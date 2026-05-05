@@ -973,6 +973,114 @@ function Login({onLogin}){
 
 // ── PANTALLA OBRAS ─────────────────────────────────────────────────────────
 // Modal para nueva obra
+
+// ── GP CONSTRUCT — GOOGLE SHEETS ──────────────────────────────────────────
+const GP_SHEET_ID = "1UaRI7ysMttXvET9I6hXPJAqadUYRd0Y0Qiwy8uRi82c";
+const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/export?format=csv`;
+
+// Parser del CSV de GP Construct
+// Estructura: Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor
+function parsearGPConstruct(csvText) {
+  const lines = csvText.split('\n').map(l => l.split(',').map(c => c.replace(/^"|"$/g,'').trim()));
+  
+  // Detectar columnas de semanas (fila 9 aprox - buscar números de 2 dígitos)
+  let headerRow = -1;
+  let colMap = {};
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    const hasSemanas = lines[i].some(c => /^[1-5][0-9]$/.test(c));
+    if (hasSemanas) {
+      headerRow = i;
+      lines[i].forEach((c, ci) => {
+        if (/^[1-5][0-9]$/.test(c)) colMap[`S${c}`] = ci;
+        if (/^2024$/.test(c)) colMap['2024'] = ci;
+        if (/^2025$/.test(c)) colMap['2025'] = ci;
+      });
+      break;
+    }
+  }
+
+  const obras = {};
+  let curObra = null, curRubro = null;
+
+  for (let i = (headerRow >= 0 ? headerRow + 1 : 10); i < lines.length; i++) {
+    const row = lines[i];
+    const b = row[1] || '';
+    if (!b.trim()) continue;
+
+    // Obra: empieza con 4 dígitos
+    if (/^\d{4}\s/.test(b)) {
+      curObra = b.trim();
+      curRubro = null;
+      if (!obras[curObra]) obras[curObra] = { rubros: {}, semanas: {} };
+      Object.entries(colMap).forEach(([k, ci]) => {
+        const v = parseFloat((row[ci] || '').replace(/[$,]/g, ''));
+        if (!isNaN(v) && v !== 0) obras[curObra].semanas[k] = Math.abs(v);
+      });
+    }
+    // Rubro: empieza con 3 dígitos
+    else if (/^\d{3}\s/.test(b) && curObra) {
+      curRubro = b.slice(0, 3);
+      if (!obras[curObra].rubros[curRubro]) {
+        obras[curObra].rubros[curRubro] = { nombre: b.trim(), semanas: {} };
+      }
+      Object.entries(colMap).forEach(([k, ci]) => {
+        const v = parseFloat((row[ci] || '').replace(/[$,]/g, ''));
+        if (!isNaN(v) && v !== 0) obras[curObra].rubros[curRubro].semanas[k] = Math.abs(v);
+      });
+    }
+  }
+
+  // Convertir a array con semanas disponibles
+  const semanasDisponibles = Object.keys(colMap).filter(k => k.startsWith('S')).sort();
+  const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
+
+  return {
+    obras,
+    semanasDisponibles,
+    ultimaSemana,
+    totalObras: Object.keys(obras).length,
+  };
+}
+
+// Hook para cargar datos de GP Construct
+function useGPConstruct() {
+  const [gpData, setGpData] = useState(null);
+  const [gpLoading, setGpLoading] = useState(false);
+  const [gpError, setGpError] = useState('');
+  const [gpUltActualiz, setGpUltActualiz] = useState('');
+
+  const cargarGP = useCallback(async () => {
+    setGpLoading(true); setGpError('');
+    try {
+      const resp = await fetch(`https://corsproxy.io/?${encodeURIComponent(GP_SHEET_CSV)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      const parsed = parsearGPConstruct(text);
+      setGpData(parsed);
+      setGpUltActualiz(new Date().toLocaleString('es-MX'));
+      // Guardar en Firestore para acceso offline
+      await fsSet('global/gp_construct', {
+        data: parsed,
+        ultimaActualizacion: new Date().toISOString()
+      });
+    } catch(e) {
+      // Si falla el fetch, cargar desde Firestore
+      const cached = await fsGet('global/gp_construct');
+      if (cached) {
+        setGpData(cached.data);
+        setGpUltActualiz(`Cache: ${new Date(cached.ultimaActualizacion).toLocaleString('es-MX')}`);
+      } else {
+        setGpError('No se pudo cargar GP Construct: ' + e.message);
+      }
+    }
+    setGpLoading(false);
+  }, []);
+
+  useEffect(() => { cargarGP(); }, []);
+
+  return { gpData, gpLoading, gpError, gpUltActualiz, cargarGP };
+}
+
 // Catálogo de obras de GP Construct disponibles para activar en CAMPO
 const GP_OBRAS_CATALOGO = [
   {id:"0001",nombre:"Oficina Central",          gastoGP:4759697},
@@ -1006,7 +1114,7 @@ const GP_OBRAS_CATALOGO = [
   {id:"0124",nombre:"SIOP Coatza Rehab. Puente", gastoGP:1770125},
 ];
 
-function ModalNuevaObra({onSave,onClose}){
+function ModalNuevaObra({onSave,onClose,gpData}){
   const[paso,setPaso]=useState("seleccionar"); // seleccionar | completar
   const[gpSel,setGpSel]=useState(null);
   const[busqueda,setBusqueda]=useState("");
@@ -1030,7 +1138,18 @@ function ModalNuevaObra({onSave,onClose}){
     setPaso("completar");
   }
 
-  const gpFiltradas = GP_OBRAS_CATALOGO.filter(o =>
+  // Usar datos del Sheet si están disponibles, sino el catálogo estático
+  const gpCatalogo = gpData
+    ? Object.entries(gpData.obras).map(([key, val]) => ({
+        id: key.slice(0,4),
+        nombre: key.slice(5).trim(),
+        gastoGP: val.semanas[gpData.ultimaSemana] || 0,
+        semanas: val.semanas,
+        rubros: val.rubros,
+      }))
+    : GP_OBRAS_CATALOGO;
+
+  const gpFiltradas = gpCatalogo.filter(o =>
     !busqueda || o.nombre.toLowerCase().includes(busqueda.toLowerCase()) || o.id.includes(busqueda)
   );
   return <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,
@@ -1145,7 +1264,7 @@ function ModalNuevaObra({onSave,onClose}){
   </div>;
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras}){
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP}){
   // Debug
   if(!obras||!Array.isArray(obras)||obras.length===0){
     return <div style={{padding:20,color:C.red,fontSize:12}}>
@@ -1198,7 +1317,7 @@ function PantallaObras({onSelect,usuario,obras,setObras}){
   const listaActual=ordenar(verHistorial?archivadas:activas);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {modalNueva&&<ModalNuevaObra onSave={agregarObra} onClose={()=>setModalNueva(false)}/>}
+    {modalNueva&&<ModalNuevaObra onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData}/>}
 
     {/* Confirmación archivar */}
     {confirmarArchivar&&<div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,
@@ -1232,6 +1351,11 @@ function PantallaObras({onSelect,usuario,obras,setObras}){
         <div style={{fontSize:11,color:C.textMut}}>
           {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
         </div>
+        {gpUltActualiz&&<div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+          GP Construct: {gpUltActualiz}
+          {onRefreshGP&&<button onClick={onRefreshGP} style={{background:"none",border:"none",
+            color:C.caliza,fontSize:9,cursor:"pointer",marginLeft:6}}>↻ Actualizar</button>}
+        </div>}
       </div>
       {puedeGestionar&&<button onClick={()=>setModalNueva(true)}
         style={{background:C.caliza,border:"none",borderRadius:8,padding:"7px 14px",
@@ -3094,6 +3218,7 @@ export default function App(){
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
+  const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP } = useGPConstruct();
 
   // Al entrar a una obra, cargar sus parámetros desde Firestore
   useEffect(()=>{
@@ -3178,7 +3303,7 @@ export default function App(){
     </div>}
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP}/>}
       {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria} materiales={materiales} setMateriales={setMateriales} rol={usuario.rol} obra={obra}/>}
       {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol}/>}
