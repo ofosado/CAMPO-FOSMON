@@ -1174,7 +1174,7 @@ function PantallaObras({onSelect,usuario,obras,setObras}){
     return l.sort((a,b)=>a.nombre.localeCompare(b.nombre));
   };
 
-  const archivar=(id)=>{
+  const archivar=async(id)=>{
     const snap=JSON.stringify(obras.find(o=>o.id===id));
     try{
       const histPrev = await fsGet("global/historial_obras") || {obras:[]};
@@ -2211,7 +2211,7 @@ function Presupuesto({obra, setObra, rol}) {
     reader.readAsArrayBuffer(file);
   }
 
-  function confirmarCatalogo() {
+  async function confirmarCatalogo() {
     if (!resultado) return;
     const cat = {
       obraId: obra.id,
