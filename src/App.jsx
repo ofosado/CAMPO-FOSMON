@@ -243,7 +243,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{padding:24,background:"#0D1619",minHeight:"100vh",color:"#fff",fontFamily:"monospace"}}>
           <div style={{background:"#DC2626",borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:14,fontWeight:700}}>
-            ⚠ Error en CAMPO
+             Error en CAMPO
           </div>
           <div style={{background:"#141E22",borderRadius:8,padding:16,fontSize:12,lineHeight:1.6,wordBreak:"break-all"}}>
             <b>{this.state.error.toString()}</b>
@@ -849,7 +849,7 @@ function SecBtn({children,onClick,style}){
 function ReadOnly({children}){
   return <div style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:9,
     color:C.yellow,background:"rgba(202,138,4,0.12)",borderRadius:4,padding:"2px 7px",
-    border:"0.5px solid rgba(202,138,4,0.25)",marginLeft:8}}>🔒 Solo lectura</div>;
+    border:"0.5px solid rgba(202,138,4,0.25)",marginLeft:8}}> Solo lectura</div>;
 }
 
 function Lightbox({url,onClose}){
@@ -869,7 +869,7 @@ function FotoUploader({fotos,onAdd,onDel}){
     </div>)}
   </div>}
   <div className="fotodrop" onClick={()=>ref.current?.click()}>
-    📷 {fotos.length>0?`${fotos.length} foto(s) — agregar más`:"Agregar fotos de evidencia"}
+     {fotos.length>0?`${fotos.length} foto(s) — agregar más`:"Agregar fotos de evidencia"}
   </div>
   <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
   <Lightbox url={lb} onClose={()=>setLb(null)}/></>;
@@ -887,7 +887,7 @@ function ConceptoFotos({fotos,onAdd,onDel}){
     </div>)}
   </div>}
   <div className="fotodrop" style={{fontSize:9,padding:"5px 8px"}} onClick={()=>ref.current?.click()}>
-    📷 {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
+     {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
   </div>
   <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
   <Lightbox url={lb} onClose={()=>setLb(null)}/></div>;
@@ -1649,6 +1649,60 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
       </div>
     </div>}
 
+    {/* Modal eliminar obra — doble confirmación */}
+    {confirmarEliminar&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:400,
+        border:`1px solid ${C.border}`,boxShadow:"0 16px 48px rgba(0,0,0,0.2)"}}>
+        {elimStep===1&&<>
+          <div style={{fontSize:13,fontWeight:600,color:C.redDk,marginBottom:8}}>
+            Eliminar obra permanentemente
+          </div>
+          <div style={{fontSize:12,fontWeight:600,color:C.textPri,marginBottom:4}}>
+            {confirmarEliminar.nombre}
+          </div>
+          <div style={{fontSize:11,color:C.textSec,marginBottom:16,lineHeight:1.6}}>
+            Esta acción es irreversible. Se eliminarán todos los datos, avances,
+            estimaciones y documentos de esta obra.
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <SecBtn onClick={()=>{setConfirmarEliminar(null);setElimStep(1);}} style={{flex:1}}>Cancelar</SecBtn>
+            <button onClick={()=>setElimStep(2)}
+              style={{flex:2,background:C.redDk,border:"none",borderRadius:6,padding:"9px 0",
+                fontSize:12,fontWeight:600,color:"white",cursor:"pointer"}}>
+              Continuar
+            </button>
+          </div>
+        </>}
+        {elimStep===2&&<>
+          <div style={{fontSize:13,fontWeight:600,color:C.redDk,marginBottom:12}}>
+            Escribe el ID de la obra para confirmar
+          </div>
+          <div style={{background:C.bg,borderRadius:6,padding:"8px 12px",
+            fontSize:13,fontWeight:700,color:C.textPri,marginBottom:10,textAlign:"center",
+            letterSpacing:"0.12em",fontFamily:"monospace",border:`1px solid ${C.border}`}}>
+            {confirmarEliminar.id}
+          </div>
+          <input value={idConfirm} onChange={e=>setIdConfirm(e.target.value)}
+            placeholder={`Escribe: ${confirmarEliminar.id}`}
+            style={{background:"white",border:`1px solid ${idConfirm===confirmarEliminar.id?C.redDk:C.border}`,
+              borderRadius:6,padding:"8px 12px",color:C.textPri,fontSize:12,width:"100%",
+              outline:"none",marginBottom:12,fontFamily:"monospace",letterSpacing:"0.08em"}}/>
+          <div style={{display:"flex",gap:8}}>
+            <SecBtn onClick={()=>setElimStep(1)} style={{flex:1}}>Atras</SecBtn>
+            <button onClick={ejecutarEliminar} disabled={idConfirm!==confirmarEliminar.id}
+              style={{flex:2,
+                background:idConfirm===confirmarEliminar.id?C.redDk:C.border,
+                border:"none",borderRadius:6,padding:"9px 0",fontSize:12,fontWeight:600,
+                color:idConfirm===confirmarEliminar.id?"white":C.textMut,
+                cursor:idConfirm===confirmarEliminar.id?"pointer":"not-allowed"}}>
+              Eliminar definitivamente
+            </button>
+          </div>
+        </>}
+      </div>
+    </div>}
+
     {/* Header */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingBottom:6}}>
       <div>
@@ -1685,7 +1739,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         style={{background:verHistorial?C.caliza:C.card,border:`0.5px solid ${C.borderM}`,
           borderRadius:6,padding:"5px 12px",fontSize:10,
           color:verHistorial?C.bg:C.textSec,cursor:"pointer",whiteSpace:"nowrap"}}>
-        {verHistorial?`← Obras activas`:`🗂 Historial (${archivadas.length})`}
+        {verHistorial?`← Obras activas`:` Historial (${archivadas.length})`}
       </button>}
     </div>
 
@@ -1741,7 +1795,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
             {puedeEliminar&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
               style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
                 padding:"2px 7px",fontSize:9,color:C.red,cursor:"pointer",opacity:0.7}}>
-              🗑 Eliminar
+              Eliminar
             </button>}
             {!archivada&&<span style={{color:C.caliza,fontWeight:700}}>Ver obra →</span>}
           </div>
@@ -2045,10 +2099,10 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
         <span style={{fontSize:9,color:C.textMut}}>{estimaciones.length} est. · Amort {obra.pctAnticipo}% · FG {obra.pctFondoGar}%</span>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-        <Kpi label="Pagado"       value={MXN(estPag)}   sub="cobrado"    color={C.green}  size={12}/>
-        <Kpi label="Por cobrar"   value={MXN(estFact)}  sub="facturadas" color={C.purple} size={12}/>
-        <Kpi label="Retenido FG"  value={MXN(estRet)}   sub="fondo"      color={C.red}    size={12}/>
-        <Kpi label="Por recuperar anticipo"value={MXN(estAmort)} sub="anticipo"   color={C.yellow} size={12}/>
+        <Kpi label="Pagado"        value={MXN(estPag)}    sub="cobrado y liquidado"    color={C.greenDk}  size={12}/>
+        <Kpi label="Por cobrar"    value={MXN(estPorCob)} sub="facturado + aprobado"   color={C.purpleDk} size={12}/>
+        <Kpi label="En proceso"    value={MXN(estProc)}   sub="en elaboración"          color={C.yellowDk} size={12}/>
+        <Kpi label="Total estimado"value={MXN(estTotal)}  sub={`${(estTotal/obra.presupuesto*100).toFixed(1)}% del contrato`} color={C.blueDk} size={12}/>
       </div>
     </Card>
     {/* ── MONTO EJECUTADO vs ESTIMADO ── */}
@@ -2132,11 +2186,11 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
           </div>
           {pctProy<95?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
             borderRadius:7,padding:"7px 10px",fontSize:10,color:C.yellow}}>
-            ⚠ Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del presupuesto.
+             Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del presupuesto.
             Se requiere acelerar <b>{MXN((obra.presupuesto-proyFin)/Math.max(semRest,1))}/sem</b> adicionales.
           </div>:<div style={{background:"rgba(22,163,74,0.1)",border:"0.5px solid rgba(22,163,74,0.25)",
             borderRadius:7,padding:"7px 10px",fontSize:10,color:C.green}}>
-            ✓ Al ritmo actual la obra termina dentro del presupuesto contratado.
+             Al ritmo actual la obra termina dentro del presupuesto contratado.
           </div>}
         </div>;
       })()}
@@ -2180,7 +2234,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
               return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
                 background:"rgba(255,254,249,0.04)",border:"1px dashed rgba(255,254,249,0.12)",
                 display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
-                <span style={{fontSize:16,opacity:0.3}}>📷</span>
+                <span style={{fontSize:16,opacity:0.3}}></span>
                 <span style={{fontSize:8,color:C.textMut}}>Sin foto</span>
               </div>;
             })}
@@ -2223,7 +2277,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
     }
   }
   const colors_map = {idle:C.blueDk, saving:C.border, saved:C.greenDk, error:C.redDk};
-  const labels_map = {idle:"💾 Guardar registro", saving:"Guardando...", saved:"✓ Guardado", error:"✗ Error al guardar"};
+  const labels_map = {idle:"Guardar registro", saving:"Guardando...", saved:"Guardado", error:"Error al guardar"};
   return (
     <button onClick={guardar} disabled={estado==="saving"}
       style={{background:estado==="idle"?C.blueDk:estado==="saved"?C.greenDk:estado==="error"?C.redDk:C.border,
@@ -2248,10 +2302,10 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
-      🔒 Vista de solo lectura — tu rol no tiene permiso para editar este módulo.
+       Vista de solo lectura — tu rol no tiene permiso para editar este módulo.
     </div>}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,paddingBottom:1}}>
-      {[["volumenes","📐 Volúmenes"],["maquinaria","🚜 Maquinaria"],["materiales","📦 Almacén"],["nomina","👷 Nómina"]].map(([id,lbl])=>
+      {[["volumenes","Volúmenes"],["maquinaria","Maquinaria"],["materiales","Almacén"],["nomina","Nómina"]].map(([id,lbl])=>
         <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:8,
           background:tab===id?C.caliza:C.card,border:`0.5px solid ${tab===id?C.caliza:C.border}`,
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
@@ -2268,7 +2322,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                 <span style={{fontSize:10,color:C.caliza}}>{exp[s.sec]?"▾":"▸"}</span>
                 <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
                 <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.sub}</span>
-                {nF>0&&<Bdg color={C.purple} small>📷{nF}</Bdg>}
+                {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
               </div>
               <div style={{fontSize:9,color:C.textMut,marginTop:1,marginLeft:12}}>{s.n} conceptos · {MXN(s.imp)}</div>
             </div>
@@ -2505,7 +2559,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
-      🔒 Vista de solo lectura — tu rol no permite editar estimaciones.
+       Vista de solo lectura — tu rol no permite editar estimaciones.
     </div>}
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
@@ -2552,7 +2606,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
         }} style={{background:saved?C.green:C.caliza,border:"none",borderRadius:6,
           padding:"5px 14px",fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",
           transition:"background .3s",display:"flex",alignItems:"center",gap:5}}>
-          {saved?"✓ Guardado":"💾 Guardar cambios"}
+          {saved?"Guardado":"Guardar cambios"}
         </button>}
       </div>
       </div>
@@ -2961,7 +3015,7 @@ function Presupuesto({obra, setObra, rol}) {
 
       <Card>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-          <Tit>📋 Catálogo de presupuesto — {obra.nombre}</Tit>
+          <Tit> Catálogo de presupuesto — {obra.nombre}</Tit>
           {catalogoGuardado && fase==='inicio' && (
             <Bdg color={C.green}>Cargado el {catalogoGuardado.fechaCarga}</Bdg>
           )}
@@ -2979,7 +3033,7 @@ function Presupuesto({obra, setObra, rol}) {
             <Kpi label="Total contrato" value={MXN(catalogoGuardado.importeContrato)} sub="capturado manualmente" color={C.caliza} size={12}/>
             <Kpi label="Total leído" value={MXN(catalogoGuardado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
             <Kpi label="Diferencia" value={MXN(Math.abs(catalogoGuardado.importeContrato - catalogoGuardado.totalLeido))}
-              sub={pctLeido >= 98 ? '✓ Cuadra' : 'Revisar'} color={pctLeido >= 98 ? C.green : C.yellow} size={12}/>
+              sub={pctLeido >= 98 ? ' Cuadra' : 'Revisar'} color={pctLeido >= 98 ? C.green : C.yellow} size={12}/>
           </div>
           {editar && <SecBtn onClick={() => setFase('inicio_nuevo')}>Reemplazar catálogo</SecBtn>}
         </Card>
@@ -3015,7 +3069,7 @@ function Presupuesto({obra, setObra, rol}) {
             {cargando
               ? <div style={{fontSize:13,color:C.caliza}}>⏳ Analizando archivo...</div>
               : <>
-                  <div style={{fontSize:28,marginBottom:8}}>📂</div>
+                  <div style={{fontSize:28,marginBottom:8}}></div>
                   <div style={{fontSize:13,fontWeight:600,color:C.textSec,marginBottom:4}}>
                     Arrastra el Excel del presupuesto aquí
                   </div>
@@ -3042,7 +3096,7 @@ function Presupuesto({obra, setObra, rol}) {
               <Kpi label="Total contrato" value={MXN(importeContrato)} sub="capturado manual" color={C.caliza} size={12}/>
               <Kpi label="Total leído" value={MXN(resultado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
               <Kpi label="Diferencia" value={MXN(difTotal)}
-                sub={pctLeido>=98?'✓ Cuadra correctamente':pctLeido>=90?'Diferencia menor — ok':' Revisar columnas'}
+                sub={pctLeido>=98?' Cuadra correctamente':pctLeido>=90?'Diferencia menor — ok':' Revisar columnas'}
                 color={pctLeido>=98?C.green:pctLeido>=90?C.yellow:C.red} size={12}/>
             </div>
             {/* Barra de cuadre */}
@@ -3058,7 +3112,7 @@ function Presupuesto({obra, setObra, rol}) {
             </div>
             {pctLeido < 90 && (
               <div style={{fontSize:10,color:C.yellow,marginTop:6}}>
-                ⚠ La diferencia es mayor al 10%. Verifica que el importe del contrato sea correcto
+                 La diferencia es mayor al 10%. Verifica que el importe del contrato sea correcto
                 y que el archivo no tenga filas de subtotales que estén duplicando importes.
               </div>
             )}
@@ -3145,7 +3199,7 @@ function Presupuesto({obra, setObra, rol}) {
             <button onClick={confirmarCatalogo}
               style={{flex:2,background:C.caliza,border:'none',borderRadius:8,padding:10,
                 fontSize:13,fontWeight:700,color:C.bg,cursor:'pointer',letterSpacing:'0.03em'}}>
-              ✓ Confirmar y guardar catálogo
+               Confirmar y guardar catálogo
             </button>
           </div>
         </>
@@ -3155,7 +3209,7 @@ function Presupuesto({obra, setObra, rol}) {
       {fase === 'confirmado' && catalogoGuardado && (
         <Card accent={C.green}>
           <div style={{fontSize:13,fontWeight:600,color:C.green,marginBottom:8}}>
-            ✓ Catálogo guardado correctamente
+             Catálogo guardado correctamente
           </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}}>
             <Kpi label="Conceptos" value={catalogoGuardado.conceptos.length} sub="partidas" color={C.blue}/>
@@ -3477,7 +3531,7 @@ function Nomina({obra, rol}) {
       <Card>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
           <div>
-            <Tit>👷 Nómina semanal — {obra.nombre}</Tit>
+            <Tit>Nómina semanal — {obra.nombre}</Tit>
             <div style={{fontSize:10,color:C.textMut,marginTop:-6}}>
               {historial.length > 0
                 ? `${historial.length} semana(s) cargada(s) · Última: ${semanaActual?.semana}`
@@ -3489,7 +3543,7 @@ function Nomina({obra, rol}) {
               style={{background:cargando?C.surface:C.caliza,border:'none',borderRadius:8,
                 padding:'8px 16px',fontSize:11,fontWeight:700,
                 color:cargando?C.textMut:C.bg,cursor:cargando?'not-allowed':'pointer',flexShrink:0}}>
-              {cargando ? '⏳ Leyendo...' : '📤 Cargar nómina'}
+              {cargando ? '⏳ Leyendo...' : ' Cargar nómina'}
             </button>
           )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}}
@@ -3504,7 +3558,7 @@ function Nomina({obra, rol}) {
       {historial.length === 0 && (
         <Card>
           <div style={{textAlign:'center',padding:'24px 0',color:C.textMut}}>
-            <div style={{fontSize:32,marginBottom:8}}>📋</div>
+            <div style={{fontSize:32,marginBottom:8}}></div>
             <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>Sin nóminas cargadas</div>
             <div style={{fontSize:11}}>Sube el Excel de nómina semanal con el botón de arriba.</div>
             <div style={{fontSize:10,marginTop:4}}>El parser detecta automáticamente el formato del archivo.</div>
@@ -3650,7 +3704,7 @@ function Nomina({obra, rol}) {
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
                 {altas.length > 0 && (
                   <Card accent={C.green}>
-                    <Tit>🟢 Altas esta semana ({altas.length})</Tit>
+                    <Tit> Altas esta semana ({altas.length})</Tit>
                     {altas.map(p=>(
                       <div key={p.id} style={{marginBottom:5,paddingBottom:5,borderBottom:`0.5px solid ${C.border}`}}>
                         <div style={{fontSize:11,color:C.textPri}}>{p.nombre}</div>
@@ -3664,7 +3718,7 @@ function Nomina({obra, rol}) {
                 )}
                 {bajas.length > 0 && (
                   <Card accent={C.red}>
-                    <Tit>🔴 Bajas vs semana anterior ({bajas.length})</Tit>
+                    <Tit> Bajas vs semana anterior ({bajas.length})</Tit>
                     {bajas.map(p=>(
                       <div key={p.id} style={{marginBottom:5,paddingBottom:5,borderBottom:`0.5px solid ${C.border}`}}>
                         <div style={{fontSize:11,color:C.textPri}}>{p.nombre}</div>
@@ -3905,7 +3959,7 @@ function Contrato({obra, setObra, rol}) {
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
       {/* Sub-tabs */}
       <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
-        {[["datos","📋 Datos del contrato"],["plazos","📅 Plazos y ampliaciones"],["documentos","📁 Repositorio"]].map(([id,lbl])=>(
+        {[["datos","Datos del contrato"],["plazos","Plazos y ampliaciones"],["documentos","Repositorio de documentos"]].map(([id,lbl])=>(
           <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
             fontSize:11,borderRadius:8,background:tab===id?C.caliza:C.card,
             border:`0.5px solid ${tab===id?C.caliza:C.border}`,
@@ -3924,7 +3978,7 @@ function Contrato({obra, setObra, rol}) {
               style={{background:saved?C.green:saving?"rgba(255,254,249,0.2)":C.caliza,
                 border:"none",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,
                 color:saved||saving?C.caliza:C.bg,cursor:"pointer",transition:"all .3s"}}>
-              {saved?"✓ Guardado":saving?"Guardando...":"💾 Guardar datos"}
+              {saved?"Guardado":saving?"Guardando...":"Guardar datos"}
             </button>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -3957,7 +4011,7 @@ function Contrato({obra, setObra, rol}) {
               <Tit>Plazo original del contrato</Tit>
               {editar&&<button onClick={guardarDatos} style={{background:C.caliza,border:"none",
                 borderRadius:6,padding:"5px 12px",fontSize:10,fontWeight:700,color:C.bg,cursor:"pointer"}}>
-                💾 Guardar
+                Guardar
               </button>}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
@@ -4082,7 +4136,7 @@ function Contrato({obra, setObra, rol}) {
                   style={{background:uploading?C.surface:C.caliza,border:"none",borderRadius:8,
                     padding:"7px 14px",fontSize:11,fontWeight:700,
                     color:uploading?C.textMut:C.bg,cursor:uploading?"not-allowed":"pointer"}}>
-                  {uploading?"⏳ Subiendo...":"📤 Subir documento"}
+                  {uploading?"⏳ Subiendo...":"Subir documento"}
                 </button>
               )}
               <input ref={fileRef} type="file"
@@ -4092,7 +4146,7 @@ function Contrato({obra, setObra, rol}) {
 
             {docs.length===0&&docsLoaded&&(
               <div style={{textAlign:"center",padding:"24px 0",color:C.textMut}}>
-                <div style={{fontSize:32,marginBottom:8}}>📁</div>
+                <div style={{fontSize:32,marginBottom:8}}></div>
                 <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>Sin documentos</div>
                 <div style={{fontSize:10}}>
                   {puedeSubir?"Sube el contrato firmado y otros documentos relevantes.":"No hay documentos disponibles aún."}
@@ -4133,7 +4187,7 @@ function Contrato({obra, setObra, rol}) {
                     </a>
                     {puedeElimDoc&&<button onClick={()=>eliminarDoc(doc.id)}
                       style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:5,
-                        padding:"4px 8px",fontSize:10,color:C.red,cursor:"pointer"}}>✕</button>}
+                        padding:"4px 8px",fontSize:10,color:C.red,cursor:"pointer"}}></button>}
                   </div>
                 </div>
               );
@@ -4150,10 +4204,10 @@ function Contrato({obra, setObra, rol}) {
 }
 
 const TABS_POR_ROL = {
-  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"📄 Contrato"}],
-  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"},{id:"contrato",label:"📄 Contrato"}],
-  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"},{id:"contrato",label:"📄 Contrato"}],
-  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"📄 Contrato"}],
+  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
+  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
+  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
 };
 
 const EST_DEFAULT = [
@@ -4274,7 +4328,7 @@ export default function App(){
         style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:6,
           margin:"4px 12px",padding:"4px 12px",fontSize:10,color:C.caliza,cursor:"pointer",
           display:"flex",alignItems:"center",gap:5}}>
-        📄 Generar PDF
+        Generar PDF
       </button>}
     </div>}
 
