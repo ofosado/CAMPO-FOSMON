@@ -262,12 +262,36 @@ class ErrorBoundary extends React.Component {
 
 // ── PALETA FOSMON ──────────────────────────────────────────────────────────
 const C = {
-  bg:"#0D1619", surface:"#141E22", card:"#1A252A",
-  border:"rgba(255,254,249,0.10)", borderM:"rgba(255,254,249,0.20)",
-  caliza:"#FFFEF9", textPri:"#FFFEF9",
-  textSec:"rgba(255,254,249,0.55)", textMut:"rgba(255,254,249,0.30)",
-  green:"#16A34A", red:"#DC2626", blue:"#2563EB", yellow:"#CA8A04",
-  purple:"#7C3AED", orange:"#D97706", pink:"#F43F5E", indigo:"#6366F1",
+  // Tema claro
+  bg:      "#F0F2F5",
+  surface: "#FFFFFF",
+  card:    "#FFFFFF",
+  border:  "#E8EAF0",
+  borderM: "#D0D4DC",
+  caliza:  "#0D1619",
+  textPri: "#0D1619",
+  textSec: "#555E6B",
+  textMut: "#9AA0AC",
+  // Colores semánticos
+  green:   "#639922",
+  greenBg: "#EAF3DE",
+  greenDk: "#3B6D11",
+  red:     "#E24B4A",
+  redBg:   "#FCEBEB",
+  redDk:   "#A32D2D",
+  blue:    "#378ADD",
+  blueBg:  "#E6F1FB",
+  blueDk:  "#185FA5",
+  yellow:  "#EF9F27",
+  yellowBg:"#FAEEDA",
+  yellowDk:"#854F0B",
+  purple:  "#7F77DD",
+  purpleBg:"#EEEDFE",
+  purpleDk:"#3C3489",
+  orange:  "#D97706",
+  orangeBg:"#FEF3C7",
+  pink:    "#F43F5E",
+  indigo:  "#6366F1",
 };
 
 // ── FIREBASE CONFIG ────────────────────────────────────────────────────────
@@ -738,24 +762,25 @@ function can(rol, modulo, accion="ver") {
 const css = `
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:${C.bg}; color:${C.textPri}; font-family:system-ui,-apple-system,sans-serif; }
-  ::-webkit-scrollbar{width:3px} ::-webkit-scrollbar-track{background:${C.bg}}
-  ::-webkit-scrollbar-thumb{background:rgba(255,254,249,0.15);border-radius:2px}
+  ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:#F0F2F5}
+  ::-webkit-scrollbar-thumb{background:#D0D4DC;border-radius:2px}
   input,select{font-family:inherit;outline:none}
-  input:focus,select:focus{border-color:${C.caliza}!important}
+  input:focus,select:focus{border-color:${C.blueDk}!important;box-shadow:0 0 0 2px ${C.blueBg}}
   button{cursor:pointer;font-family:inherit}
-  .fotodrop{border:1.5px dashed rgba(255,254,249,0.15);border-radius:8px;padding:8px;
-    text-align:center;cursor:pointer;font-size:10px;color:rgba(255,254,249,0.35);transition:all .2s}
-  .fotodrop:hover{border-color:${C.caliza};color:${C.caliza}}
-  .fotothumb{position:relative;border-radius:6px;overflow:hidden;aspect-ratio:4/3;cursor:zoom-in}
+  .fotodrop{border:1.5px dashed ${C.borderM};border-radius:8px;padding:8px;
+    text-align:center;cursor:pointer;font-size:10px;color:${C.textMut};transition:all .2s;
+    background:${C.bg};}
+  .fotodrop:hover{border-color:${C.blueDk};color:${C.blueDk};background:${C.blueBg}}
+  .fotothumb{position:relative;border-radius:8px;overflow:hidden;aspect-ratio:4/3;cursor:zoom-in}
   .fotothumb img{width:100%;height:100%;object-fit:cover;display:block}
-  .fotodel{position:absolute;top:3px;right:3px;background:rgba(0,0,0,.7);border:none;
-    color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;cursor:pointer;
+  .fotodel{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);border:none;
+    color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;cursor:pointer;
     display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s}
   .fotothumb:hover .fotodel{opacity:1}
-  .lb{position:fixed;inset:0;background:rgba(13,22,25,.95);z-index:999;
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;
     display:flex;align-items:center;justify-content:center;padding:16px;cursor:pointer}
-  .lb img{max-width:90vw;max-height:85vh;border-radius:8px;object-fit:contain}
-  input[type=range]{accent-color:${C.caliza};width:100%}
+  .lb img{max-width:90vw;max-height:85vh;border-radius:10px;object-fit:contain}
+  input[type=range]{accent-color:${C.blueDk};width:100%}
   .noscroll::-webkit-scrollbar{display:none}
 `;
 
@@ -767,45 +792,58 @@ const semM = p=>p>15?C.green:p>=6?C.yellow:C.red;
 
 // ── ATOMS ──────────────────────────────────────────────────────────────────
 function Card({children,style,accent}){
-  return <div style={{background:C.card,border:`0.5px solid ${C.border}`,borderRadius:10,
-    padding:"11px 13px",...(accent?{borderLeft:`3px solid ${accent}`}:{}),...style}}>{children}</div>;
+  return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,
+    padding:"11px 13px",boxShadow:"0 1px 3px rgba(0,0,0,0.04)",
+    ...(accent?{borderLeft:`3px solid ${accent}`,borderRadius:"0 10px 10px 0"}:{}),...style}}>{children}</div>;
 }
 function Tit({children}){
-  return <div style={{fontSize:12,fontWeight:600,color:C.textPri,marginBottom:9,letterSpacing:"0.02em"}}>{children}</div>;
+  return <div style={{fontSize:12,fontWeight:600,color:C.textPri,marginBottom:8,letterSpacing:"0.01em"}}>{children}</div>;
 }
 function Kpi({label,value,sub,color,size=15}){
-  return <div style={{background:C.bg,border:`0.5px solid ${C.border}`,borderRadius:8,
-    padding:"9px 11px",borderLeft:`3px solid ${color}`}}>
-    <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{label}</div>
+  return <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,
+    padding:"8px 10px",borderLeft:`3px solid ${color}`,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+    <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>{label}</div>
     <div style={{fontSize:size,fontWeight:600,color,lineHeight:1.2}}>{value}</div>
     {sub&&<div style={{fontSize:9,color:C.textMut,marginTop:2}}>{sub}</div>}
   </div>;
 }
 function Bar({pct,color}){
-  return <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:5,overflow:"hidden"}}>
-    <div style={{width:`${Math.min(pct||0,100)}%`,height:"100%",background:color||C.caliza,borderRadius:99,transition:"width .4s"}}/>
+  return <div style={{background:C.bg,borderRadius:99,height:4,overflow:"hidden"}}>
+    <div style={{width:`${Math.min(pct||0,100)}%`,height:"100%",background:color||C.blueDk,borderRadius:99,transition:"width .4s"}}/>
   </div>;
 }
-function Bdg({children,color,small}){
-  return <span style={{background:`${color}22`,color,border:`0.5px solid ${color}44`,borderRadius:3,
-    padding:small?"1px 4px":"1px 6px",fontSize:small?8:9,fontWeight:600,whiteSpace:"nowrap"}}>{children}</span>;
+function Bdg({children,color,small,bgColor}){
+  // Map semantic colors to proper light-mode bg
+  const bgMap = {
+    [C.green]:C.greenBg,[C.greenDk]:C.greenBg,
+    [C.red]:C.redBg,[C.redDk]:C.redBg,
+    [C.blue]:C.blueBg,[C.blueDk]:C.blueBg,
+    [C.yellow]:C.yellowBg,[C.yellowDk]:C.yellowBg,
+    [C.purple]:C.purpleBg,[C.purpleDk]:C.purpleBg,
+  };
+  const bg = bgColor || bgMap[color] || `${color}18`;
+  const textCol = {[C.green]:C.greenDk,[C.red]:C.redDk,[C.blue]:C.blueDk,
+    [C.yellow]:C.yellowDk,[C.purple]:C.purpleDk}[color] || color;
+  return <span style={{background:bg,color:textCol,borderRadius:99,
+    padding:small?"1px 7px":"2px 9px",fontSize:small?9:10,fontWeight:500,whiteSpace:"nowrap",
+    display:"inline-block"}}>{children}</span>;
 }
 function Inp({style,...rest}){
-  return <input {...rest} style={{background:C.bg,border:`0.5px solid ${C.borderM}`,borderRadius:6,
-    padding:"5px 7px",color:C.textPri,fontSize:11,width:"100%",...style}}/>;
+  return <input {...rest} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
+    padding:"6px 9px",color:C.textPri,fontSize:11,width:"100%",...style}}/>;
 }
 function Sel({children,style,...rest}){
-  return <select {...rest} style={{background:C.bg,border:`0.5px solid ${C.borderM}`,borderRadius:6,
-    padding:"5px 7px",color:C.textPri,fontSize:11,...style}}>{children}</select>;
+  return <select {...rest} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
+    padding:"6px 9px",color:C.textPri,fontSize:11,...style}}>{children}</select>;
 }
 function PrimaryBtn({children,onClick,disabled}){
   return <button onClick={onClick} disabled={disabled}
-    style={{background:disabled?"rgba(255,254,249,0.2)":C.caliza,border:"none",borderRadius:8,padding:10,
-      color:disabled?C.textMut:C.bg,fontSize:13,fontWeight:700,width:"100%",marginTop:6,
-      letterSpacing:"0.03em",cursor:disabled?"not-allowed":"pointer"}}>{children}</button>;
+    style={{background:disabled?C.border:C.blueDk,border:"none",borderRadius:8,padding:10,
+      color:disabled?C.textMut:"#fff",fontSize:12,fontWeight:500,width:"100%",marginTop:6,
+      letterSpacing:"0.02em",cursor:disabled?"not-allowed":"pointer"}}>{children}</button>;
 }
 function SecBtn({children,onClick,style}){
-  return <button onClick={onClick} style={{background:C.bg,border:`0.5px solid ${C.borderM}`,borderRadius:6,
+  return <button onClick={onClick} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
     padding:"5px 10px",fontSize:11,color:C.textSec,...style}}>{children}</button>;
 }
 function ReadOnly({children}){
@@ -1835,11 +1873,11 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
             ))}
             {/* Zonas plazo */}
             {PLAZO_IDX < n && <rect x={xS(HOY_IDX+1)} y={0} width={xS(PLAZO_IDX)-xS(HOY_IDX+1)} height={H} fill={C.green} fillOpacity={0.04}/>}
-            {PLAZOA_IDX < n && PLAZO_IDX < n && <rect x={xS(PLAZO_IDX)} y={0} width={xS(PLAZOA_IDX)-xS(PLAZO_IDX)} height={H} fill={C.yellow} fillOpacity={0.06}/>}
+            {ampliaciones.length>0 && PLAZOA_IDX < n && PLAZO_IDX < n && <rect x={xS(PLAZO_IDX)} y={0} width={xS(PLAZOA_IDX)-xS(PLAZO_IDX)} height={H} fill={C.yellow} fillOpacity={0.06}/>}
             {/* Líneas plazo */}
             {PLAZO_IDX<n && <><line x1={xS(PLAZO_IDX)} y1={0} x2={xS(PLAZO_IDX)} y2={H} stroke={C.green} strokeWidth={1} strokeDasharray="4,4" opacity={0.55}/>
             <text x={xS(PLAZO_IDX)-3} y={12} fill={C.green} fontSize={7.5} textAnchor="end" fontWeight="600" opacity={0.8}>Plazo orig.</text></>}
-            {PLAZOA_IDX<n && <><line x1={xS(PLAZOA_IDX)} y1={0} x2={xS(PLAZOA_IDX)} y2={H} stroke={C.yellow} strokeWidth={1} strokeDasharray="3,4" opacity={0.65}/>
+            {ampliaciones.length>0 && PLAZOA_IDX<n && <><line x1={xS(PLAZOA_IDX)} y1={0} x2={xS(PLAZOA_IDX)} y2={H} stroke={C.yellow} strokeWidth={1} strokeDasharray="3,4" opacity={0.65}/>
             <text x={xS(PLAZOA_IDX)+3} y={12} fill={C.yellow} fontSize={7.5} textAnchor="start" fontWeight="600" opacity={0.8}>Amp.</text></>}
           {/* Ampliaciones adicionales desde Contrato */}
           {ampliaciones.map((amp,ai)=>{
@@ -1853,8 +1891,8 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
             </g>;
           })}
             {/* Línea HOY */}
-            <line x1={xS(HOY_IDX)} y1={0} x2={xS(HOY_IDX)} y2={H} stroke={C.caliza} strokeWidth={0.7} opacity={0.18}/>
-            <text x={xS(HOY_IDX)} y={H+28} fill={C.caliza} fontSize={7.5} textAnchor="middle" opacity={0.4}>Hoy</text>
+            <line x1={xS(HOY_IDX)} y1={0} x2={xS(HOY_IDX)} y2={H} stroke={C.textMut} strokeWidth={0.8} opacity={0.5}/>
+            <text x={xS(HOY_IDX)} y={H+28} fill={C.textMut} fontSize={7.5} textAnchor="middle">Hoy</text>
             {/* Áreas */}
             {activeLines.gasto&&<path d={`${makeRealPath(s=>s.g)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gR)" opacity={0.7}/>}
             {activeLines.monto&&<path d={`${makeRealPath(s=>s.m)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gB)" opacity={0.6}/>}
@@ -1896,7 +1934,7 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
         {/* Tooltip */}
         {hovD&&(
           <div style={{position:'absolute',left:Math.min(PAD.left+xS(hovered)+12,490),top:PAD.top+10,
-            background:'rgba(13,22,25,0.97)',border:`0.5px solid ${C.borderM}`,borderRadius:9,
+            background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',
             padding:'10px 14px',boxShadow:'0 8px 32px rgba(0,0,0,0.7)',pointerEvents:'none',minWidth:180,
             backdropFilter:'blur(12px)'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
@@ -1933,7 +1971,7 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
       </div>
 
       {/* Resumen inferior */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginTop:12,paddingTop:10,borderTop:`0.5px solid ${C.border}`}}>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
         {[
           ['Ritmo gasto/sem', `$${(ritmoG).toFixed(1)}M`, C.red],
           ['Ritmo avance/sem', `$${(ritmoM).toFixed(1)}M`, C.blue],
@@ -2183,13 +2221,13 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
       setTimeout(()=>setEstado("idle"), 3000);
     }
   }
-  const colors_map = {idle:C.caliza, saving:"rgba(255,254,249,0.5)", saved:C.green, error:C.red};
+  const colors_map = {idle:C.blueDk, saving:C.border, saved:C.greenDk, error:C.redDk};
   const labels_map = {idle:"💾 Guardar registro", saving:"Guardando...", saved:"✓ Guardado", error:"✗ Error al guardar"};
   return (
     <button onClick={guardar} disabled={estado==="saving"}
-      style={{background:estado==="idle"?C.caliza:estado==="saved"?C.green:estado==="error"?C.red:"rgba(255,254,249,0.15)",
-        border:"none",borderRadius:8,padding:"10px 0",color:estado==="idle"?C.bg:C.caliza,
-        fontSize:13,fontWeight:700,width:"100%",marginTop:6,letterSpacing:"0.03em",
+      style={{background:estado==="idle"?C.blueDk:estado==="saved"?C.greenDk:estado==="error"?C.redDk:C.border,
+        border:"none",borderRadius:8,padding:"10px 0",color:"white",
+        fontSize:12,fontWeight:500,width:"100%",marginTop:6,letterSpacing:"0.02em",
         cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
       {labels_map[estado]}
     </button>
@@ -4195,14 +4233,14 @@ export default function App(){
   return <ErrorBoundary><>
     <style>{css}</style>
     {/* HEADER */}
-    <div style={{background:C.bg,borderBottom:`1.5px solid ${C.caliza}`,padding:"10px 16px",
+    <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"8px 14px",
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
-      position:"sticky",top:0,zIndex:100}}>
+      position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         <EmblemaFOSMON size={22}/>
         <div>
-          <div style={{fontSize:15,fontWeight:800,letterSpacing:"0.14em",color:C.caliza,lineHeight:1}}>CAMPO</div>
-          <div style={{fontSize:7,color:"rgba(255,254,249,0.4)",letterSpacing:"0.08em",marginTop:1}}>FOSMON CONSTRUCCIONES</div>
+          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>CAMPO</div>
+          <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1}}>FOSMON CONSTRUCCIONES</div>
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -4224,7 +4262,7 @@ export default function App(){
             return;
         }
         setCambiosPendientes(false); volver();
-      }} style={{background:"none",border:"none",padding:"8px 16px",
+      }} style={{background:"none",border:"none",padding:"7px 14px",
         fontSize:11,color:C.textSec,cursor:"pointer"}}>← Volver a obras</button>
       {cambiosPendientes&&<span style={{fontSize:9,color:C.yellow,display:"flex",alignItems:"center",
         gap:4,background:"rgba(202,138,4,0.12)",borderRadius:4,padding:"3px 8px",
@@ -4239,12 +4277,12 @@ export default function App(){
       </button>}
     </div>}
 
-    {screen==="obra"&&<div className="noscroll" style={{background:C.bg,borderBottom:`0.5px solid ${C.border}`,
+    {screen==="obra"&&<div className="noscroll" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,
       display:"flex",overflowX:"auto",padding:"0 12px"}}>
       {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",
-        borderBottom:`2px solid ${tab===t.id?C.caliza:"transparent"}`,padding:"9px 12px",fontSize:11,
-        color:tab===t.id?C.caliza:"rgba(255,254,249,0.45)",cursor:"pointer",whiteSpace:"nowrap",
-        fontWeight:tab===t.id?700:400,letterSpacing:"0.02em",transition:"all .15s"}}>{t.label}</button>)}
+        borderBottom:`2px solid ${tab===t.id?C.blueDk:"transparent"}`,padding:"8px 12px",fontSize:11,
+        color:tab===t.id?C.blueDk:C.textSec,cursor:"pointer",whiteSpace:"nowrap",
+        fontWeight:tab===t.id?500:400,letterSpacing:"0.01em",transition:"all .15s"}}>{t.label}</button>)}
     </div>}
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
@@ -4265,16 +4303,17 @@ export default function App(){
     </div>
 
     {/* FOOTER */}
-    <div style={{position:"fixed",bottom:0,left:0,right:0,background:C.bg,
-      borderTop:`0.5px solid ${C.border}`,padding:"6px 16px",
-      display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99}}>
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:C.surface,
+      borderTop:`1px solid ${C.border}`,padding:"5px 16px",
+      display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
+      boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
         <EmblemaFOSMON size={11} opacity={0.4}/>
-        <span style={{fontSize:9,color:"rgba(255,254,249,0.22)",letterSpacing:"0.03em"}}>
+        <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
           CAMPO — Control de Avance, Maquinaria, Personal y Obra
         </span>
       </div>
-      <span style={{fontSize:9,color:"rgba(255,254,249,0.15)"}}>v1.0 · 2026</span>
+      <span style={{fontSize:9,color:C.textMut}}>v1.0 · 2026</span>
     </div>
   </></ErrorBoundary>;
 }
