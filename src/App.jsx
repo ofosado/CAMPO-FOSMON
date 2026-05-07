@@ -5,807 +5,808 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } fro
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) {
-  // Cargar jsPDF + autoTable dinámicamente
+  // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
+    await new Promise((res,rej)=>{ const s=document.createElement('script');
       s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    });
+      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
   }
-  // Cargar autoTable siempre después de jsPDF
   await new Promise((res,rej)=>{
-    if (window._autoTableLoaded) return res();
+    if(window._atLoaded) return res();
     const s=document.createElement('script');
     s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
-    s.onload=()=>{ window._autoTableLoaded=true; res(); };
-    s.onerror=rej;
-    document.head.appendChild(s);
+    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
   });
   const { jsPDF } = window.jspdf;
 
-  // ── MANEJADOR DE ERRORES — muestra alert con detalle
   try {
-  // ── SISTEMA DE DISEÑO ──────────────────────────────────────────────────────
-  const W=279, H=216, M=12, HEADER=12, FOOTER=9;
-  const CW=W-M*2;         // ancho de contenido
-  const CY=HEADER+4;      // y inicio contenido
-  const CYB=H-FOOTER-4;   // y fin contenido
+  // ── CONSTANTES DE DISEÑO ──────────────────────────────────────────────────
+  // Página letter landscape: 279 × 216 mm
+  const PW=279, PH=216;
+  const ML=14, MR=14, MT=16, MB=14;  // márgenes
+  const HDR=13, FTR=10;               // header y footer
+  const CW=PW-ML-MR;                  // 251mm ancho de contenido
+  const CY0=HDR+MT;                   // Y inicio contenido = 27mm
+  const CYmax=PH-FTR-MB;             // Y máximo = 192mm → 165mm disponibles
 
-  // Tipografía — tamaños en pt
-  const F_S  = 10.5;  // section header
-  const F_C  = 7.5;   // column header
-  const F_B  = 8.5;   // body
-  const F_X  = 7.5;   // small / note
-  const F_K  = 16;    // KPI value
-  const F_KL = 7.0;   // KPI label
-  const F_FI = 9.0;   // firma
+  // Tipografía
+  const FS_SEC=10;   // section header
+  const FS_TH=8;     // table header
+  const FS_TD=8.5;   // table body
+  const FS_SM=7.5;   // small / notas
+  const FS_KL=7;     // KPI label
+  const FS_KV=15;    // KPI value grande
+  const FS_FI=8.5;   // firmas
 
-  // Paleta de colores [R,G,B]
-  const COL = {
-    negro:[13,22,25], blanco:[255,255,255], bg:[240,242,245],
-    grisLt:[248,249,251], grisBd:[224,227,232], grisTx:[85,94,107], grisMu:[154,160,172],
-    verde:[99,153,34], verdeBg:[234,243,222], verdeDk:[59,109,17],
-    rojo:[226,75,74], rojoBg:[252,235,235], rojoDk:[163,45,45],
-    azul:[55,138,221], azulBg:[230,241,251], azulDk:[24,95,165],
-    amar:[239,159,39], amarBg:[250,238,218], amarDk:[133,79,11],
-    mora:[127,119,221], moraBg:[238,237,254], moraDk:[60,52,137],
-    naran:[217,119,6],
+  // Paleta
+  const K = {
+    ng:[13,22,25], wh:[255,255,255],
+    bg:[240,242,245], glt:[248,249,251], gbd:[220,223,228],
+    gtx:[85,94,107], gmu:[154,160,172],
+    vd:[99,153,34], vk:[59,109,17], vb:[234,243,222],
+    rd:[226,75,74], rk:[163,45,45], rb:[252,235,235],
+    az:[55,138,221], ak:[24,95,165], ab:[230,241,251],
+    am:[239,159,39], ak2:[133,79,11], ab2:[250,238,218],
+    mo:[127,119,221], mk:[60,52,137], mb:[238,237,254],
+    na:[217,119,6],
   };
 
-  // KPIs derivados
-  const pf = n => parseFloat(n)||0;
-  const af  = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
-  const am  = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
-  const alm = materiales.reduce((t,m)=>t+pf(m.imp),0);
-  const me  = am+alm;
-  const gt  = (obra.gastoGP||0)+maquinaria.reduce((t,m)=>t+pf(m.imp),0);
-  const mg  = me-gt;
-  const mpct= me>0?mg/me*100:0;
-  const te  = estimaciones.reduce((t,e)=>t+e.monto,0);
-  const pag = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+e.monto,0);
-  const pco = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
-  const epc = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+e.monto,0);
-  const PPTO= obra.presupuesto||1;
-  const totGP= maquinaria.reduce((t,m)=>t+pf(m.imp),0)+(obra.gastoGP||0);
-
-  const MXN = n=>`$${Math.abs(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
-  const PCT = (n,d=1)=>`${(n||0).toFixed(d)}%`;
-  const fechaStr = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
-
-  // ── HELPERS DE DIBUJO ──────────────────────────────────────────────────────
+  // ── HELPERS ───────────────────────────────────────────────────────────────
   const doc = new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});
-  let currentPage = 0;
+  const pf   = n => parseFloat(n)||0;
+  const MXN  = n => `$${Math.abs(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+  const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;
+  const hoy  = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
 
-  const setFill = c => doc.setFillColor(...c);
-  const setDraw = c => doc.setDrawColor(...c);
-  const setTxt  = c => doc.setTextColor(...c);
-  const rect    = (x,y,w,h,style='F') => doc.rect(x,y,w,h,style);
-  const rRect   = (x,y,w,h,r,style='F') => doc.roundedRect(x,y,w,h,r,r,style);
-  const line    = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
-  const txt     = (t,x,y,opts={}) => doc.text(String(t),x,y,opts);
-  const fs      = n => doc.setFontSize(n);
-  const fw      = s => doc.setFont('helvetica',s);
+  // KPIs derivados — con campos reales del app
+  const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
+  const maqActivos = maquinaria.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
+  const totAlm  = matActivos.reduce((t,m)=>t+pf(m.imp),0);
+  const totMaq  = maqActivos.reduce((t,m)=>t+pf(m.imp),0);
+  const totGP   = pf(obra.gastoGP);
+  const totGast = totGP + totMaq;
+  const am      = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  const me      = am + totAlm;
+  const af      = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
+  const mg      = me - totGast;
+  const mpct    = me>0 ? mg/me*100 : 0;
+  const PPTO    = obra.presupuesto||1;
+  const te      = estimaciones.reduce((t,e)=>t+e.monto,0);
+  const pag     = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+e.monto,0);
+  const pco     = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
+  const epc     = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+e.monto,0);
 
-  // Header + Footer para páginas interiores
-  function drawInterior() {
-    currentPage++;
-    // Header fondo oscuro — altura 12mm para dar respiro
-    setFill(COL.negro); rect(0,0,W,HEADER);
-    setTxt(COL.blanco); fs(7.5); fw('bold');
-    txt('CAMPO',M,4.5);
-    fw('normal'); fs(6);
-    txt('Reporte de Avance · FOSMON Construcciones',M,8.5);
-    txt(obra.nombre||'',W-M,4.5,{align:'right'});
-    txt(`${obra.contrato||''} · ${fechaStr}`,W-M,8.5,{align:'right'});
-    // Logo emblema en header (blanco sobre fondo oscuro)
-    try {
-      if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
-        // Logo: ratio 447w x 516h → a 8mm de alto = 6.9mm de ancho
-      doc.addImage(EMB_WHITE,'PNG',M+16,1,6.9,8,'','FAST');
-      }
+  let pagNum = 0;
+
+  // ── DRAW HELPERS ──────────────────────────────────────────────────────────
+  const sf = c => doc.setFillColor(...c);
+  const sd = c => doc.setDrawColor(...c);
+  const st = c => doc.setTextColor(...c);
+  const fs = n => doc.setFontSize(n);
+  const fw = s => doc.setFont('helvetica',s);
+  const lw = n => doc.setLineWidth(n);
+  const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
+  const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
+  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);
+
+  // Dibuja header/footer en página actual
+  function pageFrame() {
+    pagNum++;
+    // Header: fondo negro
+    sf(K.ng); R(0,0,PW,HDR);
+    // Barra azul decorativa izquierda
+    sf(K.ak); R(0,0,3,HDR);
+    // Logo FOSMON
+    try { if(typeof EMB_WHITE!=='undefined')
+      doc.addImage(EMB_WHITE,'PNG',ML,1.5,6,9.8,'','FAST'); // 447:516 ratio → 6×9.8
     } catch(e){}
+    // Textos header
+    st(K.wh); fs(8.5); fw('bold');
+    T('CAMPO', ML+8, 7);
+    fs(FS_SM); fw('normal');
+    T('Reporte de Avance · FOSMON', ML+8, 11.5);
+    T(obra.nombre||'', PW-MR, 7, {align:'right'});
+    T(`${obra.contrato||''} · ${hoy}`, PW-MR, 11.5, {align:'right'});
     // Footer
-    setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
-    setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
-    setTxt(COL.grisMu); fs(F_X); fw('normal');
-    txt('CAMPO — FOSMON Construcciones · Documento confidencial',M,H-4);
-    txt(`Pagina ${currentPage} de 8`,W/2,H-4,{align:'center'});
-    txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
+    sf([232,234,240]); R(0,PH-FTR,PW,FTR);
+    sf(K.ng); R(0,PH-FTR,PW,0.6);
+    st(K.gmu); fs(6); fw('normal');
+    T('CAMPO — FOSMON Construcciones · Documento confidencial', ML, PH-3.5);
+    T(`Página ${pagNum} de 8`, PW/2, PH-3.5, {align:'center'});
+    T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
   }
 
-  // Sección header (barra oscura con título)
-  function secHeader(titulo, y, col=COL.negro) {
-    setFill(col); rect(M,y,CW,7);
-    setFill(COL.blanco); rect(M,y,1.5,7);
-    setTxt(COL.blanco); fs(F_S); fw('bold');
-    txt(titulo,M+4,y+5);
-    return y+7+3;
+  // Dibuja una sección header (barra oscura + título)
+  function secHead(txt, y, col=K.ng) {
+    sf(col); R(ML,y,CW,8);
+    sf(K.wh); R(ML,y,2,8);
+    st(K.wh); fs(FS_SEC); fw('bold');
+    T(txt, ML+5, y+5.8);
+    return y+8+3; // retorna Y siguiente
   }
 
-  // KPI box
-  function kpiBox(lbl,val,sub,col,x,y,w,h=16) {
-    setFill(COL.blanco); setDraw(COL.grisBd);
-    doc.setLineWidth(0.15); rect(x,y,w,h,'FD');
-    setFill(col); rect(x,y,1,h);
-    setTxt(COL.grisMu); fs(F_KL); fw('normal');
-    txt(lbl.toUpperCase(),x+2,y+4.5);
-    setTxt(COL.negro); fs(val.length>9?F_K-3:F_K); fw('bold');
-    txt(val,x+2,y+11);
-    setTxt(COL.grisMu); fs(F_KL); fw('normal');
-    txt(sub,x+2,y+15);
+  // Dibuja un KPI box — retorna nada, dibuja directo
+  function kpiBox(lbl,val,sub,col,x,y,w) {
+    const h=18;
+    sf(K.wh); sd(K.gbd); lw(0.2); R(x,y,w,h,'FD');
+    sf(col); R(x,y,1.5,h);
+    st(K.gmu); fs(FS_KL); fw('normal'); T(lbl.toUpperCase(), x+3, y+5);
+    st(K.ng); fs(val.length>9?10:FS_KV); fw('bold'); T(val, x+3, y+13);
+    st(K.gmu); fs(FS_KL); fw('normal'); T(sub, x+3, y+17);
   }
 
-  // Fila de KPIs
-  function kpiRow(items, y, totalW=CW) {
-    const n=items.length, gap=1.5;
-    const w=(totalW-(n-1)*gap)/n;
+  // Dibuja fila de N KPIs — retorna Y siguiente
+  function kpiRow(items, y) {
+    const n=items.length, gap=2;
+    const w=(CW-(n-1)*gap)/n;
     items.forEach(([lbl,val,sub,col],i)=>{
-      kpiBox(lbl,val,sub,col, M+i*(w+gap), y, w);
+      kpiBox(lbl,val,sub,col, ML+i*(w+gap), y, w);
     });
-    return y+17;
+    return y+20;
   }
 
-  // Tabla con autoTable
-  function tabla(head,body,cols,y,opts={}) {
+  // Tabla autoTable con posición X explícita — clave para 2 columnas sin solapamiento
+  function autoT(head, body, colW, x, y, opts={}) {
+    const tableW = colW.reduce((s,w)=>s+w,0);
     const base = {
-      startY:y, margin:{left:M,right:M},
-      tableWidth:CW,
-      styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-      headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold',cellPadding:2.5},
-      alternateRowStyles:{fillColor:COL.grisLt},
-      columnStyles:{},
-      ...opts
+      head:[head], body,
+      startY: y,
+      margin: {left:x, right:PW-x-tableW},
+      tableWidth: tableW,
+      styles: {
+        fontSize:FS_TD, cellPadding:2.2,
+        textColor:K.gtx, lineColor:K.gbd, lineWidth:0.2,
+        font:'helvetica', fontStyle:'normal',
+        overflow:'linebreak',
+      },
+      headStyles: {
+        fillColor:K.ng, textColor:K.wh,
+        fontSize:FS_TH, fontStyle:'bold',
+        cellPadding:2.2,
+      },
+      alternateRowStyles: { fillColor:K.glt, textColor:K.gtx },
+      columnStyles: {},
+      ...opts,
     };
-    if(cols) cols.forEach((w,i)=>{ if(w!==null) base.columnStyles[i]={cellWidth:w}; });
-    doc.autoTable({head:[head],body,...base});
-    return doc.lastAutoTable.finalY+3;
+    colW.forEach((w,i)=>{ base.columnStyles[i]={cellWidth:w}; });
+    doc.autoTable(base);
+    return doc.lastAutoTable.finalY + 3;
   }
 
-  // Barra de progreso horizontal
-  function barraH(pct,x,y,w,h=2.5) {
-    const col=pct>=75?COL.verde:pct>=40?COL.amar:COL.rojo;
-    setFill(COL.grisBd); rect(x,y,w,h);
-    setFill(col); rect(x,y,Math.min(pct/100,1)*w,h);
+  // Línea separadora
+  function hrLine(y) {
+    sd(K.gbd); lw(0.2); L(ML,y,ML+CW,y); return y+2;
   }
 
-  // Badge de color
-  function badge(txt2,x,y,w,tcol,bgcol) {
-    setFill(bgcol); setDraw(tcol);
-    doc.setLineWidth(0.2); rRect(x,y,w,4,0.8,'FD');
-    setTxt(tcol); fs(F_X); fw('bold');
-    doc.text(txt2,x+w/2,y+3,{align:'center'});
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 1: PORTADA
-  // ══════════════════════════════════════════════════════════════════════════
-  currentPage=1;
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 1 — PORTADA
+  // ════════════════════════════════════════════════════════════════════════
+  pagNum=1;
   // Mitad izquierda oscura
-  setFill(COL.negro); rect(0,0,W*0.46,H);
+  sf(K.ng); R(0,0,PW*0.42,PH);
   // Mitad derecha clara
-  setFill(COL.bg); rect(W*0.46,0,W*0.54,H);
+  sf(K.bg); R(PW*0.42,0,PW*0.58,PH);
 
-  // Logo FOSMON + CAMPO (izquierda)
+  // Logo FOSMON izquierda — 22×35.8mm (ratio 447:516 → h=w*1.154)
   try {
-    if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
-      // Logo portada: 20mm de alto → 17.3mm de ancho (ratio 447:516)
-      doc.addImage(EMB_WHITE,'PNG',M,30,17.3,20,'','FAST');
-    }
+    if(typeof EMB_WHITE!=='undefined')
+      doc.addImage(EMB_WHITE,'PNG',ML,22,22,25.4,'','FAST');
   } catch(e){}
-  setTxt(COL.blanco); fs(22); fw('bold');
-  txt('CAMPO',M,55);
-  fs(7); fw('normal');
-  txt('REPORTE DE AVANCE DE OBRA',M,62);
-  setDraw(COL.blanco); doc.setLineWidth(0.3);
-  line(M,64,M+50,64);
-  fs(12); fw('bold');
-  // Nombre de obra — wrap si es largo
-  const nombreLines = doc.splitTextToSize(obra.nombre||'',W*0.38);
-  txt(nombreLines,M,72);
-  fs(7); fw('normal');
-  txt(obra.ubicacion||'Parque Urbano · FOSMON Construcciones',M,82);
 
-  // Datos del contrato (derecha)
-  const xR=W*0.49; let yR=28;
-  setTxt(COL.negro); fs(7.5); fw('bold');
-  txt('Datos del contrato',xR,yR); yR+=3;
-  setDraw(COL.grisBd); doc.setLineWidth(0.2);
-  line(xR,yR,W-M,yR); yR+=5;
-  const campos=[
-    ['Contrato:',obra.contrato||''],
-    ['Cliente:',obra.cliente||''],
-    ['Superintendente:',obra.superintendente||''],
-    ['Residente:',obra.residente||obra.superintendente||''],
-    ['Administrador:',obra.admin||''],
-    ['Inicio:',obra.inicio||''],
-    ['Fin programado:',obra.fin||''],
-    ['Presupuesto:',MXN(PPTO)],
-    ['Corte:',fechaStr],
-  ];
-  campos.forEach(([lbl,val])=>{
-    setTxt(COL.negro); fs(6); fw('bold'); txt(lbl,xR,yR);
-    setTxt(COL.grisTx); fw('normal');
-    const v=doc.splitTextToSize(val,W-xR-M-28);
-    txt(v,xR+28,yR); yR+=4;
+  // Textos izquierda
+  st(K.wh); fs(26); fw('bold'); T('CAMPO', ML, 58);
+  fs(7.5); fw('normal'); T('REPORTE DE AVANCE DE OBRA', ML, 64);
+  sd(K.wh); lw(0.4); L(ML, 66.5, ML+55, 66.5);
+  fs(13); fw('bold');
+  const nomLines=doc.splitTextToSize(obra.nombre||'',PW*0.38);
+  T(nomLines, ML, 74);
+  fs(7.5); fw('normal');
+  T(obra.ubicacion||'FOSMON Construcciones', ML, 82);
+
+  // Datos contrato derecha
+  const xR=PW*0.44, yR0=22;
+  st(K.ng); fs(9); fw('bold'); T('Datos del contrato', xR, yR0);
+  sd(K.gbd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
+  let yR=yR0+7;
+  [['Contrato:',obra.contrato||''],
+   ['Cliente:',obra.cliente||''],
+   ['Superintendente:',obra.superintendente||''],
+   ['Residente:',obra.residente||''],
+   ['Administrador:',obra.admin||''],
+   ['Inicio de obra:',obra.inicio||''],
+   ['Fin programado:',obra.fin||''],
+   ['Presupuesto:',MXN(PPTO)],
+   ['Corte del reporte:',hoy],
+  ].forEach(([lbl,val])=>{
+    st(K.ng); fs(7); fw('bold'); T(lbl, xR, yR);
+    st(K.gtx); fw('normal');
+    T(doc.splitTextToSize(String(val),PW-xR-MR-28), xR+30, yR);
+    yR+=5;
   });
 
-  // 4 KPIs portada
-  const kpW=(W*0.40)/4-2; let kpX=W*0.49;
-  const kpY=H-25;
-  [
-    ['Avance fisico',PCT(af),'del presupuesto',af>=75?COL.verde:af>=40?COL.amar:COL.rojo],
-    ['Monto ejecutado',MXN(me),PCT(me/PPTO*100)+' contrato',COL.azulDk],
-    ['Gasto total',MXN(gt),PCT(gt/PPTO*100)+' presup.',COL.rojoDk],
-    ['Margen bruto',PCT(mpct),MXN(mg),mpct<10?COL.rojoDk:mpct<15?COL.amarDk:COL.verdeDk],
-  ].forEach(([lbl,val,sub,col])=>{
-    kpiBox(lbl,val,sub,col,kpX,kpY,kpW,13); kpX+=kpW+2;
+  // 4 KPIs portada — fila horizontal
+  const kpY=PH-28, kpW=(PW*0.50)/4-2, kpX=PW*0.44;
+  [[`Avance`,PCT(af),'del presupuesto', af>=75?K.vk:af>=40?K.am:K.rd],
+   ['Ejecutado',MXN(me),PCT(me/PPTO*100)+' contrato',K.ak],
+   ['Gasto GP',MXN(totGast),PCT(totGast/PPTO*100)+' presup.',K.rk],
+   ['Margen',PCT(mpct),MXN(mg),mpct<10?K.rk:mpct<15?K.ak2:K.vk],
+  ].forEach(([lbl,val,sub,col],i)=>{
+    const x=kpX+i*(kpW+2);
+    sf(K.wh); sd(col); lw(0.3); R(x,kpY,kpW,16,'FD');
+    sf(col); R(x,kpY,1.5,16);
+    st(K.gmu); fs(6); fw('normal'); T(lbl.toUpperCase(),x+3,kpY+5);
+    st(K.ng); fs(val.length>9?9:11); fw('bold'); T(val,x+3,kpY+12);
   });
 
   // Footer portada
-  setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
-  setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
-  setTxt(COL.grisMu); fs(F_X); fw('normal');
-  txt('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones',M,H-4);
-  txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
+  sf([232,234,240]); R(0,PH-FTR,PW,FTR);
+  sf(K.ng); R(0,PH-FTR,PW,0.6);
+  st(K.gmu); fs(6); fw('normal');
+  T('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones', ML, PH-3.5);
+  T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 2: RESUMEN FINANCIERO + ESTIMACIONES
-  // ══════════════════════════════════════════════════════════════════════════
-  doc.addPage();
-  drawInterior();
-  let y2=CY;
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 2 — RESUMEN FINANCIERO
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  let y=CY0;
 
-  y2=secHeader('1  RESUMEN FINANCIERO',y2);
-  y2=kpiRow([
-    ['Avance fisico',    PCT(af),         PCT(af)+' del presupuesto',   COL.verdeDk],
-    ['Monto ejecutado',  MXN(me),         PCT(me/PPTO*100)+' contrato', COL.azulDk],
-    ['Gasto total GP',   MXN(gt),         PCT(gt/PPTO*100)+' presup.',  COL.rojoDk],
-    ['Margen bruto',     PCT(mpct),       MXN(mg),                       mpct<10?COL.rojoDk:mpct<15?COL.amarDk:COL.verdeDk],
-    ['Total estimado',   MXN(te),         PCT(te/PPTO*100)+' contrato', COL.moraDk],
-    ['Por estimar',      MXN(PPTO-te),    PCT((PPTO-te)/PPTO*100)+' rest.',COL.grisTx],
-  ],y2)+2;
+  y=secHead('1  RESUMEN FINANCIERO', y);
+  y=kpiRow([
+    ['Avance fisico',   PCT(af),         PCT(af)+' del presupuesto',   K.vk],
+    ['Monto ejecutado', MXN(me),         PCT(me/PPTO*100)+' contrato', K.ak],
+    ['Gasto total GP',  MXN(totGast),    PCT(totGast/PPTO*100)+' presup.',K.rk],
+    ['Margen bruto',    PCT(mpct),       MXN(mg),                       mpct<10?K.rk:mpct<15?K.ak2:K.vk],
+    ['Total estimado',  MXN(te),         PCT(te/PPTO*100)+' contrato', K.mk],
+    ['Por estimar',     MXN(PPTO-te),    PCT((PPTO-te)/PPTO*100)+' rest.',K.gtx],
+  ], y)+2;
 
-  // Datos contrato + Gasto por rubro en 2 columnas
-  const LW2=CW*0.38, RW2=CW-LW2-4;
-  const contHead=['Campo','Valor'];
+  // ── 2 columnas usando X explícita ─────────────────────────────────────
+  const LW=CW*0.42, RW=CW-LW-5;
+  const xL=ML, xR2=ML+LW+5;
+
+  // Columna izquierda: datos del contrato
   const contBody=[
-    ['Contrato',obra.contrato||''],
-    ['Cliente',obra.cliente||''],
-    ['Inicio',obra.inicio||''],
-    ['Fin programado',obra.fin||''],
+    ['Contrato',obra.contrato||''],['Cliente',obra.cliente||''],
+    ['Inicio',obra.inicio||''],['Fin programado',obra.fin||''],
     ['Superintendente',obra.superintendente||''],
-    ['Administrador',obra.admin||''],
+    ['Residente',obra.residente||''],['Administrador',obra.admin||''],
     ['Presupuesto',MXN(PPTO)],
   ];
-  const rubros=[
-    ['Materiales',13203452],['Sueldos y salarios',11677695],
-    ['Indirectos',3547181],['Renta y maq.',652372],['Subcontratos',249500],
-  ];
+  const yAfterCont = autoT(
+    ['Campo','Valor'], contBody,
+    [LW*0.38,LW*0.62], xL, y,
+    {didParseCell:(d)=>{
+      if(d.column.index===0){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=K.ng;}
+    }}
+  );
+
+  // Columna derecha: gasto por rubro — misma Y de inicio
+  const rubros=[['Materiales',13203452],['Sueldos y salarios',11677695],
+    ['Indirectos',3547181],['Renta y maquinaria',652372],['Subcontratos',249500]];
   const totRub=rubros.reduce((t,r)=>t+r[1],0);
+  const rubBody=[
+    ...rubros.map(([nm,mt])=>[nm,MXN(mt),PCT(mt/totRub*100),PCT(mt/PPTO*100)]),
+    ['TOTAL GP',MXN(totRub),'100.0%',PCT(totRub/PPTO*100)],
+  ];
+  const yAfterRub = autoT(
+    ['Rubro','Monto','% GP','% Ppto'], rubBody,
+    [RW*0.46,RW*0.22,RW*0.16,RW*0.16], xR2, y,
+    {columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}},
+     didParseCell:(d)=>{
+       if(d.row.index===rubros.length){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+     }}
+  );
+  y=Math.max(yAfterCont, yAfterRub)+2;
 
-  // Tabla datos contrato (izq)
-  doc.autoTable({
-    head:[contHead],body:contBody,startY:y2,
-    margin:{left:M,right:W-M-LW2},
-    tableWidth:LW2,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:LW2*0.38,fontStyle:'bold',textColor:COL.negro},1:{cellWidth:LW2*0.62}},
-  });
+  // ── Estimaciones — tabla única ancho completo ──────────────────────────
+  y=secHead('2  ESTIMACIONES AL CLIENTE', y);
 
-  // Tabla rubros (der)
-  doc.autoTable({
-    head:[['Rubro','Monto','% GP','% Ppto']],
-    body:[...rubros.map(([nm,mt])=>[nm,MXN(mt),PCT(mt/totRub*100),PCT(mt/PPTO*100)]),
-          ['TOTAL GP',MXN(totRub),'100.0%',PCT(totRub/PPTO*100)]],
-    startY:y2, margin:{left:M+LW2+4,right:M},
-    tableWidth:RW2,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{halign:'left',cellWidth:RW2*0.44},1:{cellWidth:RW2*0.22},2:{cellWidth:RW2*0.17},3:{cellWidth:RW2*0.17}},
-    didDrawRow:(data)=>{
-      if(data.row.index===rubros.length){
-        data.row.cells[0].styles.fillColor=COL.negro;
-        data.row.cells[0].styles.textColor=COL.blanco;
-      }
-    },
-  });
-  y2=doc.lastAutoTable.finalY+6;
+  const estCols=[22,55,42,38,38,42,35];  // suma = 272 < CW=251? Ajustar
+  // Calcular proporciones para CW
+  const estTotal_w=22+55+42+38+38+42+35; // 272
+  const estScale=CW/estTotal_w;
+  const estW=estCols.map(w=>Math.round(w*estScale));
 
-  // Estimaciones
-  y2=secHeader('2  ESTIMACIONES AL CLIENTE',y2);
-  const LW3=CW*0.63, RW3=CW-LW3-4;
-  const estCols=[LW3*0.09,LW3*0.17,LW3*0.16,LW3*0.14,LW3*0.13,LW3*0.15,LW3*0.16];
   const estBody=estimaciones.map(e=>{
     const a=e.monto*(obra.pctAnticipo||10)/100;
     const fg=e.monto*(obra.pctFondoGar||5)/100;
     const ef=e.monto-a-fg;
     return [`EST-0${e.no}`,e.periodo||'',MXN(e.monto),MXN(a),MXN(fg),MXN(ef),e.estatus];
   });
-  const aT=te*(obra.pctAnticipo||10)/100, fgT=te*(obra.pctFondoGar||5)/100;
+  const aT=te*(obra.pctAnticipo||10)/100;
+  const fgT=te*(obra.pctFondoGar||5)/100;
   estBody.push(['TOTAL','',MXN(te),MXN(aT),MXN(fgT),MXN(te-aT-fgT),'']);
 
-  doc.autoTable({
-    head:[['No.','Periodo','Monto bruto','Anticipo','F. Garantia','Mto. efectivo','Estatus']],
-    body:estBody, startY:y2,
-    margin:{left:M,right:W-M-LW3},
-    tableWidth:LW3,
-    styles:{fontSize:6,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{halign:'left'},1:{halign:'left'},6:{halign:'center'},
-                  0:{cellWidth:estCols[0]},1:{cellWidth:estCols[1]},2:{cellWidth:estCols[2]},
-                  3:{cellWidth:estCols[3]},4:{cellWidth:estCols[4]},5:{cellWidth:estCols[5]},6:{cellWidth:estCols[6]}},
-    didParseCell:(d)=>{
-      if(d.row.index===estBody.length-1){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}
-    },
-  });
+  const EST_COLS_MAP={1:{halign:'left'},2:{halign:'right'},3:{halign:'right'},
+                      4:{halign:'right'},5:{halign:'right'}};
+  const EST_STATUS_COLORS={
+    'Pagada':K.vk,'Facturada':K.mk,'En proceso':K.ak2,'Aprobada':K.vk,
+  };
 
-  // 4 KPIs estimaciones (derecha)
-  const kpY2=y2; const kpH=11.5;
-  [
-    ['Pagado',MXN(pag),'cobrado y liquidado',COL.verdeDk],
-    ['Por cobrar',MXN(pco),'facturado + aprobado',COL.moraDk],
-    ['En proceso',MXN(epc),'en elaboracion',COL.amarDk],
-    ['Total estimado',MXN(te),PCT(te/PPTO*100)+' contrato',COL.azulDk],
+  // Tabla estimaciones — ocupa ~65% del ancho, KPIs en el resto
+  const LW3=CW*0.66, RW3=CW-LW3-4;
+  const estWadj=estCols.map(w=>Math.round(w*(LW3/estTotal_w)));
+
+  const yEstStart=y;
+  const yAfterEst=autoT(
+    ['No.','Periodo','Monto bruto','Anticipo','F. Garantia','Mto. efectivo','Estatus'],
+    estBody, estWadj, xL, y,
+    {columnStyles:EST_COLS_MAP,
+     didParseCell:(d)=>{
+       const ri=d.row.index;
+       if(ri===estBody.length-1){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+       if(d.column.index===6 && ri<estBody.length-1){
+         const col=EST_STATUS_COLORS[estimaciones[ri]?.estatus]||K.gtx;
+         d.cell.styles.textColor=col; d.cell.styles.fontStyle='bold';
+       }
+     }}
+  );
+
+  // 4 KPIs de estimaciones apilados a la derecha
+  const kpHe=15, kpGap=2;
+  [[`Pagado`,MXN(pag),'liquidado',K.vk],
+   ['Por cobrar',MXN(pco),'facturado + aprobado',K.mk],
+   ['En proceso',MXN(epc),'en elaboración',K.ak2],
+   ['Total est.',MXN(te),PCT(te/PPTO*100)+' del contrato',K.ak],
   ].forEach(([lbl,val,sub,col],i)=>{
-    kpiBox(lbl,val,sub,col, M+LW3+4, kpY2+i*(kpH+1.5), RW3, kpH);
+    const bx=ML+LW3+4, by=yEstStart+i*(kpHe+kpGap);
+    sf(K.wh); sd(K.gbd); lw(0.2); R(bx,by,RW3,kpHe,'FD');
+    sf(col); R(bx,by,1.5,kpHe);
+    st(K.gmu); fs(FS_KL); fw('normal'); T(lbl.toUpperCase(), bx+3, by+4.5);
+    st(K.ng); fs(val.length>9?8:11); fw('bold'); T(val, bx+3, by+10.5);
+    st(K.gmu); fs(6); fw('normal'); T(sub, bx+3, by+14);
   });
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 3: AVANCE FÍSICO + ALMACÉN + MAQUINARIA
-  // ══════════════════════════════════════════════════════════════════════════
-  doc.addPage(); drawInterior();
-  let y3=CY;
-  y3=secHeader('3  AVANCE FISICO POR SUBSECCION',y3);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 3 — AVANCE FÍSICO + ALMACÉN + MAQUINARIA
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('3  AVANCE FÍSICO POR SUBSECCIÓN', y);
 
-  const LW4=CW*0.56, RW4=CW-LW4-4;  // más espacio para Mto. ejecutado
-  const totImp=subs.reduce((t,s)=>t+s.imp,0);
-  const totEjec=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  // Tabla avance — columnas fijas sumando CW exacto
+  const subsActivos=subs.filter(s=>s.imp>0);
+  const totImp=subsActivos.reduce((t,s)=>t+s.imp,0);
+  const totEjec=subsActivos.reduce((t,s)=>t+(s.a/100)*s.imp,0);
 
-  // Tabla de avance
-  doc.autoTable({
-    head:[['Sec.','Descripcion','Importe contrato','Avance','Mto. ejecutado']],
-    body:[...subs.map(s=>{
-      const ejec=(s.a/100)*s.imp;
-      return [s.sec,s.sub?.slice(0,36)||'',MXN(s.imp),PCT(s.a),MXN(ejec)];
-    }),
-    ['','TOTAL',MXN(totImp),PCT(af),MXN(totEjec)]],
-    startY:y3, margin:{left:M,right:W-M-LW4},
-    tableWidth:LW4,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt,textColor:COL.grisTx},
-    columnStyles:{0:{cellWidth:12,halign:'left'},1:{cellWidth:LW4*0.52,halign:'left'},
-                  2:{cellWidth:LW4*0.20,halign:'right'},3:{cellWidth:LW4*0.10,halign:'right'},
-                  4:{cellWidth:LW4*0.18,halign:'right'}},
-    didParseCell:(d)=>{
-      const ri=d.row.index;
-      if(ri===subs.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}
-      else {
-        // Asegurar texto visible en filas alternas
-        if(!d.cell.styles.textColor || d.cell.styles.textColor===null) d.cell.styles.textColor=COL.grisTx;
-      }
-      if(d.column.index===3 && ri<subs.length){
-        const a=subs[ri]?.a||0;
-        d.cell.styles.textColor=a>=75?COL.verdeDk:a>=40?COL.amarDk:COL.rojoDk;
-        d.cell.styles.fontStyle='bold';
-      }
-    },
+  // Anchos: Sec(16) + Desc(90) + Importe(38) + Avance%(18) + Barra(55) + Mto.Ejec(34) = 251
+  const AV_SEC=16, AV_DESC=90, AV_IMP=38, AV_PCT=18, AV_BAR=55, AV_EJEC=CW-AV_SEC-AV_DESC-AV_IMP-AV_PCT-AV_BAR;
+  const avHead=['Sec.','Descripción','Importe contrato','Avance','Progreso','Mto. ejecutado'];
+  const avBody=subsActivos.map(s=>{
+    const ejec=(s.a/100)*s.imp;
+    return [s.sec, s.sub||'', MXN(s.imp), PCT(s.a), '', MXN(ejec)];
   });
+  avBody.push(['','TOTAL',MXN(totImp),PCT(af),'',MXN(totEjec)]);
 
-  // Barras de avance (columna derecha)
-  let yBarr=y3;
-  const SECW=12, PCTW=9, BARRW=RW4-SECW-PCTW-4;
-  const bxBase=M+LW4+4;
-  subs.forEach(s=>{
-    const col=s.a>=75?COL.verde:s.a>=40?COL.amar:COL.rojo;
-    const colTxt=s.a>=75?COL.verdeDk:s.a>=40?COL.amarDk:COL.rojoDk;
-    setTxt(COL.negro); fw('bold'); fs(F_X);
-    txt(s.sec, bxBase, yBarr+3.5);
-    barraH(s.a, bxBase+SECW+1, yBarr+1, BARRW, 2.5);
-    setTxt(colTxt); fw('bold'); fs(F_X);
-    txt(PCT(s.a), bxBase+RW4-2, yBarr+3.5, {align:'right'});
-    setDraw(COL.grisBd); doc.setLineWidth(0.15);
-    line(bxBase, yBarr+5.5, bxBase+RW4-2, yBarr+5.5);
-    yBarr+=5.5;
-  });
-  y3=Math.max(doc.lastAutoTable.finalY, yBarr)+5;
+  autoT(avHead, avBody,
+    [AV_SEC,AV_DESC,AV_IMP,AV_PCT,AV_BAR,AV_EJEC],
+    ML, y,
+    {columnStyles:{
+       0:{halign:'left'},1:{halign:'left'},
+       2:{halign:'right'},3:{halign:'center',fontStyle:'bold'},
+       4:{halign:'left'},5:{halign:'right'},
+     },
+     didParseCell:(d)=>{
+       const ri=d.row.index;
+       if(ri===subsActivos.length){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+         return;
+       }
+       const s=subsActivos[ri];
+       if(!s) return;
+       if(d.column.index===3){
+         d.cell.styles.textColor=s.a>=75?K.vk:s.a>=40?K.ak2:K.rk;
+       }
+       if(d.column.index===5){
+         d.cell.styles.textColor=K.ak;
+       }
+     },
+     // Dibujar barras de progreso DENTRO de la celda con didDrawCell
+     didDrawCell:(d)=>{
+       if(d.column.index!==4) return;
+       if(d.row.index>=subsActivos.length) return;
+       const s=subsActivos[d.row.index];
+       if(!s) return;
+       const px=d.cell.x+1, py=d.cell.y+d.cell.height/2-1.5;
+       const pw=d.cell.width-2, ph=3;
+       const pct=Math.min(s.a/100,1);
+       const col=s.a>=75?K.vd:s.a>=40?K.am:K.rd;
+       sf(K.gbd); doc.rect(px,py,pw,ph,'F');
+       if(pct>0){ sf(col); doc.rect(px,py,pw*pct,ph,'F'); }
+     }
+    }
+  );
+  y=doc.lastAutoTable.finalY+5;
 
-  // Almacén y maquinaria
-  y3=secHeader('Almacen  ·  Materiales en transito  ·  Maquinaria propia',y3);
-  const LW5=CW*0.56, RW5=CW-LW5-4;
-  const totAlm=materiales.reduce((t,m)=>t+pf(m.imp),0);
+  // ── Almacén + Maquinaria en 2 columnas ──────────────────────────────────
+  y=secHead('Almacén · Materiales en tránsito · Maquinaria propia', y);
 
-  doc.autoTable({
-    head:[['Material','Condicion','Vol.','Und','Importe']],
-    body:[...materiales.map(m=>[m.mat,m.conc||m.estado||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
-          ['TOTAL ALMACEN','','','',MXN(totAlm)]],
-    startY:y3, margin:{left:M,right:W-M-LW5},
-    tableWidth:LW5,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:LW5*0.40},1:{cellWidth:LW5*0.22},2:{cellWidth:LW5*0.10,halign:'right'},3:{cellWidth:LW5*0.10},4:{cellWidth:LW5*0.18,halign:'right'}},
-    didParseCell:(d)=>{if(d.row.index===materiales.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
-  });
+  const LW5=CW*0.56, RW5=CW-LW5-5;
+  const matBody=[
+    ...matActivos.map(m=>[m.desc||'',m.concepto||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
+    ['TOTAL ALMACÉN','','','',MXN(totAlm)],
+  ];
+  const yAM=autoT(
+    ['Material','Condición','Vol.','Und','Importe'], matBody,
+    [LW5*0.40,LW5*0.22,LW5*0.10,LW5*0.10,LW5*0.18],
+    ML, y,
+    {columnStyles:{2:{halign:'right'},4:{halign:'right'}},
+     didParseCell:(d)=>{
+       if(d.row.index===matActivos.length){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+     }}
+  );
 
-  const totMaq=maquinaria.reduce((t,m)=>t+pf(m.imp),0);
-  doc.autoTable({
-    head:[['Equipo','Cant.','Unidad','Importe']],
-    body:[...maquinaria.map(m=>[m.equipo||m.nombre||'',m.vol||m.cant||'',m.und||'',MXN(pf(m.imp))]),
-          ['TOTAL MAQUINARIA','','',MXN(totMaq)]],
-    startY:y3, margin:{left:M+LW5+4,right:M},
-    tableWidth:RW5,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:RW5*0.60},1:{cellWidth:RW5*0.12,halign:'center'},2:{cellWidth:RW5*0.13},3:{cellWidth:RW5*0.15,halign:'right'}},
-    didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
-  });
+  const maqBody=[
+    ...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
+    ['TOTAL MAQUINARIA','','',MXN(totMaq)],
+  ];
+  const yMQ=autoT(
+    ['Equipo','Cant.','Unidad','Importe'], maqBody,
+    [RW5*0.62,RW5*0.12,RW5*0.11,RW5*0.15],
+    ML+LW5+5, y,
+    {columnStyles:{1:{halign:'center'},3:{halign:'right'}},
+     didParseCell:(d)=>{
+       if(d.row.index===maqActivos.length){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+     }}
+  );
+  y=Math.max(yAM,yMQ);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 4: PROYECCIÓN Y PLAZOS
-  // ══════════════════════════════════════════════════════════════════════════
-  doc.addPage(); drawInterior();
-  let y4=CY;
-  y4=secHeader('4  PROYECCION AL TERMINO  ·  PLAZOS DE OBRA',y4);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 4 — PROYECCIÓN Y PLAZOS
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('4  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
 
-  // Gráfica lineal manual
-  const GX=M, GY=y4, GW=CW, GH=50;
-  const GPL=18, GPB=7, GPR=18, GPT=6;
+  // ── Gráfica de proyección ────────────────────────────────────────────────
+  // Área: CW × 52mm
+  const GX=ML, GY=y, GW=CW, GH=52;
+  const GPL=20, GPB=8, GPR=16, GPT=8;
   const gw=GW-GPL-GPR, gh=GH-GPB-GPT;
-  const PM=(obra.presupuesto||163348337)/1e6;
+  const semsReales=5, semsTot=15;
+  const ritmoG=totGP/1e6/semsReales||0.1;
+  const ritmoM=me/1e6/semsReales||0.1;
+  const PM=PPTO/1e6;
+  const maxV=Math.max(PM, totGP/1e6*2)*1.1;
 
-  // Datos de gráfica — semanas reales del avance actual + proyección lineal
-  const semsReales=5;
-  const ritmoG=(gt/1e6)/semsReales, ritmoM=(me/1e6)/semsReales;
-  const semsTot=15;
-  const grafData=[];
-  for(let i=0;i<semsTot;i++){
-    const real=i<semsReales;
-    const g=real?(gt/1e6)*(i+1)/semsReales:(gt/1e6)+(i-semsReales+1)*ritmoG;
-    const m=real?(me/1e6)*(i+1)/semsReales:(me/1e6)+(i-semsReales+1)*ritmoM;
-    grafData.push({i,g:Math.min(g,PM),m:Math.min(m,PM),real});
-  }
-  const maxV=Math.max(PM, grafData[grafData.length-1].g, grafData[grafData.length-1].m)*1.05;
   const gxP=i=>GX+GPL+i/(semsTot-1)*gw;
-  const gyP=v=>GY+GPT+(1-v/maxV)*gh;
+  const gyP=v=>GY+GPT+(1-Math.min(v,maxV)/maxV)*gh;
 
-  // Fondo gráfica
-  setFill(COL.blanco); setDraw(COL.grisBd); doc.setLineWidth(0.15);
-  rect(GX+GPL,GY+GPT,gw,gh,'FD');
+  // Fondo blanco con borde
+  sf(K.wh); sd(K.gbd); lw(0.2); R(GX+GPL,GY+GPT,gw,gh,'FD');
 
-  // Grid horizontal
-  [0,PM*0.25,PM*0.5,PM*0.75,PM].forEach(v=>{
+  // Grid Y
+  [0,maxV*0.25,maxV*0.5,maxV*0.75,maxV].forEach(v=>{
     const gy2=gyP(v);
-    setDraw(COL.grisBd); doc.setLineWidth(0.1);
-    line(GX+GPL,gy2,GX+GPL+gw,gy2);
-    setTxt(COL.grisMu); fs(4.5); fw('normal');
-    txt(v>=PM?'Ppto':`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.2, {align:'right'});
+    sd(K.gbd); lw(0.15); doc.setLineDashPattern([2,2],0);
+    if(v<maxV) L(GX+GPL,gy2,GX+GPL+gw,gy2);
+    doc.setLineDashPattern([],0);
+    st(K.gmu); fs(6); fw('normal');
+    T(`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.5, {align:'right'});
   });
-
-  // Plazo original (línea verde)
-  const xPlazo=gxP(semsTot-1);
-  setDraw(COL.verde); doc.setLineWidth(0.4); doc.setLineDashPattern([2,1.5],0);
-  line(xPlazo,GY+GPT,xPlazo,GY+GPT+gh);
+  // Línea presupuesto
+  sf(K.ng); lw(0.4); doc.setLineDashPattern([3,2],0);
+  L(GX+GPL, gyP(PM), GX+GPL+gw, gyP(PM));
   doc.setLineDashPattern([],0);
-  setTxt(COL.verdeDk); fs(4.5); fw('bold');
-  txt('Plazo',xPlazo-1,GY+GPT+2,{align:'right'});
+  st(K.ng); fs(6); fw('bold'); T('Ppto', GX+GPL+gw+1, gyP(PM)+1.5);
+
+  // Generar datos de gráfica
+  const grafData=Array.from({length:semsTot},(_,i)=>{
+    const real=i<semsReales;
+    const g=real?totGP/1e6*(i+1)/semsReales:totGP/1e6+(i-semsReales+1)*ritmoG;
+    const m=real?me/1e6*(i+1)/semsReales:me/1e6+(i-semsReales+1)*ritmoM;
+    return {i,g:Math.min(g,PM),m:Math.min(m,PM),real};
+  });
+  const hoyIdx=semsReales-1;
+
+  // Zona sombreada hasta plazo
+  sf([244,250,240]); R(gxP(hoyIdx),GY+GPT,gxP(semsTot-1)-gxP(hoyIdx),gh,'F');
 
   // Línea HOY
-  const xHoy=gxP(semsReales-1);
-  setDraw(COL.grisMu); doc.setLineWidth(0.3); doc.setLineDashPattern([1.5,2],0);
-  line(xHoy,GY+GPT,xHoy,GY+GPT+gh);
+  sd(K.gmu); lw(0.4); doc.setLineDashPattern([1.5,2],0);
+  L(gxP(hoyIdx),GY+GPT,gxP(hoyIdx),GY+GPT+gh);
   doc.setLineDashPattern([],0);
-  setTxt(COL.grisMu); fs(4.5); fw('normal');
-  txt('Hoy',xHoy,GY+GPT+2,{align:'center'});
+  st(K.gmu); fs(5.5); fw('normal'); T('Hoy',gxP(hoyIdx),GY+GPT+gh+5,{align:'center'});
 
-  // Labels X
-  [0,2,4,6,8,10,12,14].forEach(i=>{
-    setTxt(i===semsReales-1?COL.negro:COL.grisMu); fs(4.5);
-    txt(`S${14+i}`,gxP(i),GY+GPT+gh+5.5,{align:'center'});
+  // Línea plazo final
+  sd(K.vk); lw(0.5); doc.setLineDashPattern([3,2],0);
+  L(gxP(semsTot-1),GY+GPT,gxP(semsTot-1),GY+GPT+gh);
+  doc.setLineDashPattern([],0);
+  st(K.vk); fs(5.5); fw('bold'); T('Plazo',gxP(semsTot-1),GY+GPT-1,{align:'center'});
+
+  // X labels
+  [0,2,4,6,hoyIdx,8,10,12,14].forEach(i=>{
+    const bold=i===hoyIdx;
+    st(bold?K.ng:K.gmu); fs(5.5); fw(bold?'bold':'normal');
+    T(`S${14+i}`,gxP(i),GY+GPT+gh+5,{align:'center'});
   });
 
-  // Líneas de datos — gasto (rojo) y monto (azul)
-  [[COL.rojoDk,'g'],[COL.azulDk,'m']].forEach(([col,key])=>{
-    const realPts=grafData.filter(d=>d.real);
-    const projPts=grafData.filter(d=>!d.real);
-    // Línea real (sólida gruesa)
-    setDraw(col); doc.setLineWidth(0.7); doc.setLineDashPattern([],0);
-    for(let i=0;i<realPts.length-1;i++){
-      line(gxP(realPts[i].i),gyP(realPts[i][key]),gxP(realPts[i+1].i),gyP(realPts[i+1][key]));
-    }
-    // Línea proyectada (punteada)
-    doc.setLineWidth(0.5); doc.setLineDashPattern([2,2],0);
-    const bridge=[realPts[realPts.length-1],...projPts];
-    for(let i=0;i<bridge.length-1;i++){
-      line(gxP(bridge[i].i),gyP(bridge[i][key]),gxP(bridge[i+1].i),gyP(bridge[i+1][key]));
-    }
+  // Líneas de datos
+  [[1,K.rk,'g'],[2,K.ak,'m']].forEach(([_,col,key])=>{
+    sd(col);
+    // Real (sólida, gruesa)
+    lw(0.9); doc.setLineDashPattern([],0);
+    for(let i=0;i<hoyIdx;i++)
+      L(gxP(i),gyP(grafData[i][key]),gxP(i+1),gyP(grafData[i+1][key]));
+    // Proyectada (punteada)
+    lw(0.6); doc.setLineDashPattern([3,3],0);
+    for(let i=hoyIdx;i<semsTot-1;i++)
+      L(gxP(i),gyP(grafData[i][key]),gxP(i+1),gyP(grafData[i+1][key]));
     doc.setLineDashPattern([],0);
     // Punto HOY
-    const hoyPt=realPts[realPts.length-1];
-    setFill(col); doc.circle(gxP(hoyPt.i),gyP(hoyPt[key]),1,'F');
+    sf(col); doc.circle(gxP(hoyIdx),gyP(grafData[hoyIdx][key]),1.5,'F');
     // Etiqueta
-    setTxt(col); fs(5); fw('bold');
-    const off=key==='g'?-1.5:2;
-    txt(`$${hoyPt[key].toFixed(1)}M`,gxP(hoyPt.i)+2,gyP(hoyPt[key])+off);
+    st(col); fs(6); fw('bold');
+    const off=key==='g'?-2:2;
+    T(`$${grafData[hoyIdx][key].toFixed(1)}M`, gxP(hoyIdx)+3, gyP(grafData[hoyIdx][key])+off);
   });
 
-  // Leyenda gráfica
-  setTxt(COL.grisTx); fs(5); fw('normal');
-  setFill(COL.rojoDk); rect(GX+GPL,GY+GPT+gh+8,7,1.5);
-  txt('Gasto GP',GX+GPL+8,GY+GPT+gh+9.5);
-  setFill(COL.azulDk); rect(GX+GPL+30,GY+GPT+gh+8,7,1.5);
-  txt('Monto ejecutado',GX+GPL+38,GY+GPT+gh+9.5);
-  setTxt(COL.grisMu);
-  txt('- - - proyeccion',GX+GPL+75,GY+GPT+gh+9.5);
-  y4=GY+GH+13;
+  // Leyenda
+  st(K.gtx); fs(6); fw('normal');
+  sf(K.rk); R(GX+GPL,GY+GPT+gh+9,10,2,'F');
+  T('Gasto GP',GX+GPL+12,GY+GPT+gh+11);
+  sf(K.ak); R(GX+GPL+45,GY+GPT+gh+9,10,2,'F');
+  T('Monto ejecutado',GX+GPL+57,GY+GPT+gh+11);
+  st(K.gmu); T('— — proyección',GX+GPL+108,GY+GPT+gh+11);
+  y=GY+GH+16;
 
-  // Tablas proyección
-  const semsRestantes=semsTot-semsReales;
-  const metaG=(PM-gt/1e6)/semsRestantes, metaM=(PM-me/1e6)/semsRestantes;
-  const LW6=CW*0.54, RW6=CW-LW6-4;
+  // ── Tablas de proyección en 2 columnas ────────────────────────────────
+  const semsRest=semsTot-semsReales;
+  const metaG=(PM-totGP/1e6)/semsRest, metaM=(PM-me/1e6)/semsRest;
+  const finG=Math.ceil(14+semsReales+(PM-totGP/1e6)/ritmoG);
+  const finM=Math.ceil(14+semsReales+(PM-me/1e6)/ritmoM);
+  const LW6=CW*0.55, RW6=CW-LW6-5;
 
-  doc.autoTable({
-    head:[['Indicador','Valor','Referencia']],
-    body:[
-      ['Ritmo semanal gasto',     `$${(ritmoG).toFixed(1)}M/sem`,  'Al ritmo actual de GP Construct'],
-      ['Ritmo semanal avance',    `$${(ritmoM).toFixed(1)}M/sem`,  'Al ritmo actual de avance'],
-      ['Fin proyectado gasto',    `S${14+semsReales+Math.ceil((PM-gt/1e6)/ritmoG)}`, 'Al ritmo actual'],
-      ['Fin proyectado avance',   `S${14+semsReales+Math.ceil((PM-me/1e6)/ritmoM)}`, 'Al ritmo actual'],
-      ['Meta gasto p/plazo orig.',`$${metaG.toFixed(1)}M/sem`,     `+$${(metaG-ritmoG).toFixed(1)}M/sem requerido`],
-      ['Meta avance p/plazo orig.',`$${metaM.toFixed(1)}M/sem`,    `+$${(metaM-ritmoM).toFixed(1)}M/sem requerido`],
-      ['Plazo original',          obra.fin||'',                     'Contrato original'],
-      ['Plazo ampliado',          obra.finAmpliado||'No registrado','Sin convenio modificatorio'],
-    ],
-    startY:y4, margin:{left:M,right:W-M-LW6}, tableWidth:LW6,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:LW6*0.48},1:{cellWidth:LW6*0.24,halign:'right',fontStyle:'bold',textColor:COL.negro},2:{cellWidth:LW6*0.28}},
-  });
+  const proyBody=[
+    ['Ritmo semanal gasto',`$${ritmoG.toFixed(1)}M/sem`,'al ritmo actual de GP'],
+    ['Ritmo semanal avance',`$${ritmoM.toFixed(1)}M/sem`,'al ritmo actual de avance'],
+    ['Fin proyectado gasto',`S${finG}`,'al ritmo actual'],
+    ['Fin proyectado avance',`S${finM}`,'al ritmo actual'],
+    ['Meta gasto p/plazo',`$${metaG.toFixed(1)}M/sem`,`+$${(metaG-ritmoG).toFixed(1)}M/sem requerido`],
+    ['Meta avance p/plazo',`$${metaM.toFixed(1)}M/sem`,`+$${(metaM-ritmoM).toFixed(1)}M/sem requerido`],
+    ['Plazo original',obra.fin||'','contrato original'],
+    ['Plazo ampliado',obra.finAmpliado||'No registrado',obra.finAmpliado?'Convenio modificatorio':'Sin ampliación registrada'],
+  ];
+  const yPL=autoT(
+    ['Indicador','Valor','Referencia'], proyBody,
+    [LW6*0.50,LW6*0.23,LW6*0.27], ML, y,
+    {columnStyles:{1:{halign:'right',fontStyle:'bold',textColor:K.ng}}}
+  );
 
-  doc.autoTable({
-    head:[['Hito','Fecha']],
-    body:[
-      ['Inicio contrato',obra.inicio||''],
-      ['Corte actual',fechaStr],
-      ['Fin programado',obra.fin||''],
-      ['Fin proyectado gasto',`~S${14+semsReales+Math.ceil((PM-gt/1e6)/ritmoG)}`],
-      ['Dias transcurridos',obra.diasTranscurridos||'27'],
-      ['Dias restantes orig.',obra.diasRestantes||'93'],
-    ],
-    startY:y4, margin:{left:M+LW6+4,right:M}, tableWidth:RW6,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:RW6*0.62},1:{cellWidth:RW6*0.38,halign:'right'}},
-  });
+  const plazBody=[
+    ['Inicio contrato',obra.inicio||''],
+    ['Corte actual',hoy],
+    ['Fin programado',obra.fin||''],
+    ['Fin proy. gasto',`S${finG}`],
+    ['Días transcurridos',obra.diasTranscurridos||'—'],
+    ['Días restantes',obra.diasRestantes||'—'],
+  ];
+  const yPR=autoT(
+    ['Hito','Fecha/Valor'], plazBody,
+    [RW6*0.60,RW6*0.40], ML+LW6+5, y,
+    {columnStyles:{1:{halign:'right'}}}
+  );
+  y=Math.max(yPL,yPR);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 5: PERSONAL · NOMINA · PROVEEDORES · MAQUINARIA
-  // ══════════════════════════════════════════════════════════════════════════
-  doc.addPage(); drawInterior();
-  let y5=CY;
-  y5=secHeader('5  PERSONAL EN CAMPO  ·  NOMINA  ·  TOP PROVEEDORES',y5);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 5 — PERSONAL · NÓMINA · PROVEEDORES · MAQUINARIA
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('5  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
 
-  // Nómina data desde NOMINA_S18
-  const nomData = typeof NOMINA_S18 !== 'undefined' ? NOMINA_S18 : [];
+  const nomData=typeof NOMINA_S18!=='undefined'?NOMINA_S18:[];
   const dir=nomData.filter(p=>p.tipo==='D').length;
   const ind=nomData.filter(p=>p.tipo==='I').length;
-  const total=dir+ind||66;
+  const tot=dir+ind||66;
   const conHE=nomData.filter(p=>(p.horasExtra||0)>0).length||53;
 
-  y5=kpiRow([
-    ['Total personal',String(total||66),   'trabajadores en sitio', COL.negro],
-    ['Directo',       String(dir||57),      'mano de obra',          COL.azulDk],
-    ['Indirecto',     String(ind||9),       'administracion',        COL.moraDk],
-    ['Con horas extra',String(conHE||53),   'semana actual',         COL.amarDk],
-  ],y5)+2;
+  y=kpiRow([
+    ['Total personal',String(tot),'trabajadores en sitio',K.ng],
+    ['Directo',String(dir),'mano de obra',K.ak],
+    ['Indirecto',String(ind),'administración',K.mk],
+    ['Con horas extra',String(conHE),'semana actual',K.ak2],
+  ], y)+2;
 
-  const LW7=CW*0.50, RW7=CW-LW7-4;
+  const LW7=CW*0.50, RW7=CW-LW7-5;
 
   // Top 5 nómina
-  const nom5 = nomData.slice().sort((a,b)=>(b.total||0)-(a.total||0)).slice(0,5);
-  doc.autoTable({
-    head:[['#','Trabajador','Categoria','HE hrs','Total semana']],
-    body:nom5.map((pe,i)=>[i+1,pe.nombre||'',pe.categoria||pe.cat||'',(pe.horasExtra||0).toFixed(0)+'h',MXN(pe.total||0)]),
-    startY:y5, margin:{left:M,right:W-M-LW7}, tableWidth:LW7,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:LW7*0.40},2:{cellWidth:LW7*0.28},3:{cellWidth:LW7*0.14,halign:'right'},4:{cellWidth:LW7*0.18,halign:'right'}},
-    didParseCell:(d)=>{
-      if(d.column.index===3){const he=parseFloat(d.cell.text[0])||0;d.cell.styles.textColor=he>=20?COL.rojoDk:COL.amarDk;d.cell.styles.fontStyle='bold';}
-      if(d.column.index===4){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=COL.negro;}
-    },
-  });
+  const nom5=nomData.slice().sort((a,b)=>(b.total||0)-(a.total||0)).slice(0,5);
+  const nomBody=nom5.map((pe,i)=>[
+    i+1, pe.nombre||'', pe.categoria||pe.cat||'',
+    `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
+  ]);
+  const yNom=autoT(
+    ['#','Trabajador','Categoría','HE hrs','Total semana'], nomBody,
+    [8,LW7*0.44,LW7*0.28,LW7*0.12,LW7*0.16], ML, y,
+    {columnStyles:{0:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
+     didParseCell:(d)=>{
+       if(d.column.index===3){
+         const he=parseFloat(d.cell.text[0])||0;
+         d.cell.styles.textColor=he>=20?K.rk:K.ak2;
+         d.cell.styles.fontStyle='bold';
+       }
+       if(d.column.index===4){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=K.ng;}
+     }}
+  );
 
-  // Top 5 proveedores (hardcoded por ahora — en producción vendría de GP Construct)
+  // Top 5 proveedores
   const provs=obra.proveedores||[
-    ['FOSMON CONSTRUCCIONES S.A.',4280794],
-    ['JUAN ANTONIO BENITEZ F.',2412104],
-    ['CEMEX S A B DE C V',1817638],
-    ['IMSS',1636496],
-    ['JOSE E. ALEGRIA CUETO',1426787],
+    ['FOSMON CONSTRUCCIONES S.A.',4280794],['JUAN ANTONIO BENITEZ F.',2412104],
+    ['CEMEX S A B DE C V',1817638],['IMSS',1636496],['JOSE E. ALEGRIA CUETO',1426787],
   ];
   const totPv=provs.reduce((t,p)=>t+p[1],0);
-  doc.autoTable({
-    head:[['#','Proveedor','Monto acumulado','% Gasto GP']],
-    body:provs.map(([nm,mt],i)=>[i+1,nm.slice(0,30),MXN(mt),PCT(mt/(obra.gastoGP||totPv)*100)]),
-    startY:y5, margin:{left:M+LW7+4,right:M}, tableWidth:RW7,
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:RW7*0.52},2:{cellWidth:RW7*0.28,halign:'right'},3:{cellWidth:RW7*0.20,halign:'right'}},
-  });
-  y5=doc.lastAutoTable.finalY+4;
+  const pvBody=provs.map(([nm,mt],i)=>[i+1,nm.slice(0,28),MXN(mt),PCT(mt/Math.max(totGP,1)*100)]);
+  const yPv=autoT(
+    ['#','Proveedor','Monto acumulado','% Gasto GP'], pvBody,
+    [8,RW7*0.52,RW7*0.28,RW7*0.20], ML+LW7+5, y,
+    {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}}}
+  );
+  y=Math.max(yNom,yPv)+3;
 
-  // Maquinaria
-  y5=secHeader('Maquinaria propia en obra',y5);
-  const totMaq2=maquinaria.reduce((t,m)=>t+pf(m.imp),0);
-  doc.autoTable({
-    head:[['Equipo','Cant.','Unidad','P.U.','Importe']],
-    body:[...maquinaria.map(m=>[m.equipo||m.nombre||'',m.vol||m.cant||'',m.und||'',MXN(pf(m.pu||0)),MXN(pf(m.imp))]),
-          ['TOTAL MAQUINARIA','','','',MXN(totMaq2)]],
-    startY:y5, margin:{left:M,right:M},
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:CW*0.53},1:{cellWidth:CW*0.08,halign:'center'},2:{cellWidth:CW*0.10},3:{cellWidth:CW*0.14,halign:'right'},4:{cellWidth:CW*0.15,halign:'right'}},
-    didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
-  });
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAG 6: RIESGO · OBSERVACIONES
-  // ══════════════════════════════════════════════════════════════════════════
-  doc.addPage(); drawInterior();
-  let y6=CY;
-  y6=secHeader('6  INDICADORES DE RIESGO  ·  OBSERVACIONES',y6);
-
-  const riesgos=[
-    [1,'Brecha avance vs gasto',     '+0.8pp', 'Normal',    COL.verdeDk,COL.verdeBg],
-    [2,'Velocidad quema presupuesto','1.04x',  'Vigilancia',COL.amarDk, COL.amarBg],
-    [3,'Estimaciones sin cobrar',    PCT((pco+epc)/te*100),'Vigilancia',COL.amarDk,COL.amarBg],
-    [4,'Frentes sin iniciar',        String(subs.filter(s=>s.a===0).length),'Vigilancia',COL.amarDk,COL.amarBg],
-    [5,'Concentracion proveedores',  '54%',    'Vigilancia',COL.amarDk, COL.amarBg],
-    [6,'Incremento nomina s/s',      '+15%',   'Vigilancia',COL.amarDk, COL.amarBg],
-    [7,'Trabajadores HE>=20hrs',     String(nomData.filter(p=>(p.horasExtra||0)>=20).length||8)+' pers.','Critico',COL.rojoDk,COL.rojoBg],
+  y=secHead('Maquinaria propia en obra', y);
+  const maq2Body=[
+    ...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.pu||0)),MXN(pf(m.imp))]),
+    ['TOTAL MAQUINARIA','','','',MXN(totMaq)],
   ];
-  const col4Rsg=CW-16-CW*0.30-40-50-6;
-  doc.autoTable({
-    head:[['#','Indicador','Valor','Nivel','Descripcion']],
-    body:riesgos.map(([n,titulo,val,,nivel])=>[n,titulo,val,nivel,'Ver Dashboard para detalle']),
-    startY:y6, margin:{left:M,right:M},
-    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
-    columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:CW*0.30},2:{cellWidth:40,halign:'right',fontStyle:'bold'},3:{cellWidth:50,halign:'center'},4:{cellWidth:col4Rsg}},
-    didParseCell:(d)=>{
-      if(d.column.index===3 && d.row.index>=0){
-        const r=riesgos[d.row.index];
-        if(r){d.cell.styles.textColor=r[4];d.cell.styles.fontStyle='bold';d.cell.styles.fillColor=r[5];}
-      }
-    },
-  });
-  y6=doc.lastAutoTable.finalY+4;
+  autoT(
+    ['Equipo','Cant.','Unidad','P.U.','Importe'], maq2Body,
+    [CW*0.53,CW*0.08,CW*0.10,CW*0.15,CW*0.14], ML, y,
+    {columnStyles:{1:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
+     didParseCell:(d)=>{
+       if(d.row.index===maqActivos.length){
+         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+     }}
+  );
 
-  y6=secHeader('Observaciones y alertas',y6);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 6 — INDICADORES DE RIESGO · OBSERVACIONES
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('6  INDICADORES DE RIESGO · OBSERVACIONES', y);
+
+  const rsgBody=[
+    [1,'Brecha avance vs gasto','+0.8pp','Normal',K.vk,K.vb,'Avance y gasto alineados'],
+    [2,'Velocidad quema presupuesto','1.04x','Vigilancia',K.ak2,K.ab2,'Ritmo ligeramente acelerado'],
+    [3,'Estimaciones sin cobrar',PCT((pco+epc)/Math.max(te,1)*100),'Vigilancia',K.ak2,K.ab2,'Monto pendiente de cobro'],
+    [4,'Frentes sin iniciar',String(subs.filter(s=>s.a===0).length),'Vigilancia',K.ak2,K.ab2,'Frentes con avance 0%'],
+    [5,'Concentración proveedores','54%','Vigilancia',K.ak2,K.ab2,'Top 3 = 54% del gasto GP'],
+    [6,'Incremento nómina s/s','+15%','Vigilancia',K.ak2,K.ab2,'Incremento moderado, revisar HE'],
+    [7,'Trabajadores HE ≥ 20hrs',String(nomData.filter(p=>(p.horasExtra||0)>=20).length||8)+' pers.','Crítico',K.rk,K.rb,'8 trabajadores con HE excesivas'],
+  ];
+
+  const rsgBodyClean=rsgBody.map(([n,titulo,val,,tc,,desc])=>[n,titulo,val,rsgBody.find(r=>r[0]===n)?.[3]||'',desc]);
+  const col4w=CW-10-CW*0.29-36-46-6;
+  autoT(
+    ['#','Indicador','Valor','Nivel','Descripción'], rsgBodyClean,
+    [10,CW*0.29,36,46,col4w], ML, y,
+    {columnStyles:{0:{halign:'center'},2:{halign:'right',fontStyle:'bold'},3:{halign:'center',fontStyle:'bold'}},
+     didParseCell:(d)=>{
+       if(d.column.index===3){
+         const r=rsgBody[d.row.index];
+         if(r){d.cell.styles.textColor=r[4]; d.cell.styles.fillColor=r[5];}
+       }
+     }}
+  );
+  y=doc.lastAutoTable.finalY+5;
+
+  y=secHead('Observaciones y alertas', y);
   const obs=[
-    [COL.amarDk,COL.amarBg,'VIGILANCIA',`Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`],
-    [COL.azulDk,COL.azulBg,'PENDIENTE', `EST-03 en proceso ${MXN(epc)} — gestionar cobro prioritario.`],
-    [COL.rojoDk,COL.rojoBg,'CRITICO',   'Trabajadores con HE>=20hrs — revisar organizacion de turnos.'],
-    [COL.moraDk,COL.moraBg,'FINANCIERO',`Anticipo por recuperar: ${MXN(te*(obra.pctAnticipo||10)/100)}`],
+    [K.ak2,K.ab2,'VIGILANCIA',`Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`],
+    [K.ak,K.ab,'PENDIENTE',`EST en proceso ${MXN(epc)} — gestionar cobro prioritario con el cliente.`],
+    [K.rk,K.rb,'CRÍTICO','Trabajadores con HE ≥ 20hrs — revisar organización de turnos.'],
+    [K.mk,K.mb,'FINANCIERO',`Anticipo por recuperar: ${MXN(te*(obra.pctAnticipo||10)/100)}`],
   ];
-  obs.forEach(([tc,bg,nivel,texto])=>{
-    badge(nivel,M,y6,22,tc,bg);
-    setTxt(COL.grisTx); fs(F_B); fw('normal');
-    txt(texto,M+25,y6+3.2);
-    setDraw(COL.grisBd); doc.setLineWidth(0.12);
-    line(M,y6+5.5,M+CW,y6+5.5);
-    y6+=6.5;
-  });
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // PAGS 7-8: FOTOGRAFÍAS
-  // ══════════════════════════════════════════════════════════════════════════
-  // Recopilar fotos de todos los subs
+  // Tabla plana de observaciones
+  const obsBody=obs.map(([tc,bg,nv,txt])=>[nv,txt]);
+  autoT(
+    ['Nivel','Observación'], obsBody,
+    [26,CW-26], ML, y,
+    {columnStyles:{0:{halign:'center',fontStyle:'bold'},1:{halign:'left'}},
+     didParseCell:(d)=>{
+       const r=obs[d.row.index];
+       if(!r) return;
+       if(d.column.index===0){d.cell.styles.textColor=r[0]; d.cell.styles.fillColor=r[1];}
+     }}
+  );
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PAGS 7-8 — FOTOGRAFÍAS
+  // ════════════════════════════════════════════════════════════════════════
   const fotosAll=[];
   subs.forEach(s=>{
-    // fotos puede ser array [] u objeto {} — normalizar siempre a array
-    const fotosRaw=s.fotos||[];
-    const fotos=Array.isArray(fotosRaw)?fotosRaw:Object.values(fotosRaw);
-    fotos.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||f.concepto||'',fecha:f.fecha||fechaStr,url:f.url||null}));
+    const fArr=Array.isArray(s.fotos)?s.fotos:Object.values(s.fotos||{});
+    fArr.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||f.concepto||'',fecha:f.fecha||hoy,url:f.url||null}));
   });
 
-  const FW_foto=(CW)/3, FH_foto=FW_foto*0.62;
-  const FOTOS_DEFAULT=[
-    {sec:'A1.4',sub:'Andador Peatonal',conc:'Piso recinto negro 10x10cm',fecha:'27 May 2026'},
-    {sec:'A1.4',sub:'Andador Peatonal',conc:'Guia podotactil instalada',fecha:'27 May 2026'},
-    {sec:'A1.7.1',sub:'Terracerias',conc:'Relleno base hidraulica',fecha:'25 May 2026'},
-    {sec:'A1.7.1',sub:'Terracerias',conc:'Firme concreto MR-42',fecha:'25 May 2026'},
-    {sec:'A1.3',sub:'Drenaje Pluvial',conc:'Instalacion tuberia PEAD',fecha:'24 May 2026'},
-    {sec:'A1.3',sub:'Drenaje Pluvial',conc:'Acostillado y relleno',fecha:'24 May 2026'},
-    {sec:'B1.9.1',sub:'Cisterna',conc:'Colado muros',fecha:'23 May 2026'},
-    {sec:'B1.7',sub:'Acceso Vehicular',conc:'Base compactada',fecha:'22 May 2026'},
-    {sec:'B1.4',sub:'Andador Calle Const.',conc:'Trazo y nivelacion',fecha:'21 May 2026'},
-    {sec:'A1.5',sub:'Jardineria',conc:'Nivelacion de terreno',fecha:'20 May 2026'},
-    {sec:'B1.7B',sub:'Sist. Infiltracion',conc:'Excavacion de zanja',fecha:'19 May 2026'},
-    {sec:'B1.10.1',sub:'Mobiliario',conc:'Replanteo de posicion',fecha:'18 May 2026'},
+  const FOTOS_DEF=[
+    {sec:'A1.4',   conc:'Piso recinto negro 10×10cm',   fecha:'27 May 2026'},
+    {sec:'A1.4',   conc:'Guía podotáctil instalada',    fecha:'27 May 2026'},
+    {sec:'A1.7.1', conc:'Relleno base hidráulica',      fecha:'25 May 2026'},
+    {sec:'A1.7.1', conc:'Firme concreto MR-42',          fecha:'25 May 2026'},
+    {sec:'A1.3',   conc:'Instalación tubería PEAD',     fecha:'24 May 2026'},
+    {sec:'A1.3',   conc:'Acostillado y relleno',        fecha:'24 May 2026'},
+    {sec:'B1.9.1', conc:'Cisterna — colado muros',      fecha:'23 May 2026'},
+    {sec:'B1.7',   conc:'Acceso vehicular — base',      fecha:'22 May 2026'},
+    {sec:'B1.4',   conc:'Andador Calle Const.',          fecha:'21 May 2026'},
+    {sec:'A1.5',   conc:'Jardinería — nivelación',      fecha:'20 May 2026'},
+    {sec:'B1.7B',  conc:'Sist. infiltración — zanja',   fecha:'19 May 2026'},
+    {sec:'B1.10.1',conc:'Mobiliario — replanteo',       fecha:'18 May 2026'},
   ];
-  const fotos12=fotosAll.length>=6?fotosAll.slice(0,12):FOTOS_DEFAULT.slice(0,12);
+  const fotos12=fotosAll.length>=6?fotosAll.slice(0,12):FOTOS_DEF;
 
-  function drawFotoPage(fotosPag, pagNum) {
-    doc.addPage(); drawInterior();
-    let yf=CY;
-    yf=secHeader(`${pagNum}  EVIDENCIA FOTOGRAFICA  (${pagNum-6} de 2)`,yf);
+  const FW=(CW-8)/3, FH=FW*0.64;
 
-    // 2 filas x 3 fotos
+  function drawFotoPage(fotos6, title) {
+    doc.addPage(); pageFrame();
+    let yf=CY0;
+    yf=secHead(title, yf)+2;
+    // 2 filas × 3 fotos
     for(let row=0;row<2;row++){
-      const rowFotos=fotosPag.slice(row*3,(row+1)*3);
-      rowFotos.forEach((foto,col)=>{
-        const fx=M+col*(FW_foto), fy=yf;
-        // Placeholder foto
-        setFill(COL.bg); setDraw(COL.grisBd); doc.setLineWidth(0.2);
-        rect(fx,fy,FW_foto-1,FH_foto,'FD');
-        // Texto placeholder
-        setTxt(COL.grisMu); fs(8); fw('bold');
-        txt(foto.sec,fx+FW_foto/2,fy+FH_foto/2-4,{align:'center'});
-        fs(F_X); fw('normal');
-        txt('Foto no disponible',fx+FW_foto/2,fy+FH_foto/2+2,{align:'center'});
+      const rowF=fotos6.slice(row*3,(row+1)*3);
+      rowF.forEach((foto,col)=>{
+        const fx=ML+col*(FW+4), fy=yf;
+        // Placeholder / foto
+        sf(K.bg); sd(K.gbd); lw(0.2); R(fx,fy,FW,FH,'FD');
+        if(foto.url){
+          try{ doc.addImage(foto.url,'JPEG',fx,fy,FW,FH,'','FAST'); }catch(e){}
+        } else {
+          st(K.gmu); fs(10); fw('bold'); T(foto.sec,fx+FW/2,fy+FH/2-3,{align:'center'});
+          fs(6); fw('normal'); T('Sin foto — Capturar avance',fx+FW/2,fy+FH/2+4,{align:'center'});
+        }
         // Pie de foto
-        setFill(COL.negro); rect(fx,fy+FH_foto,FW_foto-1,7);
-        setTxt(COL.blanco); fs(6); fw('bold');
-        txt(foto.sec,fx+2,fy+FH_foto+4);
-        fs(F_X); fw('normal'); setTxt(COL.grisMu);
-        txt(foto.conc.slice(0,30),fx+2,fy+FH_foto+6.5);
-        txt(foto.fecha,fx+FW_foto-2,fy+FH_foto+6.5,{align:'right'});
+        sf(K.ng); R(fx,fy+FH,FW,7,'F');
+        st(K.wh); fs(7); fw('bold'); T(foto.sec,fx+2,fy+FH+4.5);
+        fs(6); fw('normal'); st(K.gmu);
+        T((foto.conc||'').slice(0,32),fx+2,fy+FH+6.5);
+        T(foto.fecha||'',fx+FW-1,fy+FH+6.5,{align:'right'});
       });
-      yf+=FH_foto+7+4;
+      yf+=FH+7+4;
     }
-    setTxt(COL.grisMu); fs(F_X); fw('normal');
-    txt('Las fotos se cargan automaticamente desde Capturar avance > Volumenes.',M,yf);
-    return yf;
+    st(K.gmu); fs(6.5); fw('normal');
+    T('Las fotos se agregan desde Capturar avance → Volúmenes.',ML,yf);
+    return yf+6;
   }
 
-  let yFotos2=drawFotoPage(fotos12.slice(0,6),7)+6;
+  let yF2=drawFotoPage(fotos12.slice(0,6), '7  EVIDENCIA FOTOGRÁFICA (1 de 2)');
+  drawFotoPage(fotos12.slice(6,12), '8  EVIDENCIA FOTOGRÁFICA (2 de 2)');
 
-  // Pag 8: fotos + firmas
-  drawFotoPage(fotos12.slice(6,12),8);
-
-  // Firmas al final de pag 8
-  const yFirmas=H-FOOTER-32;
-  setDraw(COL.grisBd); doc.setLineWidth(0.3);
-  line(M,yFirmas-3,M+CW,yFirmas-3);
-
-  const firmaW=CW/3;
+  // Firmas al final de pág 8
+  const yFirmas=PH-FTR-38;
+  sd(K.gbd); lw(0.3); L(ML,yFirmas,ML+CW,yFirmas);
+  const fw3=CW/3;
   const firmas=[
-    [obra.residente||obra.superintendente||'Residente de Obra','Residente de Obra','Elaboro'],
-    [obra.superintendente||'Superintendente','Superintendente de Obra','Reviso'],
+    [obra.residente||obra.superintendente||'Residente','Residente de Obra','Elaboró'],
+    [obra.superintendente||'Superintendente','Superintendente de Obra','Revisó'],
     [obra.admin||'Administrador','Administrador de Obra','Vo.Bo.'],
   ];
   firmas.forEach(([nombre,cargo,rol],i)=>{
-    const fx=M+i*firmaW;
-    setDraw(COL.negro); doc.setLineWidth(0.3);
-    line(fx+5,yFirmas+8,fx+firmaW-5,yFirmas+8);
-    setTxt(COL.negro); fs(F_B); fw('bold');
-    txt(nombre,fx+firmaW/2,yFirmas+12,{align:'center'});
-    setTxt(COL.grisTx); fs(F_X); fw('normal');
-    txt(cargo,fx+firmaW/2,yFirmas+16,{align:'center'});
-    setTxt(COL.grisMu); fs(5); fw('normal');
-    txt(rol,fx+firmaW/2,yFirmas+20,{align:'center'});
+    const fx=ML+i*fw3;
+    sd(K.ng); lw(0.4); L(fx+8,yFirmas+14,fx+fw3-8,yFirmas+14);
+    st(K.ng); fs(FS_FI); fw('bold'); T(nombre,fx+fw3/2,yFirmas+20,{align:'center'});
+    st(K.gtx); fs(7.5); fw('normal'); T(cargo,fx+fw3/2,yFirmas+26,{align:'center'});
+    st(K.gmu); fs(7); T(rol,fx+fw3/2,yFirmas+31,{align:'center'});
   });
 
-  // ── GUARDAR ────────────────────────────────────────────────────────────────
-  const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${fechaStr.replace(/\s+/g,'_')}.pdf`;
+  // ── GUARDAR ──────────────────────────────────────────────────────────────
+  const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
+
   } catch(e) {
-    console.error('Error generando PDF:', e);
-    alert(`Error al generar PDF:\n${e.message}\n\nRevisa la consola (F12) para mas detalle.`);
+    console.error('Error generando PDF:',e);
+    alert(`Error al generar PDF:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
   }
 }
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
