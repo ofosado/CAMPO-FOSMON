@@ -27,10 +27,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // ── MANEJADOR DE ERRORES — muestra alert con detalle
   try {
   // ── SISTEMA DE DISEÑO ──────────────────────────────────────────────────────
-  const W=279, H=216, M=12, HEADER=10, FOOTER=8;
+  const W=279, H=216, M=12, HEADER=12, FOOTER=9;
   const CW=W-M*2;         // ancho de contenido
   const CY=HEADER+4;      // y inicio contenido
   const CYB=H-FOOTER-4;   // y fin contenido
+
+  // Tipografía — tamaños en pt
+  const F_S  = 10.5;  // section header
+  const F_C  = 7.5;   // column header
+  const F_B  = 8.5;   // body
+  const F_X  = 7.5;   // small / note
+  const F_K  = 16;    // KPI value
+  const F_KL = 7.0;   // KPI label
+  const F_FI = 9.0;   // firma
 
   // Paleta de colores [R,G,B]
   const COL = {
@@ -92,13 +101,14 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     // Logo emblema en header (blanco sobre fondo oscuro)
     try {
       if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
-        doc.addImage(EMB_WHITE,'PNG',M+18,1,12,8,'','FAST');
+        // Logo: ratio 447w x 516h → a 8mm de alto = 6.9mm de ancho
+      doc.addImage(EMB_WHITE,'PNG',M+16,1,6.9,8,'','FAST');
       }
     } catch(e){}
     // Footer
     setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
     setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
-    setTxt(COL.grisMu); fs(5.5); fw('normal');
+    setTxt(COL.grisMu); fs(F_X); fw('normal');
     txt('CAMPO — FOSMON Construcciones · Documento confidencial',M,H-4);
     txt(`Pagina ${currentPage} de 8`,W/2,H-4,{align:'center'});
     txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
@@ -106,24 +116,24 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
 
   // Sección header (barra oscura con título)
   function secHeader(titulo, y, col=COL.negro) {
-    setFill(col); rect(M,y,CW,5.5);
-    setFill(COL.blanco); rect(M,y,1.2,5.5);
-    setTxt(COL.blanco); fs(7); fw('bold');
-    txt(titulo,M+3,y+4);
-    return y+5.5+3;
+    setFill(col); rect(M,y,CW,7);
+    setFill(COL.blanco); rect(M,y,1.5,7);
+    setTxt(COL.blanco); fs(F_S); fw('bold');
+    txt(titulo,M+4,y+5);
+    return y+7+3;
   }
 
   // KPI box
-  function kpiBox(lbl,val,sub,col,x,y,w,h=13) {
+  function kpiBox(lbl,val,sub,col,x,y,w,h=16) {
     setFill(COL.blanco); setDraw(COL.grisBd);
     doc.setLineWidth(0.15); rect(x,y,w,h,'FD');
     setFill(col); rect(x,y,1,h);
-    setTxt(COL.grisMu); fs(5); fw('normal');
-    txt(lbl.toUpperCase(),x+2,y+3.5);
-    setTxt(COL.negro); fs(val.length>9?7:8); fw('bold');
-    txt(val,x+2,y+9);
-    setTxt(COL.grisMu); fs(5); fw('normal');
-    txt(sub,x+2,y+12.5);
+    setTxt(COL.grisMu); fs(F_KL); fw('normal');
+    txt(lbl.toUpperCase(),x+2,y+4.5);
+    setTxt(COL.negro); fs(val.length>9?F_K-3:F_K); fw('bold');
+    txt(val,x+2,y+11);
+    setTxt(COL.grisMu); fs(F_KL); fw('normal');
+    txt(sub,x+2,y+15);
   }
 
   // Fila de KPIs
@@ -133,7 +143,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     items.forEach(([lbl,val,sub,col],i)=>{
       kpiBox(lbl,val,sub,col, M+i*(w+gap), y, w);
     });
-    return y+14;
+    return y+17;
   }
 
   // Tabla con autoTable
@@ -141,8 +151,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     const base = {
       startY:y, margin:{left:M,right:M},
       tableWidth:CW,
-      styles:{fontSize:6.5,cellPadding:1.8,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-      headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold',cellPadding:1.8},
+      styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+      headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold',cellPadding:2.5},
       alternateRowStyles:{fillColor:COL.grisLt},
       columnStyles:{},
       ...opts
@@ -163,7 +173,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   function badge(txt2,x,y,w,tcol,bgcol) {
     setFill(bgcol); setDraw(tcol);
     doc.setLineWidth(0.2); rRect(x,y,w,4,0.8,'FD');
-    setTxt(tcol); fs(5.5); fw('bold');
+    setTxt(tcol); fs(F_X); fw('bold');
     doc.text(txt2,x+w/2,y+3,{align:'center'});
   }
 
@@ -179,7 +189,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Logo FOSMON + CAMPO (izquierda)
   try {
     if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
-      doc.addImage(EMB_WHITE,'PNG',M,30,35,12,'','FAST');
+      // Logo portada: 20mm de alto → 17.3mm de ancho (ratio 447:516)
+      doc.addImage(EMB_WHITE,'PNG',M,30,17.3,20,'','FAST');
     }
   } catch(e){}
   setTxt(COL.blanco); fs(22); fw('bold');
@@ -234,7 +245,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Footer portada
   setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
   setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
-  setTxt(COL.grisMu); fs(5.5); fw('normal');
+  setTxt(COL.grisMu); fs(F_X); fw('normal');
   txt('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones',M,H-4);
   txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
 
@@ -278,8 +289,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     head:[contHead],body:contBody,startY:y2,
     margin:{left:M,right:W-M-LW2},
     tableWidth:LW2,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:LW2*0.38,fontStyle:'bold',textColor:COL.negro},1:{cellWidth:LW2*0.62}},
   });
@@ -291,8 +302,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
           ['TOTAL GP',MXN(totRub),'100.0%',PCT(totRub/PPTO*100)]],
     startY:y2, margin:{left:M+LW2+4,right:M},
     tableWidth:RW2,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{halign:'left',cellWidth:RW2*0.44},1:{cellWidth:RW2*0.22},2:{cellWidth:RW2*0.17},3:{cellWidth:RW2*0.17}},
     didDrawRow:(data)=>{
@@ -322,8 +333,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     body:estBody, startY:y2,
     margin:{left:M,right:W-M-LW3},
     tableWidth:LW3,
-    styles:{fontSize:6,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:5.5,fontStyle:'bold'},
+    styles:{fontSize:6,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{halign:'left'},1:{halign:'left'},6:{halign:'center'},
                   0:{cellWidth:estCols[0]},1:{cellWidth:estCols[1]},2:{cellWidth:estCols[2]},
@@ -365,8 +376,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     ['','TOTAL',MXN(totImp),PCT(af),MXN(totEjec)]],
     startY:y3, margin:{left:M,right:W-M-LW4},
     tableWidth:LW4,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt,textColor:COL.grisTx},
     columnStyles:{0:{cellWidth:12,halign:'left'},1:{cellWidth:LW4*0.52,halign:'left'},
                   2:{cellWidth:LW4*0.20,halign:'right'},3:{cellWidth:LW4*0.10,halign:'right'},
@@ -393,10 +404,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   subs.forEach(s=>{
     const col=s.a>=75?COL.verde:s.a>=40?COL.amar:COL.rojo;
     const colTxt=s.a>=75?COL.verdeDk:s.a>=40?COL.amarDk:COL.rojoDk;
-    setTxt(COL.negro); fw('bold'); fs(5.5);
+    setTxt(COL.negro); fw('bold'); fs(F_X);
     txt(s.sec, bxBase, yBarr+3.5);
     barraH(s.a, bxBase+SECW+1, yBarr+1, BARRW, 2.5);
-    setTxt(colTxt); fw('bold'); fs(5.5);
+    setTxt(colTxt); fw('bold'); fs(F_X);
     txt(PCT(s.a), bxBase+RW4-2, yBarr+3.5, {align:'right'});
     setDraw(COL.grisBd); doc.setLineWidth(0.15);
     line(bxBase, yBarr+5.5, bxBase+RW4-2, yBarr+5.5);
@@ -415,8 +426,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
           ['TOTAL ALMACEN','','','',MXN(totAlm)]],
     startY:y3, margin:{left:M,right:W-M-LW5},
     tableWidth:LW5,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:LW5*0.40},1:{cellWidth:LW5*0.22},2:{cellWidth:LW5*0.10,halign:'right'},3:{cellWidth:LW5*0.10},4:{cellWidth:LW5*0.18,halign:'right'}},
     didParseCell:(d)=>{if(d.row.index===materiales.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
@@ -429,8 +440,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
           ['TOTAL MAQUINARIA','','',MXN(totMaq)]],
     startY:y3, margin:{left:M+LW5+4,right:M},
     tableWidth:RW5,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:RW5*0.60},1:{cellWidth:RW5*0.12,halign:'center'},2:{cellWidth:RW5*0.13},3:{cellWidth:RW5*0.15,halign:'right'}},
     didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
@@ -552,8 +563,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
       ['Plazo ampliado',          obra.finAmpliado||'No registrado','Sin convenio modificatorio'],
     ],
     startY:y4, margin:{left:M,right:W-M-LW6}, tableWidth:LW6,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:LW6*0.48},1:{cellWidth:LW6*0.24,halign:'right',fontStyle:'bold',textColor:COL.negro},2:{cellWidth:LW6*0.28}},
   });
@@ -569,8 +580,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
       ['Dias restantes orig.',obra.diasRestantes||'93'],
     ],
     startY:y4, margin:{left:M+LW6+4,right:M}, tableWidth:RW6,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:RW6*0.62},1:{cellWidth:RW6*0.38,halign:'right'}},
   });
@@ -604,8 +615,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     head:[['#','Trabajador','Categoria','HE hrs','Total semana']],
     body:nom5.map((pe,i)=>[i+1,pe.nombre||'',pe.categoria||pe.cat||'',(pe.horasExtra||0).toFixed(0)+'h',MXN(pe.total||0)]),
     startY:y5, margin:{left:M,right:W-M-LW7}, tableWidth:LW7,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:LW7*0.40},2:{cellWidth:LW7*0.28},3:{cellWidth:LW7*0.14,halign:'right'},4:{cellWidth:LW7*0.18,halign:'right'}},
     didParseCell:(d)=>{
@@ -627,8 +638,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     head:[['#','Proveedor','Monto acumulado','% Gasto GP']],
     body:provs.map(([nm,mt],i)=>[i+1,nm.slice(0,30),MXN(mt),PCT(mt/(obra.gastoGP||totPv)*100)]),
     startY:y5, margin:{left:M+LW7+4,right:M}, tableWidth:RW7,
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:RW7*0.52},2:{cellWidth:RW7*0.28,halign:'right'},3:{cellWidth:RW7*0.20,halign:'right'}},
   });
@@ -642,8 +653,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     body:[...maquinaria.map(m=>[m.equipo||m.nombre||'',m.vol||m.cant||'',m.und||'',MXN(pf(m.pu||0)),MXN(pf(m.imp))]),
           ['TOTAL MAQUINARIA','','','',MXN(totMaq2)]],
     startY:y5, margin:{left:M,right:M},
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:CW*0.53},1:{cellWidth:CW*0.08,halign:'center'},2:{cellWidth:CW*0.10},3:{cellWidth:CW*0.14,halign:'right'},4:{cellWidth:CW*0.15,halign:'right'}},
     didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
@@ -670,8 +681,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     head:[['#','Indicador','Valor','Nivel','Descripcion']],
     body:riesgos.map(([n,titulo,val,,nivel])=>[n,titulo,val,nivel,'Ver Dashboard para detalle']),
     startY:y6, margin:{left:M,right:M},
-    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
-    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    styles:{fontSize:F_B,cellPadding:2.5,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:F_C,fontStyle:'bold'},
     alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:CW*0.30},2:{cellWidth:40,halign:'right',fontStyle:'bold'},3:{cellWidth:50,halign:'center'},4:{cellWidth:col4Rsg}},
     didParseCell:(d)=>{
@@ -692,7 +703,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   ];
   obs.forEach(([tc,bg,nivel,texto])=>{
     badge(nivel,M,y6,22,tc,bg);
-    setTxt(COL.grisTx); fs(6.2); fw('normal');
+    setTxt(COL.grisTx); fs(F_B); fw('normal');
     txt(texto,M+25,y6+3.2);
     setDraw(COL.grisBd); doc.setLineWidth(0.12);
     line(M,y6+5.5,M+CW,y6+5.5);
@@ -744,19 +755,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
         // Texto placeholder
         setTxt(COL.grisMu); fs(8); fw('bold');
         txt(foto.sec,fx+FW_foto/2,fy+FH_foto/2-4,{align:'center'});
-        fs(5.5); fw('normal');
+        fs(F_X); fw('normal');
         txt('Foto no disponible',fx+FW_foto/2,fy+FH_foto/2+2,{align:'center'});
         // Pie de foto
         setFill(COL.negro); rect(fx,fy+FH_foto,FW_foto-1,7);
         setTxt(COL.blanco); fs(6); fw('bold');
         txt(foto.sec,fx+2,fy+FH_foto+4);
-        fs(5.5); fw('normal'); setTxt(COL.grisMu);
+        fs(F_X); fw('normal'); setTxt(COL.grisMu);
         txt(foto.conc.slice(0,30),fx+2,fy+FH_foto+6.5);
         txt(foto.fecha,fx+FW_foto-2,fy+FH_foto+6.5,{align:'right'});
       });
       yf+=FH_foto+7+4;
     }
-    setTxt(COL.grisMu); fs(5.5); fw('normal');
+    setTxt(COL.grisMu); fs(F_X); fw('normal');
     txt('Las fotos se cargan automaticamente desde Capturar avance > Volumenes.',M,yf);
     return yf;
   }
@@ -781,9 +792,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     const fx=M+i*firmaW;
     setDraw(COL.negro); doc.setLineWidth(0.3);
     line(fx+5,yFirmas+8,fx+firmaW-5,yFirmas+8);
-    setTxt(COL.negro); fs(6.5); fw('bold');
+    setTxt(COL.negro); fs(F_B); fw('bold');
     txt(nombre,fx+firmaW/2,yFirmas+12,{align:'center'});
-    setTxt(COL.grisTx); fs(5.5); fw('normal');
+    setTxt(COL.grisTx); fs(F_X); fw('normal');
     txt(cargo,fx+firmaW/2,yFirmas+16,{align:'center'});
     setTxt(COL.grisMu); fs(5); fw('normal');
     txt(rol,fx+firmaW/2,yFirmas+20,{align:'center'});
@@ -1289,8 +1300,9 @@ const EMB_NEGRO = "data:image/png;base64,"
   + "7A78DHNDYCf7+mrAE5iytwMYfidOV3Q81X8Am092y8SMvd4AAAAASUVORK5CYII=";
 function EmblemaFOSMON({ size=22, dark=false, opacity=1 }) {
   const h = Math.round(size * 516/447);
-  return <img src={dark?EMB_NEGRO:EMB_WHITE} width={size} height={h} alt="FOSMON"
-    style={{display:"block",flexShrink:0,opacity,imageRendering:"crisp-edges"}}/>;
+  return <img src={dark?EMB_NEGRO:EMB_WHITE} alt="FOSMON"
+    style={{display:"block",flexShrink:0,opacity,imageRendering:"crisp-edges",
+      width:size,height:h,objectFit:"contain"}}/>;
 }
 
 // ── ROLES Y USUARIOS ───────────────────────────────────────────────────────
@@ -1692,7 +1704,10 @@ const _OBRAS_BASE = [
 
 function loadObras() {
   // Carga inicial desde _OBRAS_BASE — filtrar obras eliminadas guardadas en localStorage
-  const eliminados=JSON.parse(localStorage.getItem('campo_eliminados')||'[]');
+  // La key de eliminados depende del usuario — se evalúa en tiempo de ejecución
+  // Por ahora filtramos con todas las keys campo_eliminados_*
+  const _todasKeys=Object.keys(localStorage).filter(k=>k.startsWith('campo_eliminados_'));
+  const eliminados=[..._todasKeys.flatMap(k=>JSON.parse(localStorage.getItem(k)||'[]'))];
   return _OBRAS_BASE.filter(o=>!eliminados.includes(o.id)).map(o=>({...o}));
 }
 
