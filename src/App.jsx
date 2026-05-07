@@ -153,27 +153,34 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Tabla autoTable con posición X explícita — clave para 2 columnas sin solapamiento
   function autoT(head, body, colW, x, y, opts={}) {
     const tableW = colW.reduce((s,w)=>s+w,0);
+    // Combinar columnStyles del caller con cellWidth de colW
+    const callerColStyles = opts.columnStyles || {};
+    const mergedColStyles = {};
+    colW.forEach((w,i)=>{
+      mergedColStyles[i] = { cellWidth:w, ...(callerColStyles[i]||{}) };
+    });
+    const { columnStyles:_discard, ...restOpts } = opts;
     const base = {
       head:[head], body,
       startY: y,
       margin: {left:x, right:PW-x-tableW},
       tableWidth: tableW,
+      rowPageBreak: 'avoid',
       styles: {
         fontSize:FS_TD, cellPadding:2.2,
         textColor:K.gtx, lineColor:K.gbd, lineWidth:0.2,
         font:'helvetica', fontStyle:'normal',
-        overflow:'linebreak',
+        overflow:'linebreak', minCellHeight:0,
       },
       headStyles: {
         fillColor:K.ng, textColor:K.wh,
         fontSize:FS_TH, fontStyle:'bold',
-        cellPadding:2.2,
+        cellPadding:2.2, minCellHeight:0,
       },
       alternateRowStyles: { fillColor:K.glt, textColor:K.gtx },
-      columnStyles: {},
-      ...opts,
+      columnStyles: mergedColStyles,
+      ...restOpts,
     };
-    colW.forEach((w,i)=>{ base.columnStyles[i]={cellWidth:w}; });
     doc.autoTable(base);
     return doc.lastAutoTable.finalY + 3;
   }
