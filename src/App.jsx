@@ -2052,11 +2052,14 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
   const dir=NOMINA_S18.filter(p=>p.tipo==="D").length;
   const ind=NOMINA_S18.filter(p=>p.tipo==="I").length;
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100;return{a,fg,ef:e.monto-a-fg};};
-  const estPag  =estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+cE(e).ef,0);
-  const estFact =estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+e.monto,0);
-  const estRet  =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
-  const estAmort=estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
-  const totalEst=estimaciones.reduce((t,e)=>t+e.monto,0);
+  const estPag   =estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+e.monto,0);
+  const estPorCob=estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
+  const estProc  =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
+  const estTotal =estimaciones.reduce((t,e)=>t+e.monto,0);
+  const estFact  =estPorCob;
+  const estRet   =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
+  const estAmort =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
+  const totalEst =estTotal;
   const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
