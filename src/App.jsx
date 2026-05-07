@@ -24,7 +24,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Página letter landscape: 279 × 216 mm
   const PW=279, PH=216;
   const ML=14, MR=14, MT=16, MB=14;  // márgenes
-  const HDR=13, FTR=10;               // header y footer
+  const HDR=14, FTR=10;               // header y footer
   const CW=PW-ML-MR;                  // 251mm ancho de contenido
   const CY0=HDR+MT;                   // Y inicio contenido = 27mm
   const CYmax=PH-FTR-MB;             // Y máximo = 192mm → 165mm disponibles
@@ -72,9 +72,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   const mpct    = me>0 ? mg/me*100 : 0;
   const PPTO    = obra.presupuesto||1;
   const te      = estimaciones.reduce((t,e)=>t+e.monto,0);
-  const pag     = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+e.monto,0);
-  const pco     = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
-  const epc     = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+e.monto,0);
+  // Normalizar estatus para comparación robusta (sin importar acentos o mayúsculas)
+  const normEst = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const pag     = estimaciones.filter(e=>normEst(e.estatus)==='pagada').reduce((t,e)=>t+e.monto,0);
+  const pco     = estimaciones.filter(e=>['facturada','aprobada'].includes(normEst(e.estatus))).reduce((t,e)=>t+e.monto,0);
+  const epc     = estimaciones.filter(e=>normEst(e.estatus).includes('proceso')).reduce((t,e)=>t+e.monto,0);
 
   let pagNum = 0;
 
@@ -97,16 +99,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     // Barra azul decorativa izquierda
     sf(K.ak); R(0,0,3,HDR);
     // Logo FOSMON
+    // Logo: 447×516 ratio. A 8mm de alto → ancho = 8/1.154 = 6.9mm. Centrado en HDR=13mm
     try { if(typeof EMB_WHITE!=='undefined')
-      doc.addImage(EMB_WHITE,'PNG',ML,1.5,6,9.8,'','FAST'); // 447:516 ratio → 6×9.8
+      doc.addImage(EMB_WHITE,'PNG',ML,2,6.9,8,'','FAST');
     } catch(e){}
-    // Textos header
-    st(K.wh); fs(8.5); fw('bold');
-    T('CAMPO', ML+8, 7);
-    fs(FS_SM); fw('normal');
-    T('Reporte de Avance · FOSMON', ML+8, 11.5);
-    T(obra.nombre||'', PW-MR, 7, {align:'right'});
-    T(`${obra.contrato||''} · ${hoy}`, PW-MR, 11.5, {align:'right'});
+    // Textos header — todo en una línea centrada verticalmente
+    st(K.wh); fs(9); fw('bold');
+    T('CAMPO', ML+10, 5);
+    fs(6.5); fw('normal');
+    T('Reporte de Avance · FOSMON Construcciones', ML+10, 9.5);
+    fs(8); fw('bold');
+    T(obra.nombre||'', PW-MR, 5, {align:'right'});
+    fs(6.5); fw('normal');
+    T(`${obra.contrato||''} · ${hoy}`, PW-MR, 9.5, {align:'right'});
     // Footer
     sf([232,234,240]); R(0,PH-FTR,PW,FTR);
     sf(K.ng); R(0,PH-FTR,PW,0.6);
@@ -304,11 +309,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // ── Estimaciones — tabla única ancho completo ──────────────────────────
   y=secHead('2  ESTIMACIONES AL CLIENTE', y);
 
-  const estCols=[22,55,42,38,38,42,35];  // suma = 272 < CW=251? Ajustar
-  // Calcular proporciones para CW
-  const estTotal_w=22+55+42+38+38+42+35; // 272
-  const estScale=CW/estTotal_w;
-  const estW=estCols.map(w=>Math.round(w*estScale));
+  // Tabla estimaciones — anchos fijos que suman LW3 exacto
+  const LW3=CW*0.66, RW3=CW-LW3-4;
+  // No.(18) + Periodo(50) + MontoBruto(38) + Anticipo(34) + FGar(34) + MtoEfectivo(38) + Estatus(LW3-resto)
+  const estW=[ 18, 50, 38, 34, 34, 38, LW3-18-50-38-34-34-38 ].map(Math.round);
 
   const estBody=estimaciones.map(e=>{
     const a=e.monto*(obra.pctAnticipo||10)/100;
@@ -323,12 +327,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   const EST_COLS_MAP={1:{halign:'left'},2:{halign:'right'},3:{halign:'right'},
                       4:{halign:'right'},5:{halign:'right'}};
   const EST_STATUS_COLORS={
-    'Pagada':K.vk,'Facturada':K.mk,'En proceso':K.ak2,'Aprobada':K.vk,
+    'pagada':K.vk,'facturada':K.mk,'en proceso':K.ak2,'aprobada':K.vk,
   };
-
-  // Tabla estimaciones — ocupa ~65% del ancho, KPIs en el resto
-  const LW3=CW*0.66, RW3=CW-LW3-4;
-  const estWadj=estCols.map(w=>Math.round(w*(LW3/estTotal_w)));
 
   const yEstStart=y;
   const yAfterEst=autoT(
@@ -341,7 +341,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
          d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
        }
        if(d.column.index===6 && ri<estBody.length-1){
-         const col=EST_STATUS_COLORS[estimaciones[ri]?.estatus]||K.gtx;
+         const estNorm=normEst(estimaciones[ri]?.estatus||'');
+         const col=EST_STATUS_COLORS[estNorm]||K.gtx;
          d.cell.styles.textColor=col; d.cell.styles.fontStyle='bold';
        }
      }}
