@@ -333,7 +333,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   const yEstStart=y;
   const yAfterEst=autoT(
     ['No.','Periodo','Monto bruto','Anticipo','F. Garantia','Mto. efectivo','Estatus'],
-    estBody, estWadj, xL, y,
+    estBody, estW, xL, y,
     {columnStyles:EST_COLS_MAP,
      didParseCell:(d)=>{
        const ri=d.row.index;
