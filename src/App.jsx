@@ -1556,6 +1556,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   }
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
+  const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const[orden,setOrden]=useState("nombre"); // nombre|importe_asc|importe_desc|avance_asc|avance_desc
   const[verHistorial,setVerHistorial]=useState(false);
   const[modalNueva,setModalNueva]=useState(false);
@@ -1733,8 +1734,8 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
               Archivar
             </button>}
             {puedeGestionar&&archivada&&<button onClick={e=>{e.stopPropagation();reactivar(o.id);}}
-              style={{background:"none",border:`0.5px solid ${C.green}44`,borderRadius:4,
-                padding:"2px 7px",fontSize:9,color:C.green,cursor:"pointer"}}>
+              style={{background:"none",border:`1px solid ${C.greenBg}`,borderRadius:4,
+                padding:"2px 7px",fontSize:9,color:C.greenDk,cursor:"pointer"}}>
               Reactivar
             </button>}
             {puedeEliminar&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
