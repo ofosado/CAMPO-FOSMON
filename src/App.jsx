@@ -3,6 +3,237 @@ import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+// ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) {
+  // Cargar jsPDF dinámicamente si no está disponible
+  if (!window.jspdf) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+
+  const W = 279; const M = 15;
+  const af = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
+  const me = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0) + materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
+  const gt = obra.gastoGP + maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
+  const totalEst = estimaciones.reduce((t,e)=>t+e.monto,0);
+  const margen = me - gt;
+  const mpct = me > 0 ? margen/me*100 : 0;
+  const MXN = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:0}).format(Math.abs(n));
+  const fecha = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
+
+  // ── PORTADA ──────────────────────────────────────────────────────────────
+  // Fondo negro
+  doc.setFillColor(13, 22, 25);
+  doc.rect(0, 0, W/2, 216, 'F');
+  doc.setFillColor(255, 254, 249);
+  doc.rect(W/2, 0, W/2, 216, 'F');
+
+  // CAMPO texto
+  doc.setTextColor(255, 254, 249);
+  doc.setFontSize(28); doc.setFont('helvetica','bold');
+  doc.text('CAMPO', M, 55);
+  doc.setFontSize(9); doc.setFont('helvetica','normal');
+  doc.text('Control de Avance, Maquinaria, Personal y Obra', M, 63);
+
+  // Línea
+  doc.setDrawColor(255,254,249); doc.setLineWidth(0.4);
+  doc.line(M, 68, W/2-M, 68);
+
+  // Título
+  doc.setFontSize(16); doc.setFont('helvetica','bold');
+  doc.text('Reporte de Avance de Obra', M, 80);
+  doc.setFontSize(12);
+  doc.text(obra.nombre, M, 92);
+
+  // Datos contrato (lado blanco)
+  doc.setTextColor(13, 22, 25);
+  const xR = W/2 + M;
+  doc.setFontSize(11); doc.setFont('helvetica','bold');
+  doc.text('Datos del contrato', xR, 40);
+  doc.setFontSize(9); doc.setFont('helvetica','normal');
+  const datosContrato = [
+    ['Contrato:', obra.contrato || '—'],
+    ['Cliente:', obra.cliente || '—'],
+    ['Superintendente:', obra.superintendente || '—'],
+    ['Administrador:', obra.admin || '—'],
+    ['Inicio:', obra.inicio || '—'],
+    ['Fin programado:', obra.fin || '—'],
+    ['Corte:', fecha],
+  ];
+  datosContrato.forEach(([lbl,val], i) => {
+    doc.setFont('helvetica','bold');
+    doc.text(lbl, xR, 52 + i*8);
+    doc.setFont('helvetica','normal');
+    doc.text(val, xR + 45, 52 + i*8);
+  });
+
+  // KPIs portada
+  const kpis = [
+    [MXN(me), 'Monto ejecutado'],
+    [MXN(gt), 'Gasto total'],
+    [`${af.toFixed(1)}%`, 'Avance físico'],
+    [`${mpct.toFixed(1)}%`, 'Margen bruto'],
+  ];
+  kpis.forEach(([val,lbl], i) => {
+    const kx = xR + i*30; const ky = 160;
+    doc.setFillColor(13,22,25); doc.rect(kx, ky, 28, 22, 'F');
+    doc.setTextColor(255,254,249); doc.setFontSize(12); doc.setFont('helvetica','bold');
+    doc.text(val, kx+14, ky+10, {align:'center'});
+    doc.setFontSize(6); doc.setFont('helvetica','normal');
+    doc.text(lbl, kx+14, ky+17, {align:'center'});
+  });
+
+  // ── PÁGINA 2: RESUMEN ────────────────────────────────────────────────────
+  doc.addPage('letter','landscape');
+
+  // Header
+  doc.setFillColor(13,22,25); doc.rect(0,0,W,14,'F');
+  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
+  doc.text('CAMPO — Reporte de Avance', M, 9);
+  doc.setFontSize(8); doc.setFont('helvetica','normal');
+  doc.text(obra.nombre, W-M, 6, {align:'right'});
+  doc.text(fecha, W-M, 11, {align:'right'});
+
+  // Sección resumen financiero
+  doc.setTextColor(13,22,25);
+  doc.setFillColor(13,22,25);
+  doc.rect(M, 18, W-2*M, 8, 'F');
+  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
+  doc.text('RESUMEN FINANCIERO', M+3, 24);
+
+  doc.setTextColor(13,22,25); doc.setFontSize(9);
+  const finData = [
+    ['Presupuesto total', MXN(obra.presupuesto), 'Monto ejecutado', MXN(me)],
+    ['Gasto total obra', MXN(gt), 'Margen bruto', `${mpct.toFixed(1)}% (${MXN(margen)})`],
+    ['Total estimado', MXN(totalEst), 'Por estimar', MXN(obra.presupuesto - totalEst)],
+  ];
+  finData.forEach(([l1,v1,l2,v2], i) => {
+    const y = 36 + i*9;
+    doc.setFont('helvetica','bold'); doc.text(l1+':', M, y);
+    doc.setFont('helvetica','normal'); doc.text(v1, M+45, y);
+    doc.setFont('helvetica','bold'); doc.text(l2+':', W/2+5, y);
+    doc.setFont('helvetica','normal'); doc.text(v2, W/2+50, y);
+    doc.setDrawColor(200,200,200); doc.setLineWidth(0.2);
+    doc.line(M, y+2, W-M, y+2);
+  });
+
+  // Avance por subsección
+  doc.setFillColor(13,22,25); doc.rect(M, 66, W-2*M, 8,'F');
+  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
+  doc.text('AVANCE POR SUBSECCIÓN', M+3, 72);
+
+  doc.setTextColor(13,22,25); doc.setFontSize(8);
+  // Headers
+  doc.setFont('helvetica','bold');
+  doc.setFillColor(230,230,230); doc.rect(M, 77, W-2*M, 6, 'F');
+  doc.text('Sección', M+2, 81);
+  doc.text('Descripción', M+22, 81);
+  doc.text('Importe', W-85, 81, {align:'right'});
+  doc.text('Avance', W-55, 81, {align:'right'});
+  doc.text('Ejecutado', W-M, 81, {align:'right'});
+
+  subs.forEach((s, i) => {
+    const y = 90 + i*7;
+    if (i%2===0) { doc.setFillColor(248,248,248); doc.rect(M, y-4, W-2*M, 7,'F'); }
+    doc.setFont('helvetica','bold'); doc.text(s.sec, M+2, y);
+    doc.setFont('helvetica','normal');
+    doc.text(s.sub.slice(0,40), M+22, y);
+    doc.text(MXN(s.imp), W-85, y, {align:'right'});
+    const col = s.a >= 85 ? [22,163,74] : s.a >= 55 ? [202,138,4] : [220,38,38];
+    doc.setTextColor(...col);
+    doc.text(`${s.a}%`, W-55, y, {align:'right'});
+    doc.setTextColor(13,22,25);
+    doc.text(MXN(s.imp*s.a/100), W-M, y, {align:'right'});
+  });
+
+  // Totales
+  const totalImp = subs.reduce((t,s)=>t+s.imp,0);
+  const totalEjec = subs.reduce((t,s)=>t+s.imp*s.a/100,0);
+  const yTot = 90 + subs.length*7 + 3;
+  doc.setFillColor(13,22,25); doc.rect(M, yTot-4, W-2*M, 7,'F');
+  doc.setTextColor(255,254,249); doc.setFont('helvetica','bold');
+  doc.text('TOTAL', M+2, yTot);
+  doc.text(MXN(totalImp), W-85, yTot, {align:'right'});
+  doc.text(`${af.toFixed(1)}%`, W-55, yTot, {align:'right'});
+  doc.text(MXN(totalEjec), W-M, yTot, {align:'right'});
+
+  // Footer
+  doc.setFillColor(240,240,238); doc.rect(0, 207, W, 9,'F');
+  doc.setTextColor(120,120,120); doc.setFontSize(7); doc.setFont('helvetica','normal');
+  doc.text('CAMPO — FOSMON Construcciones · Documento confidencial', M, 212);
+  doc.text(`Generado: ${fecha}`, W/2, 212, {align:'center'});
+  doc.text('Página 2', W-M, 212, {align:'right'});
+
+  // ── PÁGINA 3: ESTIMACIONES ───────────────────────────────────────────────
+  doc.addPage('letter','landscape');
+  doc.setFillColor(13,22,25); doc.rect(0,0,W,14,'F');
+  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
+  doc.text('CAMPO — Estimaciones', M, 9);
+  doc.text(obra.nombre, W-M, 9, {align:'right'});
+
+  doc.setFillColor(13,22,25); doc.rect(M,18,W-2*M,8,'F');
+  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
+  doc.text('RELACIÓN DE ESTIMACIONES', M+3, 24);
+
+  doc.setTextColor(13,22,25); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+  doc.setFillColor(230,230,230); doc.rect(M,30,W-2*M,6,'F');
+  ['No.','Período','Monto bruto','Anticipo','F. Garantía','Monto efectivo','% Contrato','Estatus'].forEach((h,i) => {
+    const xs=[M+2,M+18,M+65,M+112,M+148,M+190,W-52,W-M-5];
+    doc.text(h, xs[i], 35, {align: i>=2?'right':'left'});
+  });
+
+  estimaciones.forEach((e,i) => {
+    const a=e.monto*obra.pctAnticipo/100;
+    const fg=e.monto*obra.pctFondoGar/100;
+    const ef=e.monto-a-fg;
+    const pC=(e.monto/obra.presupuesto*100).toFixed(2);
+    const y=45+i*9;
+    if(i%2===0){doc.setFillColor(248,248,248);doc.rect(M,y-4,W-2*M,8,'F');}
+    doc.setFont('helvetica','normal');
+    const cols={Pagada:[22,163,74],Facturada:[124,58,237],Aprobada:[37,99,235],'En proceso':[202,138,4]};
+    const ec=cols[e.estatus]||[150,150,150];
+    [
+      [`EST-0${e.no}`,M+2,'left'],
+      [e.periodo||'—',M+18,'left'],
+      [MXN(e.monto),M+112,'right'],
+      [MXN(a),M+148,'right'],
+      [MXN(fg),M+190,'right'],
+      [MXN(ef),W-52,'right'],
+      [`${pC}%`,W-M-5,'right'],
+    ].forEach(([txt,x,align])=>{
+      doc.setTextColor(13,22,25);
+      doc.text(txt,x,y,{align});
+    });
+    doc.setTextColor(...ec); doc.setFont('helvetica','bold');
+    doc.text(e.estatus,W-M-5,y,{align:'right'});
+  });
+
+  // Total estimaciones
+  const yEstTot=45+estimaciones.length*9+3;
+  doc.setFillColor(13,22,25);doc.rect(M,yEstTot-4,W-2*M,7,'F');
+  doc.setTextColor(255,254,249);doc.setFont('helvetica','bold');
+  doc.text('TOTAL',M+2,yEstTot);
+  doc.text(MXN(totalEst),M+112,yEstTot,{align:'right'});
+  doc.text(`${(totalEst/obra.presupuesto*100).toFixed(2)}%`,W-M-5,yEstTot,{align:'right'});
+
+  doc.setFillColor(240,240,238);doc.rect(0,207,W,9,'F');
+  doc.setTextColor(120,120,120);doc.setFontSize(7);doc.setFont('helvetica','normal');
+  doc.text('CAMPO — FOSMON Construcciones · Documento confidencial',M,212);
+  doc.text(`Generado: ${fecha}`,W/2,212,{align:'center'});
+  doc.text('Página 3',W-M,212,{align:'right'});
+
+  // Descargar
+  const nombreArchivo = `Reporte_${obra.nombre.replace(/\s+/g,'_')}_${fecha.replace(/\s+/g,'_')}.pdf`;
+  doc.save(nombreArchivo);
+}
+
+
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -1123,7 +1354,7 @@ function ModalNuevaObra({onSave,onClose,gpData}){
     residente:"",admin:"",presupuesto:"",gastoGP:0,
     ultimaAct:new Date().toLocaleDateString("es-MX",{day:"2-digit",month:"long",year:"numeric"}),
     estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
-    inicio:"",fin:""
+    inicio:"",fin:"",finAmpliado:"",justificacionAmpliacion:""
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const valid=form.nombre&&form.contrato&&form.cliente&&form.presupuesto&&form.inicio&&form.fin;
@@ -1229,13 +1460,27 @@ function ModalNuevaObra({onSave,onClose,gpData}){
               </div>
             ))}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              {[["Inicio","inicio","date"],["Fin programado","fin","date"]].map(([l,k,t])=>(
+              {[["Inicio","inicio","date"],["Fin programado (original)","fin","date"]].map(([l,k,t])=>(
                 <div key={k}>
                   <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{l}</div>
                   <Inp type={t} value={form[k]} onChange={e=>f(k,e.target.value)}/>
                 </div>
               ))}
             </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                Fin ampliado (si aplica)
+              </div>
+              <Inp type="date" value={form.finAmpliado} onChange={e=>f("finAmpliado",e.target.value)}/>
+            </div>
+            {form.finAmpliado&&<div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                Justificación de ampliación
+              </div>
+              <Inp type="text" value={form.justificacionAmpliacion}
+                placeholder="Convenio modificatorio, causas de fuerza mayor, etc."
+                onChange={e=>f("justificacionAmpliacion",e.target.value)}/>
+            </div>}
             <div>
               <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Presupuesto total del contrato</div>
               <Inp type="number" value={form.presupuesto} onChange={e=>f("presupuesto",parseFloat(e.target.value)||0)} placeholder="0"/>
@@ -1309,8 +1554,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     setObras(oo=>oo.map(o=>o.id===id?{...o,estado:"activa"}:o));
   };
 
-  const agregarObra=(form)=>{
-    setObras(oo=>[...oo,{...form,presupuesto:parseFloat(form.presupuesto)||0}]);
+  const agregarObra=async(form)=>{
+    const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
+    setObras(oo=>[...oo,nueva]);
+    // Guardar en Firestore
+    await fsSet(`obras/${nueva.id}/config/info`, nueva);
     setModalNueva(false);
   };
 
@@ -1439,6 +1687,233 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   </div>;
 }
 
+
+// ── GRÁFICA INTERACTIVA DE PROYECCIÓN ─────────────────────────────────────
+function GraficaProyeccion({obra, subs, estimaciones, maquinaria}) {
+  const [hovered, setHovered] = React.useState(null);
+  const [activeLines, setActiveLines] = React.useState({
+    gasto:true, monto:true, estimado:true, metaG:true, metaA:true
+  });
+  const svgRef = useRef();
+
+  // Calcular datos reales de la obra
+  const presupuesto = obra.presupuesto / 1e6;
+  const gastoGP     = obra.gastoGP / 1e6;
+  const am          = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0) / 1e6;
+  const alm         = 0; // materiales en almacén
+  const montoEjec   = am + alm;
+  const totalEst    = estimaciones.reduce((t,e)=>t+e.monto,0) / 1e6;
+
+  // Semanas simuladas históricas + proyección
+  const HOY_IDX = 4;
+  const ritmoG  = gastoGP / 18;  // aprox semanas transcurridas
+  const ritmoM  = montoEjec / 18;
+  const SEMANAS_DATA = Array.from({length:20}, (_,i) => {
+    const esReal = i <= HOY_IDX;
+    const factor = i / HOY_IDX;
+    return {
+      s: `S${14+i}`,
+      g: esReal ? +(gastoGP * factor).toFixed(1) : +(gastoGP + ritmoG*(i-HOY_IDX)).toFixed(1),
+      m: esReal ? +(montoEjec * factor).toFixed(1) : +(montoEjec + ritmoM*(i-HOY_IDX)).toFixed(1),
+      e: esReal ? (i<3?0:+(totalEst*(i/HOY_IDX)).toFixed(1)) : +(totalEst + (presupuesto*0.15)*(i-HOY_IDX)/3).toFixed(1),
+      p: esReal ? +(am/presupuesto*100 * factor).toFixed(1) : +(am/presupuesto*100 + (am/presupuesto*100/HOY_IDX)*(i-HOY_IDX)).toFixed(1),
+      real: esReal,
+    };
+  });
+
+  const PLAZO_ORIG = Math.round((new Date(obra.fin)-new Date(obra.inicio))/(7*24*60*60*1000));
+  const PLAZO_IDX  = Math.min(Math.round(PLAZO_ORIG/1), 16);
+  const PLAZOA_IDX = Math.min(PLAZO_IDX + 4, 19);
+
+  const n = SEMANAS_DATA.length;
+  const PAD = {top:24,right:80,bottom:38,left:52};
+  const SW = 680; const SH = 260;
+  const W = SW-PAD.left-PAD.right; const H = SH-PAD.top-PAD.bottom;
+  const maxY = presupuesto * 1.08;
+  const xS = i => (i/(n-1))*W;
+  const yS = v => H - (v/maxY)*H;
+
+  const makePath = (fn, fromIdx=0) => SEMANAS_DATA
+    .slice(fromIdx).map((s,i) => `${i===0?'M':'L'} ${xS(fromIdx+i)} ${yS(fn(s))}`).join(' ');
+  const makeRealPath  = fn => SEMANAS_DATA.filter(s=>s.real).map((s,i)=>`${i===0?'M':'L'} ${xS(SEMANAS_DATA.indexOf(s))} ${yS(fn(s))}`).join(' ');
+  const makeProjPath  = fn => SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(fn(s))}`).filter(Boolean).join(' ');
+
+  const semsFinG = Math.ceil((presupuesto - gastoGP) / ritmoG);
+  const semsFinM = Math.ceil((presupuesto - montoEjec) / ritmoM);
+  const semsRest = PLAZO_IDX - HOY_IDX;
+  const metaG = semsRest > 0 ? (presupuesto - gastoGP) / semsRest : ritmoG * 1.5;
+  const metaM = semsRest > 0 ? (presupuesto - montoEjec) / semsRest : ritmoM * 1.5;
+
+  const metaGPath = SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(Math.min(gastoGP+metaG*(i-HOY_IDX),presupuesto))}`).filter(Boolean).join(' ');
+  const metaMPath = SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(Math.min(montoEjec+metaM*(i-HOY_IDX),presupuesto))}`).filter(Boolean).join(' ');
+
+  const hovD = hovered!==null ? SEMANAS_DATA[hovered] : null;
+
+  const toggleLine = k => setActiveLines(p=>({...p,[k]:!p[k]}));
+
+  return (
+    <Card>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10,flexWrap:'wrap',gap:8}}>
+        <div>
+          <Tit>Proyección de avance y gasto</Tit>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+            Pasa el cursor sobre la gráfica para ver el detalle por semana
+          </div>
+        </div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[
+            {k:'gasto',   col:C.red,    lbl:'Gasto GP'},
+            {k:'monto',   col:C.blue,   lbl:'Monto ejecutado'},
+            {k:'estimado',col:C.green,  lbl:'Estimado'},
+            {k:'metaG',   col:C.orange, lbl:'Meta gasto'},
+            {k:'metaA',   col:C.purple, lbl:'Meta avance'},
+          ].map(({k,col,lbl})=>(
+            <button key={k} onClick={()=>toggleLine(k)}
+              style={{display:'flex',alignItems:'center',gap:4,background:'none',
+                border:`0.5px solid ${activeLines[k]?col:'rgba(255,254,249,0.12)'}`,
+                borderRadius:99,padding:'2px 8px',cursor:'pointer',
+                opacity:activeLines[k]?1:0.4,transition:'all .2s'}}>
+              <div style={{width:14,height:2,background:col,borderRadius:1}}/>
+              <span style={{fontSize:9,color:activeLines[k]?C.caliza:C.textMut}}>{lbl}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{position:'relative',overflowX:'auto'}}>
+        <svg ref={svgRef} width={SW} height={SH}
+          onMouseMove={e=>{const r=svgRef.current?.getBoundingClientRect();if(!r)return;const mx=e.clientX-r.left-PAD.left;const idx=Math.round((mx/W)*(n-1));if(idx>=0&&idx<n)setHovered(idx);}}
+          onMouseLeave={()=>setHovered(null)}
+          style={{cursor:'crosshair',overflow:'visible',display:'block'}}>
+          <defs>
+            <linearGradient id="gR" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={C.red} stopOpacity="0.2"/>
+              <stop offset="100%" stopColor={C.red} stopOpacity="0.01"/>
+            </linearGradient>
+            <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={C.blue} stopOpacity="0.15"/>
+              <stop offset="100%" stopColor={C.blue} stopOpacity="0.01"/>
+            </linearGradient>
+            <filter id="gl"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <g transform={`translate(${PAD.left},${PAD.top})`}>
+            {/* Grid */}
+            {[0,25,50,75,100,presupuesto].map(v=>(
+              <g key={v}>
+                <line x1={0} y1={yS(v*presupuesto/100)} x2={W} y2={yS(v*presupuesto/100)}
+                  stroke={v===100?C.caliza:C.border} strokeWidth={v===100?0.6:0.3}
+                  strokeDasharray={v===100?'4,4':''} opacity={v===100?0.3:0.5}/>
+                <text x={-6} y={yS(v*presupuesto/100)+4} fill={C.textMut} fontSize={8} textAnchor="end">
+                  {v===100?'Ppto':`$${(v*presupuesto/100).toFixed(0)}M`}
+                </text>
+              </g>
+            ))}
+            {/* Zonas plazo */}
+            {PLAZO_IDX < n && <rect x={xS(HOY_IDX+1)} y={0} width={xS(PLAZO_IDX)-xS(HOY_IDX+1)} height={H} fill={C.green} fillOpacity={0.04}/>}
+            {PLAZOA_IDX < n && PLAZO_IDX < n && <rect x={xS(PLAZO_IDX)} y={0} width={xS(PLAZOA_IDX)-xS(PLAZO_IDX)} height={H} fill={C.yellow} fillOpacity={0.06}/>}
+            {/* Líneas plazo */}
+            {PLAZO_IDX<n && <><line x1={xS(PLAZO_IDX)} y1={0} x2={xS(PLAZO_IDX)} y2={H} stroke={C.green} strokeWidth={1} strokeDasharray="4,4" opacity={0.55}/>
+            <text x={xS(PLAZO_IDX)-3} y={12} fill={C.green} fontSize={7.5} textAnchor="end" fontWeight="600" opacity={0.8}>Plazo orig.</text></>}
+            {PLAZOA_IDX<n && <><line x1={xS(PLAZOA_IDX)} y1={0} x2={xS(PLAZOA_IDX)} y2={H} stroke={C.yellow} strokeWidth={1} strokeDasharray="3,4" opacity={0.65}/>
+            <text x={xS(PLAZOA_IDX)+3} y={12} fill={C.yellow} fontSize={7.5} textAnchor="start" fontWeight="600" opacity={0.8}>Amp.</text></>}
+            {/* Línea HOY */}
+            <line x1={xS(HOY_IDX)} y1={0} x2={xS(HOY_IDX)} y2={H} stroke={C.caliza} strokeWidth={0.7} opacity={0.18}/>
+            <text x={xS(HOY_IDX)} y={H+28} fill={C.caliza} fontSize={7.5} textAnchor="middle" opacity={0.4}>Hoy</text>
+            {/* Áreas */}
+            {activeLines.gasto&&<path d={`${makeRealPath(s=>s.g)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gR)" opacity={0.7}/>}
+            {activeLines.monto&&<path d={`${makeRealPath(s=>s.m)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gB)" opacity={0.6}/>}
+            {/* Metas */}
+            {activeLines.metaG&&<path d={metaGPath} fill="none" stroke={C.orange} strokeWidth={1.2} strokeDasharray="3,5" opacity={0.5}/>}
+            {activeLines.metaA&&<path d={metaMPath} fill="none" stroke={C.purple} strokeWidth={1.2} strokeDasharray="3,5" opacity={0.5}/>}
+            {/* Proyecciones punteadas */}
+            {activeLines.gasto&&<path d={makeProjPath(s=>s.g)} fill="none" stroke={C.red} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.45}/>}
+            {activeLines.monto&&<path d={makeProjPath(s=>s.m)} fill="none" stroke={C.blue} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.45}/>}
+            {activeLines.estimado&&<path d={makeProjPath(s=>s.e)} fill="none" stroke={C.green} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.4}/>}
+            {/* Líneas reales */}
+            {activeLines.gasto&&<path d={makeRealPath(s=>s.g)} fill="none" stroke={C.red} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
+            {activeLines.monto&&<path d={makeRealPath(s=>s.m)} fill="none" stroke={C.blue} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
+            {activeLines.estimado&&<path d={makeRealPath(s=>s.e)} fill="none" stroke={C.green} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
+            {/* Puntos reales */}
+            {SEMANAS_DATA.filter(s=>s.real).map((s,i)=>{
+              const idx=SEMANAS_DATA.indexOf(s);
+              return <g key={s.s}>
+                {activeLines.gasto&&<circle cx={xS(idx)} cy={yS(s.g)} r={hovered===idx?5.5:3.5} fill={C.red} stroke={C.bg} strokeWidth={1.5} style={{transition:'r .15s'}}/>}
+                {activeLines.monto&&<rect x={xS(idx)-3} y={yS(s.m)-3} width={hovered===idx?7:5} height={hovered===idx?7:5} fill={C.blue} stroke={C.bg} strokeWidth={1.5} style={{transition:'all .15s'}}/>}
+                {activeLines.estimado&&<polygon points={`${xS(idx)},${yS(s.e)-4.5} ${xS(idx)+3.5},${yS(s.e)+3} ${xS(idx)-3.5},${yS(s.e)+3}`} fill={C.green} stroke={C.bg} strokeWidth={1.5}/>}
+              </g>;
+            })}
+            {/* Crosshair hover */}
+            {hovered!==null&&<>
+              <line x1={xS(hovered)} y1={0} x2={xS(hovered)} y2={H} stroke={C.caliza} strokeWidth={0.7} opacity={0.25} strokeDasharray="2,3"/>
+              {activeLines.gasto&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].g)} r={6} fill="none" stroke={C.red} strokeWidth={1.8} opacity={0.8}/>}
+              {activeLines.monto&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].m)} r={6} fill="none" stroke={C.blue} strokeWidth={1.8} opacity={0.8}/>}
+              {activeLines.estimado&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].e)} r={6} fill="none" stroke={C.green} strokeWidth={1.8} opacity={0.8}/>}
+            </>}
+            {/* X labels */}
+            {SEMANAS_DATA.map((s,i)=>i%3===0&&(
+              <text key={s.s} x={xS(i)} y={H+16} fill={i===HOY_IDX?C.caliza:C.textMut}
+                fontSize={8} textAnchor="middle" fontWeight={i===HOY_IDX?'700':'400'} opacity={i===HOY_IDX?1:0.65}>{s.s}</text>
+            ))}
+          </g>
+        </svg>
+
+        {/* Tooltip */}
+        {hovD&&(
+          <div style={{position:'absolute',left:Math.min(PAD.left+xS(hovered)+12,490),top:PAD.top+10,
+            background:'rgba(13,22,25,0.97)',border:`0.5px solid ${C.borderM}`,borderRadius:9,
+            padding:'10px 14px',boxShadow:'0 8px 32px rgba(0,0,0,0.7)',pointerEvents:'none',minWidth:180,
+            backdropFilter:'blur(12px)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <span style={{fontSize:13,fontWeight:700,color:C.caliza,fontFamily:'monospace'}}>{hovD.s}</span>
+              <Bdg color={hovD.real?C.green:C.yellow} small>{hovD.real?'REAL':'PROYECT.'}</Bdg>
+            </div>
+            {[
+              {lbl:'Gasto GP acumulado', val:`$${hovD.g.toFixed(1)}M`, col:C.red,    show:activeLines.gasto},
+              {lbl:'Monto ejecutado',    val:`$${hovD.m.toFixed(1)}M`, col:C.blue,   show:activeLines.monto},
+              {lbl:'Estimado al cliente',val:`$${hovD.e.toFixed(1)}M`, col:C.green,  show:activeLines.estimado},
+              {lbl:'Avance físico',      val:`${hovD.p.toFixed(1)}%`,  col:C.caliza, show:true},
+            ].filter(r=>r.show).map(r=>(
+              <div key={r.lbl} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4,gap:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:5}}>
+                  <div style={{width:7,height:7,borderRadius:'50%',background:r.col,flexShrink:0}}/>
+                  <span style={{fontSize:9,color:C.textSec}}>{r.lbl}</span>
+                </div>
+                <span style={{fontSize:10,fontWeight:700,color:r.col,fontFamily:'monospace'}}>{r.val}</span>
+              </div>
+            ))}
+            {!hovD.real&&<>
+              <div style={{height:1,background:C.border,margin:'6px 0'}}/>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:8.5,color:C.textMut,marginTop:2}}>
+                <span>Meta gasto:</span>
+                <span style={{color:C.orange}}>${Math.min(gastoGP+metaG*(hovered-HOY_IDX),presupuesto).toFixed(1)}M</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:8.5,color:C.textMut,marginTop:2}}>
+                <span>Meta avance:</span>
+                <span style={{color:C.purple}}>${Math.min(montoEjec+metaM*(hovered-HOY_IDX),presupuesto).toFixed(1)}M</span>
+              </div>
+            </>}
+          </div>
+        )}
+      </div>
+
+      {/* Resumen inferior */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginTop:12,paddingTop:10,borderTop:`0.5px solid ${C.border}`}}>
+        {[
+          ['Ritmo gasto/sem', `$${(ritmoG).toFixed(1)}M`, C.red],
+          ['Ritmo avance/sem', `$${(ritmoM).toFixed(1)}M`, C.blue],
+          [`Fin proyect. (gasto)`, `S${14+semsFinG}`, C.red],
+          [`Fin proyect. (avance)`, `S${14+semsFinM}`, C.blue],
+        ].map(([l,v,c])=>(
+          <div key={l} style={{background:C.bg,borderRadius:7,padding:'7px 9px',borderLeft:`2px solid ${c}`}}>
+            <div style={{fontSize:8,color:C.textMut,marginBottom:2}}>{l}</div>
+            <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:'monospace'}}>{v}</div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
 function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
   const[lbFoto,setLbFoto]=useState(null);
@@ -1459,7 +1934,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
       <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ponderado"      color={semA(af)}/>
-      <Kpi label="Monto ejecutado" value={MXN(me)}         sub="avance+almacén" color={C.blue} size={12}/>
+      <Kpi label="Monto ejecutado" value={MXN(me)}         sub="monto ejecutado" color={C.blue} size={12}/>
       <Kpi label="Gasto total"     value={MXN(gt)}         sub="GP+maquinaria"  color={C.red}  size={12}/>
       <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I`} color={C.green}/>
     </div>
@@ -1501,11 +1976,11 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
         <Kpi label="Por recuperar anticipo"value={MXN(estAmort)} sub="anticipo"   color={C.yellow} size={12}/>
       </div>
     </Card>
-    {/* ── AVANCE VALORIZADO vs ESTIMADO ── */}
+    {/* ── MONTO EJECUTADO vs ESTIMADO ── */}
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div>
-          <Tit>Avance valorizado vs Estimaciones</Tit>
+          <Tit>Monto ejecutado vs Estimaciones</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
             Obra ejecutada en campo comparada con lo facturado al cliente
           </div>
@@ -1513,7 +1988,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
         <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.blue}`}}>
-          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Avance valorizado</div>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Monto ejecutado</div>
           <div style={{fontSize:13,fontWeight:700,color:C.blue}}>{MXN(am)}</div>
           <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{NUM(am/obra.presupuesto*100,1)}% del presupuesto</div>
         </div>
@@ -1531,7 +2006,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       </div>
       <div style={{marginBottom:10}}>
         {[
-          ["Avance valorizado", am, C.blue],
+          ["Monto ejecutado", am, C.blue],
           ["Estimado acumulado", totalEst, C.purple],
         ].map(([lbl,val,col])=><div key={lbl} style={{marginBottom:6}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
@@ -1592,6 +2067,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       })()}
     </Card>
 
+    <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria}/>
+
     <Card>
       <Tit>Personal en campo — Semana 18</Tit>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
@@ -1640,6 +2117,46 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       </div>
     </Card>
   </div>;
+}
+
+
+// ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales}) {
+  const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
+  async function guardar() {
+    setEstado("saving");
+    try {
+      await fsSet(`obras/${obra.id}/avance/subs`, {
+        data: subs.map(s=>({sec:s.sec,a:s.a})),
+        fecha: new Date().toISOString()
+      });
+      await fsSet(`obras/${obra.id}/avance/maquinaria`, {
+        data: maquinaria,
+        fecha: new Date().toISOString()
+      });
+      await fsSet(`obras/${obra.id}/avance/materiales`, {
+        data: materiales,
+        fecha: new Date().toISOString()
+      });
+      setEstado("saved");
+      setTimeout(()=>setEstado("idle"), 3000);
+    } catch(e) {
+      console.error(e);
+      setEstado("error");
+      setTimeout(()=>setEstado("idle"), 3000);
+    }
+  }
+  const colors_map = {idle:C.caliza, saving:"rgba(255,254,249,0.5)", saved:C.green, error:C.red};
+  const labels_map = {idle:"💾 Guardar registro", saving:"Guardando...", saved:"✓ Guardado", error:"✗ Error al guardar"};
+  return (
+    <button onClick={guardar} disabled={estado==="saving"}
+      style={{background:estado==="idle"?C.caliza:estado==="saved"?C.green:estado==="error"?C.red:"rgba(255,254,249,0.15)",
+        border:"none",borderRadius:8,padding:"10px 0",color:estado==="idle"?C.bg:C.caliza,
+        fontSize:13,fontWeight:700,width:"100%",marginTop:6,letterSpacing:"0.03em",
+        cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
+      {labels_map[estado]}
+    </button>
+  );
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
@@ -1819,7 +2336,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol}/>}
 
-    {tab!=="nomina"&&editar&&<PrimaryBtn onClick={()=>alert("✓ Registro guardado correctamente")}>GUARDAR REGISTRO</PrimaryBtn>}
+    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}/>}
   </div>;
 }
 
@@ -3220,11 +3737,25 @@ export default function App(){
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP } = useGPConstruct();
 
-  // Al entrar a una obra, cargar sus parámetros desde Firestore
+  // Al entrar a una obra, cargar sus parámetros y avance desde Firestore
   useEffect(()=>{
     if(!obraId) return;
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
       if(d) setObras(oo=>oo.map(o=>o.id===obraId?{...o,...d}:o));
+    });
+    fsGet(`obras/${obraId}/avance/subs`).then(d=>{
+      if(d&&Array.isArray(d.data)){
+        setSubs(ss=>ss.map(s=>{
+          const saved=d.data.find(x=>x.sec===s.sec);
+          return saved?{...s,a:saved.a}:s;
+        }));
+      }
+    });
+    fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
+      if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
+    });
+    fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
+      if(d&&Array.isArray(d.data)) setMateriales(d.data);
     });
   },[obraId]);
   const[subs,setSubs]=useState(SUBS_INIT);
@@ -3290,9 +3821,17 @@ export default function App(){
       </div>
     </div>
 
-    {screen==="obra"&&<button onClick={volver} style={{background:C.surface,border:"none",
-      borderBottom:`0.5px solid ${C.border}`,padding:"8px 16px",fontSize:11,color:C.textSec,
-      cursor:"pointer",textAlign:"left",width:"100%"}}>← Volver a obras</button>}
+    {screen==="obra"&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+      background:C.surface,borderBottom:`0.5px solid ${C.border}`}}>
+      <button onClick={volver} style={{background:"none",border:"none",padding:"8px 16px",
+        fontSize:11,color:C.textSec,cursor:"pointer"}}>← Volver a obras</button>
+      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales)}
+        style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:6,
+          margin:"4px 12px",padding:"4px 12px",fontSize:10,color:C.caliza,cursor:"pointer",
+          display:"flex",alignItems:"center",gap:5}}>
+        📄 Generar PDF
+      </button>}
+    </div>}
 
     {screen==="obra"&&<div className="noscroll" style={{background:C.bg,borderBottom:`0.5px solid ${C.border}`,
       display:"flex",overflowX:"auto",padding:"0 12px"}}>
