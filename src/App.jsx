@@ -81,14 +81,20 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Header + Footer para páginas interiores
   function drawInterior() {
     currentPage++;
-    // Header fondo oscuro
+    // Header fondo oscuro — altura 12mm para dar respiro
     setFill(COL.negro); rect(0,0,W,HEADER);
     setTxt(COL.blanco); fs(7.5); fw('bold');
-    txt('CAMPO',M,6.5);
+    txt('CAMPO',M,4.5);
     fw('normal'); fs(6);
-    txt('Reporte de Avance · FOSMON Construcciones',M,9.5);
-    txt(obra.nombre||'',W-M,6.5,{align:'right'});
-    txt(`${obra.contrato||''} · ${fechaStr}`,W-M,9.5,{align:'right'});
+    txt('Reporte de Avance · FOSMON Construcciones',M,8.5);
+    txt(obra.nombre||'',W-M,4.5,{align:'right'});
+    txt(`${obra.contrato||''} · ${fechaStr}`,W-M,8.5,{align:'right'});
+    // Logo emblema en header (blanco sobre fondo oscuro)
+    try {
+      if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
+        doc.addImage(EMB_WHITE,'PNG',M+18,1,12,8,'','FAST');
+      }
+    } catch(e){}
     // Footer
     setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
     setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
@@ -170,7 +176,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Mitad derecha clara
   setFill(COL.bg); rect(W*0.46,0,W*0.54,H);
 
-  // Logo CAMPO (izquierda)
+  // Logo FOSMON + CAMPO (izquierda)
+  try {
+    if(typeof EMB_WHITE!=='undefined' && EMB_WHITE) {
+      doc.addImage(EMB_WHITE,'PNG',M,30,35,12,'','FAST');
+    }
+  } catch(e){}
   setTxt(COL.blanco); fs(22); fw('bold');
   txt('CAMPO',M,55);
   fs(7); fw('normal');
@@ -291,7 +302,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
       }
     },
   });
-  y2=doc.lastAutoTable.finalY+4;
+  y2=doc.lastAutoTable.finalY+6;
 
   // Estimaciones
   y2=secHeader('2  ESTIMACIONES AL CLIENTE',y2);
@@ -340,7 +351,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   let y3=CY;
   y3=secHeader('3  AVANCE FISICO POR SUBSECCION',y3);
 
-  const LW4=CW*0.53, RW4=CW-LW4-4;
+  const LW4=CW*0.56, RW4=CW-LW4-4;  // más espacio para Mto. ejecutado
   const totImp=subs.reduce((t,s)=>t+s.imp,0);
   const totEjec=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
 
@@ -356,13 +367,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     tableWidth:LW4,
     styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
     headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
-    alternateRowStyles:{fillColor:COL.grisLt},
+    alternateRowStyles:{fillColor:COL.grisLt,textColor:COL.grisTx},
     columnStyles:{0:{cellWidth:12,halign:'left'},1:{cellWidth:LW4*0.52,halign:'left'},
                   2:{cellWidth:LW4*0.20,halign:'right'},3:{cellWidth:LW4*0.10,halign:'right'},
                   4:{cellWidth:LW4*0.18,halign:'right'}},
     didParseCell:(d)=>{
       const ri=d.row.index;
       if(ri===subs.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}
+      else {
+        // Asegurar texto visible en filas alternas
+        if(!d.cell.styles.textColor || d.cell.styles.textColor===null) d.cell.styles.textColor=COL.grisTx;
+      }
       if(d.column.index===3 && ri<subs.length){
         const a=subs[ri]?.a||0;
         d.cell.styles.textColor=a>=75?COL.verdeDk:a>=40?COL.amarDk:COL.rojoDk;
@@ -402,6 +417,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     tableWidth:LW5,
     styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
     headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:LW5*0.40},1:{cellWidth:LW5*0.22},2:{cellWidth:LW5*0.10,halign:'right'},3:{cellWidth:LW5*0.10},4:{cellWidth:LW5*0.18,halign:'right'}},
     didParseCell:(d)=>{if(d.row.index===materiales.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
   });
@@ -415,6 +431,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     tableWidth:RW5,
     styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
     headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
     columnStyles:{0:{cellWidth:RW5*0.60},1:{cellWidth:RW5*0.12,halign:'center'},2:{cellWidth:RW5*0.13},3:{cellWidth:RW5*0.15,halign:'right'}},
     didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
   });
@@ -1748,7 +1765,7 @@ function Login({onLogin}){
     <div style={{width:"100%",maxWidth:380}}>
       {/* Logo */}
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:32,gap:12}}>
-        <EmblemaFOSMON size={48}/>
+        <EmblemaFOSMON size={48} dark={false}/>
         <div style={{textAlign:"center"}}>
           <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>CAMPO</div>
           <div style={{fontSize:9,color:C.textMut,letterSpacing:"0.08em",marginTop:2}}>FOSMON CONSTRUCCIONES</div>
@@ -4840,7 +4857,7 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
       position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <EmblemaFOSMON size={22}/>
+        <EmblemaFOSMON size={22} dark={true}/>
         <div>
           <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>CAMPO</div>
           <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1}}>FOSMON CONSTRUCCIONES</div>
@@ -4911,7 +4928,7 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
-        <EmblemaFOSMON size={11} opacity={0.4}/>
+        <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>
         <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
           CAMPO — Control de Avance, Maquinaria, Personal y Obra
         </span>
