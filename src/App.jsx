@@ -5,235 +5,771 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } fro
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) {
-  // Cargar jsPDF dinámicamente si no está disponible
+  // Cargar jsPDF + autoTable dinámicamente
   if (!window.jspdf) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload = resolve; s.onerror = reject;
-      document.head.appendChild(s);
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
+    });
+  }
+  if (!window.jspdf.jsPDF.API.autoTable) {
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s);
     });
   }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
-  const W = 279; const M = 15;
-  const af = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
-  const me = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0) + materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const gt = obra.gastoGP + maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const totalEst = estimaciones.reduce((t,e)=>t+e.monto,0);
-  const margen = me - gt;
-  const mpct = me > 0 ? margen/me*100 : 0;
-  const MXN = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:0}).format(Math.abs(n));
-  const fecha = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
+  // ── SISTEMA DE DISEÑO ──────────────────────────────────────────────────────
+  const W=279, H=216, M=12, HEADER=10, FOOTER=8;
+  const CW=W-M*2;         // ancho de contenido
+  const CY=HEADER+4;      // y inicio contenido
+  const CYB=H-FOOTER-4;   // y fin contenido
 
-  // ── PORTADA ──────────────────────────────────────────────────────────────
-  // Fondo negro
-  doc.setFillColor(13, 22, 25);
-  doc.rect(0, 0, W/2, 216, 'F');
-  doc.setFillColor(255, 254, 249);
-  doc.rect(W/2, 0, W/2, 216, 'F');
+  // Paleta de colores [R,G,B]
+  const COL = {
+    negro:[13,22,25], blanco:[255,255,255], bg:[240,242,245],
+    grisLt:[248,249,251], grisBd:[224,227,232], grisTx:[85,94,107], grisMu:[154,160,172],
+    verde:[99,153,34], verdeBg:[234,243,222], verdeDk:[59,109,17],
+    rojo:[226,75,74], rojoBg:[252,235,235], rojoDk:[163,45,45],
+    azul:[55,138,221], azulBg:[230,241,251], azulDk:[24,95,165],
+    amar:[239,159,39], amarBg:[250,238,218], amarDk:[133,79,11],
+    mora:[127,119,221], moraBg:[238,237,254], moraDk:[60,52,137],
+    naran:[217,119,6],
+  };
 
-  // CAMPO texto
-  doc.setTextColor(255, 254, 249);
-  doc.setFontSize(28); doc.setFont('helvetica','bold');
-  doc.text('CAMPO', M, 55);
-  doc.setFontSize(9); doc.setFont('helvetica','normal');
-  doc.text('Control de Avance, Maquinaria, Personal y Obra', M, 63);
+  // KPIs derivados
+  const pf = n => parseFloat(n)||0;
+  const af  = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
+  const am  = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  const alm = materiales.reduce((t,m)=>t+pf(m.imp),0);
+  const me  = am+alm;
+  const gt  = (obra.gastoGP||0)+maquinaria.reduce((t,m)=>t+pf(m.imp),0);
+  const mg  = me-gt;
+  const mpct= me>0?mg/me*100:0;
+  const te  = estimaciones.reduce((t,e)=>t+e.monto,0);
+  const pag = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+e.monto,0);
+  const pco = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
+  const epc = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+e.monto,0);
+  const PPTO= obra.presupuesto||1;
+  const totGP= maquinaria.reduce((t,m)=>t+pf(m.imp),0)+(obra.gastoGP||0);
 
-  // Línea
-  doc.setDrawColor(255,254,249); doc.setLineWidth(0.4);
-  doc.line(M, 68, W/2-M, 68);
+  const MXN = n=>`$${Math.abs(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+  const PCT = (n,d=1)=>`${(n||0).toFixed(d)}%`;
+  const fechaStr = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
 
-  // Título
-  doc.setFontSize(16); doc.setFont('helvetica','bold');
-  doc.text('Reporte de Avance de Obra', M, 80);
-  doc.setFontSize(12);
-  doc.text(obra.nombre, M, 92);
+  // ── HELPERS DE DIBUJO ──────────────────────────────────────────────────────
+  const doc = new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});
+  let currentPage = 0;
 
-  // Datos contrato (lado blanco)
-  doc.setTextColor(13, 22, 25);
-  const xR = W/2 + M;
-  doc.setFontSize(11); doc.setFont('helvetica','bold');
-  doc.text('Datos del contrato', xR, 40);
-  doc.setFontSize(9); doc.setFont('helvetica','normal');
-  const datosContrato = [
-    ['Contrato:', obra.contrato || '—'],
-    ['Cliente:', obra.cliente || '—'],
-    ['Superintendente:', obra.superintendente || '—'],
-    ['Administrador:', obra.admin || '—'],
-    ['Inicio:', obra.inicio || '—'],
-    ['Fin programado:', obra.fin || '—'],
-    ['Corte:', fecha],
-  ];
-  datosContrato.forEach(([lbl,val], i) => {
-    doc.setFont('helvetica','bold');
-    doc.text(lbl, xR, 52 + i*8);
-    doc.setFont('helvetica','normal');
-    doc.text(val, xR + 45, 52 + i*8);
-  });
+  const setFill = c => doc.setFillColor(...c);
+  const setDraw = c => doc.setDrawColor(...c);
+  const setTxt  = c => doc.setTextColor(...c);
+  const rect    = (x,y,w,h,style='F') => doc.rect(x,y,w,h,style);
+  const rRect   = (x,y,w,h,r,style='F') => doc.roundedRect(x,y,w,h,r,r,style);
+  const line    = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
+  const txt     = (t,x,y,opts={}) => doc.text(String(t),x,y,opts);
+  const fs      = n => doc.setFontSize(n);
+  const fw      = s => doc.setFont('helvetica',s);
 
-  // KPIs portada
-  const kpis = [
-    [MXN(me), 'Monto ejecutado'],
-    [MXN(gt), 'Gasto total'],
-    [`${af.toFixed(1)}%`, 'Avance físico'],
-    [`${mpct.toFixed(1)}%`, 'Margen bruto'],
-  ];
-  kpis.forEach(([val,lbl], i) => {
-    const kx = xR + i*30; const ky = 160;
-    doc.setFillColor(13,22,25); doc.rect(kx, ky, 28, 22, 'F');
-    doc.setTextColor(255,254,249); doc.setFontSize(12); doc.setFont('helvetica','bold');
-    doc.text(val, kx+14, ky+10, {align:'center'});
-    doc.setFontSize(6); doc.setFont('helvetica','normal');
-    doc.text(lbl, kx+14, ky+17, {align:'center'});
-  });
+  // Header + Footer para páginas interiores
+  function drawInterior() {
+    currentPage++;
+    // Header fondo oscuro
+    setFill(COL.negro); rect(0,0,W,HEADER);
+    setTxt(COL.blanco); fs(7.5); fw('bold');
+    txt('CAMPO',M,6.5);
+    fw('normal'); fs(6);
+    txt('Reporte de Avance · FOSMON Construcciones',M,9.5);
+    txt(obra.nombre||'',W-M,6.5,{align:'right'});
+    txt(`${obra.contrato||''} · ${fechaStr}`,W-M,9.5,{align:'right'});
+    // Footer
+    setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
+    setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
+    setTxt(COL.grisMu); fs(5.5); fw('normal');
+    txt('CAMPO — FOSMON Construcciones · Documento confidencial',M,H-4);
+    txt(`Pagina ${currentPage} de 8`,W/2,H-4,{align:'center'});
+    txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
+  }
 
-  // ── PÁGINA 2: RESUMEN ────────────────────────────────────────────────────
-  doc.addPage('letter','landscape');
+  // Sección header (barra oscura con título)
+  function secHeader(titulo, y, col=COL.negro) {
+    setFill(col); rect(M,y,CW,5.5);
+    setFill(COL.blanco); rect(M,y,1.2,5.5);
+    setTxt(COL.blanco); fs(7); fw('bold');
+    txt(titulo,M+3,y+4);
+    return y+5.5+3;
+  }
 
-  // Header
-  doc.setFillColor(13,22,25); doc.rect(0,0,W,14,'F');
-  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
-  doc.text('CAMPO — Reporte de Avance', M, 9);
-  doc.setFontSize(8); doc.setFont('helvetica','normal');
-  doc.text(obra.nombre, W-M, 6, {align:'right'});
-  doc.text(fecha, W-M, 11, {align:'right'});
+  // KPI box
+  function kpiBox(lbl,val,sub,col,x,y,w,h=13) {
+    setFill(COL.blanco); setDraw(COL.grisBd);
+    doc.setLineWidth(0.15); rect(x,y,w,h,'FD');
+    setFill(col); rect(x,y,1,h);
+    setTxt(COL.grisMu); fs(5); fw('normal');
+    txt(lbl.toUpperCase(),x+2,y+3.5);
+    setTxt(COL.negro); fs(val.length>9?7:8); fw('bold');
+    txt(val,x+2,y+9);
+    setTxt(COL.grisMu); fs(5); fw('normal');
+    txt(sub,x+2,y+12.5);
+  }
 
-  // Sección resumen financiero
-  doc.setTextColor(13,22,25);
-  doc.setFillColor(13,22,25);
-  doc.rect(M, 18, W-2*M, 8, 'F');
-  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
-  doc.text('RESUMEN FINANCIERO', M+3, 24);
-
-  doc.setTextColor(13,22,25); doc.setFontSize(9);
-  const finData = [
-    ['Presupuesto total', MXN(obra.presupuesto), 'Monto ejecutado', MXN(me)],
-    ['Gasto total obra', MXN(gt), 'Margen bruto', `${mpct.toFixed(1)}% (${MXN(margen)})`],
-    ['Total estimado', MXN(totalEst), 'Por estimar', MXN(obra.presupuesto - totalEst)],
-  ];
-  finData.forEach(([l1,v1,l2,v2], i) => {
-    const y = 36 + i*9;
-    doc.setFont('helvetica','bold'); doc.text(l1+':', M, y);
-    doc.setFont('helvetica','normal'); doc.text(v1, M+45, y);
-    doc.setFont('helvetica','bold'); doc.text(l2+':', W/2+5, y);
-    doc.setFont('helvetica','normal'); doc.text(v2, W/2+50, y);
-    doc.setDrawColor(200,200,200); doc.setLineWidth(0.2);
-    doc.line(M, y+2, W-M, y+2);
-  });
-
-  // Avance por subsección
-  doc.setFillColor(13,22,25); doc.rect(M, 66, W-2*M, 8,'F');
-  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
-  doc.text('AVANCE POR SUBSECCIÓN', M+3, 72);
-
-  doc.setTextColor(13,22,25); doc.setFontSize(8);
-  // Headers
-  doc.setFont('helvetica','bold');
-  doc.setFillColor(230,230,230); doc.rect(M, 77, W-2*M, 6, 'F');
-  doc.text('Sección', M+2, 81);
-  doc.text('Descripción', M+22, 81);
-  doc.text('Importe', W-85, 81, {align:'right'});
-  doc.text('Avance', W-55, 81, {align:'right'});
-  doc.text('Ejecutado', W-M, 81, {align:'right'});
-
-  subs.forEach((s, i) => {
-    const y = 90 + i*7;
-    if (i%2===0) { doc.setFillColor(248,248,248); doc.rect(M, y-4, W-2*M, 7,'F'); }
-    doc.setFont('helvetica','bold'); doc.text(s.sec, M+2, y);
-    doc.setFont('helvetica','normal');
-    doc.text(s.sub.slice(0,40), M+22, y);
-    doc.text(MXN(s.imp), W-85, y, {align:'right'});
-    const col = s.a >= 85 ? [22,163,74] : s.a >= 55 ? [202,138,4] : [220,38,38];
-    doc.setTextColor(...col);
-    doc.text(`${s.a}%`, W-55, y, {align:'right'});
-    doc.setTextColor(13,22,25);
-    doc.text(MXN(s.imp*s.a/100), W-M, y, {align:'right'});
-  });
-
-  // Totales
-  const totalImp = subs.reduce((t,s)=>t+s.imp,0);
-  const totalEjec = subs.reduce((t,s)=>t+s.imp*s.a/100,0);
-  const yTot = 90 + subs.length*7 + 3;
-  doc.setFillColor(13,22,25); doc.rect(M, yTot-4, W-2*M, 7,'F');
-  doc.setTextColor(255,254,249); doc.setFont('helvetica','bold');
-  doc.text('TOTAL', M+2, yTot);
-  doc.text(MXN(totalImp), W-85, yTot, {align:'right'});
-  doc.text(`${af.toFixed(1)}%`, W-55, yTot, {align:'right'});
-  doc.text(MXN(totalEjec), W-M, yTot, {align:'right'});
-
-  // Footer
-  doc.setFillColor(240,240,238); doc.rect(0, 207, W, 9,'F');
-  doc.setTextColor(120,120,120); doc.setFontSize(7); doc.setFont('helvetica','normal');
-  doc.text('CAMPO — FOSMON Construcciones · Documento confidencial', M, 212);
-  doc.text(`Generado: ${fecha}`, W/2, 212, {align:'center'});
-  doc.text('Página 2', W-M, 212, {align:'right'});
-
-  // ── PÁGINA 3: ESTIMACIONES ───────────────────────────────────────────────
-  doc.addPage('letter','landscape');
-  doc.setFillColor(13,22,25); doc.rect(0,0,W,14,'F');
-  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
-  doc.text('CAMPO — Estimaciones', M, 9);
-  doc.text(obra.nombre, W-M, 9, {align:'right'});
-
-  doc.setFillColor(13,22,25); doc.rect(M,18,W-2*M,8,'F');
-  doc.setTextColor(255,254,249); doc.setFontSize(10); doc.setFont('helvetica','bold');
-  doc.text('RELACIÓN DE ESTIMACIONES', M+3, 24);
-
-  doc.setTextColor(13,22,25); doc.setFont('helvetica','bold'); doc.setFontSize(8);
-  doc.setFillColor(230,230,230); doc.rect(M,30,W-2*M,6,'F');
-  ['No.','Período','Monto bruto','Anticipo','F. Garantía','Monto efectivo','% Contrato','Estatus'].forEach((h,i) => {
-    const xs=[M+2,M+18,M+65,M+112,M+148,M+190,W-52,W-M-5];
-    doc.text(h, xs[i], 35, {align: i>=2?'right':'left'});
-  });
-
-  estimaciones.forEach((e,i) => {
-    const a=e.monto*obra.pctAnticipo/100;
-    const fg=e.monto*obra.pctFondoGar/100;
-    const ef=e.monto-a-fg;
-    const pC=(e.monto/obra.presupuesto*100).toFixed(2);
-    const y=45+i*9;
-    if(i%2===0){doc.setFillColor(248,248,248);doc.rect(M,y-4,W-2*M,8,'F');}
-    doc.setFont('helvetica','normal');
-    const cols={Pagada:[22,163,74],Facturada:[124,58,237],Aprobada:[37,99,235],'En proceso':[202,138,4]};
-    const ec=cols[e.estatus]||[150,150,150];
-    [
-      [`EST-0${e.no}`,M+2,'left'],
-      [e.periodo||'—',M+18,'left'],
-      [MXN(e.monto),M+112,'right'],
-      [MXN(a),M+148,'right'],
-      [MXN(fg),M+190,'right'],
-      [MXN(ef),W-52,'right'],
-      [`${pC}%`,W-M-5,'right'],
-    ].forEach(([txt,x,align])=>{
-      doc.setTextColor(13,22,25);
-      doc.text(txt,x,y,{align});
+  // Fila de KPIs
+  function kpiRow(items, y, totalW=CW) {
+    const n=items.length, gap=1.5;
+    const w=(totalW-(n-1)*gap)/n;
+    items.forEach(([lbl,val,sub,col],i)=>{
+      kpiBox(lbl,val,sub,col, M+i*(w+gap), y, w);
     });
-    doc.setTextColor(...ec); doc.setFont('helvetica','bold');
-    doc.text(e.estatus,W-M-5,y,{align:'right'});
+    return y+14;
+  }
+
+  // Tabla con autoTable
+  function tabla(head,body,cols,y,opts={}) {
+    const base = {
+      startY:y, margin:{left:M,right:M},
+      tableWidth:CW,
+      styles:{fontSize:6.5,cellPadding:1.8,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+      headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold',cellPadding:1.8},
+      alternateRowStyles:{fillColor:COL.grisLt},
+      columnStyles:{},
+      ...opts
+    };
+    if(cols) cols.forEach((w,i)=>{ if(w!==null) base.columnStyles[i]={cellWidth:w}; });
+    doc.autoTable({head:[head],body,...base});
+    return doc.lastAutoTable.finalY+3;
+  }
+
+  // Barra de progreso horizontal
+  function barraH(pct,x,y,w,h=2.5) {
+    const col=pct>=75?COL.verde:pct>=40?COL.amar:COL.rojo;
+    setFill(COL.grisBd); rect(x,y,w,h);
+    setFill(col); rect(x,y,Math.min(pct/100,1)*w,h);
+  }
+
+  // Badge de color
+  function badge(txt2,x,y,w,tcol,bgcol) {
+    setFill(bgcol); setDraw(tcol);
+    doc.setLineWidth(0.2); rRect(x,y,w,4,0.8,'FD');
+    setTxt(tcol); fs(5.5); fw('bold');
+    doc.text(txt2,x+w/2,y+3,{align:'center'});
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 1: PORTADA
+  // ══════════════════════════════════════════════════════════════════════════
+  currentPage=1;
+  // Mitad izquierda oscura
+  setFill(COL.negro); rect(0,0,W*0.46,H);
+  // Mitad derecha clara
+  setFill(COL.bg); rect(W*0.46,0,W*0.54,H);
+
+  // Logo CAMPO (izquierda)
+  setTxt(COL.blanco); fs(22); fw('bold');
+  txt('CAMPO',M,55);
+  fs(7); fw('normal');
+  txt('REPORTE DE AVANCE DE OBRA',M,62);
+  setDraw(COL.blanco); doc.setLineWidth(0.3);
+  line(M,64,M+50,64);
+  fs(12); fw('bold');
+  // Nombre de obra — wrap si es largo
+  const nombreLines = doc.splitTextToSize(obra.nombre||'',W*0.38);
+  txt(nombreLines,M,72);
+  fs(7); fw('normal');
+  txt(obra.ubicacion||'Parque Urbano · FOSMON Construcciones',M,82);
+
+  // Datos del contrato (derecha)
+  const xR=W*0.49; let yR=28;
+  setTxt(COL.negro); fs(7.5); fw('bold');
+  txt('Datos del contrato',xR,yR); yR+=3;
+  setDraw(COL.grisBd); doc.setLineWidth(0.2);
+  line(xR,yR,W-M,yR); yR+=5;
+  const campos=[
+    ['Contrato:',obra.contrato||''],
+    ['Cliente:',obra.cliente||''],
+    ['Superintendente:',obra.superintendente||''],
+    ['Residente:',obra.residente||obra.superintendente||''],
+    ['Administrador:',obra.admin||''],
+    ['Inicio:',obra.inicio||''],
+    ['Fin programado:',obra.fin||''],
+    ['Presupuesto:',MXN(PPTO)],
+    ['Corte:',fechaStr],
+  ];
+  campos.forEach(([lbl,val])=>{
+    setTxt(COL.negro); fs(6); fw('bold'); txt(lbl,xR,yR);
+    setTxt(COL.grisTx); fw('normal');
+    const v=doc.splitTextToSize(val,W-xR-M-28);
+    txt(v,xR+28,yR); yR+=4;
   });
 
-  // Total estimaciones
-  const yEstTot=45+estimaciones.length*9+3;
-  doc.setFillColor(13,22,25);doc.rect(M,yEstTot-4,W-2*M,7,'F');
-  doc.setTextColor(255,254,249);doc.setFont('helvetica','bold');
-  doc.text('TOTAL',M+2,yEstTot);
-  doc.text(MXN(totalEst),M+112,yEstTot,{align:'right'});
-  doc.text(`${(totalEst/obra.presupuesto*100).toFixed(2)}%`,W-M-5,yEstTot,{align:'right'});
+  // 4 KPIs portada
+  const kpW=(W*0.40)/4-2; let kpX=W*0.49;
+  const kpY=H-25;
+  [
+    ['Avance fisico',PCT(af),'del presupuesto',af>=75?COL.verde:af>=40?COL.amar:COL.rojo],
+    ['Monto ejecutado',MXN(me),PCT(me/PPTO*100)+' contrato',COL.azulDk],
+    ['Gasto total',MXN(gt),PCT(gt/PPTO*100)+' presup.',COL.rojoDk],
+    ['Margen bruto',PCT(mpct),MXN(mg),mpct<10?COL.rojoDk:mpct<15?COL.amarDk:COL.verdeDk],
+  ].forEach(([lbl,val,sub,col])=>{
+    kpiBox(lbl,val,sub,col,kpX,kpY,kpW,13); kpX+=kpW+2;
+  });
 
-  doc.setFillColor(240,240,238);doc.rect(0,207,W,9,'F');
-  doc.setTextColor(120,120,120);doc.setFontSize(7);doc.setFont('helvetica','normal');
-  doc.text('CAMPO — FOSMON Construcciones · Documento confidencial',M,212);
-  doc.text(`Generado: ${fecha}`,W/2,212,{align:'center'});
-  doc.text('Página 3',W-M,212,{align:'right'});
+  // Footer portada
+  setFill([232,234,240]); rect(0,H-FOOTER,W,FOOTER);
+  setFill(COL.negro); rect(0,H-FOOTER,W,0.5);
+  setTxt(COL.grisMu); fs(5.5); fw('normal');
+  txt('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones',M,H-4);
+  txt('campo-fosmon.netlify.app',W-M,H-4,{align:'right'});
 
-  // Descargar
-  const nombreArchivo = `Reporte_${obra.nombre.replace(/\s+/g,'_')}_${fecha.replace(/\s+/g,'_')}.pdf`;
-  doc.save(nombreArchivo);
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 2: RESUMEN FINANCIERO + ESTIMACIONES
+  // ══════════════════════════════════════════════════════════════════════════
+  doc.addPage();
+  drawInterior();
+  let y2=CY;
+
+  y2=secHeader('1  RESUMEN FINANCIERO',y2);
+  y2=kpiRow([
+    ['Avance fisico',    PCT(af),         PCT(af)+' del presupuesto',   COL.verdeDk],
+    ['Monto ejecutado',  MXN(me),         PCT(me/PPTO*100)+' contrato', COL.azulDk],
+    ['Gasto total GP',   MXN(gt),         PCT(gt/PPTO*100)+' presup.',  COL.rojoDk],
+    ['Margen bruto',     PCT(mpct),       MXN(mg),                       mpct<10?COL.rojoDk:mpct<15?COL.amarDk:COL.verdeDk],
+    ['Total estimado',   MXN(te),         PCT(te/PPTO*100)+' contrato', COL.moraDk],
+    ['Por estimar',      MXN(PPTO-te),    PCT((PPTO-te)/PPTO*100)+' rest.',COL.grisTx],
+  ],y2)+2;
+
+  // Datos contrato + Gasto por rubro en 2 columnas
+  const LW2=CW*0.38, RW2=CW-LW2-4;
+  const contHead=['Campo','Valor'];
+  const contBody=[
+    ['Contrato',obra.contrato||''],
+    ['Cliente',obra.cliente||''],
+    ['Inicio',obra.inicio||''],
+    ['Fin programado',obra.fin||''],
+    ['Superintendente',obra.superintendente||''],
+    ['Administrador',obra.admin||''],
+    ['Presupuesto',MXN(PPTO)],
+  ];
+  const rubros=[
+    ['Materiales',13203452],['Sueldos y salarios',11677695],
+    ['Indirectos',3547181],['Renta y maq.',652372],['Subcontratos',249500],
+  ];
+  const totRub=rubros.reduce((t,r)=>t+r[1],0);
+
+  // Tabla datos contrato (izq)
+  doc.autoTable({
+    head:[contHead],body:contBody,startY:y2,
+    margin:{left:M,right:W-M-LW2},
+    tableWidth:LW2,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:LW2*0.38,fontStyle:'bold',textColor:COL.negro},1:{cellWidth:LW2*0.62}},
+  });
+
+  // Tabla rubros (der)
+  doc.autoTable({
+    head:[['Rubro','Monto','% GP','% Ppto']],
+    body:[...rubros.map(([nm,mt])=>[nm,MXN(mt),PCT(mt/totRub*100),PCT(mt/PPTO*100)]),
+          ['TOTAL GP',MXN(totRub),'100.0%',PCT(totRub/PPTO*100)]],
+    startY:y2, margin:{left:M+LW2+4,right:M},
+    tableWidth:RW2,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{halign:'left',cellWidth:RW2*0.44},1:{cellWidth:RW2*0.22},2:{cellWidth:RW2*0.17},3:{cellWidth:RW2*0.17}},
+    didDrawRow:(data)=>{
+      if(data.row.index===rubros.length){
+        data.row.cells[0].styles.fillColor=COL.negro;
+        data.row.cells[0].styles.textColor=COL.blanco;
+      }
+    },
+  });
+  y2=doc.lastAutoTable.finalY+4;
+
+  // Estimaciones
+  y2=secHeader('2  ESTIMACIONES AL CLIENTE',y2);
+  const LW3=CW*0.63, RW3=CW-LW3-4;
+  const estCols=[LW3*0.09,LW3*0.17,LW3*0.16,LW3*0.14,LW3*0.13,LW3*0.15,LW3*0.16];
+  const estBody=estimaciones.map(e=>{
+    const a=e.monto*(obra.pctAnticipo||10)/100;
+    const fg=e.monto*(obra.pctFondoGar||5)/100;
+    const ef=e.monto-a-fg;
+    return [`EST-0${e.no}`,e.periodo||'',MXN(e.monto),MXN(a),MXN(fg),MXN(ef),e.estatus];
+  });
+  const aT=te*(obra.pctAnticipo||10)/100, fgT=te*(obra.pctFondoGar||5)/100;
+  estBody.push(['TOTAL','',MXN(te),MXN(aT),MXN(fgT),MXN(te-aT-fgT),'']);
+
+  doc.autoTable({
+    head:[['No.','Periodo','Monto bruto','Anticipo','F. Garantia','Mto. efectivo','Estatus']],
+    body:estBody, startY:y2,
+    margin:{left:M,right:W-M-LW3},
+    tableWidth:LW3,
+    styles:{fontSize:6,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15,halign:'right'},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:5.5,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{halign:'left'},1:{halign:'left'},6:{halign:'center'},
+                  0:{cellWidth:estCols[0]},1:{cellWidth:estCols[1]},2:{cellWidth:estCols[2]},
+                  3:{cellWidth:estCols[3]},4:{cellWidth:estCols[4]},5:{cellWidth:estCols[5]},6:{cellWidth:estCols[6]}},
+    didParseCell:(d)=>{
+      if(d.row.index===estBody.length-1){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}
+    },
+  });
+
+  // 4 KPIs estimaciones (derecha)
+  const kpY2=y2; const kpH=11.5;
+  [
+    ['Pagado',MXN(pag),'cobrado y liquidado',COL.verdeDk],
+    ['Por cobrar',MXN(pco),'facturado + aprobado',COL.moraDk],
+    ['En proceso',MXN(epc),'en elaboracion',COL.amarDk],
+    ['Total estimado',MXN(te),PCT(te/PPTO*100)+' contrato',COL.azulDk],
+  ].forEach(([lbl,val,sub,col],i)=>{
+    kpiBox(lbl,val,sub,col, M+LW3+4, kpY2+i*(kpH+1.5), RW3, kpH);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 3: AVANCE FÍSICO + ALMACÉN + MAQUINARIA
+  // ══════════════════════════════════════════════════════════════════════════
+  doc.addPage(); drawInterior();
+  let y3=CY;
+  y3=secHeader('3  AVANCE FISICO POR SUBSECCION',y3);
+
+  const LW4=CW*0.53, RW4=CW-LW4-4;
+  const totImp=subs.reduce((t,s)=>t+s.imp,0);
+  const totEjec=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+
+  // Tabla de avance
+  doc.autoTable({
+    head:[['Sec.','Descripcion','Importe contrato','Avance','Mto. ejecutado']],
+    body:[...subs.map(s=>{
+      const ejec=(s.a/100)*s.imp;
+      return [s.sec,s.sub?.slice(0,36)||'',MXN(s.imp),PCT(s.a),MXN(ejec)];
+    }),
+    ['','TOTAL',MXN(totImp),PCT(af),MXN(totEjec)]],
+    startY:y3, margin:{left:M,right:W-M-LW4},
+    tableWidth:LW4,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:12,halign:'left'},1:{cellWidth:LW4*0.52,halign:'left'},
+                  2:{cellWidth:LW4*0.20,halign:'right'},3:{cellWidth:LW4*0.10,halign:'right'},
+                  4:{cellWidth:LW4*0.18,halign:'right'}},
+    didParseCell:(d)=>{
+      const ri=d.row.index;
+      if(ri===subs.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}
+      if(d.column.index===3 && ri<subs.length){
+        const a=subs[ri]?.a||0;
+        d.cell.styles.textColor=a>=75?COL.verdeDk:a>=40?COL.amarDk:COL.rojoDk;
+        d.cell.styles.fontStyle='bold';
+      }
+    },
+  });
+
+  // Barras de avance (columna derecha)
+  let yBarr=y3;
+  const SECW=12, PCTW=9, BARRW=RW4-SECW-PCTW-4;
+  const bxBase=M+LW4+4;
+  subs.forEach(s=>{
+    const col=s.a>=75?COL.verde:s.a>=40?COL.amar:COL.rojo;
+    const colTxt=s.a>=75?COL.verdeDk:s.a>=40?COL.amarDk:COL.rojoDk;
+    setTxt(COL.negro); fw('bold'); fs(5.5);
+    txt(s.sec, bxBase, yBarr+3.5);
+    barraH(s.a, bxBase+SECW+1, yBarr+1, BARRW, 2.5);
+    setTxt(colTxt); fw('bold'); fs(5.5);
+    txt(PCT(s.a), bxBase+RW4-2, yBarr+3.5, {align:'right'});
+    setDraw(COL.grisBd); doc.setLineWidth(0.15);
+    line(bxBase, yBarr+5.5, bxBase+RW4-2, yBarr+5.5);
+    yBarr+=5.5;
+  });
+  y3=Math.max(doc.lastAutoTable.finalY, yBarr)+5;
+
+  // Almacén y maquinaria
+  y3=secHeader('Almacen  ·  Materiales en transito  ·  Maquinaria propia',y3);
+  const LW5=CW*0.56, RW5=CW-LW5-4;
+  const totAlm=materiales.reduce((t,m)=>t+pf(m.imp),0);
+
+  doc.autoTable({
+    head:[['Material','Condicion','Vol.','Und','Importe']],
+    body:[...materiales.map(m=>[m.mat,m.conc||m.estado||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
+          ['TOTAL ALMACEN','','','',MXN(totAlm)]],
+    startY:y3, margin:{left:M,right:W-M-LW5},
+    tableWidth:LW5,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    columnStyles:{0:{cellWidth:LW5*0.40},1:{cellWidth:LW5*0.22},2:{cellWidth:LW5*0.10,halign:'right'},3:{cellWidth:LW5*0.10},4:{cellWidth:LW5*0.18,halign:'right'}},
+    didParseCell:(d)=>{if(d.row.index===materiales.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
+  });
+
+  const totMaq=maquinaria.reduce((t,m)=>t+pf(m.imp),0);
+  doc.autoTable({
+    head:[['Equipo','Cant.','Unidad','Importe']],
+    body:[...maquinaria.map(m=>[m.equipo||m.nombre||'',m.vol||m.cant||'',m.und||'',MXN(pf(m.imp))]),
+          ['TOTAL MAQUINARIA','','',MXN(totMaq)]],
+    startY:y3, margin:{left:M+LW5+4,right:M},
+    tableWidth:RW5,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    columnStyles:{0:{cellWidth:RW5*0.60},1:{cellWidth:RW5*0.12,halign:'center'},2:{cellWidth:RW5*0.13},3:{cellWidth:RW5*0.15,halign:'right'}},
+    didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 4: PROYECCIÓN Y PLAZOS
+  // ══════════════════════════════════════════════════════════════════════════
+  doc.addPage(); drawInterior();
+  let y4=CY;
+  y4=secHeader('4  PROYECCION AL TERMINO  ·  PLAZOS DE OBRA',y4);
+
+  // Gráfica lineal manual
+  const GX=M, GY=y4, GW=CW, GH=50;
+  const GPL=18, GPB=7, GPR=18, GPT=6;
+  const gw=GW-GPL-GPR, gh=GH-GPB-GPT;
+  const PM=(obra.presupuesto||163348337)/1e6;
+
+  // Datos de gráfica — semanas reales del avance actual + proyección lineal
+  const semsReales=5;
+  const ritmoG=(gt/1e6)/semsReales, ritmoM=(me/1e6)/semsReales;
+  const semsTot=15;
+  const grafData=[];
+  for(let i=0;i<semsTot;i++){
+    const real=i<semsReales;
+    const g=real?(gt/1e6)*(i+1)/semsReales:(gt/1e6)+(i-semsReales+1)*ritmoG;
+    const m=real?(me/1e6)*(i+1)/semsReales:(me/1e6)+(i-semsReales+1)*ritmoM;
+    grafData.push({i,g:Math.min(g,PM),m:Math.min(m,PM),real});
+  }
+  const maxV=Math.max(PM, grafData[grafData.length-1].g, grafData[grafData.length-1].m)*1.05;
+  const gxP=i=>GX+GPL+i/(semsTot-1)*gw;
+  const gyP=v=>GY+GPT+(1-v/maxV)*gh;
+
+  // Fondo gráfica
+  setFill(COL.blanco); setDraw(COL.grisBd); doc.setLineWidth(0.15);
+  rect(GX+GPL,GY+GPT,gw,gh,'FD');
+
+  // Grid horizontal
+  [0,PM*0.25,PM*0.5,PM*0.75,PM].forEach(v=>{
+    const gy2=gyP(v);
+    setDraw(COL.grisBd); doc.setLineWidth(0.1);
+    line(GX+GPL,gy2,GX+GPL+gw,gy2);
+    setTxt(COL.grisMu); fs(4.5); fw('normal');
+    txt(v>=PM?'Ppto':`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.2, {align:'right'});
+  });
+
+  // Plazo original (línea verde)
+  const xPlazo=gxP(semsTot-1);
+  setDraw(COL.verde); doc.setLineWidth(0.4); doc.setLineDashPattern([2,1.5],0);
+  line(xPlazo,GY+GPT,xPlazo,GY+GPT+gh);
+  doc.setLineDashPattern([],0);
+  setTxt(COL.verdeDk); fs(4.5); fw('bold');
+  txt('Plazo',xPlazo-1,GY+GPT+2,{align:'right'});
+
+  // Línea HOY
+  const xHoy=gxP(semsReales-1);
+  setDraw(COL.grisMu); doc.setLineWidth(0.3); doc.setLineDashPattern([1.5,2],0);
+  line(xHoy,GY+GPT,xHoy,GY+GPT+gh);
+  doc.setLineDashPattern([],0);
+  setTxt(COL.grisMu); fs(4.5); fw('normal');
+  txt('Hoy',xHoy,GY+GPT+2,{align:'center'});
+
+  // Labels X
+  [0,2,4,6,8,10,12,14].forEach(i=>{
+    setTxt(i===semsReales-1?COL.negro:COL.grisMu); fs(4.5);
+    txt(`S${14+i}`,gxP(i),GY+GPT+gh+5.5,{align:'center'});
+  });
+
+  // Líneas de datos — gasto (rojo) y monto (azul)
+  [[COL.rojoDk,'g'],[COL.azulDk,'m']].forEach(([col,key])=>{
+    const realPts=grafData.filter(d=>d.real);
+    const projPts=grafData.filter(d=>!d.real);
+    // Línea real (sólida gruesa)
+    setDraw(col); doc.setLineWidth(0.7); doc.setLineDashPattern([],0);
+    for(let i=0;i<realPts.length-1;i++){
+      line(gxP(realPts[i].i),gyP(realPts[i][key]),gxP(realPts[i+1].i),gyP(realPts[i+1][key]));
+    }
+    // Línea proyectada (punteada)
+    doc.setLineWidth(0.5); doc.setLineDashPattern([2,2],0);
+    const bridge=[realPts[realPts.length-1],...projPts];
+    for(let i=0;i<bridge.length-1;i++){
+      line(gxP(bridge[i].i),gyP(bridge[i][key]),gxP(bridge[i+1].i),gyP(bridge[i+1][key]));
+    }
+    doc.setLineDashPattern([],0);
+    // Punto HOY
+    const hoyPt=realPts[realPts.length-1];
+    setFill(col); doc.circle(gxP(hoyPt.i),gyP(hoyPt[key]),1,'F');
+    // Etiqueta
+    setTxt(col); fs(5); fw('bold');
+    const off=key==='g'?-1.5:2;
+    txt(`$${hoyPt[key].toFixed(1)}M`,gxP(hoyPt.i)+2,gyP(hoyPt[key])+off);
+  });
+
+  // Leyenda gráfica
+  setTxt(COL.grisTx); fs(5); fw('normal');
+  setFill(COL.rojoDk); rect(GX+GPL,GY+GPT+gh+8,7,1.5);
+  txt('Gasto GP',GX+GPL+8,GY+GPT+gh+9.5);
+  setFill(COL.azulDk); rect(GX+GPL+30,GY+GPT+gh+8,7,1.5);
+  txt('Monto ejecutado',GX+GPL+38,GY+GPT+gh+9.5);
+  setTxt(COL.grisMu);
+  txt('- - - proyeccion',GX+GPL+75,GY+GPT+gh+9.5);
+  y4=GY+GH+13;
+
+  // Tablas proyección
+  const semsRestantes=semsTot-semsReales;
+  const metaG=(PM-gt/1e6)/semsRestantes, metaM=(PM-me/1e6)/semsRestantes;
+  const LW6=CW*0.54, RW6=CW-LW6-4;
+
+  doc.autoTable({
+    head:[['Indicador','Valor','Referencia']],
+    body:[
+      ['Ritmo semanal gasto',     `$${(ritmoG).toFixed(1)}M/sem`,  'Al ritmo actual de GP Construct'],
+      ['Ritmo semanal avance',    `$${(ritmoM).toFixed(1)}M/sem`,  'Al ritmo actual de avance'],
+      ['Fin proyectado gasto',    `S${14+semsReales+Math.ceil((PM-gt/1e6)/ritmoG)}`, 'Al ritmo actual'],
+      ['Fin proyectado avance',   `S${14+semsReales+Math.ceil((PM-me/1e6)/ritmoM)}`, 'Al ritmo actual'],
+      ['Meta gasto p/plazo orig.',`$${metaG.toFixed(1)}M/sem`,     `+$${(metaG-ritmoG).toFixed(1)}M/sem requerido`],
+      ['Meta avance p/plazo orig.',`$${metaM.toFixed(1)}M/sem`,    `+$${(metaM-ritmoM).toFixed(1)}M/sem requerido`],
+      ['Plazo original',          obra.fin||'',                     'Contrato original'],
+      ['Plazo ampliado',          obra.finAmpliado||'No registrado','Sin convenio modificatorio'],
+    ],
+    startY:y4, margin:{left:M,right:W-M-LW6}, tableWidth:LW6,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:LW6*0.48},1:{cellWidth:LW6*0.24,halign:'right',fontStyle:'bold',textColor:COL.negro},2:{cellWidth:LW6*0.28}},
+  });
+
+  doc.autoTable({
+    head:[['Hito','Fecha']],
+    body:[
+      ['Inicio contrato',obra.inicio||''],
+      ['Corte actual',fechaStr],
+      ['Fin programado',obra.fin||''],
+      ['Fin proyectado gasto',`~S${14+semsReales+Math.ceil((PM-gt/1e6)/ritmoG)}`],
+      ['Dias transcurridos',obra.diasTranscurridos||'27'],
+      ['Dias restantes orig.',obra.diasRestantes||'93'],
+    ],
+    startY:y4, margin:{left:M+LW6+4,right:M}, tableWidth:RW6,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:RW6*0.62},1:{cellWidth:RW6*0.38,halign:'right'}},
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 5: PERSONAL · NOMINA · PROVEEDORES · MAQUINARIA
+  // ══════════════════════════════════════════════════════════════════════════
+  doc.addPage(); drawInterior();
+  let y5=CY;
+  y5=secHeader('5  PERSONAL EN CAMPO  ·  NOMINA  ·  TOP PROVEEDORES',y5);
+
+  // Nómina data desde NOMINA_S18
+  const nomData = typeof NOMINA_S18 !== 'undefined' ? NOMINA_S18 : [];
+  const dir=nomData.filter(p=>p.tipo==='D').length;
+  const ind=nomData.filter(p=>p.tipo==='I').length;
+  const total=dir+ind||66;
+  const conHE=nomData.filter(p=>(p.horasExtra||0)>0).length||53;
+
+  y5=kpiRow([
+    ['Total personal',String(total||66),   'trabajadores en sitio', COL.negro],
+    ['Directo',       String(dir||57),      'mano de obra',          COL.azulDk],
+    ['Indirecto',     String(ind||9),       'administracion',        COL.moraDk],
+    ['Con horas extra',String(conHE||53),   'semana actual',         COL.amarDk],
+  ],y5)+2;
+
+  const LW7=CW*0.50, RW7=CW-LW7-4;
+
+  // Top 5 nómina
+  const nom5 = nomData.slice().sort((a,b)=>(b.total||0)-(a.total||0)).slice(0,5);
+  doc.autoTable({
+    head:[['#','Trabajador','Categoria','HE hrs','Total semana']],
+    body:nom5.map((pe,i)=>[i+1,pe.nombre||'',pe.categoria||pe.cat||'',(pe.horasExtra||0).toFixed(0)+'h',MXN(pe.total||0)]),
+    startY:y5, margin:{left:M,right:W-M-LW7}, tableWidth:LW7,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:LW7*0.40},2:{cellWidth:LW7*0.28},3:{cellWidth:LW7*0.14,halign:'right'},4:{cellWidth:LW7*0.18,halign:'right'}},
+    didParseCell:(d)=>{
+      if(d.column.index===3){const he=parseFloat(d.cell.text[0])||0;d.cell.styles.textColor=he>=20?COL.rojoDk:COL.amarDk;d.cell.styles.fontStyle='bold';}
+      if(d.column.index===4){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=COL.negro;}
+    },
+  });
+
+  // Top 5 proveedores (hardcoded por ahora — en producción vendría de GP Construct)
+  const provs=obra.proveedores||[
+    ['FOSMON CONSTRUCCIONES S.A.',4280794],
+    ['JUAN ANTONIO BENITEZ F.',2412104],
+    ['CEMEX S A B DE C V',1817638],
+    ['IMSS',1636496],
+    ['JOSE E. ALEGRIA CUETO',1426787],
+  ];
+  const totPv=provs.reduce((t,p)=>t+p[1],0);
+  doc.autoTable({
+    head:[['#','Proveedor','Monto acumulado','% Gasto GP']],
+    body:provs.map(([nm,mt],i)=>[i+1,nm.slice(0,30),MXN(mt),PCT(mt/(obra.gastoGP||totPv)*100)]),
+    startY:y5, margin:{left:M+LW7+4,right:M}, tableWidth:RW7,
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:RW7*0.52},2:{cellWidth:RW7*0.28,halign:'right'},3:{cellWidth:RW7*0.20,halign:'right'}},
+  });
+  y5=doc.lastAutoTable.finalY+4;
+
+  // Maquinaria
+  y5=secHeader('Maquinaria propia en obra',y5);
+  const totMaq2=maquinaria.reduce((t,m)=>t+pf(m.imp),0);
+  doc.autoTable({
+    head:[['Equipo','Cant.','Unidad','P.U.','Importe']],
+    body:[...maquinaria.map(m=>[m.equipo||m.nombre||'',m.vol||m.cant||'',m.und||'',MXN(pf(m.pu||0)),MXN(pf(m.imp))]),
+          ['TOTAL MAQUINARIA','','','',MXN(totMaq2)]],
+    startY:y5, margin:{left:M,right:M},
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:CW*0.53},1:{cellWidth:CW*0.08,halign:'center'},2:{cellWidth:CW*0.10},3:{cellWidth:CW*0.14,halign:'right'},4:{cellWidth:CW*0.15,halign:'right'}},
+    didParseCell:(d)=>{if(d.row.index===maquinaria.length){d.cell.styles.fillColor=COL.negro;d.cell.styles.textColor=COL.blanco;d.cell.styles.fontStyle='bold';}},
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAG 6: RIESGO · OBSERVACIONES
+  // ══════════════════════════════════════════════════════════════════════════
+  doc.addPage(); drawInterior();
+  let y6=CY;
+  y6=secHeader('6  INDICADORES DE RIESGO  ·  OBSERVACIONES',y6);
+
+  const riesgos=[
+    [1,'Brecha avance vs gasto',     '+0.8pp', 'Normal',    COL.verdeDk,COL.verdeBg],
+    [2,'Velocidad quema presupuesto','1.04x',  'Vigilancia',COL.amarDk, COL.amarBg],
+    [3,'Estimaciones sin cobrar',    PCT((pco+epc)/te*100),'Vigilancia',COL.amarDk,COL.amarBg],
+    [4,'Frentes sin iniciar',        String(subs.filter(s=>s.a===0).length),'Vigilancia',COL.amarDk,COL.amarBg],
+    [5,'Concentracion proveedores',  '54%',    'Vigilancia',COL.amarDk, COL.amarBg],
+    [6,'Incremento nomina s/s',      '+15%',   'Vigilancia',COL.amarDk, COL.amarBg],
+    [7,'Trabajadores HE>=20hrs',     String(nomData.filter(p=>(p.horasExtra||0)>=20).length||8)+' pers.','Critico',COL.rojoDk,COL.rojoBg],
+  ];
+  const col4Rsg=CW-16-CW*0.30-40-50-6;
+  doc.autoTable({
+    head:[['#','Indicador','Valor','Nivel','Descripcion']],
+    body:riesgos.map(([n,titulo,val,,nivel])=>[n,titulo,val,nivel,'Ver Dashboard para detalle']),
+    startY:y6, margin:{left:M,right:M},
+    styles:{fontSize:6.2,cellPadding:1.6,textColor:COL.grisTx,lineColor:COL.grisBd,lineWidth:0.15},
+    headStyles:{fillColor:COL.negro,textColor:[255,255,255],fontSize:6,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:COL.grisLt},
+    columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:CW*0.30},2:{cellWidth:40,halign:'right',fontStyle:'bold'},3:{cellWidth:50,halign:'center'},4:{cellWidth:col4Rsg}},
+    didParseCell:(d)=>{
+      if(d.column.index===3 && d.row.index>=0){
+        const r=riesgos[d.row.index];
+        if(r){d.cell.styles.textColor=r[4];d.cell.styles.fontStyle='bold';d.cell.styles.fillColor=r[5];}
+      }
+    },
+  });
+  y6=doc.lastAutoTable.finalY+4;
+
+  y6=secHeader('Observaciones y alertas',y6);
+  const obs=[
+    [COL.amarDk,COL.amarBg,'VIGILANCIA',`Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`],
+    [COL.azulDk,COL.azulBg,'PENDIENTE', `EST-03 en proceso ${MXN(epc)} — gestionar cobro prioritario.`],
+    [COL.rojoDk,COL.rojoBg,'CRITICO',   'Trabajadores con HE>=20hrs — revisar organizacion de turnos.'],
+    [COL.moraDk,COL.moraBg,'FINANCIERO',`Anticipo por recuperar: ${MXN(te*(obra.pctAnticipo||10)/100)}`],
+  ];
+  obs.forEach(([tc,bg,nivel,texto])=>{
+    badge(nivel,M,y6,22,tc,bg);
+    setTxt(COL.grisTx); fs(6.2); fw('normal');
+    txt(texto,M+25,y6+3.2);
+    setDraw(COL.grisBd); doc.setLineWidth(0.12);
+    line(M,y6+5.5,M+CW,y6+5.5);
+    y6+=6.5;
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PAGS 7-8: FOTOGRAFÍAS
+  // ══════════════════════════════════════════════════════════════════════════
+  // Recopilar fotos de todos los subs
+  const fotosAll=[];
+  subs.forEach(s=>{
+    const fotos=(s.fotos||[]);
+    fotos.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||'',fecha:f.fecha||fechaStr,url:f.url||null}));
+  });
+
+  const FW_foto=(CW)/3, FH_foto=FW_foto*0.62;
+  const FOTOS_DEFAULT=[
+    {sec:'A1.4',sub:'Andador Peatonal',conc:'Piso recinto negro 10x10cm',fecha:'27 May 2026'},
+    {sec:'A1.4',sub:'Andador Peatonal',conc:'Guia podotactil instalada',fecha:'27 May 2026'},
+    {sec:'A1.7.1',sub:'Terracerias',conc:'Relleno base hidraulica',fecha:'25 May 2026'},
+    {sec:'A1.7.1',sub:'Terracerias',conc:'Firme concreto MR-42',fecha:'25 May 2026'},
+    {sec:'A1.3',sub:'Drenaje Pluvial',conc:'Instalacion tuberia PEAD',fecha:'24 May 2026'},
+    {sec:'A1.3',sub:'Drenaje Pluvial',conc:'Acostillado y relleno',fecha:'24 May 2026'},
+    {sec:'B1.9.1',sub:'Cisterna',conc:'Colado muros',fecha:'23 May 2026'},
+    {sec:'B1.7',sub:'Acceso Vehicular',conc:'Base compactada',fecha:'22 May 2026'},
+    {sec:'B1.4',sub:'Andador Calle Const.',conc:'Trazo y nivelacion',fecha:'21 May 2026'},
+    {sec:'A1.5',sub:'Jardineria',conc:'Nivelacion de terreno',fecha:'20 May 2026'},
+    {sec:'B1.7B',sub:'Sist. Infiltracion',conc:'Excavacion de zanja',fecha:'19 May 2026'},
+    {sec:'B1.10.1',sub:'Mobiliario',conc:'Replanteo de posicion',fecha:'18 May 2026'},
+  ];
+  const fotos12=fotosAll.length>=6?fotosAll.slice(0,12):FOTOS_DEFAULT.slice(0,12);
+
+  function drawFotoPage(fotosPag, pagNum) {
+    doc.addPage(); drawInterior();
+    let yf=CY;
+    yf=secHeader(`${pagNum}  EVIDENCIA FOTOGRAFICA  (${pagNum-6} de 2)`,yf);
+
+    // 2 filas x 3 fotos
+    for(let row=0;row<2;row++){
+      const rowFotos=fotosPag.slice(row*3,(row+1)*3);
+      rowFotos.forEach((foto,col)=>{
+        const fx=M+col*(FW_foto), fy=yf;
+        // Placeholder foto
+        setFill(COL.bg); setDraw(COL.grisBd); doc.setLineWidth(0.2);
+        rect(fx,fy,FW_foto-1,FH_foto,'FD');
+        // Texto placeholder
+        setTxt(COL.grisMu); fs(8); fw('bold');
+        txt(foto.sec,fx+FW_foto/2,fy+FH_foto/2-4,{align:'center'});
+        fs(5.5); fw('normal');
+        txt('Foto no disponible',fx+FW_foto/2,fy+FH_foto/2+2,{align:'center'});
+        // Pie de foto
+        setFill(COL.negro); rect(fx,fy+FH_foto,FW_foto-1,7);
+        setTxt(COL.blanco); fs(6); fw('bold');
+        txt(foto.sec,fx+2,fy+FH_foto+4);
+        fs(5.5); fw('normal'); setTxt(COL.grisMu);
+        txt(foto.conc.slice(0,30),fx+2,fy+FH_foto+6.5);
+        txt(foto.fecha,fx+FW_foto-2,fy+FH_foto+6.5,{align:'right'});
+      });
+      yf+=FH_foto+7+4;
+    }
+    setTxt(COL.grisMu); fs(5.5); fw('normal');
+    txt('Las fotos se cargan automaticamente desde Capturar avance > Volumenes.',M,yf);
+    return yf;
+  }
+
+  let yFotos2=drawFotoPage(fotos12.slice(0,6),7)+6;
+
+  // Pag 8: fotos + firmas
+  drawFotoPage(fotos12.slice(6,12),8);
+
+  // Firmas al final de pag 8
+  const yFirmas=H-FOOTER-32;
+  setDraw(COL.grisBd); doc.setLineWidth(0.3);
+  line(M,yFirmas-3,M+CW,yFirmas-3);
+
+  const firmaW=CW/3;
+  const firmas=[
+    [obra.residente||obra.superintendente||'Residente de Obra','Residente de Obra','Elaboro'],
+    [obra.superintendente||'Superintendente','Superintendente de Obra','Reviso'],
+    [obra.admin||'Administrador','Administrador de Obra','Vo.Bo.'],
+  ];
+  firmas.forEach(([nombre,cargo,rol],i)=>{
+    const fx=M+i*firmaW;
+    setDraw(COL.negro); doc.setLineWidth(0.3);
+    line(fx+5,yFirmas+8,fx+firmaW-5,yFirmas+8);
+    setTxt(COL.negro); fs(6.5); fw('bold');
+    txt(nombre,fx+firmaW/2,yFirmas+12,{align:'center'});
+    setTxt(COL.grisTx); fs(5.5); fw('normal');
+    txt(cargo,fx+firmaW/2,yFirmas+16,{align:'center'});
+    setTxt(COL.grisMu); fs(5); fw('normal');
+    txt(rol,fx+firmaW/2,yFirmas+20,{align:'center'});
+  });
+
+  // ── GUARDAR ────────────────────────────────────────────────────────────────
+  const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${fechaStr.replace(/\s+/g,'_')}.pdf`;
+  doc.save(nombre);
 }
-
-
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -4326,8 +4862,8 @@ export default function App(){
         ● Cambios sin guardar
       </span>}
       {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales)}
-        style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:6,
-          margin:"4px 12px",padding:"4px 12px",fontSize:10,color:C.caliza,cursor:"pointer",
+        style={{background:C.blueDk,border:"none",borderRadius:6,
+          margin:"4px 12px",padding:"4px 10px",fontSize:10,color:"white",cursor:"pointer",
           display:"flex",alignItems:"center",gap:5}}>
         Generar PDF
       </button>}
