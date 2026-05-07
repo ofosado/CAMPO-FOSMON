@@ -1611,8 +1611,6 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     setConfirmarEliminar(null); setIdConfirm(""); setElimStep(1);
   };
 
-  const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
-
   const agregarObra=async(form)=>{
     const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
     setObras(oo=>[...oo,nueva]);
