@@ -688,8 +688,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // Recopilar fotos de todos los subs
   const fotosAll=[];
   subs.forEach(s=>{
-    const fotos=(s.fotos||[]);
-    fotos.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||'',fecha:f.fecha||fechaStr,url:f.url||null}));
+    // fotos puede ser array [] u objeto {} — normalizar siempre a array
+    const fotosRaw=s.fotos||[];
+    const fotos=Array.isArray(fotosRaw)?fotosRaw:Object.values(fotosRaw);
+    fotos.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||f.concepto||'',fecha:f.fecha||fechaStr,url:f.url||null}));
   });
 
   const FW_foto=(CW)/3, FH_foto=FW_foto*0.62;
