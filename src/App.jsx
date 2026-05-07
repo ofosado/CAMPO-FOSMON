@@ -313,62 +313,78 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   );
   y=Math.max(yAfterCont, yAfterRub)+2;
 
-  // ── Estimaciones — tabla única ancho completo ──────────────────────────
+  // ── Estimaciones ─────────────────────────────────────────────────────────
   y=secHead('2  ESTIMACIONES AL CLIENTE', y);
 
-  // Tabla estimaciones — anchos fijos que suman LW3 exacto
-  const LW3=CW*0.66, RW3=CW-LW3-4;
-  // No.(18) + Periodo(50) + MontoBruto(38) + Anticipo(34) + FGar(34) + MtoEfectivo(38) + Estatus(LW3-resto)
-  const estW=[ 18, 50, 38, 34, 34, 38, LW3-18-50-38-34-34-38 ].map(Math.round);
-
-  const estBody=estimaciones.map(e=>{
-    const a=e.monto*(obra.pctAnticipo||10)/100;
-    const fg=e.monto*(obra.pctFondoGar||5)/100;
-    const ef=e.monto-a-fg;
-    return [`EST-0${e.no}`,e.periodo||'',MXN(e.monto),MXN(a),MXN(fg),MXN(ef),e.estatus];
-  });
+  // Filtrar solo estimaciones con datos reales
+  const estActivas=estimaciones.filter(e=>e.no&&e.monto>0);
   const aT=te*(obra.pctAnticipo||10)/100;
   const fgT=te*(obra.pctFondoGar||5)/100;
-  estBody.push(['TOTAL','',MXN(te),MXN(aT),MXN(fgT),MXN(te-aT-fgT),'']);
 
-  const EST_COLS_MAP={1:{halign:'left'},2:{halign:'right'},3:{halign:'right'},
-                      4:{halign:'right'},5:{halign:'right'}};
-  const EST_STATUS_COLORS={
-    'pagada':K.vk,'facturada':K.mk,'en proceso':K.ak2,'aprobada':K.vk,
-  };
+  // TABLA: 4 columnas que suman CW=251mm exacto
+  // No(16) + Periodo(58) + Monto(48) + Estatus(36) + MtoEfectivo = 251
+  const C0=16, C1=58, C2=48, C3=36, C4=CW-C0-C1-C2-C3;
+  const EST_SC={'pagada':K.vk,'facturada':K.mk,'en proceso':K.ak2,'aprobada':K.vk};
 
-  const yEstStart=y;
-  const yAfterEst=autoT(
-    ['No.','Periodo','Monto bruto','Anticipo','F. Garantia','Mto. efectivo','Estatus'],
-    estBody, estW, xL, y,
-    {columnStyles:EST_COLS_MAP,
-     didParseCell:(d)=>{
-       const ri=d.row.index;
-       if(ri===estBody.length-1){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
-       }
-       if(d.column.index===6 && ri<estBody.length-1){
-         const estNorm=normEst(estimaciones[ri]?.estatus||'');
-         const col=EST_STATUS_COLORS[estNorm]||K.gtx;
-         d.cell.styles.textColor=col; d.cell.styles.fontStyle='bold';
-       }
-     }}
-  );
-
-  // 4 KPIs de estimaciones apilados a la derecha
-  const kpHe=15, kpGap=2;
-  [[`Pagado`,MXN(pag),'liquidado',K.vk],
-   ['Por cobrar',MXN(pco),'facturado + aprobado',K.mk],
-   ['En proceso',MXN(epc),'en elaboración',K.ak2],
-   ['Total est.',MXN(te),PCT(te/PPTO*100)+' del contrato',K.ak],
-  ].forEach(([lbl,val,sub,col],i)=>{
-    const bx=ML+LW3+4, by=yEstStart+i*(kpHe+kpGap);
-    sf(K.wh); sd(K.gbd); lw(0.2); R(bx,by,RW3,kpHe,'FD');
-    sf(col); R(bx,by,1.5,kpHe);
-    st(K.gmu); fs(FS_KL); fw('normal'); T(lbl.toUpperCase(), bx+3, by+4.5);
-    st(K.ng); fs(val.length>9?8:11); fw('bold'); T(val, bx+3, by+10.5);
-    st(K.gmu); fs(6); fw('normal'); T(sub, bx+3, by+14);
+  const estRows=estActivas.map(e=>{
+    const ef=e.monto*(1-(obra.pctAnticipo||10)/100-(obra.pctFondoGar||5)/100);
+    return [
+      `EST-${String(e.no).padStart(2,'0')}`,
+      e.periodo||'',
+      MXN(e.monto),
+      e.estatus||'',
+      MXN(ef),
+    ];
   });
+  estRows.push(['TOTAL','',MXN(te),'',MXN(te-aT-fgT)]);
+
+  // Usar doc.autoTable directamente — sin wrapper, control total
+  doc.autoTable({
+    head:[['No.','Periodo','Monto bruto','Estatus','Mto. efectivo']],
+    body: estRows,
+    startY: y,
+    margin: {left:ML, right:MR},
+    tableWidth: CW,
+    styles:{
+      fontSize:FS_TD, cellPadding:2.5,
+      textColor:K.gtx, lineColor:K.gbd, lineWidth:0.2,
+      overflow:'linebreak', minCellHeight:0,
+    },
+    headStyles:{fillColor:K.ng,textColor:K.wh,fontSize:FS_TH,fontStyle:'bold',cellPadding:2.5},
+    alternateRowStyles:{fillColor:K.glt,textColor:K.gtx},
+    columnStyles:{
+      0:{cellWidth:C0, halign:'center'},
+      1:{cellWidth:C1, halign:'left'},
+      2:{cellWidth:C2, halign:'right'},
+      3:{cellWidth:C3, halign:'center'},
+      4:{cellWidth:C4, halign:'right'},
+    },
+    didParseCell:(d)=>{
+      const ri=d.row.index;
+      // Fila TOTAL — fondo negro
+      if(ri===estRows.length-1){
+        d.cell.styles.fillColor=K.ng;
+        d.cell.styles.textColor=K.wh;
+        d.cell.styles.fontStyle='bold';
+        return;
+      }
+      // Color de estatus
+      if(d.column.index===3 && estActivas[ri]){
+        const col=EST_SC[normEst(estActivas[ri].estatus||'')]||K.gtx;
+        d.cell.styles.textColor=col;
+        d.cell.styles.fontStyle='bold';
+      }
+    },
+  });
+  y=doc.lastAutoTable.finalY+4;
+
+  // KPIs en fila horizontal debajo de la tabla
+  y=kpiRow([
+    ['Pagado',     MXN(pag), 'cobrado y liquidado',   K.vk],
+    ['Por cobrar', MXN(pco), 'facturado + aprobado',  K.mk],
+    ['En proceso', MXN(epc), 'en elaboración',         K.ak2],
+    ['Total est.', MXN(te),  PCT(te/PPTO*100)+' contrato', K.ak],
+  ], y);
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 3 — AVANCE FÍSICO + ALMACÉN + MAQUINARIA
