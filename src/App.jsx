@@ -13,15 +13,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
       s.onload=res; s.onerror=rej; document.head.appendChild(s);
     });
   }
-  if (!window.jspdf.jsPDF.API.autoTable) {
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
-      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    });
-  }
+  // Cargar autoTable siempre después de jsPDF
+  await new Promise((res,rej)=>{
+    if (window._autoTableLoaded) return res();
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+    s.onload=()=>{ window._autoTableLoaded=true; res(); };
+    s.onerror=rej;
+    document.head.appendChild(s);
+  });
   const { jsPDF } = window.jspdf;
 
+  // ── MANEJADOR DE ERRORES — muestra alert con detalle
+  try {
   // ── SISTEMA DE DISEÑO ──────────────────────────────────────────────────────
   const W=279, H=216, M=12, HEADER=10, FOOTER=8;
   const CW=W-M*2;         // ancho de contenido
@@ -769,6 +773,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
   // ── GUARDAR ────────────────────────────────────────────────────────────────
   const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${fechaStr.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
+  } catch(e) {
+    console.error('Error generando PDF:', e);
+    alert(`Error al generar PDF:\n${e.message}\n\nRevisa la consola (F12) para mas detalle.`);
+  }
 }
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
 class ErrorBoundary extends React.Component {
@@ -1664,8 +1672,9 @@ const _OBRAS_BASE = [
 ];
 
 function loadObras() {
-  // Carga inicial desde _OBRAS_BASE — Firestore actualiza después via useEffect
-  return _OBRAS_BASE.map(o=>({...o}));
+  // Carga inicial desde _OBRAS_BASE — filtrar obras eliminadas guardadas en localStorage
+  const eliminados=JSON.parse(localStorage.getItem('campo_eliminados')||'[]');
+  return _OBRAS_BASE.filter(o=>!eliminados.includes(o.id)).map(o=>({...o}));
 }
 
 const SUBS_INIT = [
