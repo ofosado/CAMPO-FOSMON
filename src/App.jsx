@@ -904,7 +904,7 @@ const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
 // Si no existe en Firestore, usa este default
 const ROLES_DEFAULT = {
   "ofosado@fosmon.com.mx":   { rol:"director_general",    nombre:"Oscar Fosado Monsalvo" },
-  "ofosadog@fosmon.com.mx":  { rol:"director_operaciones", nombre:"Dir. de Operaciones" },
+  "ofosadog@fosmon.com.mx":  { rol:"director_operaciones", nombre:"Oscar Fosado Galland" },
   "aoliva@fosmon.com.mx":    { rol:"gerente_construccion", nombre:"Alejandro Noe Oliva Somellera" },
   "pcastillo@fosmon.com.mx": { rol:"administrador_obra",   nombre:"Pablo Castillo Villalobos" },
 };
@@ -1782,7 +1782,7 @@ function Login({onLogin}){
     <div style={{width:"100%",maxWidth:380}}>
       {/* Logo */}
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:32,gap:12}}>
-        <EmblemaFOSMON size={48} dark={false}/>
+        <EmblemaFOSMON size={48} dark={true}/>
         <div style={{textAlign:"center"}}>
           <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>CAMPO</div>
           <div style={{fontSize:9,color:C.textMut,letterSpacing:"0.08em",marginTop:2}}>FOSMON CONSTRUCCIONES</div>
@@ -2286,7 +2286,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingBottom:6}}>
       <div>
         <div style={{fontSize:15,fontWeight:700,color:C.textPri,marginBottom:3}}>
-          Bienvenido, {usuario.nombre.split(" ")[0]}
+          Hola, {(usuario.nombre||'').split(' ').find(p=>p.length>2&&!p.endsWith('.'))||''}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
           {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
