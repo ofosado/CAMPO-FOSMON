@@ -1522,6 +1522,9 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const[verHistorial,setVerHistorial]=useState(false);
   const[modalNueva,setModalNueva]=useState(false);
   const[confirmarArchivar,setConfirmarArchivar]=useState(null);
+  const[confirmarEliminar,setConfirmarEliminar]=useState(null);
+  const[idConfirm,setIdConfirm]=useState("");
+  const[elimStep,setElimStep]=useState(1);
 
   const todasObras=PERMISOS[usuario.rol]?.todas_obras
     ? obras
@@ -1553,6 +1556,23 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const reactivar=(id)=>{
     setObras(oo=>oo.map(o=>o.id===id?{...o,estado:"activa"}:o));
   };
+
+  const iniciarEliminar=(obra)=>{
+    setConfirmarEliminar(obra); setIdConfirm(""); setElimStep(1);
+  };
+
+  const ejecutarEliminar=async()=>{
+    if(!confirmarEliminar) return;
+    // Eliminar de Firestore
+    await fsDel(`obras/${confirmarEliminar.id}/config/info`);
+    await fsDel(`obras/${confirmarEliminar.id}/config/parametros`);
+    await fsDel(`obras/${confirmarEliminar.id}/config/estimaciones`);
+    // Eliminar del estado local
+    setObras(oo=>oo.filter(o=>o.id!==confirmarEliminar.id));
+    setConfirmarEliminar(null); setIdConfirm(""); setElimStep(1);
+  };
+
+  const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
 
   const agregarObra=async(form)=>{
     const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
@@ -1679,6 +1699,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
                 padding:"2px 7px",fontSize:9,color:C.green,cursor:"pointer"}}>
               Reactivar
             </button>}
+            {puedeEliminar&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
+              style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
+                padding:"2px 7px",fontSize:9,color:C.red,cursor:"pointer",opacity:0.7}}>
+              🗑 Eliminar
+            </button>}
             {!archivada&&<span style={{color:C.caliza,fontWeight:700}}>Ver obra →</span>}
           </div>
         </div>
@@ -1689,7 +1714,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
 
 
 // ── GRÁFICA INTERACTIVA DE PROYECCIÓN ─────────────────────────────────────
-function GraficaProyeccion({obra, subs, estimaciones, maquinaria}) {
+function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[]}) {
   const [hovered, setHovered] = React.useState(null);
   const [activeLines, setActiveLines] = React.useState({
     gasto:true, monto:true, estimado:true, metaG:true, metaA:true
@@ -1816,6 +1841,17 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria}) {
             <text x={xS(PLAZO_IDX)-3} y={12} fill={C.green} fontSize={7.5} textAnchor="end" fontWeight="600" opacity={0.8}>Plazo orig.</text></>}
             {PLAZOA_IDX<n && <><line x1={xS(PLAZOA_IDX)} y1={0} x2={xS(PLAZOA_IDX)} y2={H} stroke={C.yellow} strokeWidth={1} strokeDasharray="3,4" opacity={0.65}/>
             <text x={xS(PLAZOA_IDX)+3} y={12} fill={C.yellow} fontSize={7.5} textAnchor="start" fontWeight="600" opacity={0.8}>Amp.</text></>}
+          {/* Ampliaciones adicionales desde Contrato */}
+          {ampliaciones.map((amp,ai)=>{
+            if(!amp.fecha||!obra.inicio) return null;
+            const ampMs=(new Date(amp.fecha)-new Date(obra.inicio))/(7*24*60*60*1000);
+            const ampIdx=Math.min(Math.round(ampMs),n-1);
+            const col=[C.yellow,C.orange,C.pink][ai]||C.orange;
+            return <g key={amp.id||ai}>
+              <line x1={xS(ampIdx)} y1={0} x2={xS(ampIdx)} y2={H} stroke={col} strokeWidth={1.2} strokeDasharray="4,3" opacity={0.7}/>
+              <text x={xS(ampIdx)+3} y={24+ai*10} fill={col} fontSize={7} textAnchor="start" fontWeight="600" opacity={0.85}>{amp.label||`Amp.${ai+1}`}</text>
+            </g>;
+          })}
             {/* Línea HOY */}
             <line x1={xS(HOY_IDX)} y1={0} x2={xS(HOY_IDX)} y2={H} stroke={C.caliza} strokeWidth={0.7} opacity={0.18}/>
             <text x={xS(HOY_IDX)} y={H+28} fill={C.caliza} fontSize={7.5} textAnchor="middle" opacity={0.4}>Hoy</text>
@@ -2067,7 +2103,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       })()}
     </Card>
 
-    <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria}/>
+    <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria} ampliaciones={[...(obra.finAmpliado?[{fecha:obra.finAmpliado,label:"Ampliación 1"}]:[])]}/>
 
     <Card>
       <Tit>Personal en campo — Semana 18</Tit>
@@ -2121,7 +2157,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
 
 
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
-function GuardarAvanceBtn({obra, subs, maquinaria, materiales}) {
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
   async function guardar() {
     setEstado("saving");
@@ -2139,6 +2175,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales}) {
         fecha: new Date().toISOString()
       });
       setEstado("saved");
+      if(onSaved) onSaved();
       setTimeout(()=>setEstado("idle"), 3000);
     } catch(e) {
       console.error(e);
@@ -2336,7 +2373,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol}/>}
 
-    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}/>}
+    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} onSaved={()=>setCambiosPendientes(false)}/>}
   </div>;
 }
 
@@ -3716,11 +3753,368 @@ function Nomina({obra, rol}) {
   );
 }
 
+
+// ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
+function Contrato({obra, setObra, rol}) {
+  const [tab, setTab] = useState("datos"); // datos | plazos | documentos
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [docs, setDocs] = useState([]);
+  const [docsLoaded, setDocsLoaded] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [ampliaciones, setAmpliaciones] = useState([]);
+  const [showAddAmp, setShowAddAmp] = useState(false);
+  const [nuevaAmp, setNuevaAmp] = useState({fecha:"", justificacion:"", autorizadoPor:""});
+  const fileRef = useRef();
+  const editar = can(rol, "captura", "editar") || can(rol, "estimaciones", "editar");
+  const puedeSubir = ["director_operaciones","gerente_construccion","administrador_obra"].includes(rol) ||
+                     rol==="superintendente_obra";
+  const puedeElimDoc = ["director_operaciones","gerente_construccion"].includes(rol);
+
+  // Cargar ampliaciones y documentos desde Firestore
+  useEffect(()=>{
+    fsGet(`obras/${obra.id}/contrato/plazos`).then(d=>{
+      if(d&&Array.isArray(d.ampliaciones)) setAmpliaciones(d.ampliaciones);
+    });
+    fsGet(`obras/${obra.id}/contrato/documentos`).then(d=>{
+      if(d&&Array.isArray(d.lista)) setDocs(d.lista);
+      setDocsLoaded(true);
+    });
+  },[obra.id]);
+
+  // Guardar datos del contrato
+  async function guardarDatos() {
+    setSaving(true);
+    await fsSet(`obras/${obra.id}/config/info`, {
+      nombre:obra.nombre, contrato:obra.contrato, cliente:obra.cliente,
+      superintendente:obra.superintendente, residente:obra.residente,
+      admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
+      finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
+    });
+    setSaving(false); setSaved(true);
+    setTimeout(()=>setSaved(false), 2500);
+  }
+
+  // Agregar ampliación
+  async function agregarAmpliacion() {
+    if(!nuevaAmp.fecha||!nuevaAmp.justificacion) return;
+    const amp = {...nuevaAmp, id: Date.now(), fechaRegistro: new Date().toISOString()};
+    const nuevo = [...ampliaciones, amp];
+    setAmpliaciones(nuevo);
+    await fsSet(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo});
+    // Actualizar finAmpliado en la obra
+    setObra({...obra, finAmpliado: nuevaAmp.fecha});
+    setNuevaAmp({fecha:"", justificacion:"", autorizadoPor:""});
+    setShowAddAmp(false);
+  }
+
+  async function eliminarAmpliacion(id) {
+    const nuevo = ampliaciones.filter(a=>a.id!==id);
+    setAmpliaciones(nuevo);
+    await fsSet(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo});
+    // Actualizar finAmpliado con la última ampliación restante
+    const ultima = nuevo[nuevo.length-1];
+    setObra({...obra, finAmpliado: ultima?.fecha||""});
+  }
+
+  // Subir documento
+  async function subirDocumento(file) {
+    if(!file) return;
+    setUploading(true);
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        // Subir a Firebase Storage
+        const url = await uploadFoto(obra.id, "documentos", Date.now().toString(),
+                                     e.target.result);
+        const doc = {
+          id: Date.now(),
+          nombre: file.name,
+          tipo: file.type,
+          tamaño: file.size,
+          url,
+          fecha: new Date().toLocaleDateString("es-MX"),
+          subidoPor: "",
+        };
+        const nuevos = [...docs, doc];
+        setDocs(nuevos);
+        await fsSet(`obras/${obra.id}/contrato/documentos`, {lista: nuevos});
+      } catch(e) { console.error(e); }
+      setUploading(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function eliminarDoc(id) {
+    const nuevo = docs.filter(d=>d.id!==id);
+    setDocs(nuevo);
+    await fsSet(`obras/${obra.id}/contrato/documentos`, {lista: nuevo});
+  }
+
+  const f = (k,v) => setObra({...obra, [k]: v});
+
+  // Calcular días entre fechas
+  const diasPlazo = (ini,fin) => {
+    if(!ini||!fin) return null;
+    const d = (new Date(fin)-new Date(ini))/(1000*60*60*24);
+    return Math.round(d);
+  };
+
+  const TIPOS_DOC = ["Contrato","Convenio modificatorio","Acta de inicio","Estimación","Oficio","Otro"];
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {/* Sub-tabs */}
+      <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
+        {[["datos","📋 Datos del contrato"],["plazos","📅 Plazos y ampliaciones"],["documentos","📁 Repositorio"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
+            fontSize:11,borderRadius:8,background:tab===id?C.caliza:C.card,
+            border:`0.5px solid ${tab===id?C.caliza:C.border}`,
+            color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {/* ── DATOS DEL CONTRATO ── */}
+      {tab==="datos"&&(
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <Tit>Información del contrato</Tit>
+            {editar&&<button onClick={guardarDatos} disabled={saving}
+              style={{background:saved?C.green:saving?"rgba(255,254,249,0.2)":C.caliza,
+                border:"none",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,
+                color:saved||saving?C.caliza:C.bg,cursor:"pointer",transition:"all .3s"}}>
+              {saved?"✓ Guardado":saving?"Guardando...":"💾 Guardar datos"}
+            </button>}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            {[
+              ["Número de contrato","contrato","text"],
+              ["Cliente / Dependencia","cliente","text"],
+              ["Superintendente de obra","superintendente","text"],
+              ["Residente de obra","residente","text"],
+              ["Administrador de obra","admin","text"],
+              ["Presupuesto total","presupuesto","number"],
+            ].map(([lbl,key,type])=>(
+              <div key={key}>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
+                {editar
+                  ? <Inp type={type} value={obra[key]||""} onChange={e=>f(key,type==="number"?parseFloat(e.target.value)||0:e.target.value)}/>
+                  : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{obra[key]||"—"}</div>
+                }
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* ── PLAZOS Y AMPLIACIONES ── */}
+      {tab==="plazos"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {/* Plazo original */}
+          <Card accent={C.green}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <Tit>Plazo original del contrato</Tit>
+              {editar&&<button onClick={guardarDatos} style={{background:C.caliza,border:"none",
+                borderRadius:6,padding:"5px 12px",fontSize:10,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+                💾 Guardar
+              </button>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fecha de inicio</div>
+                {editar
+                  ? <Inp type="date" value={obra.inicio||""} onChange={e=>f("inicio",e.target.value)}/>
+                  : <div style={{fontSize:13,fontWeight:600,color:C.green}}>{obra.inicio||"—"}</div>
+                }
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fecha fin original</div>
+                {editar
+                  ? <Inp type="date" value={obra.fin||""} onChange={e=>f("fin",e.target.value)}/>
+                  : <div style={{fontSize:13,fontWeight:600,color:C.green}}>{obra.fin||"—"}</div>
+                }
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración</div>
+                <div style={{fontSize:13,fontWeight:600,color:C.caliza}}>
+                  {diasPlazo(obra.inicio,obra.fin)?`${diasPlazo(obra.inicio,obra.fin)} días`:"—"}
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Ampliaciones */}
+          {ampliaciones.map((amp,i)=>(
+            <Card key={amp.id} accent={i===0?C.yellow:C.orange}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                <div>
+                  <Bdg color={i===0?C.yellow:C.orange}>Ampliación {i+1}</Bdg>
+                  <div style={{fontSize:13,fontWeight:700,color:C.caliza,marginTop:6}}>{amp.fecha}</div>
+                </div>
+                {puedeElimDoc&&<button onClick={()=>eliminarAmpliacion(amp.id)}
+                  style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
+                    padding:"2px 8px",fontSize:9,color:C.red,cursor:"pointer"}}>Eliminar</button>}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Justificación</div>
+                  <div style={{fontSize:11,color:C.textSec}}>{amp.justificacion}</div>
+                </div>
+                <div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Autorizado por</div>
+                  <div style={{fontSize:11,color:C.textSec}}>{amp.autorizadoPor||"—"}</div>
+                </div>
+              </div>
+              {obra.inicio&&amp.fecha&&<div style={{fontSize:9,color:C.textMut,marginTop:6}}>
+                Duración total con esta ampliación: {diasPlazo(obra.inicio,amp.fecha)} días
+                {obra.fin&&` (+${diasPlazo(obra.fin,amp.fecha)} días vs plazo original)`}
+              </div>}
+            </Card>
+          ))}
+
+          {/* Agregar ampliación */}
+          {editar&&!showAddAmp&&(
+            <button onClick={()=>setShowAddAmp(true)}
+              style={{background:C.card,border:`0.5px solid ${C.borderM}`,borderRadius:8,
+                padding:"10px 0",fontSize:11,color:C.textSec,cursor:"pointer",
+                width:"100%",textAlign:"center"}}>
+              + Agregar ampliación de plazo
+            </button>
+          )}
+
+          {editar&&showAddAmp&&(
+            <Card accent={C.yellow}>
+              <Tit>Nueva ampliación de plazo</Tit>
+              <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:8}}>
+                <div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Nueva fecha de terminación</div>
+                  <Inp type="date" value={nuevaAmp.fecha} onChange={e=>setNuevaAmp(p=>({...p,fecha:e.target.value}))}/>
+                </div>
+                <div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Justificación</div>
+                  <Inp type="text" value={nuevaAmp.justificacion}
+                    placeholder="Convenio modificatorio, causas de fuerza mayor, etc."
+                    onChange={e=>setNuevaAmp(p=>({...p,justificacion:e.target.value}))}/>
+                </div>
+                <div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Autorizado por</div>
+                  <Inp type="text" value={nuevaAmp.autorizadoPor}
+                    placeholder="Nombre del funcionario o referencia"
+                    onChange={e=>setNuevaAmp(p=>({...p,autorizadoPor:e.target.value}))}/>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <SecBtn onClick={()=>setShowAddAmp(false)} style={{flex:1}}>Cancelar</SecBtn>
+                  <button onClick={agregarAmpliacion}
+                    disabled={!nuevaAmp.fecha||!nuevaAmp.justificacion}
+                    style={{flex:2,background:nuevaAmp.fecha&&nuevaAmp.justificacion?C.caliza:"rgba(255,254,249,0.2)",
+                      border:"none",borderRadius:6,padding:"8px 0",fontSize:12,fontWeight:700,
+                      color:nuevaAmp.fecha&&nuevaAmp.justificacion?C.bg:C.textMut,
+                      cursor:nuevaAmp.fecha&&nuevaAmp.justificacion?"pointer":"not-allowed"}}>
+                    Registrar ampliación
+                  </button>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {ampliaciones.length===0&&!showAddAmp&&(
+            <div style={{background:C.card,borderRadius:8,padding:"16px",textAlign:"center",color:C.textMut,fontSize:11}}>
+              No hay ampliaciones registradas. La obra está dentro del plazo original.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── REPOSITORIO DE DOCUMENTOS ── */}
+      {tab==="documentos"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div>
+                <Tit>Repositorio de documentos</Tit>
+                <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+                  {docs.length} documento(s) · Contrato, convenios, actas y más
+                </div>
+              </div>
+              {puedeSubir&&(
+                <button onClick={()=>fileRef.current?.click()}
+                  style={{background:uploading?C.surface:C.caliza,border:"none",borderRadius:8,
+                    padding:"7px 14px",fontSize:11,fontWeight:700,
+                    color:uploading?C.textMut:C.bg,cursor:uploading?"not-allowed":"pointer"}}>
+                  {uploading?"⏳ Subiendo...":"📤 Subir documento"}
+                </button>
+              )}
+              <input ref={fileRef} type="file"
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.zip"
+                style={{display:"none"}} onChange={e=>subirDocumento(e.target.files[0])}/>
+            </div>
+
+            {docs.length===0&&docsLoaded&&(
+              <div style={{textAlign:"center",padding:"24px 0",color:C.textMut}}>
+                <div style={{fontSize:32,marginBottom:8}}>📁</div>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>Sin documentos</div>
+                <div style={{fontSize:10}}>
+                  {puedeSubir?"Sube el contrato firmado y otros documentos relevantes.":"No hay documentos disponibles aún."}
+                </div>
+              </div>
+            )}
+
+            {docs.map((doc,i)=>{
+              const ext = doc.nombre.split(".").pop().toUpperCase();
+              const extCol = {PDF:C.red,DOCX:C.blue,DOC:C.blue,XLSX:C.green,XLS:C.green,
+                              JPG:C.purple,JPEG:C.purple,PNG:C.purple,ZIP:C.orange}[ext]||C.textMut;
+              return (
+                <div key={doc.id} style={{display:"flex",alignItems:"center",gap:10,
+                  padding:"10px 0",borderBottom:`0.5px solid ${C.border}`}}>
+                  <div style={{background:`${extCol}22`,border:`0.5px solid ${extCol}44`,
+                    borderRadius:5,padding:"4px 7px",fontSize:9,fontWeight:700,color:extCol,
+                    flexShrink:0,minWidth:36,textAlign:"center"}}>{ext}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,color:C.textPri,overflow:"hidden",textOverflow:"ellipsis",
+                      whiteSpace:"nowrap"}}>{doc.nombre}</div>
+                    <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+                      Subido el {doc.fecha}
+                      {doc.tamaño&&` · ${(doc.tamaño/1024/1024).toFixed(1)} MB`}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6,flexShrink:0}}>
+                    <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                      style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:5,
+                        padding:"4px 10px",fontSize:10,color:C.caliza,cursor:"pointer",
+                        textDecoration:"none"}}>
+                      Ver
+                    </a>
+                    <a href={doc.url} download={doc.nombre}
+                      style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:5,
+                        padding:"4px 10px",fontSize:10,color:C.caliza,cursor:"pointer",
+                        textDecoration:"none"}}>
+                      ↓
+                    </a>
+                    {puedeElimDoc&&<button onClick={()=>eliminarDoc(doc.id)}
+                      style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:5,
+                        padding:"4px 8px",fontSize:10,color:C.red,cursor:"pointer"}}>✕</button>}
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+
+          <div style={{fontSize:9,color:C.textMut,textAlign:"center"}}>
+            Formatos soportados: PDF, Word, Excel, imágenes y ZIP · Máximo 10MB por archivo
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TABS_POR_ROL = {
-  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"}],
-  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"}],
-  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"}],
-  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"}],
+  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"📄 Contrato"}],
+  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"},{id:"contrato",label:"📄 Contrato"}],
+  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"📋 Presupuesto"},{id:"contrato",label:"📄 Contrato"}],
+  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"📄 Contrato"}],
 };
 
 const EST_DEFAULT = [
@@ -3735,6 +4129,7 @@ export default function App(){
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
+  const[cambiosPendientes,setCambiosPendientes]=useState(false);
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP } = useGPConstruct();
 
   // Al entrar a una obra, cargar sus parámetros y avance desde Firestore
@@ -3823,8 +4218,19 @@ export default function App(){
 
     {screen==="obra"&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
       background:C.surface,borderBottom:`0.5px solid ${C.border}`}}>
-      <button onClick={volver} style={{background:"none",border:"none",padding:"8px 16px",
+      <button onClick={()=>{
+        if(cambiosPendientes){
+          if(!window.confirm("Tienes cambios sin guardar en Capturar avance.\n\n¿Seguro que quieres salir? Los cambios se perderán si no los guardaste."))
+            return;
+        }
+        setCambiosPendientes(false); volver();
+      }} style={{background:"none",border:"none",padding:"8px 16px",
         fontSize:11,color:C.textSec,cursor:"pointer"}}>← Volver a obras</button>
+      {cambiosPendientes&&<span style={{fontSize:9,color:C.yellow,display:"flex",alignItems:"center",
+        gap:4,background:"rgba(202,138,4,0.12)",borderRadius:4,padding:"3px 8px",
+        border:"0.5px solid rgba(202,138,4,0.25)"}}>
+        ● Cambios sin guardar
+      </span>}
       {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales)}
         style={{background:"none",border:`0.5px solid ${C.borderM}`,borderRadius:6,
           margin:"4px 12px",padding:"4px 12px",fontSize:10,color:C.caliza,cursor:"pointer",
@@ -3844,11 +4250,18 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP}/>}
       {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
-      {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria} materiales={materiales} setMateriales={setMateriales} rol={usuario.rol} obra={obra}/>}
+      {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs}
+        setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
+        maquinaria={maquinaria}
+        setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
+        materiales={materiales}
+        setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
+        rol={usuario.rol} obra={obra}/>}
       {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol}/>}
       {screen==="obra"&&tab==="estimaciones"&&obra&&<Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={usuario.rol}/>}
       {screen==="obra"&&tab==="riesgo"&&obra&&<Riesgo obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="presupuesto"&&obra&&<Presupuesto obra={obra} setObra={setObra} rol={usuario.rol}/>}
+      {screen==="obra"&&tab==="contrato"&&obra&&<Contrato obra={obra} setObra={setObra} rol={usuario.rol}/>}
     </div>
 
     {/* FOOTER */}
