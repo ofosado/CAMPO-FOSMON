@@ -5508,7 +5508,7 @@ export default function App(){
           <div style={{fontSize:9,color:C.textSec}}>{usuario.nombre.split(" ")[0]}</div>
           <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
         </div>
-        {["director_general","admin_sistema"].includes(usuario.rol) && (
+        {["director_general","director_operaciones","admin_sistema"].includes(usuario.rol) && (
           <button onClick={()=>setScreen(screen==="usuarios"?"obras":"usuarios")}
             style={{background:screen==="usuarios"?C.caliza:"none",
               border:`0.5px solid ${screen==="usuarios"?C.caliza:C.border}`,borderRadius:6,

@@ -30,7 +30,7 @@ const ROLES_VALIDOS = [
   "cliente",
 ];
 
-const ROLES_ADMIN = ["director_general", "admin_sistema"];
+const ROLES_ADMIN = ["director_general", "director_operaciones", "admin_sistema"];
 
 // Normaliza email para usarlo como ID de documento Firestore (igual que en CAMPO frontend)
 const emailAId = (email) => email.toLowerCase().replace(/@/g, "_").replace(/\./g, "_");
