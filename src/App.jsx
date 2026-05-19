@@ -3744,9 +3744,27 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
       </div>
       {estimaciones.map((e,i)=>{
         const c=cE(e); const ecol=EST_COL[e.estatus]||C.yellow;
-        return <div key={e.no} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,borderLeft:`3px solid ${ecol}`}}>
+        // Calcular días de atraso si la estimación está Facturada y tiene fecha
+        let pillAtraso = null;
+        if(e.estatus==="Facturada" && e.fechaFact){
+          const diasPago = obra.diasPago||30;
+          const diasTrans = Math.floor((new Date() - new Date(e.fechaFact))/(1000*60*60*24));
+          const diasAtraso = diasTrans - diasPago;
+          if(diasAtraso > 0){
+            pillAtraso = {color:C.red, texto:`${diasAtraso}d de atraso`, sub:`${diasTrans}d desde facturación vs plazo ${diasPago}d`};
+          } else if(diasTrans >= diasPago - 7){
+            pillAtraso = {color:C.yellow, texto:`${-diasAtraso}d para vencer`, sub:`${diasTrans}d desde facturación vs plazo ${diasPago}d`};
+          } else {
+            pillAtraso = {color:C.green, texto:`Dentro de plazo`, sub:`${diasTrans}d / ${diasPago}d de plazo`};
+          }
+        }
+        return <div key={e.no} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
+          borderLeft:`3px solid ${pillAtraso?.color===C.red?C.red:ecol}`}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8}}>
-            <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
+            <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+              <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
+              {pillAtraso && <Bdg color={pillAtraso.color} small>{pillAtraso.texto}</Bdg>}
+            </div>
             <div style={{display:"flex",gap:6,alignItems:"center"}}>
               {editar?<Sel value={e.estatus} style={{fontSize:10,padding:"4px 6px"}}
                 onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,estatus:ev.target.value}:x))}>
@@ -3757,6 +3775,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
                 style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1}}>×</button>}
             </div>
           </div>
+          {pillAtraso && <div style={{fontSize:9,color:C.textMut,marginTop:-4,marginBottom:8}}>{pillAtraso.sub}</div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
             <div>
               <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto bruto</div>
