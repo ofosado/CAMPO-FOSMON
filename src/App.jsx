@@ -914,6 +914,58 @@ const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.spli
 const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
+// ── Helper KPIs por obra (reutilizable para Dashboard, Panel Ejecutivo y PDF) ──
+// Devuelve métricas calculadas a partir de los datos de UNA obra.
+// Datos vacíos (sin Firestore) producen ceros pero no rompe la función.
+const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[]) => {
+  const presupuesto = obra?.presupuesto || 0;
+  const gastoGP = obra?.gastoGP || 0;
+  // Gasto total = GP del Sheet + maquinaria propia
+  const gt = gastoGP + maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  // Avance monetario ejecutado (∑ avance × importe subsección)
+  const am = subs.reduce((t,s)=>t+((s.a||0)/100)*(s.imp||0), 0);
+  // Almacén (materiales en sitio/tránsito)
+  const alm = materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  // Monto ejecutado = avance + almacén
+  const me = am + alm;
+  // Avance físico ponderado %
+  const af = presupuesto > 0
+    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/presupuesto)*100, 0)
+    : 0;
+  // Margen
+  const diff = me - gt;
+  const mpct = me > 0 ? (diff/me)*100 : 0;
+  // Estimaciones
+  const estPag    = estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+(e.monto||0), 0);
+  const estPorCob = estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+  const estProc   = estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+(e.monto||0), 0);
+  const estFact   = estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+(e.monto||0), 0);
+  const estTotal  = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+  // Brecha = % gasto vs % avance físico (riesgo #1 del semáforo)
+  const pctGasto = presupuesto > 0 ? (gt/presupuesto)*100 : 0;
+  const brecha = pctGasto - af;
+  // Por estimar (obra ejecutada sin facturar al cliente)
+  const porEstimar = Math.max(am - estTotal, 0);
+  // ── ATRASO DE COBRO ──
+  // Para cada estimación "Facturada", calcular días desde fechaFact y comparar contra diasPago del contrato
+  const diasPago = obra?.diasPago || 30;
+  const hoy = new Date();
+  const atrasos = estimaciones
+    .filter(e => e.estatus === "Facturada" && e.fechaFact)
+    .map(e => {
+      const dias = Math.floor((hoy - new Date(e.fechaFact))/(1000*60*60*24));
+      return { ...e, diasTrans: dias, diasAtraso: Math.max(dias - diasPago, 0) };
+    });
+  const montoAtrasado = atrasos.filter(a=>a.diasAtraso>0).reduce((t,a)=>t+(a.monto||0), 0);
+  const maxAtraso = atrasos.reduce((m,a)=>Math.max(m, a.diasAtraso), 0);
+  return {
+    presupuesto, gastoGP, gt, am, alm, me, af, diff, mpct,
+    estPag, estPorCob, estProc, estFact, estTotal, porEstimar,
+    pctGasto, brecha,
+    diasPago, atrasos, montoAtrasado, maxAtraso,
+  };
+};
+
 // Helper Storage — subir foto base64 y obtener URL
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   try {
@@ -1715,16 +1767,6 @@ const _OBRAS_BASE = [
    presupuesto:163348337,gastoGP:29330201,ultimaAct:"27 mayo 2026",
    estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
    inicio:"2026-05-01",fin:"2026-08-28"},
-  {id:"SCT01",nombre:"Libramiento Norte Tramo 2",contrato:"SCT-JAL-2025-047",
-   cliente:"SCT Jalisco",superintendente:"Por asignar",residente:"Ing. Luis Campos",
-   admin:"C.P. Sandra Ruiz",presupuesto:48500000,gastoGP:7230450,
-   ultimaAct:"25 mayo 2026",estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
-   inicio:"2025-01-15",fin:"2025-10-30"},
-  {id:"MUN01",nombre:"Planta Tratadora Agua Centro",contrato:"SAPAZA-2025-012",
-   cliente:"SAPAZA",superintendente:"Ing. Roberto Díaz",residente:"Ing. Carmen Vega",
-   admin:"L.C. Pablo Torres",presupuesto:32000000,gastoGP:30100000,
-   ultimaAct:"20 mayo 2026",estado:"terminada",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
-   inicio:"2024-09-01",fin:"2025-06-30"},
 ];
 
 function loadObras() {
@@ -2151,7 +2193,171 @@ function ModalNuevaObra({onSave,onClose,gpData}){
   </div>;
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP}){
+// ── PANEL EJECUTIVO MULTI-OBRA ─────────────────────────────────────────────
+// Vista consolidada para Director General / Director Operaciones / Gerente.
+// Muestra: KPIs portafolio, cobranza agrupada por cliente (acordeón) y top obras de atención.
+function PanelEjecutivo({obras, datosPorObra, onSelectObra}){
+  const[expandido,setExpandido]=useState(true);
+  const[clienteAbierto,setClienteAbierto]=useState(null);
+
+  const activas = obras.filter(o=>o.estado!=="archivada");
+  // Calcular KPIs para cada obra activa
+  const obrasConKPIs = activas.map(o => {
+    const d = datosPorObra[o.id] || {subs:[],maquinaria:[],materiales:[],estimaciones:[]};
+    return { obra: o, kpis: calcularKPIsObra(o, d.subs, d.maquinaria, d.materiales, d.estimaciones) };
+  });
+
+  // Agrupar por cliente
+  const porCliente = {};
+  obrasConKPIs.forEach(({obra,kpis}) => {
+    const c = obra.cliente || "Sin cliente";
+    if(!porCliente[c]) porCliente[c] = { cliente:c, obras:[], totales:{presupuesto:0,estTotal:0,estPorCob:0,estPag:0,estProc:0,montoAtrasado:0,maxAtraso:0} };
+    porCliente[c].obras.push({obra,kpis});
+    porCliente[c].totales.presupuesto += kpis.presupuesto;
+    porCliente[c].totales.estTotal += kpis.estTotal;
+    porCliente[c].totales.estPorCob += kpis.estPorCob;
+    porCliente[c].totales.estPag += kpis.estPag;
+    porCliente[c].totales.estProc += kpis.estProc;
+    porCliente[c].totales.montoAtrasado += kpis.montoAtrasado;
+    porCliente[c].totales.maxAtraso = Math.max(porCliente[c].totales.maxAtraso, kpis.maxAtraso);
+  });
+  const clientes = Object.values(porCliente).sort((a,b)=>b.totales.estPorCob - a.totales.estPorCob);
+
+  // KPIs portafolio (consolidados)
+  const port = obrasConKPIs.reduce((t,{kpis}) => ({
+    presupuesto: t.presupuesto + kpis.presupuesto,
+    estTotal:    t.estTotal    + kpis.estTotal,
+    estPorCob:   t.estPorCob   + kpis.estPorCob,
+    estPag:      t.estPag      + kpis.estPag,
+    estProc:     t.estProc     + kpis.estProc,
+    montoAtrasado: t.montoAtrasado + kpis.montoAtrasado,
+  }), {presupuesto:0,estTotal:0,estPorCob:0,estPag:0,estProc:0,montoAtrasado:0});
+
+  // Top atención (por brecha avance-gasto descendente, solo brecha > 0)
+  const topAtencion = [...obrasConKPIs]
+    .filter(({kpis})=>kpis.brecha>5 || kpis.maxAtraso>0)
+    .sort((a,b)=>{
+      // Prioridad: monto atrasado descendente, luego brecha descendente
+      if(b.kpis.montoAtrasado !== a.kpis.montoAtrasado) return b.kpis.montoAtrasado - a.kpis.montoAtrasado;
+      return b.kpis.brecha - a.kpis.brecha;
+    })
+    .slice(0,3);
+
+  if(activas.length<2) return null;  // No muestra el panel si hay 0 o 1 obras
+
+  const kpiBox = (label, value, color, sub) => (
+    <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${color}`}}>
+      <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>{label}</div>
+      <div style={{fontSize:13,fontWeight:700,color:color}}>{value}</div>
+      {sub && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{sub}</div>}
+    </div>
+  );
+
+  return <Card accent={C.caliza} style={{marginBottom:10}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:expandido?12:0,cursor:"pointer"}}
+         onClick={()=>setExpandido(!expandido)}>
+      <div>
+        <Tit>Panel ejecutivo — {activas.length} obras activas</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Cobranza consolidada y obras que requieren atención</div>
+      </div>
+      <span style={{fontSize:14,color:C.textMut}}>{expandido?"▾":"▸"}</span>
+    </div>
+
+    {expandido && <>
+      {/* KPIs portafolio */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:14}}>
+        {kpiBox("Presupuesto total", MXN(port.presupuesto), C.caliza, `${activas.length} obras`)}
+        {kpiBox("Total estimado", MXN(port.estTotal), C.blue, port.presupuesto>0?`${NUM(port.estTotal/port.presupuesto*100,1)}% del contrato`:"")}
+        {kpiBox("Por cobrar", MXN(port.estPorCob), port.montoAtrasado>0?C.red:C.purpleDk, "facturado + aprobado")}
+        {kpiBox("Cobrado", MXN(port.estPag), C.greenDk, "pagado y liquidado")}
+        {kpiBox("En proceso", MXN(port.estProc), C.yellowDk, "estimaciones en elaboración")}
+        {kpiBox("Atrasado", MXN(port.montoAtrasado), port.montoAtrasado>0?C.red:C.green, port.montoAtrasado>0?"fuera del plazo":"todo dentro de plazo")}
+      </div>
+
+      {/* COBRANZA POR CLIENTE */}
+      <div style={{marginBottom:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:11,fontWeight:600,color:C.textPri,letterSpacing:"0.02em"}}>COBRANZA POR CLIENTE</div>
+          <div style={{fontSize:9,color:C.textMut}}>Ordenado por monto por cobrar</div>
+        </div>
+        {clientes.length===0 && <div style={{fontSize:11,color:C.textMut,padding:"8px 0"}}>Sin clientes con estimaciones</div>}
+        {clientes.map(({cliente,obras:obrasCli,totales})=>{
+          const abierto = clienteAbierto === cliente;
+          const tieneAtraso = totales.montoAtrasado > 0;
+          return <div key={cliente} style={{background:C.bg,borderRadius:8,marginBottom:6,
+            borderLeft:`3px solid ${tieneAtraso?C.red:C.blueDk}`,overflow:"hidden"}}>
+            <div onClick={()=>setClienteAbierto(abierto?null:cliente)}
+                 style={{padding:"10px 13px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                  <span style={{fontSize:12,fontWeight:700,color:C.caliza}}>{cliente}</span>
+                  <Bdg color={C.textMut} small>{obrasCli.length} {obrasCli.length===1?"obra":"obras"}</Bdg>
+                  {tieneAtraso && <Bdg color={C.red} small>Atraso {totales.maxAtraso}d</Bdg>}
+                </div>
+                <div style={{fontSize:9,color:C.textMut}}>
+                  Estimado: {MXN(totales.estTotal)} · Pagado: {MXN(totales.estPag)}
+                </div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>POR COBRAR</div>
+                <div style={{fontSize:14,fontWeight:700,color:tieneAtraso?C.red:C.purpleDk}}>{MXN(totales.estPorCob)}</div>
+              </div>
+              <span style={{fontSize:12,color:C.textMut,flexShrink:0}}>{abierto?"▾":"▸"}</span>
+            </div>
+            {/* Detalle expandido: obras del cliente */}
+            {abierto && <div style={{borderTop:`0.5px solid ${C.border}`,background:C.surface,padding:"8px 13px"}}>
+              {obrasCli.map(({obra,kpis})=>(
+                <div key={obra.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  padding:"6px 0",borderBottom:`0.5px solid ${C.border}`,gap:8}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{obra.id} · {obra.nombre}</div>
+                    <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
+                      Avance: {NUM(kpis.af,1)}% · Estimado: {MXN(kpis.estTotal)} · Por cobrar: {MXN(kpis.estPorCob)}
+                      {kpis.maxAtraso>0 && <span style={{color:C.red,marginLeft:6}}>· Atraso {kpis.maxAtraso}d</span>}
+                    </div>
+                  </div>
+                  <button onClick={()=>onSelectObra(obra.id)}
+                    style={{background:C.caliza,border:"none",borderRadius:6,padding:"4px 10px",
+                      fontSize:10,fontWeight:600,color:C.bg,cursor:"pointer",flexShrink:0}}>
+                    Entrar
+                  </button>
+                </div>
+              ))}
+            </div>}
+          </div>;
+        })}
+      </div>
+
+      {/* OBRAS QUE REQUIEREN ATENCIÓN */}
+      {topAtencion.length>0 && <div>
+        <div style={{fontSize:11,fontWeight:600,color:C.textPri,letterSpacing:"0.02em",marginBottom:8}}>
+          OBRAS QUE REQUIEREN ATENCIÓN
+        </div>
+        {topAtencion.map(({obra,kpis},i)=>{
+          const motivos = [];
+          if(kpis.montoAtrasado>0) motivos.push(`${MXN(kpis.montoAtrasado)} atrasados (${kpis.maxAtraso}d)`);
+          if(kpis.brecha>15) motivos.push(`Brecha gasto/avance +${NUM(kpis.brecha,1)}pp`);
+          else if(kpis.brecha>5) motivos.push(`Brecha gasto/avance +${NUM(kpis.brecha,1)}pp`);
+          return <div key={obra.id} onClick={()=>onSelectObra(obra.id)}
+            style={{background:C.bg,borderRadius:8,padding:"9px 12px",marginBottom:6,cursor:"pointer",
+              borderLeft:`3px solid ${kpis.montoAtrasado>0?C.red:kpis.brecha>15?C.red:C.yellow}`,
+              display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:10,color:C.textMut,fontWeight:700}}>{i+1}.</span>
+                <span style={{fontSize:11,fontWeight:700,color:C.caliza}}>{obra.id} · {obra.nombre}</span>
+              </div>
+              <div style={{fontSize:9,color:C.textSec,marginTop:3}}>{motivos.join(" · ")}</div>
+            </div>
+            <span style={{fontSize:11,color:C.textMut}}>›</span>
+          </div>;
+        })}
+      </div>}
+    </>}
+  </Card>;
+}
+
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
   // Debug
   if(!obras||!Array.isArray(obras)||obras.length===0){
     return <div style={{padding:20,color:C.red,fontSize:12}}>
@@ -2344,6 +2550,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         {verHistorial?`← Obras activas`:` Historial (${archivadas.length})`}
       </button>}
     </div>
+
+    {/* Panel ejecutivo multi-obra — solo roles directivos y si hay ≥2 obras activas */}
+    {!verHistorial && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol) && (
+      <PanelEjecutivo obras={todasObras} datosPorObra={datosPorObra} onSelectObra={onSelect}/>
+    )}
 
     {/* Lista de obras */}
     {listaActual.length===0&&<div style={{background:C.card,borderRadius:10,padding:24,
@@ -3230,7 +3441,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
                 style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1}}>×</button>}
             </div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
             <div>
               <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto bruto</div>
               {editar?<Inp type="number" value={e.monto} style={{fontSize:12,fontWeight:600,color:C.caliza}}
@@ -3242,6 +3453,12 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
               {editar?<Inp type="text" value={e.periodo||""} placeholder="01–31 May 2026" style={{fontSize:11}}
                 onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,periodo:ev.target.value}:x))}/>
               :<div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodo||"—"}</div>}
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Fecha facturación</div>
+              {editar?<Inp type="date" value={e.fechaFact||""} style={{fontSize:11}}
+                onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,fechaFact:ev.target.value}:x))}/>
+              :<div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.fechaFact||"—"}</div>}
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
@@ -4488,6 +4705,7 @@ function Contrato({obra, setObra, rol}) {
       superintendente:obra.superintendente, residente:obra.residente,
       admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
       finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
+      diasPago: obra.diasPago||30,
     });
     setSaving(false); setSaved(true);
     setTimeout(()=>setSaved(false), 2500);
@@ -4594,6 +4812,7 @@ function Contrato({obra, setObra, rol}) {
               ["Residente de obra","residente","text"],
               ["Administrador de obra","admin","text"],
               ["Presupuesto total","presupuesto","number"],
+              ["Días de pago según contrato","diasPago","number"],
             ].map(([lbl,key,type])=>(
               <div key={key}>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
@@ -4878,6 +5097,50 @@ export default function App(){
     });
   },[obraId]);
 
+  // ── CARGA BULK: datos de todas las obras activas para el Panel Ejecutivo ──
+  // Se ejecuta al hacer login Y cuando cambia el set de IDs de obras activas
+  // (al crear/archivar/eliminar una obra). Carga en paralelo (Promise.all)
+  // subs/maq/mats/ests y los parámetros del contrato.
+  const[datosPorObra,setDatosPorObra]=useState({});  // { OAX01: {subs,maquinaria,materiales,estimaciones,info}, ... }
+  // Clave estable que solo cambia cuando se agrega/quita una obra activa
+  const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
+  useEffect(()=>{
+    if(!usuario) return;
+    const activas = obras.filter(o=>o.estado!=="archivada");
+    if(activas.length===0) return;
+    Promise.all(activas.map(async(o)=>{
+      const [info, subsData, maqData, matData, estData] = await Promise.all([
+        fsGet(`obras/${o.id}/config/info`),
+        fsGet(`obras/${o.id}/avance/subs`),
+        fsGet(`obras/${o.id}/avance/maquinaria`),
+        fsGet(`obras/${o.id}/avance/materiales`),
+        fsGet(`obras/${o.id}/config/estimaciones`),
+      ]);
+      // Mezclar subs guardadas con catálogo si solo se guardan los % de avance
+      let subsFinales = [];
+      if(subsData && Array.isArray(subsData.data)){
+        subsFinales = subsData.data;
+      } else if(o.id==="OAX01"){
+        subsFinales = SUBS_INIT.map(s=>({...s}));
+      }
+      return [o.id, {
+        info: info || {},
+        subs: subsFinales,
+        maquinaria: (maqData && Array.isArray(maqData.data)) ? maqData.data : [],
+        materiales: (matData && Array.isArray(matData.data)) ? matData.data : [],
+        estimaciones: (estData && Array.isArray(estData.data)) ? estData.data : [],
+      }];
+    })).then(pares => {
+      const mapa = Object.fromEntries(pares);
+      setDatosPorObra(mapa);
+      // También enriquecer el state de obras con info de Firestore (presupuesto, diasPago, etc.)
+      setObras(oo => oo.map(o => {
+        const inf = mapa[o.id]?.info || {};
+        return { ...o, ...inf };
+      }));
+    });
+  },[usuario, obrasActivasKey]);
+
   if(!usuario) return <><style>{css}</style><Login onLogin={u=>{setUsuario(u);}}/></>;
 
   const obra=obras.find(o=>o.id===obraId);
@@ -4946,7 +5209,7 @@ export default function App(){
     </div>}
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
       {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs}
         setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
