@@ -215,6 +215,16 @@ exports.listarUsuarios = onCall(async (request) => {
       const u = await admin.auth().getUserByEmail(data.email);
       disabled = u.disabled;
     } catch { /* usuario no existe en Auth */ }
+    // creadoEn puede venir como Firestore Timestamp (con .toMillis) o como string ISO (auto-create del login)
+    let creadoEnMs = null;
+    if (data.creadoEn) {
+      if (typeof data.creadoEn.toMillis === "function") {
+        creadoEnMs = data.creadoEn.toMillis();
+      } else if (typeof data.creadoEn === "string") {
+        const t = Date.parse(data.creadoEn);
+        creadoEnMs = isNaN(t) ? null : t;
+      }
+    }
     usuarios.push({
       id: doc.id,
       email: data.email,
@@ -222,7 +232,7 @@ exports.listarUsuarios = onCall(async (request) => {
       rol: data.rol,
       obras_asignadas: data.obras_asignadas || [],
       activo: data.activo !== false && !disabled,
-      creadoEn: data.creadoEn ? data.creadoEn.toMillis() : null,
+      creadoEn: creadoEnMs,
     });
   }
   return { usuarios };

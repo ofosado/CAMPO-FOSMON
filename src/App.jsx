@@ -1406,6 +1406,7 @@ const ROL_LABEL = {
   gerente_construccion:"Gerente de Construcción",
   administrador_obra:  "Administrador de Obra",
   admin_sistema:       "Administrador de Sistema",
+  cliente:             "Cliente",
 };
 
 // Permisos: can(rol, modulo, accion)
@@ -1417,6 +1418,7 @@ const PERMISOS = {
   gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
   administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver", todas_obras:false },
   admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
+  cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,  todas_obras:false },
 };
 
 function can(rol, modulo, accion="ver") {
@@ -1863,7 +1865,13 @@ function Login({onLogin}){
         setLoading(false);
         return;
       }
-      onLogin({ correo:email, nombre:perfil.nombre, rol:perfil.rol, uid:cred.user.uid });
+      onLogin({
+        correo: email,
+        nombre: perfil.nombre,
+        rol: perfil.rol,
+        uid: cred.user.uid,
+        obras_asignadas: Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [],
+      });
     } catch(e) {
       const msgs = {
         'auth/invalid-credential':'Correo o contraseña incorrectos',
@@ -2691,9 +2699,16 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const[idConfirm,setIdConfirm]=useState("");
   const[elimStep,setElimStep]=useState(1);
 
-  const todasObras=PERMISOS[usuario.rol]?.todas_obras
+  // Filtrado de obras visibles:
+  // - Roles con todas_obras=true: ven todas
+  // - Roles con todas_obras=false (cliente, administrador_obra): solo las que están en usuario.obras_asignadas
+  //   Si no tienen obras_asignadas (estructura vieja), fallback a OAX01 para mantener compatibilidad
+  const asignadas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
+  const todasObras = PERMISOS[usuario.rol]?.todas_obras
     ? obras
-    : [obras.find(o=>o.id==="OAX01")||obras[0]].filter(Boolean);
+    : (asignadas.length > 0
+        ? obras.filter(o => asignadas.includes(o.id))
+        : [obras.find(o=>o.id==="OAX01")||obras[0]].filter(Boolean));
   const activas=todasObras.filter(o=>o.estado!=="archivada");
   const archivadas=todasObras.filter(o=>o.estado==="archivada");
 
@@ -2898,16 +2913,29 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
             <span style={{fontSize:9,color:C.textMut}}>Act: {o.ultimaAct}</span>
           </div>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
-          {[["Presupuesto",MXN(o.presupuesto),C.textPri],["Gasto GP",MXN(o.gastoGP),C.red],
-            ["Anticipo/FG",`${o.pctAnticipo}%/${o.pctFondoGar}%`,C.textSec]].map(([l,v,c])=>
-            <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
-              <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
-        </div>
-        <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}>
-          <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
-            background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
-        </div>
+        {/* Datos visibles según rol: cliente solo ve presupuesto e info pública, no costos */}
+        {usuario.rol === "cliente" ? (
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
+            {[["Presupuesto",MXN(o.presupuesto),C.textPri],
+              ["Inicio",o.inicio||"—",C.textSec],
+              ["Fin programado",o.finAmpliado||o.fin||"—",C.textSec]].map(([l,v,c])=>
+              <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
+                <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
+          </div>
+        ) : (
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
+              {[["Presupuesto",MXN(o.presupuesto),C.textPri],["Gasto GP",MXN(o.gastoGP),C.red],
+                ["Anticipo/FG",`${o.pctAnticipo}%/${o.pctFondoGar}%`,C.textSec]].map(([l,v,c])=>
+                <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
+                  <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
+            </div>
+            <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}>
+              <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
+                background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
+            </div>
+          </>
+        )}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:10,color:C.textMut}}>
           <span>{o.superintendente}</span>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -5004,6 +5032,703 @@ function Nomina({obra, rol}) {
 }
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// VISTAS PARA ROL CLIENTE
+// El cliente NO debe ver costos, márgenes, gastos GP ni datos internos.
+// Solo: avance físico, fotos por subsección, sus estimaciones (sin amortizaciones
+// internas como FG/Anticipo desglosado), y plazos del contrato.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── AVANCE (CLIENTE): listado de subsecciones con % de avance y barra ──────
+function AvanceCliente({obra, subs}){
+  // Avance físico total ponderado
+  const af = (obra?.presupuesto||0) > 0
+    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/obra.presupuesto)*100, 0)
+    : 0;
+  const completadas = subs.filter(s=>(s.a||0)>=100).length;
+  const enProceso   = subs.filter(s=>(s.a||0)>0 && (s.a||0)<100).length;
+  const sinIniciar  = subs.filter(s=>(s.a||0)===0).length;
+  // Ordenadas por importe descendente
+  const ordenadas = [...subs].sort((a,b)=>(b.imp||0)-(a.imp||0));
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card accent={C.blue}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div>
+          <Tit>Avance general de la obra</Tit>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Ponderado por importe contractual de cada partida</div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:24,fontWeight:700,color:C.blueDk,lineHeight:1}}>{NUM(af,1)}%</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>de avance acumulado</div>
+        </div>
+      </div>
+      <Bar pct={af} color={C.blueDk}/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:14}}>
+        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.green}`}}>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Completadas</div>
+          <div style={{fontSize:15,fontWeight:700,color:C.greenDk,marginTop:2}}>{completadas}</div>
+        </div>
+        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.yellow}`}}>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>En proceso</div>
+          <div style={{fontSize:15,fontWeight:700,color:C.yellowDk,marginTop:2}}>{enProceso}</div>
+        </div>
+        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.textMut}`}}>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Sin iniciar</div>
+          <div style={{fontSize:15,fontWeight:700,color:C.textSec,marginTop:2}}>{sinIniciar}</div>
+        </div>
+      </div>
+    </Card>
+
+    <Card>
+      <Tit>Avance por partida</Tit>
+      <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
+        {ordenadas.map(s=>{
+          const pct = s.a || 0;
+          const col = pct>=100 ? C.green : pct>0 ? C.blue : C.textMut;
+          const pctContrato = (obra?.presupuesto||0)>0 ? ((s.imp||0)/obra.presupuesto*100) : 0;
+          return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"9px 11px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:5}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{s.sec}</span>
+                  <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{s.sub}</span>
+                </div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(pctContrato,1)}% del contrato</div>
+              </div>
+              <div style={{fontSize:13,fontWeight:700,color:col,flexShrink:0}}>{NUM(pct,1)}%</div>
+            </div>
+            <Bar pct={pct} color={col}/>
+          </div>;
+        })}
+      </div>
+    </Card>
+  </div>;
+}
+
+// ── FOTOS (CLIENTE): galería de fotos por subsección ────────────────────────
+function FotosCliente({obra, subs}){
+  const[lightbox,setLightbox]=useState(null);
+  // subsecciones con al menos 1 foto
+  const conFotos = subs.map(s => {
+    const fotos = Array.isArray(s.fotos) ? s.fotos : Object.values(s.fotos||{});
+    return {...s, _fotos: fotos};
+  }).filter(s => s._fotos.length > 0);
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card>
+      <Tit>Evidencia fotográfica</Tit>
+      <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+        Fotos cargadas en campo, organizadas por partida
+      </div>
+      {conFotos.length === 0 && (
+        <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
+          Aún no se han cargado fotos de esta obra.
+        </div>
+      )}
+      {conFotos.map(s => (
+        <div key={s.sec} style={{marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
+            borderBottom:`0.5px solid ${C.border}`}}>
+            <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{s.sec}</span>
+            <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{s.sub}</span>
+            <Bdg color={C.blue} small>{s._fotos.length} foto{s._fotos.length>1?"s":""}</Bdg>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
+            {s._fotos.map((foto,i)=>{
+              const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
+              if(!url) return null;
+              return <div key={i} onClick={()=>setLightbox(url)}
+                style={{background:C.bg,borderRadius:6,overflow:"hidden",cursor:"pointer",aspectRatio:"4/3"}}>
+                <img src={url} alt={`${s.sub} ${i+1}`}
+                  style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+              </div>;
+            })}
+          </div>
+        </div>
+      ))}
+    </Card>
+
+    {/* Lightbox simple */}
+    {lightbox && <div onClick={()=>setLightbox(null)}
+      style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:300,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"pointer"}}>
+      <img src={lightbox} style={{maxWidth:"95%",maxHeight:"95%",objectFit:"contain"}}/>
+      <button onClick={()=>setLightbox(null)} style={{position:"absolute",top:14,right:14,
+        background:"rgba(255,255,255,0.15)",border:"none",borderRadius:99,width:36,height:36,
+        color:"#fff",fontSize:18,cursor:"pointer"}}>×</button>
+    </div>}
+  </div>;
+}
+
+// ── ESTIMACIONES (CLIENTE): solo monto + período + estatus ─────────────────
+function EstimacionesCliente({obra, estimaciones}){
+  const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+  const pagado   = estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+(e.monto||0), 0);
+  const enProc   = estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+(e.monto||0), 0);
+  const factur   = estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+  const porEst   = Math.max((obra?.presupuesto||0) - totalEst, 0);
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card>
+      <Tit>Resumen de estimaciones</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginTop:8}}>
+        <Kpi label="Total estimado" value={MXN(totalEst)}
+          sub={obra?.presupuesto>0?`${NUM(totalEst/obra.presupuesto*100,1)}% del contrato`:""}
+          color={C.caliza} size={12}/>
+        <Kpi label="Pagado"      value={MXN(pagado)} sub="liquidado"            color={C.greenDk}  size={12}/>
+        <Kpi label="Por pagar"   value={MXN(factur)} sub="facturado/aprobado"   color={C.purpleDk} size={12}/>
+        <Kpi label="En proceso"  value={MXN(enProc)} sub="en elaboración"       color={C.yellowDk} size={12}/>
+        <Kpi label="Por estimar" value={MXN(porEst)} sub="saldo del contrato"   color={C.blueDk}   size={12}/>
+      </div>
+    </Card>
+
+    <Card>
+      <Tit>Relación de estimaciones</Tit>
+      <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+        Detalle de cada estimación presentada
+      </div>
+      {estimaciones.length === 0 && (
+        <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>
+          Aún no se han generado estimaciones.
+        </div>
+      )}
+      {estimaciones.map(e => {
+        const ecol = EST_COL[e.estatus] || C.yellow;
+        return <div key={e.no} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
+          borderLeft:`3px solid ${ecol}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
+            <Bdg color={ecol}>{e.estatus}</Bdg>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>Monto</div>
+              <div style={{fontSize:13,fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</div>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>Período</div>
+              <div style={{fontSize:11,color:C.textSec}}>{e.periodo||"—"}</div>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>Fecha factura</div>
+              <div style={{fontSize:11,color:C.textSec}}>{e.fechaFact||"—"}</div>
+            </div>
+          </div>
+        </div>;
+      })}
+    </Card>
+  </div>;
+}
+
+// ── PLAZOS (CLIENTE): solo lectura de inicio, fin y ampliaciones ───────────
+function PlazosCliente({obra}){
+  const[ampliaciones,setAmpliaciones]=useState([]);
+  useEffect(()=>{
+    fsGet(`obras/${obra.id}/contrato/plazos`).then(d=>{
+      if(d&&Array.isArray(d.ampliaciones)) setAmpliaciones(d.ampliaciones);
+    });
+  },[obra.id]);
+
+  const diasPlazo = (ini,fin) => {
+    if(!ini||!fin) return null;
+    return Math.round((new Date(fin) - new Date(ini))/(1000*60*60*24));
+  };
+
+  const hoy = new Date();
+  const finVigente = ampliaciones.length>0 ? ampliaciones[ampliaciones.length-1].fecha : obra.fin;
+  const totalDias = diasPlazo(obra.inicio, finVigente);
+  const transcurridos = obra.inicio ? Math.max(diasPlazo(obra.inicio, hoy.toISOString().slice(0,10))||0, 0) : 0;
+  const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
+  const pctPlazo = totalDias && totalDias > 0 ? Math.min((transcurridos/totalDias)*100, 100) : 0;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card accent={C.green}>
+      <Tit>Plazo de la obra</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginTop:10}}>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Inicio</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.green}}>{obra.inicio||"—"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
+          <div style={{fontSize:13,fontWeight:600,color:ampliaciones.length>0?C.yellow:C.green}}>{finVigente||"—"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración total</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza}}>{totalDias!=null?`${totalDias} días`:"—"}</div>
+        </div>
+      </div>
+      {totalDias != null && totalDias > 0 && <div style={{marginTop:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:4}}>
+          <span>Transcurridos: <b style={{color:C.textSec}}>{transcurridos} días</b></span>
+          <span>Restantes: <b style={{color:C.textSec}}>{restantes} días</b></span>
+        </div>
+        <Bar pct={pctPlazo} color={pctPlazo>=100?C.red:pctPlazo>=75?C.yellow:C.green}/>
+        <div style={{fontSize:9,color:C.textMut,marginTop:3,textAlign:"right"}}>{NUM(pctPlazo,1)}% del plazo</div>
+      </div>}
+    </Card>
+
+    {/* Plazo original (si hay ampliaciones, mostrarlo aparte) */}
+    {ampliaciones.length > 0 && <Card>
+      <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:6}}>Plazo original</div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textSec}}>
+        <div>Inicio: <b>{obra.inicio||"—"}</b></div>
+        <div>Fin: <b>{obra.fin||"—"}</b></div>
+        <div>Duración: <b>{diasPlazo(obra.inicio,obra.fin)||0} días</b></div>
+      </div>
+    </Card>}
+
+    {/* Ampliaciones */}
+    {ampliaciones.length > 0 && <Card>
+      <Tit>Ampliaciones de plazo</Tit>
+      {ampliaciones.map((amp,i) => (
+        <div key={amp.id||i} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
+          borderLeft:`3px solid ${i===0?C.yellow:C.orange}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <Bdg color={i===0?C.yellow:C.orange}>Ampliación {i+1}</Bdg>
+            <div style={{fontSize:13,fontWeight:700,color:C.caliza}}>{amp.fecha}</div>
+          </div>
+          {amp.justificacion && <div style={{fontSize:11,color:C.textSec,marginTop:4}}>
+            <span style={{fontSize:9,color:C.textMut}}>Justificación: </span>{amp.justificacion}
+          </div>}
+          {amp.autorizadoPor && <div style={{fontSize:10,color:C.textMut,marginTop:4}}>
+            Autorizada por: {amp.autorizadoPor}
+          </div>}
+          {obra.inicio && <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+            Duración acumulada: {diasPlazo(obra.inicio,amp.fecha)} días
+            {obra.fin && ` (+${diasPlazo(obra.fin,amp.fecha)} días vs plazo original)`}
+          </div>}
+        </div>
+      ))}
+    </Card>}
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SUBCONTRATOS
+// Cada obra puede tener N subcontratos. Cada subcontrato tiene su propio
+// catálogo de conceptos, avance por concepto y fotos por concepto.
+// Estructura Firestore: obras/{obraId}/subcontratos/lista = { items: [...] }
+// ════════════════════════════════════════════════════════════════════════════
+
+function Subcontratos({obra, rol}){
+  const editar = can(rol, "captura", "editar");
+  const[items,setItems]=useState([]);
+  const[cargando,setCargando]=useState(true);
+  const[seleccionado,setSeleccionado]=useState(null); // id de subcontrato abierto
+  const[modalNuevo,setModalNuevo]=useState(false);
+  const[saved,setSaved]=useState(false);
+
+  // Cargar de Firestore
+  useEffect(()=>{
+    fsGet(`obras/${obra.id}/subcontratos/lista`).then(d=>{
+      if(d && Array.isArray(d.items)) setItems(d.items);
+      setCargando(false);
+    });
+  },[obra.id]);
+
+  const guardar = async (nuevos) => {
+    setItems(nuevos);
+    const r = await fsSet(`obras/${obra.id}/subcontratos/lista`, {items: nuevos});
+    if(r){ setSaved(true); setTimeout(()=>setSaved(false), 2000); }
+  };
+
+  const crear = (data) => {
+    const id = `SC-${Date.now()}`;
+    const nuevo = {
+      id, nombre: data.nombre, proveedor: data.proveedor, monto: data.monto || 0,
+      fechaInicio: data.fechaInicio || "", fechaFin: data.fechaFin || "",
+      descripcion: data.descripcion || "", estado: "activa",
+      conceptos: [], notas: "", creadoEn: new Date().toISOString(),
+    };
+    guardar([...items, nuevo]);
+    setModalNuevo(false);
+    setSeleccionado(id);
+  };
+
+  const actualizar = (id, cambios) => {
+    guardar(items.map(s => s.id === id ? {...s, ...cambios} : s));
+  };
+
+  const eliminar = (id) => {
+    if(!window.confirm("¿Eliminar este subcontrato? Los datos no se pueden recuperar.")) return;
+    guardar(items.filter(s => s.id !== id));
+    if(seleccionado === id) setSeleccionado(null);
+  };
+
+  // Si hay uno abierto, mostrar el detalle
+  const detalle = items.find(s => s.id === seleccionado);
+
+  if(detalle){
+    return <DetalleSubcontrato sub={detalle} editar={editar} obra={obra}
+      onUpdate={cambios => actualizar(detalle.id, cambios)}
+      onVolver={()=>setSeleccionado(null)}
+      onEliminar={()=>eliminar(detalle.id)}/>;
+  }
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {modalNuevo && <ModalNuevoSubcontrato onSave={crear} onClose={()=>setModalNuevo(false)}/>}
+
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div>
+          <Tit>Subcontratos de la obra</Tit>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>{items.length} registrado(s)</div>
+        </div>
+        {editar && <button onClick={()=>setModalNuevo(true)} style={{background:C.caliza,border:"none",
+          borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+          + Nuevo subcontrato
+        </button>}
+      </div>
+
+      {cargando && <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>Cargando…</div>}
+      {!cargando && items.length === 0 && (
+        <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
+          Aún no hay subcontratos. {editar?'Click "+ Nuevo subcontrato" para registrar el primero.':''}
+        </div>
+      )}
+
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {items.map(s => {
+          const totalConceptos = s.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
+          const ejecutado = s.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
+          const pctAvance = totalConceptos > 0 ? (ejecutado/totalConceptos)*100 : 0;
+          const stCol = s.estado === "completada" ? C.green : s.estado === "pausada" ? C.yellow : C.blue;
+          return <div key={s.id} onClick={()=>setSeleccionado(s.id)}
+            style={{background:C.bg,borderRadius:10,padding:"13px 15px",cursor:"pointer",
+              borderLeft:`3px solid ${stCol}`,transition:"background .15s"}}
+            onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+            onMouseLeave={e=>e.currentTarget.style.background=C.bg}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,gap:8}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.caliza,marginBottom:2}}>{s.nombre}</div>
+                <div style={{fontSize:10,color:C.textMut}}>{s.proveedor||"Sin proveedor"}</div>
+              </div>
+              <Bdg color={stCol}>{(s.estado||"activa").toUpperCase()}</Bdg>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
+              {[["Monto contratado",MXN(s.monto||0),C.textPri],
+                ["Conceptos",String(s.conceptos.length),C.textSec],
+                ["Ejecutado",MXN(ejecutado),C.greenDk],
+                ["Avance",`${NUM(pctAvance,1)}%`,pctAvance>=100?C.green:C.blue]].map(([l,v,c])=>
+                <div key={l}>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
+                  <div style={{fontSize:11,fontWeight:600,color:c}}>{v}</div>
+                </div>)}
+            </div>
+            <Bar pct={pctAvance} color={pctAvance>=100?C.green:C.blue}/>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:9,color:C.textMut,marginTop:6}}>
+              <span>{s.fechaInicio?`Inicio: ${s.fechaInicio}`:""}{s.fechaFin?` · Fin: ${s.fechaFin}`:""}</span>
+              <span style={{color:C.caliza,fontWeight:600}}>Abrir detalle →</span>
+            </div>
+          </div>;
+        })}
+      </div>
+      {saved && <div style={{position:"fixed",bottom:60,right:20,background:C.green,color:"#fff",
+        padding:"6px 14px",borderRadius:6,fontSize:11,fontWeight:600,zIndex:50}}>Guardado</div>}
+    </Card>
+  </div>;
+}
+
+// ── MODAL NUEVO SUBCONTRATO ──
+function ModalNuevoSubcontrato({onSave, onClose}){
+  const[form,setForm]=useState({nombre:"",proveedor:"",monto:0,fechaInicio:"",fechaFin:"",descripcion:""});
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:460,maxHeight:"90vh",overflow:"auto"}}>
+      <div style={{fontSize:14,fontWeight:700,color:C.caliza,marginBottom:14}}>Nuevo subcontrato</div>
+      {[
+        ["Nombre del subcontrato","nombre","text","Ej: Electrificación nave 1"],
+        ["Proveedor / Contratista","proveedor","text","Razón social del subcontratista"],
+        ["Monto contratado (MXN)","monto","number","0"],
+        ["Fecha de inicio","fechaInicio","date",""],
+        ["Fecha de fin","fechaFin","date",""],
+        ["Descripción / Alcance","descripcion","textarea","Breve resumen del alcance contratado"],
+      ].map(([lbl,key,type,ph])=>(
+        <div key={key} style={{marginBottom:10}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
+          {type==="textarea" ? (
+            <textarea value={form[key]} placeholder={ph} rows={3}
+              onChange={e=>setForm({...form,[key]:e.target.value})}
+              style={{width:"100%",padding:"7px 10px",fontSize:11,border:`0.5px solid ${C.borderM}`,
+                borderRadius:6,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
+          ) : (
+            <Inp type={type} value={form[key]} placeholder={ph}
+              onChange={e=>setForm({...form,[key]:type==="number"?parseFloat(e.target.value)||0:e.target.value})}/>
+          )}
+        </div>
+      ))}
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+        <SecBtn onClick={onClose}>Cancelar</SecBtn>
+        <button onClick={()=>{
+          if(!form.nombre||!form.proveedor) { alert("Nombre y proveedor son requeridos"); return; }
+          onSave(form);
+        }} style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+          fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+          Crear subcontrato
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+// ── DETALLE DE UN SUBCONTRATO ──
+function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar}){
+  const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
+  const[conceptoFotos,setConceptoFotos]=useState(null); // concepto al que se cargan fotos
+  const[lightbox,setLightbox]=useState(null);
+  const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
+  const ejecutado = sub.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
+  const pctAvance = totalCat > 0 ? (ejecutado/totalCat)*100 : 0;
+
+  const SUBTABS = [["datos","Datos generales"],["catalogo","Catálogo de conceptos"],["fotos","Fotos por concepto"]];
+
+  // Helpers de edición de conceptos
+  const agregarConcepto = () => {
+    onUpdate({conceptos: [...sub.conceptos,
+      {id: Date.now(), clave:"", desc:"", unidad:"", cantidad:0, pu:0, importe:0, avance:0, fotos:[]}]});
+  };
+  const actualizarConcepto = (idx, cambios) => {
+    onUpdate({conceptos: sub.conceptos.map((c,i) => {
+      if(i !== idx) return c;
+      const nuevo = {...c, ...cambios};
+      if(("cantidad" in cambios) || ("pu" in cambios)) nuevo.importe = (nuevo.cantidad||0)*(nuevo.pu||0);
+      return nuevo;
+    })});
+  };
+  const eliminarConcepto = (idx) => {
+    onUpdate({conceptos: sub.conceptos.filter((_,i) => i !== idx)});
+  };
+
+  // Subir foto a concepto
+  const subirFotoConcepto = async (conceptoIdx, file) => {
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const url = await uploadFoto(obra.id, `sub_${sub.id}_${conceptoIdx}`, Date.now().toString(), e.target.result);
+        const concepto = sub.conceptos[conceptoIdx];
+        const fotos = [...(concepto.fotos||[]), {url, fecha: new Date().toISOString().slice(0,10)}];
+        actualizarConcepto(conceptoIdx, {fotos});
+      } catch(err){ console.error(err); alert("Error al subir foto"); }
+    };
+    reader.readAsDataURL(file);
+  };
+  const eliminarFotoConcepto = (conceptoIdx, fotoIdx) => {
+    const concepto = sub.conceptos[conceptoIdx];
+    const fotos = (concepto.fotos||[]).filter((_,i) => i !== fotoIdx);
+    actualizarConcepto(conceptoIdx, {fotos});
+  };
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {/* Header con navegación */}
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <button onClick={onVolver} style={{background:"none",border:`0.5px solid ${C.border}`,
+            borderRadius:6,padding:"3px 10px",fontSize:10,color:C.textSec,cursor:"pointer",marginBottom:8}}>
+            ← Todos los subcontratos
+          </button>
+          <div style={{fontSize:15,fontWeight:700,color:C.caliza}}>{sub.nombre}</div>
+          <div style={{fontSize:11,color:C.textSec,marginTop:2}}>{sub.proveedor}</div>
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{fontSize:20,fontWeight:700,color:pctAvance>=100?C.green:C.blue,lineHeight:1}}>{NUM(pctAvance,1)}%</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>avance ponderado</div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7}}>
+        <Kpi label="Monto contrato" value={MXN(sub.monto||0)} color={C.caliza} size={12}/>
+        <Kpi label="Total catálogo"  value={MXN(totalCat)}    color={C.blue}   size={12}/>
+        <Kpi label="Ejecutado"       value={MXN(ejecutado)}   color={C.greenDk} size={12}/>
+        <Kpi label="Conceptos"       value={String(sub.conceptos.length)} color={C.textPri} size={12}/>
+      </div>
+      <div style={{marginTop:10}}>
+        <Bar pct={pctAvance} color={pctAvance>=100?C.green:C.blue}/>
+      </div>
+    </Card>
+
+    {/* Sub-tabs */}
+    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
+      {SUBTABS.map(([id,lbl])=>(
+        <button key={id} onClick={()=>setSubtab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
+          fontSize:11,borderRadius:8,background:subtab===id?C.caliza:C.card,
+          border:`0.5px solid ${subtab===id?C.caliza:C.border}`,
+          color:subtab===id?C.bg:C.textSec,fontWeight:subtab===id?700:400,whiteSpace:"nowrap"}}>
+          {lbl}
+        </button>
+      ))}
+    </div>
+
+    {/* DATOS GENERALES */}
+    {subtab==="datos" && <Card>
+      <Tit>Datos del subcontrato</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:10}}>
+        {[
+          ["Nombre","nombre","text"],
+          ["Proveedor","proveedor","text"],
+          ["Monto contratado","monto","number"],
+          ["Fecha inicio","fechaInicio","date"],
+          ["Fecha fin","fechaFin","date"],
+          ["Estado","estado","select"],
+        ].map(([lbl,key,type])=>(
+          <div key={key}>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
+            {type==="select" ? (
+              editar ? <Sel value={sub[key]||"activa"} onChange={e=>onUpdate({[key]:e.target.value})}>
+                <option value="activa">Activa</option>
+                <option value="pausada">Pausada</option>
+                <option value="completada">Completada</option>
+                <option value="cancelada">Cancelada</option>
+              </Sel> : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{sub[key]||"—"}</div>
+            ) : (
+              editar ? <Inp type={type} value={sub[key]||""}
+                onChange={e=>onUpdate({[key]:type==="number"?parseFloat(e.target.value)||0:e.target.value})}/>
+              : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>
+                  {type==="number"?MXN(sub[key]||0):(sub[key]||"—")}
+                </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{marginTop:12}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Descripción / Alcance</div>
+        {editar ? <textarea value={sub.descripcion||""} rows={3}
+          onChange={e=>onUpdate({descripcion:e.target.value})}
+          style={{width:"100%",padding:"7px 10px",fontSize:11,border:`0.5px solid ${C.borderM}`,
+            borderRadius:6,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
+        : <div style={{fontSize:11,color:C.textSec,padding:"5px 0"}}>{sub.descripcion||"—"}</div>}
+      </div>
+      <div style={{marginTop:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Notas internas</div>
+        {editar ? <textarea value={sub.notas||""} rows={2}
+          onChange={e=>onUpdate({notas:e.target.value})}
+          style={{width:"100%",padding:"7px 10px",fontSize:11,border:`0.5px solid ${C.borderM}`,
+            borderRadius:6,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
+        : <div style={{fontSize:11,color:C.textSec,padding:"5px 0"}}>{sub.notas||"—"}</div>}
+      </div>
+      {editar && <div style={{marginTop:18,paddingTop:14,borderTop:`0.5px solid ${C.border}`,display:"flex",justifyContent:"flex-end"}}>
+        <button onClick={onEliminar} style={{background:"none",border:`0.5px solid ${C.red}66`,
+          borderRadius:6,padding:"6px 14px",fontSize:11,color:C.redDk,cursor:"pointer"}}>
+          Eliminar subcontrato
+        </button>
+      </div>}
+    </Card>}
+
+    {/* CATÁLOGO DE CONCEPTOS */}
+    {subtab==="catalogo" && <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <Tit>Catálogo de conceptos</Tit>
+        {editar && <SecBtn onClick={agregarConcepto}>+ Concepto</SecBtn>}
+      </div>
+      {sub.conceptos.length === 0 && (
+        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+          {editar?'Sin conceptos. Click "+ Concepto" para empezar.':'Sin conceptos registrados.'}
+        </div>
+      )}
+      {sub.conceptos.map((c,i)=>(
+        <div key={c.id||i} style={{background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:8,
+          borderLeft:`3px solid ${(c.avance||0)>=100?C.green:(c.avance||0)>0?C.blue:C.textMut}`}}>
+          <div style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 90px 90px 110px 70px 30px",gap:6,alignItems:"center"}}>
+            {editar ? (<>
+              <Inp type="text" value={c.clave||""} placeholder="Clave" style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{clave:e.target.value})}/>
+              <Inp type="text" value={c.desc||""} placeholder="Descripción" style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{desc:e.target.value})}/>
+              <Inp type="text" value={c.unidad||""} placeholder="Und" style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{unidad:e.target.value})}/>
+              <Inp type="number" value={c.cantidad||0} placeholder="Cant" style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{cantidad:parseFloat(e.target.value)||0})}/>
+              <Inp type="number" value={c.pu||0} placeholder="P.U." style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{pu:parseFloat(e.target.value)||0})}/>
+              <div style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(c.importe||0)}</div>
+              <Inp type="number" value={c.avance||0} placeholder="%" style={{fontSize:10}}
+                onChange={e=>actualizarConcepto(i,{avance:Math.min(Math.max(parseFloat(e.target.value)||0,0),100)})}/>
+              <button onClick={()=>eliminarConcepto(i)} style={{background:"none",border:"none",
+                color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
+            </>) : (<>
+              <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{c.clave||"—"}</span>
+              <span style={{fontSize:11,color:C.textPri}}>{c.desc||"—"}</span>
+              <span style={{fontSize:10,color:C.textSec}}>{c.unidad||"—"}</span>
+              <span style={{fontSize:10,color:C.textSec,textAlign:"right"}}>{NUM(c.cantidad||0,2)}</span>
+              <span style={{fontSize:10,color:C.textSec,textAlign:"right"}}>{MXN(c.pu||0)}</span>
+              <span style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(c.importe||0)}</span>
+              <span style={{fontSize:11,fontWeight:600,color:(c.avance||0)>=100?C.green:C.blue,textAlign:"right"}}>{NUM(c.avance||0,0)}%</span>
+              <span></span>
+            </>)}
+          </div>
+          {(c.avance||0) > 0 && <div style={{marginTop:6}}>
+            <Bar pct={c.avance||0} color={(c.avance||0)>=100?C.green:C.blue}/>
+          </div>}
+        </div>
+      ))}
+    </Card>}
+
+    {/* FOTOS POR CONCEPTO */}
+    {subtab==="fotos" && <Card>
+      <Tit>Fotografías por concepto</Tit>
+      <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+        Histórico de avance fotográfico de cada concepto
+      </div>
+      {sub.conceptos.length === 0 && (
+        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+          Agrega conceptos en el catálogo primero para poder cargar fotos.
+        </div>
+      )}
+      {sub.conceptos.map((c,i)=>{
+        const fotos = c.fotos || [];
+        return <div key={c.id||i} style={{marginBottom:16,paddingBottom:12,borderBottom:`0.5px solid ${C.border}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{c.clave||`#${i+1}`}</span>
+                <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{c.desc||"(sin descripción)"}</span>
+                <Bdg color={C.blue} small>{fotos.length} foto{fotos.length===1?"":"s"}</Bdg>
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginTop:2}}>Avance: {NUM(c.avance||0,0)}%</div>
+            </div>
+            {editar && <label style={{background:C.caliza,color:C.bg,padding:"4px 10px",borderRadius:6,
+              fontSize:10,fontWeight:600,cursor:"pointer",flexShrink:0}}>
+              + Foto
+              <input type="file" accept="image/*" style={{display:"none"}}
+                onChange={e=>{ if(e.target.files?.[0]) subirFotoConcepto(i, e.target.files[0]); e.target.value=""; }}/>
+            </label>}
+          </div>
+          {fotos.length === 0 ? (
+            <div style={{padding:14,background:C.bg,borderRadius:6,textAlign:"center",color:C.textMut,fontSize:10}}>
+              Sin fotos
+            </div>
+          ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:6}}>
+              {fotos.map((f,fi)=>{
+                const url = typeof f === "string" ? f : f.url;
+                return <div key={fi} style={{position:"relative",aspectRatio:"4/3",borderRadius:6,overflow:"hidden",background:C.bg}}>
+                  <img src={url} onClick={()=>setLightbox(url)}
+                    style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
+                  {f.fecha && <div style={{position:"absolute",bottom:0,left:0,right:0,
+                    background:"linear-gradient(transparent,rgba(0,0,0,0.6))",color:"#fff",
+                    fontSize:8,padding:"4px 6px"}}>{f.fecha}</div>}
+                  {editar && <button onClick={()=>eliminarFotoConcepto(i, fi)}
+                    style={{position:"absolute",top:4,right:4,background:"rgba(0,0,0,0.6)",
+                      border:"none",color:"#fff",borderRadius:99,width:20,height:20,fontSize:11,cursor:"pointer"}}>×</button>}
+                </div>;
+              })}
+            </div>
+          )}
+        </div>;
+      })}
+    </Card>}
+
+    {/* Lightbox */}
+    {lightbox && <div onClick={()=>setLightbox(null)}
+      style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:300,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"pointer"}}>
+      <img src={lightbox} style={{maxWidth:"95%",maxHeight:"95%",objectFit:"contain"}}/>
+    </div>}
+  </div>;
+}
+
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
 function Contrato({obra, setObra, rol}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
@@ -5363,11 +6088,12 @@ function Contrato({obra, setObra, rol}) {
 }
 
 const TABS_POR_ROL = {
-  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
-  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
-  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
-  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
-  admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
+  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
+  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 };
 
 const EST_DEFAULT = [
@@ -5481,7 +6207,12 @@ export default function App(){
 
   const obra=obras.find(o=>o.id===obraId);
   const setObra=u=>setObras(oo=>oo.map(o=>o.id===u.id?u:o));
-  const entrar=id=>{setObraId(id);setScreen("obra");setTab("dash");};
+  const entrar=id=>{
+    setObraId(id);setScreen("obra");
+    // Tab inicial = primera tab disponible según rol del usuario
+    const primerTab = (TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones)[0]?.id || "dash";
+    setTab(primerTab);
+  };
   const volver=()=>{setScreen("obras");setObraId(null);};
   const logout=async()=>{
     try { await signOut(fbAuth); } catch {}
@@ -5568,7 +6299,13 @@ export default function App(){
       {screen==="obra"&&tab==="estimaciones"&&obra&&<Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={usuario.rol}/>}
       {screen==="obra"&&tab==="riesgo"&&obra&&<Riesgo obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="presupuesto"&&obra&&<Presupuesto obra={obra} setObra={setObra} rol={usuario.rol}/>}
+      {screen==="obra"&&tab==="subcontratos"&&obra&&<Subcontratos obra={obra} rol={usuario.rol}/>}
       {screen==="obra"&&tab==="contrato"&&obra&&<Contrato obra={obra} setObra={setObra} rol={usuario.rol}/>}
+      {/* Vistas para rol cliente */}
+      {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
+      {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>
 
     {/* FOOTER */}
