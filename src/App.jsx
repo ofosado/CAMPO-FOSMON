@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+import { getFunctions, httpsCallable } from "firebase/functions";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
@@ -907,6 +908,19 @@ const fbApp  = initializeApp(firebaseConfig);
 const fbAuth = getAuth(fbApp);
 const fbDb   = getFirestore(fbApp);
 const fbStor = getStorage(fbApp);
+const fbFn   = getFunctions(fbApp, "us-central1");
+
+// Helpers para llamar Cloud Functions (gestión de usuarios)
+const callFn = async (name, data) => {
+  try {
+    const fn = httpsCallable(fbFn, name);
+    const res = await fn(data || {});
+    return { ok: true, data: res.data };
+  } catch (e) {
+    console.error(`callFn(${name})`, e);
+    return { ok: false, error: e.message || String(e), code: e.code };
+  }
+};
 
 // Helpers Firestore
 const fsGet  = async (path) => { try { const d = await getDoc(doc(fbDb, ...path.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
@@ -1825,11 +1839,29 @@ function Login({onLogin}){
       // Autenticar con Firebase Auth
       const cred = await signInWithEmailAndPassword(fbAuth, correo.trim(), pass);
       const email = cred.user.email.toLowerCase();
+      const emailId = email.replace(/@/g,'_').replace(/\./g,'_');
       // Buscar perfil en Firestore (para roles dinámicos)
-      let perfil = await fsGet(`usuarios/${email.replace('@','_').replace('.','_')}`);
+      let perfil = await fsGet(`usuarios/${emailId}`);
       if (!perfil) {
-        // Fallback a defaults hardcodeados
+        // Si no existe en Firestore: usar default hardcodeado y crear el documento
+        // (necesario para que Cloud Functions puedan verificar el rol del usuario)
         perfil = ROLES_DEFAULT[email] || { rol:"administrador_obra", nombre:email };
+        await fsSet(`usuarios/${emailId}`, {
+          email,
+          nombre: perfil.nombre,
+          rol: perfil.rol,
+          obras_asignadas: [],
+          activo: true,
+          uid: cred.user.uid,
+          creadoEn: new Date().toISOString(),
+          creadoPor: "auto-sync-from-login",
+        });
+      }
+      if (perfil.activo === false) {
+        setError("Tu usuario está desactivado. Contacta al administrador.");
+        try { await signOut(fbAuth); } catch {}
+        setLoading(false);
+        return;
       }
       onLogin({ correo:email, nombre:perfil.nombre, rol:perfil.rol, uid:cred.user.uid });
     } catch(e) {
@@ -2192,6 +2224,287 @@ function ModalNuevaObra({onSave,onClose,gpData}){
           </div>
         </>
       )}
+    </div>
+  </div>;
+}
+
+// ── GESTIÓN DE USUARIOS (solo director_general y admin_sistema) ────────────
+// Llama a Cloud Functions para crear/editar/eliminar usuarios en Firebase Auth + Firestore.
+function GestionUsuarios({usuario, obras, onClose}){
+  const[usuarios,setUsuarios]=useState([]);
+  const[cargando,setCargando]=useState(true);
+  const[error,setError]=useState("");
+  const[modalNuevo,setModalNuevo]=useState(false);
+  const[modalEditar,setModalEditar]=useState(null);
+  const[modalEliminar,setModalEliminar]=useState(null);
+  const[modalPassword,setModalPassword]=useState(null);
+  const[busy,setBusy]=useState(false);
+
+  const recargar = async () => {
+    setCargando(true); setError("");
+    const r = await callFn("listarUsuarios");
+    if(r.ok) setUsuarios(r.data.usuarios||[]);
+    else setError(r.error||"Error al cargar usuarios");
+    setCargando(false);
+  };
+
+  useEffect(()=>{ recargar(); },[]);
+
+  const rolColor = {
+    director_general: C.purple,
+    director_operaciones: C.blue,
+    gerente_construccion: C.green,
+    administrador_obra: C.yellow,
+    admin_sistema: C.caliza,
+    cliente: C.textMut,
+  };
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {error && <div style={{background:`${C.red}15`,border:`0.5px solid ${C.red}55`,borderRadius:8,
+      padding:"9px 12px",fontSize:11,color:C.redDk}}>⚠ {error}</div>}
+
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div>
+          <Tit>Gestión de usuarios</Tit>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Crear, editar y eliminar accesos a CAMPO</div>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <SecBtn onClick={recargar}>Recargar</SecBtn>
+          <button onClick={()=>setModalNuevo(true)} style={{background:C.caliza,border:"none",borderRadius:6,
+            padding:"6px 14px",fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+            + Nuevo usuario
+          </button>
+        </div>
+      </div>
+
+      {cargando ? <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>Cargando…</div>
+      : usuarios.length===0 ? <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>
+          Sin usuarios registrados. Crea el primero con "+ Nuevo usuario".
+        </div>
+      : <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {/* Header */}
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 1fr auto",gap:8,
+            padding:"6px 10px",fontSize:9,color:C.textMut,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+            <div>Usuario</div><div>Email</div><div>Rol</div><div>Estado</div><div></div>
+          </div>
+          {usuarios.map(u=>(
+            <div key={u.id} style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr 1fr auto",gap:8,
+              padding:"9px 10px",background:C.bg,borderRadius:8,alignItems:"center",
+              opacity:u.activo?1:0.55}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{u.nombre}</div>
+              <div style={{fontSize:10,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.email}</div>
+              <div><Bdg color={rolColor[u.rol]||C.textMut} small>{ROL_LABEL[u.rol]||u.rol}</Bdg></div>
+              <div>
+                <Bdg color={u.activo?C.green:C.red} small>{u.activo?"Activo":"Inactivo"}</Bdg>
+              </div>
+              <div style={{display:"flex",gap:4}}>
+                <button onClick={()=>setModalEditar(u)} title="Editar"
+                  style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:4,
+                    padding:"3px 8px",fontSize:9,color:C.textSec,cursor:"pointer"}}>Editar</button>
+                <button onClick={()=>setModalPassword(u)} title="Resetear contraseña"
+                  style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:4,
+                    padding:"3px 8px",fontSize:9,color:C.textSec,cursor:"pointer"}}>Pass</button>
+                {u.email !== usuario.correo && (
+                  <button onClick={()=>setModalEliminar(u)} title="Eliminar"
+                    style={{background:"none",border:`0.5px solid ${C.red}44`,borderRadius:4,
+                      padding:"3px 8px",fontSize:9,color:C.red,cursor:"pointer"}}>×</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>}
+    </Card>
+
+    {/* MODAL NUEVO */}
+    {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras}
+      onCancel={()=>setModalNuevo(false)} pedirPassword={true}
+      onConfirm={async (form)=>{
+        setBusy(true);
+        const r = await callFn("crearUsuario", form);
+        setBusy(false);
+        if(!r.ok){ alert("Error: "+r.error); return; }
+        setModalNuevo(false);
+        recargar();
+      }} busy={busy}/>}
+
+    {/* MODAL EDITAR */}
+    {modalEditar && <ModalUsuario titulo="Editar usuario" obras={obras} usuario={modalEditar}
+      onCancel={()=>setModalEditar(null)}
+      onConfirm={async (form)=>{
+        setBusy(true);
+        const cambios = {nombre:form.nombre, rol:form.rol, obras_asignadas:form.obras_asignadas, activo:form.activo};
+        const r = await callFn("actualizarUsuario", {email:modalEditar.email, cambios});
+        setBusy(false);
+        if(!r.ok){ alert("Error: "+r.error); return; }
+        setModalEditar(null);
+        recargar();
+      }} busy={busy}/>}
+
+    {/* MODAL RESETEAR PASSWORD */}
+    {modalPassword && <ModalPassword usuario={modalPassword}
+      onCancel={()=>setModalPassword(null)}
+      onConfirm={async (nuevaPassword)=>{
+        setBusy(true);
+        const r = await callFn("cambiarPassword", {email:modalPassword.email, nuevaPassword});
+        setBusy(false);
+        if(!r.ok){ alert("Error: "+r.error); return; }
+        setModalPassword(null);
+        alert(`Contraseña actualizada para ${modalPassword.email}`);
+      }} busy={busy}/>}
+
+    {/* MODAL ELIMINAR */}
+    {modalEliminar && <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:400}}>
+        <div style={{fontSize:13,fontWeight:600,color:C.redDk,marginBottom:8}}>Eliminar usuario permanentemente</div>
+        <div style={{fontSize:12,color:C.textSec,marginBottom:14}}>
+          ¿Eliminar a <b>{modalEliminar.nombre}</b> ({modalEliminar.email})?<br/>
+          Se borrará de Firebase Auth y de la base de datos. No se puede deshacer.
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <SecBtn onClick={()=>setModalEliminar(null)}>Cancelar</SecBtn>
+          <button disabled={busy} onClick={async()=>{
+            setBusy(true);
+            const r = await callFn("eliminarUsuario", {email:modalEliminar.email});
+            setBusy(false);
+            if(!r.ok){ alert("Error: "+r.error); return; }
+            setModalEliminar(null);
+            recargar();
+          }} style={{background:C.red,border:"none",borderRadius:6,padding:"7px 14px",
+            fontSize:11,fontWeight:700,color:"#fff",cursor:"pointer",opacity:busy?0.5:1}}>
+            {busy?"Eliminando…":"Sí, eliminar"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ── MODAL FORMULARIO USUARIO (nuevo o editar) ──
+function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword}){
+  const[form,setForm]=useState({
+    email: usuario?.email||"",
+    nombre: usuario?.nombre||"",
+    rol: usuario?.rol||"administrador_obra",
+    obras_asignadas: usuario?.obras_asignadas||[],
+    activo: usuario?.activo!==false,
+    password: "",
+  });
+
+  const ROLES = [
+    ["director_general","Director General"],
+    ["director_operaciones","Director de Operaciones"],
+    ["gerente_construccion","Gerente de Construcción"],
+    ["administrador_obra","Administrador de Obra"],
+    ["admin_sistema","Administrador de Sistema"],
+    ["cliente","Cliente"],
+  ];
+
+  const toggleObra = (id) => setForm(f=>{
+    const a = new Set(f.obras_asignadas);
+    if(a.has(id)) a.delete(id); else a.add(id);
+    return {...f, obras_asignadas:[...a]};
+  });
+
+  const submit = () => {
+    if(!form.email || !form.nombre || !form.rol) { alert("Email, nombre y rol son requeridos"); return; }
+    if(pedirPassword && (!form.password || form.password.length<6)) { alert("Contraseña mínimo 6 caracteres"); return; }
+    onConfirm(form);
+  };
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:480,maxHeight:"90vh",overflow:"auto"}}>
+      <div style={{fontSize:14,fontWeight:700,color:C.caliza,marginBottom:14}}>{titulo}</div>
+
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Correo</div>
+        <Inp type="email" value={form.email} disabled={!!usuario}
+          placeholder="usuario@fosmon.com.mx"
+          onChange={e=>setForm({...form, email:e.target.value})}/>
+      </div>
+
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Nombre completo</div>
+        <Inp type="text" value={form.nombre}
+          onChange={e=>setForm({...form, nombre:e.target.value})}/>
+      </div>
+
+      {pedirPassword && <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Contraseña inicial</div>
+        <Inp type="text" value={form.password} placeholder="mínimo 6 caracteres"
+          onChange={e=>setForm({...form, password:e.target.value})}/>
+        <div style={{fontSize:9,color:C.textMut,marginTop:3}}>El usuario debería cambiarla al entrar.</div>
+      </div>}
+
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Rol</div>
+        <Sel value={form.rol} onChange={e=>setForm({...form, rol:e.target.value})}>
+          {ROLES.map(([id,lbl])=><option key={id} value={id}>{lbl}</option>)}
+        </Sel>
+      </div>
+
+      {/* Asignación de obras — útil para clientes y admin de obra */}
+      {(form.rol==="cliente" || form.rol==="administrador_obra") && obras && obras.length>0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:5,textTransform:"uppercase"}}>
+            Obras asignadas {form.rol==="cliente"?"(qué obras puede ver el cliente)":"(qué obras administra)"}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:140,overflow:"auto",
+            border:`0.5px solid ${C.border}`,borderRadius:6,padding:8}}>
+            {obras.map(o=>(
+              <label key={o.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:11,cursor:"pointer"}}>
+                <input type="checkbox" checked={form.obras_asignadas.includes(o.id)}
+                  onChange={()=>toggleObra(o.id)}/>
+                <span style={{color:C.textPri}}>{o.id} · {o.nombre}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {usuario && <div style={{marginBottom:10}}>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:11,cursor:"pointer"}}>
+          <input type="checkbox" checked={form.activo}
+            onChange={e=>setForm({...form, activo:e.target.checked})}/>
+          <span style={{color:C.textPri}}>Usuario activo (puede iniciar sesión)</span>
+        </label>
+      </div>}
+
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+        <SecBtn onClick={onCancel}>Cancelar</SecBtn>
+        <button disabled={busy} onClick={submit} style={{background:C.caliza,border:"none",borderRadius:6,
+          padding:"7px 14px",fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",opacity:busy?0.5:1}}>
+          {busy?"Guardando…":(usuario?"Guardar cambios":"Crear usuario")}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+// ── MODAL RESETEAR CONTRASEÑA ──
+function ModalPassword({usuario, onCancel, onConfirm, busy}){
+  const[pass,setPass]=useState("");
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:380}}>
+      <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>Resetear contraseña</div>
+      <div style={{fontSize:11,color:C.textSec,marginBottom:14}}>
+        Usuario: <b>{usuario.nombre}</b> ({usuario.email})
+      </div>
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Nueva contraseña</div>
+        <Inp type="text" value={pass} placeholder="mínimo 6 caracteres" onChange={e=>setPass(e.target.value)}/>
+      </div>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+        <SecBtn onClick={onCancel}>Cancelar</SecBtn>
+        <button disabled={busy||pass.length<6} onClick={()=>onConfirm(pass)}
+          style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+            fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",opacity:(busy||pass.length<6)?0.5:1}}>
+          {busy?"Guardando…":"Guardar"}
+        </button>
+      </div>
     </div>
   </div>;
 }
@@ -5176,6 +5489,15 @@ export default function App(){
           <div style={{fontSize:9,color:C.textSec}}>{usuario.nombre.split(" ")[0]}</div>
           <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
         </div>
+        {["director_general","admin_sistema"].includes(usuario.rol) && (
+          <button onClick={()=>setScreen(screen==="usuarios"?"obras":"usuarios")}
+            style={{background:screen==="usuarios"?C.caliza:"none",
+              border:`0.5px solid ${screen==="usuarios"?C.caliza:C.border}`,borderRadius:6,
+              padding:"4px 8px",fontSize:10,
+              color:screen==="usuarios"?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
+            {screen==="usuarios"?"← Obras":"Usuarios"}
+          </button>
+        )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
           padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer"}}>Salir</button>
       </div>
@@ -5213,6 +5535,7 @@ export default function App(){
     </div>}
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
+      {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
       {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs}
