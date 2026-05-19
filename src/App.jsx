@@ -982,6 +982,7 @@ const ROLES_DEFAULT = {
   "ofosadog@fosmon.com.mx":  { rol:"director_operaciones", nombre:"Oscar Fosado Galland" },
   "aoliva@fosmon.com.mx":    { rol:"gerente_construccion", nombre:"Alejandro Noe Oliva Somellera" },
   "pcastillo@fosmon.com.mx": { rol:"administrador_obra",   nombre:"Pablo Castillo Villalobos" },
+  "lmayo@fosmon.com.mx":     { rol:"admin_sistema",        nombre:"Luis Mayo" },
 };
 
 
@@ -1390,6 +1391,7 @@ const ROL_LABEL = {
   director_operaciones:"Director de Operaciones",
   gerente_construccion:"Gerente de Construcción",
   administrador_obra:  "Administrador de Obra",
+  admin_sistema:       "Administrador de Sistema",
 };
 
 // Permisos: can(rol, modulo, accion)
@@ -1400,6 +1402,7 @@ const PERMISOS = {
   director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver", todas_obras:true  },
   gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
   administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver", todas_obras:false },
+  admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
 };
 
 function can(rol, modulo, accion="ver") {
@@ -5032,6 +5035,7 @@ const TABS_POR_ROL = {
   director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
   gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
   administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
 };
 
 const EST_DEFAULT = [
