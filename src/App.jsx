@@ -5478,11 +5478,128 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
   const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
   const[conceptoFotos,setConceptoFotos]=useState(null); // concepto al que se cargan fotos
   const[lightbox,setLightbox]=useState(null);
+  const[importPanel,setImportPanel]=useState(false);    // panel de importar catálogo
+  const[importBusy,setImportBusy]=useState(false);
+  const[importError,setImportError]=useState("");
+  const[importResultado,setImportResultado]=useState(null); // {conceptos, totalLeido, nFilasLeidas}
+  const[importModo,setImportModo]=useState("reemplazar"); // reemplazar | agregar
+  const fileImportRef = useRef();
+  const fileAdjuntoRef = useRef();
+  const[uploadingAdj,setUploadingAdj]=useState(false);
+
   const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
   const ejecutado = sub.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
   const pctAvance = totalCat > 0 ? (ejecutado/totalCat)*100 : 0;
+  // VALIDACIÓN DE MONTO: comparar lo escrito (sub.monto) vs suma del catálogo (totalCat)
+  const montoContrato = sub.monto || 0;
+  const difMonto = totalCat - montoContrato;
+  const pctDif = montoContrato > 0 ? Math.abs(difMonto / montoContrato) * 100 : 0;
+  let validacion = null;
+  if (sub.conceptos.length > 0 && montoContrato > 0) {
+    if (pctDif <= 1) validacion = { color: C.green, txt: "Cuadra", icon: "✓" };
+    else if (pctDif <= 5) validacion = { color: C.yellow, txt: "Desviación menor", icon: "!" };
+    else validacion = { color: C.red, txt: "Revisar", icon: "⚠" };
+  }
 
   const SUBTABS = [["datos","Datos generales"],["catalogo","Catálogo de conceptos"],["fotos","Fotos por concepto"]];
+
+  // ── IMPORTAR CATÁLOGO DESDE EXCEL/CSV ──
+  // Carga SheetJS si no está
+  useEffect(() => {
+    if (typeof window.XLSX === 'undefined') {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      document.head.appendChild(s);
+    }
+  }, []);
+
+  const procesarImport = (file) => {
+    if(!file) return;
+    setImportBusy(true); setImportError(""); setImportResultado(null);
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const ext = file.name.split('.').pop().toLowerCase();
+        let rows;
+        if (ext === 'csv') {
+          const text = new TextDecoder().decode(e.target.result);
+          rows = text.split('\n').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g,'')));
+        } else if (ext === 'xlsx' || ext === 'xls') {
+          if (typeof window.XLSX === 'undefined') {
+            setImportError("La librería XLSX está cargando. Espera 2 segundos y vuelve a intentar.");
+            setImportBusy(false);
+            return;
+          }
+          const wb = window.XLSX.read(e.target.result, {type:'array'});
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          rows = window.XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+        } else {
+          setImportError("Formato no soportado para parseo automático. Usa .xlsx, .xls o .csv. Para PDF, adjúntalo en 'Datos generales' como respaldo y captura el catálogo manualmente.");
+          setImportBusy(false);
+          return;
+        }
+        // Reusar el parser global con el monto del subcontrato como referencia
+        const res = parsearPresupuesto(rows, montoContrato);
+        if (!res.conceptos || res.conceptos.length === 0) {
+          setImportError("No se detectaron partidas válidas en el archivo. Verifica formato.");
+        } else {
+          setImportResultado(res);
+        }
+      } catch (err) {
+        setImportError("Error al leer el archivo: " + err.message);
+      }
+      setImportBusy(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const confirmarImport = () => {
+    if (!importResultado) return;
+    // Convertir a formato del subcontrato (id, clave, desc, unidad, cantidad, pu, importe, avance, fotos)
+    const nuevos = importResultado.conceptos.map((c, i) => ({
+      id: Date.now() + i,
+      clave: c.clave || "",
+      desc: c.desc || "",
+      unidad: c.unidad || "",
+      cantidad: c.cant || 0,
+      pu: c.pu || 0,
+      importe: c.importe || 0,
+      avance: 0,
+      fotos: [],
+    }));
+    const conceptosFinales = importModo === "reemplazar"
+      ? nuevos
+      : [...sub.conceptos, ...nuevos];
+    onUpdate({ conceptos: conceptosFinales });
+    setImportPanel(false);
+    setImportResultado(null);
+    setSubtab("catalogo");
+  };
+
+  // ── DOCUMENTO ADJUNTO (cotización original PDF/imagen/Excel) ──
+  const subirAdjunto = async (file) => {
+    if(!file) return;
+    setUploadingAdj(true);
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const ext = file.name.split('.').pop().toLowerCase();
+        const fileId = `cotizacion_${Date.now()}`;
+        const url = await uploadFoto(obra.id, `subdoc_${sub.id}`, fileId, e.target.result);
+        onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: new Date().toISOString().slice(0,10) } });
+      } catch (err) {
+        console.error(err);
+        alert("Error al subir documento: " + err.message);
+      }
+      setUploadingAdj(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const eliminarAdjunto = () => {
+    if (!window.confirm("¿Eliminar el documento adjunto?")) return;
+    onUpdate({ adjunto: null });
+  };
 
   // Helpers de edición de conceptos
   const agregarConcepto = () => {
@@ -5539,11 +5656,31 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7}}>
-        <Kpi label="Monto contrato" value={MXN(sub.monto||0)} color={C.caliza} size={12}/>
-        <Kpi label="Total catálogo"  value={MXN(totalCat)}    color={C.blue}   size={12}/>
+        <Kpi label="Monto contrato" value={MXN(montoContrato)} color={C.caliza} size={12}/>
+        <Kpi label="Total catálogo"  value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "captura conceptos"} color={validacion?.color || C.blue} size={12}/>
         <Kpi label="Ejecutado"       value={MXN(ejecutado)}   color={C.greenDk} size={12}/>
         <Kpi label="Conceptos"       value={String(sub.conceptos.length)} color={C.textPri} size={12}/>
       </div>
+      {/* Validador de monto: barra y mensaje */}
+      {validacion && (
+        <div style={{background:`${validacion.color}12`,border:`0.5px solid ${validacion.color}44`,
+          borderRadius:8,padding:"8px 11px",marginTop:10,
+          display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:14,fontWeight:700,color:validacion.color}}>{validacion.icon}</span>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:validacion.color}}>
+                {validacion.txt}: {difMonto > 0 ? "+" : ""}{MXN(difMonto)} ({NUM(pctDif,2)}%)
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
+                {difMonto > 0 ? "Catálogo excede el monto contratado — ajusta cantidades o P.U." :
+                 difMonto < 0 ? "Catálogo está por debajo del contrato — faltan partidas o ajustar precios" :
+                 "Catálogo coincide exactamente con el contrato"}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{marginTop:10}}>
         <Bar pct={pctAvance} color={pctAvance>=100?C.green:C.blue}/>
       </div>
@@ -5608,6 +5745,52 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
             borderRadius:6,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
         : <div style={{fontSize:11,color:C.textSec,padding:"5px 0"}}>{sub.notas||"—"}</div>}
       </div>
+
+      {/* Documento original adjunto (cotización/contrato firmado) */}
+      <div style={{marginTop:14,paddingTop:12,borderTop:`0.5px solid ${C.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <div>
+            <div style={{fontSize:10,fontWeight:600,color:C.textPri,letterSpacing:"0.02em"}}>DOCUMENTO ORIGINAL</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:2}}>Cotización o contrato firmado por el subcontratista (PDF, Excel o imagen)</div>
+          </div>
+          {editar && !sub.adjunto && (
+            <label style={{background:C.caliza,color:C.bg,padding:"5px 12px",borderRadius:6,
+              fontSize:11,fontWeight:600,cursor:"pointer",opacity:uploadingAdj?0.5:1}}>
+              {uploadingAdj ? "Subiendo..." : "+ Subir documento"}
+              <input ref={fileAdjuntoRef} type="file"
+                accept=".pdf,.xlsx,.xls,.doc,.docx,.jpg,.jpeg,.png"
+                style={{display:"none"}}
+                disabled={uploadingAdj}
+                onChange={e=>{ if(e.target.files?.[0]) subirAdjunto(e.target.files[0]); e.target.value=""; }}/>
+            </label>
+          )}
+        </div>
+        {sub.adjunto ? (
+          <div style={{background:C.bg,borderRadius:8,padding:"10px 12px",
+            display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {sub.adjunto.nombre}
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+                {sub.adjunto.ext?.toUpperCase()} · subido {sub.adjunto.fecha}
+                {sub.adjunto.tamano ? ` · ${Math.round(sub.adjunto.tamano/1024)} KB` : ""}
+              </div>
+            </div>
+            <a href={sub.adjunto.url} target="_blank" rel="noopener noreferrer"
+              style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
+                padding:"4px 10px",fontSize:10,color:C.textSec,textDecoration:"none",whiteSpace:"nowrap"}}>
+              Ver / Descargar
+            </a>
+            {editar && <button onClick={eliminarAdjunto}
+              style={{background:"none",border:`0.5px solid ${C.red}44`,borderRadius:6,
+                padding:"4px 8px",fontSize:10,color:C.red,cursor:"pointer"}}>×</button>}
+          </div>
+        ) : (
+          <div style={{fontSize:10,color:C.textMut,padding:"8px 0"}}>Sin documento adjunto.</div>
+        )}
+      </div>
+
       {editar && <div style={{marginTop:18,paddingTop:14,borderTop:`0.5px solid ${C.border}`,display:"flex",justifyContent:"flex-end"}}>
         <button onClick={onEliminar} style={{background:"none",border:`0.5px solid ${C.red}66`,
           borderRadius:6,padding:"6px 14px",fontSize:11,color:C.redDk,cursor:"pointer"}}>
@@ -5618,13 +5801,102 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
 
     {/* CATÁLOGO DE CONCEPTOS */}
     {subtab==="catalogo" && <Card>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:6}}>
         <Tit>Catálogo de conceptos</Tit>
-        {editar && <SecBtn onClick={agregarConcepto}>+ Concepto</SecBtn>}
+        {editar && (
+          <div style={{display:"flex",gap:6}}>
+            <SecBtn onClick={()=>setImportPanel(!importPanel)}>{importPanel ? "Cerrar" : "+ Importar catálogo"}</SecBtn>
+            <SecBtn onClick={agregarConcepto}>+ Concepto</SecBtn>
+          </div>
+        )}
       </div>
-      {sub.conceptos.length === 0 && (
+
+      {/* PANEL DE IMPORTACIÓN */}
+      {importPanel && editar && (
+        <div style={{background:C.bg,border:`0.5px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:8}}>
+            Importar catálogo desde archivo
+          </div>
+
+          {/* Selector de modo (reemplazar vs agregar) */}
+          {sub.conceptos.length > 0 && (
+            <div style={{display:"flex",gap:14,marginBottom:10}}>
+              <label style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:C.textSec,cursor:"pointer"}}>
+                <input type="radio" name="importModo" value="reemplazar"
+                  checked={importModo==="reemplazar"} onChange={()=>setImportModo("reemplazar")}/>
+                <span><b>Reemplazar</b> catálogo actual ({sub.conceptos.length} conceptos)</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:C.textSec,cursor:"pointer"}}>
+                <input type="radio" name="importModo" value="agregar"
+                  checked={importModo==="agregar"} onChange={()=>setImportModo("agregar")}/>
+                <span><b>Agregar</b> al catálogo existente</span>
+              </label>
+            </div>
+          )}
+
+          {/* Dropzone */}
+          <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:8,padding:18,textAlign:"center",
+            cursor:"pointer",transition:"border-color .2s"}}
+            onClick={()=>fileImportRef.current?.click()}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=C.caliza;}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor=C.borderM;}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=C.borderM;procesarImport(e.dataTransfer.files[0]);}}>
+            {importBusy
+              ? <div style={{fontSize:12,color:C.caliza}}>Analizando archivo...</div>
+              : <>
+                  <div style={{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:3}}>
+                    Arrastra aquí el archivo del catálogo
+                  </div>
+                  <div style={{fontSize:9,color:C.textMut}}>
+                    Formatos: .xlsx, .xls, .csv · El parser detecta automáticamente clave, descripción, unidad, cantidad, P.U. e importe
+                  </div>
+                  <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+                    Para PDF: adjúntalo como respaldo en "Datos generales" y captura el catálogo a mano.
+                  </div>
+                </>}
+          </div>
+          <input ref={fileImportRef} type="file" accept=".xlsx,.xls,.csv" style={{display:"none"}}
+            onChange={e=>{ if(e.target.files?.[0]) procesarImport(e.target.files[0]); e.target.value=""; }}/>
+
+          {importError && (
+            <div style={{background:`${C.red}15`,border:`0.5px solid ${C.red}55`,borderRadius:6,
+              padding:"7px 10px",fontSize:10,color:C.redDk,marginTop:8}}>
+              {importError}
+            </div>
+          )}
+
+          {/* Preview de resultados */}
+          {importResultado && (
+            <div style={{marginTop:12}}>
+              {(() => {
+                const dif = importResultado.totalLeido - montoContrato;
+                const pct = montoContrato > 0 ? Math.abs(dif/montoContrato)*100 : 0;
+                const ok = montoContrato === 0 ? null : pct <= 1 ? {color:C.green,txt:"Cuadra"} : pct <= 5 ? {color:C.yellow,txt:"Desviación menor"} : {color:C.red,txt:"Revisar"};
+                return <>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginBottom:8}}>
+                    <Kpi label="Conceptos" value={importResultado.conceptos.length} sub={`de ${importResultado.nFilasLeidas} filas`} color={C.blue}/>
+                    <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="capturado" color={C.caliza} size={12}/>
+                    <Kpi label="Total leído"   value={MXN(importResultado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
+                    {ok && <Kpi label="Diferencia" value={MXN(Math.abs(dif))} sub={`${ok.txt} (${NUM(pct,2)}%)`} color={ok.color} size={12}/>}
+                  </div>
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:10}}>
+                    <SecBtn onClick={()=>{setImportResultado(null);setImportError("");}}>Limpiar</SecBtn>
+                    <button onClick={confirmarImport}
+                      style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+                        fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+                      {importModo==="reemplazar" ? "Reemplazar catálogo" : "Agregar conceptos"}
+                    </button>
+                  </div>
+                </>;
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {sub.conceptos.length === 0 && !importPanel && (
         <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
-          {editar?'Sin conceptos. Click "+ Concepto" para empezar.':'Sin conceptos registrados.'}
+          {editar?'Sin conceptos. Click "+ Concepto" para capturar a mano o "+ Importar catálogo" para subir desde Excel.':'Sin conceptos registrados.'}
         </div>
       )}
       {sub.conceptos.map((c,i)=>(
