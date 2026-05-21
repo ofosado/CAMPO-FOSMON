@@ -3225,15 +3225,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const pctGasto = obra.presupuesto > 0 ? gt/obra.presupuesto*100 : 0;
   const brecha = pctGasto - af;
   const alertas = [];
-  if (mpct < 6 && me > 0) alertas.push({tipo:"riesgo",color:C.red,texto:`Margen crítico: ${NUM(mpct,1)}%`,tab:"riesgo"});
-  else if (mpct < 15 && me > 0) alertas.push({tipo:"riesgo",color:C.yellow,texto:`Margen en vigilancia: ${NUM(mpct,1)}%`,tab:"riesgo"});
-  if (brecha > 15) alertas.push({tipo:"riesgo",color:C.red,texto:`Brecha gasto-avance: +${NUM(brecha,1)}pp`,tab:"riesgo"});
+  if (mpct < 6 && me > 0) alertas.push({tipo:"riesgo",color:C.red,texto:`Margen crítico: ${NUM(mpct,1)}%`,tab:"operacion",subTab:"estimaciones"});
+  else if (mpct < 15 && me > 0) alertas.push({tipo:"riesgo",color:C.yellow,texto:`Margen en vigilancia: ${NUM(mpct,1)}%`,tab:"operacion",subTab:"estimaciones"});
+  if (brecha > 15) alertas.push({tipo:"riesgo",color:C.red,texto:`Brecha gasto-avance: +${NUM(brecha,1)}pp`,tab:"operacion",subTab:"avance"});
   // Estimaciones atrasadas
   const diasPago = obra.diasPago||30; const hoy = new Date();
   const estAtrasadas = estimaciones.filter(e => e.estatus==="Facturada" && e.fechaFact
     && Math.floor((hoy-new Date(e.fechaFact))/(1000*60*60*24)) - diasPago > 0);
   if (estAtrasadas.length > 0) alertas.push({tipo:"estim",color:C.red,
-    texto:`${estAtrasadas.length} estimación(es) atrasada(s) en cobro`, tab:"estimaciones"});
+    texto:`${estAtrasadas.length} estimación(es) atrasada(s) en cobro`, tab:"operacion", subTab:"estimaciones"});
   // Subcontratos sin pago vs avance alto
   const subsDesfasados = subcontratos.filter(s => {
     const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
@@ -3244,29 +3244,30 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     return pctFis > 0 && (pctFis - pctFin) > 20;
   });
   if (subsDesfasados.length > 0) alertas.push({tipo:"sub",color:C.yellow,
-    texto:`${subsDesfasados.length} subcontrato(s) con desfase obra vs pago`, tab:"subcontratos"});
+    texto:`${subsDesfasados.length} subcontrato(s) con desfase obra vs pago`, tab:"operacion", subTab:"subcontratos"});
 
   // ── Wrapper para hacer secciones clickeables ──
-  const clickableCard = (tabId, extraStyle={}) => onNavTab && tabId ? {
+  // Acepta tabId principal y opcionalmente subTabId (para navegar a Operación > Avance, etc.)
+  const clickableCard = (tabId, subTabId, extraStyle={}) => onNavTab && tabId ? {
     cursor:"pointer", transition:"transform .12s, box-shadow .12s", ...extraStyle,
     onMouseEnter: e=>{e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)";},
     onMouseLeave: e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="";},
-    onClick: ()=>onNavTab(tabId)
+    onClick: ()=>onNavTab(tabId, subTabId)
   } : {};
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {/* BLOQUE 1: KPIs PRINCIPALES (clickables) */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-      <div {...clickableCard("captura")}>
-        <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ver captura ›"   color={semA(af)}/>
+      <div {...clickableCard("operacion","avance")}>
+        <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ver avance ›"   color={semA(af)}/>
       </div>
-      <div {...clickableCard("estimaciones")}>
+      <div {...clickableCard("operacion","estimaciones")}>
         <Kpi label="Monto ejecutado" value={MXN(me)}         sub="vs estimaciones ›" color={C.blue} size={12}/>
       </div>
       <div {...clickableCard("gastos")}>
         <Kpi label="Gasto total"     value={MXN(gt)}         sub="ver gastos GP ›"   color={C.red}  size={12}/>
       </div>
-      <div {...clickableCard("captura")}>
+      <div {...clickableCard("operacion","nomina")}>
         <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
       </div>
     </div>
@@ -3280,7 +3281,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:5}}>
           {alertas.map((a,i)=>(
-            <div key={i} onClick={()=>onNavTab && onNavTab(a.tab)}
+            <div key={i} onClick={()=>onNavTab && onNavTab(a.tab, a.subTab)}
               style={{background:C.bg,borderRadius:6,padding:"7px 11px",fontSize:10,
                 borderLeft:`3px solid ${a.color}`,cursor:onNavTab?"pointer":"default",
                 display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
@@ -3291,9 +3292,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         </div>
       </Card>
     )}
-    <Card accent={mc} {...clickableCard("riesgo")}>
+    <Card accent={mc} {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver riesgo ›</span>}</Tit>
+        <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Monto ejecutado − Gasto total</div></div>
         <div style={{background:`${mc}22`,border:`0.5px solid ${mc}44`,borderRadius:4,
           padding:"3px 9px",fontSize:10,fontWeight:600,color:mc,whiteSpace:"nowrap"}}>
@@ -3317,7 +3318,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         <span>$0</span><span style={{color:C.yellow}}>↑ umbral 15%</span><span>{MXN(obra.presupuesto)}</span>
       </div>
     </Card>
-    <Card {...clickableCard("estimaciones")}>
+    <Card {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <Tit>Estimaciones {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
         <span style={{fontSize:9,color:C.textMut}}>{estimaciones.length} est. · Amort {obra.pctAnticipo}% · FG {obra.pctFondoGar}%</span>
@@ -3331,7 +3332,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     </Card>
     {/* ── SUBCONTRATOS (resumen en Dashboard) ── */}
     {subcontratos.length > 0 && (
-      <Card {...clickableCard("subcontratos")}>
+      <Card {...clickableCard("operacion","subcontratos")}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <Tit>Subcontratos {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver módulo ›</span>}</Tit>
           <span style={{fontSize:9,color:C.textMut}}>
@@ -3473,7 +3474,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 
     <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria} ampliaciones={[...(obra.finAmpliado?[{fecha:obra.finAmpliado,label:"Ampliación 1"}]:[])]}/>
 
-    <Card {...clickableCard("captura")}>
+    <Card {...clickableCard("operacion","nomina")}>
       <Tit>Personal en campo — Semana 18 {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver n\u00f3mina ›</span>}</Tit>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
         <Kpi label="Total"     value={dir+ind} sub="trabajadores"  color={C.caliza}/>
@@ -3482,8 +3483,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </div>
     </Card>
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
-    <Card {...clickableCard("captura")}>
-      <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver captura ›</span>}</Tit>
+    <Card {...clickableCard("operacion","avance")}>
+      <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
       {top4.map((s,i)=>{
         const fotos=(CATALOGO[s.sec]?.conceptos||[]).flatMap(c=>c.fotos||[]);
         const mostrar=fotos.slice(0,2);
@@ -3564,9 +3565,112 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// OPERACIÓN — Wrapper con sub-tabs: lo que se reporta semana a semana
+// (Avance · Almacén · Maquinaria · Nómina · Estimaciones · Subcontratos)
+// Cada sub-tab tiene su propio mini-dashboard arriba (Sprint B).
+// ════════════════════════════════════════════════════════════════════════════
+function Operacion({subTab,setSubTab,obra,setObra,rol,
+                   subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
+                   estimaciones,setEstimaciones,subcontratos,setSubcontratos}){
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {/* Sub-tabs */}
+    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+      background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
+      {SUBTABS_OPERACION.map(t => (
+        <button key={t.id} onClick={()=>setSubTab(t.id)}
+          style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
+            background: subTab===t.id ? C.caliza : "transparent",
+            border:"none",
+            color: subTab===t.id ? C.bg : C.textSec,
+            fontWeight: subTab===t.id ? 700 : 400, whiteSpace:"nowrap", cursor:"pointer"}}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+
+    {/* RESUMEN: mini-dashboard de operación con accesos rápidos */}
+    {subTab==="resumen" && (
+      <Card>
+        <Tit>Resumen de Operación</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+          Reporte semanal de la obra. Selecciona la sección que quieres actualizar.
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+          {SUBTABS_OPERACION.filter(t=>t.id!=="resumen").map(t => (
+            <div key={t.id} onClick={()=>setSubTab(t.id)}
+              style={{background:C.bg,borderRadius:8,padding:"14px 12px",cursor:"pointer",
+                border:`0.5px solid ${C.border}`,transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor=C.caliza;e.currentTarget.style.transform="translateY(-1px)";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.transform="";}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.caliza,marginBottom:3}}>{t.label}</div>
+              <div style={{fontSize:9,color:C.textMut}}>Abrir ›</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    )}
+
+    {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) */}
+    {subTab==="avance" && (
+      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+        materiales={materiales} setMateriales={setMateriales}
+        rol={rol} obra={obra} forceTab="volumenes"/>
+    )}
+    {subTab==="almacen" && (
+      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+        materiales={materiales} setMateriales={setMateriales}
+        rol={rol} obra={obra} forceTab="materiales"/>
+    )}
+    {subTab==="maquinaria" && (
+      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+        materiales={materiales} setMateriales={setMateriales}
+        rol={rol} obra={obra} forceTab="maquinaria"/>
+    )}
+    {subTab==="nomina" && (
+      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+        materiales={materiales} setMateriales={setMateriales}
+        rol={rol} obra={obra} forceTab="nomina"/>
+    )}
+    {subTab==="estimaciones" && (
+      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol}/>
+    )}
+    {subTab==="subcontratos" && (
+      <Subcontratos obra={obra} rol={rol} items={subcontratos} setItems={setSubcontratos}/>
+    )}
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
+// ════════════════════════════════════════════════════════════════════════════
+function Planeacion({subTab,setSubTab,obra,setObra,rol}){
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+      background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
+      {SUBTABS_PLANEACION.map(t => (
+        <button key={t.id} onClick={()=>setSubTab(t.id)}
+          style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
+            background: subTab===t.id ? C.caliza : "transparent",
+            border:"none",
+            color: subTab===t.id ? C.bg : C.textSec,
+            fontWeight: subTab===t.id ? 700 : 400, whiteSpace:"nowrap", cursor:"pointer"}}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol}/>}
+    {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol}/>}
+  </div>;
+}
+
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra}){
-  const[tab,setTab]=useState("volumenes");
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab}){
+  // Si forceTab viene (porque el wrapper Operación define qué sub-tab mostrar),
+  // ocultamos las tabs internas y usamos el tab forzado.
+  const[tabLocal,setTab]=useState("volumenes");
+  const tab = forceTab || tabLocal;
+  const ocultarTabs = !!forceTab;
   const[exp,setExp]=useState({});
   const editar=can(rol,"captura","editar");
   const addFoto=(sec,foto)=>setSubs(ss=>ss.map(s=>s.sec===sec?{...s,fotos:{...s.fotos,[sec]:[...(s.fotos[sec]||[]),foto]}}:s));
@@ -3579,12 +3683,12 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
        Vista de solo lectura — tu rol no tiene permiso para editar este módulo.
     </div>}
-    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,paddingBottom:1}}>
+    {!ocultarTabs && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,paddingBottom:1}}>
       {[["volumenes","Volúmenes"],["maquinaria","Maquinaria"],["materiales","Almacén"],["nomina","Nómina"]].map(([id,lbl])=>
         <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:8,
           background:tab===id?C.caliza:C.card,border:`0.5px solid ${tab===id?C.caliza:C.border}`,
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
-    </div>
+    </div>}
 
     {tab==="volumenes"&&<Card>
       <Tit>Avance por subsección</Tit>
@@ -6569,14 +6673,35 @@ function Contrato({obra, setObra, rol}) {
   );
 }
 
+// MENÚ PRINCIPAL: 4 tabs por rol (la organización fina vive dentro de cada uno)
+// - Dashboard: vista ejecutiva consolidada
+// - Operación: lo que se reporta semana a semana (avance, almacén, maq, nómina, estimaciones, subs)
+// - Planeación: contrato y presupuesto (lo que define la obra)
+// - Gastos GP: datos del Sheet
 const TABS_POR_ROL = {
-  director_general:    [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
-  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
-  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"presupuesto",label:"Presupuesto"},{id:"contrato",label:"Contrato"}],
-  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"captura",label:"Capturar avance"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
-  admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"gastos",label:"Gastos GP"},{id:"estimaciones",label:"Estimaciones"},{id:"subcontratos",label:"Subcontratos"},{id:"riesgo",label:"Riesgo"},{id:"contrato",label:"Contrato"}],
+  director_general:    [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  director_operaciones:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 };
+
+// SUB-TABS dentro de cada sección principal
+const SUBTABS_OPERACION = [
+  {id:"resumen", label:"Resumen"},
+  {id:"avance", label:"Avance físico"},
+  {id:"almacen", label:"Almacén"},
+  {id:"maquinaria", label:"Maquinaria"},
+  {id:"nomina", label:"Nómina"},
+  {id:"estimaciones", label:"Estimaciones"},
+  {id:"subcontratos", label:"Subcontratos"},
+];
+
+const SUBTABS_PLANEACION = [
+  {id:"contrato", label:"Contrato"},
+  {id:"presupuesto", label:"Presupuesto"},
+];
 
 const EST_DEFAULT = [
   {no:1,monto:8500000,periodo:"01–31 Mar 2026",estatus:"Pagada"},
@@ -6589,6 +6714,15 @@ export default function App(){
   const[screen,setScreen]=useState("obras");
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
+  // Sub-tabs activos dentro de Operación y Planeación
+  const[subTabOper,setSubTabOper]=useState("resumen");
+  const[subTabPlan,setSubTabPlan]=useState("contrato");
+  // Helper: navegación desde Dashboard. Si pasa subTab, lo activa también.
+  const navTab = (tabId, subTabId) => {
+    setTab(tabId);
+    if (tabId === "operacion" && subTabId) setSubTabOper(subTabId);
+    if (tabId === "planeacion" && subTabId) setSubTabPlan(subTabId);
+  };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP } = useGPConstruct();
@@ -6775,20 +6909,32 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} onNavTab={setTab}/>}
-      {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs}
-        setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
-        maquinaria={maquinaria}
-        setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
-        materiales={materiales}
-        setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
-        rol={usuario.rol} obra={obra}/>}
+
+      {/* DASHBOARD ejecutivo */}
+      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} onNavTab={navTab}/>}
+
+      {/* OPERACIÓN: wrapper con sub-tabs */}
+      {screen==="obra"&&tab==="operacion"&&obra&&(
+        <Operacion
+          subTab={subTabOper} setSubTab={setSubTabOper}
+          obra={obra} setObra={setObra} rol={usuario.rol}
+          subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
+          maquinaria={maquinaria} setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
+          materiales={materiales} setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          subcontratos={subcontratos} setSubcontratos={setSubcontratos}/>
+      )}
+
+      {/* GASTOS GP */}
       {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol}/>}
-      {screen==="obra"&&tab==="estimaciones"&&obra&&<Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={usuario.rol}/>}
-      {screen==="obra"&&tab==="riesgo"&&obra&&<Riesgo obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
-      {screen==="obra"&&tab==="presupuesto"&&obra&&<Presupuesto obra={obra} setObra={setObra} rol={usuario.rol}/>}
-      {screen==="obra"&&tab==="subcontratos"&&obra&&<Subcontratos obra={obra} rol={usuario.rol} items={subcontratos} setItems={setSubcontratos}/>}
-      {screen==="obra"&&tab==="contrato"&&obra&&<Contrato obra={obra} setObra={setObra} rol={usuario.rol}/>}
+
+      {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
+      {screen==="obra"&&tab==="planeacion"&&obra&&(
+        <Planeacion
+          subTab={subTabPlan} setSubTab={setSubTabPlan}
+          obra={obra} setObra={setObra} rol={usuario.rol}/>
+      )}
+
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
       {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
