@@ -3201,7 +3201,7 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
 }
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   const gt=obra.gastoGP+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
   const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
@@ -3220,16 +3220,80 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
   const estAmort =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
   const totalEst =estTotal;
   const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
+
+  // ── ALERTAS automáticas ──
+  const pctGasto = obra.presupuesto > 0 ? gt/obra.presupuesto*100 : 0;
+  const brecha = pctGasto - af;
+  const alertas = [];
+  if (mpct < 6 && me > 0) alertas.push({tipo:"riesgo",color:C.red,texto:`Margen crítico: ${NUM(mpct,1)}%`,tab:"riesgo"});
+  else if (mpct < 15 && me > 0) alertas.push({tipo:"riesgo",color:C.yellow,texto:`Margen en vigilancia: ${NUM(mpct,1)}%`,tab:"riesgo"});
+  if (brecha > 15) alertas.push({tipo:"riesgo",color:C.red,texto:`Brecha gasto-avance: +${NUM(brecha,1)}pp`,tab:"riesgo"});
+  // Estimaciones atrasadas
+  const diasPago = obra.diasPago||30; const hoy = new Date();
+  const estAtrasadas = estimaciones.filter(e => e.estatus==="Facturada" && e.fechaFact
+    && Math.floor((hoy-new Date(e.fechaFact))/(1000*60*60*24)) - diasPago > 0);
+  if (estAtrasadas.length > 0) alertas.push({tipo:"estim",color:C.red,
+    texto:`${estAtrasadas.length} estimación(es) atrasada(s) en cobro`, tab:"estimaciones"});
+  // Subcontratos sin pago vs avance alto
+  const subsDesfasados = subcontratos.filter(s => {
+    const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
+    const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
+    const pctFis = totalCat>0 ? ejec/totalCat*100 : 0;
+    const pagado = s.pagos?.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0),0) || 0;
+    const pctFin = s.monto>0 ? pagado/s.monto*100 : 0;
+    return pctFis > 0 && (pctFis - pctFin) > 20;
+  });
+  if (subsDesfasados.length > 0) alertas.push({tipo:"sub",color:C.yellow,
+    texto:`${subsDesfasados.length} subcontrato(s) con desfase obra vs pago`, tab:"subcontratos"});
+
+  // ── Wrapper para hacer secciones clickeables ──
+  const clickableCard = (tabId, extraStyle={}) => onNavTab && tabId ? {
+    cursor:"pointer", transition:"transform .12s, box-shadow .12s", ...extraStyle,
+    onMouseEnter: e=>{e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.08)";},
+    onMouseLeave: e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="";},
+    onClick: ()=>onNavTab(tabId)
+  } : {};
+
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {/* BLOQUE 1: KPIs PRINCIPALES (clickables) */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-      <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ponderado"      color={semA(af)}/>
-      <Kpi label="Monto ejecutado" value={MXN(me)}         sub="monto ejecutado" color={C.blue} size={12}/>
-      <Kpi label="Gasto total"     value={MXN(gt)}         sub="GP+maquinaria"  color={C.red}  size={12}/>
-      <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I`} color={C.green}/>
+      <div {...clickableCard("captura")}>
+        <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ver captura ›"   color={semA(af)}/>
+      </div>
+      <div {...clickableCard("estimaciones")}>
+        <Kpi label="Monto ejecutado" value={MXN(me)}         sub="vs estimaciones ›" color={C.blue} size={12}/>
+      </div>
+      <div {...clickableCard("gastos")}>
+        <Kpi label="Gasto total"     value={MXN(gt)}         sub="ver gastos GP ›"   color={C.red}  size={12}/>
+      </div>
+      <div {...clickableCard("captura")}>
+        <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
+      </div>
     </div>
-    <Card accent={mc}>
+
+    {/* BLOQUE 2: ALERTAS (solo si hay) */}
+    {alertas.length > 0 && (
+      <Card accent={alertas.some(a=>a.color===C.red)?C.red:C.yellow}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+          <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>ALERTAS ACTIVAS</span>
+          <Bdg color={alertas.some(a=>a.color===C.red)?C.red:C.yellow} small>{alertas.length}</Bdg>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {alertas.map((a,i)=>(
+            <div key={i} onClick={()=>onNavTab && onNavTab(a.tab)}
+              style={{background:C.bg,borderRadius:6,padding:"7px 11px",fontSize:10,
+                borderLeft:`3px solid ${a.color}`,cursor:onNavTab?"pointer":"default",
+                display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <span style={{color:C.textPri,fontWeight:500}}>{a.texto}</span>
+              {onNavTab && <span style={{fontSize:9,color:a.color,fontWeight:600}}>Revisar ›</span>}
+            </div>
+          ))}
+        </div>
+      </Card>
+    )}
+    <Card accent={mc} {...clickableCard("riesgo")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <div><Tit>Margen bruto de obra</Tit>
+        <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver riesgo ›</span>}</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Monto ejecutado − Gasto total</div></div>
         <div style={{background:`${mc}22`,border:`0.5px solid ${mc}44`,borderRadius:4,
           padding:"3px 9px",fontSize:10,fontWeight:600,color:mc,whiteSpace:"nowrap"}}>
@@ -3253,9 +3317,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
         <span>$0</span><span style={{color:C.yellow}}>↑ umbral 15%</span><span>{MXN(obra.presupuesto)}</span>
       </div>
     </Card>
-    <Card>
+    <Card {...clickableCard("estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-        <Tit>Estimaciones</Tit>
+        <Tit>Estimaciones {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
         <span style={{fontSize:9,color:C.textMut}}>{estimaciones.length} est. · Amort {obra.pctAnticipo}% · FG {obra.pctFondoGar}%</span>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
@@ -3265,6 +3329,57 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
         <Kpi label="Total estimado"value={MXN(estTotal)}  sub={`${(estTotal/obra.presupuesto*100).toFixed(1)}% del contrato`} color={C.blueDk} size={12}/>
       </div>
     </Card>
+    {/* ── SUBCONTRATOS (resumen en Dashboard) ── */}
+    {subcontratos.length > 0 && (
+      <Card {...clickableCard("subcontratos")}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Tit>Subcontratos {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver módulo ›</span>}</Tit>
+          <span style={{fontSize:9,color:C.textMut}}>
+            {subcontratos.length} subcontrato{subcontratos.length===1?"":"s"} ·
+            Valor total: {MXN(subcontratos.reduce((t,s)=>t+(s.monto||0),0))}
+          </span>
+        </div>
+        {/* Header */}
+        <div style={{display:"grid",gridTemplateColumns:"2fr 1.3fr 1fr 1fr",gap:8,
+          padding:"4px 10px",fontSize:8,color:C.textMut,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+          <div>Subcontrato</div><div style={{textAlign:"right"}}>Valor</div>
+          <div style={{textAlign:"right"}}>Av. físico</div><div style={{textAlign:"right"}}>Av. financiero</div>
+        </div>
+        {subcontratos.slice(0,5).map(s => {
+          const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
+          const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
+          const pctFis = totalCat>0 ? ejec/totalCat*100 : 0;
+          const pagado = s.pagos?.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0),0) || 0;
+          const pctFin = s.monto>0 ? pagado/s.monto*100 : 0;
+          const desfase = Math.abs(pctFis - pctFin);
+          const colFis = pctFis>=100?C.green:pctFis>0?C.blue:C.textMut;
+          const colFin = pctFin>=100?C.green:pctFin>0?C.purpleDk:C.textMut;
+          return <div key={s.id} style={{display:"grid",gridTemplateColumns:"2fr 1.3fr 1fr 1fr",gap:8,
+            padding:"9px 10px",background:C.bg,borderRadius:8,marginBottom:5,alignItems:"center",
+            borderLeft:`3px solid ${desfase>20?C.yellow:C.border}`}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nombre}</div>
+              <div style={{fontSize:9,color:C.textMut,marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.proveedor||"Sin proveedor"}</div>
+            </div>
+            <div style={{textAlign:"right",fontSize:11,fontWeight:600,color:C.textPri}}>{MXN(s.monto||0)}</div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:11,fontWeight:700,color:colFis}}>{NUM(pctFis,1)}%</div>
+              <div style={{fontSize:8,color:C.textMut,marginTop:1}}>{MXN(ejec)}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:11,fontWeight:700,color:colFin}}>{NUM(pctFin,1)}%</div>
+              <div style={{fontSize:8,color:C.textMut,marginTop:1}}>{MXN(pagado)}</div>
+            </div>
+          </div>;
+        })}
+        {subcontratos.length > 5 && (
+          <div style={{textAlign:"center",fontSize:10,color:C.textMut,marginTop:6}}>
+            + {subcontratos.length - 5} subcontrato(s) más
+          </div>
+        )}
+      </Card>
+    )}
+
     {/* ── MONTO EJECUTADO vs ESTIMADO ── */}
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -3358,8 +3473,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
 
     <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria} ampliaciones={[...(obra.finAmpliado?[{fecha:obra.finAmpliado,label:"Ampliación 1"}]:[])]}/>
 
-    <Card>
-      <Tit>Personal en campo — Semana 18</Tit>
+    <Card {...clickableCard("captura")}>
+      <Tit>Personal en campo — Semana 18 {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver n\u00f3mina ›</span>}</Tit>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
         <Kpi label="Total"     value={dir+ind} sub="trabajadores"  color={C.caliza}/>
         <Kpi label="Directo"   value={dir}     sub="mano de obra"  color={C.blue}/>
@@ -3367,8 +3482,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones}){
       </div>
     </Card>
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
-    <Card>
-      <Tit>Top subsecciones — avance y evidencia</Tit>
+    <Card {...clickableCard("captura")}>
+      <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver captura ›</span>}</Tit>
       {top4.map((s,i)=>{
         const fotos=(CATALOGO[s.sec]?.conceptos||[]).flatMap(c=>c.fotos||[]);
         const mostrar=fotos.slice(0,2);
@@ -5312,21 +5427,12 @@ function PlazosCliente({obra}){
 // Estructura Firestore: obras/{obraId}/subcontratos/lista = { items: [...] }
 // ════════════════════════════════════════════════════════════════════════════
 
-function Subcontratos({obra, rol}){
+function Subcontratos({obra, rol, items, setItems}){
   const editar = can(rol, "captura", "editar");
-  const[items,setItems]=useState([]);
-  const[cargando,setCargando]=useState(true);
   const[seleccionado,setSeleccionado]=useState(null); // id de subcontrato abierto
   const[modalNuevo,setModalNuevo]=useState(false);
   const[saved,setSaved]=useState(false);
-
-  // Cargar de Firestore
-  useEffect(()=>{
-    fsGet(`obras/${obra.id}/subcontratos/lista`).then(d=>{
-      if(d && Array.isArray(d.items)) setItems(d.items);
-      setCargando(false);
-    });
-  },[obra.id]);
+  const cargando = false; // el state ya viene del padre, ya está cargado
 
   const guardar = async (nuevos) => {
     setItems(nuevos);
@@ -5501,7 +5607,25 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
     else validacion = { color: C.red, txt: "Revisar", icon: "⚠" };
   }
 
-  const SUBTABS = [["datos","Datos generales"],["catalogo","Catálogo de conceptos"],["fotos","Fotos por concepto"]];
+  const SUBTABS = [["datos","Datos generales"],["catalogo","Catálogo de conceptos"],["fotos","Fotos por concepto"],["pagos","Pagos"]];
+
+  // ── PAGOS AL SUBCONTRATISTA ──
+  // Cada pago: { id, fecha, monto, referencia (folio/cheque/concepto), estatus (programado/pagado/cancelado) }
+  const pagos = Array.isArray(sub.pagos) ? sub.pagos : [];
+  const totalPagado = pagos.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0), 0);
+  const totalProgramado = pagos.filter(p=>p.estatus==="programado").reduce((t,p)=>t+(p.monto||0), 0);
+  const pctFinanciero = montoContrato > 0 ? (totalPagado/montoContrato)*100 : 0;
+
+  const agregarPago = () => {
+    const nuevos = [...pagos, {id: Date.now(), fecha: new Date().toISOString().slice(0,10), monto: 0, referencia: "", estatus: "programado"}];
+    onUpdate({pagos: nuevos});
+  };
+  const actualizarPago = (idx, cambios) => {
+    onUpdate({pagos: pagos.map((p,i) => i===idx ? {...p, ...cambios} : p)});
+  };
+  const eliminarPago = (idx) => {
+    onUpdate({pagos: pagos.filter((_,i) => i !== idx)});
+  };
 
   // ── IMPORTAR CATÁLOGO DESDE EXCEL/CSV ──
   // Carga SheetJS si no está
@@ -5651,15 +5775,23 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
           <div style={{fontSize:11,color:C.textSec,marginTop:2}}>{sub.proveedor}</div>
         </div>
         <div style={{textAlign:"right",flexShrink:0}}>
-          <div style={{fontSize:20,fontWeight:700,color:pctAvance>=100?C.green:C.blue,lineHeight:1}}>{NUM(pctAvance,1)}%</div>
-          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>avance ponderado</div>
+          <div style={{display:"flex",gap:14,alignItems:"flex-end"}}>
+            <div>
+              <div style={{fontSize:18,fontWeight:700,color:pctAvance>=100?C.green:C.blue,lineHeight:1}}>{NUM(pctAvance,1)}%</div>
+              <div style={{fontSize:8,color:C.textMut,marginTop:2,textTransform:"uppercase"}}>Físico</div>
+            </div>
+            <div>
+              <div style={{fontSize:18,fontWeight:700,color:pctFinanciero>=100?C.green:C.purpleDk,lineHeight:1}}>{NUM(pctFinanciero,1)}%</div>
+              <div style={{fontSize:8,color:C.textMut,marginTop:2,textTransform:"uppercase"}}>Financiero</div>
+            </div>
+          </div>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7}}>
         <Kpi label="Monto contrato" value={MXN(montoContrato)} color={C.caliza} size={12}/>
         <Kpi label="Total catálogo"  value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "captura conceptos"} color={validacion?.color || C.blue} size={12}/>
-        <Kpi label="Ejecutado"       value={MXN(ejecutado)}   color={C.greenDk} size={12}/>
-        <Kpi label="Conceptos"       value={String(sub.conceptos.length)} color={C.textPri} size={12}/>
+        <Kpi label="Ejecutado"       value={MXN(ejecutado)}   sub={`${NUM(pctAvance,1)}% del cat\u00e1logo`} color={C.greenDk} size={12}/>
+        <Kpi label="Pagado"          value={MXN(totalPagado)} sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.purpleDk} size={12}/>
       </div>
       {/* Validador de monto: barra y mensaje */}
       {validacion && (
@@ -5991,6 +6123,84 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
         </div>;
       })}
     </Card>}
+
+    {/* PAGOS AL SUBCONTRATISTA */}
+    {subtab==="pagos" && <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {/* Resumen */}
+      <Card>
+        <Tit>Resumen de pagos al subcontratista</Tit>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginTop:8}}>
+          <Kpi label="Monto contrato" value={MXN(montoContrato)}                                  color={C.caliza}    size={12}/>
+          <Kpi label="Pagado"         value={MXN(totalPagado)}     sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.greenDk}   size={12}/>
+          <Kpi label="Programado"     value={MXN(totalProgramado)} sub="pendiente de pago"                  color={C.yellowDk} size={12}/>
+          <Kpi label="Por pagar"      value={MXN(Math.max(montoContrato - totalPagado, 0))} sub="saldo del contrato" color={C.blueDk} size={12}/>
+        </div>
+        <div style={{marginTop:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+            <span>Avance financiero</span>
+            <span style={{color:C.greenDk,fontWeight:600}}>{NUM(pctFinanciero,1)}%</span>
+          </div>
+          <Bar pct={pctFinanciero} color={pctFinanciero>=100?C.green:C.greenDk}/>
+        </div>
+        {/* Alerta de desfase obra vs pago */}
+        {sub.conceptos.length > 0 && Math.abs(pctAvance - pctFinanciero) > 10 && (
+          <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
+            padding:"7px 11px",marginTop:10,fontSize:10,color:C.yellowDk}}>
+            ⚠ Desfase entre avance físico ({NUM(pctAvance,1)}%) y financiero ({NUM(pctFinanciero,1)}%) de {NUM(Math.abs(pctAvance-pctFinanciero),1)}pp.
+            {pctAvance > pctFinanciero ? " El subcontratista lleva más obra ejecutada que pagos recibidos." : " Se le ha pagado más de lo que ha ejecutado."}
+          </div>
+        )}
+      </Card>
+
+      {/* Lista de pagos */}
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Tit>Historial de pagos</Tit>
+          {editar && <SecBtn onClick={agregarPago}>+ Pago</SecBtn>}
+        </div>
+        {pagos.length === 0 && (
+          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+            {editar?'Sin pagos registrados. Click "+ Pago" para empezar.':'Sin pagos registrados.'}
+          </div>
+        )}
+        {/* Header */}
+        {pagos.length > 0 && (
+          <div style={{display:"grid",gridTemplateColumns:"110px 130px 1fr 110px 30px",gap:6,
+            padding:"4px 10px",marginBottom:4,fontSize:9,color:C.textMut,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+            <div>Fecha</div><div>Monto</div><div>Referencia / Concepto</div><div>Estatus</div><div></div>
+          </div>
+        )}
+        {pagos.map((p,i)=>{
+          const estCol = p.estatus==="pagado"?C.green : p.estatus==="cancelado"?C.red : C.yellow;
+          return <div key={p.id||i} style={{display:"grid",gridTemplateColumns:"110px 130px 1fr 110px 30px",gap:6,
+            padding:"7px 10px",marginBottom:5,background:C.bg,borderRadius:8,alignItems:"center",
+            borderLeft:`3px solid ${estCol}`,opacity:p.estatus==="cancelado"?0.5:1}}>
+            {editar ? (<>
+              <Inp type="date" value={p.fecha||""} style={{fontSize:10}}
+                onChange={e=>actualizarPago(i,{fecha:e.target.value})}/>
+              <Inp type="number" value={p.monto||0} style={{fontSize:11,fontWeight:600}}
+                onChange={e=>actualizarPago(i,{monto:parseFloat(e.target.value)||0})}/>
+              <Inp type="text" value={p.referencia||""} placeholder="Folio, cheque, concepto..." style={{fontSize:10}}
+                onChange={e=>actualizarPago(i,{referencia:e.target.value})}/>
+              <Sel value={p.estatus||"programado"} style={{fontSize:10,padding:"4px 6px"}}
+                onChange={e=>actualizarPago(i,{estatus:e.target.value})}>
+                <option value="programado">Programado</option>
+                <option value="pagado">Pagado</option>
+                <option value="cancelado">Cancelado</option>
+              </Sel>
+              <button onClick={()=>eliminarPago(i)} style={{background:"none",border:"none",
+                color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
+            </>) : (<>
+              <span style={{fontSize:11,color:C.textSec}}>{p.fecha||"—"}</span>
+              <span style={{fontSize:12,fontWeight:600,color:C.caliza}}>{MXN(p.monto||0)}</span>
+              <span style={{fontSize:10,color:C.textSec}}>{p.referencia||"—"}</span>
+              <Bdg color={estCol} small>{(p.estatus||"programado").toUpperCase()}</Bdg>
+              <span></span>
+            </>)}
+          </div>;
+        })}
+      </Card>
+    </div>}
 
     {/* Lightbox */}
     {lightbox && <div onClick={()=>setLightbox(null)}
@@ -6403,6 +6613,11 @@ export default function App(){
     fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
     });
+    // Cargar subcontratos
+    fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
+      if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
+      else setSubcontratos([]);
+    });
   },[obraId]);
   const[subs,setSubs]=useState(SUBS_INIT);
   const[maquinaria,setMaquinaria]=useState([
@@ -6421,6 +6636,7 @@ export default function App(){
   ]);
   const[estimaciones,setEstimaciones]=useState(EST_DEFAULT.map(e=>({...e})));
   const[estCargadas,setEstCargadas]=useState(false);
+  const[subcontratos,setSubcontratos]=useState([]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   useEffect(()=>{
@@ -6559,7 +6775,7 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
+      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} onNavTab={setTab}/>}
       {screen==="obra"&&tab==="captura"&&obra&&<Captura subs={subs}
         setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
         maquinaria={maquinaria}
@@ -6571,7 +6787,7 @@ export default function App(){
       {screen==="obra"&&tab==="estimaciones"&&obra&&<Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={usuario.rol}/>}
       {screen==="obra"&&tab==="riesgo"&&obra&&<Riesgo obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="presupuesto"&&obra&&<Presupuesto obra={obra} setObra={setObra} rol={usuario.rol}/>}
-      {screen==="obra"&&tab==="subcontratos"&&obra&&<Subcontratos obra={obra} rol={usuario.rol}/>}
+      {screen==="obra"&&tab==="subcontratos"&&obra&&<Subcontratos obra={obra} rol={usuario.rol} items={subcontratos} setItems={setSubcontratos}/>}
       {screen==="obra"&&tab==="contrato"&&obra&&<Contrato obra={obra} setObra={setObra} rol={usuario.rol}/>}
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
