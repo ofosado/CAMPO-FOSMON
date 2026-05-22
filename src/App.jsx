@@ -2962,28 +2962,54 @@ function useGPConstruct() {
   const [gpError, setGpError] = useState('');
   const [gpUltActualiz, setGpUltActualiz] = useState('');
 
-  const cargarGP = useCallback(async () => {
+  // Intenta varios CORS proxies en orden hasta que uno funcione
+  const PROXIES = [
+    (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    (url) => `https://cors-anywhere.herokuapp.com/${url}`,
+  ];
+
+  const cargarGP = useCallback(async (forzar = false) => {
     setGpLoading(true); setGpError('');
-    try {
-      const resp = await fetch(`https://corsproxy.io/?${encodeURIComponent(GP_SHEET_CSV)}`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const text = await resp.text();
-      const parsed = parsearGPConstruct(text);
-      setGpData(parsed);
-      setGpUltActualiz(new Date().toLocaleString('es-MX'));
-      // Guardar en Firestore para acceso offline
-      await fsSet('global/gp_construct', {
-        data: parsed,
-        ultimaActualizacion: new Date().toISOString()
-      });
-    } catch(e) {
-      // Si falla el fetch, cargar desde Firestore
+    let exito = false;
+    let ultimoError = '';
+    // Intentar cada proxy hasta que uno responda con datos válidos
+    for (const proxyFn of PROXIES) {
+      try {
+        const proxyUrl = proxyFn(GP_SHEET_CSV);
+        // Si forzar, agregar cache buster
+        const finalUrl = forzar ? `${proxyUrl}&_t=${Date.now()}` : proxyUrl;
+        const resp = await fetch(finalUrl, { cache: forzar ? 'no-cache' : 'default' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const text = await resp.text();
+        if (!text || text.length < 100) throw new Error('respuesta vacía');
+        const parsed = parsearGPConstruct(text);
+        if (!parsed.obras || Object.keys(parsed.obras).length === 0) {
+          throw new Error('parser no detectó obras');
+        }
+        setGpData(parsed);
+        setGpUltActualiz(new Date().toLocaleString('es-MX'));
+        // Guardar en Firestore para acceso offline
+        await fsSet('global/gp_construct', {
+          data: parsed,
+          ultimaActualizacion: new Date().toISOString()
+        });
+        exito = true;
+        break;
+      } catch(e) {
+        ultimoError = e.message;
+        console.warn('Proxy falló:', proxyFn.toString().match(/https:\/\/[^?'"]+/)?.[0], e.message);
+      }
+    }
+    if (!exito) {
+      // Si todos los proxies fallan, cargar desde Firestore
       const cached = await fsGet('global/gp_construct');
-      if (cached) {
+      if (cached?.data) {
         setGpData(cached.data);
         setGpUltActualiz(`Cache: ${new Date(cached.ultimaActualizacion).toLocaleString('es-MX')}`);
+        setGpError(`No se pudo refrescar desde el Sheet (${ultimoError}). Mostrando datos en caché.`);
       } else {
-        setGpError('No se pudo cargar GP Construct: ' + e.message);
+        setGpError(`No se pudo cargar GP Construct ni del Sheet ni del caché: ${ultimoError}`);
       }
     }
     setGpLoading(false);
@@ -3057,6 +3083,7 @@ function ModalNuevaObra({onSave,onClose,gpData}){
   // gastoGP usa Grand Total (acumulado real) - no la semana actual
   const gpCatalogo = gpData
     ? Object.entries(gpData.obras).map(([key, val]) => {
+        // Grand Total real, fallback a años+total2026, o suma de meses si nada existe
         const totalReal = val.grandTotal > 0
           ? val.grandTotal
           : Object.values(val.años||{}).reduce((t,v)=>t+v, 0)
@@ -5502,7 +5529,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 // GASTOS — Análisis completo de datos de GP Construct
 // 4 sub-tabs: Resumen · Proveedores · Rubros · Semanas
 // ════════════════════════════════════════════════════════════════════════════
-function GastosGP({obra,maquinaria,rol,gpData}){
+function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP}){
   const[subtab,setSubtab]=useState("resumen");
   const totalMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
 
@@ -5694,15 +5721,49 @@ function GastosGP({obra,maquinaria,rol,gpData}){
       </Card>
     )}
 
+    {/* Estado del Sheet GP + botón refrescar — visible siempre */}
+    <Card style={{padding:"8px 14px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontSize:10,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>Sheet GP Construct</div>
+          {gpLoading && <div style={{fontSize:10,color:C.blueDk,marginTop:2}}>Cargando datos del Sheet…</div>}
+          {!gpLoading && gpData?.obras && Object.keys(gpData.obras).length > 0 && (
+            <div style={{fontSize:10,color:C.textSec,marginTop:2}}>
+              {Object.keys(gpData.obras).length} obras · {gpData.semanasDisponibles?.length||0} semanas detectadas
+              {gpUltActualiz && <span style={{color:C.textMut}}> · {gpUltActualiz}</span>}
+            </div>
+          )}
+          {!gpLoading && (!gpData?.obras || Object.keys(gpData.obras).length === 0) && (
+            <div style={{fontSize:10,color:C.redDk,marginTop:2}}>Sheet no cargado</div>
+          )}
+          {gpError && <div style={{fontSize:9,color:C.yellow,marginTop:2}}>{gpError}</div>}
+        </div>
+        {onRefreshGP && (
+          <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
+            style={{background:C.caliza,border:"none",borderRadius:6,padding:"5px 12px",
+              fontSize:10,fontWeight:600,color:C.bg,cursor:gpLoading?"not-allowed":"pointer",
+              opacity:gpLoading?0.5:1,whiteSpace:"nowrap"}}>
+            {gpLoading?"…":"Refrescar Sheet"}
+          </button>
+        )}
+      </div>
+    </Card>
+
     {/* Si no hay datos de GP, mostrar mensaje + selector manual */}
     {!datosObra && (
       <Card>
         <div style={{padding:14}}>
           <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6,textAlign:"center"}}>
-            No se encontró esta obra en el Sheet de GP
+            {(!gpData?.obras || Object.keys(gpData.obras).length === 0)
+              ? (gpLoading ? "Cargando Sheet de GP…" : "Sheet de GP no disponible")
+              : "Esta obra no está mapeada al Sheet"}
           </div>
           <div style={{fontSize:10,color:C.textSec,textAlign:"center",marginBottom:12}}>
-            El sistema buscó por nombre y por ID pero no encontró coincidencia automática.
+            {(!gpData?.obras || Object.keys(gpData.obras).length === 0)
+              ? (gpLoading
+                ? "Espera unos segundos a que termine la descarga."
+                : "Posibles causas: el proxy CORS está bloqueado, sin internet o el Sheet no está público. Intenta el botón Refrescar.")
+              : "El sistema buscó por nombre y por ID pero no hay coincidencia automática."}
           </div>
 
           {/* Selector manual de obra GP */}
@@ -5717,23 +5778,18 @@ function GastosGP({obra,maquinaria,rol,gpData}){
                   const upd = {...obra, gpId: nuevoId};
                   setObra(upd);
                   await fsSet(`obras/${obra.id}/config/info`, {gpId: nuevoId});
+                  await fsSet(`obras/${obra.id}`, {gpId: nuevoId});
                 }}>
                 <option value="">— Selecciona una obra —</option>
                 {Object.values(gpData.obras)
                   .sort((a,b)=>a.id.localeCompare(b.id))
                   .map(o => (
-                    <option key={o.id} value={o.id}>{o.nombre}</option>
+                    <option key={o.id} value={o.id}>{o.id} · {o.nombre.replace(/^\d{4}\s*/,'')}</option>
                   ))}
               </Sel>
               <div style={{fontSize:9,color:C.textMut,marginTop:6}}>
-                Esta selección se guarda en el contrato y se usa en futuras cargas.
+                Esta selección se guarda y se usa en futuras cargas.
               </div>
-            </div>
-          )}
-
-          {(!gpData?.obras || Object.keys(gpData.obras).length === 0) && (
-            <div style={{fontSize:10,color:C.textMut,textAlign:"center",padding:10}}>
-              El Sheet de GP no se ha cargado todavía. Refresca la página o pide a Luis Mayo que verifique el Sheet.
             </div>
           )}
         </div>
@@ -9272,7 +9328,7 @@ export default function App(){
       )}
 
       {/* GASTOS GP */}
-      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData}/>}
+      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP}/>}
 
       {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
       {screen==="obra"&&tab==="planeacion"&&obra&&(
