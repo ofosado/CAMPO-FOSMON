@@ -2969,6 +2969,10 @@ function useGPConstruct() {
     (url) => `https://cors-anywhere.herokuapp.com/${url}`,
   ];
 
+  // Versión del parser. Si el cache de Firestore tiene una versión vieja se ignora.
+  // Incrementar cada vez que cambie la estructura de gpData.obras (años, meses, grandTotal, etc.)
+  const PARSER_VERSION = 2;
+
   const cargarGP = useCallback(async (forzar = false) => {
     setGpLoading(true); setGpError('');
     let exito = false;
@@ -2989,9 +2993,10 @@ function useGPConstruct() {
         }
         setGpData(parsed);
         setGpUltActualiz(new Date().toLocaleString('es-MX'));
-        // Guardar en Firestore para acceso offline
+        // Guardar en Firestore para acceso offline (con versión del parser)
         await fsSet('global/gp_construct', {
           data: parsed,
+          parserVersion: PARSER_VERSION,
           ultimaActualizacion: new Date().toISOString()
         });
         exito = true;
@@ -3002,12 +3007,14 @@ function useGPConstruct() {
       }
     }
     if (!exito) {
-      // Si todos los proxies fallan, cargar desde Firestore
+      // Si todos los proxies fallan, intentar caché solo si tiene la versión actual del parser
       const cached = await fsGet('global/gp_construct');
-      if (cached?.data) {
+      if (cached?.data && cached.parserVersion === PARSER_VERSION) {
         setGpData(cached.data);
         setGpUltActualiz(`Cache: ${new Date(cached.ultimaActualizacion).toLocaleString('es-MX')}`);
         setGpError(`No se pudo refrescar desde el Sheet (${ultimoError}). Mostrando datos en caché.`);
+      } else if (cached?.data) {
+        setGpError(`Caché obsoleto (versión vieja del parser). No se pudo refrescar: ${ultimoError}. Intenta el botón Refrescar.`);
       } else {
         setGpError(`No se pudo cargar GP Construct ni del Sheet ni del caché: ${ultimoError}`);
       }
@@ -3126,6 +3133,14 @@ function ModalNuevaObra({onSave,onClose,gpData}){
       {/* PASO 1: Seleccionar de GP Construct */}
       {paso==="seleccionar"&&(
         <>
+          {/* Aviso si está usando catálogo hardcodeado viejo */}
+          {!gpData?.obras && (
+            <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
+              padding:"7px 11px",fontSize:10,color:C.yellowDk,marginBottom:8}}>
+              ⚠ El Sheet de GP no se ha cargado. Estás viendo un catálogo de referencia desactualizado.
+              <br/>Cierra este modal, refresca el Sheet en Gastos y vuelve a intentar.
+            </div>
+          )}
           <Inp placeholder="Buscar por nombre o ID..." value={busqueda}
             onChange={e=>setBusqueda(e.target.value)}
             style={{marginBottom:10}}/>
@@ -3927,12 +3942,26 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
 
   const ejecutarEliminar=async()=>{
     if(!confirmarEliminar) return;
-    // Eliminar de Firestore
-    await fsDel(`obras/${confirmarEliminar.id}/config/info`);
-    await fsDel(`obras/${confirmarEliminar.id}/config/parametros`);
-    await fsDel(`obras/${confirmarEliminar.id}/config/estimaciones`);
+    const id = confirmarEliminar.id;
+    // Eliminar TODO de Firestore: top-level + cada sub-doc conocido
+    // El doc top-level obras/{id} es el que usa el listador al cargar (con getDocs)
+    await Promise.all([
+      fsDel(`obras/${id}`),
+      fsDel(`obras/${id}/config/info`),
+      fsDel(`obras/${id}/config/parametros`),
+      fsDel(`obras/${id}/config/estimaciones`),
+      fsDel(`obras/${id}/config/catalogo`),
+      fsDel(`obras/${id}/avance/subs`),
+      fsDel(`obras/${id}/avance/maquinaria`),
+      fsDel(`obras/${id}/avance/materiales`),
+      fsDel(`obras/${id}/avance/historial`),
+      fsDel(`obras/${id}/nomina/historial`),
+      fsDel(`obras/${id}/contrato/plazos`),
+      fsDel(`obras/${id}/contrato/documentos`),
+      fsDel(`obras/${id}/subcontratos/lista`),
+    ]);
     // Eliminar del estado local
-    setObras(oo=>oo.filter(o=>o.id!==confirmarEliminar.id));
+    setObras(oo=>oo.filter(o=>o.id!==id));
     setConfirmarEliminar(null); setIdConfirm(""); setElimStep(1);
   };
 
