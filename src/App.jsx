@@ -929,6 +929,74 @@ const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
 // ════════════════════════════════════════════════════════════════════════════
+// HISTÓRICO SEMANAL DE AVANCE
+// ════════════════════════════════════════════════════════════════════════════
+// Estructura Firestore: obras/{obraId}/avance/historial = { semanas: [...] }
+// Cada snapshot: { id, semana, año, fechaCaptura, fechaCierre, tipo (intermedio/oficial),
+//                  capturadoPor, subs: [{sec, a, imp}], avancePonderado, montoEjecutado }
+
+// Calcula el número ISO de semana ISO 8601 (semana que contiene el primer jueves del año)
+const semanaISO = (fecha) => {
+  const d = new Date(fecha);
+  d.setHours(0, 0, 0, 0);
+  // Jueves de esta semana (semana ISO está definida por el jueves)
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const inicioAño = new Date(d.getFullYear(), 0, 1);
+  return {
+    semana: Math.ceil(((d - inicioAño) / 86400000 + 1) / 7),
+    año: d.getFullYear(),
+  };
+};
+
+// ID de snapshot: S{semana}-{año} ej. "S22-2026"
+const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}`;
+
+// Crear snapshot del avance actual y guardarlo en el historial
+// tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
+const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio") => {
+  if (!obraId || !Array.isArray(subs) || subs.length === 0) return null;
+  try {
+    const ahora = new Date();
+    const { semana, año } = semanaISO(ahora);
+    const id = snapshotId(semana, año);
+    const totalImporte = subs.reduce((t, s) => t + (s.imp || 0), 0);
+    const avancePonderado = totalImporte > 0
+      ? subs.reduce((t, s) => t + ((s.a || 0) / 100) * ((s.imp || 0) / totalImporte) * 100, 0)
+      : 0;
+    const montoEjecutado = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (s.imp || 0), 0);
+    const snap = {
+      id, semana, año,
+      fechaCaptura: ahora.toISOString(),
+      fechaCierre: tipo === "oficial" ? ahora.toISOString() : null,
+      tipo, capturadoPor: capturadoPor || 'sistema',
+      subs: subs.map(s => ({sec: s.sec, sub: s.sub, a: s.a || 0, imp: s.imp || 0})),
+      avancePonderado, montoEjecutado,
+    };
+    // Leer historial actual, hacer upsert por id (semana actual sobrescribe el snapshot intermedio)
+    const hist = await fsGet(`obras/${obraId}/avance/historial`) || { semanas: [] };
+    const semanas = (hist.semanas || []).slice();
+    const idx = semanas.findIndex(s => s.id === id);
+    // Si ya hay un oficial guardado, no sobrescribir con intermedio
+    if (idx >= 0) {
+      if (semanas[idx].tipo === "oficial" && tipo !== "oficial") {
+        return null; // ya está cerrado oficialmente, no tocamos
+      }
+      semanas[idx] = snap;
+    } else {
+      semanas.push(snap);
+    }
+    // Mantener máximo 52 semanas (1 año)
+    semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
+    const recortadas = semanas.slice(-52);
+    await fsSet(`obras/${obraId}/avance/historial`, { semanas: recortadas });
+    return snap;
+  } catch (e) {
+    console.error('crearSnapshotAvance', e);
+    return null;
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // NOTIFICACIONES — Sistema in-app
 // ════════════════════════════════════════════════════════════════════════════
 // Estructura: notificaciones/{uid}/items/{notifId}
@@ -3186,7 +3254,9 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const agregarObra=async(form)=>{
     const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
     setObras(oo=>[...oo,nueva]);
-    // Guardar en Firestore
+    // Guardar en Firestore: top-level + sub-doc info
+    // El top-level es necesario para que la obra sea listable con getDocs(collection('obras'))
+    await fsSet(`obras/${nueva.id}`, nueva);
     await fsSet(`obras/${nueva.id}/config/info`, nueva);
     setModalNueva(false);
     // Notif a directivos sobre la nueva obra
@@ -3965,9 +4035,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 
 
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
-function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
-  async function guardar() {
+  async function guardar(tipoSnapshot = "intermedio") {
     setEstado("saving");
     try {
       await fsSet(`obras/${obra.id}/avance/subs`, {
@@ -3982,6 +4052,19 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
         data: materiales,
         fecha: new Date().toISOString()
       });
+      // Crear snapshot del avance para histórico semanal
+      const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot);
+      if (snap && onHistorialNuevo) onHistorialNuevo(snap);
+      // Si es oficial, también notif
+      if (tipoSnapshot === "oficial" && snap) {
+        await notifARoles(['director_general','director_operaciones','gerente_construccion','admin_sistema'], {
+          categoria: 'actividad', tipo: 'cierre_semana',
+          titulo: `Cierre semanal S${snap.semana} · ${obra.nombre || obra.id}`,
+          mensaje: `Avance: ${snap.avancePonderado.toFixed(1)}% · ${usuario?.nombre || usuario?.correo} cerró el reporte`,
+          link: { tab: 'operacion', subTab: 'avance', obraId: obra.id },
+          creadaPor: usuario?.correo || 'sistema',
+        });
+      }
       setEstado("saved");
       if(onSaved) onSaved();
       setTimeout(()=>setEstado("idle"), 3000);
@@ -3991,17 +4074,263 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
       setTimeout(()=>setEstado("idle"), 3000);
     }
   }
-  const colors_map = {idle:C.blueDk, saving:C.border, saved:C.greenDk, error:C.redDk};
   const labels_map = {idle:"Guardar registro", saving:"Guardando...", saved:"Guardado", error:"Error al guardar"};
   return (
-    <button onClick={guardar} disabled={estado==="saving"}
-      style={{background:estado==="idle"?C.blueDk:estado==="saved"?C.greenDk:estado==="error"?C.redDk:C.border,
-        border:"none",borderRadius:8,padding:"10px 0",color:"white",
-        fontSize:12,fontWeight:500,width:"100%",marginTop:6,letterSpacing:"0.02em",
-        cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
-      {labels_map[estado]}
-    </button>
+    <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>
+      <button onClick={()=>guardar("intermedio")} disabled={estado==="saving"}
+        style={{background:estado==="idle"?C.blueDk:estado==="saved"?C.greenDk:estado==="error"?C.redDk:C.border,
+          border:"none",borderRadius:8,padding:"10px 0",color:"white",
+          fontSize:12,fontWeight:500,width:"100%",letterSpacing:"0.02em",
+          cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
+        {labels_map[estado]}
+      </button>
+      {/* Botón "Cerrar semana oficial" — confirma con doble click */}
+      <button onClick={() => {
+          if (window.confirm(
+            "Cerrar la semana oficialmente:\n\n" +
+            "- Esta guardará el avance actual como reporte semanal oficial.\n" +
+            "- Se notificará a los directivos.\n" +
+            "- No podrás sobreescribir esta semana con guardados normales.\n\n" +
+            "¿Confirmas el cierre semanal?")) {
+            guardar("oficial");
+          }
+        }}
+        disabled={estado==="saving"}
+        style={{background:"transparent",border:`0.5px solid ${C.caliza}`,borderRadius:8,
+          padding:"8px 0",color:C.caliza,fontSize:11,fontWeight:600,width:"100%",
+          cursor:estado==="saving"?"not-allowed":"pointer"}}>
+        Cerrar semana oficialmente
+      </button>
+    </div>
   );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MINI-DASHBOARD DE AVANCE (con histórico semanal)
+// ════════════════════════════════════════════════════════════════════════════
+// KPIs: avance actual, esta semana (delta), velocidad promedio últimas 4 sem,
+// proyección de fin a ritmo actual, desviación vs plazo.
+// Detectores: partidas más calientes, estancadas (≥2 sem sin movimiento),
+// retroceso, a ritmo crítico.
+// Gráfica: línea acumulada vs ideal lineal.
+function MiniDashAvance({obra, subs, historialAvance=[]}){
+  // Avance actual ponderado
+  const totalImp = subs.reduce((t,s)=>t+(s.imp||0), 0);
+  const avanceActual = totalImp > 0
+    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/totalImp)*100, 0)
+    : 0;
+
+  // Snapshots oficiales ordenados (los intermedios solo para auditoría)
+  const oficiales = (historialAvance||[])
+    .filter(s => s.tipo === 'oficial')
+    .sort((a,b) => (a.año-b.año)||(a.semana-b.semana));
+
+  const ultimoOf = oficiales[oficiales.length-1] || null;
+  const penultimoOf = oficiales[oficiales.length-2] || null;
+  const deltaSemana = ultimoOf && penultimoOf ? ultimoOf.avancePonderado - penultimoOf.avancePonderado : 0;
+
+  // Velocidad promedio últimas 4 semanas oficiales (pp/semana)
+  const ult4 = oficiales.slice(-4);
+  let velocidadProm = 0;
+  if (ult4.length >= 2) {
+    const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
+    const totalSems = ult4.length - 1;
+    velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
+  }
+
+  // Proyección de fin a ritmo actual (semanas hasta 100%)
+  const pendientes = Math.max(100 - avanceActual, 0);
+  const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
+  const fechaProyFin = semsParaFin ? new Date(Date.now() + semsParaFin*7*86400000) : null;
+  // Desviación vs plazo contratado
+  const finContrato = obra.finAmpliado || obra.fin;
+  let desvDias = null;
+  if (fechaProyFin && finContrato) {
+    desvDias = Math.round((fechaProyFin - new Date(finContrato))/86400000);
+  }
+
+  // ── DETECTORES ──
+  // Mapear snapshots oficiales por sección para ver evolución de cada partida
+  const ultimoMap = ultimoOf ? Object.fromEntries((ultimoOf.subs||[]).map(s=>[s.sec, s.a])) : {};
+  const penMap = penultimoOf ? Object.fromEntries((penultimoOf.subs||[]).map(s=>[s.sec, s.a])) : {};
+  const hace3Of = oficiales[oficiales.length-3] || null;
+  const hace3Map = hace3Of ? Object.fromEntries((hace3Of.subs||[]).map(s=>[s.sec, s.a])) : {};
+
+  // Top 5 partidas con mayor delta esta semana
+  const calientes = subs.map(s => ({
+    ...s,
+    delta: ultimoOf ? (s.a||0) - (penMap[s.sec] ?? s.a ?? 0) : 0,
+  }))
+  .filter(s => s.delta > 0)
+  .sort((a,b)=>b.delta-a.delta).slice(0,5);
+
+  // Estancadas: ≥2 semanas sin movimiento (último vs hace 2 sem)
+  const estancadas = oficiales.length >= 2
+    ? subs.filter(s => {
+        const ant = penMap[s.sec];
+        if (ant === undefined) return false;
+        return (s.a||0) > 0 && (s.a||0) < 100 && (s.a||0) === ant;
+      }).slice(0,5)
+    : [];
+
+  // Retroceso: bajó de avance vs semana anterior
+  const retroceso = subs.map(s => ({
+    ...s,
+    delta: ultimoOf ? (s.a||0) - (penMap[s.sec] ?? s.a ?? 0) : 0,
+  })).filter(s => s.delta < -1).sort((a,b)=>a.delta-b.delta).slice(0,5);
+
+  // Sin iniciar después de plazos
+  const sinIniciar = subs.filter(s => (s.a||0) === 0).slice(0,5);
+
+  // ── GRÁFICA: avance acumulado vs ideal ──
+  // Si no hay histórico, mostramos solo el actual
+  const puntos = oficiales.length > 0
+    ? oficiales.map(s => ({
+        x: `S${s.semana}`,
+        real: s.avancePonderado,
+        sem: s.semana, año: s.año,
+      }))
+    : [];
+  // Ideal: lineal de 0 a 100% sobre el plazo contratado
+  const inicio = obra.inicio ? new Date(obra.inicio) : null;
+  const fin = finContrato ? new Date(finContrato) : null;
+  let idealActual = null;
+  if (inicio && fin) {
+    const total = (fin - inicio) / 86400000;
+    const trans = Math.max(0, (Date.now() - inicio) / 86400000);
+    idealActual = Math.min((trans / total) * 100, 100);
+  }
+  // Desviación vs ideal
+  const desvIdeal = idealActual !== null ? avanceActual - idealActual : null;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:10}}>
+    {/* KPIs principales */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+      <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
+        sub={oficiales.length>0?`Última semana cerrada: S${ultimoOf.semana}`:"Sin cierres oficiales"}
+        color={semA(avanceActual)} size={14}/>
+      <Kpi label="Esta semana" value={oficiales.length>=2?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
+        sub={oficiales.length>=2?`vs S${penultimoOf.semana}`:"requiere 2 cierres"}
+        color={deltaSemana>=0?C.greenDk:C.red} size={12}/>
+      <Kpi label="Velocidad prom." value={ult4.length>=2?`${NUM(velocidadProm,2)} pp/sem`:"—"}
+        sub={`últimas ${ult4.length} sem.`} color={C.blueDk} size={12}/>
+      <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"2-digit"}):"—"}
+        sub={desvDias!==null?(desvDias>0?`+${desvDias}d vs contrato`:desvDias<0?`${desvDias}d antes`:"en plazo"):"—"}
+        color={desvDias===null?C.textMut:desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
+      {idealActual!==null && (
+        <Kpi label="Avance ideal" value={`${NUM(idealActual,1)}%`}
+          sub={desvIdeal!==null?(desvIdeal<0?`${NUM(desvIdeal,1)}pp atrasado`:`+${NUM(desvIdeal,1)}pp adelantado`):"—"}
+          color={desvIdeal===null?C.textMut:desvIdeal<-5?C.red:desvIdeal<0?C.yellow:C.greenDk} size={12}/>
+      )}
+    </div>
+
+    {/* Sin histórico aún */}
+    {oficiales.length === 0 && (
+      <Card>
+        <div style={{padding:16,textAlign:"center",fontSize:11,color:C.textMut}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>
+            Aún no hay cierres semanales oficiales
+          </div>
+          <div>Para empezar a ver tendencias, captura el avance y haz click en <b>"Cerrar semana oficialmente"</b> cada viernes.</div>
+        </div>
+      </Card>
+    )}
+
+    {/* Detectores: partidas que requieren atención */}
+    {oficiales.length > 0 && (estancadas.length>0 || retroceso.length>0 || calientes.length>0) && (
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8}}>
+        {calientes.length > 0 && (
+          <Card accent={C.green}>
+            <Tit>Partidas con mayor avance</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>esta semana vs anterior</div>
+            {calientes.map(s=>(
+              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
+                <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
+                </span>
+                <span style={{color:C.greenDk,fontWeight:700,marginLeft:6}}>+{NUM(s.delta,1)}pp</span>
+              </div>
+            ))}
+          </Card>
+        )}
+        {estancadas.length > 0 && (
+          <Card accent={C.yellow}>
+            <Tit>Partidas estancadas</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>≥2 semanas sin movimiento</div>
+            {estancadas.map(s=>(
+              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
+                <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
+                </span>
+                <span style={{color:C.yellowDk,fontWeight:700,marginLeft:6}}>{s.a||0}%</span>
+              </div>
+            ))}
+          </Card>
+        )}
+        {retroceso.length > 0 && (
+          <Card accent={C.red}>
+            <Tit>Partidas con retroceso</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>posibles correcciones o re-trabajo</div>
+            {retroceso.map(s=>(
+              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
+                <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
+                </span>
+                <span style={{color:C.red,fontWeight:700,marginLeft:6}}>{NUM(s.delta,1)}pp</span>
+              </div>
+            ))}
+          </Card>
+        )}
+      </div>
+    )}
+
+    {/* Gráfica de tendencia: avance real vs ideal */}
+    {oficiales.length >= 2 && (
+      <Card>
+        <Tit>Tendencia de avance — últimas {puntos.length} semanas</Tit>
+        <GraficaTendencia puntos={puntos} idealActual={idealActual}/>
+      </Card>
+    )}
+  </div>;
+}
+
+// ── Componente SVG simple de tendencia (línea acumulada) ──
+function GraficaTendencia({puntos=[], idealActual=null}){
+  const W = 540, H = 180, P = 30;
+  const maxY = 100; // % acumulado
+  const xs = puntos.map((p,i) => P + (i*(W-2*P)/Math.max(puntos.length-1,1)));
+  const ys = puntos.map(p => H - P - (p.real/maxY)*(H-2*P));
+  const path = puntos.map((p,i)=>`${i===0?"M":"L"} ${xs[i]} ${ys[i]}`).join(" ");
+  // Línea ideal (de 0 al avance ideal actual proporcional)
+  const yIdeal = idealActual!==null ? H - P - (idealActual/maxY)*(H-2*P) : null;
+  return <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:200}}>
+    {/* Grid horizontal */}
+    {[0, 25, 50, 75, 100].map(pct => {
+      const y = H - P - (pct/maxY)*(H-2*P);
+      return <g key={pct}>
+        <line x1={P} y1={y} x2={W-P} y2={y} stroke={C.border} strokeDasharray="2 2"/>
+        <text x={P-6} y={y+3} fontSize="9" fill={C.textMut} textAnchor="end">{pct}%</text>
+      </g>;
+    })}
+    {/* Línea ideal */}
+    {yIdeal !== null && (
+      <line x1={P} y1={H-P} x2={W-P} y2={yIdeal}
+        stroke={C.textMut} strokeWidth="1" strokeDasharray="4 3" opacity="0.6"/>
+    )}
+    {/* Línea real */}
+    <path d={path} fill="none" stroke={C.blueDk} strokeWidth="2"/>
+    {/* Puntos */}
+    {xs.map((x,i)=>(
+      <g key={i}>
+        <circle cx={x} cy={ys[i]} r="3.5" fill={C.blueDk}/>
+        <text x={x} y={H-P+14} fontSize="9" fill={C.textSec} textAnchor="middle">{puntos[i].x}</text>
+        <text x={x} y={ys[i]-8} fontSize="9" fill={C.caliza} fontWeight="600" textAnchor="middle">{NUM(puntos[i].real,1)}%</text>
+      </g>
+    ))}
+  </svg>;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4011,7 +4340,8 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
 // ════════════════════════════════════════════════════════════════════════════
 function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
-                   estimaciones,setEstimaciones,subcontratos,setSubcontratos}){
+                   estimaciones,setEstimaciones,subcontratos,setSubcontratos,
+                   historialAvance,setHistorialAvance,setCambiosPendientes}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
@@ -4050,26 +4380,37 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </Card>
     )}
 
-    {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) */}
+    {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
-      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
-        materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="volumenes"/>
+      <>
+        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
+        <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          rol={rol} obra={obra} forceTab="volumenes"
+          usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          setCambiosPendientes={setCambiosPendientes}/>
+      </>
     )}
     {subTab==="almacen" && (
       <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
         materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="materiales"/>
+        rol={rol} obra={obra} forceTab="materiales"
+        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+        setCambiosPendientes={setCambiosPendientes}/>
     )}
     {subTab==="maquinaria" && (
       <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
         materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="maquinaria"/>
+        rol={rol} obra={obra} forceTab="maquinaria"
+        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+        setCambiosPendientes={setCambiosPendientes}/>
     )}
     {subTab==="nomina" && (
       <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
         materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="nomina"/>
+        rol={rol} obra={obra} forceTab="nomina"
+        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+        setCambiosPendientes={setCambiosPendientes}/>
     )}
     {subTab==="estimaciones" && (
       <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
@@ -4104,7 +4445,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol}){
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes}){
   // Si forceTab viene (porque el wrapper Operación define qué sub-tab mostrar),
   // ocultamos las tabs internas y usamos el tab forzado.
   const[tabLocal,setTab]=useState("volumenes");
@@ -4284,7 +4625,17 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol}/>}
 
-    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} onSaved={()=>setCambiosPendientes(false)}/>}
+    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
+      onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
+      onHistorialNuevo={(snap)=>{
+        if (!setHistorialAvance) return;
+        setHistorialAvance(hist => {
+          const arr = (hist||[]).slice();
+          const idx = arr.findIndex(s => s.id === snap.id);
+          if (idx >= 0) arr[idx] = snap; else arr.push(snap);
+          return arr.sort((a,b) => (a.año - b.año) || (a.semana - b.semana));
+        });
+      }}/>}
   </div>;
 }
 
@@ -7334,13 +7685,16 @@ function Contrato({obra, setObra, rol}) {
   // Guardar datos del contrato
   async function guardarDatos() {
     setSaving(true);
-    await fsSet(`obras/${obra.id}/config/info`, {
+    const datos = {
       nombre:obra.nombre, contrato:obra.contrato, cliente:obra.cliente,
       superintendente:obra.superintendente, residente:obra.residente,
       admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
       finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
       diasPago: obra.diasPago||30,
-    });
+    };
+    await fsSet(`obras/${obra.id}/config/info`, datos);
+    // También escribir top-level para que la obra sea listable en getDocs(collection('obras'))
+    await fsSet(`obras/${obra.id}`, {id: obra.id, ...datos, estado: obra.estado || 'activa'});
     setSaving(false); setSaved(true);
     setTimeout(()=>setSaved(false), 2500);
   }
@@ -7740,6 +8094,11 @@ export default function App(){
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
       else setSubcontratos([]);
     });
+    // Cargar histórico semanal de avance
+    fsGet(`obras/${obraId}/avance/historial`).then(d=>{
+      if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
+      else setHistorialAvance([]);
+    });
   },[obraId]);
   const[subs,setSubs]=useState(SUBS_INIT);
   const[maquinaria,setMaquinaria]=useState([
@@ -7759,6 +8118,7 @@ export default function App(){
   const[estimaciones,setEstimaciones]=useState(EST_DEFAULT.map(e=>({...e})));
   const[estCargadas,setEstCargadas]=useState(false);
   const[subcontratos,setSubcontratos]=useState([]);
+  const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   useEffect(()=>{
@@ -7768,6 +8128,36 @@ export default function App(){
       setEstCargadas(true);
     });
   },[obraId]);
+
+  // ── CARGAR OBRAS desde Firestore al hacer login ──
+  // Las obras viven en colecciones top-level `obras/{id}` con sub-doc /config/info.
+  // También unimos info de /config/info que puede tener datos más recientes.
+  useEffect(() => {
+    if (!usuario) return;
+    (async () => {
+      try {
+        const snap = await getDocs(collection(fbDb, 'obras'));
+        const obrasFromDB = snap.docs.map(d => ({id: d.id, ...d.data()}));
+        // Para cada obra, si hay un /config/info más completo, mergear (info de Contrato editado)
+        await Promise.all(obrasFromDB.map(async (o, idx) => {
+          const info = await fsGet(`obras/${o.id}/config/info`);
+          if (info) obrasFromDB[idx] = {...o, ...info, id: o.id};
+        }));
+        // Merge: agregar las de Firestore que no estén ya en state, y mergear datos de las que sí
+        setObras(actual => {
+          const idsActuales = new Set(actual.map(o => o.id));
+          const nuevas = obrasFromDB.filter(o => !idsActuales.has(o.id));
+          const actualizadas = actual.map(o => {
+            const fromDB = obrasFromDB.find(x => x.id === o.id);
+            return fromDB ? {...o, ...fromDB} : o;
+          });
+          return [...actualizadas, ...nuevas];
+        });
+      } catch (e) {
+        console.error('cargar obras', e);
+      }
+    })();
+  }, [usuario?.uid]);
 
   // ── NOTIFICACIONES en tiempo real ──
   const[notificaciones,setNotificaciones]=useState([]);
@@ -7933,7 +8323,9 @@ export default function App(){
           maquinaria={maquinaria} setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
           materiales={materiales} setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
           estimaciones={estimaciones} setEstimaciones={setEstimaciones}
-          subcontratos={subcontratos} setSubcontratos={setSubcontratos}/>
+          subcontratos={subcontratos} setSubcontratos={setSubcontratos}
+          historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          setCambiosPendientes={setCambiosPendientes}/>
       )}
 
       {/* GASTOS GP */}
