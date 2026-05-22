@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
@@ -927,6 +927,106 @@ const fsGet  = async (path) => { try { const d = await getDoc(doc(fbDb, ...path.
 const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
 const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
+
+// ════════════════════════════════════════════════════════════════════════════
+// NOTIFICACIONES — Sistema in-app
+// ════════════════════════════════════════════════════════════════════════════
+// Estructura: notificaciones/{uid}/items/{notifId}
+// Categorías: actividad · financiero · riesgo · plazo · gestion · resumen
+// Cada notif tiene: tipo, categoria, titulo, mensaje, link {tab, subTab, obraId},
+//                   leida (bool), archivada (bool), fecha (timestamp)
+
+// Helper para crear una notif para uno o varios UIDs
+const crearNotifPara = async (uids, {categoria, tipo, titulo, mensaje, link, creadaPor}) => {
+  if (!Array.isArray(uids)) uids = [uids];
+  uids = [...new Set(uids.filter(Boolean))]; // únicos, sin nulos
+  if (uids.length === 0) return;
+  try {
+    const batch = writeBatch(fbDb);
+    for (const uid of uids) {
+      const ref = doc(collection(fbDb, `notificaciones/${uid}/items`));
+      batch.set(ref, {
+        categoria, tipo, titulo,
+        mensaje: mensaje || '',
+        link: link || {},
+        leida: false,
+        archivada: false,
+        fecha: serverTimestamp(),
+        creadaPor: creadaPor || 'sistema',
+      });
+    }
+    await batch.commit();
+  } catch (e) {
+    console.error('crearNotifPara', e);
+  }
+};
+
+// Helper: notificar a usuarios de uno o varios roles
+// Lee la colección 'usuarios' filtrando por rol y activos
+const notifARoles = async (roles, payload) => {
+  if (!Array.isArray(roles)) roles = [roles];
+  try {
+    const q = query(collection(fbDb, 'usuarios'), where('rol', 'in', roles));
+    const snap = await getDocs(q);
+    const uids = snap.docs
+      .map(d => d.data())
+      .filter(u => u.activo !== false && u.uid)
+      .map(u => u.uid);
+    return crearNotifPara(uids, payload);
+  } catch (e) {
+    console.error('notifARoles', e);
+  }
+};
+
+// Helper: notificar a un usuario específico por email
+const notifAEmail = async (email, payload) => {
+  if (!email) return;
+  try {
+    const emailId = email.toLowerCase().replace(/@/g,'_').replace(/\./g,'_');
+    const perfilSnap = await getDoc(doc(fbDb, `usuarios/${emailId}`));
+    if (!perfilSnap.exists()) return;
+    const perfil = perfilSnap.data();
+    if (perfil.activo === false || !perfil.uid) return;
+    return crearNotifPara([perfil.uid], payload);
+  } catch (e) {
+    console.error('notifAEmail', e);
+  }
+};
+
+// Marcar una notif como leída
+const marcarNotifLeida = async (uid, notifId) => {
+  try { await updateDoc(doc(fbDb, `notificaciones/${uid}/items/${notifId}`), {leida: true}); }
+  catch(e) { console.error('marcarNotifLeida', e); }
+};
+
+// Marcar todas como leídas
+const marcarTodasLeidas = async (uid, notifIds) => {
+  try {
+    const batch = writeBatch(fbDb);
+    for (const id of notifIds) {
+      batch.update(doc(fbDb, `notificaciones/${uid}/items/${id}`), {leida: true});
+    }
+    await batch.commit();
+  } catch(e) { console.error('marcarTodasLeidas', e); }
+};
+
+// Auto-archivar notif > 30 días
+const archivarViejas = async (uid, notifs) => {
+  const limite = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const viejas = notifs.filter(n => {
+    if (n.archivada) return false;
+    const ms = n.fecha?.toMillis?.() || (typeof n.fecha === 'number' ? n.fecha : 0);
+    return ms > 0 && ms < limite;
+  });
+  if (viejas.length === 0) return;
+  try {
+    const batch = writeBatch(fbDb);
+    for (const n of viejas) {
+      batch.update(doc(fbDb, `notificaciones/${uid}/items/${n.id}`), {archivada: true});
+    }
+    await batch.commit();
+  } catch(e) { console.error('archivarViejas', e); }
+};
 
 // ── Helper KPIs por obra (reutilizable para Dashboard, Panel Ejecutivo y PDF) ──
 // Devuelve métricas calculadas a partir de los datos de UNA obra.
@@ -2376,6 +2476,157 @@ function ModalNuevaObra({onSave,onClose,gpData}){
   </div>;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// CENTRO DE NOTIFICACIONES (campana en header con dropdown)
+// ════════════════════════════════════════════════════════════════════════════
+function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra}){
+  const[abierto,setAbierto]=useState(false);
+  const dropdownRef = useRef(null);
+
+  // Cerrar al hacer click fuera
+  useEffect(() => {
+    if (!abierto) return;
+    const handler = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setAbierto(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [abierto]);
+
+  // Filtrar las no archivadas y ordenar por fecha desc
+  const activas = (notificaciones||[])
+    .filter(n => !n.archivada)
+    .sort((a,b) => (b.fecha?.toMillis?.()||0) - (a.fecha?.toMillis?.()||0));
+  const noLeidas = activas.filter(n => !n.leida);
+  const noLeidasCount = noLeidas.length;
+
+  const COLOR_CAT = {
+    actividad: C.blue,
+    financiero: C.purple,
+    riesgo: C.red,
+    plazo: C.yellow,
+    gestion: C.green,
+    resumen: C.caliza,
+  };
+  const ICON_CAT = {
+    actividad: '●',
+    financiero: '$',
+    riesgo: '!',
+    plazo: '◷',
+    gestion: '+',
+    resumen: '≡',
+  };
+
+  const formatearFecha = (n) => {
+    const ms = n.fecha?.toMillis?.() || 0;
+    if (!ms) return '';
+    const diffMin = Math.floor((Date.now() - ms) / 60000);
+    if (diffMin < 1) return 'Ahora';
+    if (diffMin < 60) return `Hace ${diffMin}m`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `Hace ${diffH}h`;
+    const diffD = Math.floor(diffH / 24);
+    if (diffD < 7) return `Hace ${diffD}d`;
+    return new Date(ms).toLocaleDateString('es-MX', {day:'numeric', month:'short'});
+  };
+
+  const onClickNotif = async (n) => {
+    if (!n.leida) await marcarNotifLeida(usuario.uid, n.id);
+    setAbierto(false);
+    if (n.link?.obraId && onSelectObra) onSelectObra(n.link.obraId);
+    if (n.link?.tab && onNavTab) onNavTab(n.link.tab, n.link.subTab);
+  };
+
+  const marcarTodas = async () => {
+    if (noLeidas.length === 0) return;
+    await marcarTodasLeidas(usuario.uid, noLeidas.map(n=>n.id));
+  };
+
+  return <div style={{position:'relative'}} ref={dropdownRef}>
+    {/* Campana */}
+    <button onClick={()=>setAbierto(!abierto)} title="Notificaciones"
+      style={{background:abierto?C.caliza:'none',border:`0.5px solid ${abierto?C.caliza:C.border}`,
+        borderRadius:6, padding:'4px 8px', fontSize:14, cursor:'pointer',
+        color:abierto?C.bg:C.textSec, position:'relative', minWidth:32}}>
+      {String.fromCharCode(0x2691)/* flag-like icon */}
+      {noLeidasCount > 0 && (
+        <span style={{position:'absolute', top:-4, right:-4, background:C.red, color:'#fff',
+          borderRadius:99, padding:'1px 5px', fontSize:8, fontWeight:700, minWidth:14, textAlign:'center'}}>
+          {noLeidasCount > 9 ? '9+' : noLeidasCount}
+        </span>
+      )}
+    </button>
+
+    {/* Dropdown */}
+    {abierto && (
+      <div style={{position:'absolute', right:0, top:'calc(100% + 6px)', width:360, maxWidth:'95vw',
+        maxHeight:480, background:'#fff', border:`0.5px solid ${C.border}`, borderRadius:10,
+        boxShadow:'0 8px 24px rgba(0,0,0,0.15)', zIndex:300, display:'flex', flexDirection:'column'}}>
+        {/* Header */}
+        <div style={{padding:'10px 12px', borderBottom:`0.5px solid ${C.border}`,
+          display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:12, fontWeight:700, color:C.caliza}}>Notificaciones</div>
+            <div style={{fontSize:9, color:C.textMut}}>
+              {noLeidasCount > 0 ? `${noLeidasCount} sin leer` : 'Todo al día'}
+            </div>
+          </div>
+          {noLeidasCount > 0 && (
+            <button onClick={marcarTodas}
+              style={{background:'none', border:'none', fontSize:10, color:C.blueDk,
+                cursor:'pointer', fontWeight:600}}>
+              Marcar todas
+            </button>
+          )}
+        </div>
+
+        {/* Lista */}
+        <div style={{overflow:'auto', flex:1}}>
+          {activas.length === 0 && (
+            <div style={{padding:30, textAlign:'center', color:C.textMut, fontSize:11}}>
+              Sin notificaciones por el momento.
+            </div>
+          )}
+          {activas.map(n => {
+            const col = COLOR_CAT[n.categoria] || C.textMut;
+            const icon = ICON_CAT[n.categoria] || '·';
+            return <div key={n.id} onClick={()=>onClickNotif(n)}
+              style={{padding:'10px 12px', borderBottom:`0.5px solid ${C.border}`,
+                cursor:'pointer', background:n.leida?'transparent':`${col}08`,
+                borderLeft:`3px solid ${n.leida?'transparent':col}`,
+                transition:'background .12s'}}
+              onMouseEnter={e=>e.currentTarget.style.background=C.bg}
+              onMouseLeave={e=>e.currentTarget.style.background=n.leida?'transparent':`${col}08`}>
+              <div style={{display:'flex', alignItems:'flex-start', gap:8}}>
+                <div style={{width:20, height:20, borderRadius:'50%', background:`${col}22`,
+                  color:col, fontSize:11, fontWeight:700, display:'flex',
+                  alignItems:'center', justifyContent:'center', flexShrink:0}}>{icon}</div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{display:'flex', justifyContent:'space-between', gap:6, alignItems:'baseline'}}>
+                    <div style={{fontSize:11, fontWeight:n.leida?500:700, color:C.caliza,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                      {n.titulo}
+                    </div>
+                    <div style={{fontSize:9, color:C.textMut, flexShrink:0}}>{formatearFecha(n)}</div>
+                  </div>
+                  {n.mensaje && (
+                    <div style={{fontSize:10, color:C.textSec, marginTop:2, lineHeight:1.4}}>
+                      {n.mensaje}
+                    </div>
+                  )}
+                </div>
+                {!n.leida && (
+                  <div style={{width:6, height:6, borderRadius:'50%', background:col, flexShrink:0, marginTop:5}}/>
+                )}
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+    )}
+  </div>;
+}
+
 // ── GESTIÓN DE USUARIOS (solo director_general y admin_sistema) ────────────
 // Llama a Cloud Functions para crear/editar/eliminar usuarios en Firebase Auth + Firestore.
 function GestionUsuarios({usuario, obras, onClose}){
@@ -2474,6 +2725,19 @@ function GestionUsuarios({usuario, obras, onClose}){
         if(!r.ok){ alert("Error: "+r.error); return; }
         setModalNuevo(false);
         recargar();
+        // Notif al usuario nuevo y a directivos
+        await notifAEmail(form.email, {
+          categoria: 'gestion', tipo: 'bienvenida',
+          titulo: `Bienvenido a CAMPO`,
+          mensaje: `Tu cuenta fue creada con rol ${ROL_LABEL[form.rol]||form.rol}. Cambia tu contraseña al ingresar.`,
+          creadaPor: usuario?.correo || 'sistema',
+        });
+        await notifARoles(['director_general'], {
+          categoria: 'gestion', tipo: 'usuario_creado',
+          titulo: `Nuevo usuario en CAMPO`,
+          mensaje: `${form.nombre} (${form.email}) · ${ROL_LABEL[form.rol]||form.rol}`,
+          creadaPor: usuario?.correo || 'sistema',
+        });
       }} busy={busy}/>}
 
     {/* MODAL EDITAR */}
@@ -2485,6 +2749,38 @@ function GestionUsuarios({usuario, obras, onClose}){
         const r = await callFn("actualizarUsuario", {email:modalEditar.email, cambios});
         setBusy(false);
         if(!r.ok){ alert("Error: "+r.error); return; }
+        // Detectar cambios y notif
+        const obrasAntes = modalEditar.obras_asignadas || [];
+        const obrasNuevas = form.obras_asignadas || [];
+        const obrasAgregadas = obrasNuevas.filter(o => !obrasAntes.includes(o));
+        if (modalEditar.rol !== form.rol) {
+          await notifAEmail(modalEditar.email, {
+            categoria: 'gestion', tipo: 'cambio_rol',
+            titulo: `Tu rol cambió`,
+            mensaje: `Ahora eres ${ROL_LABEL[form.rol]||form.rol}`,
+            creadaPor: usuario?.correo || 'sistema',
+          });
+        }
+        if (obrasAgregadas.length > 0) {
+          const nombresObras = obrasAgregadas.map(id => {
+            const o = obras.find(x => x.id === id);
+            return o ? o.nombre : id;
+          }).join(', ');
+          await notifAEmail(modalEditar.email, {
+            categoria: 'gestion', tipo: 'obra_asignada',
+            titulo: `Te asignaron a nueva(s) obra(s)`,
+            mensaje: `${nombresObras}`,
+            creadaPor: usuario?.correo || 'sistema',
+          });
+        }
+        if (modalEditar.activo !== false && form.activo === false) {
+          await notifAEmail(modalEditar.email, {
+            categoria: 'gestion', tipo: 'desactivado',
+            titulo: `Tu cuenta fue desactivada`,
+            mensaje: `Contacta al administrador si necesitas reactivarla.`,
+            creadaPor: usuario?.correo || 'sistema',
+          });
+        }
         setModalEditar(null);
         recargar();
       }} busy={busy}/>}
@@ -2893,6 +3189,14 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     // Guardar en Firestore
     await fsSet(`obras/${nueva.id}/config/info`, nueva);
     setModalNueva(false);
+    // Notif a directivos sobre la nueva obra
+    notifARoles(['director_general','director_operaciones','admin_sistema'], {
+      categoria: 'gestion', tipo: 'obra_nueva',
+      titulo: `Nueva obra · ${nueva.nombre}`,
+      mensaje: `${nueva.cliente || 'Sin cliente'} · Presupuesto: ${MXN(nueva.presupuesto)} · ID ${nueva.id}`,
+      link: { obraId: nueva.id, tab: 'dash' },
+      creadaPor: usuario?.correo || 'sistema',
+    });
   };
 
   const listaActual=ordenar(verHistorial?archivadas:activas);
@@ -3705,7 +4009,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved}) {
 // (Avance · Almacén · Maquinaria · Nómina · Estimaciones · Subcontratos)
 // Cada sub-tab tiene su propio mini-dashboard arriba (Sprint B).
 // ════════════════════════════════════════════════════════════════════════════
-function Operacion({subTab,setSubTab,obra,setObra,rol,
+function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -3768,10 +4072,10 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,
         rol={rol} obra={obra} forceTab="nomina"/>
     )}
     {subTab==="estimaciones" && (
-      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol}/>
+      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
     )}
     {subTab==="subcontratos" && (
-      <Subcontratos obra={obra} rol={rol} items={subcontratos} setItems={setSubcontratos}/>
+      <Subcontratos obra={obra} rol={rol} items={subcontratos} setItems={setSubcontratos} usuario={usuario}/>
     )}
   </div>;
 }
@@ -4527,9 +4831,66 @@ function GastosGP({obra,maquinaria,rol,gpData}){
 }
 
 // ── ESTIMACIONES ───────────────────────────────────────────────────────────
-function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
+function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   const[saved,setSaved]=useState(false);
   const editar=can(rol,"estimaciones","editar");
+  // Snapshot del estado guardado para detectar cambios en el próximo save
+  const[snapshotGuardado,setSnapshotGuardado]=useState(null);
+  useEffect(() => {
+    // Al cargar el componente, guardar el snapshot inicial
+    if (snapshotGuardado === null && estimaciones.length > 0) {
+      setSnapshotGuardado(JSON.stringify(estimaciones.map(e=>({no:e.no, estatus:e.estatus, monto:e.monto}))));
+    }
+  }, [estimaciones, snapshotGuardado]);
+
+  // Función que dispara notif al guardar
+  const dispararNotifsCambios = async (nuevas) => {
+    if (!snapshotGuardado) return;
+    try {
+      const ant = JSON.parse(snapshotGuardado);
+      const antMap = Object.fromEntries(ant.map(e=>[e.no, e]));
+      const link = { tab: 'operacion', subTab: 'estimaciones', obraId: obra.id };
+      const creadaPor = usuario?.correo || 'sistema';
+      for (const e of nuevas) {
+        const prev = antMap[e.no];
+        if (!prev) {
+          // Nueva estimación
+          await notifARoles(['director_general','director_operaciones','admin_sistema'], {
+            categoria: 'financiero', tipo: 'estim_creada',
+            titulo: `Nueva estimación EST-0${e.no} · ${obra.nombre||obra.id}`,
+            mensaje: `${MXN(e.monto)} en estatus ${e.estatus}`,
+            link, creadaPor,
+          });
+        } else if (prev.estatus !== e.estatus) {
+          // Cambio de estatus
+          if (e.estatus === 'Facturada') {
+            await notifARoles(['director_general','director_operaciones','admin_sistema'], {
+              categoria: 'financiero', tipo: 'estim_facturada',
+              titulo: `EST-0${e.no} facturada · ${obra.nombre||obra.id}`,
+              mensaje: `${MXN(e.monto)} · ${obra.diasPago||30} días para vencer cobro`,
+              link, creadaPor,
+            });
+          } else if (e.estatus === 'Pagada') {
+            await notifARoles(['director_general','director_operaciones','admin_sistema'], {
+              categoria: 'financiero', tipo: 'estim_pagada',
+              titulo: `EST-0${e.no} cobrada · ${obra.nombre||obra.id}`,
+              mensaje: `${MXN(e.monto)} recibidos del cliente`,
+              link, creadaPor,
+            });
+          } else if (e.estatus === 'Aprobada') {
+            await notifARoles(['director_general','director_operaciones','admin_sistema'], {
+              categoria: 'financiero', tipo: 'estim_aprobada',
+              titulo: `EST-0${e.no} aprobada · ${obra.nombre||obra.id}`,
+              mensaje: `${MXN(e.monto)} lista para facturar`,
+              link, creadaPor,
+            });
+          }
+        }
+      }
+      // Actualizar snapshot
+      setSnapshotGuardado(JSON.stringify(nuevas.map(e=>({no:e.no, estatus:e.estatus, monto:e.monto}))));
+    } catch(err) { console.error('dispararNotifsCambios', err); }
+  };
   const ESTATUS=["En proceso","Aprobada","Facturada","Pagada"];
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100,re=e.monto*(obra.pctRetencion||0)/100;return{a,fg,re,ef:e.monto-a-fg-re,pC:e.monto/obra.presupuesto*100};};
   const totalEst  =estimaciones.reduce((t,e)=>t+e.monto,0);
@@ -4581,10 +4942,12 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol}){
         <Tit>Relación de estimaciones</Tit>
         <div style={{display:"flex",gap:6}}>
         {editar&&<SecBtn onClick={()=>setEstimaciones(es=>[...es,{no:(es.length>0?Math.max(...es.map(e=>e.no)):0)+1,monto:0,periodo:"",estatus:"En proceso"}])}>+ Nueva estimación</SecBtn>}
-        {editar&&<button onClick={()=>{
+        {editar&&<button onClick={async ()=>{
           try{
-            fsSet(`obras/${obra.id}/config/estimaciones`, {data:estimaciones});
-            fsSet(`obras/${obra.id}/config/parametros`, {pctAnticipo:obra.pctAnticipo,pctFondoGar:obra.pctFondoGar,pctRetencion:obra.pctRetencion||0});
+            await fsSet(`obras/${obra.id}/config/estimaciones`, {data:estimaciones});
+            await fsSet(`obras/${obra.id}/config/parametros`, {pctAnticipo:obra.pctAnticipo,pctFondoGar:obra.pctFondoGar,pctRetencion:obra.pctRetencion||0});
+            // Disparar notif por cambios detectados
+            dispararNotifsCambios(estimaciones);
             setSaved(true); setTimeout(()=>setSaved(false),2500);
           }catch(e){alert("Error al guardar");}
         }} style={{background:saved?C.green:C.caliza,border:"none",borderRadius:6,
@@ -6136,7 +6499,7 @@ function PlazosCliente({obra}){
 // Estructura Firestore: obras/{obraId}/subcontratos/lista = { items: [...] }
 // ════════════════════════════════════════════════════════════════════════════
 
-function Subcontratos({obra, rol, items, setItems}){
+function Subcontratos({obra, rol, items, setItems, usuario}){
   const editar = can(rol, "captura", "editar");
   const[seleccionado,setSeleccionado]=useState(null); // id de subcontrato abierto
   const[modalNuevo,setModalNuevo]=useState(false);
@@ -6160,6 +6523,14 @@ function Subcontratos({obra, rol, items, setItems}){
     guardar([...items, nuevo]);
     setModalNuevo(false);
     setSeleccionado(id);
+    // Notif a directivos sobre el nuevo subcontrato
+    notifARoles(['director_general','director_operaciones','admin_sistema'], {
+      categoria: 'gestion', tipo: 'subcontrato_nuevo',
+      titulo: `Nuevo subcontrato · ${obra.nombre || obra.id}`,
+      mensaje: `${data.nombre} · ${data.proveedor} · ${MXN(data.monto || 0)}`,
+      link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
+      creadaPor: usuario?.correo || 'sistema',
+    });
   };
 
   const actualizar = (id, cambios) => {
@@ -6176,7 +6547,7 @@ function Subcontratos({obra, rol, items, setItems}){
   const detalle = items.find(s => s.id === seleccionado);
 
   if(detalle){
-    return <DetalleSubcontrato sub={detalle} editar={editar} obra={obra}
+    return <DetalleSubcontrato sub={detalle} editar={editar} obra={obra} usuario={usuario}
       onUpdate={cambios => actualizar(detalle.id, cambios)}
       onVolver={()=>setSeleccionado(null)}
       onEliminar={()=>eliminar(detalle.id)}/>;
@@ -6289,7 +6660,7 @@ function ModalNuevoSubcontrato({onSave, onClose}){
 }
 
 // ── DETALLE DE UN SUBCONTRATO ──
-function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar}){
+function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, usuario}){
   const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
   const[conceptoFotos,setConceptoFotos]=useState(null); // concepto al que se cargan fotos
   const[lightbox,setLightbox]=useState(null);
@@ -6330,7 +6701,19 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar})
     onUpdate({pagos: nuevos});
   };
   const actualizarPago = (idx, cambios) => {
-    onUpdate({pagos: pagos.map((p,i) => i===idx ? {...p, ...cambios} : p)});
+    const pagoPrev = pagos[idx];
+    const pagoNuevo = {...pagoPrev, ...cambios};
+    onUpdate({pagos: pagos.map((p,i) => i===idx ? pagoNuevo : p)});
+    // Notif si pasó a "pagado" y antes no lo estaba
+    if (cambios.estatus === 'pagado' && pagoPrev.estatus !== 'pagado' && pagoNuevo.monto > 0) {
+      notifARoles(['director_general','director_operaciones','admin_sistema'], {
+        categoria: 'financiero', tipo: 'pago_sub',
+        titulo: `Pago registrado · ${sub.proveedor || sub.nombre}`,
+        mensaje: `${MXN(pagoNuevo.monto)} · ${obra.nombre || obra.id}${pagoNuevo.referencia ? ' · '+pagoNuevo.referencia : ''}`,
+        link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
+        creadaPor: usuario?.correo || 'sistema',
+      });
+    }
   };
   const eliminarPago = (idx) => {
     onUpdate({pagos: pagos.filter((_,i) => i !== idx)});
@@ -7386,6 +7769,26 @@ export default function App(){
     });
   },[obraId]);
 
+  // ── NOTIFICACIONES en tiempo real ──
+  const[notificaciones,setNotificaciones]=useState([]);
+  useEffect(() => {
+    if (!usuario?.uid) return;
+    const q = query(
+      collection(fbDb, `notificaciones/${usuario.uid}/items`),
+      orderBy('fecha', 'desc'),
+      limit(100)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const items = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setNotificaciones(items);
+      // Auto-archivar las > 30 días
+      archivarViejas(usuario.uid, items);
+    }, (err) => {
+      console.error('listener notif', err);
+    });
+    return () => unsub();
+  }, [usuario?.uid]);
+
   // ── CARGA BULK: datos de todas las obras activas para el Panel Ejecutivo ──
   // Se ejecuta al hacer login Y cuando cambia el set de IDs de obras activas
   // (al crear/archivar/eliminar una obra). Carga en paralelo (Promise.all)
@@ -7465,6 +7868,10 @@ export default function App(){
           <div style={{fontSize:9,color:C.textSec}}>{usuario.nombre.split(" ")[0]}</div>
           <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
         </div>
+        {/* Campana de notificaciones — para todos los usuarios autenticados */}
+        <CentroNotificaciones usuario={usuario} notificaciones={notificaciones}
+          onNavTab={(t,st)=>{ setScreen("obra"); navTab(t,st); }}
+          onSelectObra={(id)=>{ if(id && id!==obraId) entrar(id); }}/>
         {["director_general","director_operaciones","admin_sistema"].includes(usuario.rol) && (
           <button onClick={()=>setScreen(screen==="usuarios"?"obras":"usuarios")}
             style={{background:screen==="usuarios"?C.caliza:"none",
@@ -7521,7 +7928,7 @@ export default function App(){
       {screen==="obra"&&tab==="operacion"&&obra&&(
         <Operacion
           subTab={subTabOper} setSubTab={setSubTabOper}
-          obra={obra} setObra={setObra} rol={usuario.rol}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
           subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
           maquinaria={maquinaria} setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
           materiales={materiales} setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
