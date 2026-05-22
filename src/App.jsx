@@ -1779,22 +1779,14 @@ const NOMINA_S18 = [
   {nombre:'MIGUEL ANGEL GASPAR AGUILAR',categoria:'AYUDANTE',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:2.0,horasExtra:0,importeDias:1000.0,importeHE:0,total:1000.0,semana:18},
 ];
 
-const _OBRAS_BASE = [
-  {id:"OAX01",nombre:"Oaxaca Parque Lineal",contrato:"IE-SIC/SSOP/UL-X010-2026",
-   cliente:"Gob. Estado de Oaxaca",superintendente:"Ing. Eduardo Botello Vázquez",
-   residente:"Ing. Ana Martínez",admin:"L.C. Pablo Castillo Villalobos",
-   presupuesto:163348337,gastoGP:29330201,ultimaAct:"27 mayo 2026",
-   estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
-   inicio:"2026-05-01",fin:"2026-08-28"},
-];
+// Sin obras hardcodeadas. Todas las obras se crean desde GP Construct vía PantallaObras.
+const _OBRAS_BASE = [];
 
 function loadObras() {
-  // Carga inicial desde _OBRAS_BASE — filtrar obras eliminadas guardadas en localStorage
-  // La key de eliminados depende del usuario — se evalúa en tiempo de ejecución
-  // Por ahora filtramos con todas las keys campo_eliminados_*
-  const _todasKeys=Object.keys(localStorage).filter(k=>k.startsWith('campo_eliminados_'));
-  const eliminados=[..._todasKeys.flatMap(k=>JSON.parse(localStorage.getItem(k)||'[]'))];
-  return _OBRAS_BASE.filter(o=>!eliminados.includes(o.id)).map(o=>({...o}));
+  // No hay obras base. La carga real de obras vive en Firestore y se hidrata
+  // desde el useEffect bulk en App al hacer login. Aquí solo devolvemos array vacío
+  // para arrancar limpio.
+  return [];
 }
 
 const SUBS_INIT = [
@@ -2753,12 +2745,8 @@ function PanelEjecutivo({obras, datosPorObra, onSelectObra}){
 }
 
 function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
-  // Debug
-  if(!obras||!Array.isArray(obras)||obras.length===0){
-    return <div style={{padding:20,color:C.red,fontSize:12}}>
-      Error: obras no disponible ({typeof obras}, len={obras?.length})
-    </div>;
-  }
+  // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
+  if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
@@ -2773,13 +2761,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   // Filtrado de obras visibles:
   // - Roles con todas_obras=true: ven todas
   // - Roles con todas_obras=false (cliente, administrador_obra): solo las que están en usuario.obras_asignadas
-  //   Si no tienen obras_asignadas (estructura vieja), fallback a OAX01 para mantener compatibilidad
   const asignadas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
   const todasObras = PERMISOS[usuario.rol]?.todas_obras
     ? obras
     : (asignadas.length > 0
         ? obras.filter(o => asignadas.includes(o.id))
-        : [obras.find(o=>o.id==="OAX01")||obras[0]].filter(Boolean));
+        : []);
   const activas=todasObras.filter(o=>o.estado!=="archivada");
   const archivadas=todasObras.filter(o=>o.estado==="archivada");
 
@@ -3929,18 +3916,52 @@ function GastosGP({obra,maquinaria,rol,gpData}){
   const[subtab,setSubtab]=useState("resumen");
   const totalMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
 
-  // ── Buscar la obra en gpData (por ID de 4 dígitos: usamos el id de la obra como prefijo) ──
-  // Si gpData no se cargó, usar fallback al gastoGP del state local
-  const obraGP = gpData?.obras
-    ? Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || obra.nombre?.toUpperCase().includes(o.nombre?.split(' ').slice(1).join(' ').toUpperCase()))
-    : null;
+  // ── Buscar la obra en gpData ──
+  // Estrategia (en orden de prioridad):
+  // 1. Si la obra tiene campo gpId capturado en Contrato (ej. "0114"), usarlo exacto
+  // 2. Si el id de CAMPO es de 4 dígitos, intentar match directo (legacy)
+  // 3. Match por similitud de nombre (normalizado: sin acentos, mayúsculas, palabras significativas)
+  const normalizar = (s) => (s||"")
+    .toString()
+    .toUpperCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // quita acentos
+    .replace(/[^\w\s]/g, " ")  // quita puntuación
+    .replace(/\s+/g, " ")
+    .trim();
 
-  // Si no encontramos la obra exacta, intentamos buscar por coincidencia parcial
-  const obraGPMatch = obraGP || (gpData?.obras
-    ? Object.values(gpData.obras).find(o => obra.nombre?.toUpperCase().includes((o.nombre||'').split(' ').slice(1,3).join(' ').toUpperCase()))
-    : null);
+  const buscarObraEnGP = () => {
+    if (!gpData?.obras) return null;
+    const obrasGPArr = Object.values(gpData.obras);
+    // 1. Por gpId explícito
+    if (obra.gpId) {
+      const exact = obrasGPArr.find(o => o.id === obra.gpId);
+      if (exact) return exact;
+    }
+    // 2. Por id de CAMPO si parece código de 4 dígitos
+    if (/^\d{4}/.test(obra.id||"")) {
+      const exact = obrasGPArr.find(o => o.id === obra.id.slice(0,4));
+      if (exact) return exact;
+    }
+    // 3. Match por nombre normalizado: contiene palabras significativas
+    const nombreObra = normalizar(obra.nombre);
+    const palabrasObra = nombreObra.split(" ").filter(w => w.length > 3);
+    let mejorMatch = null;
+    let mejorScore = 0;
+    for (const o of obrasGPArr) {
+      const nombreGP = normalizar(o.nombre).replace(/^\d{4}\s*/, ""); // quita el código
+      const palabrasGP = nombreGP.split(" ").filter(w => w.length > 3);
+      // Calcular cuántas palabras significativas coinciden
+      const matches = palabrasObra.filter(p => palabrasGP.some(g => g.includes(p) || p.includes(g)));
+      if (matches.length > mejorScore) {
+        mejorScore = matches.length;
+        mejorMatch = o;
+      }
+    }
+    // Solo aceptar match si comparten al menos 2 palabras significativas
+    return mejorScore >= 2 ? mejorMatch : null;
+  };
 
-  const datosObra = obraGPMatch;
+  const datosObra = buscarObraEnGP();
   const semanas = gpData?.semanasDisponibles || [];
   const ultimaSem = gpData?.ultimaSemana || '';
 
@@ -4071,17 +4092,48 @@ function GastosGP({obra,maquinaria,rol,gpData}){
       </Card>
     )}
 
-    {/* Si no hay datos de GP, mostrar mensaje y salir */}
+    {/* Si no hay datos de GP, mostrar mensaje + selector manual */}
     {!datosObra && (
       <Card>
-        <div style={{padding:16,textAlign:"center",fontSize:11,color:C.textMut}}>
-          <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>
-            Esta obra no aparece aún en el Sheet de GP Construct
+        <div style={{padding:14}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6,textAlign:"center"}}>
+            No se encontró esta obra en el Sheet de GP
           </div>
-          <div>El gasto mostrado es de la maquinaria propia capturada en CAMPO.</div>
-          <div style={{marginTop:8,fontSize:10}}>
-            Pide a Luis Mayo que agregue la obra al Sheet con el código <b>{obra.id?.slice(0,4) || "[ID 4 dígitos]"}</b>.
+          <div style={{fontSize:10,color:C.textSec,textAlign:"center",marginBottom:12}}>
+            El sistema buscó por nombre y por ID pero no encontró coincidencia automática.
           </div>
+
+          {/* Selector manual de obra GP */}
+          {gpData?.obras && Object.keys(gpData.obras).length > 0 && (
+            <div style={{background:C.bg,borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:C.textMut,marginBottom:5,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                Selecciona la obra correspondiente en GP Construct:
+              </div>
+              <Sel value={obra.gpId||""}
+                onChange={async (e) => {
+                  const nuevoId = e.target.value;
+                  const upd = {...obra, gpId: nuevoId};
+                  setObra(upd);
+                  await fsSet(`obras/${obra.id}/config/info`, {gpId: nuevoId});
+                }}>
+                <option value="">— Selecciona una obra —</option>
+                {Object.values(gpData.obras)
+                  .sort((a,b)=>a.id.localeCompare(b.id))
+                  .map(o => (
+                    <option key={o.id} value={o.id}>{o.nombre}</option>
+                  ))}
+              </Sel>
+              <div style={{fontSize:9,color:C.textMut,marginTop:6}}>
+                Esta selección se guarda en el contrato y se usa en futuras cargas.
+              </div>
+            </div>
+          )}
+
+          {(!gpData?.obras || Object.keys(gpData.obras).length === 0) && (
+            <div style={{fontSize:10,color:C.textMut,textAlign:"center",padding:10}}>
+              El Sheet de GP no se ha cargado todavía. Refresca la página o pide a Luis Mayo que verifique el Sheet.
+            </div>
+          )}
         </div>
       </Card>
     )}
@@ -7264,12 +7316,11 @@ export default function App(){
         fsGet(`obras/${o.id}/avance/materiales`),
         fsGet(`obras/${o.id}/config/estimaciones`),
       ]);
-      // Mezclar subs guardadas con catálogo si solo se guardan los % de avance
+      // Subs viene del Firestore (data); si no existe queda vacío y se llena
+      // cuando se sube el catálogo desde el módulo Presupuesto.
       let subsFinales = [];
       if(subsData && Array.isArray(subsData.data)){
         subsFinales = subsData.data;
-      } else if(o.id==="OAX01"){
-        subsFinales = SUBS_INIT.map(s=>({...s}));
       }
       return [o.id, {
         info: info || {},
