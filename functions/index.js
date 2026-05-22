@@ -245,7 +245,7 @@ exports.listarUsuarios = onCall(async (request) => {
 
 const GP_SHEET_ID = "1UaRI7ysMttXvET9I6hXPJAqadUYRd0Y0Qiwy8uRi82c";
 const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/export?format=csv`;
-const PARSER_VERSION = 2;
+const PARSER_VERSION = 3;
 
 // ── Parser CSV robusto (maneja comillas con comas dentro) ──
 function parseCsvLine(line) {
@@ -275,69 +275,201 @@ function parseMonto(s) {
   return isNaN(n) ? NaN : n;
 }
 
-// Parser de GP Construct (idéntico al del frontend para mantener consistencia)
+// Parser de GP Construct v3 — robusto a estructura con AÑOS DESPLEGADOS
+//
+// El Sheet tiene jerarquía: Año → Mes → Semanas (cada uno con su Total).
+// Estructura típica de columnas:
+//   [0] vacía
+//   [1] Row Labels (nombres de obras/rubros/proveedores)
+//   [2..N] 2024 desplegado: Enero, Total Enero, Febrero, Total Febrero, ..., Total 2024
+//   [N+1..M] 2025 desplegado: igual estructura
+//   [M+1..K] 2026 desplegado: igual
+//   [K+1] Total general (Grand Total)
+//   [K+2] %
+//
+// Cada año tiene sus semanas (14, 15...) que se REPITEN por año. Para el acumulado real
+// SIEMPRE usamos "Total general"; las columnas individuales son para análisis temporal.
 function parsearGPConstruct(csvText) {
   const lines = csvText.split('\n').map(parseCsvLine);
-  const colMap = {};
   const MESES = {
     'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
     'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
   };
-  let headerRow = -1;
+  // Normalizador para detectar palabras especiales
+  const normalize = (s) => (s||'').toString().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,'').trim();
+
+  // ── PASO 1: detectar columnas especiales en filas de header (filas 0-10) ──
+  // colMap guarda las posiciones de columnas críticas:
+  //  - grand_total: índice de "Total general" / "Grand Total"
+  //  - total_year_2024, total_year_2025, total_year_2026: totales anuales
+  //  - total_month_2026_05, etc: totales mensuales (solo del año actual usualmente)
+  //  - week_2026_22: semanas individuales del año actual (para tendencia)
+  //  - pct: columna de %
+  const colMap = {};
+  // Necesitamos "estado" mientras escaneamos headers para asociar mes a su año actual
+  // Por simplicidad: las semanas/meses individuales se asocian al año más reciente que vimos
+  // a la izquierda en la misma fila
+
   const maxScan = Math.min(lines.length, 12);
+
+  // Primero pase: identificar fila de años (la que tiene "2024", "2025", "2026" como texto puro)
+  let yearRow = -1;
+  let yearCols = {}; // {año: colIndex}
+  for (let i = 0; i < maxScan; i++) {
+    const matches = lines[i].map((c, ci) => /^20\d{2}$/.test((c||'').trim()) ? ci : -1).filter(x => x >= 0);
+    if (matches.length >= 1) {
+      yearRow = i;
+      matches.forEach(ci => { yearCols[lines[i][ci].trim()] = ci; });
+      break;
+    }
+  }
+
+  // Segundo pase: identificar fila de meses (con nombres como "1 .- Enero", "2 .- Febrero")
+  let monthRow = -1;
+  for (let i = 0; i < maxScan; i++) {
+    const tieneMeses = lines[i].some(c => {
+      const m = (c||'').toLowerCase();
+      return /enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre/.test(m);
+    });
+    if (tieneMeses) { monthRow = i; break; }
+  }
+
+  // Tercer pase: identificar fila de semanas (números 1-53)
+  let weekRow = -1;
+  for (let i = 0; i < maxScan; i++) {
+    const numCount = lines[i].filter(c => /^[1-5]?[0-9]$/.test((c||'').trim())).length;
+    if (numCount >= 5) { weekRow = i; break; }
+  }
+
+  // Determinar Grand Total y Total de cada año (buscar en cualquier fila de header)
+  // Texto típico: "Total general", "Grand Total", "Total 2024", "Total 2025", "Total 2026"
   for (let i = 0; i < maxScan; i++) {
     lines[i].forEach((cellRaw, ci) => {
       const c = (cellRaw || '').trim();
       if (!c) return;
-      if (/^20\d{2}$/.test(c) && !colMap[`y_${c}`]) colMap[`y_${c}`] = ci;
-      const matchMes = c.match(/(?:^\d+\s*[.\-]+\s*)?([A-Za-záéíóú]+)/);
-      if (matchMes) {
-        const m = matchMes[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,'');
-        if (MESES[m] && !colMap[`m_2026_${MESES[m]}`]) colMap[`m_2026_${MESES[m]}`] = ci;
+      const n = normalize(c);
+      // Grand Total / Total general (acumulado de todos los años)
+      if ((n === 'total general' || n === 'grand total' || /^grand\s*total$/i.test(c))
+          && colMap.grand_total === undefined) {
+        colMap.grand_total = ci;
       }
-      if (/^[1-5][0-9]$/.test(c)) {
-        const n = parseInt(c);
-        if (n >= 1 && n <= 53 && !colMap[`w_${n}`]) {
-          colMap[`w_${n}`] = ci;
-          if (headerRow < 0) headerRow = i;
+      // Total anual: "Total 2024", "Total 2025", "Total 2026", "2024 Total"
+      const matchTotalAño = c.match(/total\s*(20\d{2})|^(20\d{2})\s*total$/i);
+      if (matchTotalAño) {
+        const año = matchTotalAño[1] || matchTotalAño[2];
+        const key = `total_year_${año}`;
+        if (colMap[key] === undefined) colMap[key] = ci;
+      }
+      // Total mensual: "Total 1 .- Enero", "Total Enero"
+      const matchTotalMes = c.match(/total\s+(?:\d+\s*[.\-]+\s*)?([a-záéíóú]+)/i);
+      if (matchTotalMes) {
+        const mesNombre = normalize(matchTotalMes[1]);
+        if (MESES[mesNombre]) {
+          // Asignamos al año más reciente disponible (2026 por defecto)
+          // (mejorable: trackear año del contexto)
+          const key = `total_month_2026_${MESES[mesNombre]}`;
+          if (colMap[key] === undefined) colMap[key] = ci;
         }
       }
-      if (/2026.*total/i.test(c) && !colMap.total_2026) colMap.total_2026 = ci;
-      if (/grand\s*total/i.test(c) && !colMap.grand_total) colMap.grand_total = ci;
-      if (c === '%' && !colMap.pct) colMap.pct = ci;
+      // %
+      if (c === '%' && colMap.pct === undefined) colMap.pct = ci;
     });
   }
-  if (headerRow < 0) {
-    for (let i = 0; i < maxScan; i++) {
-      if (Object.values(colMap).includes(i) || lines[i].some(c => /^20\d{2}$/.test((c||'').trim()))) {
-        headerRow = i; break;
+
+  // Construir mapa de semanas del AÑO ACTUAL (2026)
+  // Las semanas se repiten por año, así que solo nos quedamos con las de la última instancia
+  // (asumiendo que el orden de columnas es 2024 → 2025 → 2026)
+  const weekColsByYear = {}; // {año: {semana: ci}}
+  if (weekRow >= 0) {
+    // Vamos a mapear semanas asociándolas al año contextual basado en la columna
+    // Para eso, recorremos el row de semanas y vamos contando en qué bloque de año estamos
+    const orderedYears = Object.entries(yearCols).sort((a,b) => a[1] - b[1]); // [['2024', 2], ['2025', 35], ['2026', 70]]
+    let añoActual = null;
+    let cur = 0;
+    for (let ci = 0; ci < lines[weekRow].length; ci++) {
+      // Avanzar año si pasamos su columna
+      while (cur < orderedYears.length && ci >= orderedYears[cur][1]) {
+        añoActual = orderedYears[cur][0];
+        cur++;
+      }
+      const cell = (lines[weekRow][ci] || '').trim();
+      if (/^[1-5]?[0-9]$/.test(cell) && añoActual) {
+        const n = parseInt(cell);
+        if (n >= 1 && n <= 53) {
+          if (!weekColsByYear[añoActual]) weekColsByYear[añoActual] = {};
+          weekColsByYear[añoActual][n] = ci;
+        }
       }
     }
   }
+  // Tomar las semanas del año más reciente como las "semanas disponibles" del Sheet
+  const añoMasReciente = Object.keys(weekColsByYear).sort().pop() || '2026';
+  const weekColsActual = weekColsByYear[añoMasReciente] || {};
+  Object.entries(weekColsActual).forEach(([n, ci]) => {
+    colMap[`week_${añoMasReciente}_${n}`] = ci;
+  });
+
+  // Asociar columnas de años individuales (sin desplegar) si existen
+  Object.entries(yearCols).forEach(([año, ci]) => {
+    colMap[`year_${año}`] = ci;
+  });
+
+  // Determinar fila donde empiezan los datos (justo después del último header)
+  const ultimoHeaderRow = Math.max(yearRow, monthRow, weekRow);
+  const dataStart = ultimoHeaderRow >= 0 ? ultimoHeaderRow + 1 : 8;
+
+  // ── PASO 2: parsear filas de datos ──
   const obras = {};
   let curObra = null, curRubro = null;
-  for (let i = (headerRow >= 0 ? headerRow + 1 : 8); i < lines.length; i++) {
+
+  for (let i = dataStart; i < lines.length; i++) {
     const row = lines[i];
     const label = (row[1] || '').trim();
     if (!label) continue;
-    if (/^Grand Total$/i.test(label) || /^Total/i.test(label)) continue;
+    // Saltar totales y secciones
+    if (/^(grand\s*total|total\s+general)$/i.test(label)) continue;
+    if (/^total/i.test(label)) continue;
     if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
+
     const extraerValores = () => {
-      const semanas = {}, meses = {}, anos = {};
-      let total2026 = 0, grandTotal = 0;
-      Object.entries(colMap).forEach(([key, ci]) => {
+      // Grand Total: la suma de TODO. Es nuestro acumulado real.
+      let grandTotal = parseMonto(row[colMap.grand_total]) || 0;
+      grandTotal = Math.abs(grandTotal);
+
+      // Totales por año
+      const años = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('total_year_')).forEach(([k, ci]) => {
+        const año = k.replace('total_year_', '');
         const v = parseMonto(row[ci]);
-        if (isNaN(v) || v === 0) return;
-        const abs = Math.abs(v);
-        if (key.startsWith('w_')) semanas[`S${key.slice(2)}`] = abs;
-        else if (key.startsWith('m_')) meses[`M${key.slice(2).replace('_','-')}`] = abs;
-        else if (key.startsWith('y_')) anos[`Y${key.slice(2)}`] = abs;
-        else if (key === 'total_2026') total2026 = abs;
-        else if (key === 'grand_total') grandTotal = abs;
+        if (!isNaN(v) && v !== 0) años[`Y${año}`] = Math.abs(v);
       });
-      return { semanas, meses, años: anos, total2026, grandTotal };
+
+      // Totales por mes (del año actual)
+      const meses = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('total_month_')).forEach(([k, ci]) => {
+        // k = total_month_2026_05
+        const mesKey = k.replace('total_month_', '').replace('_', '-'); // 2026-05
+        const v = parseMonto(row[ci]);
+        if (!isNaN(v) && v !== 0) meses[`M${mesKey}`] = Math.abs(v);
+      });
+
+      // Semanas (del año actual)
+      const semanas = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('week_')).forEach(([k, ci]) => {
+        const partes = k.split('_'); // ['week', '2026', '22']
+        const v = parseMonto(row[ci]);
+        if (!isNaN(v) && v !== 0) semanas[`S${partes[2]}`] = Math.abs(v);
+      });
+
+      // total2026 = el más reciente total anual
+      const total2026 = años['Y2026'] || meses['M2026-' + (Object.keys(meses).map(k=>k.slice(-2)).sort().pop()||'01')] || 0;
+
+      return { semanas, meses, años, total2026, grandTotal };
     };
+
     if (/^\d{4}\s/.test(label)) {
+      // OBRA: empieza con 4 dígitos
       curObra = label;
       curRubro = null;
       if (!obras[curObra]) {
@@ -350,6 +482,7 @@ function parsearGPConstruct(csvText) {
         };
       }
     } else if (/^\d{3}\s/.test(label) && curObra) {
+      // RUBRO: empieza con 3 dígitos
       curRubro = label.slice(0, 3);
       if (!obras[curObra].rubros[curRubro]) {
         const vals = extraerValores();
@@ -361,10 +494,11 @@ function parsearGPConstruct(csvText) {
         };
       }
     } else if (curObra && curRubro && !/^\d/.test(label)) {
+      // PROVEEDOR
       const vals = extraerValores();
       const totalProv = vals.grandTotal > 0
         ? vals.grandTotal
-        : Object.values(vals.años).reduce((t,v)=>t+v,0) + (vals.total2026 || Object.values(vals.meses).reduce((t,v)=>t+v,0));
+        : Object.values(vals.años).reduce((t,v)=>t+v,0);
       if (totalProv === 0) continue;
       const prov = {
         nombre: label, rubroId: curRubro,
@@ -377,16 +511,20 @@ function parsearGPConstruct(csvText) {
       obras[curObra].proveedores.push(prov);
     }
   }
+
+  // ── PASO 3: listas de semanas y meses disponibles ──
   const semanasDisponibles = Object.keys(colMap)
-    .filter(k => k.startsWith('w_'))
-    .map(k => `S${k.slice(2)}`)
+    .filter(k => k.startsWith('week_'))
+    .map(k => `S${k.split('_')[2]}`)
     .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
   const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
+
   const mesesDisponibles = Object.keys(colMap)
-    .filter(k => k.startsWith('m_'))
-    .map(k => `M${k.slice(2).replace('_','-')}`)
+    .filter(k => k.startsWith('total_month_'))
+    .map(k => `M${k.replace('total_month_', '').replace('_', '-')}`)
     .sort();
   const ultimoMes = mesesDisponibles[mesesDisponibles.length - 1] || '';
+
   return {
     obras, semanasDisponibles, ultimaSemana,
     mesesDisponibles, ultimoMes,

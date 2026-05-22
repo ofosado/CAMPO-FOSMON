@@ -2772,158 +2772,193 @@ function parseMonto(s) {
   return isNaN(n) ? NaN : n;
 }
 
-// Parser de GP Construct mejorado v2
-// El Sheet tiene una jerarquía de columnas temporales:
-//   - Año (2024, 2025) en una fila de header
-//   - Mes 2026 (Enero, Febrero...) en otra fila de header
-//   - Semanas (14, 15, 16...) como sub-columnas dentro del mes actual
-//   - Columnas de totales: "2026 Total", "Grand Total", "%"
-// Estructura de filas: EGRESOS > Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor (texto)
+// Parser de GP Construct v3 — robusto a estructura con AÑOS DESPLEGADOS
 //
-// IMPORTANTE: para el acumulado total se usa la columna "Grand Total" (no la suma
-// de columnas individuales, que se traslapan: semanas son sub-columnas del mes).
+// El Sheet tiene jerarquía: Año → Mes → Semanas (cada uno con su Total).
+// Cada año tiene sus propias semanas (14, 15...) que se REPITEN. Para el acumulado
+// real SIEMPRE usamos "Total general"; las columnas individuales son para análisis temporal.
 function parsearGPConstruct(csvText) {
   const lines = csvText.split('\n').map(parseCsvLine);
-
-  // ── 1. Detectar columnas analizando hasta 12 filas iniciales del header ──
-  // Buscamos en las primeras filas todos los textos que indiquen tipo de columna.
-  const colMap = {};   // ej. { y_2024: 2, y_2025: 3, m_2026_01: 4, w_14: 7, total_2026: 12, grand_total: 13 }
   const MESES = {
     'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
     'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
   };
-  let headerRow = -1;
+  const normalize = (s) => (s||'').toString().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,'').trim();
+
+  const colMap = {};
   const maxScan = Math.min(lines.length, 12);
+
+  // Identificar fila de años (texto "2024", "2025", "2026")
+  let yearRow = -1;
+  let yearCols = {};
+  for (let i = 0; i < maxScan; i++) {
+    const matches = lines[i].map((c, ci) => /^20\d{2}$/.test((c||'').trim()) ? ci : -1).filter(x => x >= 0);
+    if (matches.length >= 1) {
+      yearRow = i;
+      matches.forEach(ci => { yearCols[lines[i][ci].trim()] = ci; });
+      break;
+    }
+  }
+
+  // Identificar fila de meses (con nombres de meses)
+  let monthRow = -1;
+  for (let i = 0; i < maxScan; i++) {
+    const tieneMeses = lines[i].some(c => {
+      const m = (c||'').toLowerCase();
+      return /enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre/.test(m);
+    });
+    if (tieneMeses) { monthRow = i; break; }
+  }
+
+  // Identificar fila de semanas (≥5 números cortos)
+  let weekRow = -1;
+  for (let i = 0; i < maxScan; i++) {
+    const numCount = lines[i].filter(c => /^[1-5]?[0-9]$/.test((c||'').trim())).length;
+    if (numCount >= 5) { weekRow = i; break; }
+  }
+
+  // Detectar Grand Total y Totales anuales en CUALQUIER fila de header
   for (let i = 0; i < maxScan; i++) {
     lines[i].forEach((cellRaw, ci) => {
       const c = (cellRaw || '').trim();
       if (!c) return;
-      // Año (2024, 2025)
-      if (/^20\d{2}$/.test(c) && !colMap[`y_${c}`]) {
-        colMap[`y_${c}`] = ci;
+      const n = normalize(c);
+      // Grand Total / Total general
+      if ((n === 'total general' || n === 'grand total' || /^grand\s*total$/i.test(c))
+          && colMap.grand_total === undefined) {
+        colMap.grand_total = ci;
       }
-      // Mes de 2026 (ej "1 .- Enero" o "Enero" o "1 - Enero")
-      const matchMes = c.match(/(?:^\d+\s*[.\-]+\s*)?([A-Za-záéíóú]+)/);
-      if (matchMes) {
-        const m = matchMes[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,'');
-        if (MESES[m] && !colMap[`m_2026_${MESES[m]}`]) {
-          colMap[`m_2026_${MESES[m]}`] = ci;
+      // Total anual
+      const matchTotalAño = c.match(/total\s*(20\d{2})|^(20\d{2})\s*total$/i);
+      if (matchTotalAño) {
+        const año = matchTotalAño[1] || matchTotalAño[2];
+        const key = `total_year_${año}`;
+        if (colMap[key] === undefined) colMap[key] = ci;
+      }
+      // Total mensual
+      const matchTotalMes = c.match(/total\s+(?:\d+\s*[.\-]+\s*)?([a-záéíóú]+)/i);
+      if (matchTotalMes) {
+        const mesNombre = normalize(matchTotalMes[1]);
+        if (MESES[mesNombre]) {
+          const key = `total_month_2026_${MESES[mesNombre]}`;
+          if (colMap[key] === undefined) colMap[key] = ci;
         }
       }
-      // Semana (14-53)
-      if (/^[1-5][0-9]$/.test(c)) {
-        const n = parseInt(c);
-        if (n >= 1 && n <= 53 && !colMap[`w_${n}`]) {
-          colMap[`w_${n}`] = ci;
-          if (headerRow < 0) headerRow = i;
-        }
-      }
-      // Totales
-      if (/2026.*total/i.test(c) && !colMap.total_2026) colMap.total_2026 = ci;
-      if (/grand\s*total/i.test(c) && !colMap.grand_total) colMap.grand_total = ci;
-      if (c === '%' && !colMap.pct) colMap.pct = ci;
+      if (c === '%' && colMap.pct === undefined) colMap.pct = ci;
     });
   }
 
-  // Si no encontramos header con semanas, intentamos por años
-  if (headerRow < 0) {
-    for (let i = 0; i < maxScan; i++) {
-      if (Object.values(colMap).includes(i) || lines[i].some(c => /^20\d{2}$/.test((c||'').trim()))) {
-        headerRow = i;
-        break;
+  // Mapear semanas al año contextual (basado en posición de columna)
+  const weekColsByYear = {};
+  if (weekRow >= 0) {
+    const orderedYears = Object.entries(yearCols).sort((a,b) => a[1] - b[1]);
+    let añoActual = null;
+    let cur = 0;
+    for (let ci = 0; ci < lines[weekRow].length; ci++) {
+      while (cur < orderedYears.length && ci >= orderedYears[cur][1]) {
+        añoActual = orderedYears[cur][0];
+        cur++;
+      }
+      const cell = (lines[weekRow][ci] || '').trim();
+      if (/^[1-5]?[0-9]$/.test(cell) && añoActual) {
+        const n = parseInt(cell);
+        if (n >= 1 && n <= 53) {
+          if (!weekColsByYear[añoActual]) weekColsByYear[añoActual] = {};
+          weekColsByYear[añoActual][n] = ci;
+        }
       }
     }
   }
+  // Solo nos quedamos con las semanas del año más reciente para "semanas disponibles"
+  const añoMasReciente = Object.keys(weekColsByYear).sort().pop() || '2026';
+  const weekColsActual = weekColsByYear[añoMasReciente] || {};
+  Object.entries(weekColsActual).forEach(([n, ci]) => {
+    colMap[`week_${añoMasReciente}_${n}`] = ci;
+  });
 
-  // ── 2. Iterar filas para parsear obras/rubros/proveedores ──
+  // Años individuales (sin desplegar) si existen
+  Object.entries(yearCols).forEach(([año, ci]) => {
+    colMap[`year_${año}`] = ci;
+  });
+
+  const ultimoHeaderRow = Math.max(yearRow, monthRow, weekRow);
+  const dataStart = ultimoHeaderRow >= 0 ? ultimoHeaderRow + 1 : 8;
+
   const obras = {};
   let curObra = null, curRubro = null;
 
-  for (let i = (headerRow >= 0 ? headerRow + 1 : 8); i < lines.length; i++) {
+  for (let i = dataStart; i < lines.length; i++) {
     const row = lines[i];
     const label = (row[1] || '').trim();
     if (!label) continue;
-    // Saltar filas de totales o secciones
-    if (/^Grand Total$/i.test(label) || /^Total/i.test(label)) continue;
+    if (/^(grand\s*total|total\s+general)$/i.test(label)) continue;
+    if (/^total/i.test(label)) continue;
     if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
 
-    // Helper para extraer todos los valores de columnas para una fila
     const extraerValores = () => {
-      const semanas = {};   // S14, S15, ...
-      const meses = {};     // M2026-01, M2026-02, ...
-      const años = {};      // Y2024, Y2025, ...
-      let total2026 = 0;
-      let grandTotal = 0;
-      Object.entries(colMap).forEach(([key, ci]) => {
+      let grandTotal = parseMonto(row[colMap.grand_total]) || 0;
+      grandTotal = Math.abs(grandTotal);
+
+      const años = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('total_year_')).forEach(([k, ci]) => {
+        const año = k.replace('total_year_', '');
         const v = parseMonto(row[ci]);
-        if (isNaN(v) || v === 0) return;
-        const abs = Math.abs(v);
-        if (key.startsWith('w_')) semanas[`S${key.slice(2)}`] = abs;
-        else if (key.startsWith('m_')) {
-          // m_2026_01 → M2026-01
-          meses[`M${key.slice(2).replace('_','-')}`] = abs;
-        }
-        else if (key.startsWith('y_')) años[`Y${key.slice(2)}`] = abs;
-        else if (key === 'total_2026') total2026 = abs;
-        else if (key === 'grand_total') grandTotal = abs;
+        if (!isNaN(v) && v !== 0) años[`Y${año}`] = Math.abs(v);
       });
+
+      const meses = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('total_month_')).forEach(([k, ci]) => {
+        const mesKey = k.replace('total_month_', '').replace('_', '-');
+        const v = parseMonto(row[ci]);
+        if (!isNaN(v) && v !== 0) meses[`M${mesKey}`] = Math.abs(v);
+      });
+
+      const semanas = {};
+      Object.entries(colMap).filter(([k]) => k.startsWith('week_')).forEach(([k, ci]) => {
+        const partes = k.split('_');
+        const v = parseMonto(row[ci]);
+        if (!isNaN(v) && v !== 0) semanas[`S${partes[2]}`] = Math.abs(v);
+      });
+
+      const total2026 = años['Y2026'] || 0;
       return { semanas, meses, años, total2026, grandTotal };
     };
 
-    // OBRA: empieza con 4 dígitos
     if (/^\d{4}\s/.test(label)) {
       curObra = label;
       curRubro = null;
       if (!obras[curObra]) {
         const vals = extraerValores();
         obras[curObra] = {
-          id: label.slice(0, 4),
-          nombre: label,
-          semanas: vals.semanas,
-          meses: vals.meses,
-          años: vals.años,
-          total2026: vals.total2026,
-          grandTotal: vals.grandTotal,
-          rubros: {},
-          proveedores: [],
+          id: label.slice(0, 4), nombre: label,
+          semanas: vals.semanas, meses: vals.meses, años: vals.años,
+          total2026: vals.total2026, grandTotal: vals.grandTotal,
+          rubros: {}, proveedores: [],
         };
       }
-    }
-    // RUBRO: empieza con 3 dígitos
-    else if (/^\d{3}\s/.test(label) && curObra) {
+    } else if (/^\d{3}\s/.test(label) && curObra) {
       curRubro = label.slice(0, 3);
       if (!obras[curObra].rubros[curRubro]) {
         const vals = extraerValores();
         obras[curObra].rubros[curRubro] = {
-          id: curRubro,
-          nombre: label,
-          nombreCorto: label.slice(4).trim(),
-          semanas: vals.semanas,
-          meses: vals.meses,
-          años: vals.años,
-          total2026: vals.total2026,
-          grandTotal: vals.grandTotal,
+          id: curRubro, nombre: label, nombreCorto: label.slice(4).trim(),
+          semanas: vals.semanas, meses: vals.meses, años: vals.años,
+          total2026: vals.total2026, grandTotal: vals.grandTotal,
           proveedores: [],
         };
       }
-    }
-    // PROVEEDOR: texto sin prefijo numérico, dentro de un rubro
-    else if (curObra && curRubro && !/^\d/.test(label)) {
+    } else if (curObra && curRubro && !/^\d/.test(label)) {
       const vals = extraerValores();
-      // El total del proveedor es su Grand Total si está disponible, si no, la suma de columnas no-traslapadas
       const totalProv = vals.grandTotal > 0
         ? vals.grandTotal
-        : Object.values(vals.años).reduce((t,v)=>t+v,0) + (vals.total2026 || Object.values(vals.meses).reduce((t,v)=>t+v,0));
+        : Object.values(vals.años).reduce((t,v)=>t+v,0);
       if (totalProv === 0) continue;
       const prov = {
-        nombre: label,
-        rubroId: curRubro,
+        nombre: label, rubroId: curRubro,
         rubroNombre: obras[curObra].rubros[curRubro].nombreCorto,
-        semanas: vals.semanas,
-        meses: vals.meses,
-        años: vals.años,
-        total2026: vals.total2026,
-        grandTotal: vals.grandTotal,
+        semanas: vals.semanas, meses: vals.meses, años: vals.años,
+        total2026: vals.total2026, grandTotal: vals.grandTotal,
         total: totalProv,
       };
       obras[curObra].rubros[curRubro].proveedores.push(prov);
@@ -2931,27 +2966,22 @@ function parsearGPConstruct(csvText) {
     }
   }
 
-  // ── 3. Semanas y meses disponibles (ordenados) ──
   const semanasDisponibles = Object.keys(colMap)
-    .filter(k => k.startsWith('w_'))
-    .map(k => `S${k.slice(2)}`)
-    .sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    .filter(k => k.startsWith('week_'))
+    .map(k => `S${k.split('_')[2]}`)
+    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
   const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
 
   const mesesDisponibles = Object.keys(colMap)
-    .filter(k => k.startsWith('m_'))
-    .map(k => `M${k.slice(2).replace('_','-')}`)
+    .filter(k => k.startsWith('total_month_'))
+    .map(k => `M${k.replace('total_month_', '').replace('_', '-')}`)
     .sort();
   const ultimoMes = mesesDisponibles[mesesDisponibles.length - 1] || '';
 
   return {
-    obras,
-    semanasDisponibles,
-    ultimaSemana,
-    mesesDisponibles,
-    ultimoMes,
-    totalObras: Object.keys(obras).length,
-    colMap,
+    obras, semanasDisponibles, ultimaSemana,
+    mesesDisponibles, ultimoMes,
+    totalObras: Object.keys(obras).length, colMap,
   };
 }
 
@@ -2963,20 +2993,31 @@ function useGPConstruct() {
   const [gpUltActualiz, setGpUltActualiz] = useState('');
 
   // Versión del parser (debe coincidir con la de Cloud Functions)
-  const PARSER_VERSION = 2;
+  const PARSER_VERSION = 3;
 
   // Cargar GP desde Firestore (poblado por Cloud Function scheduled cada lunes 9am
   // o por refresh manual via callable). Sin dependencia de CORS proxies.
   const cargarGP = useCallback(async (forzar = false) => {
     setGpLoading(true); setGpError('');
+    let mensajeError = '';
     try {
       // Si forzar = true, llamar a la Cloud Function para refrescar AHORA
       if (forzar) {
         try {
           const fn = httpsCallable(fbFn, 'refrescarGP');
-          await fn({});
+          const res = await fn({});
+          console.log('refrescarGP OK:', res.data);
         } catch (e) {
-          setGpError(`Error al refrescar Sheet desde el servidor: ${e.message}`);
+          // Errores comunes: function not found, unauthenticated, network error
+          const detalle = e.message || String(e);
+          if (e.code === 'functions/not-found' || /not.*found/i.test(detalle)) {
+            mensajeError = 'La Cloud Function "refrescarGP" no existe. Necesita deploy: firebase deploy --only functions';
+          } else if (e.code === 'functions/unauthenticated') {
+            mensajeError = 'Sesión expirada. Cierra sesión y vuelve a entrar.';
+          } else {
+            mensajeError = `Error al refrescar (${e.code||'unknown'}): ${detalle}`;
+          }
+          console.error('refrescarGP falló:', e);
         }
       }
       // Leer siempre de Firestore (donde Cloud Functions guarda el resultado)
@@ -2984,10 +3025,11 @@ function useGPConstruct() {
       if (cached?.data && cached.parserVersion === PARSER_VERSION) {
         setGpData(cached.data);
         setGpUltActualiz(new Date(cached.ultimaActualizacion).toLocaleString('es-MX'));
+        if (mensajeError) setGpError(mensajeError);
       } else if (cached?.data) {
-        setGpError('Caché del Sheet es de una versión vieja del parser. Click Refrescar.');
+        setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar (requiere Cloud Functions deployadas).');
       } else {
-        setGpError('El Sheet no se ha sincronizado nunca. Click Refrescar (la primera vez tarda ~30s).');
+        setGpError(mensajeError || 'El Sheet no se ha sincronizado nunca. Click Refrescar (requiere Cloud Functions deployadas — la primera sincronización tarda ~30s).');
       }
     } catch (e) {
       setGpError(`Error al leer caché de GP: ${e.message}`);
@@ -3033,7 +3075,7 @@ const GP_OBRAS_CATALOGO = [
   {id:"0124",nombre:"SIOP Coatza Rehab. Puente", gastoGP:1770125},
 ];
 
-function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading}){
+function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
   const[paso,setPaso]=useState("seleccionar"); // seleccionar | completar
   const[gpSel,setGpSel]=useState(null);
   const[busqueda,setBusqueda]=useState("");
@@ -3113,6 +3155,12 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading}){
               <div style={{fontSize:10,color:C.yellowDk,marginBottom:6}}>
                 ⚠ El Sheet de GP no está cargado. Estás viendo un catálogo de referencia desactualizado.
               </div>
+              {gpError && (
+                <div style={{fontSize:9,color:C.redDk,marginBottom:6,
+                  background:`${C.red}10`,padding:"5px 8px",borderRadius:4}}>
+                  {gpError}
+                </div>
+              )}
               {onRefreshGP && (
                 <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
                   style={{background:C.caliza,border:"none",borderRadius:6,padding:"5px 12px",
