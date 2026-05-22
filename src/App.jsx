@@ -5,7 +5,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addD
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = []) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -825,6 +825,97 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales) 
     st(K.gmu); fs(7); T(rol,fx+fw3/2,yFirmas+31,{align:'center'});
   });
 
+  // ════════════════════════════════════════════════════════════════════════
+  // PÁGINAS DE SUBCONTRATOS — una por cada subcontrato registrado
+  // ════════════════════════════════════════════════════════════════════════
+  if (subcontratos && subcontratos.length > 0) {
+    for (const sub of subcontratos) {
+      doc.addPage();
+      pageFrame();
+      // Header de sección con nombre del sub
+      let y = CY0;
+      y = secHead(`SUBCONTRATO · ${sub.nombre || sub.id}`.toUpperCase(), y, K.ng);
+
+      // KPIs del subcontrato
+      const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
+      const ejecSub = (sub.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
+      const avSub = totalCat > 0 ? (ejecSub/totalCat)*100 : 0;
+      const pagSub = (sub.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
+      const finSub = pf(sub.monto) > 0 ? (pagSub/pf(sub.monto))*100 : 0;
+      y = kpiRow([
+        ['Monto contratado', MXN(pf(sub.monto)), sub.proveedor||'Sin proveedor', K.ng],
+        ['Total catálogo', MXN(totalCat), `${(sub.conceptos||[]).length} conceptos`, K.az],
+        ['Ejecutado', MXN(ejecSub), `${PCT(avSub)} físico`, K.vd],
+        ['Pagado', MXN(pagSub), `${PCT(finSub)} financiero`, K.mo],
+      ], y);
+
+      // Datos generales del sub
+      y = secHead('Datos del subcontrato', y, K.gtx);
+      const datosSub = [
+        ['Proveedor', sub.proveedor||'—'],
+        ['Estado', (sub.estado||'activa').toUpperCase()],
+        ['Inicio', sub.fechaInicio||'—'],
+        ['Fin', sub.fechaFin||'—'],
+        ['Descripción', sub.descripcion||'—'],
+      ];
+      y = autoT(['Campo','Valor'], datosSub, [50, CW-50], ML, y, {
+        bodyStyles: {fontSize: FS_SM},
+      });
+
+      // Catálogo de conceptos del sub (si caben)
+      if ((sub.conceptos||[]).length > 0) {
+        const yDisp = CYmax - y;
+        if (yDisp > 30) {
+          y = secHead('Catálogo de conceptos', y, K.gtx);
+          const filas = sub.conceptos.map(c => [
+            c.clave||'—',
+            (c.desc||'').substring(0,60),
+            c.unidad||'',
+            (pf(c.cantidad)||0).toLocaleString('es-MX',{maximumFractionDigits:2}),
+            MXN(pf(c.pu)),
+            MXN(pf(c.importe)),
+            PCT(pf(c.avance),0),
+          ]);
+          // colW: 25 + 100 + 18 + 25 + 30 + 35 + 18 = 251 (CW)
+          y = autoT(
+            ['Clave','Descripción','Und','Cant.','P.U.','Importe','Avance'],
+            filas, [25, 100, 18, 25, 30, 35, 18], ML, y,
+            {
+              bodyStyles: {fontSize: FS_SM, halign:'left'},
+              columnStyles: {
+                3: {halign:'right'},
+                4: {halign:'right'},
+                5: {halign:'right', fontStyle:'bold'},
+                6: {halign:'right', fontStyle:'bold'},
+              },
+            });
+        }
+      }
+
+      // Pagos del sub (si hay y caben)
+      if ((sub.pagos||[]).length > 0 && (CYmax - y) > 25) {
+        y = secHead('Historial de pagos', y, K.gtx);
+        const pagosFilas = sub.pagos.map(p => [
+          p.fecha||'—',
+          MXN(pf(p.monto)),
+          (p.referencia||'').substring(0,60),
+          (p.estatus||'programado').toUpperCase(),
+        ]);
+        // colW: 30 + 40 + 130 + 51 = 251
+        y = autoT(
+          ['Fecha','Monto','Referencia','Estatus'],
+          pagosFilas, [30, 40, 130, 51], ML, y,
+          {
+            bodyStyles: {fontSize: FS_SM},
+            columnStyles: {
+              1: {halign:'right', fontStyle:'bold'},
+              3: {halign:'center'},
+            },
+          });
+      }
+    }
+  }
+
   // ── GUARDAR ──────────────────────────────────────────────────────────────
   const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
@@ -994,6 +1085,562 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     console.error('crearSnapshotAvance', e);
     return null;
   }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// BIBLIOTECA DE RIESGOS
+// ════════════════════════════════════════════════════════════════════════════
+// Cada riesgo tiene un detector que recibe un contexto y devuelve null (no aplica)
+// o un objeto {severidad, valor, detalle, extra} cuando se detecta.
+//
+// Contexto que reciben los detectores:
+//   { obra, subs, maquinaria, materiales, estimaciones, subcontratos,
+//     historialAvance, gpData, kpis }
+//
+// Categorías: financiero · plazo · avance · nomina · materiales · maquinaria
+//             · subcontratos · contractual · compliance · cobranza
+// Severidades: bajo · medio · alto · critico
+
+const SEVERIDADES = {
+  bajo:   {color:'#9AA0AC',   label:'Bajo',   peso: 1},
+  medio:  {color:'#EF9F27',   label:'Medio',  peso: 2},
+  alto:   {color:'#F43F5E',   label:'Alto',   peso: 3},
+  critico:{color:'#E24B4A',   label:'Crítico',peso: 4},
+};
+
+const BIBLIOTECA_RIESGOS = [
+  // ── FINANCIEROS ──
+  {
+    id: 'fin_001', categoria: 'financiero',
+    titulo: 'Margen bruto en zona crítica',
+    descripcion: 'El margen bruto está por debajo del umbral mínimo aceptable',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({kpis}) => {
+      if (!kpis || kpis.me <= 0) return null;
+      if (kpis.mpct < 0) return {severidad:'critico', valor:`${kpis.mpct.toFixed(1)}%`, detalle:'Margen negativo — se gasta más de lo que se ejecuta', extra:`Ejecutado ${MXN(kpis.me)} vs gastado ${MXN(kpis.gt)}`};
+      if (kpis.mpct < 6) return {severidad:'alto', valor:`${kpis.mpct.toFixed(1)}%`, detalle:'Margen bajo el umbral crítico (6%)', extra:`Ejecutado ${MXN(kpis.me)} vs gastado ${MXN(kpis.gt)}`};
+      if (kpis.mpct < 15) return {severidad:'medio', valor:`${kpis.mpct.toFixed(1)}%`, detalle:'Margen en vigilancia (15%)', extra:`Mantener atención`};
+      return null;
+    },
+  },
+  {
+    id: 'fin_002', categoria: 'financiero',
+    titulo: 'Brecha entre gasto y avance',
+    descripcion: 'Se está gastando más rápido que el avance físico de la obra',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({kpis}) => {
+      if (!kpis) return null;
+      if (kpis.brecha > 25) return {severidad:'critico', valor:`+${kpis.brecha.toFixed(1)}pp`, detalle:'Brecha muy alta — sobrecosto inminente', extra:`Gasto: ${kpis.pctGasto.toFixed(1)}% · Avance: ${kpis.af.toFixed(1)}%`};
+      if (kpis.brecha > 15) return {severidad:'alto', valor:`+${kpis.brecha.toFixed(1)}pp`, detalle:'Gasto adelantado al avance', extra:`Revisar uso de presupuesto`};
+      if (kpis.brecha > 8) return {severidad:'medio', valor:`+${kpis.brecha.toFixed(1)}pp`, detalle:'Brecha en vigilancia'};
+      return null;
+    },
+  },
+  {
+    id: 'fin_003', categoria: 'cobranza',
+    titulo: 'Estimaciones atrasadas en cobro',
+    descripcion: 'Hay estimaciones facturadas vencidas según el plazo contractual',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({obra, estimaciones}) => {
+      if (!estimaciones?.length) return null;
+      const diasPago = obra.diasPago || 30;
+      const hoy = new Date();
+      const atrasadas = estimaciones.filter(e => {
+        if (e.estatus !== 'Facturada' || !e.fechaFact) return false;
+        const dias = Math.floor((hoy - new Date(e.fechaFact))/86400000);
+        return dias > diasPago;
+      });
+      if (atrasadas.length === 0) return null;
+      const totalAtras = atrasadas.reduce((t,e)=>t+(e.monto||0), 0);
+      const maxDias = Math.max(...atrasadas.map(e => Math.floor((hoy - new Date(e.fechaFact))/86400000) - diasPago));
+      const sev = maxDias > 30 ? 'critico' : maxDias > 15 ? 'alto' : 'medio';
+      return {severidad: sev, valor: `${atrasadas.length}`, detalle: `${MXN(totalAtras)} sin cobrar fuera de plazo`, extra: `Máximo atraso: ${maxDias} días vs plazo de ${diasPago}`};
+    },
+  },
+  {
+    id: 'fin_004', categoria: 'cobranza',
+    titulo: 'Concentración de cuentas por cobrar',
+    descripcion: 'Mucho monto facturado pendiente de cobro vs lo cobrado',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({estimaciones}) => {
+      if (!estimaciones?.length) return null;
+      const total = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+      const porCob = estimaciones.filter(e => ['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+      if (total === 0) return null;
+      const pct = porCob/total*100;
+      if (pct > 70) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Mucho monto sin cobrar del cliente', extra:`${MXN(porCob)} de ${MXN(total)} estimado`};
+      if (pct > 50) return {severidad:'medio', valor:`${pct.toFixed(0)}%`, detalle:'Cobranza pendiente significativa'};
+      return null;
+    },
+  },
+  {
+    id: 'fin_005', categoria: 'financiero',
+    titulo: 'Anticipo no recuperado',
+    descripcion: 'Falta amortizar mucho anticipo recibido del cliente',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({obra, estimaciones}) => {
+      if (!estimaciones?.length || !obra.pctAnticipo) return null;
+      const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+      const amortizado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto*obra.pctAnticipo/100), 0);
+      const porAmort = estimaciones.filter(e=>e.estatus!=='Pagada').reduce((t,e)=>t+(e.monto*obra.pctAnticipo/100), 0);
+      const anticipoTotal = obra.presupuesto * (obra.pctAnticipo/100);
+      const totalAmort = amortizado + porAmort;
+      if (totalAmort < anticipoTotal * 0.5) return null; // solo alertar si ya amortizamos al menos 50%
+      const pendiente = anticipoTotal - amortizado;
+      if (pendiente > anticipoTotal * 0.7) return {severidad:'medio', valor: MXN(pendiente), detalle:'Anticipo pendiente de recuperar', extra:`Total contractual: ${MXN(anticipoTotal)}`};
+      return null;
+    },
+  },
+  {
+    id: 'fin_006', categoria: 'financiero',
+    titulo: 'Velocidad de quema insostenible',
+    descripcion: 'A ritmo actual el presupuesto se agota antes del fin contractual',
+    tab: 'gastos',
+    detect: ({obra, gpData, kpis}) => {
+      if (!obra.fin || !gpData?.obras || !kpis) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP) return null;
+      const semanas = gpData.semanasDisponibles || [];
+      const ult4 = semanas.slice(-4);
+      const sumUlt4 = ult4.reduce((t,s)=>t+(obraGP.semanas[s]||0), 0);
+      const velocidad = ult4.length>0 ? sumUlt4/ult4.length : 0;
+      if (velocidad <= 0) return null;
+      const totalGastado = obraGP.grandTotal || 0;
+      const restante = obra.presupuesto - totalGastado;
+      if (restante <= 0) return {severidad:'critico', valor:'0 sem', detalle:'Presupuesto agotado', extra:`Gastado: ${MXN(totalGastado)}`};
+      const semsAgotar = Math.ceil(restante/velocidad);
+      const semsPlazo = Math.max(Math.floor((new Date(obra.fin) - new Date())/(86400000*7)), 0);
+      if (semsAgotar < semsPlazo * 0.5) return {severidad:'critico', valor:`${semsAgotar} sem`, detalle:'Presupuesto se agota mucho antes del plazo', extra:`Quedan ${semsPlazo} sem de plazo`};
+      if (semsAgotar < semsPlazo) return {severidad:'alto', valor:`${semsAgotar} sem`, detalle:'Presupuesto agotará antes del fin', extra:`Plazo: ${semsPlazo} sem`};
+      return null;
+    },
+  },
+  // ── PLAZOS ──
+  {
+    id: 'plz_001', categoria: 'plazo',
+    titulo: 'Plazo contractual vencido',
+    descripcion: 'La fecha fin del contrato (o última ampliación) ya pasó',
+    tab: 'planeacion', subTab: 'contrato',
+    detect: ({obra}) => {
+      const fin = obra.finAmpliado || obra.fin;
+      if (!fin) return null;
+      const dias = Math.floor((Date.now() - new Date(fin))/86400000);
+      if (dias > 0) return {severidad:'critico', valor:`+${dias}d`, detalle:'Plazo vencido sin ampliación', extra:`Fin contratado: ${fin}`};
+      return null;
+    },
+  },
+  {
+    id: 'plz_002', categoria: 'plazo',
+    titulo: 'Plazo a punto de vencer',
+    descripcion: 'Quedan 30 días o menos para el fin contractual',
+    tab: 'planeacion', subTab: 'contrato',
+    detect: ({obra}) => {
+      const fin = obra.finAmpliado || obra.fin;
+      if (!fin) return null;
+      const dias = Math.floor((new Date(fin) - Date.now())/86400000);
+      if (dias <= 0 || dias > 30) return null;
+      const sev = dias <= 7 ? 'alto' : dias <= 15 ? 'medio' : 'bajo';
+      return {severidad: sev, valor:`${dias}d`, detalle:`Quedan ${dias} días para el cierre`, extra:`Fecha fin: ${fin}`};
+    },
+  },
+  {
+    id: 'plz_003', categoria: 'plazo',
+    titulo: 'No terminará en plazo a ritmo actual',
+    descripcion: 'Proyección con velocidad histórica no alcanza el 100% en fecha fin',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({obra, historialAvance}) => {
+      if (!historialAvance?.length || !obra.fin) return null;
+      const oficiales = historialAvance.filter(s => s.tipo === 'oficial');
+      if (oficiales.length < 2) return null;
+      const ult4 = oficiales.slice(-4);
+      const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
+      const velocidad = (ult4.length-1) > 0 ? totalDelta/(ult4.length-1) : 0;
+      if (velocidad <= 0) return null;
+      const ultimo = oficiales[oficiales.length-1];
+      const pendientes = Math.max(100 - ultimo.avancePonderado, 0);
+      const semsNecesarias = pendientes/velocidad;
+      const semsPlazo = Math.max(Math.floor((new Date(obra.finAmpliado||obra.fin) - Date.now())/(86400000*7)), 0);
+      if (semsNecesarias > semsPlazo * 1.3) return {severidad:'critico', valor:`${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Terminará muy tarde a ritmo actual', extra:`Velocidad: ${velocidad.toFixed(2)}pp/sem`};
+      if (semsNecesarias > semsPlazo) return {severidad:'alto', valor:`+${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Necesita acelerar para terminar en plazo'};
+      return null;
+    },
+  },
+  // ── AVANCE FÍSICO ──
+  {
+    id: 'avc_001', categoria: 'avance',
+    titulo: 'Frentes sin iniciar',
+    descripcion: 'Hay subsecciones que no han empezado ejecución',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({subs}) => {
+      if (!subs?.length) return null;
+      const sinIni = subs.filter(s => (s.a||0) === 0);
+      if (sinIni.length === 0) return null;
+      const sev = sinIni.length > 5 ? 'alto' : sinIni.length > 2 ? 'medio' : 'bajo';
+      return {severidad: sev, valor: `${sinIni.length}`, detalle: 'Subsecciones sin iniciar', extra: sinIni.slice(0,3).map(s=>s.sec).join(', ')+(sinIni.length>3?'...':'')};
+    },
+  },
+  {
+    id: 'avc_002', categoria: 'avance',
+    titulo: 'Partidas estancadas',
+    descripcion: 'Subsecciones con avance entre 1-99% sin movimiento ≥2 semanas',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({subs, historialAvance}) => {
+      if (!subs?.length || !historialAvance?.length) return null;
+      const oficiales = historialAvance.filter(s => s.tipo === 'oficial');
+      if (oficiales.length < 2) return null;
+      const penultimo = oficiales[oficiales.length-2];
+      const penMap = Object.fromEntries((penultimo.subs||[]).map(s=>[s.sec, s.a]));
+      const estancadas = subs.filter(s => {
+        const ant = penMap[s.sec];
+        if (ant === undefined) return false;
+        return (s.a||0) > 0 && (s.a||0) < 100 && (s.a||0) === ant;
+      });
+      if (estancadas.length === 0) return null;
+      const sev = estancadas.length > 3 ? 'alto' : estancadas.length > 1 ? 'medio' : 'bajo';
+      return {severidad: sev, valor: `${estancadas.length}`, detalle: 'Sin avance ≥2 semanas', extra: estancadas.slice(0,3).map(s=>s.sec).join(', ')};
+    },
+  },
+  {
+    id: 'avc_003', categoria: 'avance',
+    titulo: 'Partidas con retroceso',
+    descripcion: 'Subsecciones donde el % bajó vs semana anterior',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({subs, historialAvance}) => {
+      if (!subs?.length || !historialAvance?.length) return null;
+      const oficiales = historialAvance.filter(s => s.tipo === 'oficial');
+      if (oficiales.length < 1) return null;
+      const ultimo = oficiales[oficiales.length-1];
+      const ultMap = Object.fromEntries((ultimo.subs||[]).map(s=>[s.sec, s.a]));
+      const retros = subs.filter(s => {
+        const ant = ultMap[s.sec];
+        return ant !== undefined && (s.a||0) < ant - 1;
+      });
+      if (retros.length === 0) return null;
+      return {severidad:'alto', valor: `${retros.length}`, detalle: 'Posibles correcciones o re-trabajo', extra: retros.slice(0,3).map(s=>s.sec).join(', ')};
+    },
+  },
+  {
+    id: 'avc_004', categoria: 'avance',
+    titulo: 'Avance vs plazo desbalanceado',
+    descripcion: 'El % de plazo transcurrido supera mucho al % de avance',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({obra, kpis}) => {
+      if (!obra.inicio || !obra.fin || !kpis) return null;
+      const finVigente = obra.finAmpliado || obra.fin;
+      const total = (new Date(finVigente) - new Date(obra.inicio))/86400000;
+      const trans = Math.max((Date.now() - new Date(obra.inicio))/86400000, 0);
+      const pctPlazo = Math.min(trans/total*100, 100);
+      const desv = pctPlazo - kpis.af;
+      if (desv > 30) return {severidad:'critico', valor:`-${desv.toFixed(0)}pp`, detalle:'Plazo muy adelantado al avance', extra:`${pctPlazo.toFixed(0)}% plazo vs ${kpis.af.toFixed(0)}% avance`};
+      if (desv > 20) return {severidad:'alto', valor:`-${desv.toFixed(0)}pp`, detalle:'Avance rezagado vs plazo'};
+      if (desv > 10) return {severidad:'medio', valor:`-${desv.toFixed(0)}pp`, detalle:'Avance ligeramente rezagado'};
+      return null;
+    },
+  },
+  // ── NÓMINA ──
+  {
+    id: 'nom_001', categoria: 'nomina',
+    titulo: 'Trabajadores con horas extra excesivas',
+    descripcion: 'Personal con ≥20 horas extra por semana',
+    tab: 'operacion', subTab: 'nomina',
+    detect: () => {
+      const altasHE = NOMINA_S18.filter(p => p.horasExtra >= 20);
+      if (altasHE.length === 0) return null;
+      const sev = altasHE.length > 10 ? 'alto' : altasHE.length > 5 ? 'medio' : 'bajo';
+      return {severidad: sev, valor: `${altasHE.length}`, detalle: 'Riesgo de fatiga y sobrecosto', extra: altasHE.slice(0,3).map(p=>`${p.nombre.split(' ')[0]}: ${p.horasExtra}h`).join(' · ')};
+    },
+  },
+  {
+    id: 'nom_002', categoria: 'nomina',
+    titulo: 'Costo de horas extra alto',
+    descripcion: 'Las horas extra superan el 15% del total de nómina',
+    tab: 'operacion', subTab: 'nomina',
+    detect: () => {
+      const totalNom = NOMINA_S18.reduce((t,p)=>t+(p.total||0), 0);
+      const totalHE = NOMINA_S18.reduce((t,p)=>t+(p.importeHE||0), 0);
+      if (totalNom === 0) return null;
+      const pct = totalHE/totalNom*100;
+      if (pct > 25) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Costo HE muy alto', extra:`${MXN(totalHE)} de ${MXN(totalNom)} nómina`};
+      if (pct > 15) return {severidad:'medio', valor:`${pct.toFixed(0)}%`, detalle:'Costo HE elevado'};
+      return null;
+    },
+  },
+  {
+    id: 'nom_003', categoria: 'nomina',
+    titulo: 'Posibles anomalías en cálculo',
+    descripcion: 'Trabajadores con total >2.5× su salario base',
+    tab: 'operacion', subTab: 'nomina',
+    detect: () => {
+      const anom = NOMINA_S18.filter(p => p.salarioSemanal>0 && p.total > p.salarioSemanal*2.5);
+      if (anom.length === 0) return null;
+      return {severidad:'medio', valor: `${anom.length}`, detalle: 'Verificar cálculo o caso especial', extra: anom.slice(0,3).map(p=>p.nombre.split(' ')[0]).join(', ')};
+    },
+  },
+  // ── MATERIALES / ALMACÉN ──
+  {
+    id: 'mat_001', categoria: 'materiales',
+    titulo: 'Material en tránsito por mucho tiempo',
+    descripcion: 'Material marcado como En tránsito sin actualización',
+    tab: 'operacion', subTab: 'almacen',
+    detect: ({materiales}) => {
+      const transito = (materiales||[]).filter(m => m.concepto === 'En tránsito' && (m.imp||0) > 0);
+      if (transito.length === 0) return null;
+      const total = transito.reduce((t,m)=>t+(m.imp||0), 0);
+      return {severidad: total > 1000000 ? 'medio':'bajo', valor: `${transito.length}`, detalle: 'Verificar tiempos de entrega', extra: MXN(total)+' en tránsito'};
+    },
+  },
+  {
+    id: 'mat_002', categoria: 'materiales',
+    titulo: 'Material en fabricación pendiente',
+    descripcion: 'Material en proceso de fabricación con tiempo de espera',
+    tab: 'operacion', subTab: 'almacen',
+    detect: ({materiales}) => {
+      const fab = (materiales||[]).filter(m => m.concepto === 'En fabricación' && (m.imp||0) > 0);
+      if (fab.length === 0) return null;
+      const total = fab.reduce((t,m)=>t+(m.imp||0), 0);
+      return {severidad: total > 2000000 ? 'medio':'bajo', valor: `${fab.length}`, detalle: 'Tiempos de fabricación pueden impactar', extra: MXN(total)+' en fabricación'};
+    },
+  },
+  // ── MAQUINARIA ──
+  {
+    id: 'maq_001', categoria: 'maquinaria',
+    titulo: 'Costo de maquinaria alto vs presupuesto',
+    descripcion: 'La maquinaria propia representa más del 8% del presupuesto',
+    tab: 'operacion', subTab: 'maquinaria',
+    detect: ({obra, maquinaria}) => {
+      if (!obra.presupuesto || !maquinaria?.length) return null;
+      const total = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+      const pct = total/obra.presupuesto*100;
+      if (pct > 15) return {severidad:'alto', valor:`${pct.toFixed(1)}%`, detalle:'Costo maquinaria muy alto', extra: MXN(total)};
+      if (pct > 8) return {severidad:'medio', valor:`${pct.toFixed(1)}%`, detalle:'Revisar uso de maquinaria propia'};
+      return null;
+    },
+  },
+  // ── SUBCONTRATOS ──
+  {
+    id: 'sub_001', categoria: 'subcontratos',
+    titulo: 'Subcontratos con desfase obra vs pago',
+    descripcion: 'Subcontratistas con >20pp de diferencia entre avance físico y pago',
+    tab: 'operacion', subTab: 'subcontratos',
+    detect: ({subcontratos}) => {
+      if (!subcontratos?.length) return null;
+      const desfasados = subcontratos.filter(s => {
+        const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
+        const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
+        const pctF = totalCat > 0 ? ejec/totalCat*100 : 0;
+        const pagado = s.pagos?.filter(p=>p.estatus==='pagado').reduce((t,p)=>t+(p.monto||0), 0) || 0;
+        const pctFin = s.monto > 0 ? pagado/s.monto*100 : 0;
+        return pctF > 0 && (pctF - pctFin) > 20;
+      });
+      if (desfasados.length === 0) return null;
+      return {severidad:'medio', valor:`${desfasados.length}`, detalle:'Sub ejecutó más que lo pagado', extra: desfasados.slice(0,3).map(s=>s.nombre).join(', ')};
+    },
+  },
+  {
+    id: 'sub_002', categoria: 'subcontratos',
+    titulo: 'Subcontratos con catálogo no cuadrado',
+    descripcion: 'Suma del catálogo difiere >5% del monto contratado',
+    tab: 'operacion', subTab: 'subcontratos',
+    detect: ({subcontratos}) => {
+      if (!subcontratos?.length) return null;
+      const sinCuadrar = subcontratos.filter(s => {
+        if (!s.monto || !s.conceptos?.length) return false;
+        const totalCat = s.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
+        const dif = Math.abs(totalCat - s.monto) / s.monto * 100;
+        return dif > 5;
+      });
+      if (sinCuadrar.length === 0) return null;
+      return {severidad:'medio', valor:`${sinCuadrar.length}`, detalle:'Cuadrar catálogo con monto contratado', extra: sinCuadrar.slice(0,3).map(s=>s.nombre).join(', ')};
+    },
+  },
+  {
+    id: 'sub_003', categoria: 'subcontratos',
+    titulo: 'Pagos programados pendientes',
+    descripcion: 'Subs con pagos programados a punto de ejecutarse',
+    tab: 'operacion', subTab: 'subcontratos',
+    detect: ({subcontratos}) => {
+      if (!subcontratos?.length) return null;
+      let totalProg = 0; let cuantos = 0;
+      subcontratos.forEach(s => {
+        const prog = s.pagos?.filter(p => p.estatus === 'programado') || [];
+        if (prog.length > 0) cuantos++;
+        totalProg += prog.reduce((t,p)=>t+(p.monto||0), 0);
+      });
+      if (cuantos === 0) return null;
+      return {severidad:'bajo', valor: MXN(totalProg), detalle: 'Pagos programados pendientes de ejecutar', extra: `${cuantos} subcontrato(s)`};
+    },
+  },
+  // ── GASTOS / PROVEEDORES ──
+  {
+    id: 'gst_001', categoria: 'financiero',
+    titulo: 'Concentración de proveedores',
+    descripcion: 'Top 3 proveedores concentran >55% del gasto',
+    tab: 'gastos',
+    detect: ({obra, gpData}) => {
+      if (!gpData?.obras) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP?.proveedores?.length) return null;
+      const ord = [...obraGP.proveedores].sort((a,b)=>(b.total||0)-(a.total||0));
+      const total = ord.reduce((t,p)=>t+(p.total||0), 0);
+      if (total === 0) return null;
+      const top3 = ord.slice(0,3).reduce((t,p)=>t+(p.total||0), 0);
+      const pct = top3/total*100;
+      if (pct > 70) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Dependencia muy alta de 3 proveedores', extra: 'Diversificar'};
+      if (pct > 55) return {severidad:'medio', valor:`${pct.toFixed(0)}%`, detalle:'Concentración alta de proveedores'};
+      return null;
+    },
+  },
+  {
+    id: 'gst_002', categoria: 'financiero',
+    titulo: 'Anomalía de gasto semanal',
+    descripcion: 'Gasto de la última semana es >2× el promedio histórico',
+    tab: 'gastos',
+    detect: ({obra, gpData}) => {
+      if (!gpData?.obras || !gpData.ultimaSemana) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP) return null;
+      const semanas = gpData.semanasDisponibles || [];
+      if (semanas.length < 4) return null;
+      const valores = semanas.map(s => obraGP.semanas[s]||0);
+      const prom = valores.reduce((t,v)=>t+v, 0) / valores.length;
+      const ult = obraGP.semanas[gpData.ultimaSemana] || 0;
+      if (prom === 0 || ult === 0) return null;
+      const ratio = ult/prom;
+      if (ratio > 3) return {severidad:'alto', valor:`${ratio.toFixed(1)}x`, detalle:'Gasto semanal muy por arriba del promedio', extra: `${MXN(ult)} vs prom ${MXN(prom)}`};
+      if (ratio > 2) return {severidad:'medio', valor:`${ratio.toFixed(1)}x`, detalle:'Gasto semanal anormal'};
+      return null;
+    },
+  },
+  {
+    id: 'gst_003', categoria: 'financiero',
+    titulo: 'Proveedores nuevos esta semana',
+    descripcion: 'Proveedores que aparecen por primera vez',
+    tab: 'gastos',
+    detect: ({obra, gpData}) => {
+      if (!gpData?.obras || !gpData.ultimaSemana) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP?.proveedores?.length) return null;
+      const nuevos = obraGP.proveedores.filter(p => {
+        const sems = Object.keys(p.semanas || {});
+        return sems.length === 1 && sems[0] === gpData.ultimaSemana;
+      });
+      if (nuevos.length === 0) return null;
+      const total = nuevos.reduce((t,p)=>t+(p.total||0), 0);
+      return {severidad:'bajo', valor: `${nuevos.length}`, detalle: 'Verificar registro y autorización', extra: `${MXN(total)} en total`};
+    },
+  },
+  {
+    id: 'gst_004', categoria: 'financiero',
+    titulo: 'Proveedor con incremento súbito',
+    descripcion: 'Algún proveedor facturó >50% más vs semana anterior',
+    tab: 'gastos',
+    detect: ({obra, gpData}) => {
+      if (!gpData?.obras || !gpData.ultimaSemana || !gpData.semanasDisponibles?.length) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP?.proveedores?.length) return null;
+      const idxU = gpData.semanasDisponibles.indexOf(gpData.ultimaSemana);
+      if (idxU <= 0) return null;
+      const semAnt = gpData.semanasDisponibles[idxU-1];
+      const incs = obraGP.proveedores
+        .map(p => {
+          const ult = p.semanas[gpData.ultimaSemana] || 0;
+          const ant = p.semanas[semAnt] || 0;
+          if (ult <= 0 || ant <= 0) return null;
+          return {nombre: p.nombre, ant, ult, pct: ((ult-ant)/ant)*100};
+        })
+        .filter(p => p && p.pct > 50);
+      if (incs.length === 0) return null;
+      return {severidad:'medio', valor: `${incs.length}`, detalle: 'Verificar autorización de incremento', extra: incs.slice(0,2).map(p=>`${p.nombre}: +${p.pct.toFixed(0)}%`).join(' · ')};
+    },
+  },
+  {
+    id: 'gst_005', categoria: 'financiero',
+    titulo: 'Proveedores activos sin movimiento reciente',
+    descripcion: 'Proveedores con gasto histórico sin facturar en 4+ semanas',
+    tab: 'gastos',
+    detect: ({obra, gpData}) => {
+      if (!gpData?.obras || !gpData.semanasDisponibles?.length) return null;
+      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      if (!obraGP?.proveedores?.length) return null;
+      const ult4 = gpData.semanasDisponibles.slice(-4);
+      if (ult4.length < 4) return null;
+      const inactivos = obraGP.proveedores.filter(p => {
+        const sumU4 = ult4.reduce((t,s)=>t+(p.semanas[s]||0), 0);
+        return p.total > 0 && sumU4 === 0;
+      });
+      if (inactivos.length === 0) return null;
+      return {severidad:'bajo', valor: `${inactivos.length}`, detalle: 'Posible cierre de relación o trabajo detenido', extra: inactivos.slice(0,3).map(p=>p.nombre).join(', ')};
+    },
+  },
+  // ── CONTRACTUALES ──
+  {
+    id: 'ctr_001', categoria: 'contractual',
+    titulo: 'Días de pago no configurados',
+    descripcion: 'No se ha definido el plazo contractual de pago de estimaciones',
+    tab: 'planeacion', subTab: 'contrato',
+    detect: ({obra}) => {
+      if (obra.diasPago !== undefined && obra.diasPago > 0) return null;
+      return {severidad:'bajo', valor: '—', detalle: 'Captura días de pago en Contrato', extra: 'Necesario para detectar atrasos'};
+    },
+  },
+  {
+    id: 'ctr_002', categoria: 'contractual',
+    titulo: 'ID GP no vinculado',
+    descripcion: 'La obra no tiene asignado el código de GP Construct',
+    tab: 'planeacion', subTab: 'contrato',
+    detect: ({obra, gpData}) => {
+      if (obra.gpId) return null;
+      if (/^\d{4}/.test(obra.id||'')) return null; // ya el id es 4 dígitos
+      if (!gpData) return null;
+      return {severidad:'medio', valor: '!', detalle: 'Sin esto no se ven gastos de GP', extra: 'Captura gpId en Contrato'};
+    },
+  },
+  // ── COMPLIANCE ──
+  {
+    id: 'cmp_001', categoria: 'compliance',
+    titulo: 'Sin presupuesto cargado',
+    descripcion: 'No hay catálogo de presupuesto detallado para esta obra',
+    tab: 'planeacion', subTab: 'presupuesto',
+    detect: ({subs}) => {
+      if (subs?.length > 0) return null;
+      return {severidad:'medio', valor: '—', detalle: 'Sin catálogo no se puede medir avance', extra: 'Sube el Excel en Presupuesto'};
+    },
+  },
+  {
+    id: 'cmp_002', categoria: 'compliance',
+    titulo: 'Sin cierres semanales registrados',
+    descripcion: 'Aún no se ha cerrado oficialmente ninguna semana',
+    tab: 'operacion', subTab: 'avance',
+    detect: ({historialAvance}) => {
+      const oficiales = (historialAvance||[]).filter(s => s.tipo === 'oficial');
+      if (oficiales.length > 0) return null;
+      return {severidad:'bajo', valor: '0', detalle: 'Sin esto no hay tendencias ni proyecciones', extra: 'Botón "Cerrar semana oficialmente"'};
+    },
+  },
+];
+
+// Motor de detección: evalúa todas las plantillas y devuelve las que disparen
+const detectarRiesgos = (contexto) => {
+  const detectados = [];
+  for (const plantilla of BIBLIOTECA_RIESGOS) {
+    try {
+      const r = plantilla.detect(contexto);
+      if (r) {
+        detectados.push({
+          ...plantilla,
+          severidad: r.severidad,
+          valor: r.valor,
+          detalle: r.detalle,
+          extra: r.extra,
+        });
+      }
+    } catch(e) {
+      // Detector con error: ignorar silenciosamente
+    }
+  }
+  // Ordenar por severidad descendente
+  detectados.sort((a,b) => (SEVERIDADES[b.severidad]?.peso||0) - (SEVERIDADES[a.severidad]?.peso||0));
+  return detectados;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -3710,7 +4357,62 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
 }
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],onNavTab}){
+// ════════════════════════════════════════════════════════════════════════════
+// BANNER DE RIESGOS — Dashboard
+// ════════════════════════════════════════════════════════════════════════════
+function BannerRiesgos({riesgos, onNavTab, compacto=false}){
+  const [expandido, setExpandido] = useState(false);
+  const criticos = riesgos.filter(r => r.severidad === 'critico');
+  const altos = riesgos.filter(r => r.severidad === 'alto');
+  const medios = riesgos.filter(r => r.severidad === 'medio');
+  const bajos = riesgos.filter(r => r.severidad === 'bajo');
+  const totalGrave = criticos.length + altos.length;
+  const accent = criticos.length > 0 ? C.red : altos.length > 0 ? C.red : medios.length > 0 ? C.yellow : C.textMut;
+  const mostrar = expandido ? riesgos : riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
+
+  return <Card accent={accent}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>RIESGOS DETECTADOS</span>
+        {criticos.length > 0 && <Bdg color={C.red} small>{criticos.length} crítico{criticos.length>1?'s':''}</Bdg>}
+        {altos.length > 0 && <Bdg color={C.red} small>{altos.length} alto{altos.length>1?'s':''}</Bdg>}
+        {medios.length > 0 && <Bdg color={C.yellow} small>{medios.length} medio{medios.length>1?'s':''}</Bdg>}
+        {bajos.length > 0 && expandido && <Bdg color={C.textMut} small>{bajos.length} bajo{bajos.length>1?'s':''}</Bdg>}
+      </div>
+      <button onClick={()=>setExpandido(!expandido)} style={{background:"none",border:"none",
+        fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
+        {expandido ? "Ver solo críticos ▴" : `Ver todos (${riesgos.length}) ▾`}
+      </button>
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+      {mostrar.map((r,i)=>{
+        const sevDef = SEVERIDADES[r.severidad] || SEVERIDADES.medio;
+        return <div key={r.id+'_'+i} onClick={()=>onNavTab && onNavTab(r.tab, r.subTab)}
+          style={{background:C.bg,borderRadius:6,padding:"8px 11px",fontSize:10,
+            borderLeft:`3px solid ${sevDef.color}`,cursor:onNavTab?"pointer":"default",
+            display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,
+            transition:"background .12s"}}
+          onMouseEnter={e=>{if(onNavTab)e.currentTarget.style.background=C.surface;}}
+          onMouseLeave={e=>e.currentTarget.style.background=C.bg}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+              <span style={{fontSize:8,fontWeight:700,color:sevDef.color,textTransform:"uppercase",letterSpacing:"0.04em"}}>{sevDef.label}</span>
+              <span style={{fontSize:10,fontWeight:700,color:C.textPri}}>{r.titulo}</span>
+            </div>
+            <div style={{fontSize:9,color:C.textSec}}>{r.detalle}</div>
+            {r.extra && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{r.extra}</div>}
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:13,fontWeight:700,color:sevDef.color,lineHeight:1}}>{r.valor}</div>
+            {onNavTab && <div style={{fontSize:9,color:sevDef.color,marginTop:3,fontWeight:600}}>Revisar ›</div>}
+          </div>
+        </div>;
+      })}
+    </div>
+  </Card>;
+}
+
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   const gt=obra.gastoGP+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
   const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
@@ -3730,30 +4432,18 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const totalEst =estTotal;
   const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
 
-  // ── ALERTAS automáticas ──
+  // ── ALERTAS desde la biblioteca de riesgos ──
   const pctGasto = obra.presupuesto > 0 ? gt/obra.presupuesto*100 : 0;
   const brecha = pctGasto - af;
-  const alertas = [];
-  if (mpct < 6 && me > 0) alertas.push({tipo:"riesgo",color:C.red,texto:`Margen crítico: ${NUM(mpct,1)}%`,tab:"operacion",subTab:"estimaciones"});
-  else if (mpct < 15 && me > 0) alertas.push({tipo:"riesgo",color:C.yellow,texto:`Margen en vigilancia: ${NUM(mpct,1)}%`,tab:"operacion",subTab:"estimaciones"});
-  if (brecha > 15) alertas.push({tipo:"riesgo",color:C.red,texto:`Brecha gasto-avance: +${NUM(brecha,1)}pp`,tab:"operacion",subTab:"avance"});
-  // Estimaciones atrasadas
-  const diasPago = obra.diasPago||30; const hoy = new Date();
-  const estAtrasadas = estimaciones.filter(e => e.estatus==="Facturada" && e.fechaFact
-    && Math.floor((hoy-new Date(e.fechaFact))/(1000*60*60*24)) - diasPago > 0);
-  if (estAtrasadas.length > 0) alertas.push({tipo:"estim",color:C.red,
-    texto:`${estAtrasadas.length} estimación(es) atrasada(s) en cobro`, tab:"operacion", subTab:"estimaciones"});
-  // Subcontratos sin pago vs avance alto
-  const subsDesfasados = subcontratos.filter(s => {
-    const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
-    const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
-    const pctFis = totalCat>0 ? ejec/totalCat*100 : 0;
-    const pagado = s.pagos?.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0),0) || 0;
-    const pctFin = s.monto>0 ? pagado/s.monto*100 : 0;
-    return pctFis > 0 && (pctFis - pctFin) > 20;
+  // KPIs consolidados que el motor de detección usa
+  const kpisCtx = {gt, am, alm, me, af, diff, mpct, pctGasto, brecha};
+  const riesgos = detectarRiesgos({
+    obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx
   });
-  if (subsDesfasados.length > 0) alertas.push({tipo:"sub",color:C.yellow,
-    texto:`${subsDesfasados.length} subcontrato(s) con desfase obra vs pago`, tab:"operacion", subTab:"subcontratos"});
+  // Para el banner principal, solo mostramos críticos+altos (los medios y bajos van al panel completo)
+  const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
+  const riesgosMed = riesgos.filter(r => r.severidad === 'medio');
+  const totalRiesgos = riesgos.length;
 
   // ── Wrapper para hacer secciones clickeables ──
   // Acepta tabId principal y opcionalmente subTabId (para navegar a Operación > Avance, etc.)
@@ -3781,25 +4471,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </div>
     </div>
 
-    {/* BLOQUE 2: ALERTAS (solo si hay) */}
-    {alertas.length > 0 && (
-      <Card accent={alertas.some(a=>a.color===C.red)?C.red:C.yellow}>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-          <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>ALERTAS ACTIVAS</span>
-          <Bdg color={alertas.some(a=>a.color===C.red)?C.red:C.yellow} small>{alertas.length}</Bdg>
-        </div>
-        <div style={{display:"flex",flexDirection:"column",gap:5}}>
-          {alertas.map((a,i)=>(
-            <div key={i} onClick={()=>onNavTab && onNavTab(a.tab, a.subTab)}
-              style={{background:C.bg,borderRadius:6,padding:"7px 11px",fontSize:10,
-                borderLeft:`3px solid ${a.color}`,cursor:onNavTab?"pointer":"default",
-                display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
-              <span style={{color:C.textPri,fontWeight:500}}>{a.texto}</span>
-              {onNavTab && <span style={{fontSize:9,color:a.color,fontWeight:600}}>Revisar ›</span>}
-            </div>
-          ))}
-        </div>
-      </Card>
+    {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
+    {totalRiesgos > 0 && (
+      <BannerRiesgos riesgos={riesgos} onNavTab={onNavTab}/>
     )}
     <Card accent={mc} {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -4182,18 +4856,25 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   // Sin iniciar después de plazos
   const sinIniciar = subs.filter(s => (s.a||0) === 0).slice(0,5);
 
-  // ── GRÁFICA: avance acumulado vs ideal ──
-  // Si no hay histórico, mostramos solo el actual
+  // ── GRÁFICA: Curva S — avance acumulado real vs programado ──
+  // Por cada snapshot oficial calculamos qué % deberíamos tener en esa fecha (lineal del 0 al 100% sobre el plazo)
+  const inicio = obra.inicio ? new Date(obra.inicio) : null;
+  const fin = finContrato ? new Date(finContrato) : null;
+  const plazoTotalDias = (inicio && fin) ? (fin - inicio) / 86400000 : null;
+  const programadoEnFecha = (fechaISO) => {
+    if (!plazoTotalDias || plazoTotalDias <= 0) return null;
+    const trans = (new Date(fechaISO) - inicio) / 86400000;
+    return Math.min(Math.max((trans / plazoTotalDias) * 100, 0), 100);
+  };
   const puntos = oficiales.length > 0
     ? oficiales.map(s => ({
         x: `S${s.semana}`,
         real: s.avancePonderado,
+        programado: programadoEnFecha(s.fechaCierre || s.fechaCaptura),
         sem: s.semana, año: s.año,
       }))
     : [];
-  // Ideal: lineal de 0 a 100% sobre el plazo contratado
-  const inicio = obra.inicio ? new Date(obra.inicio) : null;
-  const fin = finContrato ? new Date(finContrato) : null;
+  // % ideal a fecha actual
   let idealActual = null;
   if (inicio && fin) {
     const total = (fin - inicio) / 86400000;
@@ -4297,40 +4978,191 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   </div>;
 }
 
-// ── Componente SVG simple de tendencia (línea acumulada) ──
+// ── Curva S: real vs programado a lo largo del plazo ──
 function GraficaTendencia({puntos=[], idealActual=null}){
-  const W = 540, H = 180, P = 30;
-  const maxY = 100; // % acumulado
+  const W = 540, H = 200, P = 32;
+  const maxY = 100;
   const xs = puntos.map((p,i) => P + (i*(W-2*P)/Math.max(puntos.length-1,1)));
-  const ys = puntos.map(p => H - P - (p.real/maxY)*(H-2*P));
-  const path = puntos.map((p,i)=>`${i===0?"M":"L"} ${xs[i]} ${ys[i]}`).join(" ");
-  // Línea ideal (de 0 al avance ideal actual proporcional)
-  const yIdeal = idealActual!==null ? H - P - (idealActual/maxY)*(H-2*P) : null;
-  return <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:200}}>
-    {/* Grid horizontal */}
-    {[0, 25, 50, 75, 100].map(pct => {
-      const y = H - P - (pct/maxY)*(H-2*P);
-      return <g key={pct}>
-        <line x1={P} y1={y} x2={W-P} y2={y} stroke={C.border} strokeDasharray="2 2"/>
-        <text x={P-6} y={y+3} fontSize="9" fill={C.textMut} textAnchor="end">{pct}%</text>
-      </g>;
-    })}
-    {/* Línea ideal */}
-    {yIdeal !== null && (
-      <line x1={P} y1={H-P} x2={W-P} y2={yIdeal}
-        stroke={C.textMut} strokeWidth="1" strokeDasharray="4 3" opacity="0.6"/>
+  const ysReal = puntos.map(p => H - P - (p.real/maxY)*(H-2*P));
+  const ysProg = puntos.map(p => p.programado !== null && p.programado !== undefined
+    ? H - P - (p.programado/maxY)*(H-2*P) : null);
+  const pathReal = puntos.map((p,i)=>`${i===0?"M":"L"} ${xs[i]} ${ysReal[i]}`).join(" ");
+  const tieneProgramado = puntos.some(p => p.programado !== null && p.programado !== undefined);
+  const pathProg = tieneProgramado ? puntos.map((p,i) => {
+    const y = ysProg[i];
+    if (y === null) return '';
+    return `${i===0?"M":"L"} ${xs[i]} ${y}`;
+  }).filter(Boolean).join(" ") : null;
+  return <div>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:220}}>
+      {/* Grid horizontal */}
+      {[0, 25, 50, 75, 100].map(pct => {
+        const y = H - P - (pct/maxY)*(H-2*P);
+        return <g key={pct}>
+          <line x1={P} y1={y} x2={W-P} y2={y} stroke={C.border} strokeDasharray="2 2"/>
+          <text x={P-6} y={y+3} fontSize="9" fill={C.textMut} textAnchor="end">{pct}%</text>
+        </g>;
+      })}
+      {/* Curva programada (lineal, plazo contractual) */}
+      {pathProg && (
+        <path d={pathProg} fill="none" stroke={C.textMut} strokeWidth="1.5" strokeDasharray="4 3" opacity="0.85"/>
+      )}
+      {/* Línea real */}
+      <path d={pathReal} fill="none" stroke={C.blueDk} strokeWidth="2.5"/>
+      {/* Puntos programados */}
+      {tieneProgramado && xs.map((x,i)=> ysProg[i] !== null && (
+        <circle key={'p'+i} cx={x} cy={ysProg[i]} r="2.5" fill={C.textMut} opacity="0.6"/>
+      ))}
+      {/* Puntos reales */}
+      {xs.map((x,i)=>(
+        <g key={i}>
+          <circle cx={x} cy={ysReal[i]} r="3.5" fill={C.blueDk}/>
+          <text x={x} y={H-P+14} fontSize="9" fill={C.textSec} textAnchor="middle">{puntos[i].x}</text>
+          <text x={x} y={ysReal[i]-8} fontSize="9" fill={C.caliza} fontWeight="600" textAnchor="middle">{NUM(puntos[i].real,1)}%</text>
+        </g>
+      ))}
+    </svg>
+    {/* Leyenda */}
+    <div style={{display:"flex",justifyContent:"center",gap:14,marginTop:6,fontSize:9,color:C.textMut}}>
+      <div style={{display:"flex",alignItems:"center",gap:4}}>
+        <div style={{width:12,height:2,background:C.blueDk}}/> <span>Real ejecutado</span>
+      </div>
+      {tieneProgramado && (
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <div style={{width:12,height:1.5,background:C.textMut,borderTop:`1.5px dashed ${C.textMut}`}}/> <span>Programado (lineal)</span>
+        </div>
+      )}
+    </div>
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MINI-DASHBOARDS por sub-tab de Operación
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── ALMACÉN ──
+function MiniDashAlmacen({obra, materiales}){
+  const total = (materiales||[]).reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const enAlmacen = (materiales||[]).filter(m=>m.concepto==='En almacén').reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const enTransito = (materiales||[]).filter(m=>m.concepto==='En tránsito').reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const enFabricacion = (materiales||[]).filter(m=>m.concepto==='En fabricación').reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const anticipo = (materiales||[]).filter(m=>m.concepto==='Anticipo').reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const items = (materiales||[]).filter(m => (parseFloat(m.imp)||0) > 0).length;
+  const pctPresupuesto = obra.presupuesto > 0 ? total/obra.presupuesto*100 : 0;
+  return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:10}}>
+    <Kpi label="Total almacén" value={MXN(total)} sub={`${items} item${items===1?'':'s'} activos`} color={C.blueDk} size={12}/>
+    <Kpi label="En almacén" value={MXN(enAlmacen)} sub="disponible en obra" color={CT_COL['En almacén']} size={12}/>
+    <Kpi label="En tránsito" value={MXN(enTransito)} sub="en camino" color={CT_COL['En tránsito']} size={12}/>
+    <Kpi label="En fabricación" value={MXN(enFabricacion)} sub="pendiente entrega" color={CT_COL['En fabricación']} size={12}/>
+    {anticipo > 0 && <Kpi label="Anticipo" value={MXN(anticipo)} sub="dado a proveedores" color={CT_COL['Anticipo']} size={12}/>}
+    <Kpi label="% presupuesto" value={`${NUM(pctPresupuesto,1)}%`} sub="del contrato" color={C.caliza} size={12}/>
+  </div>;
+}
+
+// ── MAQUINARIA ──
+function MiniDashMaquinaria({obra, maquinaria}){
+  const total = (maquinaria||[]).reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const items = (maquinaria||[]).filter(m => (parseFloat(m.imp)||0) > 0).length;
+  const sinAsignar = (maquinaria||[]).filter(m => !m.desc).length;
+  const pctPresupuesto = obra.presupuesto > 0 ? total/obra.presupuesto*100 : 0;
+  // Top 3 más caras
+  const top3 = [...(maquinaria||[])].filter(m => (parseFloat(m.imp)||0) > 0).sort((a,b)=>(parseFloat(b.imp)||0)-(parseFloat(a.imp)||0)).slice(0,3);
+  const top3Total = top3.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
+      <Kpi label="Costo total" value={MXN(total)} sub="acumulado" color={C.orange} size={12}/>
+      <Kpi label="Equipos activos" value={String(items)} sub={`${sinAsignar} slots vacíos`} color={C.blueDk} size={12}/>
+      <Kpi label="% presupuesto" value={`${NUM(pctPresupuesto,1)}%`} sub={pctPresupuesto > 8 ? "elevado" : "dentro de rango"} color={pctPresupuesto > 8 ? C.yellow : C.greenDk} size={12}/>
+      {items > 0 && <Kpi label="Costo promedio" value={MXN(total/items)} sub="por equipo" color={C.purple} size={12}/>}
+    </div>
+    {top3.length > 0 && (
+      <Card style={{padding:"10px 12px"}}>
+        <div style={{fontSize:10,color:C.textMut,fontWeight:600,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>Top 3 equipos por costo</div>
+        {top3.map((m,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:10,padding:"4px 0",borderBottom:i<2?`0.5px solid ${C.border}`:'none'}}>
+            <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              <span style={{color:C.textMut,fontWeight:600}}>#{i+1}</span> · <span style={{color:C.textPri}}>{m.desc}</span>
+            </span>
+            <span style={{color:C.orange,fontWeight:600}}>{MXN(parseFloat(m.imp)||0)}</span>
+          </div>
+        ))}
+      </Card>
     )}
-    {/* Línea real */}
-    <path d={path} fill="none" stroke={C.blueDk} strokeWidth="2"/>
-    {/* Puntos */}
-    {xs.map((x,i)=>(
-      <g key={i}>
-        <circle cx={x} cy={ys[i]} r="3.5" fill={C.blueDk}/>
-        <text x={x} y={H-P+14} fontSize="9" fill={C.textSec} textAnchor="middle">{puntos[i].x}</text>
-        <text x={x} y={ys[i]-8} fontSize="9" fill={C.caliza} fontWeight="600" textAnchor="middle">{NUM(puntos[i].real,1)}%</text>
-      </g>
-    ))}
-  </svg>;
+  </div>;
+}
+
+// ── NÓMINA ──
+function MiniDashNomina(){
+  const totalNom = NOMINA_S18.reduce((t,p)=>t+(p.total||0), 0);
+  const totalHE = NOMINA_S18.reduce((t,p)=>t+(p.importeHE||0), 0);
+  const totalDias = NOMINA_S18.reduce((t,p)=>t+(p.importeDias||0), 0);
+  const directos = NOMINA_S18.filter(p=>p.tipo==='D');
+  const indirectos = NOMINA_S18.filter(p=>p.tipo==='I');
+  const trabajadoresActivos = NOMINA_S18.filter(p=>(p.total||0) > 0).length;
+  const inasistentes = NOMINA_S18.filter(p=>(p.diasTrabajados||0) === 0).length;
+  const altasHE = NOMINA_S18.filter(p=>(p.horasExtra||0) >= 20).length;
+  const pctHE = totalNom > 0 ? totalHE/totalNom*100 : 0;
+  return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
+      <Kpi label="Total nómina S18" value={MXN(totalNom)} sub="semana actual" color={C.caliza} size={12}/>
+      <Kpi label="Activos" value={String(trabajadoresActivos)} sub={`${directos.length}D · ${indirectos.length}I`} color={C.green}/>
+      <Kpi label="Horas extra" value={MXN(totalHE)} sub={`${NUM(pctHE,1)}% del total`} color={pctHE > 15 ? C.yellowDk : C.blueDk} size={12}/>
+      <Kpi label="Sueldos base" value={MXN(totalDias)} sub="jornadas" color={C.purpleDk} size={12}/>
+      {altasHE > 0 && <Kpi label="Riesgo HE" value={String(altasHE)} sub={`≥20h ext.`} color={C.yellow}/>}
+      {inasistentes > 0 && <Kpi label="Sin asistencia" value={String(inasistentes)} sub="esta semana" color={C.red}/>}
+    </div>
+  </div>;
+}
+
+// ── ESTIMACIONES ──
+function MiniDashEstimaciones({obra, estimaciones}){
+  const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+  const pagado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto||0), 0);
+  const porCobrar = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+  const enProceso = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+(e.monto||0), 0);
+  const porEstimar = Math.max(obra.presupuesto - totalEst, 0);
+  const diasPago = obra.diasPago || 30;
+  const hoy = new Date();
+  const atrasadas = estimaciones.filter(e => {
+    if (e.estatus !== 'Facturada' || !e.fechaFact) return false;
+    return Math.floor((hoy - new Date(e.fechaFact))/86400000) > diasPago;
+  });
+  const montoAtrasado = atrasadas.reduce((t,e)=>t+(e.monto||0), 0);
+  return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
+      <Kpi label="Total estimado" value={MXN(totalEst)} sub={`${NUM(totalEst/obra.presupuesto*100,1)}% del contrato`} color={C.caliza} size={12}/>
+      <Kpi label="Pagado" value={MXN(pagado)} sub="cobrado y liquidado" color={C.greenDk} size={12}/>
+      <Kpi label="Por cobrar" value={MXN(porCobrar)} sub={atrasadas.length > 0 ? `${atrasadas.length} atrasada(s)` : "facturado+aprobado"} color={atrasadas.length > 0 ? C.red : C.purpleDk} size={12}/>
+      <Kpi label="En proceso" value={MXN(enProceso)} sub="en elaboración" color={C.yellowDk} size={12}/>
+      <Kpi label="Por estimar" value={MXN(porEstimar)} sub="saldo del contrato" color={C.blueDk} size={12}/>
+      {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)} sub={`plazo: ${diasPago}d`} color={C.red} size={12}/>}
+    </div>
+  </div>;
+}
+
+// ── SUBCONTRATOS ──
+function MiniDashSubcontratos({obra, subcontratos}){
+  if (!subcontratos?.length) return null;
+  const totalContratado = subcontratos.reduce((t,s)=>t+(s.monto||0), 0);
+  const totalEjec = subcontratos.reduce((t,s) => {
+    const ejec = s.conceptos?.reduce((tt,c)=>tt+((c.avance||0)/100)*(c.importe||0), 0) || 0;
+    return t + ejec;
+  }, 0);
+  const totalPagado = subcontratos.reduce((t,s) => {
+    return t + (s.pagos?.filter(p=>p.estatus==='pagado').reduce((tt,p)=>tt+(p.monto||0), 0) || 0);
+  }, 0);
+  const totalCat = subcontratos.reduce((t,s) => t + (s.conceptos?.reduce((tt,c)=>tt+(c.importe||0), 0) || 0), 0);
+  const pctAvanceProm = totalCat > 0 ? totalEjec/totalCat*100 : 0;
+  const pctPagado = totalContratado > 0 ? totalPagado/totalContratado*100 : 0;
+  const activos = subcontratos.filter(s => s.estado === 'activa').length;
+  const completados = subcontratos.filter(s => s.estado === 'completada').length;
+  return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:10}}>
+    <Kpi label="Total contratado" value={MXN(totalContratado)} sub={`${subcontratos.length} sub${subcontratos.length===1?'':'s'} · ${activos} activos`} color={C.caliza} size={12}/>
+    <Kpi label="Avance físico" value={`${NUM(pctAvanceProm,1)}%`} sub={`${MXN(totalEjec)} ejecutado`} color={pctAvanceProm>=100?C.green:C.blue} size={12}/>
+    <Kpi label="Avance financiero" value={`${NUM(pctPagado,1)}%`} sub={`${MXN(totalPagado)} pagado`} color={pctPagado>=100?C.green:C.purpleDk} size={12}/>
+    <Kpi label="Por pagar" value={MXN(Math.max(totalContratado - totalPagado, 0))} sub="saldo a proveedores" color={C.blueDk} size={12}/>
+    {completados > 0 && <Kpi label="Completados" value={String(completados)} sub="cerrados" color={C.green}/>}
+  </div>;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4392,31 +5224,46 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </>
     )}
     {subTab==="almacen" && (
-      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
-        materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="materiales"
-        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-        setCambiosPendientes={setCambiosPendientes}/>
+      <>
+        <MiniDashAlmacen obra={obra} materiales={materiales}/>
+        <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          rol={rol} obra={obra} forceTab="materiales"
+          usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          setCambiosPendientes={setCambiosPendientes}/>
+      </>
     )}
     {subTab==="maquinaria" && (
-      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
-        materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="maquinaria"
-        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-        setCambiosPendientes={setCambiosPendientes}/>
+      <>
+        <MiniDashMaquinaria obra={obra} maquinaria={maquinaria}/>
+        <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          rol={rol} obra={obra} forceTab="maquinaria"
+          usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          setCambiosPendientes={setCambiosPendientes}/>
+      </>
     )}
     {subTab==="nomina" && (
-      <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
-        materiales={materiales} setMateriales={setMateriales}
-        rol={rol} obra={obra} forceTab="nomina"
-        usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-        setCambiosPendientes={setCambiosPendientes}/>
+      <>
+        <MiniDashNomina/>
+        <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          rol={rol} obra={obra} forceTab="nomina"
+          usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          setCambiosPendientes={setCambiosPendientes}/>
+      </>
     )}
     {subTab==="estimaciones" && (
-      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
+      <>
+        <MiniDashEstimaciones obra={obra} estimaciones={estimaciones}/>
+        <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
+      </>
     )}
     {subTab==="subcontratos" && (
-      <Subcontratos obra={obra} rol={rol} items={subcontratos} setItems={setSubcontratos} usuario={usuario}/>
+      <>
+        <MiniDashSubcontratos obra={obra} subcontratos={subcontratos}/>
+        <Subcontratos obra={obra} rol={rol} items={subcontratos} setItems={setSubcontratos} usuario={usuario}/>
+      </>
     )}
   </div>;
 }
@@ -5178,7 +6025,92 @@ function GastosGP({obra,maquinaria,rol,gpData}){
         </>
       )}
     </>}
+
+    {/* Panel diagnóstico solo para admin_sistema (Luis Mayo) */}
+    {rol === 'admin_sistema' && gpData && (
+      <PanelDiagnosticoGP gpData={gpData} obra={obra} datosObra={datosObra}/>
+    )}
   </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PANEL DE DIAGNÓSTICO DE GP CONSTRUCT — solo admin_sistema
+// ════════════════════════════════════════════════════════════════════════════
+function PanelDiagnosticoGP({gpData, obra, datosObra}){
+  const [abierto, setAbierto] = useState(false);
+  const colsCount = Object.keys(gpData?.colMap || {}).length;
+  const obrasDetectadas = gpData?.totalObras || 0;
+  const semanasDet = gpData?.semanasDisponibles?.length || 0;
+  const mesesDet = gpData?.mesesDisponibles?.length || 0;
+  return <Card style={{marginTop:14, background:'#fafafa', border:`0.5px dashed ${C.borderM}`}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}
+      onClick={()=>setAbierto(!abierto)}>
+      <div>
+        <Tit>Diagnóstico parser GP Construct</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-4}}>
+          Visible solo para Administrador de Sistema · {colsCount} columnas detectadas · {obrasDetectadas} obras
+        </div>
+      </div>
+      <span style={{fontSize:14,color:C.textMut}}>{abierto?'▾':'▸'}</span>
+    </div>
+    {abierto && (
+      <div style={{marginTop:12,padding:12,background:C.surface,borderRadius:6,fontSize:10}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8,marginBottom:14}}>
+          <div><b style={{color:C.textPri}}>Obras detectadas:</b> {obrasDetectadas}</div>
+          <div><b style={{color:C.textPri}}>Semanas:</b> {semanasDet}</div>
+          <div><b style={{color:C.textPri}}>Meses:</b> {mesesDet}</div>
+          <div><b style={{color:C.textPri}}>Última semana:</b> {gpData?.ultimaSemana||'—'}</div>
+          <div><b style={{color:C.textPri}}>Último mes:</b> {gpData?.ultimoMes||'—'}</div>
+        </div>
+
+        <div style={{fontSize:9,fontWeight:700,color:C.textPri,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+          Columnas detectadas
+        </div>
+        <div style={{maxHeight:180,overflow:"auto",border:`0.5px solid ${C.border}`,borderRadius:6,padding:8}}>
+          {Object.entries(gpData?.colMap||{}).sort((a,b)=>a[1]-b[1]).map(([k,v])=>{
+            let tipo='', color=C.textMut;
+            if(k.startsWith('y_')) { tipo='Año'; color=C.purple; }
+            else if(k.startsWith('m_')) { tipo='Mes 2026'; color=C.blue; }
+            else if(k.startsWith('w_')) { tipo='Semana'; color=C.green; }
+            else if(k==='total_2026') { tipo='Total 2026'; color=C.orange; }
+            else if(k==='grand_total') { tipo='Grand Total'; color=C.red; }
+            else if(k==='pct') { tipo='%'; color=C.textMut; }
+            return <div key={k} style={{display:"flex",justifyContent:"space-between",
+              fontSize:9,padding:"3px 6px",borderBottom:`0.5px dashed ${C.border}`}}>
+              <span style={{fontFamily:"monospace",color:C.textSec}}>col {v}</span>
+              <span style={{color:color,fontWeight:600}}>{tipo}</span>
+              <span style={{fontFamily:"monospace",color:C.textMut}}>{k}</span>
+            </div>;
+          })}
+        </div>
+
+        {datosObra && (
+          <div style={{marginTop:14,padding:10,background:C.bg,borderRadius:6}}>
+            <div style={{fontSize:9,fontWeight:700,color:C.textPri,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              Match con obra actual
+            </div>
+            <div style={{fontSize:10,color:C.textSec}}>
+              <div>Obra CAMPO: <b>{obra.id} · {obra.nombre}</b></div>
+              <div>Encontrada en GP: <b style={{color:C.greenDk}}>{datosObra.id} · {datosObra.nombre}</b></div>
+              <div style={{marginTop:4}}>
+                Grand Total: <b>{MXN(datosObra.grandTotal||0)}</b> · Rubros: <b>{Object.keys(datosObra.rubros||{}).length}</b> · Proveedores: <b>{(datosObra.proveedores||[]).length}</b>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!datosObra && (
+          <div style={{marginTop:14,padding:10,background:`${C.red}10`,borderRadius:6,fontSize:10,color:C.redDk}}>
+            ⚠ Esta obra no fue encontrada en el Sheet. Si esperabas verla, verifica el código de 4 dígitos.
+          </div>
+        )}
+
+        <div style={{marginTop:12,fontSize:9,color:C.textMut}}>
+          Si el formato del Sheet cambia y dejan de detectarse columnas, este panel ayudará a diagnosticar el problema.
+        </div>
+      </div>
+    )}
+  </Card>;
 }
 
 // ── ESTIMACIONES ───────────────────────────────────────────────────────────
@@ -8291,7 +9223,7 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales)}
+      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales,subcontratos)}
         style={{background:C.blueDk,border:"none",borderRadius:6,
           margin:"4px 12px",padding:"4px 10px",fontSize:10,color:"white",cursor:"pointer",
           display:"flex",alignItems:"center",gap:5}}>
@@ -8312,7 +9244,7 @@ export default function App(){
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} onNavTab={navTab}/>}
+      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} onNavTab={navTab}/>}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
