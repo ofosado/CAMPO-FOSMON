@@ -1936,23 +1936,58 @@ function Login({onLogin}){
 const GP_SHEET_ID = "1UaRI7ysMttXvET9I6hXPJAqadUYRd0Y0Qiwy8uRi82c";
 const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/export?format=csv`;
 
-// Parser del CSV de GP Construct
-// Estructura: Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor
+// ── Parser CSV robusto (maneja comillas con comas dentro) ──
+function parseCsvLine(line) {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i+1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(cur.trim()); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
+// Convierte "$1,234.56" o "-$1,234" o "1234" a número (devuelve NaN si no aplica)
+function parseMonto(s) {
+  if (!s) return NaN;
+  const limpio = String(s).replace(/[$\s,()]/g, '');
+  if (!limpio || limpio === '-') return NaN;
+  const n = parseFloat(limpio);
+  return isNaN(n) ? NaN : n;
+}
+
+// Parser de GP Construct mejorado
+// Estructura jerárquica: EGRESOS > Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor (texto)
+// Devuelve: { obras: { "0001 NOMBRE": { rubros: {...}, semanas: {...}, proveedores: [...] } } }
 function parsearGPConstruct(csvText) {
-  const lines = csvText.split('\n').map(l => l.split(',').map(c => c.replace(/^"|"$/g,'').trim()));
-  
-  // Detectar columnas de semanas (fila 9 aprox - buscar números de 2 dígitos)
+  const lines = csvText.split('\n').map(parseCsvLine);
+
+  // Detectar columnas: filas 5-7 tienen año / mes / semana respectivamente
+  // Estrategia: identificar columnas con números de 2 dígitos (semanas) y años 4 dígitos
   let headerRow = -1;
-  let colMap = {};
+  let colMap = {}; // { S14: 8, S15: 9, ..., "2024": 2, "2025": 3, ... }
   for (let i = 0; i < Math.min(lines.length, 15); i++) {
     const hasSemanas = lines[i].some(c => /^[1-5][0-9]$/.test(c));
     if (hasSemanas) {
       headerRow = i;
       lines[i].forEach((c, ci) => {
         if (/^[1-5][0-9]$/.test(c)) colMap[`S${c}`] = ci;
-        if (/^2024$/.test(c)) colMap['2024'] = ci;
-        if (/^2025$/.test(c)) colMap['2025'] = ci;
       });
+      // Buscar años en filas anteriores (típicamente fila 5)
+      for (let j = Math.max(0, i-3); j < i; j++) {
+        lines[j].forEach((c, ci) => {
+          if (/^20\d{2}$/.test(c)) colMap[c] = ci;
+        });
+      }
       break;
     }
   }
@@ -1962,34 +1997,69 @@ function parsearGPConstruct(csvText) {
 
   for (let i = (headerRow >= 0 ? headerRow + 1 : 10); i < lines.length; i++) {
     const row = lines[i];
-    const b = row[1] || '';
-    if (!b.trim()) continue;
+    const label = (row[1] || '').trim();
+    if (!label) continue;
+    // Saltar filas de totales o secciones
+    if (/^Grand Total$/i.test(label) || /^Total/i.test(label)) continue;
+    // Saltar fila EGRESOS / INGRESOS de cabecera
+    if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
 
-    // Obra: empieza con 4 dígitos
-    if (/^\d{4}\s/.test(b)) {
-      curObra = b.trim();
+    // OBRA: empieza con 4 dígitos
+    if (/^\d{4}\s/.test(label)) {
+      curObra = label;
       curRubro = null;
-      if (!obras[curObra]) obras[curObra] = { rubros: {}, semanas: {} };
+      if (!obras[curObra]) obras[curObra] = { id: label.slice(0,4), nombre: label, rubros: {}, semanas: {}, proveedores: [] };
       Object.entries(colMap).forEach(([k, ci]) => {
-        const v = parseFloat((row[ci] || '').replace(/[$,]/g, ''));
+        const v = parseMonto(row[ci]);
         if (!isNaN(v) && v !== 0) obras[curObra].semanas[k] = Math.abs(v);
       });
     }
-    // Rubro: empieza con 3 dígitos
-    else if (/^\d{3}\s/.test(b) && curObra) {
-      curRubro = b.slice(0, 3);
+    // RUBRO: empieza con 3 dígitos
+    else if (/^\d{3}\s/.test(label) && curObra) {
+      curRubro = label.slice(0, 3);
       if (!obras[curObra].rubros[curRubro]) {
-        obras[curObra].rubros[curRubro] = { nombre: b.trim(), semanas: {} };
+        obras[curObra].rubros[curRubro] = {
+          id: curRubro,
+          nombre: label,
+          nombreCorto: label.slice(4).trim(),
+          semanas: {},
+          proveedores: [],
+        };
       }
       Object.entries(colMap).forEach(([k, ci]) => {
-        const v = parseFloat((row[ci] || '').replace(/[$,]/g, ''));
+        const v = parseMonto(row[ci]);
         if (!isNaN(v) && v !== 0) obras[curObra].rubros[curRubro].semanas[k] = Math.abs(v);
       });
     }
+    // PROVEEDOR: texto sin prefijo numérico, dentro de un rubro
+    else if (curObra && curRubro && !/^\d/.test(label)) {
+      const provSemanas = {};
+      let total = 0;
+      Object.entries(colMap).forEach(([k, ci]) => {
+        const v = parseMonto(row[ci]);
+        if (!isNaN(v) && v !== 0) {
+          const abs = Math.abs(v);
+          provSemanas[k] = abs;
+          total += abs;
+        }
+      });
+      if (total === 0) continue; // proveedor sin gastos: ignorar
+      const prov = {
+        nombre: label,
+        rubroId: curRubro,
+        rubroNombre: obras[curObra].rubros[curRubro].nombreCorto,
+        semanas: provSemanas,
+        total,
+      };
+      obras[curObra].rubros[curRubro].proveedores.push(prov);
+      obras[curObra].proveedores.push(prov);
+    }
   }
 
-  // Convertir a array con semanas disponibles
-  const semanasDisponibles = Object.keys(colMap).filter(k => k.startsWith('S')).sort();
+  // Semanas disponibles (ordenadas numéricamente)
+  const semanasDisponibles = Object.keys(colMap)
+    .filter(k => k.startsWith('S'))
+    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
   const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
 
   return {
@@ -1997,6 +2067,7 @@ function parsearGPConstruct(csvText) {
     semanasDisponibles,
     ultimaSemana,
     totalObras: Object.keys(obras).length,
+    colMap,
   };
 }
 
@@ -3850,74 +3921,467 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 }
 
 // ── GASTOS GP ──────────────────────────────────────────────────────────────
-function GastosGP({obra,maquinaria,rol}){
-  const[idx,setIdx]=useState(7);
-  const cur=PERIODOS[idx]; const prev=idx>0?PERIODOS[idx-1]:null;
-  const delta=prev?cur.a-prev.a:cur.a;
-  const maxD=Math.max(...PERIODOS.map((_,i)=>i>0?PERIODOS[i].a-PERIODOS[i-1].a:PERIODOS[0].a));
-  const totalGP=RUBROS_GP.reduce((t,r)=>t+r.monto,0);
-  const totalMaq=maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
+// ════════════════════════════════════════════════════════════════════════════
+// GASTOS — Análisis completo de datos de GP Construct
+// 4 sub-tabs: Resumen · Proveedores · Rubros · Semanas
+// ════════════════════════════════════════════════════════════════════════════
+function GastosGP({obra,maquinaria,rol,gpData}){
+  const[subtab,setSubtab]=useState("resumen");
+  const totalMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+
+  // ── Buscar la obra en gpData (por ID de 4 dígitos: usamos el id de la obra como prefijo) ──
+  // Si gpData no se cargó, usar fallback al gastoGP del state local
+  const obraGP = gpData?.obras
+    ? Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || obra.nombre?.toUpperCase().includes(o.nombre?.split(' ').slice(1).join(' ').toUpperCase()))
+    : null;
+
+  // Si no encontramos la obra exacta, intentamos buscar por coincidencia parcial
+  const obraGPMatch = obraGP || (gpData?.obras
+    ? Object.values(gpData.obras).find(o => obra.nombre?.toUpperCase().includes((o.nombre||'').split(' ').slice(1,3).join(' ').toUpperCase()))
+    : null);
+
+  const datosObra = obraGPMatch;
+  const semanas = gpData?.semanasDisponibles || [];
+  const ultimaSem = gpData?.ultimaSemana || '';
+
+  // ── KPIs principales ──
+  const totalGP = datosObra
+    ? Object.values(datosObra.semanas).reduce((t,v)=>t+v, 0)
+    : obra.gastoGP || 0;
+  const totalGastoObra = totalGP + totalMaq;
+  const pctPresupuesto = obra.presupuesto > 0 ? (totalGastoObra/obra.presupuesto)*100 : 0;
+
+  // Gasto última semana y delta
+  const gastoUltimaSem = datosObra && ultimaSem ? (datosObra.semanas[ultimaSem] || 0) : 0;
+  const semanasOrdenadas = semanas.slice();
+  const idxUlt = semanasOrdenadas.indexOf(ultimaSem);
+  const semAnterior = idxUlt > 0 ? semanasOrdenadas[idxUlt - 1] : null;
+  const gastoSemAnterior = datosObra && semAnterior ? (datosObra.semanas[semAnterior] || 0) : 0;
+  const deltaUltSem = gastoUltimaSem - gastoSemAnterior;
+
+  // Velocidad promedio últimas 4 semanas
+  const ultimas4 = semanasOrdenadas.slice(-4);
+  const sumUlt4 = datosObra ? ultimas4.reduce((t,s)=>t+(datosObra.semanas[s]||0), 0) : 0;
+  const velocidadProm = ultimas4.length > 0 ? sumUlt4/ultimas4.length : 0;
+
+  // ── Análisis de proveedores ──
+  const todosProveedores = datosObra?.proveedores || [];
+  const proveedoresOrdenados = [...todosProveedores].sort((a,b)=>b.total-a.total);
+  const top10Prov = proveedoresOrdenados.slice(0,10);
+  const totalProveedores = todosProveedores.reduce((t,p)=>t+p.total, 0);
+  const top3Pct = totalProveedores > 0
+    ? top10Prov.slice(0,3).reduce((t,p)=>t+p.total, 0) / totalProveedores * 100
+    : 0;
+  const top10Pct = totalProveedores > 0
+    ? top10Prov.reduce((t,p)=>t+p.total, 0) / totalProveedores * 100
+    : 0;
+
+  // Proveedores nuevos esta semana (aparecen en ultimaSem pero no en semanas anteriores)
+  const nuevosEstaSem = ultimaSem
+    ? todosProveedores.filter(p => {
+        const semanasConGasto = Object.keys(p.semanas);
+        return semanasConGasto.length === 1 && semanasConGasto[0] === ultimaSem;
+      })
+    : [];
+
+  // Proveedores con mayor incremento esta semana vs anterior
+  const proveedoresIncremento = todosProveedores
+    .map(p => ({
+      ...p,
+      gastoUlt: p.semanas[ultimaSem] || 0,
+      gastoAnt: semAnterior ? (p.semanas[semAnterior] || 0) : 0,
+    }))
+    .filter(p => p.gastoUlt > 0 && p.gastoAnt > 0)
+    .map(p => ({...p, incrementoPct: ((p.gastoUlt - p.gastoAnt) / p.gastoAnt) * 100}))
+    .filter(p => p.incrementoPct > 50)
+    .sort((a,b)=>b.incrementoPct-a.incrementoPct)
+    .slice(0, 5);
+
+  // Proveedores inactivos: tienen gasto histórico pero no en últimas 4 semanas
+  const proveedoresInactivos = ultimas4.length >= 4
+    ? todosProveedores.filter(p => {
+        const totalUlt4 = ultimas4.reduce((t,s)=>t+(p.semanas[s]||0), 0);
+        return p.total > 0 && totalUlt4 === 0;
+      }).sort((a,b)=>b.total-a.total).slice(0, 10)
+    : [];
+
+  // ── Análisis de rubros ──
+  const rubrosArr = datosObra ? Object.values(datosObra.rubros) : [];
+  const rubrosOrdenados = rubrosArr.map(r => ({
+    ...r,
+    total: Object.values(r.semanas).reduce((t,v)=>t+v, 0),
+  })).sort((a,b)=>b.total-a.total);
+  const totalRubros = rubrosOrdenados.reduce((t,r)=>t+r.total, 0);
+
+  // Colores por rubro (por orden, recicla la paleta)
+  const RUBRO_COLORS = [C.blue, C.green, C.purple, C.orange, C.yellow, C.red, C.pink, C.indigo, C.caliza];
+  const colorRubro = (i) => RUBRO_COLORS[i % RUBRO_COLORS.length];
+
+  // ── Anomalías y proyección ──
+  const gastoMaxHistorico = Math.max(...(datosObra ? Object.values(datosObra.semanas) : [0]));
+  const gastoPromedioSem = semanas.length > 0
+    ? Object.values(datosObra?.semanas || {}).reduce((t,v)=>t+v,0) / semanas.length
+    : 0;
+  const semanasAnomalas = datosObra
+    ? semanasOrdenadas.filter(s => (datosObra.semanas[s]||0) > gastoPromedioSem * 2 && (datosObra.semanas[s]||0) > 0)
+    : [];
+
+  // Proyección: a velocidad actual, ¿cuándo se agota el presupuesto?
+  const presupuestoRestante = Math.max(obra.presupuesto - totalGastoObra, 0);
+  const semanasParaAgotar = velocidadProm > 0 ? Math.ceil(presupuestoRestante / velocidadProm) : null;
+
+  // ── Alertas automáticas ──
+  const alertas = [];
+  if (top3Pct > 55) alertas.push({color:C.yellow, texto:`Top 3 proveedores concentran ${NUM(top3Pct,1)}% del gasto`, sub:"Considera diversificar"});
+  if (gastoUltimaSem > gastoPromedioSem * 2 && gastoPromedioSem > 0) alertas.push({color:C.red, texto:`Gasto de última semana ${NUM(gastoUltimaSem/gastoPromedioSem,1)}x el promedio histórico`, sub:`${MXN(gastoUltimaSem)} vs ${MXN(gastoPromedioSem)} promedio`});
+  if (proveedoresInactivos.length > 0) alertas.push({color:C.yellow, texto:`${proveedoresInactivos.length} proveedor(es) activos sin facturación en 4+ semanas`, sub:"Posibles ahorros o trabajos detenidos"});
+  if (proveedoresIncremento.length > 0) alertas.push({color:C.yellow, texto:`${proveedoresIncremento.length} proveedor(es) con incremento >50% esta semana`, sub:"Verifica si es esperado"});
+
+  // ── Render ──
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-      <Kpi label="Gasto GP Construct" value={MXN(totalGP)}   sub="acumulado GP"  color={C.red}    size={12}/>
-      <Kpi label="Maquinaria propia"  value={MXN(totalMaq)}  sub="equipo FOSMON" color={C.orange} size={12}/>
-      <Kpi label="Gasto total obra"   value={MXN(totalGP+totalMaq)} sub="GP+maquinaria" color={C.textPri} size={12}/>
-      <Kpi label="% del presupuesto"  value={`${NUM((totalGP+totalMaq)/obra.presupuesto*100,1)}%`} sub="del contrato" color={C.yellow}/>
+
+    {/* MINI-DASHBOARD: 4 KPIs */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+      <Kpi label="Gasto acumulado" value={MXN(totalGastoObra)} sub="GP + maquinaria propia" color={C.red} size={12}/>
+      <Kpi label="Última semana" value={MXN(gastoUltimaSem)}
+        sub={`${deltaUltSem>=0?"+":""}${MXN(deltaUltSem)} vs sem ant.`}
+        color={deltaUltSem > gastoPromedioSem ? C.red : C.caliza} size={12}/>
+      <Kpi label="Velocidad prom." value={MXN(velocidadProm)} sub="últimas 4 semanas" color={C.purple} size={12}/>
+      <Kpi label="% presupuesto" value={`${NUM(pctPresupuesto,1)}%`}
+        sub={semanasParaAgotar ? `agota en ~${semanasParaAgotar} sem` : "consumido"}
+        color={pctPresupuesto > 85 ? C.red : pctPresupuesto > 60 ? C.yellow : C.green}/>
     </div>
-    <Card>
-      <Tit>Desglose acumulado por rubro</Tit>
-      {RUBROS_GP.map(r=>{
-        const pctGP=totalGP>0?r.monto/totalGP*100:0;
-        return <div key={r.id} style={{marginBottom:10}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:r.color,flexShrink:0}}/>
-              <span style={{fontSize:11,color:C.textSec}}>{r.label}</span>
+
+    {/* ALERTAS */}
+    {alertas.length > 0 && (
+      <Card accent={alertas.some(a=>a.color===C.red)?C.red:C.yellow}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+          <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>ALERTAS DE GASTO</span>
+          <Bdg color={alertas.some(a=>a.color===C.red)?C.red:C.yellow} small>{alertas.length}</Bdg>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {alertas.map((a,i)=>(
+            <div key={i} style={{background:C.bg,borderRadius:6,padding:"7px 11px",
+              borderLeft:`3px solid ${a.color}`}}>
+              <div style={{fontSize:10,fontWeight:600,color:C.textPri}}>{a.texto}</div>
+              {a.sub && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{a.sub}</div>}
             </div>
-            <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
-              <span style={{fontSize:9,color:C.textMut}}>{NUM(pctGP,1)}% del GP</span>
-              <span style={{fontSize:12,fontWeight:600,color:r.color}}>{MXN(r.monto)}</span>
+          ))}
+        </div>
+      </Card>
+    )}
+
+    {/* Si no hay datos de GP, mostrar mensaje y salir */}
+    {!datosObra && (
+      <Card>
+        <div style={{padding:16,textAlign:"center",fontSize:11,color:C.textMut}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>
+            Esta obra no aparece aún en el Sheet de GP Construct
+          </div>
+          <div>El gasto mostrado es de la maquinaria propia capturada en CAMPO.</div>
+          <div style={{marginTop:8,fontSize:10}}>
+            Pide a Luis Mayo que agregue la obra al Sheet con el código <b>{obra.id?.slice(0,4) || "[ID 4 dígitos]"}</b>.
+          </div>
+        </div>
+      </Card>
+    )}
+
+    {datosObra && <>
+      {/* Sub-tabs */}
+      <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",
+        background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`}}>
+        {[["resumen","Resumen"],["proveedores","Proveedores"],["rubros","Rubros"],["semanas","Tendencia semanal"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setSubtab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
+            fontSize:11,borderRadius:6,background:subtab===id?C.caliza:"transparent",
+            border:"none",color:subtab===id?C.bg:C.textSec,
+            fontWeight:subtab===id?700:400,whiteSpace:"nowrap",cursor:"pointer"}}>{lbl}</button>
+        ))}
+      </div>
+
+      {/* RESUMEN */}
+      {subtab==="resumen" && (
+        <>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <Tit>Desglose por rubro</Tit>
+              <span style={{fontSize:9,color:C.textMut}}>{rubrosOrdenados.length} rubros · al {ultimaSem}</span>
             </div>
+            {rubrosOrdenados.map((r,i)=>{
+              const pctR = totalRubros > 0 ? r.total/totalRubros*100 : 0;
+              const col = colorRubro(i);
+              return <div key={r.id} style={{marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:col,flexShrink:0}}/>
+                    <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{r.id}</span>
+                    <span style={{fontSize:11,color:C.textPri,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nombreCorto}</span>
+                  </div>
+                  <div style={{display:"flex",gap:10,alignItems:"center",flexShrink:0}}>
+                    <span style={{fontSize:9,color:C.textMut}}>{NUM(pctR,1)}%</span>
+                    <span style={{fontSize:12,fontWeight:600,color:col}}>{MXN(r.total)}</span>
+                  </div>
+                </div>
+                <Bar pct={pctR} color={col}/>
+              </div>;
+            })}
+            <div style={{marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,
+              display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:10,color:C.textMut}}>TOTAL GP CONSTRUCT</span>
+              <span style={{fontSize:14,fontWeight:700,color:C.textPri}}>{MXN(totalGP)}</span>
+            </div>
+            {totalMaq > 0 && (
+              <div style={{marginTop:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:10,color:C.textMut}}>+ Maquinaria propia</span>
+                <span style={{fontSize:12,fontWeight:600,color:C.orange}}>{MXN(totalMaq)}</span>
+              </div>
+            )}
+          </Card>
+
+          {/* Top 5 proveedores compact preview */}
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <Tit>Top 5 proveedores</Tit>
+              <button onClick={()=>setSubtab("proveedores")} style={{background:"none",border:"none",
+                fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600}}>
+                Ver todos ›
+              </button>
+            </div>
+            {top10Prov.slice(0,5).map((p,i)=>{
+              const pctP = totalProveedores > 0 ? p.total/totalProveedores*100 : 0;
+              return <div key={p.nombre} style={{display:"grid",gridTemplateColumns:"24px 1fr auto auto",gap:8,
+                padding:"7px 0",borderBottom:i<4?`0.5px solid ${C.border}`:"none",alignItems:"center"}}>
+                <div style={{fontSize:9,color:C.textMut,fontWeight:700}}>#{i+1}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre}</div>
+                  <div style={{fontSize:9,color:C.textMut}}>{p.rubroNombre}</div>
+                </div>
+                <div style={{fontSize:9,color:C.textMut,whiteSpace:"nowrap"}}>{NUM(pctP,1)}%</div>
+                <div style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right",whiteSpace:"nowrap"}}>{MXN(p.total)}</div>
+              </div>;
+            })}
+          </Card>
+        </>
+      )}
+
+      {/* PROVEEDORES */}
+      {subtab==="proveedores" && (
+        <>
+          <Card>
+            <Tit>Concentración de proveedores</Tit>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:8}}>
+              <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${top3Pct>55?C.red:top3Pct>40?C.yellow:C.green}`}}>
+                <div style={{fontSize:9,color:C.textMut}}>Top 3</div>
+                <div style={{fontSize:14,fontWeight:700,color:top3Pct>55?C.redDk:top3Pct>40?C.yellowDk:C.greenDk}}>{NUM(top3Pct,1)}%</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.purple}`}}>
+                <div style={{fontSize:9,color:C.textMut}}>Top 10</div>
+                <div style={{fontSize:14,fontWeight:700,color:C.purpleDk}}>{NUM(top10Pct,1)}%</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.caliza}`}}>
+                <div style={{fontSize:9,color:C.textMut}}>Total únicos</div>
+                <div style={{fontSize:14,fontWeight:700,color:C.caliza}}>{todosProveedores.length}</div>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <Tit>Top 10 proveedores por monto</Tit>
+            <div style={{display:"grid",gridTemplateColumns:"30px 1fr 1.5fr 70px 100px",gap:6,
+              padding:"5px 10px",fontSize:9,color:C.textMut,fontWeight:700,textTransform:"uppercase"}}>
+              <div>#</div><div>Proveedor</div><div>Rubro</div><div style={{textAlign:"right"}}>%</div><div style={{textAlign:"right"}}>Monto</div>
+            </div>
+            {top10Prov.map((p,i)=>{
+              const pctP = totalProveedores > 0 ? p.total/totalProveedores*100 : 0;
+              return <div key={p.nombre} style={{display:"grid",gridTemplateColumns:"30px 1fr 1.5fr 70px 100px",gap:6,
+                padding:"8px 10px",marginBottom:4,background:C.bg,borderRadius:6,alignItems:"center",
+                borderLeft:`3px solid ${i<3?C.caliza:C.border}`}}>
+                <div style={{fontSize:11,fontWeight:700,color:i<3?C.caliza:C.textMut}}>{i+1}</div>
+                <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre}</div>
+                <div style={{fontSize:10,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.rubroNombre}</div>
+                <div style={{fontSize:10,color:C.textMut,textAlign:"right"}}>{NUM(pctP,1)}%</div>
+                <div style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(p.total)}</div>
+              </div>;
+            })}
+          </Card>
+
+          {/* Nuevos esta semana */}
+          {nuevosEstaSem.length > 0 && (
+            <Card accent={C.blue}>
+              <Tit>Proveedores nuevos en {ultimaSem}</Tit>
+              <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+                Aparecen por primera vez en esta semana
+              </div>
+              {nuevosEstaSem.map(p => (
+                <div key={p.nombre} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  padding:"6px 10px",marginBottom:4,background:C.bg,borderRadius:6}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre}</div>
+                    <div style={{fontSize:9,color:C.textMut}}>{p.rubroNombre}</div>
+                  </div>
+                  <div style={{fontSize:11,fontWeight:600,color:C.blueDk}}>{MXN(p.total)}</div>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          {/* Incremento súbito */}
+          {proveedoresIncremento.length > 0 && (
+            <Card accent={C.yellow}>
+              <Tit>Mayor incremento esta semana</Tit>
+              <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+                Proveedores que facturaron >50% más que la semana anterior
+              </div>
+              {proveedoresIncremento.map(p => (
+                <div key={p.nombre} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:8,
+                  padding:"7px 10px",marginBottom:4,background:C.bg,borderRadius:6,alignItems:"center"}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:C.caliza,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre}</div>
+                    <div style={{fontSize:9,color:C.textMut}}>{p.rubroNombre}</div>
+                  </div>
+                  <div style={{fontSize:9,color:C.textMut,textAlign:"right"}}>
+                    <div>{MXN(p.gastoAnt)}</div>
+                    <div>→ {MXN(p.gastoUlt)}</div>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:700,color:C.yellowDk,textAlign:"right"}}>+{NUM(p.incrementoPct,0)}%</div>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          {/* Inactivos */}
+          {proveedoresInactivos.length > 0 && (
+            <Card accent={C.textMut}>
+              <Tit>Proveedores inactivos</Tit>
+              <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+                Sin facturación en las últimas 4 semanas (tienen gasto histórico)
+              </div>
+              {proveedoresInactivos.slice(0,5).map(p => (
+                <div key={p.nombre} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  padding:"6px 10px",marginBottom:4,background:C.bg,borderRadius:6,opacity:0.75}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nombre}</div>
+                    <div style={{fontSize:9,color:C.textMut}}>{p.rubroNombre}</div>
+                  </div>
+                  <div style={{fontSize:10,color:C.textMut}}>Total: {MXN(p.total)}</div>
+                </div>
+              ))}
+              {proveedoresInactivos.length > 5 && (
+                <div style={{fontSize:9,color:C.textMut,textAlign:"center",marginTop:6}}>
+                  + {proveedoresInactivos.length - 5} más
+                </div>
+              )}
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* RUBROS */}
+      {subtab==="rubros" && (
+        <Card>
+          <Tit>Análisis detallado por rubro</Tit>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+            Tendencia de gasto por rubro a lo largo de las semanas disponibles
           </div>
-          <Bar pct={pctGP} color={r.color}/>
-        </div>;
-      })}
-      <div style={{marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,
-        display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <span style={{fontSize:10,color:C.textMut}}>TOTAL GASTO ACUMULADO</span>
-        <span style={{fontSize:14,fontWeight:700,color:C.textPri}}>{MXN(totalGP+totalMaq)}</span>
-      </div>
-    </Card>
-    <Card>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-        <Tit>Evolución acumulada — GP Construct</Tit>
-        <span style={{fontSize:9,color:C.caliza,fontWeight:600}}>Act: {obra.ultimaAct}</span>
-      </div>
-      <input type="range" min="0" max={PERIODOS.length-1} value={idx} step="1"
-        style={{marginBottom:5}} onChange={e=>setIdx(parseInt(e.target.value))}/>
-      <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
-        {PERIODOS.map((p,i)=><span key={p.k} onClick={()=>setIdx(i)} style={{fontSize:8,cursor:"pointer",
-          color:i===idx?C.caliza:"rgba(255,254,249,0.3)",fontWeight:i===idx?600:400}}>{p.l}</span>)}
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
-        {[[`Acum. al ${cur.l}`,MXN(cur.a),C.red],["Gasto período",MXN(delta),C.caliza],
-          ["% del total GP",`${NUM(cur.a/totalGP*100,1)}%`,C.purple]].map(([l,v,c])=>
-          <div key={l} style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${c}`}}>
-            <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>{l}</div>
-            <div style={{fontSize:14,fontWeight:600,color:c}}>{v}</div>
-          </div>)}
-      </div>
-      {PERIODOS.map((p,i)=>{
-        const d=i>0?p.a-PERIODOS[i-1].a:p.a;
-        return <div key={p.k} style={{marginBottom:6}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3,gap:6}}>
-            <span style={{color:i===idx?C.caliza:"rgba(255,254,249,0.5)",fontWeight:i===idx?600:400}}>{p.l}</span>
-            <span style={{fontWeight:600,color:C.caliza}}>{MXN(d)}</span>
-          </div>
-          <Bar pct={d/maxD*100} color={i===idx?C.caliza:"rgba(255,254,249,0.2)"}/>
-        </div>;
-      })}
-    </Card>
+          {rubrosOrdenados.map((r,ri) => {
+            const col = colorRubro(ri);
+            const valoresSem = semanasOrdenadas.map(s => r.semanas[s] || 0);
+            const maxV = Math.max(...valoresSem, 1);
+            const provDelRubro = (r.proveedores || []).sort((a,b)=>b.total-a.total).slice(0,3);
+            return <div key={r.id} style={{marginBottom:18,paddingBottom:14,borderBottom:`0.5px solid ${C.border}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:8}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:col,flexShrink:0}}/>
+                    <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{r.id}</span>
+                    <span style={{fontSize:12,fontWeight:700,color:C.caliza}}>{r.nombreCorto}</span>
+                  </div>
+                  <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
+                    {(r.proveedores||[]).length} proveedor(es) · {NUM(totalRubros > 0 ? r.total/totalRubros*100 : 0, 1)}% del gasto GP
+                  </div>
+                </div>
+                <div style={{fontSize:14,fontWeight:700,color:col,textAlign:"right"}}>{MXN(r.total)}</div>
+              </div>
+              {/* Mini sparkline */}
+              <div style={{display:"flex",alignItems:"flex-end",gap:3,height:30,marginBottom:6}}>
+                {valoresSem.map((v,i) => (
+                  <div key={i} title={`${semanasOrdenadas[i]}: ${MXN(v)}`}
+                    style={{flex:1,background:v>0?col:"transparent",
+                      height:`${Math.max((v/maxV)*30, v>0?2:0)}px`,
+                      borderRadius:2,opacity:i===semanasOrdenadas.length-1?1:0.5}}/>
+                ))}
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:8,color:C.textMut,marginBottom:6}}>
+                {semanasOrdenadas.length > 0 && <><span>{semanasOrdenadas[0]}</span><span>{semanasOrdenadas[semanasOrdenadas.length-1]}</span></>}
+              </div>
+              {/* Top 3 proveedores del rubro */}
+              {provDelRubro.length > 0 && (
+                <div style={{marginTop:6}}>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Top proveedores del rubro:</div>
+                  {provDelRubro.map(p => (
+                    <div key={p.nombre} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      fontSize:10,padding:"3px 8px",background:C.bg,borderRadius:4,marginBottom:2}}>
+                      <span style={{color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,minWidth:0,marginRight:8}}>{p.nombre}</span>
+                      <span style={{color:C.caliza,fontWeight:600,flexShrink:0}}>{MXN(p.total)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>;
+          })}
+        </Card>
+      )}
+
+      {/* SEMANAS */}
+      {subtab==="semanas" && (
+        <>
+          <Card>
+            <Tit>Tendencia semanal de gasto</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+              {semanasOrdenadas.length} semanas registradas · Promedio: {MXN(gastoPromedioSem)}/sem
+            </div>
+            {semanasOrdenadas.map(s => {
+              const v = datosObra.semanas[s] || 0;
+              const pct = gastoMaxHistorico > 0 ? (v/gastoMaxHistorico)*100 : 0;
+              const esAnomala = semanasAnomalas.includes(s);
+              const col = esAnomala ? C.red : s===ultimaSem ? C.caliza : C.textMut;
+              return <div key={s} style={{marginBottom:7}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3}}>
+                  <span style={{color:col,fontWeight:s===ultimaSem?700:400}}>
+                    {s} {esAnomala && <span style={{color:C.red,fontSize:9}}>· anomalía</span>}
+                  </span>
+                  <span style={{fontWeight:600,color:col}}>{MXN(v)}</span>
+                </div>
+                <Bar pct={pct} color={col}/>
+              </div>;
+            })}
+          </Card>
+
+          <Card accent={semanasParaAgotar && semanasParaAgotar < 8 ? C.red : C.blue}>
+            <Tit>Proyección de gasto</Tit>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
+              <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.blueDk}`}}>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Velocidad última 4 sem</div>
+                <div style={{fontSize:14,fontWeight:700,color:C.blueDk}}>{MXN(velocidadProm)}/sem</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.greenDk}`}}>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Por consumir</div>
+                <div style={{fontSize:14,fontWeight:700,color:C.greenDk}}>{MXN(presupuestoRestante)}</div>
+              </div>
+            </div>
+            {semanasParaAgotar !== null && (
+              <div style={{marginTop:10,padding:"10px 12px",background:semanasParaAgotar<8?`${C.red}15`:`${C.blue}15`,
+                borderRadius:6,fontSize:10,color:semanasParaAgotar<8?C.redDk:C.blueDk}}>
+                A la velocidad actual el presupuesto se agota en aproximadamente <b>{semanasParaAgotar} semanas</b>
+                {obra.fin && (() => {
+                  const semsRestPlazo = Math.max(Math.floor((new Date(obra.fin) - new Date())/(1000*60*60*24*7)), 0);
+                  return <span> (quedan {semsRestPlazo} semanas de plazo contractual).</span>;
+                })()}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+    </>}
   </div>;
 }
 
@@ -6926,7 +7390,7 @@ export default function App(){
       )}
 
       {/* GASTOS GP */}
-      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol}/>}
+      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData}/>}
 
       {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
       {screen==="obra"&&tab==="planeacion"&&obra&&(
