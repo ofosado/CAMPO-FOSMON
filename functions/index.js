@@ -543,12 +543,69 @@ async function descargarYGuardarGP() {
   if (!parsed.obras || Object.keys(parsed.obras).length === 0) {
     throw new Error('Parser no detectó obras en el CSV');
   }
-  await admin.firestore().doc('global/gp_construct').set({
-    data: parsed,
+
+  // ── PERFORMANCE: separar en 2 documentos ──
+  // 1. RESUMEN (~50KB): solo metadatos + lista de obras con sus totales
+  //    Esto es lo que el frontend descarga al login. Suficiente para listar obras.
+  // 2. DETALLE (~3MB): rubros + proveedores con desglose semanal por cada obra
+  //    Esto se descarga SOLO cuando entras al tab Gastos de una obra específica.
+  const resumen = {
     parserVersion: PARSER_VERSION,
     ultimaActualizacion: new Date().toISOString(),
     fuente: 'cloud-function',
-  });
+    semanasDisponibles: parsed.semanasDisponibles,
+    ultimaSemana: parsed.ultimaSemana,
+    mesesDisponibles: parsed.mesesDisponibles,
+    ultimoMes: parsed.ultimoMes,
+    totalObras: parsed.totalObras,
+    colMap: parsed.colMap,
+    // Solo info esencial por obra: id, nombre, totales (sin rubros ni proveedores)
+    obras: Object.fromEntries(Object.entries(parsed.obras).map(([key, val]) => [
+      key,
+      {
+        id: val.id,
+        nombre: val.nombre,
+        grandTotal: val.grandTotal,
+        total2026: val.total2026,
+        años: val.años,
+        meses: val.meses,
+        semanas: val.semanas,
+        // Conteos para indicadores rápidos en el resumen
+        numRubros: Object.keys(val.rubros||{}).length,
+        numProveedores: (val.proveedores||[]).length,
+      }
+    ])),
+  };
+  await admin.firestore().doc('global/gp_construct').set(resumen);
+
+  // El detalle de cada obra se guarda en su propio documento por id de 4 dígitos
+  // El frontend lo descarga solo cuando entra al tab Gastos de esa obra
+  const batch = admin.firestore().batch();
+  let batchCount = 0;
+  for (const [key, val] of Object.entries(parsed.obras)) {
+    const ref = admin.firestore().doc(`global/gp_detalle/obras/${val.id}`);
+    batch.set(ref, {
+      parserVersion: PARSER_VERSION,
+      ultimaActualizacion: new Date().toISOString(),
+      id: val.id,
+      nombre: val.nombre,
+      grandTotal: val.grandTotal,
+      total2026: val.total2026,
+      años: val.años,
+      meses: val.meses,
+      semanas: val.semanas,
+      rubros: val.rubros,
+      proveedores: val.proveedores,
+    });
+    batchCount++;
+    // Firestore limita batch a 500 ops, hacemos commits intermedios
+    if (batchCount >= 400) {
+      await batch.commit();
+      batchCount = 0;
+    }
+  }
+  if (batchCount > 0) await batch.commit();
+
   return parsed;
 }
 

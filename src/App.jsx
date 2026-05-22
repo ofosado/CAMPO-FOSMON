@@ -1609,12 +1609,12 @@ const BIBLIOTECA_RIESGOS = [
   {
     id: 'cmp_002', categoria: 'compliance',
     titulo: 'Sin cierres semanales registrados',
-    descripcion: 'Aún no se ha cerrado oficialmente ninguna semana',
+    descripcion: 'Aún no se ha cerrado ninguna semana',
     tab: 'operacion', subTab: 'avance',
     detect: ({historialAvance}) => {
       const oficiales = (historialAvance||[]).filter(s => s.tipo === 'oficial');
       if (oficiales.length > 0) return null;
-      return {severidad:'bajo', valor: '0', detalle: 'Sin esto no hay tendencias ni proyecciones', extra: 'Botón "Cerrar semana oficialmente"'};
+      return {severidad:'bajo', valor: '0', detalle: 'Sin esto no hay tendencias ni proyecciones', extra: 'Botón "Cerrar semana"'};
     },
   },
 ];
@@ -2987,28 +2987,40 @@ function parsearGPConstruct(csvText) {
 
 // Hook para cargar datos de GP Construct
 function useGPConstruct() {
+  // gpData ahora es el RESUMEN (~50KB): obras con totales pero sin rubros ni proveedores.
+  // Para análisis detallado de una obra (rubros + proveedores), cargarDetalleGP(obraId).
   const [gpData, setGpData] = useState(null);
   const [gpLoading, setGpLoading] = useState(false);
   const [gpError, setGpError] = useState('');
   const [gpUltActualiz, setGpUltActualiz] = useState('');
+  // Cache de detalles ya cargados: { '0114': {grandTotal, rubros, proveedores, ...} }
+  const [gpDetalles, setGpDetalles] = useState({});
 
-  // Versión del parser (debe coincidir con la de Cloud Functions)
   const PARSER_VERSION = 3;
 
-  // Cargar GP desde Firestore (poblado por Cloud Function scheduled cada lunes 9am
-  // o por refresh manual via callable). Sin dependencia de CORS proxies.
+  // Compatibilidad: el documento global/gp_construct ahora tiene formato nuevo (sin data wrapper)
+  // pero leemos también el formato viejo (con data wrapper) por si hay cache previo.
+  const extraerResumen = (cached) => {
+    if (!cached) return null;
+    // Nuevo formato: campos en root
+    if (cached.obras && cached.parserVersion) return cached;
+    // Formato viejo: dentro de 'data'
+    if (cached.data?.obras && cached.parserVersion) return {...cached.data, parserVersion: cached.parserVersion, ultimaActualizacion: cached.ultimaActualizacion};
+    return null;
+  };
+
   const cargarGP = useCallback(async (forzar = false) => {
     setGpLoading(true); setGpError('');
     let mensajeError = '';
     try {
-      // Si forzar = true, llamar a la Cloud Function para refrescar AHORA
       if (forzar) {
         try {
           const fn = httpsCallable(fbFn, 'refrescarGP');
           const res = await fn({});
           console.log('refrescarGP OK:', res.data);
+          // Invalidar cache de detalles para forzar recarga
+          setGpDetalles({});
         } catch (e) {
-          // Errores comunes: function not found, unauthenticated, network error
           const detalle = e.message || String(e);
           if (e.code === 'functions/not-found' || /not.*found/i.test(detalle)) {
             mensajeError = 'La Cloud Function "refrescarGP" no existe. Necesita deploy: firebase deploy --only functions';
@@ -3020,16 +3032,17 @@ function useGPConstruct() {
           console.error('refrescarGP falló:', e);
         }
       }
-      // Leer siempre de Firestore (donde Cloud Functions guarda el resultado)
+      // Leer SOLO el resumen (ligero) del Firestore
       const cached = await fsGet('global/gp_construct');
-      if (cached?.data && cached.parserVersion === PARSER_VERSION) {
-        setGpData(cached.data);
-        setGpUltActualiz(new Date(cached.ultimaActualizacion).toLocaleString('es-MX'));
+      const resumen = extraerResumen(cached);
+      if (resumen && resumen.parserVersion === PARSER_VERSION) {
+        setGpData(resumen);
+        setGpUltActualiz(new Date(resumen.ultimaActualizacion).toLocaleString('es-MX'));
         if (mensajeError) setGpError(mensajeError);
-      } else if (cached?.data) {
-        setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar (requiere Cloud Functions deployadas).');
+      } else if (resumen) {
+        setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar.');
       } else {
-        setGpError(mensajeError || 'El Sheet no se ha sincronizado nunca. Click Refrescar (requiere Cloud Functions deployadas — la primera sincronización tarda ~30s).');
+        setGpError(mensajeError || 'El Sheet no se ha sincronizado nunca. Click Refrescar (la primera tarda ~30s).');
       }
     } catch (e) {
       setGpError(`Error al leer caché de GP: ${e.message}`);
@@ -3037,9 +3050,26 @@ function useGPConstruct() {
     setGpLoading(false);
   }, []);
 
+  // Carga el detalle completo (rubros + proveedores) de UNA obra específica
+  // Se invoca solo cuando se necesita (ej: al entrar al tab Gastos)
+  const cargarDetalleObra = useCallback(async (obraIdGP) => {
+    if (!obraIdGP) return null;
+    if (gpDetalles[obraIdGP]) return gpDetalles[obraIdGP]; // ya está en cache
+    try {
+      const det = await fsGet(`global/gp_detalle/obras/${obraIdGP}`);
+      if (det && det.parserVersion === PARSER_VERSION) {
+        setGpDetalles(prev => ({...prev, [obraIdGP]: det}));
+        return det;
+      }
+    } catch(e) {
+      console.warn('cargarDetalleObra error:', e);
+    }
+    return null;
+  }, [gpDetalles]);
+
   useEffect(() => { cargarGP(); }, []);
 
-  return { gpData, gpLoading, gpError, gpUltActualiz, cargarGP };
+  return { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles };
 }
 
 // Catálogo de obras de GP Construct disponibles para activar en CAMPO
@@ -4860,11 +4890,11 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
         {labels_map[estado]}
       </button>
-      {/* Botón "Cerrar semana oficial" — confirma con doble click */}
+      {/* Botón "Cerrar semana" — confirma con doble click */}
       <button onClick={() => {
           if (window.confirm(
-            "Cerrar la semana oficialmente:\n\n" +
-            "- Esta guardará el avance actual como reporte semanal oficial.\n" +
+            "Cerrar la semana:\n\n" +
+            "- Esta guardará el avance actual como reporte semanal.\n" +
             "- Se notificará a los directivos.\n" +
             "- No podrás sobreescribir esta semana con guardados normales.\n\n" +
             "¿Confirmas el cierre semanal?")) {
@@ -4875,7 +4905,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
         style={{background:"transparent",border:`0.5px solid ${C.caliza}`,borderRadius:8,
           padding:"8px 0",color:C.caliza,fontSize:11,fontWeight:600,width:"100%",
           cursor:estado==="saving"?"not-allowed":"pointer"}}>
-        Cerrar semana oficialmente
+        Cerrar semana
       </button>
     </div>
   );
@@ -5014,7 +5044,7 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>
             Aún no hay cierres semanales oficiales
           </div>
-          <div>Para empezar a ver tendencias, captura el avance y haz click en <b>"Cerrar semana oficialmente"</b> cada viernes.</div>
+          <div>Para empezar a ver tendencias, captura el avance y haz click en <b>"Cerrar semana"</b> cada viernes.</div>
         </div>
       </Card>
     )}
@@ -5593,7 +5623,17 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 // GASTOS — Análisis completo de datos de GP Construct
 // 4 sub-tabs: Resumen · Proveedores · Rubros · Semanas
 // ════════════════════════════════════════════════════════════════════════════
-function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP}){
+function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP,cargarDetalleObra,gpDetalles}){
+  // Cargar detalle (rubros + proveedores) de esta obra al montar
+  useEffect(() => {
+    if (!gpData?.obras || !cargarDetalleObra) return;
+    const obraGPMatch = Object.values(gpData.obras).find(o =>
+      o.id === obra.gpId || o.id === obra.id?.slice(0,4)
+    );
+    if (obraGPMatch && !gpDetalles?.[obraGPMatch.id]) {
+      cargarDetalleObra(obraGPMatch.id);
+    }
+  }, [obra.id, obra.gpId, gpData, cargarDetalleObra, gpDetalles]);
   const[subtab,setSubtab]=useState("resumen");
   const totalMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
 
@@ -5642,7 +5682,12 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
     return mejorScore >= 2 ? mejorMatch : null;
   };
 
-  const datosObra = buscarObraEnGP();
+  const datosObraResumen = buscarObraEnGP();
+  // Detalle (rubros + proveedores) viene del cache de detalles si está disponible
+  // Si aún no se cargó, usamos solo el resumen (sin rubros ni proveedores)
+  const detalle = datosObraResumen && gpDetalles?.[datosObraResumen.id];
+  // datosObra = resumen + detalle si está disponible, sino solo resumen
+  const datosObra = detalle ? {...datosObraResumen, ...detalle} : datosObraResumen;
 
   // ── Año actual para filtros ──
   const añoActual = new Date().getFullYear();
@@ -9130,7 +9175,7 @@ export default function App(){
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
-  const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP } = useGPConstruct();
+  const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
 
   // Al entrar a una obra, cargar sus parámetros y avance desde Firestore
   useEffect(()=>{
@@ -9152,16 +9197,14 @@ export default function App(){
     fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
     });
-    // Cargar subcontratos
+    // Subcontratos: se cargan al entrar a obra (los necesita Dashboard también)
     fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
       else setSubcontratos([]);
     });
-    // Cargar histórico semanal de avance
-    fsGet(`obras/${obraId}/avance/historial`).then(d=>{
-      if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
-      else setHistorialAvance([]);
-    });
+    // Historial: lazy load — solo cuando se entra al tab Avance (puede ser grande)
+    setHistorialAvance([]);
+    setHistorialCargado(false);
   },[obraId]);
   const[subs,setSubs]=useState(SUBS_INIT);
   const[maquinaria,setMaquinaria]=useState([
@@ -9182,6 +9225,19 @@ export default function App(){
   const[estCargadas,setEstCargadas]=useState(false);
   const[subcontratos,setSubcontratos]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
+  const[historialCargado,setHistorialCargado]=useState(false);
+
+  // Lazy load de historial de avance: solo cuando se abre el tab Avance
+  // (puede ser grande con muchas semanas + snapshots completos por subseccion)
+  useEffect(() => {
+    if (!obraId || historialCargado) return;
+    if (tab === "operacion" && subTabOper === "avance") {
+      fsGet(`obras/${obraId}/avance/historial`).then(d=>{
+        if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
+        setHistorialCargado(true);
+      });
+    }
+  }, [obraId, tab, subTabOper, historialCargado]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   useEffect(()=>{
@@ -9242,17 +9298,22 @@ export default function App(){
     return () => unsub();
   }, [usuario?.uid]);
 
-  // ── CARGA BULK: datos de todas las obras activas para el Panel Ejecutivo ──
-  // Se ejecuta al hacer login Y cuando cambia el set de IDs de obras activas
-  // (al crear/archivar/eliminar una obra). Carga en paralelo (Promise.all)
-  // subs/maq/mats/ests y los parámetros del contrato.
-  const[datosPorObra,setDatosPorObra]=useState({});  // { OAX01: {subs,maquinaria,materiales,estimaciones,info}, ... }
-  // Clave estable que solo cambia cuando se agrega/quita una obra activa
+  // ── CARGA BULK LAZY: datos de obras para el Panel Ejecutivo ──
+  // Solo se ejecuta cuando: (1) hay usuario, (2) está en pantalla "obras"
+  // (donde vive el Panel Ejecutivo), (3) tiene rol que ve el panel.
+  // Si está dentro de una sola obra, NO se necesita el bulk.
+  const[datosPorObra,setDatosPorObra]=useState({});
   const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
+  const verPanelEjecutivo = usuario && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol);
   useEffect(()=>{
     if(!usuario) return;
+    if(screen !== "obras") return;   // solo cargar cuando estoy en la lista de obras
+    if(!verPanelEjecutivo) return;   // solo si va a ver el Panel Ejecutivo
     const activas = obras.filter(o=>o.estado!=="archivada");
-    if(activas.length===0) return;
+    if(activas.length<2) return;     // el Panel Ejecutivo solo se muestra con ≥2 obras
+    // Si ya tenemos los datos de todas las activas, no recargar
+    const yaTodos = activas.every(o => datosPorObra[o.id]);
+    if (yaTodos) return;
     Promise.all(activas.map(async(o)=>{
       const [info, subsData, maqData, matData, estData] = await Promise.all([
         fsGet(`obras/${o.id}/config/info`),
@@ -9261,12 +9322,8 @@ export default function App(){
         fsGet(`obras/${o.id}/avance/materiales`),
         fsGet(`obras/${o.id}/config/estimaciones`),
       ]);
-      // Subs viene del Firestore (data); si no existe queda vacío y se llena
-      // cuando se sube el catálogo desde el módulo Presupuesto.
       let subsFinales = [];
-      if(subsData && Array.isArray(subsData.data)){
-        subsFinales = subsData.data;
-      }
+      if(subsData && Array.isArray(subsData.data)) subsFinales = subsData.data;
       return [o.id, {
         info: info || {},
         subs: subsFinales,
@@ -9277,13 +9334,13 @@ export default function App(){
     })).then(pares => {
       const mapa = Object.fromEntries(pares);
       setDatosPorObra(mapa);
-      // También enriquecer el state de obras con info de Firestore (presupuesto, diasPago, etc.)
+      // Enriquecer obras con info de Firestore
       setObras(oo => oo.map(o => {
         const inf = mapa[o.id]?.info || {};
         return { ...o, ...inf };
       }));
     });
-  },[usuario, obrasActivasKey]);
+  },[usuario, obrasActivasKey, screen, verPanelEjecutivo]);
 
   if(!usuario) return <><style>{css}</style><Login onLogin={u=>{setUsuario(u);}}/></>;
 
@@ -9392,7 +9449,7 @@ export default function App(){
       )}
 
       {/* GASTOS GP */}
-      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP}/>}
+      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
 
       {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
       {screen==="obra"&&tab==="planeacion"&&obra&&(
