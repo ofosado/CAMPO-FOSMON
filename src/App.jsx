@@ -3044,7 +3044,9 @@ function ModalNuevaObra({onSave,onClose,gpData}){
   function seleccionarGP(obra) {
     setGpSel(obra);
     setForm(p=>({...p,
-      id: "GP"+obra.id,
+      // ID = código GP de 4 dígitos exacto (sin prefijo "GP") para que matchee con el Sheet
+      id: obra.id,
+      gpId: obra.id,
       nombre: obra.nombre,
       gastoGP: obra.gastoGP,
     }));
@@ -3052,14 +3054,23 @@ function ModalNuevaObra({onSave,onClose,gpData}){
   }
 
   // Usar datos del Sheet si están disponibles, sino el catálogo estático
+  // gastoGP usa Grand Total (acumulado real) - no la semana actual
   const gpCatalogo = gpData
-    ? Object.entries(gpData.obras).map(([key, val]) => ({
-        id: key.slice(0,4),
-        nombre: key.slice(5).trim(),
-        gastoGP: val.semanas[gpData.ultimaSemana] || 0,
-        semanas: val.semanas,
-        rubros: val.rubros,
-      }))
+    ? Object.entries(gpData.obras).map(([key, val]) => {
+        const totalReal = val.grandTotal > 0
+          ? val.grandTotal
+          : Object.values(val.años||{}).reduce((t,v)=>t+v, 0)
+            + (val.total2026 || Object.values(val.meses||{}).reduce((t,v)=>t+v, 0));
+        return {
+          id: val.id || key.slice(0,4),
+          nombre: key.slice(5).trim(),
+          gastoGP: totalReal,
+          semanas: val.semanas,
+          rubros: val.rubros,
+          grandTotal: val.grandTotal,
+          total2026: val.total2026,
+        };
+      }).sort((a,b) => a.id.localeCompare(b.id))
     : GP_OBRAS_CATALOGO;
 
   const gpFiltradas = gpCatalogo.filter(o =>
