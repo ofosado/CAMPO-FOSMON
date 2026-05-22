@@ -2962,62 +2962,35 @@ function useGPConstruct() {
   const [gpError, setGpError] = useState('');
   const [gpUltActualiz, setGpUltActualiz] = useState('');
 
-  // Intenta varios CORS proxies en orden hasta que uno funcione
-  const PROXIES = [
-    (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    (url) => `https://cors-anywhere.herokuapp.com/${url}`,
-  ];
-
-  // Versión del parser. Si el cache de Firestore tiene una versión vieja se ignora.
-  // Incrementar cada vez que cambie la estructura de gpData.obras (años, meses, grandTotal, etc.)
+  // Versión del parser (debe coincidir con la de Cloud Functions)
   const PARSER_VERSION = 2;
 
+  // Cargar GP desde Firestore (poblado por Cloud Function scheduled cada lunes 9am
+  // o por refresh manual via callable). Sin dependencia de CORS proxies.
   const cargarGP = useCallback(async (forzar = false) => {
     setGpLoading(true); setGpError('');
-    let exito = false;
-    let ultimoError = '';
-    // Intentar cada proxy hasta que uno responda con datos válidos
-    for (const proxyFn of PROXIES) {
-      try {
-        const proxyUrl = proxyFn(GP_SHEET_CSV);
-        // Si forzar, agregar cache buster
-        const finalUrl = forzar ? `${proxyUrl}&_t=${Date.now()}` : proxyUrl;
-        const resp = await fetch(finalUrl, { cache: forzar ? 'no-cache' : 'default' });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const text = await resp.text();
-        if (!text || text.length < 100) throw new Error('respuesta vacía');
-        const parsed = parsearGPConstruct(text);
-        if (!parsed.obras || Object.keys(parsed.obras).length === 0) {
-          throw new Error('parser no detectó obras');
+    try {
+      // Si forzar = true, llamar a la Cloud Function para refrescar AHORA
+      if (forzar) {
+        try {
+          const fn = httpsCallable(fbFn, 'refrescarGP');
+          await fn({});
+        } catch (e) {
+          setGpError(`Error al refrescar Sheet desde el servidor: ${e.message}`);
         }
-        setGpData(parsed);
-        setGpUltActualiz(new Date().toLocaleString('es-MX'));
-        // Guardar en Firestore para acceso offline (con versión del parser)
-        await fsSet('global/gp_construct', {
-          data: parsed,
-          parserVersion: PARSER_VERSION,
-          ultimaActualizacion: new Date().toISOString()
-        });
-        exito = true;
-        break;
-      } catch(e) {
-        ultimoError = e.message;
-        console.warn('Proxy falló:', proxyFn.toString().match(/https:\/\/[^?'"]+/)?.[0], e.message);
       }
-    }
-    if (!exito) {
-      // Si todos los proxies fallan, intentar caché solo si tiene la versión actual del parser
+      // Leer siempre de Firestore (donde Cloud Functions guarda el resultado)
       const cached = await fsGet('global/gp_construct');
       if (cached?.data && cached.parserVersion === PARSER_VERSION) {
         setGpData(cached.data);
-        setGpUltActualiz(`Cache: ${new Date(cached.ultimaActualizacion).toLocaleString('es-MX')}`);
-        setGpError(`No se pudo refrescar desde el Sheet (${ultimoError}). Mostrando datos en caché.`);
+        setGpUltActualiz(new Date(cached.ultimaActualizacion).toLocaleString('es-MX'));
       } else if (cached?.data) {
-        setGpError(`Caché obsoleto (versión vieja del parser). No se pudo refrescar: ${ultimoError}. Intenta el botón Refrescar.`);
+        setGpError('Caché del Sheet es de una versión vieja del parser. Click Refrescar.');
       } else {
-        setGpError(`No se pudo cargar GP Construct ni del Sheet ni del caché: ${ultimoError}`);
+        setGpError('El Sheet no se ha sincronizado nunca. Click Refrescar (la primera vez tarda ~30s).');
       }
+    } catch (e) {
+      setGpError(`Error al leer caché de GP: ${e.message}`);
     }
     setGpLoading(false);
   }, []);
@@ -3060,7 +3033,7 @@ const GP_OBRAS_CATALOGO = [
   {id:"0124",nombre:"SIOP Coatza Rehab. Puente", gastoGP:1770125},
 ];
 
-function ModalNuevaObra({onSave,onClose,gpData}){
+function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading}){
   const[paso,setPaso]=useState("seleccionar"); // seleccionar | completar
   const[gpSel,setGpSel]=useState(null);
   const[busqueda,setBusqueda]=useState("");
@@ -3133,12 +3106,26 @@ function ModalNuevaObra({onSave,onClose,gpData}){
       {/* PASO 1: Seleccionar de GP Construct */}
       {paso==="seleccionar"&&(
         <>
-          {/* Aviso si está usando catálogo hardcodeado viejo */}
+          {/* Aviso + botón refresh si el Sheet no está cargado */}
           {!gpData?.obras && (
             <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
-              padding:"7px 11px",fontSize:10,color:C.yellowDk,marginBottom:8}}>
-              ⚠ El Sheet de GP no se ha cargado. Estás viendo un catálogo de referencia desactualizado.
-              <br/>Cierra este modal, refresca el Sheet en Gastos y vuelve a intentar.
+              padding:"9px 12px",marginBottom:8}}>
+              <div style={{fontSize:10,color:C.yellowDk,marginBottom:6}}>
+                ⚠ El Sheet de GP no está cargado. Estás viendo un catálogo de referencia desactualizado.
+              </div>
+              {onRefreshGP && (
+                <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
+                  style={{background:C.caliza,border:"none",borderRadius:6,padding:"5px 12px",
+                    fontSize:10,fontWeight:600,color:C.bg,cursor:gpLoading?"not-allowed":"pointer",
+                    opacity:gpLoading?0.5:1}}>
+                  {gpLoading?"Refrescando…":"Refrescar Sheet ahora"}
+                </button>
+              )}
+            </div>
+          )}
+          {gpData?.obras && (
+            <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
+              Sheet sincronizado: {Object.keys(gpData.obras).length} obras
             </div>
           )}
           <Inp placeholder="Buscar por nombre o ID..." value={busqueda}
@@ -3986,7 +3973,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const listaActual=ordenar(verHistorial?archivadas:activas);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {modalNueva&&<ModalNuevaObra onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData}/>}
+    {modalNueva&&<ModalNuevaObra onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}/>}
 
     {/* Confirmación archivar */}
     {confirmarArchivar&&<div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,

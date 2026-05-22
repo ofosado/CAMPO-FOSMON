@@ -15,6 +15,7 @@
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions");
 const admin = require("firebase-admin");
 
@@ -236,4 +237,217 @@ exports.listarUsuarios = onCall(async (request) => {
     });
   }
   return { usuarios };
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// GP CONSTRUCT — descarga + parseo server-side (sin problemas de CORS)
+// ════════════════════════════════════════════════════════════════════════════
+
+const GP_SHEET_ID = "1UaRI7ysMttXvET9I6hXPJAqadUYRd0Y0Qiwy8uRi82c";
+const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/export?format=csv`;
+const PARSER_VERSION = 2;
+
+// ── Parser CSV robusto (maneja comillas con comas dentro) ──
+function parseCsvLine(line) {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i+1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(cur.trim()); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
+function parseMonto(s) {
+  if (!s) return NaN;
+  const limpio = String(s).replace(/[$\s,()]/g, '');
+  if (!limpio || limpio === '-') return NaN;
+  const n = parseFloat(limpio);
+  return isNaN(n) ? NaN : n;
+}
+
+// Parser de GP Construct (idéntico al del frontend para mantener consistencia)
+function parsearGPConstruct(csvText) {
+  const lines = csvText.split('\n').map(parseCsvLine);
+  const colMap = {};
+  const MESES = {
+    'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
+    'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
+  };
+  let headerRow = -1;
+  const maxScan = Math.min(lines.length, 12);
+  for (let i = 0; i < maxScan; i++) {
+    lines[i].forEach((cellRaw, ci) => {
+      const c = (cellRaw || '').trim();
+      if (!c) return;
+      if (/^20\d{2}$/.test(c) && !colMap[`y_${c}`]) colMap[`y_${c}`] = ci;
+      const matchMes = c.match(/(?:^\d+\s*[.\-]+\s*)?([A-Za-záéíóú]+)/);
+      if (matchMes) {
+        const m = matchMes[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,'');
+        if (MESES[m] && !colMap[`m_2026_${MESES[m]}`]) colMap[`m_2026_${MESES[m]}`] = ci;
+      }
+      if (/^[1-5][0-9]$/.test(c)) {
+        const n = parseInt(c);
+        if (n >= 1 && n <= 53 && !colMap[`w_${n}`]) {
+          colMap[`w_${n}`] = ci;
+          if (headerRow < 0) headerRow = i;
+        }
+      }
+      if (/2026.*total/i.test(c) && !colMap.total_2026) colMap.total_2026 = ci;
+      if (/grand\s*total/i.test(c) && !colMap.grand_total) colMap.grand_total = ci;
+      if (c === '%' && !colMap.pct) colMap.pct = ci;
+    });
+  }
+  if (headerRow < 0) {
+    for (let i = 0; i < maxScan; i++) {
+      if (Object.values(colMap).includes(i) || lines[i].some(c => /^20\d{2}$/.test((c||'').trim()))) {
+        headerRow = i; break;
+      }
+    }
+  }
+  const obras = {};
+  let curObra = null, curRubro = null;
+  for (let i = (headerRow >= 0 ? headerRow + 1 : 8); i < lines.length; i++) {
+    const row = lines[i];
+    const label = (row[1] || '').trim();
+    if (!label) continue;
+    if (/^Grand Total$/i.test(label) || /^Total/i.test(label)) continue;
+    if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
+    const extraerValores = () => {
+      const semanas = {}, meses = {}, anos = {};
+      let total2026 = 0, grandTotal = 0;
+      Object.entries(colMap).forEach(([key, ci]) => {
+        const v = parseMonto(row[ci]);
+        if (isNaN(v) || v === 0) return;
+        const abs = Math.abs(v);
+        if (key.startsWith('w_')) semanas[`S${key.slice(2)}`] = abs;
+        else if (key.startsWith('m_')) meses[`M${key.slice(2).replace('_','-')}`] = abs;
+        else if (key.startsWith('y_')) anos[`Y${key.slice(2)}`] = abs;
+        else if (key === 'total_2026') total2026 = abs;
+        else if (key === 'grand_total') grandTotal = abs;
+      });
+      return { semanas, meses, años: anos, total2026, grandTotal };
+    };
+    if (/^\d{4}\s/.test(label)) {
+      curObra = label;
+      curRubro = null;
+      if (!obras[curObra]) {
+        const vals = extraerValores();
+        obras[curObra] = {
+          id: label.slice(0, 4), nombre: label,
+          semanas: vals.semanas, meses: vals.meses, años: vals.años,
+          total2026: vals.total2026, grandTotal: vals.grandTotal,
+          rubros: {}, proveedores: [],
+        };
+      }
+    } else if (/^\d{3}\s/.test(label) && curObra) {
+      curRubro = label.slice(0, 3);
+      if (!obras[curObra].rubros[curRubro]) {
+        const vals = extraerValores();
+        obras[curObra].rubros[curRubro] = {
+          id: curRubro, nombre: label, nombreCorto: label.slice(4).trim(),
+          semanas: vals.semanas, meses: vals.meses, años: vals.años,
+          total2026: vals.total2026, grandTotal: vals.grandTotal,
+          proveedores: [],
+        };
+      }
+    } else if (curObra && curRubro && !/^\d/.test(label)) {
+      const vals = extraerValores();
+      const totalProv = vals.grandTotal > 0
+        ? vals.grandTotal
+        : Object.values(vals.años).reduce((t,v)=>t+v,0) + (vals.total2026 || Object.values(vals.meses).reduce((t,v)=>t+v,0));
+      if (totalProv === 0) continue;
+      const prov = {
+        nombre: label, rubroId: curRubro,
+        rubroNombre: obras[curObra].rubros[curRubro].nombreCorto,
+        semanas: vals.semanas, meses: vals.meses, años: vals.años,
+        total2026: vals.total2026, grandTotal: vals.grandTotal,
+        total: totalProv,
+      };
+      obras[curObra].rubros[curRubro].proveedores.push(prov);
+      obras[curObra].proveedores.push(prov);
+    }
+  }
+  const semanasDisponibles = Object.keys(colMap)
+    .filter(k => k.startsWith('w_'))
+    .map(k => `S${k.slice(2)}`)
+    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+  const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
+  const mesesDisponibles = Object.keys(colMap)
+    .filter(k => k.startsWith('m_'))
+    .map(k => `M${k.slice(2).replace('_','-')}`)
+    .sort();
+  const ultimoMes = mesesDisponibles[mesesDisponibles.length - 1] || '';
+  return {
+    obras, semanasDisponibles, ultimaSemana,
+    mesesDisponibles, ultimoMes,
+    totalObras: Object.keys(obras).length, colMap,
+  };
+}
+
+// Lógica común: descargar Sheet + parsear + guardar en Firestore
+async function descargarYGuardarGP() {
+  // Server-side: fetch directo a Google Sheets sin CORS
+  const resp = await fetch(GP_SHEET_CSV, { redirect: 'follow' });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} al descargar Sheet`);
+  const text = await resp.text();
+  if (!text || text.length < 200) throw new Error('Respuesta del Sheet vacía o muy corta');
+  const parsed = parsearGPConstruct(text);
+  if (!parsed.obras || Object.keys(parsed.obras).length === 0) {
+    throw new Error('Parser no detectó obras en el CSV');
+  }
+  await admin.firestore().doc('global/gp_construct').set({
+    data: parsed,
+    parserVersion: PARSER_VERSION,
+    ultimaActualizacion: new Date().toISOString(),
+    fuente: 'cloud-function',
+  });
+  return parsed;
+}
+
+// ── SCHEDULED: cada lunes 9am hora México ──
+exports.actualizarGPSheet = onSchedule({
+  schedule: "0 9 * * 1",   // lunes 9:00am
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  console.log("Iniciando actualización programada de GP Sheet…");
+  try {
+    const parsed = await descargarYGuardarGP();
+    console.log(`Actualización OK: ${parsed.totalObras} obras, ${parsed.semanasDisponibles.length} semanas`);
+  } catch (e) {
+    console.error("Error en actualización programada de GP:", e);
+    throw e;
+  }
+});
+
+// ── CALLABLE: refrescar manualmente (cualquier admin) ──
+exports.refrescarGP = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const email = (request.auth.token.email || "").toLowerCase();
+  if (!email) throw new HttpsError("unauthenticated", "Token sin email.");
+  // Cualquier usuario autenticado puede pedir refresh (es información útil para todos)
+  try {
+    const parsed = await descargarYGuardarGP();
+    return {
+      ok: true,
+      totalObras: parsed.totalObras,
+      semanas: parsed.semanasDisponibles.length,
+      ultimaSemana: parsed.ultimaSemana,
+      ultimoMes: parsed.ultimoMes,
+    };
+  } catch (e) {
+    throw new HttpsError("internal", `Error al refrescar GP: ${e.message}`);
+  }
 });
