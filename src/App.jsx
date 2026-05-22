@@ -1957,107 +1957,184 @@ function parseMonto(s) {
   return isNaN(n) ? NaN : n;
 }
 
-// Parser de GP Construct mejorado
-// Estructura jerárquica: EGRESOS > Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor (texto)
-// Devuelve: { obras: { "0001 NOMBRE": { rubros: {...}, semanas: {...}, proveedores: [...] } } }
+// Parser de GP Construct mejorado v2
+// El Sheet tiene una jerarquía de columnas temporales:
+//   - Año (2024, 2025) en una fila de header
+//   - Mes 2026 (Enero, Febrero...) en otra fila de header
+//   - Semanas (14, 15, 16...) como sub-columnas dentro del mes actual
+//   - Columnas de totales: "2026 Total", "Grand Total", "%"
+// Estructura de filas: EGRESOS > Obra (4 dígitos) > Rubro (3 dígitos) > Proveedor (texto)
+//
+// IMPORTANTE: para el acumulado total se usa la columna "Grand Total" (no la suma
+// de columnas individuales, que se traslapan: semanas son sub-columnas del mes).
 function parsearGPConstruct(csvText) {
   const lines = csvText.split('\n').map(parseCsvLine);
 
-  // Detectar columnas: filas 5-7 tienen año / mes / semana respectivamente
-  // Estrategia: identificar columnas con números de 2 dígitos (semanas) y años 4 dígitos
+  // ── 1. Detectar columnas analizando hasta 12 filas iniciales del header ──
+  // Buscamos en las primeras filas todos los textos que indiquen tipo de columna.
+  const colMap = {};   // ej. { y_2024: 2, y_2025: 3, m_2026_01: 4, w_14: 7, total_2026: 12, grand_total: 13 }
+  const MESES = {
+    'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
+    'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'
+  };
   let headerRow = -1;
-  let colMap = {}; // { S14: 8, S15: 9, ..., "2024": 2, "2025": 3, ... }
-  for (let i = 0; i < Math.min(lines.length, 15); i++) {
-    const hasSemanas = lines[i].some(c => /^[1-5][0-9]$/.test(c));
-    if (hasSemanas) {
-      headerRow = i;
-      lines[i].forEach((c, ci) => {
-        if (/^[1-5][0-9]$/.test(c)) colMap[`S${c}`] = ci;
-      });
-      // Buscar años en filas anteriores (típicamente fila 5)
-      for (let j = Math.max(0, i-3); j < i; j++) {
-        lines[j].forEach((c, ci) => {
-          if (/^20\d{2}$/.test(c)) colMap[c] = ci;
-        });
+  const maxScan = Math.min(lines.length, 12);
+  for (let i = 0; i < maxScan; i++) {
+    lines[i].forEach((cellRaw, ci) => {
+      const c = (cellRaw || '').trim();
+      if (!c) return;
+      // Año (2024, 2025)
+      if (/^20\d{2}$/.test(c) && !colMap[`y_${c}`]) {
+        colMap[`y_${c}`] = ci;
       }
-      break;
+      // Mes de 2026 (ej "1 .- Enero" o "Enero" o "1 - Enero")
+      const matchMes = c.match(/(?:^\d+\s*[.\-]+\s*)?([A-Za-záéíóú]+)/);
+      if (matchMes) {
+        const m = matchMes[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,'');
+        if (MESES[m] && !colMap[`m_2026_${MESES[m]}`]) {
+          colMap[`m_2026_${MESES[m]}`] = ci;
+        }
+      }
+      // Semana (14-53)
+      if (/^[1-5][0-9]$/.test(c)) {
+        const n = parseInt(c);
+        if (n >= 1 && n <= 53 && !colMap[`w_${n}`]) {
+          colMap[`w_${n}`] = ci;
+          if (headerRow < 0) headerRow = i;
+        }
+      }
+      // Totales
+      if (/2026.*total/i.test(c) && !colMap.total_2026) colMap.total_2026 = ci;
+      if (/grand\s*total/i.test(c) && !colMap.grand_total) colMap.grand_total = ci;
+      if (c === '%' && !colMap.pct) colMap.pct = ci;
+    });
+  }
+
+  // Si no encontramos header con semanas, intentamos por años
+  if (headerRow < 0) {
+    for (let i = 0; i < maxScan; i++) {
+      if (Object.values(colMap).includes(i) || lines[i].some(c => /^20\d{2}$/.test((c||'').trim()))) {
+        headerRow = i;
+        break;
+      }
     }
   }
 
+  // ── 2. Iterar filas para parsear obras/rubros/proveedores ──
   const obras = {};
   let curObra = null, curRubro = null;
 
-  for (let i = (headerRow >= 0 ? headerRow + 1 : 10); i < lines.length; i++) {
+  for (let i = (headerRow >= 0 ? headerRow + 1 : 8); i < lines.length; i++) {
     const row = lines[i];
     const label = (row[1] || '').trim();
     if (!label) continue;
     // Saltar filas de totales o secciones
     if (/^Grand Total$/i.test(label) || /^Total/i.test(label)) continue;
-    // Saltar fila EGRESOS / INGRESOS de cabecera
     if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
+
+    // Helper para extraer todos los valores de columnas para una fila
+    const extraerValores = () => {
+      const semanas = {};   // S14, S15, ...
+      const meses = {};     // M2026-01, M2026-02, ...
+      const años = {};      // Y2024, Y2025, ...
+      let total2026 = 0;
+      let grandTotal = 0;
+      Object.entries(colMap).forEach(([key, ci]) => {
+        const v = parseMonto(row[ci]);
+        if (isNaN(v) || v === 0) return;
+        const abs = Math.abs(v);
+        if (key.startsWith('w_')) semanas[`S${key.slice(2)}`] = abs;
+        else if (key.startsWith('m_')) {
+          // m_2026_01 → M2026-01
+          meses[`M${key.slice(2).replace('_','-')}`] = abs;
+        }
+        else if (key.startsWith('y_')) años[`Y${key.slice(2)}`] = abs;
+        else if (key === 'total_2026') total2026 = abs;
+        else if (key === 'grand_total') grandTotal = abs;
+      });
+      return { semanas, meses, años, total2026, grandTotal };
+    };
 
     // OBRA: empieza con 4 dígitos
     if (/^\d{4}\s/.test(label)) {
       curObra = label;
       curRubro = null;
-      if (!obras[curObra]) obras[curObra] = { id: label.slice(0,4), nombre: label, rubros: {}, semanas: {}, proveedores: [] };
-      Object.entries(colMap).forEach(([k, ci]) => {
-        const v = parseMonto(row[ci]);
-        if (!isNaN(v) && v !== 0) obras[curObra].semanas[k] = Math.abs(v);
-      });
+      if (!obras[curObra]) {
+        const vals = extraerValores();
+        obras[curObra] = {
+          id: label.slice(0, 4),
+          nombre: label,
+          semanas: vals.semanas,
+          meses: vals.meses,
+          años: vals.años,
+          total2026: vals.total2026,
+          grandTotal: vals.grandTotal,
+          rubros: {},
+          proveedores: [],
+        };
+      }
     }
     // RUBRO: empieza con 3 dígitos
     else if (/^\d{3}\s/.test(label) && curObra) {
       curRubro = label.slice(0, 3);
       if (!obras[curObra].rubros[curRubro]) {
+        const vals = extraerValores();
         obras[curObra].rubros[curRubro] = {
           id: curRubro,
           nombre: label,
           nombreCorto: label.slice(4).trim(),
-          semanas: {},
+          semanas: vals.semanas,
+          meses: vals.meses,
+          años: vals.años,
+          total2026: vals.total2026,
+          grandTotal: vals.grandTotal,
           proveedores: [],
         };
       }
-      Object.entries(colMap).forEach(([k, ci]) => {
-        const v = parseMonto(row[ci]);
-        if (!isNaN(v) && v !== 0) obras[curObra].rubros[curRubro].semanas[k] = Math.abs(v);
-      });
     }
     // PROVEEDOR: texto sin prefijo numérico, dentro de un rubro
     else if (curObra && curRubro && !/^\d/.test(label)) {
-      const provSemanas = {};
-      let total = 0;
-      Object.entries(colMap).forEach(([k, ci]) => {
-        const v = parseMonto(row[ci]);
-        if (!isNaN(v) && v !== 0) {
-          const abs = Math.abs(v);
-          provSemanas[k] = abs;
-          total += abs;
-        }
-      });
-      if (total === 0) continue; // proveedor sin gastos: ignorar
+      const vals = extraerValores();
+      // El total del proveedor es su Grand Total si está disponible, si no, la suma de columnas no-traslapadas
+      const totalProv = vals.grandTotal > 0
+        ? vals.grandTotal
+        : Object.values(vals.años).reduce((t,v)=>t+v,0) + (vals.total2026 || Object.values(vals.meses).reduce((t,v)=>t+v,0));
+      if (totalProv === 0) continue;
       const prov = {
         nombre: label,
         rubroId: curRubro,
         rubroNombre: obras[curObra].rubros[curRubro].nombreCorto,
-        semanas: provSemanas,
-        total,
+        semanas: vals.semanas,
+        meses: vals.meses,
+        años: vals.años,
+        total2026: vals.total2026,
+        grandTotal: vals.grandTotal,
+        total: totalProv,
       };
       obras[curObra].rubros[curRubro].proveedores.push(prov);
       obras[curObra].proveedores.push(prov);
     }
   }
 
-  // Semanas disponibles (ordenadas numéricamente)
+  // ── 3. Semanas y meses disponibles (ordenados) ──
   const semanasDisponibles = Object.keys(colMap)
-    .filter(k => k.startsWith('S'))
-    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    .filter(k => k.startsWith('w_'))
+    .map(k => `S${k.slice(2)}`)
+    .sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
   const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
+
+  const mesesDisponibles = Object.keys(colMap)
+    .filter(k => k.startsWith('m_'))
+    .map(k => `M${k.slice(2).replace('_','-')}`)
+    .sort();
+  const ultimoMes = mesesDisponibles[mesesDisponibles.length - 1] || '';
 
   return {
     obras,
     semanasDisponibles,
     ultimaSemana,
+    mesesDisponibles,
+    ultimoMes,
     totalObras: Object.keys(obras).length,
     colMap,
   };
@@ -3962,12 +4039,20 @@ function GastosGP({obra,maquinaria,rol,gpData}){
   };
 
   const datosObra = buscarObraEnGP();
+
+  // ── Año actual para filtros ──
+  const añoActual = new Date().getFullYear();
   const semanas = gpData?.semanasDisponibles || [];
   const ultimaSem = gpData?.ultimaSemana || '';
 
   // ── KPIs principales ──
+  // El acumulado total es Grand Total (suma de todos los años). Si no está disponible
+  // como columna, calculamos sumando años + total 2026 (sin traslapes con semanas/meses).
   const totalGP = datosObra
-    ? Object.values(datosObra.semanas).reduce((t,v)=>t+v, 0)
+    ? (datosObra.grandTotal > 0
+        ? datosObra.grandTotal
+        : Object.values(datosObra.años||{}).reduce((t,v)=>t+v, 0)
+          + (datosObra.total2026 || Object.values(datosObra.meses||{}).reduce((t,v)=>t+v, 0)))
     : obra.gastoGP || 0;
   const totalGastoObra = totalGP + totalMaq;
   const pctPresupuesto = obra.presupuesto > 0 ? (totalGastoObra/obra.presupuesto)*100 : 0;
@@ -4027,10 +4112,14 @@ function GastosGP({obra,maquinaria,rol,gpData}){
     : [];
 
   // ── Análisis de rubros ──
+  // Igual que la obra: usar grandTotal del rubro si existe, fallback a años+total2026
   const rubrosArr = datosObra ? Object.values(datosObra.rubros) : [];
   const rubrosOrdenados = rubrosArr.map(r => ({
     ...r,
-    total: Object.values(r.semanas).reduce((t,v)=>t+v, 0),
+    total: r.grandTotal > 0
+      ? r.grandTotal
+      : Object.values(r.años||{}).reduce((t,v)=>t+v, 0)
+        + (r.total2026 || Object.values(r.meses||{}).reduce((t,v)=>t+v, 0)),
   })).sort((a,b)=>b.total-a.total);
   const totalRubros = rubrosOrdenados.reduce((t,r)=>t+r.total, 0);
 
