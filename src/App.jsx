@@ -5260,7 +5260,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
 // ════════════════════════════════════════════════════════════════════════════
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
-function Planeacion({subTab,setSubTab,obra,setObra,rol}){
+function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
@@ -5276,7 +5276,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol}){
       ))}
     </div>
     {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol}/>}
-    {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol}/>}
+    {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
   </div>;
 }
 
@@ -6720,7 +6720,7 @@ function parsearPresupuesto(data, importeContrato) {
   };
 }
 
-function Presupuesto({obra, setObra, rol}) {
+function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
   // Cargar SheetJS dinámicamente
   useEffect(() => {
     if (typeof window.XLSX === 'undefined') {
@@ -6789,9 +6789,23 @@ function Presupuesto({obra, setObra, rol}) {
       fechaCarga: new Date().toLocaleDateString('es-MX'),
       archivo: 'Presupuesto cargado'
     };
+    // Convertir conceptos a formato subs para Avance físico
+    // Cada concepto del catálogo se vuelve una "subsección" capturable
+    const subsParaAvance = resultado.conceptos.map(c => ({
+      sec: c.clave || c.id,
+      sub: c.desc || '(sin descripción)',
+      imp: c.importe || 0,
+      n: 1,
+      a: 0,
+      fotos: {},
+    }));
     try {
       await fsSet(`obras/${obra.id}/config/catalogo`, cat);
+      // También guardar como subs para que aparezcan en Operación → Avance físico
+      await fsSet(`obras/${obra.id}/avance/subs`, { data: subsParaAvance });
       setObra({...obra, presupuesto: importeContrato});
+      // Actualizar el state global de subs si el padre lo permite (para no requerir reload)
+      if (setSubsGlobal) setSubsGlobal(subsParaAvance);
     } catch(e) { setError('Error al guardar: ' + e.message); return; }
     setCatalogoGuardado(cat);
     setFase('confirmado');
@@ -9252,8 +9266,26 @@ export default function App(){
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
       if(d) setObras(oo=>oo.map(o=>o.id===obraId?{...o,...d}:o));
     });
-    fsGet(`obras/${obraId}/avance/subs`).then(d=>{
-      if(d&&Array.isArray(d.data)) setSubs(d.data);
+    // Carga de subs con fallback al catálogo (para obras que cargaron catálogo
+    // antes del fix que sincroniza catálogo → subs automáticamente)
+    fsGet(`obras/${obraId}/avance/subs`).then(async d=>{
+      if(d && Array.isArray(d.data) && d.data.length > 0) {
+        setSubs(d.data);
+      } else {
+        // Sin subs: intentar derivar del catálogo si existe
+        const cat = await fsGet(`obras/${obraId}/config/catalogo`);
+        if (cat && Array.isArray(cat.conceptos) && cat.conceptos.length > 0) {
+          const subsFromCat = cat.conceptos.map(c => ({
+            sec: c.clave || c.id,
+            sub: c.desc || '(sin descripción)',
+            imp: c.importe || 0,
+            n: 1, a: 0, fotos: {},
+          }));
+          setSubs(subsFromCat);
+          // Guardar para futuras cargas (auto-migración)
+          fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
+        }
+      }
     });
     fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
@@ -9505,7 +9537,8 @@ export default function App(){
       {screen==="obra"&&tab==="planeacion"&&obra&&(
         <Planeacion
           subTab={subTabPlan} setSubTab={setSubTabPlan}
-          obra={obra} setObra={setObra} rol={usuario.rol}/>
+          obra={obra} setObra={setObra} rol={usuario.rol}
+          setSubsGlobal={setSubs}/>
       )}
 
       {/* Vistas para rol cliente */}
