@@ -4660,8 +4660,17 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
   async function guardar(tipoSnapshot = "intermedio") {
     setEstado("saving");
     try {
+      // Guardar avance + datos completos de cada subsección incluyendo fotos
+      // (las fotos se guardan en s.fotos[s.sec] = [...])
       await fsSet(`obras/${obra.id}/avance/subs`, {
-        data: subs.map(s=>({sec:s.sec,a:s.a})),
+        data: subs.map(s=>({
+          sec: s.sec,
+          sub: s.sub || '',
+          imp: s.imp || 0,
+          n: s.n || 1,
+          a: s.a || 0,
+          fotos: s.fotos || {},
+        })),
         fecha: new Date().toISOString()
       });
       await fsSet(`obras/${obra.id}/avance/maquinaria`, {
@@ -5366,44 +5375,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           </div>
           <Bar pct={s.a||0} color={semA(s.a||0)}/>
           {exp[s.sec]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
-            <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:8}}>
-              Conceptos — {s.sec} ({(CATALOGO[s.sec]?.conceptos||[]).length} partidas)
+            <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>
+              Reporte fotográfico — {s.sec}
             </div>
-            {(CATALOGO[s.sec]?.conceptos||[]).map((c,ci)=>(
-              <div key={c.clave} style={{background:C.card,borderRadius:7,padding:"8px 10px",marginBottom:5,borderLeft:`2px solid ${semA(c.avance)}`}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,gap:8}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:8,color:C.textMut,marginBottom:2,fontFamily:"monospace"}}>{c.clave}</div>
-                    <div style={{fontSize:10,color:C.textSec,lineHeight:1.3}}>{c.desc}</div>
-                    <div style={{fontSize:9,color:C.textMut,marginTop:3}}>{c.unidad} · {c.cantidad.toLocaleString("es-MX")} uds</div>
-                  </div>
-                  <div style={{flexShrink:0,textAlign:"right"}}>
-                    <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{MXN(c.importe)}</div>
-                    <div style={{fontSize:8,color:semA(c.avance),marginTop:2,fontWeight:600}}>{c.avance}%</div>
-                  </div>
-                </div>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-                  <div style={{flex:1,background:"rgba(255,254,249,0.08)",borderRadius:99,height:4,overflow:"hidden"}}>
-                    <div style={{width:`${c.avance}%`,height:"100%",background:semA(c.avance),borderRadius:99,transition:"width .3s"}}/>
-                  </div>
-                  {editar&&<><input type="number" min="0" max="100" placeholder="0" value={c.avance||""}
-                    onChange={e=>{
-                      const val=Math.min(100,Math.max(0,parseFloat(e.target.value)||0));
-                      const cat=CATALOGO[s.sec];if(cat)cat.conceptos[ci].avance=val;
-                      const conceptos=CATALOGO[s.sec]?.conceptos||[];
-                      const totalImp=conceptos.reduce((t,x)=>t+x.importe,0);
-                      const avSub=totalImp>0?conceptos.reduce((t,x)=>t+(x.avance/100)*x.importe,0)/totalImp*100:0;
-                      setSubs(ss=>ss.map(x=>x.sec===s.sec?{...x,a:Math.round(avSub*10)/10}:x));
-                    }}
-                    style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:5,
-                      padding:"2px 5px",fontSize:11,width:44,textAlign:"right",color:C.textPri,outline:"none"}}/>
-                  <span style={{fontSize:9,color:C.textMut}}>%</span></>}
-                </div>
-                {editar&&<ConceptoFotos fotos={c.fotos}
-                  onAdd={foto=>{const cat=CATALOGO[s.sec];if(cat){cat.conceptos[ci].fotos=[...cat.conceptos[ci].fotos,foto];}setSubs(ss=>[...ss]);}}
-                  onDel={id=>{const cat=CATALOGO[s.sec];if(cat){cat.conceptos[ci].fotos=cat.conceptos[ci].fotos.filter(f=>f.id!==id);}setSubs(ss=>[...ss]);}}/>}
-              </div>
-            ))}
+            <ConceptoFotos
+              fotos={(s.fotos||{})[s.sec]||[]}
+              onAdd={editar ? (foto=>addFoto(s.sec, foto)) : (()=>{})}
+              onDel={editar ? (id=>delFoto(s.sec, id)) : (()=>{})}/>
+            {!editar && ((s.fotos||{})[s.sec]||[]).length === 0 && (
+              <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas en esta partida.</div>
+            )}
           </div>}
         </div>;
       })}
