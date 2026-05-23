@@ -5246,8 +5246,17 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   const ocultarTabs = !!forceTab;
   const[exp,setExp]=useState({});
   const editar=can(rol,"captura","editar");
-  const addFoto=(sec,foto)=>setSubs(ss=>ss.map(s=>s.sec===sec?{...s,fotos:{...s.fotos,[sec]:[...(s.fotos[sec]||[]),foto]}}:s));
-  const delFoto=(sec,id)=>setSubs(ss=>ss.map(s=>s.sec===sec?{...s,fotos:{...s.fotos,[sec]:(s.fotos[sec]||[]).filter(f=>f.id!==id)}}:s));
+  // Guards defensivos: las subs cargadas de Firestore no traen `fotos` por defecto
+  const addFoto=(sec,foto)=>setSubs(ss=>ss.map(s=>{
+    if(s.sec!==sec) return s;
+    const fotosObj = s.fotos || {};
+    return {...s, fotos:{...fotosObj, [sec]:[...(fotosObj[sec]||[]), foto]}};
+  }));
+  const delFoto=(sec,id)=>setSubs(ss=>ss.map(s=>{
+    if(s.sec!==sec) return s;
+    const fotosObj = s.fotos || {};
+    return {...s, fotos:{...fotosObj, [sec]:(fotosObj[sec]||[]).filter(f=>f.id!==id)}};
+  }));
   const rMaq=(i,f,v)=>setMaquinaria(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
   const rMat=(i,f,v)=>setMateriales(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
 
@@ -5265,8 +5274,13 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab==="volumenes"&&<Card>
       <Tit>Avance por subsección</Tit>
+      {subs.length === 0 && (
+        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+          Sin catálogo de presupuesto cargado. Súbelo desde Planeación → Presupuesto.
+        </div>
+      )}
       {subs.map(s=>{
-        const nF=(s.fotos[s.sec]||[]).length;
+        const nF=((s.fotos||{})[s.sec]||[]).length;
         return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
             <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[s.sec]:!e[s.sec]}))}>
