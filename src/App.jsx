@@ -2252,6 +2252,12 @@ const css = `
   ::-webkit-scrollbar-thumb{background:#D0D4DC;border-radius:2px}
   input,select{font-family:inherit;outline:none}
   input:focus,select:focus{border-color:${C.blueDk}!important;box-shadow:0 0 0 2px ${C.blueBg}}
+  /* Ocultar flechas de inputs number (spinner) — se ven feas en inputs pequeños */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button {
+    -webkit-appearance:none; margin:0;
+  }
+  input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   button{cursor:pointer;font-family:inherit}
   .fotodrop{border:1.5px dashed ${C.borderM};border-radius:8px;padding:8px;
     text-align:center;cursor:pointer;font-size:10px;color:${C.textMut};transition:all .2s;
@@ -2380,219 +2386,12 @@ function ConceptoFotos({fotos,onAdd,onDel}){
 }
 
 // ── DATOS ──────────────────────────────────────────────────────────────────
-const CATALOGO = {
-  "A1.4": {
-    nombre: "ANDADOR PEATONAL",
-    imp_total: 33217646.21,
-    conceptos: [
-      {clave:"0219-OAX-CBH-08",desc:"EXCAVACIÓN EN CAJA POR MEDIOS MECÁNICOS EN MATERIAL SECO TIPO B; INCLUYE: MAQUINARIA, MARTILLO HIDRÁULICO (EN CASO NECES",unidad:"M3",cantidad:598.51,pu:202.15,importe:120988.8,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, PRIMER KILÓMETRO; INCLUYE: EQUIPO, HERRAMIENTA, CARGA, ACARREO ",unidad:"M3",cantidad:778.06,pu:39.38,importe:30640.0,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, KILÓMETRO SUBSECUENTE, EN ZONA URBANA; INCLUYE: CARGA, ACARREO ",unidad:"M3//KM",cantidad:11670.95,pu:36.01,importe:420270.91,avance:0,fotos:[]},
-      {clave:"0219-OAX-RMT-38.",desc:"RELLENO CON MATERIAL DE BANCO (TEPETATE), EN CAPAS NO MAYORES A 20 CM, COMPACTADO AL 90% DEL P.V.S.M.; INCLUYE: MATERIAL",unidad:"M3",cantidad:258.51,pu:1161.66,importe:300300.73,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-002",desc:"FIRME DE CONCRETO HIDRÁULICO F’C = 150 KG/CM², DE 16 CM DE ESPESOR, REFORZADO CON MALLA ELECTROSOLDADA 6-6/10-10; INCLUY",unidad:"M2",cantidad:6852.48,pu:1253.2,importe:8587527.94,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-003",desc:"CONSTRUCCIÓN DE DENTELLÓN PERIMETRAL DE 10 CM DE ANCHO POR 17 CM DE ALTURA, REFORZADO A BASE DE ARMEX 15 X 10 X 4, CON C",unidad:"M",cantidad:71.28,pu:562.63,importe:40104.27,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41_10",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE RECINTO NEGRO 10 X 10 DE 4 CMS DE ESPESOR, ASENTADO CON MORTERO CEMENTO ARENA PROP. 1",unidad:"M2",cantidad:2810.37,pu:3652.58,importe:10265101.25,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41_20",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE RECINTO NEGRO 20 X 20  DE 4 CMS DE ESPESOR, ASENTADO CON MORTERO CEMENTO ARENA PROP. ",unidad:"M2",cantidad:3160.18,pu:3100.09,importe:9796842.42,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41R",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE REAL TOPACIO REGULAR 10X10 PORFIDO DE 4CM DE ESPESOR, ASENTADO CON MORTERO CEMENTO AR",unidad:"M2",cantidad:881.93,pu:4069.11,importe:3588670.18,avance:0,fotos:[]},
-      {clave:"0219-OAX-FCH-43",desc:"CONCRETO EN ESTRUCTURA DE 20CM DE ESPESOR, HECHO EN OBRA DE F´C= 250 KG/CM2 INCLUYE: ACARREOS, CIMBRADO Y DESCIMBRADO, C",unidad:"M3",cantidad:11.45,pu:5868.97,importe:67199.71,avance:0,fotos:[]},
-    ],
-  },
-  "B1.10.1": {
-    nombre: "MOBILIARIO URBANO",
-    imp_total: 22148492.26,
-    conceptos: [
-      {clave:"0219-OAX-BCAN-135",desc:"SUMINISTRO Y FABRICACION DE BANCA DE CANTERA RUSTICA 135CM DE LONGITUD, 45CM DE ANCHO, 40CM DE ALTURA INCLUYE MARTELINAD",unidad:"PZA",cantidad:180.0,pu:38094.54,importe:6857017.2,avance:0,fotos:[]},
-      {clave:"0219-OAX-APB-C1",desc:"SUMINISTRO, FABRICACIÓN Y COLOCACIÓN  DE APARCABICIS, CON DIMENSIONES DE 46 Cm DE ANCHO Y 75 CM DE ALTURA, FABRICADO EN ",unidad:"PZA",cantidad:50.0,pu:16553.08,importe:827654.0,avance:0,fotos:[]},
-      {clave:"0219-OAX-BLRD-50",desc:"SUMINISTRO Y COLOCACIÓN DE BOLARDOS DE ACERO DE PLACA METALICA 5/8'' CON DIMENSIONES DE 46 CM DE DIAMETRO Y 0.50 M DE AL",unidad:"PZA",cantidad:598.0,pu:19562.34,importe:11698279.32,avance:0,fotos:[]},
-      {clave:"0219-OAX-BMT-CT1",desc:"FABRICACION Y MONTAJE DE BASURERO METALICO DE 0.43M X 0.43M X 0.60M A BASE DE LAMINA NEGRA CALIBRE 11 SEGÚN DISEÑO DE PR",unidad:"PZA",cantidad:40.0,pu:24418.79,importe:976751.6,avance:0,fotos:[]},
-      {clave:"0219-OAX-SEÑ-INF01",desc:"SUMINISTRO Y COLOCACIÓN DE SEÑALÉTICA INFORMATIVA, PREVENTIVA Y RESTRICTIVA, FABRICADA EN LÁMINA GALVANIZADA CALIBRE 18,",unidad:"PZA",cantidad:123.0,pu:10823.34,importe:1331270.82,avance:0,fotos:[]},
-      {clave:"0219-OAX-SEÑ-INF02",desc:"SUMIISTRO, FABRICACION Y MONTAJE DE SEÑALETICA, TOTEM DE SEÑALAMIENTO MIXTO CON ESTRUCTURA DE ACERO ELECTROPINTADO, MEDI",unidad:"PZA",cantidad:9.0,pu:50835.48,importe:457519.32,avance:0,fotos:[]},
-    ],
-  },
-  "B1.4": {
-    nombre: "ANDADOR PEATONAL",
-    imp_total: 17739848.09,
-    conceptos: [
-      {clave:"0219-OAX-CBH-08",desc:"EXCAVACIÓN EN CAJA POR MEDIOS MECÁNICOS EN MATERIAL SECO TIPO B; INCLUYE: MAQUINARIA, MARTILLO HIDRÁULICO (EN CASO NECES",unidad:"M3",cantidad:945.47,pu:202.15,importe:191126.76,avance:0,fotos:[]},
-      {clave:"0219-OAX-RMT-38.",desc:"RELLENO CON MATERIAL DE BANCO (TEPETATE), EN CAPAS NO MAYORES A 20 CM, COMPACTADO AL 90% DEL P.V.S.M.; INCLUYE: MATERIAL",unidad:"M3",cantidad:180.25,pu:1161.66,importe:209389.22,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-002",desc:"FIRME DE CONCRETO HIDRÁULICO F’C = 150 KG/CM², DE 16 CM DE ESPESOR, REFORZADO CON MALLA ELECTROSOLDADA 6-6/10-10; INCLUY",unidad:"M2",cantidad:3604.92,pu:1253.2,importe:4517685.74,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-003.",desc:"CONSTRUCCIÓN DE DENTELLÓN PERIMETRAL DE 10 CM DE ANCHO POR 17 CM DE ALTURA, REFORZADO A BASE DE ARMEX 15 X 10 X 4, CON C",unidad:"ML",cantidad:145.12,pu:562.63,importe:81648.87,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41_10",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE RECINTO NEGRO 10 X 10 DE 4 CMS DE ESPESOR, ASENTADO CON MORTERO CEMENTO ARENA PROP. 1",unidad:"M2",cantidad:768.24,pu:3652.58,importe:2806058.06,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41_20",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE RECINTO NEGRO 20 X 20  DE 4 CMS DE ESPESOR, ASENTADO CON MORTERO CEMENTO ARENA PROP. ",unidad:"M2",cantidad:1674.11,pu:3100.09,importe:5189891.67,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41R",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE REAL TOPACIO REGULAR 10X10 PORFIDO DE 4CM DE ESPESOR, ASENTADO CON MORTERO CEMENTO AR",unidad:"M2",cantidad:1162.57,pu:4069.11,importe:4730625.21,avance:0,fotos:[]},
-      {clave:"0219-OAX-PT-CP01",desc:"PINTURA DE TRAFICO PARA CIRCUITO DE PATINAJE DE 10CM DE ANCHO, APLICADO SOBRE RECINTO, INCLUYE SUMIISTRO DE MATERIAL, HE",unidad:"ML",cantidad:340.07,pu:39.47,importe:13422.56,avance:0,fotos:[]},
-    ],
-  },
-  "A1.7.1": {
-    nombre: "TERRACERIAS",
-    imp_total: 11569121.13,
-    conceptos: [
-      {clave:"0219-OAX-CBH-08",desc:"EXCAVACIÓN EN CAJA POR MEDIOS MECÁNICOS EN MATERIAL SECO TIPO B; INCLUYE: MAQUINARIA, MARTILLO HIDRÁULICO (EN CASO NECES",unidad:"M3",cantidad:424.28,pu:202.15,importe:85768.2,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, PRIMER KILÓMETRO; INCLUYE: EQUIPO, HERRAMIENTA, CARGA, ACARREO ",unidad:"M3",cantidad:726.06,pu:39.38,importe:28592.24,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, KILÓMETRO SUBSECUENTE, EN ZONA URBANA; INCLUYE: CARGA, ACARREO ",unidad:"M3//KM",cantidad:10890.95,pu:36.01,importe:392183.11,avance:0,fotos:[]},
-      {clave:"0219-OAX-AYRB-49",desc:"AFINE Y COMPACTACIÓN DE TERRENO NATURAL CON MATERIAL DE BANCO EN CAPAS NO MAYORES A 20 CMS POR MEDIOS MANUALES CON BAILA",unidad:"M2",cantidad:2121.41,pu:239.47,importe:508014.05,avance:0,fotos:[]},
-      {clave:"0219-OAX-RBHD-01",desc:"RELLENO CON BASE HIDRAULICA: 40% ARENA, 30% GRAVA TMA 1', 20% GRAVA TMA 3/4', 10% MATERIAL PARA REVESTIMIENTO, COMPACTAD",unidad:"M3",cantidad:424.28,pu:5093.16,importe:2160925.92,avance:0,fotos:[]},
-      {clave:"0219-OAX-GUC-50",desc:"GUARNICION DE 15 X 60 CMS DE ALTURA, DE UN CONCRETO F´C =250 KG/CM2 REFROZADO CON 4 VARILLA DEL NO 3 Y ESTRIBOS DEL NO 2",unidad:"ML",cantidad:894.57,pu:1412.22,importe:1263329.65,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-008",desc:"FIRME DE CONCRETO HIDRAULICO MR-42  DE 20CM DE ESPESOR, REFORZADO CON MALLA ELECTROLDADA 6-6 / 10-10, INCLUYE SILLETAS D",unidad:"M2",cantidad:2121.41,pu:1516.27,importe:3216630.34,avance:0,fotos:[]},
-      {clave:"0219-OAX-PRN-41_20",desc:"SUMINISTRO Y COLOCACIÓN DE PISO DE RECINTO NEGRO 20 X 20  DE 4 CMS DE ESPESOR, ASENTADO CON MORTERO CEMENTO ARENA PROP. ",unidad:"M2",cantidad:1262.44,pu:3100.09,importe:3913677.62,avance:0,fotos:[]},
-    ],
-  },
-  "B1.7B": {
-    nombre: "SISTEMA DE INFILTRACIÓN Y BOMBEO PLUVIAL",
-    imp_total: 7378421.15,
-    conceptos: [
-      {clave:"0219-OAX-PZO-ABS01",desc:"CONSTRUCCION Y PERFORACION DE POZO DE ABSORCION DE 100.00 MTS DE PROFUNDIDAD Y 18' Ø. INCLUYE: INSTALACION Y DESMANTELAM",unidad:"PZA",cantidad:1.0,pu:2565429.9,importe:2565429.9,avance:0,fotos:[]},
-      {clave:"0219-OAX-PZO-EXT01",desc:"CONSTRUCCION Y PERFORACION DE POZO DE EXTRACCION DE 100 MTS DE PROFUNDIDAD Y 14' Ø. INCLUYE INSTALACION  Y DESMANTELAMIE",unidad:"PZA",cantidad:1.0,pu:3390475.76,importe:3390475.76,avance:0,fotos:[]},
-      {clave:"0219-OAX-CBOM-C1",desc:"CONSTRUCCION DE CARCAMO DE BOMBEO DE 4.58M DE LARGO X 1.60M DE ANCHO X 1.70 M DE ALTO, A BASE DE MURO DE TABIQUE LIGERO ",unidad:"PZA",cantidad:1.0,pu:249882.82,importe:249882.82,avance:0,fotos:[]},
-      {clave:"0219-OAX-EQ-PEXT-01",desc:"SUMINISTRO E INSTALACION DE EQUIPO ELECTROMECANICO PARA CARCAMO DE BOMBEO. INCLUYE: SUMINISTRO E INSTALACION DE TREN DE ",unidad:"PZA",cantidad:1.0,pu:1172632.67,importe:1172632.67,avance:0,fotos:[]},
-    ],
-  },
-  "B1.7": {
-    nombre: "ACCESO VEHICULAR",
-    imp_total: 7311598.19,
-    conceptos: [
-      {clave:"0219-OAX-CBH-08",desc:"EXCAVACIÓN EN CAJA POR MEDIOS MECÁNICOS EN MATERIAL SECO TIPO B; INCLUYE: MAQUINARIA, MARTILLO HIDRÁULICO (EN CASO NECES",unidad:"M3",cantidad:866.5,pu:202.15,importe:175162.98,avance:0,fotos:[]},
-      {clave:"0219-OAX-AYRB-49",desc:"AFINE Y COMPACTACIÓN DE TERRENO NATURAL CON MATERIAL DE BANCO EN CAPAS NO MAYORES A 20 CMS POR MEDIOS MANUALES CON BAILA",unidad:"M2",cantidad:2190.99,pu:239.47,importe:524676.38,avance:0,fotos:[]},
-      {clave:"0219-OAX-GUC-50",desc:"GUARNICION DE 15 X 60 CMS DE ALTURA, DE UN CONCRETO F´C =250 KG/CM2 REFROZADO CON 4 VARILLA DEL NO 3 Y ESTRIBOS DEL NO 2",unidad:"ML",cantidad:749.0,pu:1412.22,importe:1057752.78,avance:0,fotos:[]},
-      {clave:"0219-OAX-RBHD-01.",desc:"RELLENO CON BASE HIDRAULICA: 40% ARENA, 30% GRAVA TMA 1, 20% GRAVA TMA 3/4', 10% MATERIAL PARA REVESTIMIENTO, COMPACTADO",unidad:"M3",cantidad:438.21,pu:5093.16,importe:2231873.64,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-008",desc:"FIRME DE CONCRETO HIDRAULICO MR-42  DE 20CM DE ESPESOR, REFORZADO CON MALLA ELECTROLDADA 6-6 / 10-10, INCLUYE SILLETAS D",unidad:"M2",cantidad:2190.99,pu:1516.27,importe:3322132.41,avance:0,fotos:[]},
-    ],
-  },
-  "B1.9.1": {
-    nombre: "CISTERNA",
-    imp_total: 6908046.86,
-    conceptos: [
-      {clave:"0219-OAX-TRAZ-03.",desc:"TRAZO Y NIVELACIÓN CON EQUIPO DE TOPOGRAFÍA, INCLUYE: CUADRILLA DE TOPOGRAFÍA, EQUIPO, HERRAMIENTA Y EQUIPO DE SEGURIDAD",unidad:"M2",cantidad:256.12,pu:23.99,importe:6144.32,avance:0,fotos:[]},
-      {clave:"0219-OAX-EXCJ-26",desc:"EXCAVACIÓN POR MEDIOS MANUALES EN TERRENO TIPO 'B' A UNA PROFUNDIDAD MAXIMA DE 1.00 METROS EN TERRENO NATURAL. INCLUYE; ",unidad:"M3",cantidad:1037.26,pu:246.09,importe:255259.31,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACION Y DEMOLICION.  PRIMER KILOMETRO, INCLUYE: EQUIPO HERRAMIENTA, AC",unidad:"M3",cantidad:1348.44,pu:39.38,importe:53101.57,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACION Y DEMOLICION. KILOMETRO SUBSECUENTE, ZONA URBANA INCLUYE: ACARRE",unidad:"M3//KM",cantidad:20226.57,pu:36.01,importe:728358.79,avance:0,fotos:[]},
-      {clave:"OAX.ZARP-TN1",desc:"PERFILADO Y ZARPEO DE MUROS DEL ALUD EN TERRENO TIPO 'B' A UNA PROFUNDIDAD MÁXIMA DE 5.00 METROS PARA CISTERNA DE MÓDULO",unidad:"M2",cantidad:313.2,pu:497.2,importe:155723.04,avance:0,fotos:[]},
-      {clave:"0219-OAX-AYRB-49",desc:"AFINE Y COMPACTACIÓN DE TERRENO NATURAL CON MATERIAL DE BANCO EN CAPAS NO MAYORES A 20 CMS POR MEDIOS MANUALES CON BAILA",unidad:"M2",cantidad:154.0,pu:239.47,importe:36878.38,avance:0,fotos:[]},
-      {clave:"0219-OAX-CAM-A01",desc:"SUMINISTRO Y COLOCACIÓN DE CAMA DE ARENA DE 10 CM DE ESPESOR INCLUYE: MATERIAL MANO DE OBRA, ACARREOS Y TODO LO NECESARI",unidad:"M2",cantidad:154.0,pu:231.4,importe:35635.6,avance:0,fotos:[]},
-      {clave:"0219-OAX-RMT-38",desc:"RELLENO CON MATERIAL DE BANCO (TEPETATE) EN CAPAS NO MAYORES A 20 CMS COMPACTADO AL 90% DE SU PVSM. INCLUYE: MATERIAL, M",unidad:"M3",cantidad:706.93,pu:1161.66,importe:821212.3,avance:0,fotos:[]},
-      {clave:"0219-OAX-AQUA-C01",desc:"SUMINISTRO, HABILITADO Y CONFORMADO DE CISTERNA PREFABRICADA WAVIN AQUACELL, CON UNA DIMENSIÓN DE 14.40M X 9.00M X 2.43M",unidad:"PZA",cantidad:1.0,pu:4815733.55,importe:4815733.55,avance:0,fotos:[]},
-    ],
-  },
-  "B1.10.4": {
-    nombre: "AREA SKATE PARK",
-    imp_total: 4983613.51,
-    conceptos: [
-      {clave:"0219-OAX-TRAZ-03.",desc:"TRAZO Y NIVELACIÓN CON EQUIPO DE TOPOGRAFÍA, INCLUYE: CUADRILLA DE TOPOGRAFÍA, EQUIPO, HERRAMIENTA Y EQUIPO DE SEGURIDAD",unidad:"M2",cantidad:800.0,pu:23.99,importe:19192.0,avance:0,fotos:[]},
-      {clave:"0219-OAX-EXCJ-26",desc:"EXCAVACIÓN POR MEDIOS MANUALES EN TERRENO TIPO 'B' A UNA PROFUNDIDAD MAXIMA DE 1.00 METROS EN TERRENO NATURAL. INCLUYE; ",unidad:"M3",cantidad:360.0,pu:246.09,importe:88592.4,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACION Y DEMOLICION.  PRIMER KILOMETRO, INCLUYE: EQUIPO HERRAMIENTA, AC",unidad:"M3",cantidad:468.0,pu:39.38,importe:18429.84,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACION Y DEMOLICION. KILOMETRO SUBSECUENTE, ZONA URBANA INCLUYE: ACARRE",unidad:"M3//KM",cantidad:7020.0,pu:36.01,importe:252790.2,avance:0,fotos:[]},
-      {clave:"0219-OAX-RMT-38",desc:"RELLENO CON MATERIAL DE BANCO (TEPETATE) EN CAPAS NO MAYORES A 20 CMS COMPACTADO AL 90% DE SU PVSM. INCLUYE: MATERIAL, M",unidad:"M3",cantidad:160.0,pu:1161.66,importe:185865.6,avance:0,fotos:[]},
-      {clave:"0219-OAX-CIM-GRA01",desc:"SUMINISTRO Y TENDIDO DE CAMA DE FILTRO A BASE DE GRAVILLA 3/4', CRIBADO DE 10 CMS DE ESPESOR, GRADO DE ACOMODADO 8% DE S",unidad:"M3",cantidad:80.0,pu:2491.89,importe:199351.2,avance:0,fotos:[]},
-      {clave:"0219-OAX-EST-C250",desc:"FIRME DE CONCRETO HIDRAULICO PREMEZCLADO F'C = 250KG/M2 DE 20CM DE ESPESOR, INCLUYE: SUMINISTRO, ARMADO Y COLOCACION DE ",unidad:"M2",cantidad:440.49,pu:1340.11,importe:590305.05,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-LOOP",desc:"CONSTRUCCIÓN DE MODULO #1 LOOP SANTI + QUATER PIPE (X2), EJE LONGITUDINAL DE 4.75M, EJE TRANSVERSAL DE 10.00 M, . INCLUY",unidad:"PZA",cantidad:1.0,pu:467437.93,importe:467437.93,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-SPEED",desc:"CONSTRUCCIÓN DE MODULO #2 SPEED BUMP / HIPPIE PUMP, DIAMETRO 4.20M, ALZADO DE 0.55M A PARTIR DE NPT. INCLUYE: EXCAVACION",unidad:"PZA",cantidad:1.0,pu:242403.37,importe:242403.37,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-DIAM",desc:"CONSTRUCCIÓN DE MODULO #3 DIAMON - BUMP TO BUMP, EJE LONGITUDINAL DE 5.48M Y EJE TRANSVERSAL DE 8.46M. INCLUYE: EXCAVACI",unidad:"PZA",cantidad:1.0,pu:432207.62,importe:432207.62,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-FBOX",desc:"CONSTRUCCIÓN DE MODULO #4 FUN BOX CRUZ FIALLO, EJE LONGITUDINAL DE 5.48M Y EJE TRANSVERSAL DE 8.00M. INCLUYE: EXCAVACION",unidad:"PZA",cantidad:1.0,pu:315762.69,importe:315762.69,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-PYRAM",desc:"CONSTRUCCIÓN DE MODULO #5 PLANTA 3 SIDE PYRAMID HIP, EJE LONGITUDINAL DE 5.04M Y EJE TRANSVERSAL DE 3.95M. INCLUYE: EXCA",unidad:"PZA",cantidad:1.0,pu:270597.64,importe:270597.64,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-BUMP",desc:"CONSTRUCCIÓN DE MODULO #6 BUMP TO BUMP TO DIAMOND, EJE LONGITUDINAL DE 4.70M Y EJE TRANSVERSAL DE 8.105M. INCLUYE: EXCAV",unidad:"PZA",cantidad:1.0,pu:315193.31,importe:315193.31,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-MRAMP",desc:"CONSTRUCCIÓN DE MODULO #7 MINI RAMP, EJE LONGITUDINAL DE 19.06M Y EJE TRANSVERSAL DE3.40M. INCLUYE: EXCAVACION DE TERREN",unidad:"PZA",cantidad:2.0,pu:462481.25,importe:924962.5,avance:0,fotos:[]},
-      {clave:"0219-OAX-SKT-BMX",desc:"CONSTRUCCIÓN DE MODULO #8 BOLW BMX > SKATE TIPO CACAHUATE, EJE LONGITUDINAL DE 13.10M, EJE TRANSVERSAL DE 8.25 M, . INCL",unidad:"PZA",cantidad:1.0,pu:660522.16,importe:660522.16,avance:0,fotos:[]},
-    ],
-  },
-  "A1.3": {
-    nombre: "DRENAJE PLUVIAL",
-    imp_total: 4644580.24,
-    conceptos: [
-      {clave:"0219-OAX-EX25-24",desc:"EXCAVACIÓN POR MEDIOS MECÁNICOS EN TERRENO TIPO “B”, A UNA PROFUNDIDAD MÁXIMA DE 2.50 METROS, PARA DRENAJE PLUVIAL; INCL",unidad:"M3",cantidad:1289.31,pu:220.31,importe:284047.89,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, PRIMER KILÓMETRO; INCLUYE: EQUIPO, HERRAMIENTA, CARGA, ACARREO ",unidad:"M3",cantidad:1676.12,pu:39.38,importe:66005.61,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, KILÓMETRO SUBSECUENTE, EN ZONA URBANA; INCLUYE: CARGA, ACARREO ",unidad:"M3//KM",cantidad:25141.69,pu:36.01,importe:905352.26,avance:0,fotos:[]},
-      {clave:"0219-OAX-AFT-35",desc:"AFINE DE FONDO DE CEPA PARA LA INSTALACIÓN DE TUBERÍA PLUVIAL, POR MEDIOS MANUALES CON BAILARINA; INCLUYE: MANO DE OBRA,",unidad:"M2",cantidad:573.05,pu:105.17,importe:60267.67,avance:0,fotos:[]},
-      {clave:"0219-OAX-CA5-36",desc:"SUMINISTRO Y COLOCACIÓN DE CAMA DE ARENA DE 10 CM DE ESPESOR PARA ASENTAR TUBERÍA PEAD CORRUGADA DE 45 CM DE DIÁMETRO; I",unidad:"M2",cantidad:573.05,pu:231.4,importe:132603.77,avance:0,fotos:[]},
-      {clave:"0219-OAX-TPDR-31",desc:"TRABAJOS DE PERFORACIÓN DE TUBERÍA DE DRENAJE DE PEAD CORRUGADO DE 18' DE DIÁMETRO, CON TALADRO Y BROCA DE 1/2', A MEDIO",unidad:"M",cantidad:115.62,pu:168.87,importe:19524.75,avance:0,fotos:[]},
-      {clave:"0219-OAX-TP45-34",desc:"SUMINISTRO E INSTALACIÓN DE TUBERÍA DE PEAD CORRUGADO DE 18' DE DIÁMETRO INTERIOR PARA DRENAJE PLUVIAL, HASTA 3 M DE PRO",unidad:"M",cantidad:764.04,pu:2322.41,importe:1774414.14,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACT-37",desc:"ACOSTILLADO DE TUBERÍA CON MATERIAL DE BANCO (GRAVA 3/4'), CRIBADO, LIMPIO Y LIBRE DE FINOS, COLOCADO EN CAPAS NO MAYORE",unidad:"M3",cantidad:136.61,pu:1571.4,importe:214668.95,avance:0,fotos:[]},
-      {clave:"0219-OAX-GTX-H01",desc:"SUMINISTRO Y COLOCACIÓN DE GEOTEXTIL NO TEJIDO DE POLIPROPILENO, PUNZONADO MECÁNICAMENTE, CON UN GRAMAJE MÍNIMO DE 200 G",unidad:"PZA",cantidad:16.0,pu:11231.95,importe:179711.2,avance:0,fotos:[]},
-      {clave:"0219-OAX-RMT-38.",desc:"RELLENO CON MATERIAL DE BANCO (TEPETATE), EN CAPAS NO MAYORES A 20 CM, COMPACTADO AL 90% DEL P.V.S.M.; INCLUYE: MATERIAL",unidad:"M3",cantidad:867.71,pu:1161.66,importe:1007984.0,avance:0,fotos:[]},
-    ],
-  },
-  "A1.5": {
-    nombre: "JARDINERIA",
-    imp_total: 4248745.89,
-    conceptos: [
-      {clave:"0219-OAX-EXCJ-26",desc:"EXCAVACIÓN POR MEDIOS MANUALES EN TERRENO TIPO 'B' A UNA PROFUNDIDAD MAXIMA DE 1.00 METROS EN TERRENO NATURAL. INCLUYE; ",unidad:"M3",cantidad:416.68,pu:246.09,importe:102540.78,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACA1-10..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, PRIMER KILÓMETRO; INCLUYE: EQUIPO, HERRAMIENTA, CARGA, ACARREO ",unidad:"M3",cantidad:541.68,pu:39.38,importe:21331.36,avance:0,fotos:[]},
-      {clave:"0219-OAX-ACAS-11..",desc:"ACARREO EN CAMIÓN DE MATERIAL PRODUCTO DE LA EXCAVACIÓN, KILÓMETRO SUBSECUENTE, EN ZONA URBANA; INCLUYE: CARGA, ACARREO ",unidad:"M3//KM",cantidad:8125.26,pu:36.01,importe:292590.61,avance:0,fotos:[]},
-      {clave:"0219-OAX-CIM-J12X30",desc:"CONSTRUCCIÓN DE CADENA DE CONCRETO DE 0.15 X 0.30 M, CON CONCRETO PREMEZCLADO BOMBEABLE F’C = 250 KG/CM²; INCLUYE: SUMIN",unidad:"ML",cantidad:1090.56,pu:1010.73,importe:1102261.71,avance:0,fotos:[]},
-      {clave:"0219-OAX-SAR-44",desc:"SUMINISTRO Y SIEMBRA DE ÁRBOL (PALO MULATO, PRIMAVERA, CEIBA, POCHOTE GRIS, FLOR DE MAYO, GUIEXUUBA, COQUITO, GUAMÚCHIL,",unidad:"PZA",cantidad:71.0,pu:19095.84,importe:1355804.64,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-005",desc:"SUMINISTRO Y COLOCACIÓN DE CAPA DE TEZONTLE DE 0.15 M DE ESPESOR, EN JARDINERAS TRIANGULARES DE 4.24 X 4.24 M Y 6.00 M D",unidad:"M3",cantidad:95.85,pu:4033.16,importe:386578.39,avance:0,fotos:[]},
-      {clave:"0219-OAX-ADC-006",desc:"SUMINISTRO, FABRICACIÓN Y COLOCACIÓN DE MARCO METÁLICO TRIANGULAR A BASE DE ÁNGULO DE 4' X 1/4', CON LAS SIGUIENTES DIME",unidad:"PZA",cantidad:71.0,pu:13910.4,importe:987638.4,avance:0,fotos:[]},
-    ],
-  },
-};
+// Catálogo de muestra eliminado — cada obra debe cargar su catálogo desde Presupuesto.
+const CATALOGO = {};
 
-const NOMINA_S18 = [
-  {nombre:'EDUARDO BOTELLO VASQUEZ',categoria:'DIRECTOR DE OBRA',tipo:'I',salarioSemanal:7466.67,salarioDiario:1244.445,diasTrabajados:6.0,horasExtra:0,importeDias:7466.67,importeHE:0,total:8666.67,semana:18},
-  {nombre:'JHOAN SMITH MONTIEL CORTES',categoria:'GERENTE DE HSE',tipo:'I',salarioSemanal:6500.0,salarioDiario:1083.3333,diasTrabajados:6.0,horasExtra:0,importeDias:6500.0,importeHE:0,total:8000.0,semana:18},
-  {nombre:'PABLO CASTILLO VILLALOBOS',categoria:'CONTROL DE OBRA',tipo:'I',salarioSemanal:8600.0,salarioDiario:1433.3333,diasTrabajados:6.0,horasExtra:0,importeDias:8600.0,importeHE:0,total:9800.0,semana:18},
-  {nombre:'JUAN EDGAR SUAREZ PRIETO',categoria:'SUPERVISOR DE OBRA',tipo:'I',salarioSemanal:5000.0,salarioDiario:833.3333,diasTrabajados:6.0,horasExtra:0,importeDias:5000.0,importeHE:0,total:5000.0,semana:18},
-  {nombre:'JOSE EMMANUEL ALEGRIA CUETO',categoria:'LOGISTICA',tipo:'I',salarioSemanal:5000.0,salarioDiario:833.3333,diasTrabajados:6.0,horasExtra:10.0,importeDias:5000.0,importeHE:1200.0,total:7400.0,semana:18},
-  {nombre:'ERICK GUTIERREZ JIMENEZ',categoria:'AUX. ADMINISTRATIVO',tipo:'I',salarioSemanal:5500.0,salarioDiario:916.6667,diasTrabajados:6.0,horasExtra:0,importeDias:5500.0,importeHE:0,total:5500.0,semana:18},
-  {nombre:'VIDAL MORALES HERNANDEZ',categoria:'VELADOR',tipo:'I',salarioSemanal:3500.0,salarioDiario:583.3333,diasTrabajados:6.0,horasExtra:0,importeDias:3500.0,importeHE:0,total:3500.0,semana:18},
-  {nombre:'MATEO GONZALEZ PEREZ',categoria:'VELADOR',tipo:'I',salarioSemanal:3500.0,salarioDiario:583.3333,diasTrabajados:5.0,horasExtra:0,importeDias:2916.67,importeHE:0,total:2916.67,semana:18},
-  {nombre:'MIGUEL AGUILAR EVIA',categoria:'BODEGUERO',tipo:'I',salarioSemanal:3300.0,salarioDiario:550.0,diasTrabajados:6.0,horasExtra:24.0,importeDias:3300.0,importeHE:2880.0,total:7380.0,semana:18},
-  {nombre:'JOSE ANTONIO DE JESUS MARIN',categoria:'OFICIAL FIERRERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:24.0,importeDias:4000.0,importeHE:3600.0,total:9000.0,semana:18},
-  {nombre:'ALEJANDRO GUZMAN MENDEZ',categoria:'OFICIAL CARPINTERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:25.0,importeDias:4000.0,importeHE:3750.0,total:9150.0,semana:18},
-  {nombre:'JUAN MIGUEL MORALES GARCIA',categoria:'CABO',tipo:'D',salarioSemanal:6000.0,salarioDiario:1000.0,diasTrabajados:6.0,horasExtra:28.0,importeDias:6000.0,importeHE:4200.0,total:11400.0,semana:18},
-  {nombre:'RODOLFO AQUINO HERNANDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:20.0,importeDias:4000.0,importeHE:3000.0,total:8400.0,semana:18},
-  {nombre:'JUAN JOSE GARCIA TELLEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:18.0,importeDias:4000.0,importeHE:2700.0,total:8100.0,semana:18},
-  {nombre:'BERENICE CARRILLO RAMIREZ',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:12.0,importeDias:3000.0,importeHE:1440.0,total:4440.0,semana:18},
-  {nombre:'DAVID VAZQUEZ SANTOS',categoria:'TOPOGRAFO',tipo:'D',salarioSemanal:5300.0,salarioDiario:883.3333,diasTrabajados:6.0,horasExtra:16.0,importeDias:5300.0,importeHE:2400.0,total:8900.0,semana:18},
-  {nombre:'MIGUEL ANGEL MENDEZ MATIAS',categoria:'CHOFER',tipo:'D',salarioSemanal:3500.0,salarioDiario:583.3333,diasTrabajados:6.0,horasExtra:20.0,importeDias:3500.0,importeHE:2400.0,total:5900.0,semana:18},
-  {nombre:'MELQUIADES CHAPAN MEMECHI',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:24.0,importeDias:4000.0,importeHE:3600.0,total:9000.0,semana:18},
-  {nombre:'RICARDO JUAREZ SANCHEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:20.0,importeDias:4000.0,importeHE:3000.0,total:8400.0,semana:18},
-  {nombre:'MARCOS MANUEL SANCHEZ PEREZ',categoria:'OPERADOR RETRO EXCAVADORA',tipo:'D',salarioSemanal:6500.0,salarioDiario:1083.3333,diasTrabajados:6.0,horasExtra:18.0,importeDias:6500.0,importeHE:2700.0,total:10600.0,semana:18},
-  {nombre:'HERMELINDO NUÑEZ MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:19.0,importeDias:4000.0,importeHE:2850.0,total:8250.0,semana:18},
-  {nombre:'ISRAEL NUÑEZ MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:19.0,importeDias:4000.0,importeHE:2850.0,total:8250.0,semana:18},
-  {nombre:'ALFREDO MACUIXTLE DE JESUS',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:18.0,importeDias:4000.0,importeHE:2700.0,total:8100.0,semana:18},
-  {nombre:'MARICELA HERNANDEZ FRANCO',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:16.0,importeDias:3000.0,importeHE:1920.0,total:4920.0,semana:18},
-  {nombre:'SAMUEL MARTINEZ REYES',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:24.0,importeDias:4000.0,importeHE:3600.0,total:9000.0,semana:18},
-  {nombre:'GUSTAVO HERNANDEZ RODRIGUEZ',categoria:'PAILERO',tipo:'D',salarioSemanal:5000.0,salarioDiario:833.3333,diasTrabajados:6.0,horasExtra:5.0,importeDias:5000.0,importeHE:600.0,total:6800.0,semana:18},
-  {nombre:'JESUS ABEL GUZMAN DE LA CRUZ',categoria:'SOLDADOR',tipo:'D',salarioSemanal:5000.0,salarioDiario:833.3333,diasTrabajados:4.0,horasExtra:10.0,importeDias:3333.33,importeHE:1200.0,total:5333.33,semana:18},
-  {nombre:'ALEJANDRO HERNANDEZ GERARDO',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:5.0,importeDias:4000.0,importeHE:750.0,total:6150.0,semana:18},
-  {nombre:'NOHEMY GABRIELA RODRIGUEZ VELASQUEZ',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:11.0,importeDias:3000.0,importeHE:1320.0,total:4320.0,semana:18},
-  {nombre:'JONATAN CHAPAN CHIBAMBA',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:22.0,importeDias:4000.0,importeHE:3300.0,total:8700.0,semana:18},
-  {nombre:'ROSENDO GUZMAN MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'JORGE GUTIERREZ JAIMES',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:5.0,horasExtra:0,importeDias:3333.33,importeHE:0,total:4500.33,semana:18},
-  {nombre:'SAMUEL HERNANDEZ MEDINA',categoria:'CADENERO',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:14.0,importeDias:3000.0,importeHE:1680.0,total:4680.0,semana:18},
-  {nombre:'SEVERO RAMIREZ',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:2.0,importeDias:3000.0,importeHE:240.0,total:3240.0,semana:18},
-  {nombre:'HECTOR JIMENEZ HERNANDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:11.0,importeDias:4000.0,importeHE:1650.0,total:5650.0,semana:18},
-  {nombre:'JOSE OSVALDO GALLARDO MARTINEZ',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:20.0,importeDias:3000.0,importeHE:2400.0,total:5400.0,semana:18},
-  {nombre:'ALEJANDRO VIDAL SANTIAGO',categoria:'AYUDANTE GENERAL',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:5.0,horasExtra:2.0,importeDias:2500.0,importeHE:240.0,total:2740.0,semana:18},
-  {nombre:'JUAN GALINDO MARTINEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'VICTOR VILORIA RAMIREZ',categoria:'OFICIAL FIERRERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:7450.0,semana:18},
-  {nombre:'ROSENDO JUAN BRIGADA',categoria:'OFICIAL CARPINTERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'BENIGNO VAZQUEZ JUAREZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'DAVID BAUTISTA MARTINEZ',categoria:'OFICIAL CARPINTERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:3.0,horasExtra:17.0,importeDias:2000.0,importeHE:2550.0,total:4550.0,semana:18},
-  {nombre:'MIGUEL ANGEL VAZQUEZ JUAREZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'MANUEL GUZMAN MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'RICARDO JULIAN GOMEZ GOMEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'JHONATAN DE JESUS  MENDOZA ROMAN',categoria:'ARMADOR',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:15.0,importeDias:4000.0,importeHE:1800.0,total:7000.0,semana:18},
-  {nombre:'SILVANO VAZQUEZ JUAREZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'MIGUEL ANGEL GOMEZ MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:18.0,importeDias:4000.0,importeHE:2700.0,total:8100.0,semana:18},
-  {nombre:'DAIRON CANO NUÑEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'DANIEL GOMEZ CRUZ',categoria:'OPERADOR RETRO EXCAVADORA',tipo:'D',salarioSemanal:5000.0,salarioDiario:833.3333,diasTrabajados:6.0,horasExtra:19.0,importeDias:5000.0,importeHE:2280.0,total:8480.0,semana:18},
-  {nombre:'ARMANDO GUZMAN BAUTISTA',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'DANIEL GUZMAN BAUTISTA',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'JUAN PABLO ROSARIO SANCHEZ',categoria:'OFICIAL ALBANIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:15.0,importeDias:4000.0,importeHE:2250.0,total:7650.0,semana:18},
-  {nombre:'EPIFANIO VELAZQUEZ GARCIA',categoria:'OFICIAL ALBANIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:0,horasExtra:0,importeDias:0,importeHE:0,total:0,semana:18},
-  {nombre:'ANGEL LIBRADO NUÑEZ MENDEZ',categoria:'OFICIAL FIERRERO',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:25.0,importeDias:4000.0,importeHE:3750.0,total:9150.0,semana:18},
-  {nombre:'FIDENCIO BELEN RUIZ',categoria:'OFICIAL ALBANIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:1.0,horasExtra:0,importeDias:666.67,importeHE:0,total:899.67,semana:18},
-  {nombre:'DANIEL FABIAN BERNANDO CANSECO',categoria:'AYUDANTE',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:6.0,horasExtra:5.0,importeDias:3000.0,importeHE:600.0,total:3600.0,semana:18},
-  {nombre:'ANTONIO QUIROZ MORALES',categoria:'AYUDANTE',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:3.0,horasExtra:0,importeDias:1500.0,importeHE:0,total:1500.0,semana:18},
-  {nombre:'ORLANDO CANO NUÑEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:25.0,importeDias:4000.0,importeHE:3750.0,total:9150.0,semana:18},
-  {nombre:'BRAULIO CANO NUÑEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:25.0,importeDias:4000.0,importeHE:3750.0,total:9150.0,semana:18},
-  {nombre:'NEREO SANCHEZ SAINOS',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:25.0,importeDias:4000.0,importeHE:3750.0,total:9150.0,semana:18},
-  {nombre:'LEOBARDO JUAREZ MENDEZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:18.0,importeDias:4000.0,importeHE:2700.0,total:8100.0,semana:18},
-  {nombre:'FRANCISCO VAZQUEZ JUAREZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'NARCISO VAZQUEZ JUAREZ',categoria:'OFICIAL ALBAÑIL',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:6.0,horasExtra:23.0,importeDias:4000.0,importeHE:3450.0,total:8850.0,semana:18},
-  {nombre:'FREDIBETH VELAZQUEZ ANTONIO',categoria:'ARMADOR',tipo:'D',salarioSemanal:4000.0,salarioDiario:666.6667,diasTrabajados:3.0,horasExtra:0,importeDias:2000.0,importeHE:0,total:2000.0,semana:18},
-  {nombre:'MIGUEL ANGEL GASPAR AGUILAR',categoria:'AYUDANTE',tipo:'D',salarioSemanal:3000.0,salarioDiario:500.0,diasTrabajados:2.0,horasExtra:0,importeDias:1000.0,importeHE:0,total:1000.0,semana:18},
-];
+// Nómina hardcodeada de muestra eliminada — se carga vacía por defecto.
+// Cada obra debe cargar su propia nómina desde el módulo de captura semanal.
+const NOMINA_S18 = [];
 
 // Sin obras hardcodeadas. Todas las obras se crean desde GP Construct vía PantallaObras.
 const _OBRAS_BASE = [];
@@ -2604,18 +2403,8 @@ function loadObras() {
   return [];
 }
 
-const SUBS_INIT = [
-  {sec:"A1.4",   sub:"Andador Peatonal",             imp:33217646,n:10,a:0,fotos:{}},
-  {sec:"B1.10.1",sub:"Mobiliario Urbano",             imp:22148492,n:6, a:0,fotos:{}},
-  {sec:"B1.4",   sub:"Andador Peatonal (Calle Const.)",imp:17739848,n:8,a:0,fotos:{}},
-  {sec:"A1.7.1", sub:"Terracerias",                   imp:11569121,n:8, a:0,fotos:{}},
-  {sec:"B1.7B",  sub:"Sistema Infiltración y Bombeo", imp:7378421, n:4, a:0,fotos:{}},
-  {sec:"B1.7",   sub:"Acceso Vehicular",              imp:7311598, n:5, a:0,fotos:{}},
-  {sec:"B1.9.1", sub:"Cisterna",                      imp:6752324, n:8, a:0,fotos:{}},
-  {sec:"B1.10.4",sub:"Área Skate Park",               imp:4983614, n:15,a:0,fotos:{}},
-  {sec:"A1.3",   sub:"Drenaje Pluvial",               imp:4644580, n:10,a:0,fotos:{}},
-  {sec:"A1.5",   sub:"Jardinería",                    imp:4248746, n:7, a:0,fotos:{}},
-];
+// Sin catálogo hardcodeado. Cada obra debe cargar su catálogo desde el módulo Presupuesto.
+const SUBS_INIT = [];
 
 const RUBROS_GP=[
   {id:"mat",label:"Materiales",         monto:13203452,color:C.blue},
@@ -6452,7 +6241,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           {pillAtraso && <div style={{fontSize:9,color:C.textMut,marginTop:-4,marginBottom:8}}>{pillAtraso.sub}</div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
             <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto bruto</div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto bruto (SIN IVA)</div>
               {editar?<Inp type="number" value={e.monto} style={{fontSize:12,fontWeight:600,color:C.caliza}}
                 onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,monto:parseFloat(ev.target.value)||0}:x))}/>
               :<div style={{fontSize:14,fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</div>}
@@ -8086,7 +7875,7 @@ function ModalNuevoSubcontrato({onSave, onClose}){
       {[
         ["Nombre del subcontrato","nombre","text","Ej: Electrificación nave 1"],
         ["Proveedor / Contratista","proveedor","text","Razón social del subcontratista"],
-        ["Monto contratado (MXN)","monto","number","0"],
+        ["Monto contratado (SIN IVA, MXN)","monto","number","0"],
         ["Fecha de inicio","fechaInicio","date",""],
         ["Fecha de fin","fechaFin","date",""],
         ["Descripción / Alcance","descripcion","textarea","Breve resumen del alcance contratado"],
@@ -8388,7 +8177,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         {[
           ["Nombre","nombre","text"],
           ["Proveedor","proveedor","text"],
-          ["Monto contratado","monto","number"],
+          ["Monto contratado (SIN IVA)","monto","number"],
           ["Fecha inicio","fechaInicio","date"],
           ["Fecha fin","fechaFin","date"],
           ["Estado","estado","select"],
@@ -8907,7 +8696,7 @@ function Contrato({obra, setObra, rol}) {
               ["Superintendente de obra","superintendente","text"],
               ["Residente de obra","residente","text"],
               ["Administrador de obra","admin","text"],
-              ["Presupuesto total","presupuesto","number"],
+              ["Presupuesto total (SIN IVA)","presupuesto","number"],
               ["Días de pago según contrato","diasPago","number"],
             ].map(([lbl,key,type])=>(
               <div key={key}>
@@ -9153,11 +8942,8 @@ const SUBTABS_PLANEACION = [
   {id:"presupuesto", label:"Presupuesto"},
 ];
 
-const EST_DEFAULT = [
-  {no:1,monto:8500000,periodo:"01–31 Mar 2026",estatus:"Pagada"},
-  {no:2,monto:7200000,periodo:"01–30 Abr 2026",estatus:"Facturada"},
-  {no:3,monto:6100000,periodo:"01–20 May 2026",estatus:"En proceso"},
-];
+// Sin estimaciones de muestra. Cada obra comienza en blanco.
+const EST_DEFAULT = [];
 
 export default function App(){
   const[usuario,setUsuario]=useState(null);
@@ -9177,19 +8963,27 @@ export default function App(){
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
 
-  // Al entrar a una obra, cargar sus parámetros y avance desde Firestore
+  // Al entrar a una obra, RESETEAR todo a vacío primero (evita ver datos de la obra
+  // anterior) y luego cargar lo que haya en Firestore. Si Firestore no tiene datos,
+  // los componentes muestran "vacío" hasta que el usuario capture.
   useEffect(()=>{
     if(!obraId) return;
+    // Reset inmediato para evitar mostrar datos de la obra anterior
+    setSubs([]);
+    setMaquinaria([]);
+    setMateriales([]);
+    setEstimaciones([]);
+    setEstCargadas(false);
+    setSubcontratos([]);
+    setHistorialAvance([]);
+    setHistorialCargado(false);
+
+    // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
       if(d) setObras(oo=>oo.map(o=>o.id===obraId?{...o,...d}:o));
     });
     fsGet(`obras/${obraId}/avance/subs`).then(d=>{
-      if(d&&Array.isArray(d.data)){
-        setSubs(ss=>ss.map(s=>{
-          const saved=d.data.find(x=>x.sec===s.sec);
-          return saved?{...s,a:saved.a}:s;
-        }));
-      }
+      if(d&&Array.isArray(d.data)) setSubs(d.data);
     });
     fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
@@ -9197,31 +8991,16 @@ export default function App(){
     fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
     });
-    // Subcontratos: se cargan al entrar a obra (los necesita Dashboard también)
     fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
-      else setSubcontratos([]);
     });
-    // Historial: lazy load — solo cuando se entra al tab Avance (puede ser grande)
-    setHistorialAvance([]);
-    setHistorialCargado(false);
   },[obraId]);
-  const[subs,setSubs]=useState(SUBS_INIT);
-  const[maquinaria,setMaquinaria]=useState([
-    {id:1,desc:"Retroexcavadora CAT-416D",vol:2,und:"Mes",pu:70000,imp:140000},
-    {id:2,desc:"Compactador BOMAG BW120", vol:2,und:"Mes",pu:35000,imp:70000},
-    {id:3,desc:"",vol:"",und:"Mes",pu:"",imp:0},
-    {id:4,desc:"",vol:"",und:"Mes",pu:"",imp:0},
-    {id:5,desc:"",vol:"",und:"Mes",pu:"",imp:0},
-  ]);
-  const[materiales,setMateriales]=useState([
-    {id:1,desc:"Tubería PEAD 18\"",      concepto:"En almacén",    vol:120,und:"ML", pu:2322.41,imp:278689},
-    {id:2,desc:"Piso recinto negro 10×10cm",concepto:"En tránsito",  vol:850,und:"M2", pu:3652.58,imp:3104693},
-    {id:3,desc:"Bolardos acero inoxidable",concepto:"En fabricación",vol:120,und:"PZA",pu:19562,  imp:2347440},
-    {id:4,desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0},
-    {id:5,desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0},
-  ]);
-  const[estimaciones,setEstimaciones]=useState(EST_DEFAULT.map(e=>({...e})));
+  // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
+  // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
+  const[subs,setSubs]=useState([]);
+  const[maquinaria,setMaquinaria]=useState([]);
+  const[materiales,setMateriales]=useState([]);
+  const[estimaciones,setEstimaciones]=useState([]);
   const[estCargadas,setEstCargadas]=useState(false);
   const[subcontratos,setSubcontratos]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
