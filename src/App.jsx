@@ -4983,6 +4983,49 @@ function GraficaTendencia({puntos=[], idealActual=null}){
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// EmptyState — mensaje visual para sub-tabs sin datos capturados
+// ════════════════════════════════════════════════════════════════════════════
+// Props:
+//   titulo: string (ej. "Sin catálogo cargado")
+//   mensaje: string corto explicando qué hacer
+//   cta: { label: string, onClick: fn } botón principal (opcional)
+//   pasos: array de strings con pasos detallados (opcional)
+function EmptyState({titulo, mensaje, cta, pasos}){
+  return <Card style={{background:C.bg, border:`0.5px dashed ${C.borderM}`, marginTop:6}}>
+    <div style={{padding:"22px 18px", textAlign:"center"}}>
+      <div style={{fontSize:13, fontWeight:700, color:C.caliza, marginBottom:6}}>{titulo}</div>
+      <div style={{fontSize:11, color:C.textSec, marginBottom:cta||pasos?14:0,
+        maxWidth:400, margin:"0 auto", lineHeight:1.5}}>
+        {mensaje}
+      </div>
+      {pasos && (
+        <div style={{margin:"14px auto 0", maxWidth:380, textAlign:"left",
+          background:C.surface, borderRadius:8, padding:"12px 14px",
+          border:`0.5px solid ${C.border}`}}>
+          {pasos.map((p,i) => (
+            <div key={i} style={{fontSize:10, color:C.textSec, marginBottom:6,
+              display:"flex", alignItems:"flex-start", gap:8}}>
+              <span style={{width:18, height:18, borderRadius:"50%", background:C.caliza,
+                color:C.bg, fontSize:10, fontWeight:700, display:"flex",
+                alignItems:"center", justifyContent:"center", flexShrink:0}}>{i+1}</span>
+              <span style={{paddingTop:2}}>{p}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {cta && (
+        <button onClick={cta.onClick}
+          style={{marginTop:14, background:C.caliza, color:C.bg, border:"none",
+            borderRadius:6, padding:"8px 18px", fontSize:11, fontWeight:600,
+            cursor:"pointer"}}>
+          {cta.label}
+        </button>
+      )}
+    </div>
+  </Card>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // MINI-DASHBOARDS por sub-tab de Operación
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -5119,7 +5162,7 @@ function MiniDashSubcontratos({obra, subcontratos}){
 function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
-                   historialAvance,setHistorialAvance,setCambiosPendientes}){
+                   historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
@@ -5166,7 +5209,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="volumenes"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
     {subTab==="almacen" && (
@@ -5176,7 +5219,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="materiales"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
     {subTab==="maquinaria" && (
@@ -5186,7 +5229,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="maquinaria"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
     {subTab==="nomina" && (
@@ -5196,7 +5239,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="nomina"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
     {subTab==="estimaciones" && (
@@ -5238,7 +5281,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol}){
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab}){
   // Si forceTab viene (porque el wrapper Operación define qué sub-tab mostrar),
   // ocultamos las tabs internas y usamos el tab forzado.
   const[tabLocal,setTab]=useState("volumenes");
@@ -5272,13 +5315,22 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
     </div>}
 
-    {tab==="volumenes"&&<Card>
+    {tab==="volumenes" && subs.length === 0 && (
+      <EmptyState
+        titulo="Aún no hay catálogo de presupuesto"
+        mensaje="Antes de capturar avance físico necesitas cargar el catálogo de conceptos de esta obra. Es lo que define qué subsecciones hay y cuánto pesa cada una."
+        cta={onNavTab ? {
+          label: "Ir a Planeación → Presupuesto",
+          onClick: () => onNavTab("planeacion", "presupuesto"),
+        } : null}
+        pasos={[
+          "Ve a la pestaña Planeación → Presupuesto.",
+          "Sube tu archivo Excel o CSV con el catálogo de conceptos.",
+          "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
+        ]}/>
+    )}
+    {tab==="volumenes" && subs.length > 0 && <Card>
       <Tit>Avance por subsección</Tit>
-      {subs.length === 0 && (
-        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
-          Sin catálogo de presupuesto cargado. Súbelo desde Planeación → Presupuesto.
-        </div>
-      )}
       {subs.map(s=>{
         const nF=((s.fotos||{})[s.sec]||[]).length;
         return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
@@ -5346,7 +5398,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       })}
     </Card>}
 
-    {tab==="maquinaria"&&<Card>
+    {tab==="maquinaria" && maquinaria.length === 0 && (
+      <EmptyState
+        titulo="Sin maquinaria propia registrada"
+        mensaje="Aquí registras los equipos de FOSMON asignados a esta obra (retroexcavadoras, compactadores, plantas, etc.). Suma al gasto total."
+        cta={editar ? {
+          label: "+ Agregar primer equipo",
+          onClick: () => setMaquinaria(mm=>[...mm,{id:Date.now(),desc:"",vol:"",und:"Mes",pu:"",imp:0}]),
+        } : null}
+        pasos={editar ? [
+          "Click en '+ Agregar primer equipo'.",
+          "Captura descripción, volumen, unidad (Mes/Día) y precio unitario.",
+          "El importe se calcula automáticamente. Guarda registro al terminar."
+        ] : null}/>
+    )}
+    {tab==="maquinaria" && maquinaria.length > 0 && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Maquinaria propia en obra</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al gasto</span>
@@ -5384,7 +5450,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       </div>
     </Card>}
 
-    {tab==="materiales"&&<Card>
+    {tab==="materiales" && materiales.length === 0 && (
+      <EmptyState
+        titulo="Sin materiales en almacén registrados"
+        mensaje="Registra los materiales que están en obra, en tránsito o en fabricación. Suma al Monto Ejecutado aunque aún no estén instalados."
+        cta={editar ? {
+          label: "+ Agregar primer material",
+          onClick: () => setMateriales(mm=>[...mm,{id:Date.now(),desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0}]),
+        } : null}
+        pasos={editar ? [
+          "Click en '+ Agregar primer material'.",
+          "Captura descripción, condición (En almacén/En tránsito/En fabricación/Anticipo), volumen, unidad y precio unitario.",
+          "Mantén actualizada esta lista para que el margen de obra sea real."
+        ] : null}/>
+    )}
+    {tab==="materiales" && materiales.length > 0 && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Materiales en almacén</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al monto ejecutado</span>
@@ -6244,6 +6324,18 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         </button>}
       </div>
       </div>
+      {estimaciones.length === 0 && (
+        <div style={{padding:"24px 16px",textAlign:"center",background:C.bg,borderRadius:8,marginTop:8}}>
+          <div style={{fontSize:12,fontWeight:600,color:C.caliza,marginBottom:6}}>
+            Sin estimaciones registradas
+          </div>
+          <div style={{fontSize:10,color:C.textSec,maxWidth:380,margin:"0 auto",lineHeight:1.5}}>
+            {editar
+              ? 'Click "+ Nueva estimación" arriba para registrar la primera. Captura el monto (SIN IVA), período, estatus y fecha de facturación cuando aplique.'
+              : 'Aún no hay estimaciones registradas en esta obra.'}
+          </div>
+        </div>
+      )}
       {estimaciones.map((e,i)=>{
         const c=cE(e); const ecol=EST_COL[e.estatus]||C.yellow;
         // Calcular días de atraso si la estimación está Facturada y tiene fecha
@@ -9263,7 +9355,8 @@ export default function App(){
           estimaciones={estimaciones} setEstimaciones={setEstimaciones}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes}/>
+          setCambiosPendientes={setCambiosPendientes}
+          onNavTab={navTab}/>
       )}
 
       {/* GASTOS GP */}
