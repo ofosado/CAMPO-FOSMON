@@ -5398,13 +5398,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       })}
     </Card>}
 
-    {tab==="maquinaria" && maquinaria.length === 0 && (
+    {tab==="maquinaria" && maquinaria.filter(m => m.desc && m.desc.trim()).length === 0 && (
       <EmptyState
         titulo="Sin maquinaria propia registrada"
         mensaje="Aquí registras los equipos de FOSMON asignados a esta obra (retroexcavadoras, compactadores, plantas, etc.). Suma al gasto total."
         cta={editar ? {
           label: "+ Agregar primer equipo",
-          onClick: () => setMaquinaria(mm=>[...mm,{id:Date.now(),desc:"",vol:"",und:"Mes",pu:"",imp:0}]),
+          onClick: () => setMaquinaria(mm=>{
+            const conDatos = mm.filter(m => m.desc && m.desc.trim());
+            return [...conDatos, {id:Date.now(),desc:"",vol:"",und:"Mes",pu:"",imp:0}];
+          }),
         } : null}
         pasos={editar ? [
           "Click en '+ Agregar primer equipo'.",
@@ -5412,7 +5415,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "El importe se calcula automáticamente. Guarda registro al terminar."
         ] : null}/>
     )}
-    {tab==="maquinaria" && maquinaria.length > 0 && <Card>
+    {tab==="maquinaria" && maquinaria.filter(m => m.desc && m.desc.trim()).length > 0 && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Maquinaria propia en obra</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al gasto</span>
@@ -5450,13 +5453,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       </div>
     </Card>}
 
-    {tab==="materiales" && materiales.length === 0 && (
+    {tab==="materiales" && materiales.filter(m => m.desc && m.desc.trim()).length === 0 && (
       <EmptyState
         titulo="Sin materiales en almacén registrados"
         mensaje="Registra los materiales que están en obra, en tránsito o en fabricación. Suma al Monto Ejecutado aunque aún no estén instalados."
         cta={editar ? {
           label: "+ Agregar primer material",
-          onClick: () => setMateriales(mm=>[...mm,{id:Date.now(),desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0}]),
+          onClick: () => setMateriales(mm=>{
+            const conDatos = mm.filter(m => m.desc && m.desc.trim());
+            return [...conDatos, {id:Date.now(),desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0}];
+          }),
         } : null}
         pasos={editar ? [
           "Click en '+ Agregar primer material'.",
@@ -5464,7 +5470,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Mantén actualizada esta lista para que el margen de obra sea real."
         ] : null}/>
     )}
-    {tab==="materiales" && materiales.length > 0 && <Card>
+    {tab==="materiales" && materiales.filter(m => m.desc && m.desc.trim()).length > 0 && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Materiales en almacén</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al monto ejecutado</span>
@@ -6324,7 +6330,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         </button>}
       </div>
       </div>
-      {estimaciones.length === 0 && (
+      {estimaciones.filter(e => e.monto > 0 || (e.periodo && e.periodo.trim())).length === 0 && (
         <div style={{padding:"24px 16px",textAlign:"center",background:C.bg,borderRadius:8,marginTop:8}}>
           <div style={{fontSize:12,fontWeight:600,color:C.caliza,marginBottom:6}}>
             Sin estimaciones registradas
