@@ -327,17 +327,23 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const C0=16, C1=58, C2=48, C3=36, C4=CW-C0-C1-C2-C3;
   const EST_SC={'pagada':K.vk,'facturada':K.mk,'en proceso':K.ak2,'aprobada':K.vk};
 
-  const estRows=estActivas.map(e=>{
-    const ef=e.monto*(1-(obra.pctAnticipo||10)/100-(obra.pctFondoGar||5)/100);
-    return [
-      `EST-${String(e.no).padStart(2,'0')}`,
-      e.periodo||'',
-      MXN(e.monto),
-      e.estatus||'',
-      MXN(ef),
-    ];
-  });
-  estRows.push(['TOTAL','',MXN(te),'',MXN(te-aT-fgT)]);
+  let estRows;
+  if (estActivas.length > 0) {
+    estRows = estActivas.map(e=>{
+      const ef=e.monto*(1-(obra.pctAnticipo||10)/100-(obra.pctFondoGar||5)/100);
+      return [
+        `EST-${String(e.no).padStart(2,'0')}`,
+        e.periodo||'',
+        MXN(e.monto),
+        e.estatus||'',
+        MXN(ef),
+      ];
+    });
+    estRows.push(['TOTAL','',MXN(te),'',MXN(te-aT-fgT)]);
+  } else {
+    // Sin estimaciones capturadas: mostrar renglón vacío con indicación
+    estRows = [['—','Sin estimaciones capturadas','—','—','—']];
+  }
 
   // Usar doc.autoTable directamente — sin wrapper, control total
   doc.autoTable({
@@ -402,11 +408,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Anchos: Sec(16) + Desc(90) + Importe(38) + Avance%(18) + Barra(55) + Mto.Ejec(34) = 251
   const AV_SEC=16, AV_DESC=90, AV_IMP=38, AV_PCT=18, AV_BAR=55, AV_EJEC=CW-AV_SEC-AV_DESC-AV_IMP-AV_PCT-AV_BAR;
   const avHead=['Sec.','Descripción','Importe contrato','Avance','Progreso','Mto. ejecutado'];
-  const avBody=subsActivos.map(s=>{
-    const ejec=(s.a/100)*s.imp;
-    return [s.sec, s.sub||'', MXN(s.imp), PCT(s.a), '', MXN(ejec)];
-  });
-  avBody.push(['','TOTAL',MXN(totImp),PCT(af),'',MXN(totEjec)]);
+  let avBody;
+  if (subsActivos.length > 0) {
+    avBody = subsActivos.map(s=>{
+      const ejec=(s.a/100)*s.imp;
+      return [s.sec, s.sub||'', MXN(s.imp), PCT(s.a), '', MXN(ejec)];
+    });
+    avBody.push(['','TOTAL',MXN(totImp),PCT(af),'',MXN(totEjec)]);
+  } else {
+    // Sin catálogo cargado: renglón vacío indicando que no se ha capturado
+    avBody = [['—','Sin catálogo de presupuesto cargado','—','—','','—']];
+  }
 
   autoT(avHead, avBody,
     [AV_SEC,AV_DESC,AV_IMP,AV_PCT,AV_BAR,AV_EJEC],
@@ -452,34 +464,41 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=secHead('Almacén · Materiales en tránsito · Maquinaria propia', y);
 
   const LW5=CW*0.56, RW5=CW-LW5-5;
-  const matBody=[
-    ...matActivos.map(m=>[m.desc||'',m.concepto||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
-    ['TOTAL ALMACÉN','','','',MXN(totAlm)],
-  ];
+  // Si no hay materiales, mostrar un renglón vacío indicando que no se ha capturado
+  const matBody = matActivos.length > 0
+    ? [...matActivos.map(m=>[m.desc||'',m.concepto||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
+       ['TOTAL ALMACÉN','','','',MXN(totAlm)]]
+    : [['Sin materiales capturados','','','','—']];
   const yAM=autoT(
     ['Material','Condición','Vol.','Und','Importe'], matBody,
     [LW5*0.40,LW5*0.22,LW5*0.10,LW5*0.10,LW5*0.18],
     ML, y,
     {columnStyles:{2:{halign:'right'},4:{halign:'right'}},
      didParseCell:(d)=>{
-       if(d.row.index===matActivos.length){
+       if(matActivos.length > 0 && d.row.index===matActivos.length){
          d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+       if(matActivos.length === 0){
+         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
        }
      }}
   );
 
-  const maqBody=[
-    ...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
-    ['TOTAL MAQUINARIA','','',MXN(totMaq)],
-  ];
+  const maqBody = maqActivos.length > 0
+    ? [...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
+       ['TOTAL MAQUINARIA','','',MXN(totMaq)]]
+    : [['Sin maquinaria capturada','','','—']];
   const yMQ=autoT(
     ['Equipo','Cant.','Unidad','Importe'], maqBody,
     [RW5*0.62,RW5*0.12,RW5*0.11,RW5*0.15],
     ML+LW5+5, y,
     {columnStyles:{1:{halign:'center'},3:{halign:'right'}},
      didParseCell:(d)=>{
-       if(d.row.index===maqActivos.length){
+       if(maqActivos.length > 0 && d.row.index===maqActivos.length){
          d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+       if(maqActivos.length === 0){
+         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
        }
      }}
   );
@@ -644,17 +663,23 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   const LW7=CW*0.50, RW7=CW-LW7-5;
 
-  // Top 5 nómina
+  // Top 5 nómina (renglón vacío si no hay)
   const nom5=nomData.slice().sort((a,b)=>(b.total||0)-(a.total||0)).slice(0,5);
-  const nomBody=nom5.map((pe,i)=>[
-    i+1, pe.nombre||'', pe.categoria||pe.cat||'',
-    `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
-  ]);
+  const nomBody = nom5.length > 0
+    ? nom5.map((pe,i)=>[
+        i+1, pe.nombre||'', pe.categoria||pe.cat||'',
+        `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
+      ])
+    : [['—','Sin nómina capturada','—','—','—']];
   const yNom=autoT(
     ['#','Trabajador','Categoría','HE hrs','Total semana'], nomBody,
     [8,LW7*0.44,LW7*0.28,LW7*0.12,LW7*0.16], ML, y,
     {columnStyles:{0:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
      didParseCell:(d)=>{
+       if(nom5.length === 0){
+         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
+         return;
+       }
        if(d.column.index===3){
          const he=parseFloat(d.cell.text[0])||0;
          d.cell.styles.textColor=he>=20?K.rk:K.ak2;
@@ -5489,23 +5514,23 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
   const totalGP = datosObra
     ? (datosObra.grandTotal > 0
         ? datosObra.grandTotal
-        : Object.values(datosObra.años||{}).reduce((t,v)=>t+v, 0)
-          + (datosObra.total2026 || Object.values(datosObra.meses||{}).reduce((t,v)=>t+v, 0)))
+        : (datosObra.años ? Object.values(datosObra.años).reduce((t,v)=>t+v, 0) : 0)
+          + (datosObra.total2026 || (datosObra.meses ? Object.values(datosObra.meses).reduce((t,v)=>t+v, 0) : 0)))
     : obra.gastoGP || 0;
   const totalGastoObra = totalGP + totalMaq;
   const pctPresupuesto = obra.presupuesto > 0 ? (totalGastoObra/obra.presupuesto)*100 : 0;
 
   // Gasto última semana y delta
-  const gastoUltimaSem = datosObra && ultimaSem ? (datosObra.semanas[ultimaSem] || 0) : 0;
+  const gastoUltimaSem = datosObra?.semanas && ultimaSem ? (datosObra.semanas[ultimaSem] || 0) : 0;
   const semanasOrdenadas = semanas.slice();
   const idxUlt = semanasOrdenadas.indexOf(ultimaSem);
   const semAnterior = idxUlt > 0 ? semanasOrdenadas[idxUlt - 1] : null;
-  const gastoSemAnterior = datosObra && semAnterior ? (datosObra.semanas[semAnterior] || 0) : 0;
+  const gastoSemAnterior = datosObra?.semanas && semAnterior ? (datosObra.semanas[semAnterior] || 0) : 0;
   const deltaUltSem = gastoUltimaSem - gastoSemAnterior;
 
   // Velocidad promedio últimas 4 semanas
   const ultimas4 = semanasOrdenadas.slice(-4);
-  const sumUlt4 = datosObra ? ultimas4.reduce((t,s)=>t+(datosObra.semanas[s]||0), 0) : 0;
+  const sumUlt4 = datosObra?.semanas ? ultimas4.reduce((t,s)=>t+(datosObra.semanas[s]||0), 0) : 0;
   const velocidadProm = ultimas4.length > 0 ? sumUlt4/ultimas4.length : 0;
 
   // ── Análisis de proveedores ──
@@ -5551,7 +5576,7 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
 
   // ── Análisis de rubros ──
   // Igual que la obra: usar grandTotal del rubro si existe, fallback a años+total2026
-  const rubrosArr = datosObra ? Object.values(datosObra.rubros) : [];
+  const rubrosArr = datosObra && datosObra.rubros ? Object.values(datosObra.rubros) : [];
   const rubrosOrdenados = rubrosArr.map(r => ({
     ...r,
     total: r.grandTotal > 0
@@ -5566,11 +5591,11 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
   const colorRubro = (i) => RUBRO_COLORS[i % RUBRO_COLORS.length];
 
   // ── Anomalías y proyección ──
-  const gastoMaxHistorico = Math.max(...(datosObra ? Object.values(datosObra.semanas) : [0]));
+  const gastoMaxHistorico = Math.max(...(datosObra && datosObra.semanas ? Object.values(datosObra.semanas) : [0]));
   const gastoPromedioSem = semanas.length > 0
     ? Object.values(datosObra?.semanas || {}).reduce((t,v)=>t+v,0) / semanas.length
     : 0;
-  const semanasAnomalas = datosObra
+  const semanasAnomalas = datosObra?.semanas
     ? semanasOrdenadas.filter(s => (datosObra.semanas[s]||0) > gastoPromedioSem * 2 && (datosObra.semanas[s]||0) > 0)
     : [];
 
@@ -5948,7 +5973,7 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
               {semanasOrdenadas.length} semanas registradas · Promedio: {MXN(gastoPromedioSem)}/sem
             </div>
             {semanasOrdenadas.map(s => {
-              const v = datosObra.semanas[s] || 0;
+              const v = (datosObra?.semanas && datosObra.semanas[s]) || 0;
               const pct = gastoMaxHistorico > 0 ? (v/gastoMaxHistorico)*100 : 0;
               const esAnomala = semanasAnomalas.includes(s);
               const col = esAnomala ? C.red : s===ultimaSem ? C.caliza : C.textMut;
