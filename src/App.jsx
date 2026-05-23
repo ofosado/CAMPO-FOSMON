@@ -5309,12 +5309,29 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   const ocultarTabs = !!forceTab;
   const[exp,setExp]=useState({});
   const editar=can(rol,"captura","editar");
-  // Guards defensivos: las subs cargadas de Firestore no traen `fotos` por defecto
-  const addFoto=(sec,foto)=>setSubs(ss=>ss.map(s=>{
-    if(s.sec!==sec) return s;
-    const fotosObj = s.fotos || {};
-    return {...s, fotos:{...fotosObj, [sec]:[...(fotosObj[sec]||[]), foto]}};
-  }));
+  // Sube la foto a Firebase Storage y guarda solo la URL en Firestore (no base64).
+  // Esto evita que el documento Firestore crezca demasiado y permite cargar
+  // miles de fotos sin afectar el rendimiento de carga.
+  const addFoto = async (sec, foto) => {
+    if (!obra?.id) return;
+    try {
+      // foto = {id, url} donde url puede ser base64 (recién leída) o ya http
+      const idSafe = (foto.id || Date.now()).toString();
+      // Si ya es URL https, no la re-subimos
+      let urlFinal = foto.url;
+      if (foto.url && foto.url.startsWith('data:')) {
+        urlFinal = await uploadFoto(obra.id, `avance_${sec}`, idSafe, foto.url);
+      }
+      setSubs(ss => ss.map(s => {
+        if (s.sec !== sec) return s;
+        const fotosObj = s.fotos || {};
+        return {...s, fotos:{...fotosObj, [sec]:[...(fotosObj[sec]||[]), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
+      }));
+    } catch (e) {
+      console.error('addFoto error', e);
+      alert('Error al subir foto: ' + (e.message || 'desconocido'));
+    }
+  };
   const delFoto=(sec,id)=>setSubs(ss=>ss.map(s=>{
     if(s.sec!==sec) return s;
     const fotosObj = s.fotos || {};
@@ -5350,7 +5367,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         ]}/>
     )}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
-      <Tit>Avance por subsección</Tit>
+      <Tit>Avance por concepto</Tit>
       {subs.filter(s => (s.imp||0) > 0).map(s=>{
         const nF=((s.fotos||{})[s.sec]||[]).length;
         return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
