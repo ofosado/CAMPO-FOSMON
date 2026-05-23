@@ -26,6 +26,8 @@ const ROLES_VALIDOS = [
   "director_general",
   "director_operaciones",
   "gerente_construccion",
+  "superintendente",
+  "residente",
   "administrador_obra",
   "admin_sistema",
   "cliente",

@@ -1045,6 +1045,85 @@ const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
 // ════════════════════════════════════════════════════════════════════════════
+// AUDIT LOG (bitácora) — para resolver controversias y trazabilidad
+// ════════════════════════════════════════════════════════════════════════════
+// Estructura Firestore: auditoria/{autoId} con tipo, usuario, obra, módulo,
+// entidad, path, antes, después, ts. Helpers fsSetA / fsDelA envuelven los
+// writes para registrar automáticamente.
+let _auditCtx = { correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" };
+const setAuditCtx = (ctx) => { _auditCtx = { ..._auditCtx, ...ctx }; };
+const setAuditObra = (id, nombre) => { _auditCtx.obraId = id; _auditCtx.obraNombre = nombre || ""; };
+
+// Trunca snapshots para no llenar la bitácora con fotos en base64 o listas enormes
+const _trunc = (v, depth=0) => {
+  if (v === null || v === undefined) return v;
+  if (depth > 3) return "…";
+  if (typeof v === "string") return v.length > 200 ? v.slice(0,200) + "…" : v;
+  if (typeof v === "number" || typeof v === "boolean") return v;
+  if (Array.isArray(v)) return v.slice(0, 50).map(x => _trunc(x, depth+1));
+  if (typeof v === "object") {
+    const o = {};
+    Object.keys(v).slice(0, 30).forEach(k => {
+      if (k === "url" && typeof v[k] === "string" && v[k].startsWith("data:")) o[k] = "[base64 omitido]";
+      else if (k === "fotos" && Array.isArray(v[k])) o[k] = `[${v[k].length} foto(s)]`;
+      else o[k] = _trunc(v[k], depth+1);
+    });
+    return o;
+  }
+  return String(v);
+};
+
+async function fsAudit(tipo, opciones = {}) {
+  try {
+    const entry = {
+      tipo,
+      usuario: _auditCtx.correo || "anonimo",
+      nombre: _auditCtx.nombre || "",
+      rol: _auditCtx.rol || "",
+      obraId: opciones.obraId !== undefined ? opciones.obraId : _auditCtx.obraId,
+      obraNombre: opciones.obraNombre !== undefined ? opciones.obraNombre : _auditCtx.obraNombre,
+      modulo: opciones.modulo || "",
+      entidad: opciones.entidad || "",
+      path: opciones.path || "",
+      ts: new Date().toISOString(),
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 200) : "",
+    };
+    if (opciones.antes !== undefined) entry.antes = _trunc(opciones.antes);
+    if (opciones.despues !== undefined) entry.despues = _trunc(opciones.despues);
+    if (opciones.meta) entry.meta = _trunc(opciones.meta);
+    await addDoc(collection(fbDb, "auditoria"), entry);
+  } catch(e) { console.warn("fsAudit fallo (silencioso):", e?.message); }
+}
+
+// Wrappers con auditoría. Si no se pasa ctx, no se audita.
+const fsSetA = async (path, data, ctx) => {
+  let antes = null;
+  if (ctx) { try { antes = await fsGet(path); } catch {} }
+  const ok = await fsSet(path, data);
+  if (ok && ctx) {
+    fsAudit(antes ? "editar" : "crear", {
+      path, modulo: ctx.modulo, entidad: ctx.entidad,
+      obraId: ctx.obraId, obraNombre: ctx.obraNombre,
+      antes, despues: data, meta: ctx.meta,
+    });
+  }
+  return ok;
+};
+const fsDelA = async (path, ctx) => {
+  let antes = null;
+  if (ctx) { try { antes = await fsGet(path); } catch {} }
+  const ok = await fsDel(path);
+  if (ok && ctx) {
+    fsAudit("borrar", {
+      path, modulo: ctx.modulo, entidad: ctx.entidad,
+      obraId: ctx.obraId, obraNombre: ctx.obraNombre,
+      antes, meta: ctx.meta,
+    });
+  }
+  return ok;
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
 // ════════════════════════════════════════════════════════════════════════════
 // Estructura Firestore: obras/{obraId}/avance/historial = { semanas: [...] }
@@ -2244,6 +2323,8 @@ const ROL_LABEL = {
   director_general:    "Director General",
   director_operaciones:"Director de Operaciones",
   gerente_construccion:"Gerente de Construcción",
+  superintendente:     "Superintendente",
+  residente:           "Residente",
   administrador_obra:  "Administrador de Obra",
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
@@ -2252,19 +2333,36 @@ const ROL_LABEL = {
 // Permisos: can(rol, modulo, accion)
 // acciones: 'ver' | 'editar'
 // modulos: 'dash','captura','gastos','estimaciones','riesgo','personal_detalle','todas_obras'
+// Equipo de obra (super/residente/admin_obra): mismos permisos por default.
+// Puede afinarse por obra desde Planeación → Permisos (override).
 const PERMISOS = {
-  director_general:    { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
-  director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver", todas_obras:true  },
-  gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
-  administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver", todas_obras:false },
-  admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver", todas_obras:true  },
-  cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,  todas_obras:false },
+  director_general:    { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  superintendente:     { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
+  residente:           { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
+  administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
+  admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
 };
 
+// Override de permisos por obra: { [rol]: { [modulo]: "ver"|"editar"|null } }
+// Se setea al entrar a una obra desde Firestore (obras/{id}/config/permisos).
+let _permisosObraOverride = null;
+const setPermisosObraOverride = (override) => { _permisosObraOverride = override; };
+const getPermisosObraOverride = () => _permisosObraOverride;
+
 function can(rol, modulo, accion="ver") {
-  const p = PERMISOS[rol];
-  if (!p) return false;
-  const v = p[modulo];
+  // 1) Override por obra (si hay y tiene definido el rol/módulo)
+  let v = null;
+  if (_permisosObraOverride && _permisosObraOverride[rol] && _permisosObraOverride[rol][modulo] !== undefined) {
+    v = _permisosObraOverride[rol][modulo];
+  } else {
+    // 2) Default global
+    const p = PERMISOS[rol];
+    if (!p) return false;
+    v = p[modulo];
+  }
   if (!v) return false;
   if (accion === "ver") return v === "ver" || v === "editar";
   return v === "editar";
@@ -2486,12 +2584,17 @@ function Login({onLogin}){
         setLoading(false);
         return;
       }
+      // Configura ctx de auditoría y registra login
+      setAuditCtx({ correo: email, nombre: perfil.nombre, rol: perfil.rol, obraId: null, obraNombre: "" });
+      fsAudit("login", { modulo: "sesion", entidad: email });
       onLogin({
         correo: email,
         nombre: perfil.nombre,
         rol: perfil.rol,
         uid: cred.user.uid,
         obras_asignadas: Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [],
+        bienvenidaVista: perfil.bienvenidaVista === true,
+        emailId,
       });
     } catch(e) {
       const msgs = {
@@ -3822,8 +3925,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
   const ejecutarEliminar=async()=>{
     if(!confirmarEliminar) return;
     const id = confirmarEliminar.id;
-    // Eliminar TODO de Firestore: top-level + cada sub-doc conocido
-    // El doc top-level obras/{id} es el que usa el listador al cargar (con getDocs)
+    const snapshotPrev = confirmarEliminar;
     await Promise.all([
       fsDel(`obras/${id}`),
       fsDel(`obras/${id}/config/info`),
@@ -3839,7 +3941,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
       fsDel(`obras/${id}/contrato/documentos`),
       fsDel(`obras/${id}/subcontratos/lista`),
     ]);
-    // Eliminar del estado local
+    // Auditar (1 sola entrada por operación de borrado de obra)
+    fsAudit("borrar", { modulo: "obra", entidad: snapshotPrev.nombre || id,
+      obraId: id, obraNombre: snapshotPrev.contrato || snapshotPrev.nombre || "",
+      antes: snapshotPrev, path: `obras/${id}` });
     setObras(oo=>oo.filter(o=>o.id!==id));
     setConfirmarEliminar(null); setIdConfirm(""); setElimStep(1);
   };
@@ -3848,9 +3953,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
     setObras(oo=>[...oo,nueva]);
     // Guardar en Firestore: top-level + sub-doc info
-    // El top-level es necesario para que la obra sea listable con getDocs(collection('obras'))
     await fsSet(`obras/${nueva.id}`, nueva);
     await fsSet(`obras/${nueva.id}/config/info`, nueva);
+    fsAudit("crear", { modulo: "obra", entidad: nueva.nombre,
+      obraId: nueva.id, obraNombre: nueva.contrato || nueva.nombre || "",
+      despues: nueva, path: `obras/${nueva.id}` });
     setModalNueva(false);
     // Notif a directivos sobre la nueva obra
     notifARoles(['director_general','director_operaciones','admin_sistema'], {
@@ -4662,25 +4769,22 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
-      await fsSet(`obras/${obra.id}/avance/subs`, {
+      const avanceData = {
         data: subs.map(s=>({
-          sec: s.sec,
-          sub: s.sub || '',
-          imp: s.imp || 0,
-          n: s.n || 1,
-          a: s.a || 0,
-          fotos: s.fotos || {},
+          sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
+          n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
         })),
         fecha: new Date().toISOString()
-      });
-      await fsSet(`obras/${obra.id}/avance/maquinaria`, {
-        data: maquinaria,
-        fecha: new Date().toISOString()
-      });
-      await fsSet(`obras/${obra.id}/avance/materiales`, {
-        data: materiales,
-        fecha: new Date().toISOString()
-      });
+      };
+      await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
+        { modulo:"avance_fisico", entidad:`captura ${tipoSnapshot}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+          meta:{ tipo: tipoSnapshot, nSubs: subs.length, avancePromedio: subs.reduce((s,x)=>s+(x.a||0),0)/(subs.length||1) } });
+      await fsSetA(`obras/${obra.id}/avance/maquinaria`,
+        { data: maquinaria, fecha: new Date().toISOString() },
+        { modulo:"maquinaria", entidad:`${maquinaria.length} equipos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      await fsSetA(`obras/${obra.id}/avance/materiales`,
+        { data: materiales, fecha: new Date().toISOString() },
+        { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
       // Crear snapshot del avance para histórico semanal
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot);
       if (snap && onHistorialNuevo) onHistorialNuevo(snap);
@@ -5286,6 +5390,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
     </div>
     {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
+    {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
   </div>;
 }
 
@@ -6332,8 +6437,11 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         {editar&&<SecBtn onClick={()=>setEstimaciones(es=>[...es,{no:(es.length>0?Math.max(...es.map(e=>e.no)):0)+1,monto:0,periodo:"",estatus:"En proceso"}])}>+ Nueva estimación</SecBtn>}
         {editar&&<button onClick={async ()=>{
           try{
-            await fsSet(`obras/${obra.id}/config/estimaciones`, {data:estimaciones});
-            await fsSet(`obras/${obra.id}/config/parametros`, {pctAnticipo:obra.pctAnticipo,pctFondoGar:obra.pctFondoGar,pctRetencion:obra.pctRetencion||0});
+            await fsSetA(`obras/${obra.id}/config/estimaciones`, {data:estimaciones},
+              { modulo:"estimaciones", entidad:`${estimaciones.length} estimaciones`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+            await fsSetA(`obras/${obra.id}/config/parametros`,
+              {pctAnticipo:obra.pctAnticipo,pctFondoGar:obra.pctFondoGar,pctRetencion:obra.pctRetencion||0},
+              { modulo:"contrato", entidad:"parámetros de estimación", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
             // Disparar notif por cambios detectados
             dispararNotifsCambios(estimaciones);
             setSaved(true); setTimeout(()=>setSaved(false),2500);
@@ -6798,9 +6906,12 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       fotos: {},
     }));
     try {
-      await fsSet(`obras/${obra.id}/config/catalogo`, cat);
+      await fsSetA(`obras/${obra.id}/config/catalogo`, cat,
+        { modulo:"presupuesto", entidad:`catálogo ${cat.conceptos?.length||0} conceptos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+          meta:{ importeTotal: cat.totalLeido, importeContrato } });
       // También guardar como subs para que aparezcan en Operación → Avance físico
-      await fsSet(`obras/${obra.id}/avance/subs`, { data: subsParaAvance });
+      await fsSetA(`obras/${obra.id}/avance/subs`, { data: subsParaAvance },
+        { modulo:"avance_fisico", entidad:"sincronización desde catálogo", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
       setObra({...obra, presupuesto: importeContrato});
       // Actualizar el state global de subs si el padre lo permite (para no requerir reload)
       if (setSubsGlobal) setSubsGlobal(subsParaAvance);
@@ -7369,7 +7480,9 @@ function Nomina({obra, rol}) {
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
         };
         const nuevo_hist = [...historial, nueva];
-        fsSet(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist});
+        fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
+          { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+            meta:{ totalNomina: nueva.totalNomina } });
         setHistorial(nuevo_hist);
         setVistaTab('actual');
         setSemanaVer(nuevo_hist.length - 1);
@@ -7382,8 +7495,10 @@ function Nomina({obra, rol}) {
   }
 
   function eliminarSemana(idx) {
+    const semPrev = historial[idx];
     const nuevo = historial.filter((_,i) => i !== idx);
-    fsSet(`obras/${obra.id}/nomina/historial`, {semanas:nuevo});
+    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
+      { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     setHistorial(nuevo);
     setSemanaVer(Math.max(0, idx-1));
   }
@@ -8038,7 +8153,8 @@ function Subcontratos({obra, rol, items, setItems, usuario}){
 
   const guardar = async (nuevos) => {
     setItems(nuevos);
-    const r = await fsSet(`obras/${obra.id}/subcontratos/lista`, {items: nuevos});
+    const r = await fsSetA(`obras/${obra.id}/subcontratos/lista`, {items: nuevos},
+      { modulo:"subcontratos", entidad:`${nuevos.length} subcontratos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     if(r){ setSaved(true); setTimeout(()=>setSaved(false), 2000); }
   };
 
@@ -8871,7 +8987,8 @@ function Contrato({obra, setObra, rol}) {
       finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
       diasPago: obra.diasPago||30,
     };
-    await fsSet(`obras/${obra.id}/config/info`, datos);
+    await fsSetA(`obras/${obra.id}/config/info`, datos,
+      { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // También escribir top-level para que la obra sea listable en getDocs(collection('obras'))
     await fsSet(`obras/${obra.id}`, {id: obra.id, ...datos, estado: obra.estado || 'activa'});
     setSaving(false); setSaved(true);
@@ -8884,7 +9001,8 @@ function Contrato({obra, setObra, rol}) {
     const amp = {...nuevaAmp, id: Date.now(), fechaRegistro: new Date().toISOString()};
     const nuevo = [...ampliaciones, amp];
     setAmpliaciones(nuevo);
-    await fsSet(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo});
+    await fsSetA(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo},
+      { modulo:"contrato", entidad:`ampliación ${amp.fecha}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // Actualizar finAmpliado en la obra
     setObra({...obra, finAmpliado: nuevaAmp.fecha});
     setNuevaAmp({fecha:"", justificacion:"", autorizadoPor:""});
@@ -8894,7 +9012,8 @@ function Contrato({obra, setObra, rol}) {
   async function eliminarAmpliacion(id) {
     const nuevo = ampliaciones.filter(a=>a.id!==id);
     setAmpliaciones(nuevo);
-    await fsSet(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo});
+    await fsSetA(`obras/${obra.id}/contrato/plazos`, {ampliaciones: nuevo},
+      { modulo:"contrato", entidad:"eliminar ampliación", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // Actualizar finAmpliado con la última ampliación restante
     const ultima = nuevo[nuevo.length-1];
     setObra({...obra, finAmpliado: ultima?.fecha||""});
@@ -8921,7 +9040,8 @@ function Contrato({obra, setObra, rol}) {
         };
         const nuevos = [...docs, doc];
         setDocs(nuevos);
-        await fsSet(`obras/${obra.id}/contrato/documentos`, {lista: nuevos});
+        await fsSetA(`obras/${obra.id}/contrato/documentos`, {lista: nuevos},
+          { modulo:"contrato", entidad:`documento ${file.name}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
       } catch(e) { console.error(e); }
       setUploading(false);
     };
@@ -8929,9 +9049,11 @@ function Contrato({obra, setObra, rol}) {
   }
 
   async function eliminarDoc(id) {
+    const docPrev = docs.find(d=>d.id===id);
     const nuevo = docs.filter(d=>d.id!==id);
     setDocs(nuevo);
-    await fsSet(`obras/${obra.id}/contrato/documentos`, {lista: nuevo});
+    await fsSetA(`obras/${obra.id}/contrato/documentos`, {lista: nuevo},
+      { modulo:"contrato", entidad:`eliminar documento ${docPrev?.nombre||id}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
   }
 
   const f = (k,v) => setObra({...obra, [k]: v});
@@ -9203,6 +9325,8 @@ const TABS_POR_ROL = {
   director_general:    [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   director_operaciones:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   gerente_construccion:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  superintendente:     [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  residente:           [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
@@ -9222,13 +9346,529 @@ const SUBTABS_OPERACION = [
 const SUBTABS_PLANEACION = [
   {id:"contrato", label:"Contrato"},
   {id:"presupuesto", label:"Presupuesto"},
+  {id:"permisos", label:"Permisos"},
 ];
 
 // Sin estimaciones de muestra. Cada obra comienza en blanco.
 const EST_DEFAULT = [];
 
+// ── WELCOME BANNER ────────────────────────────────────────────────────────
+// Pasos personalizados por rol, basados en el manual operativo. Solo
+// aparece la primera vez que el usuario entra a CAMPO.
+const PASOS_BIENVENIDA = {
+  director_general: [
+    { t:"Visión global", d:"Desde la pantalla de Obras ves el portafolio completo: avance, gasto y riesgo de cada obra activa." },
+    { t:"Entra a cualquier obra", d:"Haz clic en una obra para ver Dashboard, Operación, Gastos y Planeación con el detalle." },
+    { t:"Panel ejecutivo", d:"En Dashboard encuentras KPIs consolidados y alertas en rojo cuando algo requiere tu atención." },
+  ],
+  director_operaciones: [
+    { t:"Crea o abre una obra", d:"En Obras puedes registrar una nueva o entrar a una existente desde GP Construct." },
+    { t:"Carga el contrato", d:"En Planeación → Contrato registra cliente, monto, fechas y porcentajes." },
+    { t:"Sube el presupuesto", d:"En Planeación → Presupuesto carga el Excel de Opus para activar la captura de avance." },
+    { t:"Asigna el equipo", d:"Da de alta a residentes y superintendentes para que entren a capturar avance." },
+  ],
+  gerente_construccion: [
+    { t:"Revisa el portafolio", d:"En Obras ves todas tus obras activas con su semáforo de avance y riesgo." },
+    { t:"Captura semanal", d:"En Operación → Avance físico actualiza % por partida cada lunes." },
+    { t:"Estimaciones", d:"En Operación → Estimaciones autoriza lo cobrado al cliente." },
+  ],
+  superintendente: [
+    { t:"Tu obra", d:"Entras directo a la obra que tienes asignada. Verás el Dashboard con el avance acumulado." },
+    { t:"Captura tu avance", d:"En Operación → Avance físico actualiza el % de cada partida y sube fotos de evidencia." },
+    { t:"Maquinaria y almacén", d:"Lleva el control diario de horas-máquina y consumos en Operación → Maquinaria / Almacén." },
+    { t:"Semáforo", d:"El Dashboard usa colores: verde si vas bien, amarillo y rojo si hay que ajustar." },
+    { t:"Marca riesgos", d:"Si algo se atrasa o tienes un imprevisto, captúralo en Riesgos para que se vea arriba." },
+  ],
+  residente: [
+    { t:"Tu obra", d:"Al entrar verás tu obra preconfigurada. No necesitas crear nada." },
+    { t:"Cada lunes", d:"En Operación → Avance físico actualiza el porcentaje de cada partida que avanzaste la semana." },
+    { t:"Fotos de evidencia", d:"En cada partida puedes adjuntar fotos. Es la base del reporte fotográfico semanal." },
+    { t:"Semáforo", d:"El Dashboard te muestra en verde si vas bien, en amarillo/rojo si hay que ajustar." },
+    { t:"Reporta lo crítico", d:"Si algo no avanza o hay un problema, anótalo. Tu superintendente y el gerente lo verán." },
+  ],
+  administrador_obra: [
+    { t:"Tu obra", d:"Tu obra ya está cargada. Entra y revisa el Dashboard para ver el estado actual." },
+    { t:"Carga estimaciones", d:"En Operación → Estimaciones registra cada cobro al cliente con su factura." },
+    { t:"Gastos y subcontratos", d:"Lleva el control de gastos en Gastos y subcontratos en Operación → Subcontratos." },
+    { t:"Semáforo", d:"El Dashboard usa colores: verde si vas bien, amarillo y rojo si hay que ajustar." },
+    { t:"Cierra la semana", d:"Cada viernes revisa que toda la captura esté completa antes del corte semanal." },
+  ],
+  admin_sistema: [
+    { t:"Administrador de Sistema", d:"Tienes acceso a todas las obras en modo lectura para soporte técnico." },
+    { t:"Usuarios", d:"Puedes dar de alta o desactivar usuarios desde la pantalla de Administración." },
+  ],
+  cliente: [
+    { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
+    { t:"Avance y fotos", d:"En las pestañas Avance y Fotos sigues el progreso semana por semana." },
+  ],
+};
+
+function WelcomeBanner({usuario, onCerrar}){
+  const pasos = PASOS_BIENVENIDA[usuario.rol] || PASOS_BIENVENIDA.administrador_obra;
+  const rolLabel = ROL_LABEL[usuario.rol] || "Usuario";
+  const primerNombre = (usuario.nombre || "").split(" ")[0] || usuario.nombre || "";
+  const [guardando, setGuardando] = useState(false);
+
+  async function cerrar(){
+    setGuardando(true);
+    try {
+      if (usuario.emailId) {
+        await fsSet(`usuarios/${usuario.emailId}`, { bienvenidaVista: true });
+      }
+    } catch(e) { console.error("WelcomeBanner save", e); }
+    onCerrar();
+  }
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:9999,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:C.card,borderRadius:14,maxWidth:540,width:"100%",
+      maxHeight:"90vh",overflow:"auto",boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
+      <div style={{background:C.caliza,color:"#fff",padding:"18px 22px",borderRadius:"14px 14px 0 0"}}>
+        <div style={{fontSize:11,opacity:0.7,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>
+          Bienvenido a CAMPO
+        </div>
+        <div style={{fontSize:20,fontWeight:600,lineHeight:1.3}}>
+          Hola {primerNombre}
+        </div>
+        <div style={{fontSize:12,opacity:0.8,marginTop:4}}>
+          Acceso como {rolLabel}
+        </div>
+      </div>
+      <div style={{padding:"18px 22px"}}>
+        <div style={{fontSize:12,color:C.textSec,marginBottom:14,lineHeight:1.5}}>
+          Para que empieces rápido, estos son los pasos clave de tu rol:
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          {pasos.map((p,i)=>(
+            <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+              <div style={{flexShrink:0,width:26,height:26,borderRadius:"50%",
+                background:C.blueDk,color:"#fff",display:"flex",alignItems:"center",
+                justifyContent:"center",fontSize:12,fontWeight:600}}>{i+1}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600,color:C.textPri,marginBottom:2}}>{p.t}</div>
+                <div style={{fontSize:12,color:C.textSec,lineHeight:1.45}}>{p.d}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:18,padding:"10px 12px",background:C.bg,borderRadius:8,
+          fontSize:11,color:C.textMut,lineHeight:1.4}}>
+          Puedes revisar el manual completo en cualquier momento o pedirle ayuda a tu administrador. Este mensaje solo aparece una vez.
+        </div>
+        <button onClick={cerrar} disabled={guardando} style={{marginTop:16,width:"100%",
+          background:C.blueDk,color:"#fff",border:"none",borderRadius:8,padding:"12px",
+          fontSize:13,fontWeight:600,cursor:guardando?"wait":"pointer",
+          opacity:guardando?0.7:1}}>
+          {guardando ? "Guardando…" : "Entendido, empezar"}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+// ── VISOR DE BITÁCORA (AUDIT LOG) ─────────────────────────────────────────
+// Pantalla accesible para director_general / director_operaciones / admin_sistema
+const TIPO_LABEL = {
+  login:"Inicio sesión", logout:"Cierre sesión",
+  crear:"Creación", editar:"Edición", borrar:"Borrado",
+};
+const TIPO_COLOR = {
+  login:C.blueDk, logout:C.textMut,
+  crear:C.greenDk, editar:C.yellowDk, borrar:C.redDk,
+};
+function fmtFechaBit(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("es-MX",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+}
+function Bitacora({obras}){
+  const [items, setItems] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [fUsuario, setFUsuario] = useState("");
+  const [fObra, setFObra] = useState("");
+  const [fTipo, setFTipo] = useState("");
+  const [fModulo, setFModulo] = useState("");
+  const [fDesde, setFDesde] = useState("");
+  const [fHasta, setFHasta] = useState("");
+  const [detalle, setDetalle] = useState(null);
+  const [maxItems, setMaxItems] = useState(200);
+
+  useEffect(()=>{
+    let cancel=false;
+    (async ()=>{
+      setCargando(true); setError("");
+      try {
+        const q = query(collection(fbDb,"auditoria"), orderBy("ts","desc"), limit(maxItems));
+        const snap = await getDocs(q);
+        const arr = snap.docs.map(d=>({id:d.id, ...d.data()}));
+        if(!cancel){ setItems(arr); setCargando(false); }
+      } catch(e) {
+        if(!cancel){ setError(e.message || "Error al leer bitácora"); setCargando(false); }
+      }
+    })();
+    return ()=>{cancel=true;};
+  },[maxItems]);
+
+  const filtrados = items.filter(it => {
+    if(fUsuario && !(it.usuario||"").toLowerCase().includes(fUsuario.toLowerCase())
+       && !(it.nombre||"").toLowerCase().includes(fUsuario.toLowerCase())) return false;
+    if(fObra && it.obraId !== fObra) return false;
+    if(fTipo && it.tipo !== fTipo) return false;
+    if(fModulo && it.modulo !== fModulo) return false;
+    if(fDesde && it.ts < fDesde) return false;
+    if(fHasta && it.ts > fHasta + "T23:59:59") return false;
+    return true;
+  });
+
+  const modulos = [...new Set(items.map(i=>i.modulo).filter(Boolean))].sort();
+
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+      <div>
+        <h2 style={{fontSize:16,fontWeight:600,color:C.textPri,margin:0}}>Bitácora del sistema</h2>
+        <div style={{fontSize:11,color:C.textMut,marginTop:2}}>
+          {cargando ? "Cargando…" : `${filtrados.length} de ${items.length} registros`}
+        </div>
+      </div>
+      <select value={maxItems} onChange={e=>setMaxItems(Number(e.target.value))}
+        style={{fontSize:11,padding:"4px 8px",border:`1px solid ${C.border}`,borderRadius:6}}>
+        <option value={100}>Últimos 100</option>
+        <option value={200}>Últimos 200</option>
+        <option value={500}>Últimos 500</option>
+        <option value={1000}>Últimos 1000</option>
+      </select>
+    </div>
+
+    {error && <div style={{background:C.redBg,color:C.redDk,padding:10,borderRadius:6,marginBottom:10,fontSize:12}}>
+      {error}
+    </div>}
+
+    <Card style={{marginBottom:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Usuario</div>
+          <input type="text" value={fUsuario} onChange={e=>setFUsuario(e.target.value)}
+            placeholder="correo o nombre"
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}/>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Obra</div>
+          <select value={fObra} onChange={e=>setFObra(e.target.value)}
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}>
+            <option value="">Todas</option>
+            {obras.map(o=><option key={o.id} value={o.id}>{o.contrato||o.nombre||o.id}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Tipo</div>
+          <select value={fTipo} onChange={e=>setFTipo(e.target.value)}
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}>
+            <option value="">Todos</option>
+            {Object.keys(TIPO_LABEL).map(k=><option key={k} value={k}>{TIPO_LABEL[k]}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Módulo</div>
+          <select value={fModulo} onChange={e=>setFModulo(e.target.value)}
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}>
+            <option value="">Todos</option>
+            {modulos.map(m=><option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Desde</div>
+          <input type="date" value={fDesde} onChange={e=>setFDesde(e.target.value)}
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}/>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Hasta</div>
+          <input type="date" value={fHasta} onChange={e=>setFHasta(e.target.value)}
+            style={{width:"100%",fontSize:11,padding:"5px 7px",border:`1px solid ${C.border}`,borderRadius:5}}/>
+        </div>
+      </div>
+    </Card>
+
+    <Card>
+      {cargando ? (
+        <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>Cargando bitácora…</div>
+      ) : filtrados.length === 0 ? (
+        <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>
+          {items.length === 0 ? "No hay registros aún." : "Ningún registro coincide con los filtros."}
+        </div>
+      ) : (
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+            <thead>
+              <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:10,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Fecha</th>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Usuario</th>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Tipo</th>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Módulo</th>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Obra</th>
+                <th style={{textAlign:"left",padding:"6px 8px"}}>Entidad</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtrados.map(it=>(
+                <tr key={it.id} style={{borderBottom:`1px solid ${C.bg}`}}>
+                  <td style={{padding:"6px 8px",whiteSpace:"nowrap",color:C.textSec}}>{fmtFechaBit(it.ts)}</td>
+                  <td style={{padding:"6px 8px"}}>
+                    <div style={{color:C.textPri,fontWeight:500}}>{it.nombre || it.usuario}</div>
+                    <div style={{color:C.textMut,fontSize:9}}>{it.rol}</div>
+                  </td>
+                  <td style={{padding:"6px 8px"}}>
+                    <span style={{background:(TIPO_COLOR[it.tipo]||C.textMut)+"22",
+                      color:TIPO_COLOR[it.tipo]||C.textMut,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:500}}>
+                      {TIPO_LABEL[it.tipo]||it.tipo}
+                    </span>
+                  </td>
+                  <td style={{padding:"6px 8px",color:C.textSec}}>{it.modulo||"—"}</td>
+                  <td style={{padding:"6px 8px",color:C.textSec,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.obraNombre||"—"}</td>
+                  <td style={{padding:"6px 8px",color:C.textSec,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.entidad||"—"}</td>
+                  <td style={{padding:"6px 8px"}}>
+                    {(it.antes || it.despues || it.meta) && (
+                      <button onClick={()=>setDetalle(it)} style={{background:"none",border:`1px solid ${C.border}`,
+                        borderRadius:4,padding:"2px 7px",fontSize:10,color:C.blueDk,cursor:"pointer"}}>Ver</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+
+    {detalle && <div onClick={()=>setDetalle(null)} style={{position:"fixed",inset:0,
+      background:"rgba(0,0,0,0.55)",zIndex:9999,display:"flex",alignItems:"center",
+      justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.card,borderRadius:12,
+        maxWidth:700,width:"100%",maxHeight:"90vh",overflow:"auto"}}>
+        <div style={{background:C.caliza,color:"#fff",padding:"14px 18px",borderRadius:"12px 12px 0 0"}}>
+          <div style={{fontSize:11,opacity:0.7}}>{TIPO_LABEL[detalle.tipo]||detalle.tipo} · {detalle.modulo}</div>
+          <div style={{fontSize:15,fontWeight:600,marginTop:2}}>{detalle.entidad||detalle.path||""}</div>
+          <div style={{fontSize:10,opacity:0.8,marginTop:4}}>
+            {detalle.nombre||detalle.usuario} ({detalle.rol}) · {fmtFechaBit(detalle.ts)}
+          </div>
+          {detalle.obraNombre && <div style={{fontSize:10,opacity:0.7,marginTop:2}}>Obra: {detalle.obraNombre}</div>}
+        </div>
+        <div style={{padding:"14px 18px"}}>
+          {detalle.path && <div style={{fontSize:10,color:C.textMut,marginBottom:8,fontFamily:"monospace"}}>
+            {detalle.path}
+          </div>}
+          {detalle.meta && <div style={{marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:4}}>Resumen</div>
+            <pre style={{background:C.bg,padding:8,borderRadius:6,fontSize:10,overflow:"auto",margin:0}}>
+              {JSON.stringify(detalle.meta, null, 2)}
+            </pre>
+          </div>}
+          {detalle.antes !== undefined && <div style={{marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.redDk,marginBottom:4}}>Antes</div>
+            <pre style={{background:C.redBg,padding:8,borderRadius:6,fontSize:10,overflow:"auto",margin:0,maxHeight:240}}>
+              {JSON.stringify(detalle.antes, null, 2)}
+            </pre>
+          </div>}
+          {detalle.despues !== undefined && <div style={{marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.greenDk,marginBottom:4}}>Después</div>
+            <pre style={{background:C.greenBg,padding:8,borderRadius:6,fontSize:10,overflow:"auto",margin:0,maxHeight:240}}>
+              {JSON.stringify(detalle.despues, null, 2)}
+            </pre>
+          </div>}
+          <button onClick={()=>setDetalle(null)} style={{width:"100%",background:C.blueDk,
+            color:"#fff",border:"none",borderRadius:6,padding:"10px",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ── MATRIZ DE PERMISOS POR OBRA ──────────────────────────────────────────
+// Permite a Director/Director Op./Admin Sistema sobre-escribir los permisos
+// del equipo operativo (super/residente/admin_obra) en una obra específica.
+const ROLES_OVERRIDE = ["superintendente","residente","administrador_obra"];
+const MODULOS_OVERRIDE = [
+  {id:"captura",      label:"Avance físico"},
+  {id:"gastos",       label:"Gastos"},
+  {id:"estimaciones", label:"Estimaciones"},
+  {id:"riesgo",       label:"Riesgos"},
+];
+const ACCIONES_OPCIONES = [
+  {v:"editar", l:"Editar"},
+  {v:"ver",    l:"Solo ver"},
+  {v:null,     l:"Sin acceso"},
+];
+function PermisosObra({obra, rol}){
+  const puedeEditar = ["director_general","director_operaciones","admin_sistema"].includes(rol);
+  const [override, setOverride] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(()=>{
+    let cancel=false;
+    setCargando(true);
+    fsGet(`obras/${obra.id}/config/permisos`).then(d=>{
+      if(cancel) return;
+      setOverride(d?.override || null);
+      setCargando(false);
+    });
+    return ()=>{cancel=true;};
+  },[obra.id]);
+
+  const valorActual = (rolKey, mod) => {
+    if (override && override[rolKey] && override[rolKey][mod] !== undefined) {
+      return override[rolKey][mod];
+    }
+    return PERMISOS[rolKey]?.[mod] ?? null;
+  };
+  const esDefault = (rolKey, mod) => {
+    return !(override && override[rolKey] && override[rolKey][mod] !== undefined);
+  };
+  const setValor = (rolKey, mod, valor) => {
+    setOverride(prev => {
+      const nuevo = JSON.parse(JSON.stringify(prev || {}));
+      if (!nuevo[rolKey]) nuevo[rolKey] = {};
+      nuevo[rolKey][mod] = valor;
+      return nuevo;
+    });
+  };
+
+  async function guardar(){
+    setGuardando(true);
+    const data = { override: override || {}, actualizadoEn: new Date().toISOString() };
+    const ok = await fsSetA(`obras/${obra.id}/config/permisos`, data,
+      { modulo:"permisos", entidad:"matriz por obra", obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+        meta:{ override } });
+    if (ok) {
+      setPermisosObraOverride(override);
+      setSaved(true); setTimeout(()=>setSaved(false), 2500);
+    }
+    setGuardando(false);
+  }
+
+  async function restaurarDefaults(){
+    if (!window.confirm("¿Restaurar los permisos por default? Se borrará la matriz personalizada de esta obra.")) return;
+    setGuardando(true);
+    const ok = await fsDelA(`obras/${obra.id}/config/permisos`,
+      { modulo:"permisos", entidad:"restaurar defaults", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    if (ok) {
+      setOverride(null);
+      setPermisosObraOverride(null);
+      setSaved(true); setTimeout(()=>setSaved(false), 2500);
+    }
+    setGuardando(false);
+  }
+
+  if (cargando) return <Card><div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:12}}>Cargando permisos…</div></Card>;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card>
+      <Tit>Matriz de permisos por obra</Tit>
+      <div style={{fontSize:11,color:C.textSec,lineHeight:1.5,marginBottom:12}}>
+        Por default, Superintendente, Residente y Administrador de Obra pueden editar todo dentro de esta obra.
+        En obras grandes o con equipos más numerosos puedes restringir acciones específicas por rol.
+        Los cambios solo aplican a <strong>esta obra</strong>.
+        {!puedeEditar && <div style={{marginTop:6,color:C.textMut,fontStyle:"italic"}}>Solo lectura — necesitas rol Director o Admin de Sistema para modificar.</div>}
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:10,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              <th style={{textAlign:"left",padding:"8px 6px"}}>Rol</th>
+              {MODULOS_OVERRIDE.map(m=>(
+                <th key={m.id} style={{textAlign:"left",padding:"8px 6px",minWidth:120}}>{m.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ROLES_OVERRIDE.map(rolKey=>(
+              <tr key={rolKey} style={{borderBottom:`1px solid ${C.bg}`}}>
+                <td style={{padding:"10px 6px",fontWeight:500,color:C.textPri}}>{ROL_LABEL[rolKey]}</td>
+                {MODULOS_OVERRIDE.map(m=>{
+                  const v = valorActual(rolKey, m.id);
+                  const def = esDefault(rolKey, m.id);
+                  return <td key={m.id} style={{padding:"6px"}}>
+                    <select value={v===null?"null":v}
+                      disabled={!puedeEditar || guardando}
+                      onChange={e=>{
+                        const raw = e.target.value;
+                        setValor(rolKey, m.id, raw==="null" ? null : raw);
+                      }}
+                      style={{width:"100%",fontSize:11,padding:"5px 6px",
+                        border:`1px solid ${def ? C.border : C.blueDk}`,
+                        borderRadius:5,
+                        background: def ? C.surface : C.blueBg,
+                        color: v===null ? C.redDk : v==="editar" ? C.greenDk : C.textPri}}>
+                      {ACCIONES_OPCIONES.map(op=>(
+                        <option key={op.v===null?"null":op.v} value={op.v===null?"null":op.v}>{op.l}</option>
+                      ))}
+                    </select>
+                    {!def && <div style={{fontSize:9,color:C.blueDk,marginTop:2}}>personalizado</div>}
+                  </td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {puedeEditar && <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end",alignItems:"center"}}>
+        {saved && <span style={{fontSize:11,color:C.greenDk}}>Guardado</span>}
+        <button onClick={restaurarDefaults} disabled={guardando || !override}
+          style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+            padding:"7px 14px",fontSize:11,color:C.textSec,cursor:(guardando||!override)?"not-allowed":"pointer",
+            opacity:(guardando||!override)?0.5:1}}>
+          Restaurar defaults
+        </button>
+        <button onClick={guardar} disabled={guardando}
+          style={{background:C.caliza,border:"none",borderRadius:6,
+            padding:"7px 14px",fontSize:11,color:C.bg,cursor:guardando?"wait":"pointer",
+            opacity:guardando?0.7:1,fontWeight:500}}>
+          {guardando?"Guardando…":"Guardar matriz"}
+        </button>
+      </div>}
+    </Card>
+    <Card>
+      <Tit>Defaults globales (referencia)</Tit>
+      <div style={{fontSize:11,color:C.textMut,marginBottom:8}}>
+        Estos son los permisos por default si no hay personalización en la obra:
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase"}}>
+              <th style={{textAlign:"left",padding:"4px 6px"}}>Rol</th>
+              {MODULOS_OVERRIDE.map(m=>(
+                <th key={m.id} style={{textAlign:"left",padding:"4px 6px"}}>{m.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ROLES_OVERRIDE.map(rolKey=>(
+              <tr key={rolKey} style={{borderBottom:`1px solid ${C.bg}`}}>
+                <td style={{padding:"4px 6px",color:C.textSec}}>{ROL_LABEL[rolKey]}</td>
+                {MODULOS_OVERRIDE.map(m=>{
+                  const v = PERMISOS[rolKey]?.[m.id];
+                  return <td key={m.id} style={{padding:"4px 6px",
+                    color: v==="editar"?C.greenDk : v==="ver"?C.textSec : C.redDk}}>
+                    {v==="editar"?"Editar" : v==="ver"?"Solo ver" : "Sin acceso"}
+                  </td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  </div>;
+}
+
 export default function App(){
   const[usuario,setUsuario]=useState(null);
+  const[mostrarBienvenida,setMostrarBienvenida]=useState(false);
   const[screen,setScreen]=useState("obras");
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
@@ -9421,25 +10061,43 @@ export default function App(){
     });
   },[usuario, obrasActivasKey, screen, verPanelEjecutivo]);
 
-  if(!usuario) return <><style>{css}</style><Login onLogin={u=>{setUsuario(u);}}/></>;
+  if(!usuario) return <><style>{css}</style><Login onLogin={u=>{
+    setUsuario(u);
+    if (u.bienvenidaVista !== true) setMostrarBienvenida(true);
+  }}/></>;
 
   const obra=obras.find(o=>o.id===obraId);
   const setObra=u=>setObras(oo=>oo.map(o=>o.id===u.id?u:o));
-  const entrar=id=>{
+  const entrar=async id=>{
     setObraId(id);setScreen("obra");
     // Tab inicial = primera tab disponible según rol del usuario
     const primerTab = (TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones)[0]?.id || "dash";
     setTab(primerTab);
+    const o = obras.find(x=>x.id===id);
+    setAuditObra(id, o?.contrato || o?.nombre || "");
+    // Cargar override de permisos por obra (si lo tiene configurado)
+    try {
+      const perm = await fsGet(`obras/${id}/config/permisos`);
+      setPermisosObraOverride(perm?.override || null);
+    } catch { setPermisosObraOverride(null); }
+    fsAudit("editar", { modulo:"navegacion", entidad:"entrar a obra", obraId:id, obraNombre:o?.contrato||"" });
   };
-  const volver=()=>{setScreen("obras");setObraId(null);};
+  const volver=()=>{setScreen("obras");setObraId(null); setAuditObra(null, ""); setPermisosObraOverride(null);};
   const logout=async()=>{
+    try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
     try { await signOut(fbAuth); } catch {}
+    setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
+    setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
   };
   const TABS=TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones;
 
   return <ErrorBoundary><>
     <style>{css}</style>
+    {mostrarBienvenida && <WelcomeBanner usuario={usuario} onCerrar={()=>{
+      setMostrarBienvenida(false);
+      setUsuario(u=>u?{...u,bienvenidaVista:true}:u);
+    }}/>}
     {/* HEADER */}
     <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"8px 14px",
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
@@ -9468,6 +10126,15 @@ export default function App(){
               padding:"4px 8px",fontSize:10,
               color:screen==="usuarios"?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
             {screen==="usuarios"?"← Obras":"Usuarios"}
+          </button>
+        )}
+        {["director_general","director_operaciones","admin_sistema"].includes(usuario.rol) && (
+          <button onClick={()=>setScreen(screen==="bitacora"?"obras":"bitacora")}
+            style={{background:screen==="bitacora"?C.caliza:"none",
+              border:`0.5px solid ${screen==="bitacora"?C.caliza:C.border}`,borderRadius:6,
+              padding:"4px 8px",fontSize:10,
+              color:screen==="bitacora"?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
+            {screen==="bitacora"?"← Obras":"Bitácora"}
           </button>
         )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
@@ -9508,6 +10175,7 @@ export default function App(){
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
+      {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
