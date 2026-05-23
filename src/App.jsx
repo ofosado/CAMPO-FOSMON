@@ -5315,7 +5315,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
     </div>}
 
-    {tab==="volumenes" && subs.length === 0 && (
+    {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length === 0 && (
       <EmptyState
         titulo="Aún no hay catálogo de presupuesto"
         mensaje="Antes de capturar avance físico necesitas cargar el catálogo de conceptos de esta obra. Es lo que define qué subsecciones hay y cuánto pesa cada una."
@@ -5329,9 +5329,9 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
     )}
-    {tab==="volumenes" && subs.length > 0 && <Card>
+    {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por subsección</Tit>
-      {subs.map(s=>{
+      {subs.filter(s => (s.imp||0) > 0).map(s=>{
         const nF=((s.fotos||{})[s.sec]||[]).length;
         return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
