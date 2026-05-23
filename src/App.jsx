@@ -6659,7 +6659,28 @@ function parsearPresupuesto(data, importeContrato) {
     if (cs.shortTextCount > cs.textCount * 0.5 && cs.textCount > 3) colUnidad = ci;
   });
 
-  // Parsear conceptos
+  // ── Detector mejorado de filas-resumen que duplican el total ──
+  // Patrones comunes en presupuestos de obra:
+  const PATRONES_RESUMEN = [
+    /^total\b/i,                    // "Total", "Total X"
+    /^subtotal\b/i,                 // "Subtotal"
+    /^suma\b/i,                     // "Suma de"
+    /\btotal\s*(general|del|de)\b/i, // "Total general", "Total del capítulo"
+    /^importe\s+total\b/i,          // "Importe total"
+    /\b(capitulo|capítulo|seccion|sección|partida)\s+\d+/i, // "Capítulo 1", "Sección 2"
+    /^(monto|gran)\s+total\b/i,     // "Monto total", "Gran total"
+  ];
+  const esFilaResumen = (clave, desc, cant, pu) => {
+    const txt = (desc || clave || '').trim();
+    if (!txt) return false;
+    // Patrones por texto
+    if (PATRONES_RESUMEN.some(p => p.test(txt))) return true;
+    // Si NO tiene cantidad ni PU pero SÍ tiene un importe grande, probablemente es resumen
+    if (cant === 0 && pu === 0) return true;
+    return false;
+  };
+
+  // Parsear conceptos (descartando filas-resumen)
   const conceptos = [];
   let totalLeido = 0;
 
@@ -6674,8 +6695,10 @@ function parsearPresupuesto(data, importeContrato) {
     // Filtrar filas sin datos útiles
     if (!desc && !clave) return;
     if (importe === 0 && pu === 0 && cant === 0) return;
-    // Filtrar subtotales/totales
-    if (/^total/i.test(desc) || /^subtotal/i.test(desc)) return;
+    // Filtrar filas-resumen (subtotales, totales, encabezados de capítulo, etc.)
+    if (esFilaResumen(clave, desc, cant, pu)) return;
+    // Filtrar consistencia: si tiene importe pero ni cantidad ni PU, es agrupador
+    if (importe > 0 && cant === 0 && pu === 0) return;
 
     totalLeido += importe;
     const pctContrato = importeContrato > 0 ? (importe / importeContrato * 100) : 0;
@@ -6783,6 +6806,56 @@ function Presupuesto({obra, setObra, rol}) {
   const paginas = Math.ceil(conceptosFiltrados.length / POR_PAG);
   const conceptosPagina = conceptosFiltrados.slice(paginaActual * POR_PAG, (paginaActual+1) * POR_PAG);
 
+  // ── DETECTORES INTELIGENTES DE DUPLICACIÓN ──
+  // Si el total leído es ~exactamente un múltiplo entero del contratado (2x, 3x...),
+  // probablemente hay filas-resumen incluidas. Sugerimos dividir.
+  const detectarDuplicacion = () => {
+    if (!resultado || importeContrato <= 0 || resultado.totalLeido <= 0) return null;
+    const ratio = resultado.totalLeido / importeContrato;
+    // Solo si es múltiplo cercano a entero 2-5
+    for (const n of [2, 3, 4, 5]) {
+      if (Math.abs(ratio - n) < 0.02) {
+        return { multiplo: n, ratio };
+      }
+    }
+    return null;
+  };
+  const duplicacion = detectarDuplicacion();
+
+  // ── ACCIONES DE AJUSTE ──
+  // 1. Dividir todos los importes entre N (típicamente 2)
+  const dividirImportesEntre = (n) => {
+    if (!resultado || n <= 1) return;
+    const nuevos = resultado.conceptos.map(c => ({
+      ...c,
+      importe: c.importe / n,
+      pu: c.pu > 0 ? c.pu / n : c.pu,
+      pctContrato: importeContrato > 0 ? ((c.importe / n) / importeContrato * 100) : c.pctContrato,
+    }));
+    const nuevoTotal = nuevos.reduce((t, c) => t + c.importe, 0);
+    setResultado({ ...resultado, conceptos: nuevos, totalLeido: nuevoTotal });
+  };
+
+  // 2. Escalar proporcionalmente para que el total = monto contratado
+  const ajustarAlContratado = () => {
+    if (!resultado || resultado.totalLeido <= 0 || importeContrato <= 0) return;
+    const factor = importeContrato / resultado.totalLeido;
+    const nuevos = resultado.conceptos.map(c => ({
+      ...c,
+      importe: c.importe * factor,
+      pu: c.pu > 0 ? c.pu * factor : c.pu,
+      pctContrato: ((c.importe * factor) / importeContrato * 100),
+    }));
+    const nuevoTotal = nuevos.reduce((t, c) => t + c.importe, 0);
+    setResultado({ ...resultado, conceptos: nuevos, totalLeido: nuevoTotal });
+  };
+
+  // 3. Usar el total leído como el monto contratado correcto
+  const usarTotalLeido = () => {
+    if (!resultado) return;
+    setImporteContrato(resultado.totalLeido);
+  };
+
   return (
     <div style={{display:'flex',flexDirection:'column',gap:10}}>
     
@@ -6884,12 +6957,55 @@ function Presupuesto({obra, setObra, rol}) {
                   background:pctLeido>=98?C.green:pctLeido>=90?C.yellow:C.red,borderRadius:99,transition:'width .4s'}}/>
               </div>
             </div>
-            {pctLeido < 90 && (
-              <div style={{fontSize:10,color:C.yellow,marginTop:6}}>
-                 La diferencia es mayor al 10%. Verifica que el importe del contrato sea correcto
-                y que el archivo no tenga filas de subtotales que estén duplicando importes.
+            {/* Banner de duplicación detectada (cuando ratio es ~entero 2-5) */}
+            {duplicacion && (
+              <div style={{background:`${C.red}10`,border:`1px solid ${C.red}55`,borderRadius:8,
+                padding:'12px 14px',marginTop:10}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.redDk,marginBottom:6}}>
+                  ⚠ Posible duplicación detectada ({duplicacion.multiplo}× el monto contratado)
+                </div>
+                <div style={{fontSize:10,color:C.textSec,marginBottom:10,lineHeight:1.5}}>
+                  El archivo probablemente incluye filas de subtotal o total que se están sumando
+                  junto con las partidas. Es muy común en presupuestos de obra que el Excel termine
+                  con una fila "Total general" que el parser confunde con una partida real.
+                </div>
+                <button onClick={() => dividirImportesEntre(duplicacion.multiplo)}
+                  style={{background:C.red,color:'#fff',border:'none',borderRadius:6,
+                    padding:'7px 14px',fontSize:11,fontWeight:600,cursor:'pointer'}}>
+                  Dividir todos los importes entre {duplicacion.multiplo}
+                </button>
               </div>
             )}
+
+            {/* Botones de ajuste manual cuando no cuadra (sin ser duplicación obvia) */}
+            {!duplicacion && pctLeido < 95 && resultado.totalLeido > 0 && (
+              <div style={{background:`${C.yellow}10`,border:`0.5px solid ${C.yellow}55`,borderRadius:8,
+                padding:'12px 14px',marginTop:10}}>
+                <div style={{fontSize:11,fontWeight:700,color:C.yellowDk,marginBottom:6}}>
+                  Diferencia de {pctLeido < 100 ? `-${(100-pctLeido).toFixed(1)}%` : `+${(pctLeido-100).toFixed(1)}%`} vs monto contratado
+                </div>
+                <div style={{fontSize:10,color:C.textSec,marginBottom:10,lineHeight:1.5}}>
+                  Posibles causas: el archivo tiene filas de subtotales, columnas mal detectadas,
+                  o el monto contratado capturado no coincide con el del archivo. Elige cómo cuadrar:
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  <button onClick={ajustarAlContratado}
+                    style={{background:C.caliza,color:C.bg,border:'none',borderRadius:6,
+                      padding:'7px 14px',fontSize:10,fontWeight:600,cursor:'pointer'}}>
+                    Ajustar importes proporcionalmente al monto contratado
+                  </button>
+                  <button onClick={usarTotalLeido}
+                    style={{background:'transparent',color:C.caliza,border:`0.5px solid ${C.caliza}`,
+                      borderRadius:6,padding:'7px 14px',fontSize:10,fontWeight:600,cursor:'pointer'}}>
+                    El total leído es correcto, actualizar monto contratado
+                  </button>
+                </div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:8}}>
+                  Si ninguna opción aplica, cancela y revisa el archivo antes de subirlo.
+                </div>
+              </div>
+            )}
+
             <div style={{fontSize:9,color:C.textMut,marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`}}>
               Columnas detectadas automáticamente:
               Clave (col {resultado.colsDetectadas.colClave+1}) ·
