@@ -5282,6 +5282,17 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol}){
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
 function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab}){
+  // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
+  // aunque el item recién agregado aún no tenga descripción
+  const[agregandoMaq, setAgregandoMaq] = useState(false);
+  const[agregandoMat, setAgregandoMat] = useState(false);
+  // Reset al cambiar de obra
+  useEffect(() => { setAgregandoMaq(false); setAgregandoMat(false); }, [obra?.id]);
+  // Tienen datos reales? (descartando placeholders vacíos)
+  const maqReal = maquinaria.filter(m => m.desc && m.desc.trim()).length > 0;
+  const matReal = materiales.filter(m => m.desc && m.desc.trim()).length > 0;
+  const mostrarTablaMaq = maqReal || agregandoMaq;
+  const mostrarTablaMat = matReal || agregandoMat;
   // Si forceTab viene (porque el wrapper Operación define qué sub-tab mostrar),
   // ocultamos las tabs internas y usamos el tab forzado.
   const[tabLocal,setTab]=useState("volumenes");
@@ -5398,16 +5409,19 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       })}
     </Card>}
 
-    {tab==="maquinaria" && maquinaria.filter(m => m.desc && m.desc.trim()).length === 0 && (
+    {tab==="maquinaria" && !mostrarTablaMaq && (
       <EmptyState
         titulo="Sin maquinaria propia registrada"
         mensaje="Aquí registras los equipos de FOSMON asignados a esta obra (retroexcavadoras, compactadores, plantas, etc.). Suma al gasto total."
         cta={editar ? {
           label: "+ Agregar primer equipo",
-          onClick: () => setMaquinaria(mm=>{
-            const conDatos = mm.filter(m => m.desc && m.desc.trim());
-            return [...conDatos, {id:Date.now(),desc:"",vol:"",und:"Mes",pu:"",imp:0}];
-          }),
+          onClick: () => {
+            setMaquinaria(mm=>{
+              const conDatos = mm.filter(m => m.desc && m.desc.trim());
+              return [...conDatos, {id:Date.now(),desc:"",vol:"",und:"Mes",pu:"",imp:0}];
+            });
+            setAgregandoMaq(true);
+          },
         } : null}
         pasos={editar ? [
           "Click en '+ Agregar primer equipo'.",
@@ -5415,7 +5429,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "El importe se calcula automáticamente. Guarda registro al terminar."
         ] : null}/>
     )}
-    {tab==="maquinaria" && maquinaria.filter(m => m.desc && m.desc.trim()).length > 0 && <Card>
+    {tab==="maquinaria" && mostrarTablaMaq && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Maquinaria propia en obra</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al gasto</span>
@@ -5453,16 +5467,19 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       </div>
     </Card>}
 
-    {tab==="materiales" && materiales.filter(m => m.desc && m.desc.trim()).length === 0 && (
+    {tab==="materiales" && !mostrarTablaMat && (
       <EmptyState
         titulo="Sin materiales en almacén registrados"
         mensaje="Registra los materiales que están en obra, en tránsito o en fabricación. Suma al Monto Ejecutado aunque aún no estén instalados."
         cta={editar ? {
           label: "+ Agregar primer material",
-          onClick: () => setMateriales(mm=>{
-            const conDatos = mm.filter(m => m.desc && m.desc.trim());
-            return [...conDatos, {id:Date.now(),desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0}];
-          }),
+          onClick: () => {
+            setMateriales(mm=>{
+              const conDatos = mm.filter(m => m.desc && m.desc.trim());
+              return [...conDatos, {id:Date.now(),desc:"",concepto:"En almacén",vol:"",und:"PZA",pu:"",imp:0}];
+            });
+            setAgregandoMat(true);
+          },
         } : null}
         pasos={editar ? [
           "Click en '+ Agregar primer material'.",
@@ -5470,7 +5487,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Mantén actualizada esta lista para que el margen de obra sea real."
         ] : null}/>
     )}
-    {tab==="materiales" && materiales.filter(m => m.desc && m.desc.trim()).length > 0 && <Card>
+    {tab==="materiales" && mostrarTablaMat && <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <Tit>Materiales en almacén</Tit>
         <span style={{fontSize:9,color:C.textMut}}>Suma al monto ejecutado</span>
