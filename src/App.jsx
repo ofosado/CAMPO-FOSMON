@@ -405,74 +405,21 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   ], y);
 
   // ════════════════════════════════════════════════════════════════════════
-  // PAG 3 — AVANCE FÍSICO + ALMACÉN + MAQUINARIA
+  // PAG 3 — ALMACÉN + MAQUINARIA
+  // (El avance físico detallado se ve mejor en la gráfica visual de la pág 4.
+  // El catálogo completo de partidas puede tener cientos de renglones y no
+  // aporta valor ejecutivo, por eso ya no se incluye aquí.)
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('3  AVANCE FÍSICO POR SUBSECCIÓN', y);
 
-  // Tabla avance — columnas fijas sumando CW exacto
+  // Variables compartidas que usan secciones siguientes (totales, ejecución)
   const subsActivos=subs.filter(s=>s.imp>0);
   const totImp=subsActivos.reduce((t,s)=>t+s.imp,0);
   const totEjec=subsActivos.reduce((t,s)=>t+(s.a/100)*s.imp,0);
 
-  // Anchos: Sec(16) + Desc(90) + Importe(38) + Avance%(18) + Barra(55) + Mto.Ejec(34) = 251
-  const AV_SEC=16, AV_DESC=90, AV_IMP=38, AV_PCT=18, AV_BAR=55, AV_EJEC=CW-AV_SEC-AV_DESC-AV_IMP-AV_PCT-AV_BAR;
-  const avHead=['Sec.','Descripción','Importe contrato','Avance','Progreso','Mto. ejecutado'];
-  let avBody;
-  if (subsActivos.length > 0) {
-    avBody = subsActivos.map(s=>{
-      const ejec=(s.a/100)*s.imp;
-      return [s.sec, s.sub||'', MXN(s.imp), PCT(s.a), '', MXN(ejec)];
-    });
-    avBody.push(['','TOTAL',MXN(totImp),PCT(af),'',MXN(totEjec)]);
-  } else {
-    // Sin catálogo cargado: renglón vacío indicando que no se ha capturado
-    avBody = [['—','Sin catálogo de presupuesto cargado','—','—','','—']];
-  }
-
-  autoT(avHead, avBody,
-    [AV_SEC,AV_DESC,AV_IMP,AV_PCT,AV_BAR,AV_EJEC],
-    ML, y,
-    {columnStyles:{
-       0:{halign:'left'},1:{halign:'left'},
-       2:{halign:'right'},3:{halign:'center',fontStyle:'bold'},
-       4:{halign:'left'},5:{halign:'right'},
-     },
-     didParseCell:(d)=>{
-       const ri=d.row.index;
-       if(ri===subsActivos.length){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
-         return;
-       }
-       const s=subsActivos[ri];
-       if(!s) return;
-       if(d.column.index===3){
-         d.cell.styles.textColor=s.a>=75?K.vk:s.a>=40?K.ak2:K.rk;
-       }
-       if(d.column.index===5){
-         d.cell.styles.textColor=K.ak;
-       }
-     },
-     // Dibujar barras de progreso DENTRO de la celda con didDrawCell
-     didDrawCell:(d)=>{
-       if(d.column.index!==4) return;
-       if(d.row.index>=subsActivos.length) return;
-       const s=subsActivos[d.row.index];
-       if(!s) return;
-       const px=d.cell.x+1, py=d.cell.y+d.cell.height/2-1.5;
-       const pw=d.cell.width-2, ph=3;
-       const pct=Math.min(s.a/100,1);
-       const col=s.a>=75?K.vd:s.a>=40?K.am:K.rd;
-       sf(K.gbd); doc.rect(px,py,pw,ph,'F');
-       if(pct>0){ sf(col); doc.rect(px,py,pw*pct,ph,'F'); }
-     }
-    }
-  );
-  y=doc.lastAutoTable.finalY+5;
-
   // ── Almacén + Maquinaria en 2 columnas ──────────────────────────────────
-  y=secHead('Almacén · Materiales en tránsito · Maquinaria propia', y);
+  y=secHead('3  ALMACÉN · MATERIALES EN TRÁNSITO · MAQUINARIA PROPIA', y);
 
   const LW5=CW*0.56, RW5=CW-LW5-5;
   // Si no hay materiales, mostrar un renglón vacío indicando que no se ha capturado
