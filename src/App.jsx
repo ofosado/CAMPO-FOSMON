@@ -5671,6 +5671,44 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
   const[subtab,setSubtab]=useState("resumen");
   const totalMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
 
+  // ── OTROS GASTOS (manuales, fuera de GP) ──
+  // Lista editable por obra. Se suman al gasto total y aparecen en el desglose.
+  // Útil para conceptos que no están en GP Construct (pagos directos, conciliaciones, etc.)
+  const[otrosGastos, setOtrosGastos] = useState([]);
+  const[otrosLoaded, setOtrosLoaded] = useState(false);
+  const[otrosSaving, setOtrosSaving] = useState(false);
+  const puedeEditarOtros = can(rol, 'gastos', 'editar');
+  useEffect(() => {
+    if (!obra?.id) return;
+    fsGet(`obras/${obra.id}/config/otros_gastos`).then(d => {
+      setOtrosGastos(Array.isArray(d?.items) ? d.items : []);
+      setOtrosLoaded(true);
+    });
+  }, [obra?.id]);
+  const totalOtrosGastos = otrosGastos.reduce((t,g)=>t+(parseFloat(g.importe)||0), 0);
+  async function guardarOtros(nuevos) {
+    setOtrosSaving(true);
+    setOtrosGastos(nuevos);
+    await fsSetA(`obras/${obra.id}/config/otros_gastos`, { items: nuevos },
+      { modulo:"gastos", entidad:`otros gastos (${nuevos.length})`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+        meta:{ totalOtros: nuevos.reduce((t,g)=>t+(parseFloat(g.importe)||0),0) } });
+    setOtrosSaving(false);
+  }
+  function agregarOtroGasto() {
+    guardarOtros([...otrosGastos, {
+      id: Date.now(), concepto: "", importe: 0, fecha: new Date().toISOString().slice(0,10), notas: ""
+    }]);
+  }
+  function actualizarOtroGasto(id, campo, valor) {
+    const nuevos = otrosGastos.map(g => g.id===id ? {...g, [campo]: valor} : g);
+    setOtrosGastos(nuevos); // optimista
+  }
+  function commitOtroGasto() { guardarOtros(otrosGastos); }
+  function eliminarOtroGasto(id) {
+    if (!window.confirm("¿Eliminar este gasto?")) return;
+    guardarOtros(otrosGastos.filter(g=>g.id!==id));
+  }
+
   // ── Buscar la obra en gpData ──
   // Estrategia (en orden de prioridad):
   // 1. Si la obra tiene campo gpId capturado en Contrato (ej. "0114"), usarlo exacto
@@ -5737,7 +5775,7 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
         : (datosObra.años ? Object.values(datosObra.años).reduce((t,v)=>t+v, 0) : 0)
           + (datosObra.total2026 || (datosObra.meses ? Object.values(datosObra.meses).reduce((t,v)=>t+v, 0) : 0)))
     : obra.gastoGP || 0;
-  const totalGastoObra = totalGP + totalMaq;
+  const totalGastoObra = totalGP + totalMaq + totalOtrosGastos;
   const pctPresupuesto = obra.presupuesto > 0 ? (totalGastoObra/obra.presupuesto)*100 : 0;
 
   // Gasto última semana y delta
@@ -5835,7 +5873,9 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
 
     {/* MINI-DASHBOARD: 4 KPIs */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
-      <Kpi label="Gasto acumulado" value={MXN(totalGastoObra)} sub="GP + maquinaria propia" color={C.red} size={12}/>
+      <Kpi label="Gasto acumulado" value={MXN(totalGastoObra)}
+        sub={`GP + maquinaria${totalOtrosGastos>0?` + otros (${MXN(totalOtrosGastos)})`:""}`}
+        color={C.red} size={12}/>
       <Kpi label="Última semana" value={MXN(gastoUltimaSem)}
         sub={`${deltaUltSem>=0?"+":""}${MXN(deltaUltSem)} vs sem ant.`}
         color={deltaUltSem > gastoPromedioSem ? C.red : C.caliza} size={12}/>
@@ -5943,7 +5983,7 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
       {/* Sub-tabs */}
       <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",
         background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`}}>
-        {[["resumen","Resumen"],["proveedores","Proveedores"],["rubros","Rubros"],["semanas","Tendencia semanal"]].map(([id,lbl])=>(
+        {[["resumen","Resumen"],["proveedores","Proveedores"],["rubros","Rubros"],["semanas","Tendencia semanal"],["otros","Otros gastos"]].map(([id,lbl])=>(
           <button key={id} onClick={()=>setSubtab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
             fontSize:11,borderRadius:6,background:subtab===id?C.caliza:"transparent",
             border:"none",color:subtab===id?C.bg:C.textSec,
@@ -5988,6 +6028,18 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
                 <span style={{fontSize:12,fontWeight:600,color:C.orange}}>{MXN(totalMaq)}</span>
               </div>
             )}
+            {totalOtrosGastos > 0 && (
+              <div style={{marginTop:4,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}
+                onClick={()=>setSubtab("otros")} title="Ver otros gastos">
+                <span style={{fontSize:10,color:C.textMut}}>+ Otros gastos ({otrosGastos.length})</span>
+                <span style={{fontSize:12,fontWeight:600,color:C.yellowDk}}>{MXN(totalOtrosGastos)}</span>
+              </div>
+            )}
+            <div style={{marginTop:6,paddingTop:6,borderTop:`0.5px solid ${C.border}`,
+              display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:10,color:C.textPri,fontWeight:600}}>GASTO TOTAL OBRA</span>
+              <span style={{fontSize:14,fontWeight:700,color:C.red}}>{MXN(totalGastoObra)}</span>
+            </div>
           </Card>
 
           {/* Top 5 proveedores compact preview */}
@@ -6229,6 +6281,105 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
                   const semsRestPlazo = Math.max(Math.floor((new Date(obra.fin) - new Date())/(1000*60*60*24*7)), 0);
                   return <span> (quedan {semsRestPlazo} semanas de plazo contractual).</span>;
                 })()}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* OTROS GASTOS — partidas manuales que se suman a GP */}
+      {subtab==="otros" && (
+        <>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div>
+                <Tit>Otros gastos (fuera de GP Construct)</Tit>
+                <div style={{fontSize:10,color:C.textMut,marginTop:2,lineHeight:1.4}}>
+                  Para conceptos que no aparecen en el Sheet de GP (pagos directos, conciliaciones, ajustes).
+                  Se suman al total de gastos de esta obra.
+                </div>
+              </div>
+              <Kpi label="Total" value={MXN(totalOtrosGastos)} sub={`${otrosGastos.length} partidas`} color={C.yellow} size={13}/>
+            </div>
+          </Card>
+          <Card>
+            {!otrosLoaded ? (
+              <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>Cargando…</div>
+            ) : otrosGastos.length===0 ? (
+              <div style={{padding:20,textAlign:"center"}}>
+                <div style={{fontSize:11,color:C.textSec,marginBottom:10}}>No hay gastos extra registrados.</div>
+                {puedeEditarOtros && <SecBtn onClick={agregarOtroGasto}>+ Agregar primer gasto</SecBtn>}
+              </div>
+            ) : (
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+                  <thead>
+                    <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                      <th style={{textAlign:"left",padding:"6px 8px",width:"110px"}}>Fecha</th>
+                      <th style={{textAlign:"left",padding:"6px 8px"}}>Concepto</th>
+                      <th style={{textAlign:"right",padding:"6px 8px",width:"130px"}}>Importe</th>
+                      <th style={{textAlign:"left",padding:"6px 8px"}}>Notas</th>
+                      {puedeEditarOtros && <th style={{width:"40px"}}></th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {otrosGastos.map(g=>(
+                      <tr key={g.id} style={{borderBottom:`1px solid ${C.bg}`}}>
+                        <td style={{padding:"4px 8px"}}>
+                          {puedeEditarOtros ? (
+                            <input type="date" value={g.fecha||""}
+                              onChange={e=>actualizarOtroGasto(g.id,"fecha",e.target.value)}
+                              onBlur={commitOtroGasto}
+                              style={{width:"100%",fontSize:10,padding:"4px 6px",border:`1px solid ${C.border}`,borderRadius:4}}/>
+                          ) : g.fecha}
+                        </td>
+                        <td style={{padding:"4px 8px"}}>
+                          {puedeEditarOtros ? (
+                            <input type="text" value={g.concepto||""}
+                              onChange={e=>actualizarOtroGasto(g.id,"concepto",e.target.value)}
+                              onBlur={commitOtroGasto}
+                              placeholder="Ej. pago directo proveedor X"
+                              style={{width:"100%",fontSize:11,padding:"4px 6px",border:`1px solid ${C.border}`,borderRadius:4}}/>
+                          ) : g.concepto}
+                        </td>
+                        <td style={{padding:"4px 8px",textAlign:"right"}}>
+                          {puedeEditarOtros ? (
+                            <input type="number" value={g.importe||0} step="0.01"
+                              onChange={e=>actualizarOtroGasto(g.id,"importe",parseFloat(e.target.value)||0)}
+                              onBlur={commitOtroGasto}
+                              style={{width:"100%",fontSize:11,padding:"4px 6px",border:`1px solid ${C.border}`,borderRadius:4,textAlign:"right"}}/>
+                          ) : <span style={{fontWeight:600}}>{MXN(g.importe)}</span>}
+                        </td>
+                        <td style={{padding:"4px 8px"}}>
+                          {puedeEditarOtros ? (
+                            <input type="text" value={g.notas||""}
+                              onChange={e=>actualizarOtroGasto(g.id,"notas",e.target.value)}
+                              onBlur={commitOtroGasto}
+                              style={{width:"100%",fontSize:10,padding:"4px 6px",border:`1px solid ${C.border}`,borderRadius:4,color:C.textMut}}/>
+                          ) : g.notas}
+                        </td>
+                        {puedeEditarOtros && (
+                          <td style={{padding:"4px 8px",textAlign:"center"}}>
+                            <button onClick={()=>eliminarOtroGasto(g.id)}
+                              style={{background:"none",border:"none",color:C.red,fontSize:14,cursor:"pointer",padding:"2px 6px"}}
+                              title="Eliminar">×</button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                    <tr style={{borderTop:`2px solid ${C.border}`,background:C.bg}}>
+                      <td colSpan={2} style={{padding:"8px",fontSize:11,fontWeight:600,color:C.textPri}}>Total</td>
+                      <td style={{padding:"8px",textAlign:"right",fontSize:12,fontWeight:700,color:C.caliza}}>{MXN(totalOtrosGastos)}</td>
+                      <td colSpan={puedeEditarOtros?2:1}></td>
+                    </tr>
+                  </tbody>
+                </table>
+                {puedeEditarOtros && (
+                  <div style={{marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <SecBtn onClick={agregarOtroGasto} disabled={otrosSaving}>+ Agregar gasto</SecBtn>
+                    {otrosSaving && <span style={{fontSize:10,color:C.textMut}}>Guardando…</span>}
+                  </div>
+                )}
               </div>
             )}
           </Card>
@@ -6679,13 +6830,13 @@ function parsearPresupuesto(data, importeContrato) {
   // Filtrar filas vacías
   const filas = data.filter(row => row.some(c => c !== null && c !== undefined && String(c).trim() !== ''));
 
-  // Detectar qué columna es qué por heurística
-  // Clave: texto corto alfanumérico con guiones (ej: 0219-OAX-CBH-08)
-  // Descripción: texto largo (> 20 chars promedio)
-  // Unidad: texto muy corto (M2, ML, PZA, M3, etc.)
-  // Volumen/Cantidad: número decimal positivo pequeño-mediano
-  // PU: número decimal positivo, puede ser grande
-  // Importe: número decimal positivo grande (generalmente mayor que PU)
+  // Helper: extraer número desde celda (maneja $, comas, %, etc.)
+  const toNum = (v) => {
+    if (v === null || v === undefined || v === '') return 0;
+    const s = String(v).trim().replace(/[$,\s%]/g, '');
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+  };
 
   // Encontrar fila de headers (primera fila con texto en ≥3 columnas)
   let headerRow = 0;
@@ -6696,115 +6847,225 @@ function parsearPresupuesto(data, importeContrato) {
   }
 
   const nCols = filas[0]?.length || 0;
+  const headers = (filas[headerRow] || []).map(h => String(h || '').trim().toLowerCase());
 
-  // Analizar columnas en las filas de datos
-  const colStats = Array.from({length: nCols}, () => ({
+  // Pistas por header — patrones comunes en Opus, Neodata, manual, etc.
+  const headerMatch = (h, patterns) => patterns.some(p => p.test(h));
+  const H_CLAVE    = [/clave/i, /c[oó]digo/i, /^id$/i, /^no\.?$/i];
+  const H_DESC     = [/descripci[oó]n/i, /^concepto$/i, /^partida$/i];
+  const H_UNIDAD   = [/^und?$/i, /^u\.?$/i, /unidad/i];
+  const H_CANTIDAD = [/cantidad/i, /^cant\.?$/i, /^vol\.?$/i, /volumen/i];
+  const H_PU       = [/^p\.?\s*u\.?$/i, /precio\s*unit/i, /^pu$/i];
+  const H_IMPORTE  = [/importe/i, /^total$/i, /^monto$/i, /^subtotal$/i];
+  const H_PCT      = [/^%/i, /porcent/i, /^pct/i];
+
+  // Analizar columnas
+  const dataRows = filas.slice(dataStart);
+  const colStats = Array.from({length: nCols}, (_, ci) => ({
+    ci,
     numCount: 0, textCount: 0, shortTextCount: 0, longTextCount: 0,
-    codeCount: 0, avgNum: 0, maxNum: 0, nums: []
+    codeCount: 0, fracCount: 0, nums: [],
+    header: headers[ci] || '',
   }));
 
-  const dataRows = filas.slice(dataStart);
   dataRows.forEach(row => {
     row.forEach((cell, ci) => {
       if (ci >= nCols) return;
       const s = String(cell || '').trim();
       if (!s) return;
-      const n = Number(s.replace(/[$,]/g, ''));
-      if (!isNaN(n) && n !== 0) {
+      const n = toNum(s);
+      if (n !== 0) {
         colStats[ci].numCount++;
         colStats[ci].nums.push(Math.abs(n));
-        colStats[ci].maxNum = Math.max(colStats[ci].maxNum, Math.abs(n));
-      } else {
+        if (Math.abs(n) < 1) colStats[ci].fracCount++;
+      } else if (isNaN(Number(s.replace(/[$,]/g,'')))) {
         colStats[ci].textCount++;
         if (s.length <= 6) colStats[ci].shortTextCount++;
         if (s.length > 15) colStats[ci].longTextCount++;
-        // Patrón de clave: tiene guiones y números mezclados
-        if (/[A-Z0-9].*-.*[A-Z0-9]/.test(s) || /^\d{4}/.test(s)) colStats[ci].codeCount++;
+        if (/[A-Z0-9].*-.*[A-Z0-9]/i.test(s) || /^\d{4}/.test(s)) colStats[ci].codeCount++;
       }
     });
   });
-
-  // Calcular promedios
   colStats.forEach(cs => {
-    if (cs.nums.length > 0) cs.avgNum = cs.nums.reduce((a,b)=>a+b,0) / cs.nums.length;
+    cs.avgNum = cs.nums.length ? cs.nums.reduce((a,b)=>a+b,0) / cs.nums.length : 0;
+    cs.maxNum = cs.nums.length ? Math.max(...cs.nums) : 0;
+    cs.fracRatio = cs.numCount ? cs.fracCount / cs.numCount : 0;
   });
 
-  // Asignar roles a columnas
-  let colClave=-1, colDesc=-1, colUnidad=-1, colCantidad=-1, colPU=-1, colImporte=-1;
+  // ── Asignar columnas de TEXTO (clave, descripción, unidad)
+  let colClave=-1, colDesc=-1, colUnidad=-1;
 
-  // Clave: mayor proporción de códigos alfanuméricos
-  let maxCode = 0;
-  colStats.forEach((cs, ci) => {
-    if (cs.codeCount > maxCode && cs.textCount > dataRows.length * 0.1) {
-      maxCode = cs.codeCount; colClave = ci;
+  // Clave: prioridad header → mayor proporción de códigos
+  const claveByHeader = colStats.find(cs => headerMatch(cs.header, H_CLAVE));
+  if (claveByHeader) colClave = claveByHeader.ci;
+  else {
+    let maxCode = 0;
+    colStats.forEach(cs => {
+      if (cs.codeCount > maxCode && cs.textCount > dataRows.length * 0.1) {
+        maxCode = cs.codeCount; colClave = cs.ci;
+      }
+    });
+  }
+
+  // Descripción: prioridad header → mayor texto largo
+  const descByHeader = colStats.find(cs => headerMatch(cs.header, H_DESC));
+  if (descByHeader) colDesc = descByHeader.ci;
+  else {
+    let maxLong = 0;
+    colStats.forEach(cs => {
+      if (cs.ci === colClave) return;
+      if (cs.longTextCount > maxLong) { maxLong = cs.longTextCount; colDesc = cs.ci; }
+    });
+  }
+
+  // Unidad: prioridad header → texto muy corto que no es clave/desc
+  const unidadByHeader = colStats.find(cs => headerMatch(cs.header, H_UNIDAD));
+  if (unidadByHeader) colUnidad = unidadByHeader.ci;
+  else {
+    colStats.forEach(cs => {
+      if (cs.ci === colClave || cs.ci === colDesc) return;
+      if (cs.shortTextCount > cs.textCount * 0.5 && cs.textCount > 3) colUnidad = cs.ci;
+    });
+  }
+
+  // ── Asignar columnas NUMÉRICAS (cantidad, PU, importe) por CONSISTENCIA
+  // Estrategia: probar todas las combinaciones de 3 columnas numéricas y
+  // elegir la que más renglones cumplen cant * PU ≈ importe (±3%)
+  const usadas = new Set([colClave, colDesc, colUnidad].filter(x => x >= 0));
+  const numCols = colStats.filter(cs => cs.numCount > dataRows.length * 0.05 && !usadas.has(cs.ci));
+
+  // Descartar columnas tipo % (header o todos valores < 1)
+  const noEsPct = (cs) => !headerMatch(cs.header, H_PCT) && cs.fracRatio < 0.7;
+  const candidatas = numCols.filter(noEsPct);
+
+  // Si hay hints por header, úsalos
+  let colCantidad = -1, colPU = -1, colImporte = -1;
+  const cantByHeader = candidatas.find(cs => headerMatch(cs.header, H_CANTIDAD));
+  const puByHeader = candidatas.find(cs => headerMatch(cs.header, H_PU));
+  const impByHeader = candidatas.find(cs => headerMatch(cs.header, H_IMPORTE));
+  if (cantByHeader) colCantidad = cantByHeader.ci;
+  if (puByHeader)   colPU = puByHeader.ci;
+  if (impByHeader)  colImporte = impByHeader.ci;
+
+  // Si falta alguna, decidir por consistencia entre las restantes
+  const restantes = candidatas.filter(cs =>
+    cs.ci !== colCantidad && cs.ci !== colPU && cs.ci !== colImporte
+  );
+
+  // Función de score: cuántos renglones cumplen cant*PU ≈ importe
+  const scoreCombo = (ciCant, ciPU, ciImp) => {
+    let ok = 0, eval_ = 0;
+    dataRows.forEach(row => {
+      const c = toNum(row[ciCant]);
+      const p = toNum(row[ciPU]);
+      const im = Math.abs(toNum(row[ciImp]));
+      if (c > 0 && p > 0 && im > 0) {
+        eval_++;
+        const calc = c * p;
+        if (Math.abs(calc - im) / im < 0.03) ok++;
+      }
+    });
+    return eval_ > 0 ? ok / eval_ : 0;
+  };
+
+  // Si hay incógnitas, probar combinaciones
+  if (colCantidad < 0 || colPU < 0 || colImporte < 0) {
+    let bestScore = -1, bestCombo = null;
+    // Pool incluye lo que ya tenemos asignado (puede recolocarse) más restantes
+    const pool = [...new Set([
+      ...(colCantidad >= 0 ? [colCantidad] : []),
+      ...(colPU >= 0 ? [colPU] : []),
+      ...(colImporte >= 0 ? [colImporte] : []),
+      ...restantes.map(r => r.ci),
+    ])];
+    // Probar todas las permutaciones de 3 entre pool
+    for (let a = 0; a < pool.length; a++) {
+      for (let b = 0; b < pool.length; b++) {
+        for (let c = 0; c < pool.length; c++) {
+          if (a===b || a===c || b===c) continue;
+          const s = scoreCombo(pool[a], pool[b], pool[c]);
+          if (s > bestScore) {
+            bestScore = s;
+            bestCombo = { cant: pool[a], pu: pool[b], imp: pool[c] };
+          }
+        }
+      }
     }
-  });
+    if (bestCombo && bestScore > 0.5) {
+      // Solo aceptar la combinación si supera el 50% de consistencia
+      // y NO contradice un header explícito
+      if (colCantidad < 0 || (!cantByHeader)) colCantidad = bestCombo.cant;
+      if (colPU < 0 || (!puByHeader))         colPU = bestCombo.pu;
+      if (colImporte < 0 || (!impByHeader))   colImporte = bestCombo.imp;
+    } else {
+      // Fallback: si no hay consistencia (Excel raro), usar promedios
+      // Importe = mayor avgNum, PU = segundo, Cantidad = el de menor avgNum
+      const sortedByAvg = [...candidatas].sort((a,b) => b.avgNum - a.avgNum);
+      if (colImporte < 0 && sortedByAvg[0]) colImporte = sortedByAvg[0].ci;
+      if (colPU < 0 && sortedByAvg[1])      colPU = sortedByAvg[1].ci;
+      if (colCantidad < 0 && sortedByAvg.length >= 3) {
+        // Cantidad: el de menor avg entre los no usados, excluyendo el último si parece %
+        const usadasNum = new Set([colImporte, colPU]);
+        const restNum = sortedByAvg.filter(cs => !usadasNum.has(cs.ci));
+        if (restNum.length) colCantidad = restNum[restNum.length-1].ci;
+      }
+    }
+  }
 
-  // Descripción: mayor proporción de texto largo
-  let maxLong = 0;
-  colStats.forEach((cs, ci) => {
-    if (ci === colClave) return;
-    if (cs.longTextCount > maxLong) { maxLong = cs.longTextCount; colDesc = ci; }
-  });
-
-  // Entre columnas numéricas, ordenar por avgNum DESC
-  const numCols = colStats.map((cs, ci) => ({ci, ...cs}))
-    .filter(cs => cs.numCount > dataRows.length * 0.05 && cs.ci !== colClave && cs.ci !== colDesc)
-    .sort((a,b) => b.avgNum - a.avgNum);
-
-  // Importe: mayor promedio numérico
-  if (numCols.length > 0) colImporte = numCols[0].ci;
-  // PU: segundo mayor promedio
-  if (numCols.length > 1) colPU = numCols[1].ci;
-  // Cantidad: tercer mayor (o menor promedio)
-  if (numCols.length > 2) colCantidad = numCols[numCols.length-1].ci;
-
-  // Unidad: texto muy corto que no es clave ni descripción
-  colStats.forEach((cs, ci) => {
-    if (ci === colClave || ci === colDesc || ci === colImporte || ci === colPU || ci === colCantidad) return;
-    if (cs.shortTextCount > cs.textCount * 0.5 && cs.textCount > 3) colUnidad = ci;
-  });
-
-  // ── Detector mejorado de filas-resumen que duplican el total ──
-  // Patrones comunes en presupuestos de obra:
+  // ── Detector de filas-resumen / subtotales jerárquicos
   const PATRONES_RESUMEN = [
-    /^total\b/i,                    // "Total", "Total X"
-    /^subtotal\b/i,                 // "Subtotal"
-    /^suma\b/i,                     // "Suma de"
-    /\btotal\s*(general|del|de)\b/i, // "Total general", "Total del capítulo"
-    /^importe\s+total\b/i,          // "Importe total"
-    /\b(capitulo|capítulo|seccion|sección|partida)\s+\d+/i, // "Capítulo 1", "Sección 2"
-    /^(monto|gran)\s+total\b/i,     // "Monto total", "Gran total"
+    /^total\b/i, /^subtotal\b/i, /^suma\b/i,
+    /\btotal\s*(general|del|de)\b/i, /^importe\s+total\b/i,
+    /\b(capitulo|capítulo|seccion|sección|partida)\s+\d+/i,
+    /^(monto|gran)\s+total\b/i,
   ];
-  const esFilaResumen = (clave, desc, cant, pu) => {
+  const esFilaResumen = (clave, desc, unidad, cant, pu, importe) => {
     const txt = (desc || clave || '').trim();
-    if (!txt) return false;
-    // Patrones por texto
-    if (PATRONES_RESUMEN.some(p => p.test(txt))) return true;
-    // Si NO tiene cantidad ni PU pero SÍ tiene un importe grande, probablemente es resumen
+    if (txt && PATRONES_RESUMEN.some(p => p.test(txt))) return true;
+    // REGLA CRÍTICA: un concepto real SIEMPRE tiene PU > 0.
+    // Si hay importe pero no PU, es agrupador/subtotal jerárquico
+    if (importe > 0 && pu === 0) return true;
+    // Sin cantidad ni PU = resumen
     if (cant === 0 && pu === 0) return true;
+    // Unidad "—" o "-" sin PU = agrupador (Opus usa guión largo)
+    const u = (unidad || '').trim();
+    if ((u === '—' || u === '-' || u === '') && pu === 0) return true;
+    // Clave jerárquica corta sin descripción real
+    if (clave && !desc && /^[A-Z]([0-9.]*)?$/i.test(clave.trim()) && pu === 0) return true;
     return false;
   };
 
-  // Parsear conceptos (descartando filas-resumen)
+  // ── Parsear conceptos
   const conceptos = [];
   let totalLeido = 0;
+  let cantidadesDeducidas = 0;
 
   dataRows.forEach((row, ri) => {
     const clave   = colClave   >= 0 ? String(row[colClave]   || '').trim() : '';
     const desc    = colDesc    >= 0 ? String(row[colDesc]    || '').trim() : '';
     const unidad  = colUnidad  >= 0 ? String(row[colUnidad]  || '').trim() : '';
-    const cant    = colCantidad >= 0 ? parseFloat(String(row[colCantidad] || '').replace(/[$,]/g,'')) || 0 : 0;
-    const pu      = colPU      >= 0 ? parseFloat(String(row[colPU]      || '').replace(/[$,]/g,'')) || 0 : 0;
-    const importe = colImporte >= 0 ? Math.abs(parseFloat(String(row[colImporte] || '').replace(/[$,]/g,'')) || 0) : 0;
+    let cant    = colCantidad >= 0 ? toNum(row[colCantidad]) : 0;
+    const pu      = colPU      >= 0 ? toNum(row[colPU])      : 0;
+    const importe = colImporte >= 0 ? Math.abs(toNum(row[colImporte])) : 0;
 
     // Filtrar filas sin datos útiles
     if (!desc && !clave) return;
     if (importe === 0 && pu === 0 && cant === 0) return;
-    // Filtrar filas-resumen (subtotales, totales, encabezados de capítulo, etc.)
-    if (esFilaResumen(clave, desc, cant, pu)) return;
-    // Filtrar consistencia: si tiene importe pero ni cantidad ni PU, es agrupador
-    if (importe > 0 && cant === 0 && pu === 0) return;
+    // Filtrar filas-resumen / subtotales jerárquicos
+    if (esFilaResumen(clave, desc, unidad, cant, pu, importe)) return;
+
+    // DEDUCIR cantidad cuando falta pero tenemos PU e importe
+    // Solo si la cantidad detectada no cuadra con importe/PU
+    let cantDeducida = false;
+    if (pu > 0 && importe > 0) {
+      const cantCalc = importe / pu;
+      if (cant === 0 || Math.abs(cant * pu - importe) / importe > 0.05) {
+        // La cantidad actual es 0 o no cuadra → usar la calculada
+        cant = Math.round(cantCalc * 100) / 100;
+        cantDeducida = true;
+        cantidadesDeducidas++;
+      }
+    }
 
     totalLeido += importe;
     const pctContrato = importeContrato > 0 ? (importe / importeContrato * 100) : 0;
@@ -6813,6 +7074,7 @@ function parsearPresupuesto(data, importeContrato) {
       clave: clave || `C${ri+1}`,
       desc: desc || '(sin descripción)',
       unidad, cant, pu, importe,
+      cantDeducida,
       pctContrato: Math.round(pctContrato * 100) / 100,
       avance: 0, fotos: []
     });
@@ -6821,6 +7083,7 @@ function parsearPresupuesto(data, importeContrato) {
   return {
     conceptos,
     totalLeido,
+    cantidadesDeducidas,
     colsDetectadas: {colClave, colDesc, colUnidad, colCantidad, colPU, colImporte},
     nFilasLeidas: dataRows.length,
   };
@@ -7062,7 +7325,9 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
           <Card accent={pctLeido >= 98 ? C.green : pctLeido >= 90 ? C.yellow : C.red}>
             <Tit>Validación del archivo</Tit>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginBottom:10}}>
-              <Kpi label="Conceptos leídos" value={resultado.conceptos.length} sub={`de ${resultado.nFilasLeidas} filas`} color={C.blue}/>
+              <Kpi label="Conceptos leídos" value={resultado.conceptos.length}
+                sub={`de ${resultado.nFilasLeidas} filas${resultado.cantidadesDeducidas>0?` · ${resultado.cantidadesDeducidas} cant. calculadas`:''}`}
+                color={C.blue}/>
               <Kpi label="Total contrato" value={MXN(importeContrato)} sub="capturado manual" color={C.caliza} size={12}/>
               <Kpi label="Total leído" value={MXN(resultado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
               <Kpi label="Diferencia" value={MXN(difTotal)}
@@ -7174,8 +7439,10 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                         overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.desc}</td>
                       <td style={{padding:'5px 8px',textAlign:'right',color:C.textMut,
                         fontSize:10,whiteSpace:'nowrap'}}>{c.unidad||'—'}</td>
-                      <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>
+                      <td style={{padding:'5px 8px',textAlign:'right',color:c.cantDeducida?C.yellowDk:C.textSec}}
+                        title={c.cantDeducida?'Cantidad calculada como importe/PU porque el Excel no la traía':''}>
                         {c.cant>0?c.cant.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'}
+                        {c.cantDeducida && <span style={{fontSize:8,marginLeft:3,opacity:0.7}}>(calc)</span>}
                       </td>
                       <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>
                         {c.pu>0?MXN(c.pu):'—'}
