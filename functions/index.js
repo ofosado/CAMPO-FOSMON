@@ -80,8 +80,10 @@ exports.crearUsuario = onCall(async (request) => {
   }
 
   const emailNorm = email.toLowerCase().trim();
+  const perfilRef = admin.firestore().doc(`usuarios/${emailAId(emailNorm)}`);
 
   let userRecord;
+  let reparado = false;
   try {
     userRecord = await admin.auth().createUser({
       email: emailNorm,
@@ -90,12 +92,27 @@ exports.crearUsuario = onCall(async (request) => {
     });
   } catch (e) {
     if (e.code === "auth/email-already-exists") {
-      throw new HttpsError("already-exists", "Ya existe un usuario con ese correo.");
+      // El usuario ya existe en Auth. Verificar si también tiene perfil en Firestore.
+      // Si NO, es un caso huérfano (migración previa, perfil borrado, etc.) y lo reparamos.
+      // Si SÍ, es un duplicado real y rechazamos.
+      const perfilSnap = await perfilRef.get();
+      if (perfilSnap.exists) {
+        throw new HttpsError(
+          "already-exists",
+          "Ya existe un usuario con ese correo. Para editarlo, búscalo en la lista de usuarios."
+        );
+      }
+      // Huérfano: reusar el registro de Auth, actualizando password y displayName
+      const existing = await admin.auth().getUserByEmail(emailNorm);
+      await admin.auth().updateUser(existing.uid, { password, displayName: nombre, disabled: false });
+      userRecord = existing;
+      reparado = true;
+    } else {
+      throw new HttpsError("internal", `Error al crear en Auth: ${e.message}`);
     }
-    throw new HttpsError("internal", `Error al crear en Auth: ${e.message}`);
   }
 
-  await admin.firestore().doc(`usuarios/${emailAId(emailNorm)}`).set({
+  await perfilRef.set({
     email: emailNorm,
     nombre,
     rol,
@@ -104,9 +121,10 @@ exports.crearUsuario = onCall(async (request) => {
     uid: userRecord.uid,
     creadoEn: admin.firestore.FieldValue.serverTimestamp(),
     creadoPor: request.auth.token.email || "",
+    ...(reparado ? { reparadoDeAuth: true } : {}),
   });
 
-  return { ok: true, uid: userRecord.uid, email: emailNorm };
+  return { ok: true, uid: userRecord.uid, email: emailNorm, reparado };
 });
 
 // ──────────────────────────────────────────────────────────────────────────
