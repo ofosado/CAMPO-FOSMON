@@ -5,7 +5,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addD
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = []) {
+// branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
+// Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -21,6 +23,16 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const { jsPDF } = window.jspdf;
 
   try {
+  // ── BRANDING (con defaults FOSMON) ────────────────────────────────────────
+  // Para vender CAMPO a otra empresa: pasar { logoBlanco, logoNegro, empresa, dominio }
+  const B = {
+    logoBlanco: branding.logoBlanco || (typeof EMB_WHITE!=='undefined' ? EMB_WHITE : null),
+    logoNegro:  branding.logoNegro  || (typeof EMB_NEGRO!=='undefined' ? EMB_NEGRO : null),
+    empresa:    branding.empresa    || 'FOSMON Construcciones',
+    empresaCorta: branding.empresaCorta || 'FOSMON',
+    dominio:    branding.dominio    || 'campo-fosmon.netlify.app',
+  };
+
   // ── CONSTANTES DE DISEÑO ──────────────────────────────────────────────────
   // Página letter landscape: 279 × 216 mm
   const PW=279, PH=216;
@@ -99,27 +111,26 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     sf(K.ng); R(0,0,PW,HDR);
     // Barra azul decorativa izquierda
     sf(K.ak); R(0,0,3,HDR);
-    // Logo FOSMON
-    // Logo: 447×516 ratio. A 8mm de alto → ancho = 8/1.154 = 6.9mm. Centrado en HDR=13mm
-    try { if(typeof EMB_WHITE!=='undefined')
-      doc.addImage(EMB_WHITE,'PNG',ML,2,6.9,8,'','FAST');
+    // Logo (branded)
+    try { if(B.logoBlanco)
+      doc.addImage(B.logoBlanco,'PNG',ML,2,6.9,8,'','FAST');
     } catch(e){}
-    // Textos header — todo en una línea centrada verticalmente
+    // Textos header
     st(K.wh); fs(9); fw('bold');
     T('CAMPO', ML+10, 5);
     fs(6.5); fw('normal');
-    T('Reporte de Avance · FOSMON Construcciones', ML+10, 9.5);
+    T(`Reporte ejecutivo · ${B.empresa}`, ML+10, 9.5);
     fs(8); fw('bold');
     T(obra.nombre||'', PW-MR, 5, {align:'right'});
     fs(6.5); fw('normal');
     T(`${obra.contrato||''} · ${hoy}`, PW-MR, 9.5, {align:'right'});
-    // Footer
+    // Footer (la página total se reescribe al final cuando ya conocemos totalPages)
     sf([232,234,240]); R(0,PH-FTR,PW,FTR);
     sf(K.ng); R(0,PH-FTR,PW,0.6);
     st(K.gmu); fs(6); fw('normal');
-    T('CAMPO — FOSMON Construcciones · Documento confidencial', ML, PH-3.5);
-    T(`Página ${pagNum} de 8`, PW/2, PH-3.5, {align:'center'});
-    T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
+    T(`CAMPO — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
+    T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
+    T(B.dominio, PW-MR, PH-3.5, {align:'right'});
   }
 
   // Dibuja una sección header (barra oscura + título)
@@ -505,11 +516,118 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=Math.max(yAM,yMQ);
 
   // ════════════════════════════════════════════════════════════════════════
-  // PAG 4 — PROYECCIÓN Y PLAZOS
+  // PAG 4 — GRÁFICA VISUAL DE AVANCE (top partidas + comparativo)
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('4  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
+  y=secHead('4  GRÁFICA DE AVANCE FÍSICO', y);
+
+  // KPIs resumen arriba
+  const subsConAv = subs.filter(s=>s.imp>0);
+  const subsCompletadas = subsConAv.filter(s=>s.a>=100).length;
+  const subsEnProgreso  = subsConAv.filter(s=>s.a>0 && s.a<100).length;
+  const subsSinIniciar  = subsConAv.filter(s=>s.a===0).length;
+  // % "programado" = avance ideal en función del plazo transcurrido
+  let pctProgIdeal = 0;
+  if (obra.inicio && obra.fin) {
+    const ini = new Date(obra.inicio), fn = new Date(obra.fin), hoy_ = new Date();
+    const total = (fn - ini) / 86400000;
+    const transc = Math.max(0, Math.min(total, (hoy_ - ini) / 86400000));
+    pctProgIdeal = total > 0 ? (transc / total * 100) : 0;
+  }
+  const desviacion = af - pctProgIdeal;
+  y=kpiRow([
+    ['Avance real',     PCT(af),              `${subsConAv.length} partidas activas`, af>=75?K.vk:af>=40?K.am:K.rd],
+    ['Avance programado', PCT(pctProgIdeal),  pctProgIdeal>0?'según plazo contractual':'sin fechas capturadas', K.ak],
+    ['Desviación',      `${desviacion>=0?'+':''}${desviacion.toFixed(1)}%`,  desviacion>=0?'sobre programa':'bajo programa', desviacion>=0?K.vk:K.rk],
+    ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
+  ], y)+3;
+
+  // Top 12 partidas por importe (las más relevantes)
+  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 12);
+
+  if (top.length === 0) {
+    st(K.gmu); fs(10); fw('italic');
+    T('No hay partidas con presupuesto cargado. Carga el catálogo en Planeación → Presupuesto.',
+      ML+10, y+15);
+  } else {
+    // Layout: descripción a la izq, barra horizontal con marcador de "programado"
+    const rowH = 11;
+    const barX = ML + 110;       // donde empieza la barra
+    const barW = CW - 110 - 30;  // ancho de la barra (deja 30mm para etiqueta de %)
+    const labelW = 105;
+    // Encabezado de la sección
+    st(K.gmu); fs(7); fw('bold');
+    T('PARTIDA', ML, y+4);
+    T('AVANCE REAL VS PROGRAMADO', barX, y+4);
+    T('%', barX+barW+12, y+4, {align:'center'});
+    y += 7;
+    sd(K.gbd); lw(0.3); L(ML, y, ML+CW, y);
+    y += 3;
+
+    top.forEach((s, idx) => {
+      const pctReal = Math.min(100, s.a||0);
+      const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
+      const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
+
+      // Etiqueta partida (sec + descripción truncada)
+      st(K.ng); fs(7.5); fw('bold');
+      T(s.sec || '—', ML, y+5);
+      st(K.gtx); fs(7); fw('normal');
+      const descCorta = doc.splitTextToSize(s.sub || '', labelW - 18);
+      T(descCorta[0] || '', ML+15, y+5);
+      st(K.gmu); fs(6.5);
+      T(MXN(s.imp), ML+15, y+9);
+
+      // Fondo de la barra
+      sf(K.glt); doc.rect(barX, y+2, barW, 5, 'F');
+      sd(K.gbd); lw(0.15); doc.rect(barX, y+2, barW, 5, 'S');
+
+      // Barra de avance real
+      if (pctReal > 0) {
+        sf(colReal); doc.rect(barX, y+2, barW * pctReal/100, 5, 'F');
+      }
+
+      // Marcador vertical de "% programado" (línea naranja punteada)
+      if (pctProgIdeal > 0 && pctProgIdeal <= 100) {
+        const xProg = barX + barW * pctProgIdeal/100;
+        sd(K.na); lw(0.6);
+        doc.line(xProg, y+1, xProg, y+8);
+        // pequeño triángulo arriba para destacarlo
+        sf(K.na); doc.triangle(xProg-1.2, y+1, xProg+1.2, y+1, xProg, y+2.2, 'F');
+      }
+
+      // Etiqueta de % al final
+      st(colKReal); fs(9); fw('bold');
+      T(`${pctReal.toFixed(0)}%`, barX+barW+12, y+6, {align:'center'});
+
+      y += rowH;
+      if (idx < top.length-1) {
+        sd(K.gbd); lw(0.1); L(ML, y-1, ML+CW, y-1);
+      }
+    });
+
+    // Leyenda al pie del gráfico
+    y += 4;
+    sf(K.glt); sd(K.gbd); lw(0.2); R(ML, y, CW, 9, 'FD');
+    st(K.gtx); fs(7); fw('normal');
+    // Cuadrados de color + labels
+    sf(K.vd); R(ML+4, y+3, 3, 3, 'F'); T('Avance ≥75%', ML+9, y+5.3);
+    sf(K.am); R(ML+45, y+3, 3, 3, 'F'); T('40-74%', ML+50, y+5.3);
+    sf(K.rd); R(ML+72, y+3, 3, 3, 'F'); T('<40%', ML+77, y+5.3);
+    sf(K.na); doc.triangle(ML+100, y+3, ML+103.5, y+3, ML+101.7, y+5.5, 'F');
+    T('Posición esperada según plazo', ML+106, y+5.3);
+    st(K.gmu); fs(6.5);
+    T(`Top ${top.length} partidas por importe (${MXN(top.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)} total)`,
+      PW-MR, y+5.3, {align:'right'});
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 5 — PROYECCIÓN Y PLAZOS
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('5  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
 
   // ── Gráfica de proyección ────────────────────────────────────────────────
   // Área: CW × 52mm
@@ -646,7 +764,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('5  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
+  y=secHead('6  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
 
   const nomData=typeof NOMINA_S18!=='undefined'?NOMINA_S18:[];
   const dir=nomData.filter(p=>p.tipo==='D').length;
@@ -724,7 +842,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('6  INDICADORES DE RIESGO · OBSERVACIONES', y);
+  y=secHead('7  INDICADORES DE RIESGO · OBSERVACIONES', y);
 
   const rsgBody=[
     [1,'Brecha avance vs gasto','+0.8pp','Normal',K.vk,K.vb,'Avance y gasto alineados'],
@@ -773,7 +891,109 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   );
 
   // ════════════════════════════════════════════════════════════════════════
-  // PAGS 7-8 — FOTOGRAFÍAS
+  // RESUMEN EJECUTIVO DE SUBCONTRATOS (tabla compacta de todos)
+  // Solo aparece si hay subcontratos. Va antes del detalle individual.
+  // ════════════════════════════════════════════════════════════════════════
+  if (subcontratos && subcontratos.length > 0) {
+    doc.addPage(); pageFrame();
+    y = CY0;
+    y = secHead('RESUMEN EJECUTIVO DE SUBCONTRATOS', y);
+
+    // KPIs resumen
+    const totContratado = subcontratos.reduce((t,s)=>t+pf(s.monto), 0);
+    const totEjecutado  = subcontratos.reduce((t,s)=>{
+      const totCat = (s.conceptos||[]).reduce((tt,c)=>tt+pf(c.importe), 0);
+      const ejec = (s.conceptos||[]).reduce((tt,c)=>tt+((pf(c.avance)/100)*pf(c.importe)), 0);
+      return t + ejec;
+    }, 0);
+    const totPagado = subcontratos.reduce((t,s)=>
+      t + (s.pagos||[]).filter(p=>p.estatus==='pagado').reduce((tt,p)=>tt+pf(p.monto), 0), 0);
+    const activos = subcontratos.filter(s=>(s.estado||'activa')==='activa').length;
+
+    y = kpiRow([
+      ['Subcontratos',     `${subcontratos.length}`, `${activos} activos`, K.ng],
+      ['Monto contratado', MXN(totContratado), 'suma de contratos',       K.ak],
+      ['Ejecutado físico', MXN(totEjecutado),  totContratado>0?PCT(totEjecutado/totContratado*100)+' del total':'',  K.vk],
+      ['Pagado',           MXN(totPagado),     totContratado>0?PCT(totPagado/totContratado*100)+' del total':'',     K.mo],
+    ], y) + 3;
+
+    // Tabla resumen de subcontratos
+    const subRows = subcontratos.map(s => {
+      const totCat = (s.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
+      const ejec   = (s.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
+      const avPct  = totCat > 0 ? (ejec/totCat)*100 : 0;
+      const pag    = (s.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
+      const finPct = pf(s.monto) > 0 ? (pag/pf(s.monto))*100 : 0;
+      const pendiente = pf(s.monto) - pag;
+      return [
+        s.nombre || s.id || '—',
+        s.proveedor || '—',
+        (s.estado || 'activa').toUpperCase(),
+        MXN(pf(s.monto)),
+        PCT(avPct, 0),
+        MXN(pag),
+        PCT(finPct, 0),
+        MXN(pendiente),
+      ];
+    });
+    // Fila de totales
+    subRows.push([
+      '', 'TOTAL', '', MXN(totContratado), '',
+      MXN(totPagado), '', MXN(totContratado - totPagado)
+    ]);
+
+    autoT(
+      ['Subcontrato', 'Proveedor', 'Estado', 'Contratado', '% Avance', 'Pagado', '% Pagado', 'Por pagar'],
+      subRows,
+      [42, 50, 22, 30, 18, 30, 18, 41],
+      ML, y,
+      {
+        bodyStyles: { fontSize: FS_TD - 0.5 },
+        columnStyles: {
+          2: { halign:'center', fontSize: FS_SM },
+          3: { halign:'right' },
+          4: { halign:'center', fontStyle:'bold' },
+          5: { halign:'right' },
+          6: { halign:'center' },
+          7: { halign:'right', fontStyle:'bold' },
+        },
+        didParseCell: (d) => {
+          const ri = d.row.index;
+          // Fila TOTAL
+          if (ri === subRows.length - 1) {
+            d.cell.styles.fillColor = K.ng;
+            d.cell.styles.textColor = K.wh;
+            d.cell.styles.fontStyle = 'bold';
+            return;
+          }
+          const s = subcontratos[ri];
+          if (!s) return;
+          // Color al % avance
+          if (d.column.index === 4) {
+            const av = parseFloat(d.cell.text[0]) || 0;
+            d.cell.styles.textColor = av >= 75 ? K.vk : av >= 40 ? K.ak2 : K.rk;
+          }
+          // Color al estado
+          if (d.column.index === 2) {
+            const est = (s.estado || 'activa').toLowerCase();
+            d.cell.styles.textColor =
+              est === 'terminada' ? K.vk :
+              est === 'pausada' ? K.ak2 :
+              est === 'cancelada' ? K.rk : K.ak;
+          }
+        },
+      }
+    );
+    y = doc.lastAutoTable.finalY + 4;
+
+    // Nota al pie
+    st(K.gmu); fs(7); fw('italic');
+    T(`El detalle de cada subcontrato (catálogo y pagos) aparece en las hojas siguientes.`,
+      ML, y+3);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PAGS — FOTOGRAFÍAS
   // ════════════════════════════════════════════════════════════════════════
   const fotosAll=[];
   subs.forEach(s=>{
@@ -830,8 +1050,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     return yf+6;
   }
 
-  let yF2=drawFotoPage(fotos12.slice(0,6), '7  EVIDENCIA FOTOGRÁFICA (1 de 2)');
-  drawFotoPage(fotos12.slice(6,12), '8  EVIDENCIA FOTOGRÁFICA (2 de 2)');
+  let yF2=drawFotoPage(fotos12.slice(0,6), '8  EVIDENCIA FOTOGRÁFICA (1 de 2)');
+  drawFotoPage(fotos12.slice(6,12), '9  EVIDENCIA FOTOGRÁFICA (2 de 2)');
 
   // Firmas al final de pág 8
   const yFirmas=PH-FTR-38;
@@ -939,6 +1159,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
           });
       }
     }
+  }
+
+  // ── PIE DE PÁGINA CON TOTAL DE PÁGINAS ──────────────────────────────────
+  // Sobrescribe "Página X" por "Página X de N" ahora que conocemos el total
+  const totalPaginas = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPaginas; i++) {
+    doc.setPage(i);
+    // Cubrir el texto anterior con fondo del footer y rescribir
+    sf([232,234,240]); R(PW/2-25, PH-6, 50, 4, 'F');
+    st(K.gmu); fs(6); fw('normal');
+    T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
   }
 
   // ── GUARDAR ──────────────────────────────────────────────────────────────
@@ -10425,10 +10656,17 @@ export default function App(){
         ● Cambios sin guardar
       </span>}
       {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales,subcontratos)}
-        style={{background:C.blueDk,border:"none",borderRadius:6,
-          margin:"4px 12px",padding:"4px 10px",fontSize:10,color:"white",cursor:"pointer",
-          display:"flex",alignItems:"center",gap:5}}>
-        Generar PDF
+        title="Descargar reporte ejecutivo en PDF"
+        style={{background:C.caliza,border:"none",borderRadius:6,
+          margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
+          display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/>
+          <polyline points="9 15 12 12 15 15"/>
+        </svg>
+        Reporte ejecutivo
       </button>}
     </div>}
 
