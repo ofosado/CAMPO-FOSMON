@@ -490,8 +490,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
   ], y)+3;
 
-  // Top 12 partidas por importe (las más relevantes)
-  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 12);
+  // Top 10 partidas por importe (las más relevantes, deja espacio para leyenda sin sobrepasar margen)
+  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 10);
 
   if (top.length === 0) {
     st(K.gmu); fs(10); fw('italic');
@@ -499,10 +499,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       ML+10, y+15);
   } else {
     // Layout: descripción a la izq, barra horizontal con marcador de "programado"
-    const rowH = 11;
+    const rowH = 12;             // antes 11, da más aire entre filas
     const barX = ML + 110;       // donde empieza la barra
-    const barW = CW - 110 - 30;  // ancho de la barra (deja 30mm para etiqueta de %)
-    const labelW = 105;
+    const barW = CW - 110 - 30;  // ancho de la barra (30mm para etiqueta de %)
+    const labelW = 105;          // ancho de la columna de descripción
+    const maxDescChars = 55;     // truncar descripciones largas con "…"
     // Encabezado de la sección
     st(K.gmu); fs(7); fw('bold');
     T('PARTIDA', ML, y+4);
@@ -517,14 +518,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
       const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
 
-      // Etiqueta partida (sec + descripción truncada)
+      // Clave (sec)
       st(K.ng); fs(7.5); fw('bold');
-      T(s.sec || '—', ML, y+5);
+      T(s.sec || '—', ML, y+4.5);
+      // Descripción truncada manualmente con "…" si excede
       st(K.gtx); fs(7); fw('normal');
-      const descCorta = doc.splitTextToSize(s.sub || '', labelW - 18);
-      T(descCorta[0] || '', ML+15, y+5);
+      let descTxt = (s.sub || '').trim();
+      if (descTxt.length > maxDescChars) descTxt = descTxt.slice(0, maxDescChars-1).trim() + '…';
+      T(descTxt, ML+15, y+4.5);
+      // Importe (más abajo)
       st(K.gmu); fs(6.5);
-      T(MXN(s.imp), ML+15, y+9);
+      T(MXN(s.imp), ML+15, y+8.5);
 
       // Fondo de la barra
       sf(K.glt); doc.rect(barX, y+2, barW, 5, 'F');
@@ -535,12 +539,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         sf(colReal); doc.rect(barX, y+2, barW * pctReal/100, 5, 'F');
       }
 
-      // Marcador vertical de "% programado" (línea naranja punteada)
+      // Marcador vertical de "% programado"
       if (pctProgIdeal > 0 && pctProgIdeal <= 100) {
         const xProg = barX + barW * pctProgIdeal/100;
         sd(K.na); lw(0.6);
         doc.line(xProg, y+1, xProg, y+8);
-        // pequeño triángulo arriba para destacarlo
         sf(K.na); doc.triangle(xProg-1.2, y+1, xProg+1.2, y+1, xProg, y+2.2, 'F');
       }
 
@@ -549,8 +552,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       T(`${pctReal.toFixed(0)}%`, barX+barW+12, y+6, {align:'center'});
 
       y += rowH;
+      // Línea divisora: bien debajo del importe (no encima), entre filas
       if (idx < top.length-1) {
-        sd(K.gbd); lw(0.1); L(ML, y-1, ML+CW, y-1);
+        sd(K.gbd); lw(0.1);
+        L(ML, y-0.5, ML+CW, y-0.5);
       }
     });
 
@@ -558,7 +563,6 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     y += 4;
     sf(K.glt); sd(K.gbd); lw(0.2); R(ML, y, CW, 9, 'FD');
     st(K.gtx); fs(7); fw('normal');
-    // Cuadrados de color + labels
     sf(K.vd); R(ML+4, y+3, 3, 3, 'F'); T('Avance ≥75%', ML+9, y+5.3);
     sf(K.am); R(ML+45, y+3, 3, 3, 'F'); T('40-74%', ML+50, y+5.3);
     sf(K.rd); R(ML+72, y+3, 3, 3, 'F'); T('<40%', ML+77, y+5.3);
@@ -754,17 +758,25 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
      }}
   );
 
-  // Top 5 proveedores
-  const provs=obra.proveedores||[
-    ['FOSMON CONSTRUCCIONES S.A.',4280794],['JUAN ANTONIO BENITEZ F.',2412104],
-    ['CEMEX S A B DE C V',1817638],['IMSS',1636496],['JOSE E. ALEGRIA CUETO',1426787],
-  ];
-  const totPv=provs.reduce((t,p)=>t+p[1],0);
-  const pvBody=provs.map(([nm,mt],i)=>[i+1,nm.slice(0,28),MXN(mt),PCT(mt/Math.max(totGP,1)*100)]);
+  // Top 5 proveedores — solo si hay datos reales de la obra
+  const provs = Array.isArray(obra.proveedores) && obra.proveedores.length > 0
+    ? obra.proveedores : [];
+  const totPv = provs.reduce((t,p)=>t+p[1],0);
+  // El % se calcula sobre el total de los proveedores mostrados (no contra totGP
+  // de toda la obra, que puede ser muy distinto y producir porcentajes absurdos)
+  const pvBody = provs.length > 0
+    ? provs.map(([nm,mt],i) => [i+1, nm.slice(0,28), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
+    : [['—','Sin proveedores capturados en esta obra','—','—']];
   const yPv=autoT(
-    ['#','Proveedor','Monto acumulado','% Gasto GP'], pvBody,
+    ['#','Proveedor','Monto acumulado','% del top'], pvBody,
     [8,RW7*0.52,RW7*0.28,RW7*0.20], ML+LW7+5, y,
-    {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}}}
+    {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}},
+     didParseCell:(d) => {
+       if (provs.length === 0) {
+         d.cell.styles.textColor = K.gmu;
+         d.cell.styles.fontStyle = 'italic';
+       }
+     }}
   );
   y=Math.max(yNom,yPv)+3;
 
