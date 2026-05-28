@@ -490,8 +490,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
   ], y)+3;
 
-  // Top 10 partidas por importe (las más relevantes, deja espacio para leyenda sin sobrepasar margen)
-  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 10);
+  // Top 9 partidas por importe — cabe dentro del área útil sin que la leyenda
+  // choque con el footer (área útil = 165mm; 9 × 14mm + KPIs + header + leyenda = ~160mm)
+  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 9);
 
   if (top.length === 0) {
     st(K.gmu); fs(10); fw('italic');
@@ -499,11 +500,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       ML+10, y+15);
   } else {
     // Layout: descripción a la izq, barra horizontal con marcador de "programado"
-    const rowH = 12;             // antes 11, da más aire entre filas
+    const rowH = 14;             // suficiente aire para que % no toque siguiente fila
     const barX = ML + 110;       // donde empieza la barra
     const barW = CW - 110 - 30;  // ancho de la barra (30mm para etiqueta de %)
     const labelW = 105;          // ancho de la columna de descripción
-    const maxDescChars = 55;     // truncar descripciones largas con "…"
+    const maxDescChars = 42;     // truncar descripciones largas (en mayúsculas ocupan más)
     // Encabezado de la sección
     st(K.gmu); fs(7); fw('bold');
     T('PARTIDA', ML, y+4);
@@ -563,11 +564,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     y += 4;
     sf(K.glt); sd(K.gbd); lw(0.2); R(ML, y, CW, 9, 'FD');
     st(K.gtx); fs(7); fw('normal');
-    sf(K.vd); R(ML+4, y+3, 3, 3, 'F'); T('Avance ≥75%', ML+9, y+5.3);
-    sf(K.am); R(ML+45, y+3, 3, 3, 'F'); T('40-74%', ML+50, y+5.3);
-    sf(K.rd); R(ML+72, y+3, 3, 3, 'F'); T('<40%', ML+77, y+5.3);
-    sf(K.na); doc.triangle(ML+100, y+3, ML+103.5, y+3, ML+101.7, y+5.5, 'F');
-    T('Posición esperada según plazo', ML+106, y+5.3);
+    sf(K.vd); R(ML+4, y+3, 3, 3, 'F'); T('Avance 75% o más', ML+9, y+5.3);
+    sf(K.am); R(ML+50, y+3, 3, 3, 'F'); T('40 a 74%', ML+55, y+5.3);
+    sf(K.rd); R(ML+78, y+3, 3, 3, 'F'); T('Menos de 40%', ML+83, y+5.3);
+    sf(K.na); doc.triangle(ML+112, y+3, ML+115.5, y+3, ML+113.7, y+5.5, 'F');
+    T('Posición esperada según plazo', ML+118, y+5.3);
     st(K.gmu); fs(6.5);
     T(`Top ${top.length} partidas por importe (${MXN(top.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)} total)`,
       PW-MR, y+5.3, {align:'right'});
@@ -766,7 +767,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // de toda la obra, que puede ser muy distinto y producir porcentajes absurdos)
   const pvBody = provs.length > 0
     ? provs.map(([nm,mt],i) => [i+1, nm.slice(0,28), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
-    : [['—','Sin proveedores capturados en esta obra','—','—']];
+    : [['—','Sin datos en esta obra','—','—']];
   const yPv=autoT(
     ['#','Proveedor','Monto acumulado','% del top'], pvBody,
     [8,RW7*0.52,RW7*0.28,RW7*0.20], ML+LW7+5, y,
