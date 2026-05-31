@@ -4965,6 +4965,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           id: s.id || `${s.sec || 'C'}__${idx}`,
           sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
           n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
+          cat: s.cat || null, catDesc: s.catDesc || null,
         })),
         fecha: new Date().toISOString()
       };
@@ -5666,49 +5667,105 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     )}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por concepto</Tit>
-      {subs.filter(s => (s.imp||0) > 0).map(s=>{
-        // El id es ÚNICO; la clave sec puede repetirse (ej. demolición en
-        // dos zonas distintas de la obra). Las fotos pueden estar bajo s.id
-        // (nuevo) o bajo s.sec (legacy), aceptamos ambos.
-        const subId = s.id || s.sec;
-        const fotosObj = s.fotos || {};
-        const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
-        const nF = fotosArr.length;
-        return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-            <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[subId]:!e[subId]}))}>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <span style={{fontSize:10,color:C.caliza}}>{exp[subId]?"▾":"▸"}</span>
-                <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
-                <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.sub}</span>
-                {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
+      {(() => {
+        // Agrupar conceptos por categoría preservando orden de aparición
+        const subsConImp = subs.filter(s => (s.imp||0) > 0);
+        const grupos = [];     // {cat, catDesc, items, _first}
+        const huerfanos = [];  // conceptos sin categoría
+        const catIdx = new Map();
+        subsConImp.forEach(s => {
+          if (!s.cat) {
+            huerfanos.push(s);
+            return;
+          }
+          if (!catIdx.has(s.cat)) {
+            const g = { cat: s.cat, catDesc: s.catDesc, items: [] };
+            catIdx.set(s.cat, g);
+            grupos.push(g);
+          }
+          catIdx.get(s.cat).items.push(s);
+        });
+
+        // Renderiza un concepto individual (sub)
+        const renderConcepto = (s, indentLevel = 0) => {
+          const subId = s.id || s.sec;
+          const fotosObj = s.fotos || {};
+          const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
+          const nF = fotosArr.length;
+          return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5,
+            marginLeft: indentLevel * 16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+              <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[subId]:!e[subId]}))}>
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:10,color:C.caliza}}>{exp[subId]?"▾":"▸"}</span>
+                  <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
+                  <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.sub}</span>
+                  {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
+                </div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:1,marginLeft:12}}>{MXN(s.imp)}</div>
               </div>
-              <div style={{fontSize:9,color:C.textMut,marginTop:1,marginLeft:12}}>{s.n} conceptos · {MXN(s.imp)}</div>
+              <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,marginLeft:8}}>
+                {editar?<><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
+                  onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
+                  style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
+                    padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
+                <span style={{fontSize:10,color:C.textMut}}>%</span></>
+                :<span style={{fontSize:13,fontWeight:700,color:semA(s.a||0)}}>{s.a||0}%</span>}
+              </div>
             </div>
-            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,marginLeft:8}}>
-              {editar?<><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
-                onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
-                style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
-                  padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
-              <span style={{fontSize:10,color:C.textMut}}>%</span></>
-              :<span style={{fontSize:13,fontWeight:700,color:semA(s.a||0)}}>{s.a||0}%</span>}
-            </div>
-          </div>
-          <Bar pct={s.a||0} color={semA(s.a||0)}/>
-          {exp[subId]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
-            <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>
-              Reporte fotográfico — {s.sec}
-            </div>
-            <ConceptoFotos
-              fotos={fotosArr}
-              onAdd={editar ? (foto=>addFoto(subId, foto)) : (()=>{})}
-              onDel={editar ? (id=>delFoto(subId, id)) : (()=>{})}/>
-            {!editar && fotosArr.length === 0 && (
-              <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas en esta partida.</div>
+            <Bar pct={s.a||0} color={semA(s.a||0)}/>
+            {exp[subId]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
+              <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>
+                Reporte fotográfico — {s.sec}
+              </div>
+              <ConceptoFotos
+                fotos={fotosArr}
+                onAdd={editar ? (foto=>addFoto(subId, foto)) : (()=>{})}
+                onDel={editar ? (id=>delFoto(subId, id)) : (()=>{})}/>
+              {!editar && fotosArr.length === 0 && (
+                <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas en esta partida.</div>
             )}
-          </div>}
-        </div>;
-      })}
+            </div>}
+          </div>;
+        };
+
+        // Render de un grupo (categoría) colapsable
+        const renderGrupo = (g) => {
+          const catId = `__cat__${g.cat}`;
+          const expanded = exp[catId] !== false;  // por default expandidas
+          const totImp = g.items.reduce((t,s) => t+(s.imp||0), 0);
+          const avPond = totImp > 0
+            ? g.items.reduce((t,s) => t + (s.a||0) * (s.imp||0), 0) / totImp
+            : 0;
+          return <div key={catId} style={{marginBottom:8}}>
+            <div onClick={()=>setExp(e=>({...e, [catId]: !expanded}))}
+              style={{background:C.caliza,color:C.bg,borderRadius:8,padding:"9px 12px",
+                cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
+                marginBottom: expanded ? 6 : 0}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,overflow:"hidden"}}>
+                <span style={{fontSize:12}}>{expanded?"▾":"▸"}</span>
+                <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.04em",flexShrink:0}}>{g.cat}</span>
+                <span style={{fontSize:11,opacity:0.9,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.catDesc||""}</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0,fontSize:10}}>
+                <span style={{opacity:0.7}}>{g.items.length} concepto{g.items.length>1?"s":""}</span>
+                <span style={{opacity:0.7}}>{MXN(totImp)}</span>
+                <span style={{fontWeight:700,color: avPond>=75?"#a8d979" : avPond>=40?"#f3b658" : avPond>0?"#f08e8d" : C.bg, fontSize:12}}>
+                  {avPond.toFixed(0)}%
+                </span>
+              </div>
+            </div>
+            {expanded && g.items.map(s => renderConcepto(s, 1))}
+          </div>;
+        };
+
+        return <>
+          {/* Conceptos sin categoría (huérfanos) van primero, sueltos */}
+          {huerfanos.map(s => renderConcepto(s, 0))}
+          {/* Grupos por categoría */}
+          {grupos.map(g => renderGrupo(g))}
+        </>;
+      })()}
     </Card>}
 
     {tab==="maquinaria" && !mostrarTablaMaq && (
@@ -7211,31 +7268,38 @@ function parsearPresupuesto(data, importeContrato) {
     }
   }
 
-  // ── Detector de filas-resumen / subtotales jerárquicos
-  const PATRONES_RESUMEN = [
+  // ── Detector de filas-resumen / agrupadores
+  const PATRONES_TOTAL = [
     /^total\b/i, /^subtotal\b/i, /^suma\b/i,
     /\btotal\s*(general|del|de)\b/i, /^importe\s+total\b/i,
-    /\b(capitulo|capítulo|seccion|sección|partida)\s+\d+/i,
     /^(monto|gran)\s+total\b/i,
   ];
-  const esFilaResumen = (clave, desc, unidad, cant, pu, importe) => {
+  // Detecta si una fila es:
+  // - "total" / "gran total" / etc. → descartar (no aporta valor, solo duplica)
+  // - "categoría/capítulo" (A, A1, A1.5, 1, 1.1, etc.) → preservar como agrupador
+  // - "concepto real" → preservar normal
+  const esTotalAgregado = (clave, desc) => {
     const txt = (desc || clave || '').trim();
-    if (txt && PATRONES_RESUMEN.some(p => p.test(txt))) return true;
-    // REGLA CRÍTICA: un concepto real SIEMPRE tiene PU > 0.
-    // Si hay importe pero no PU, es agrupador/subtotal jerárquico
+    return txt && PATRONES_TOTAL.some(p => p.test(txt));
+  };
+  // Una fila es categoría si tiene clave jerárquica corta (A, A1, A1.5, 1.2.3)
+  // o si tiene importe pero no PU (agrupador típico de Opus)
+  const esCategoria = (clave, desc, unidad, cant, pu, importe) => {
+    if (pu > 0 && cant > 0) return false;  // tiene PU y cantidad → es concepto real
+    const claveTrim = (clave || '').trim();
+    // Patrón jerárquico: A, A1, A1.5, 1, 1.1, 1.1.5
+    const esJerarquica = /^[A-Z]?[0-9]+(\.[0-9]+)*$/i.test(claveTrim)
+                      || /^[A-Z]+$/i.test(claveTrim);
+    if (esJerarquica) return true;
+    // Sin PU pero con importe = agrupador
     if (importe > 0 && pu === 0) return true;
-    // Sin cantidad ni PU = resumen
-    if (cant === 0 && pu === 0) return true;
-    // Unidad "—" o "-" sin PU = agrupador (Opus usa guión largo)
-    const u = (unidad || '').trim();
-    if ((u === '—' || u === '-' || u === '') && pu === 0) return true;
-    // Clave jerárquica corta sin descripción real
-    if (clave && !desc && /^[A-Z]([0-9.]*)?$/i.test(clave.trim()) && pu === 0) return true;
     return false;
   };
 
-  // ── Parsear conceptos
-  const conceptos = [];
+  // ── Parsear conceptos y categorías preservando orden
+  // Las categorías se agrupan jerárquicamente: cada concepto se asocia a la
+  // categoría más reciente de menor nivel (ej. A1.5 antes que A1 antes que A)
+  const filasClasif = [];  // array intercalado de categorías y conceptos en orden
   let totalLeido = 0;
   let cantidadesDeducidas = 0;
 
@@ -7247,40 +7311,81 @@ function parsearPresupuesto(data, importeContrato) {
     const pu      = colPU      >= 0 ? toNum(row[colPU])      : 0;
     const importe = colImporte >= 0 ? Math.abs(toNum(row[colImporte])) : 0;
 
-    // Filtrar filas sin datos útiles
+    // Filas sin datos útiles
     if (!desc && !clave) return;
     if (importe === 0 && pu === 0 && cant === 0) return;
-    // Filtrar filas-resumen / subtotales jerárquicos
-    if (esFilaResumen(clave, desc, unidad, cant, pu, importe)) return;
+    // Descartar totales globales (Total general, Gran total, etc.)
+    if (esTotalAgregado(clave, desc)) return;
 
-    // DEDUCIR cantidad cuando falta pero tenemos PU e importe
-    // Solo si la cantidad detectada no cuadra con importe/PU
-    let cantDeducida = false;
-    if (pu > 0 && importe > 0) {
-      const cantCalc = importe / pu;
-      if (cant === 0 || Math.abs(cant * pu - importe) / importe > 0.05) {
-        // La cantidad actual es 0 o no cuadra → usar la calculada
-        cant = Math.round(cantCalc * 100) / 100;
-        cantDeducida = true;
-        cantidadesDeducidas++;
+    if (esCategoria(clave, desc, unidad, cant, pu, importe)) {
+      // Calcular el "nivel" de jerarquía por número de puntos en la clave
+      // A = nivel 1, A1 = nivel 2 (o si es solo num: 1 = nivel 1, 1.1 = nivel 2)
+      const claveTrim = (clave || '').trim();
+      let nivel = 1;
+      if (claveTrim) {
+        nivel = claveTrim.split('.').length;
+        // Detalle: A1 también es nivel 2 (letra + número)
+        if (nivel === 1 && /^[A-Z][0-9]/.test(claveTrim)) nivel = 2;
+      }
+      filasClasif.push({
+        tipo: 'categoria',
+        nivel,
+        clave: claveTrim || `CAT${ri+1}`,
+        desc: desc || '',
+        importe,
+        _ri: ri,
+      });
+    } else {
+      // Es un concepto real
+      let cantDeducida = false;
+      if (pu > 0 && importe > 0) {
+        const cantCalc = importe / pu;
+        if (cant === 0 || Math.abs(cant * pu - importe) / importe > 0.05) {
+          cant = Math.round(cantCalc * 100) / 100;
+          cantDeducida = true;
+          cantidadesDeducidas++;
+        }
+      }
+      totalLeido += importe;
+      const pctContrato = importeContrato > 0 ? (importe / importeContrato * 100) : 0;
+      filasClasif.push({
+        tipo: 'concepto',
+        clave: clave || `C${ri+1}`,
+        desc: desc || '(sin descripción)',
+        unidad, cant, pu, importe,
+        cantDeducida,
+        pctContrato: Math.round(pctContrato * 100) / 100,
+        avance: 0, fotos: [],
+        _ri: ri,
+      });
+    }
+  });
+
+  // conceptos planos (para compatibilidad con el resto del código)
+  const conceptos = filasClasif.filter(f => f.tipo === 'concepto').map((c, idx) => ({
+    id: String(idx),
+    ...c,
+  }));
+  // categorías con sus conceptos hijos asociados (jerarquía por stack)
+  const categorias = [];
+  let stackCat = [];
+  filasClasif.forEach(f => {
+    if (f.tipo === 'categoria') {
+      stackCat = stackCat.filter(c => c.nivel < f.nivel);
+      const cat = { ...f, hijos: [], padre: stackCat.length > 0 ? stackCat[stackCat.length-1].clave : null };
+      categorias.push(cat);
+      stackCat.push(cat);
+    } else {
+      if (stackCat.length > 0) {
+        stackCat[stackCat.length-1].hijos.push(f);
       }
     }
-
-    totalLeido += importe;
-    const pctContrato = importeContrato > 0 ? (importe / importeContrato * 100) : 0;
-    conceptos.push({
-      id: String(ri),
-      clave: clave || `C${ri+1}`,
-      desc: desc || '(sin descripción)',
-      unidad, cant, pu, importe,
-      cantDeducida,
-      pctContrato: Math.round(pctContrato * 100) / 100,
-      avance: 0, fotos: []
-    });
   });
 
   return {
     conceptos,
+    categorias,
+    filasClasif,
     totalLeido,
     cantidadesDeducidas,
     colsDetectadas: {colClave, colDesc, colUnidad, colCantidad, colPU, colImporte},
@@ -7357,19 +7462,33 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       fechaCarga: new Date().toLocaleDateString('es-MX'),
       archivo: 'Presupuesto cargado'
     };
-    // Convertir conceptos a formato subs para Avance físico
-    // Cada concepto del catálogo se vuelve una "subsección" capturable.
-    // id ÚNICO por sub: la clave puede repetirse en distintas zonas de la obra
-    // (ej. "demolición" en preliminares y en andador peatonal), por eso usamos
-    // un id derivado del índice en el catálogo que SÍ es único.
-    const subsParaAvance = resultado.conceptos.map((c, idx) => ({
-      id: `${c.clave || c.id || 'C'}__${idx}`,
-      sec: c.clave || c.id,
-      sub: c.desc || '(sin descripción)',
-      imp: c.importe || 0,
-      n: 1,
-      a: 0,
-      fotos: {},
+    // Convertir conceptos a formato subs para Avance físico.
+    // Preservamos categorías para vista jerárquica colapsable.
+    // - Conceptos con categoría padre: cat = "A1.5"
+    // - Conceptos huérfanos (sin categoría previa): cat = null → aparecen sueltos al inicio
+    // id ÚNICO por sub: la clave puede repetirse en distintas zonas de la obra,
+    // por eso usamos clave__índice que SÍ es único.
+    const cat2concepto = new Map();  // clave categoría → categoría
+    (resultado.categorias || []).forEach(cat => {
+      cat.hijos.forEach(c => cat2concepto.set(c._ri, { clave: cat.clave, desc: cat.desc, nivel: cat.nivel }));
+    });
+    const subsParaAvance = resultado.conceptos.map((c, idx) => {
+      const pertenece = cat2concepto.get(c._ri);
+      return {
+        id: `${c.clave || c.id || 'C'}__${idx}`,
+        sec: c.clave || c.id,
+        sub: c.desc || '(sin descripción)',
+        imp: c.importe || 0,
+        n: 1,
+        a: 0,
+        fotos: {},
+        cat: pertenece ? pertenece.clave : null,
+        catDesc: pertenece ? pertenece.desc : null,
+      };
+    });
+    // Guardamos también el árbol de categorías para reconstruir la jerarquía
+    cat.categorias = (resultado.categorias || []).map(c => ({
+      clave: c.clave, desc: c.desc, nivel: c.nivel, padre: c.padre,
     }));
     try {
       await fsSetA(`obras/${obra.id}/config/catalogo`, cat,
@@ -10395,12 +10514,16 @@ export default function App(){
         // Sin subs: intentar derivar del catálogo si existe
         const cat = await fsGet(`obras/${obraId}/config/catalogo`);
         if (cat && Array.isArray(cat.conceptos) && cat.conceptos.length > 0) {
+          // Si el catálogo tiene info de categorías (parser nuevo), úsala para
+          // asignar cada concepto a su categoría padre. Si no, lista plana.
           const subsFromCat = cat.conceptos.map((c, idx) => ({
             id: `${c.clave || c.id || 'C'}__${idx}`,
             sec: c.clave || c.id,
             sub: c.desc || '(sin descripción)',
             imp: c.importe || 0,
             n: 1, a: 0, fotos: {},
+            cat: c.cat || null,
+            catDesc: c.catDesc || null,
           }));
           setSubs(subsFromCat);
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
