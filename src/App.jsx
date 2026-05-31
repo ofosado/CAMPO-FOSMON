@@ -7311,11 +7311,21 @@ function parsearPresupuesto(data, importeContrato) {
     }
   }
 
-  // ── Detector de filas-resumen / agrupadores
+  // ── Detector de filas-resumen / agrupadores / metadatos repetitivos
+  // Cubre tanto totales como pies de página típicos de Opus:
+  //   "Acumulado anterior:", "Monto esta hoja:", "Acumulado:", "GERENTE: ..."
   const PATRONES_TOTAL = [
     /^total\b/i, /^subtotal\b/i, /^suma\b/i,
     /\btotal\s*(general|del|de)\b/i, /^importe\s+total\b/i,
     /^(monto|gran)\s+total\b/i,
+    /^acumulado\b/i,           // "Acumulado:", "Acumulado anterior:"
+    /^monto\s+esta\s+hoja/i,   // "Monto esta hoja:"
+    /^gerente\b/i,             // "GERENTE: C. ..."
+    /^residente\b/i,
+    /^superintendente\b/i,
+    /^elabor[óo]\b/i, /^revis[óo]\b/i, /^autoriz[óo]\b/i,
+    /^fecha\s+de\s+t[ée]rmino/i,
+    /^d[ií]as?\s+nat/i,        // "120 DIAS NAT."
   ];
   // Detecta si una fila es:
   // - "total" / "gran total" / etc. → descartar (no aporta valor, solo duplica)
@@ -7369,14 +7379,15 @@ function parsearPresupuesto(data, importeContrato) {
     const pu      = colPU      >= 0 ? toNum(row[colPU])      : 0;
     const importe = colImporte >= 0 ? Math.abs(toNum(row[colImporte])) : 0;
 
-    // Filas sin datos útiles
+    // Filas completamente vacías
     if (!desc && !clave) return;
-    if (importe === 0 && pu === 0 && cant === 0) return;
-    // Descartar totales globales (Total general, Gran total, etc.)
+    // Descartar totales globales y de capítulo
+    // (ej. "A1.1 TOTAL TRABAJOS PRELIMINARES" — empieza con TOTAL en desc)
     if (esTotalAgregado(clave, desc)) return;
-    // Descartar ruido (metadatos, encabezados, filas sueltas sin clave válida)
-    if (esRuido(clave, desc, unidad, cant, pu, importe)) return;
 
+    // VERIFICAR CATEGORÍA PRIMERO (antes de filtrar por "sin datos")
+    // Las categorías típicamente vienen como filas SOLO con clave + descripción,
+    // sin importe ni cantidad. Ej: "A1.1  TRABAJOS PRELIMINARES" sin más datos.
     if (esCategoria(clave, desc, unidad, cant, pu, importe)) {
       // Calcular el "nivel" de jerarquía por número de puntos en la clave
       // A = nivel 1, A1 = nivel 2 (o si es solo num: 1 = nivel 1, 1.1 = nivel 2)
@@ -7396,7 +7407,12 @@ function parsearPresupuesto(data, importeContrato) {
         _ri: ri,
       });
     } else {
-      // Es un concepto real
+      // No es categoría. Para ser un concepto válido debe tener PU > 0.
+      // Sin PU es ruido (pie de página, metadato, fila vacía con números sueltos)
+      if (pu <= 0) return;
+      // También filtrar filas sin descripción ni clave útil
+      if (importe === 0 && cant === 0) return;
+
       let cantDeducida = false;
       if (pu > 0 && importe > 0) {
         const cantCalc = importe / pu;
