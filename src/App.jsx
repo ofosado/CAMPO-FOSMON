@@ -4915,7 +4915,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       {top4.map((s,i)=>{
         const fotos=(CATALOGO[s.sec]?.conceptos||[]).flatMap(c=>c.fotos||[]);
         const mostrar=fotos.slice(0,2);
-        return <div key={s.sec} style={{marginBottom:12}}>
+        return <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,gap:6}}>
             <span style={{display:"flex",alignItems:"center",gap:4,minWidth:0,overflow:"hidden"}}>
               <span style={{color:C.textMut,flexShrink:0}}>{i+1}</span>
@@ -4961,7 +4961,8 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
       const avanceData = {
-        data: subs.map(s=>({
+        data: subs.map((s, idx)=>({
+          id: s.id || `${s.sec || 'C'}__${idx}`,
           sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
           n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
         })),
@@ -5174,8 +5175,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           <Card accent={C.green}>
             <Tit>Partidas con mayor avance</Tit>
             <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>esta semana vs anterior</div>
-            {calientes.map(s=>(
-              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            {calientes.map((s,i)=>(
+              <div key={s.id || `${s.sec}-c${i}`} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                 padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
                 <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
@@ -5189,8 +5190,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           <Card accent={C.yellow}>
             <Tit>Partidas estancadas</Tit>
             <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>≥2 semanas sin movimiento</div>
-            {estancadas.map(s=>(
-              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            {estancadas.map((s,i)=>(
+              <div key={s.id || `${s.sec}-e${i}`} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                 padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
                 <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
@@ -5204,8 +5205,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           <Card accent={C.red}>
             <Tit>Partidas con retroceso</Tit>
             <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>posibles correcciones o re-trabajo</div>
-            {retroceso.map(s=>(
-              <div key={s.sec} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            {retroceso.map((s,i)=>(
+              <div key={s.id || `${s.sec}-r${i}`} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                 padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>
                 <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   <span style={{color:C.textMut,fontWeight:600}}>{s.sec}</span> · <span style={{color:C.textPri}}>{s.sub}</span>
@@ -5608,30 +5609,31 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   // Sube la foto a Firebase Storage y guarda solo la URL en Firestore (no base64).
   // Esto evita que el documento Firestore crezca demasiado y permite cargar
   // miles de fotos sin afectar el rendimiento de carga.
-  const addFoto = async (sec, foto) => {
+  // addFoto/delFoto reciben el id ÚNICO de la sub (no la clave sec, que puede repetirse)
+  const addFoto = async (subId, foto) => {
     if (!obra?.id) return;
     try {
-      // foto = {id, url} donde url puede ser base64 (recién leída) o ya http
       const idSafe = (foto.id || Date.now()).toString();
-      // Si ya es URL https, no la re-subimos
       let urlFinal = foto.url;
       if (foto.url && foto.url.startsWith('data:')) {
-        urlFinal = await uploadFoto(obra.id, `avance_${sec}`, idSafe, foto.url);
+        urlFinal = await uploadFoto(obra.id, `avance_${subId}`, idSafe, foto.url);
       }
       setSubs(ss => ss.map(s => {
-        if (s.sec !== sec) return s;
+        if (s.id !== subId) return s;
         const fotosObj = s.fotos || {};
-        return {...s, fotos:{...fotosObj, [sec]:[...(fotosObj[sec]||[]), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
+        // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
+        return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
       }));
     } catch (e) {
       console.error('addFoto error', e);
       alert('Error al subir foto: ' + (e.message || 'desconocido'));
     }
   };
-  const delFoto=(sec,id)=>setSubs(ss=>ss.map(s=>{
-    if(s.sec!==sec) return s;
+  const delFoto=(subId, fotoId)=>setSubs(ss=>ss.map(s=>{
+    if(s.id !== subId) return s;
     const fotosObj = s.fotos || {};
-    return {...s, fotos:{...fotosObj, [sec]:(fotosObj[sec]||[]).filter(f=>f.id!==id)}};
+    const lista = fotosObj[subId] || fotosObj[s.sec] || [];
+    return {...s, fotos:{...fotosObj, [subId]: lista.filter(f=>f.id!==fotoId)}};
   }));
   const rMaq=(i,f,v)=>setMaquinaria(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
   const rMat=(i,f,v)=>setMateriales(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
@@ -5665,12 +5667,18 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por concepto</Tit>
       {subs.filter(s => (s.imp||0) > 0).map(s=>{
-        const nF=((s.fotos||{})[s.sec]||[]).length;
-        return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
+        // El id es ÚNICO; la clave sec puede repetirse (ej. demolición en
+        // dos zonas distintas de la obra). Las fotos pueden estar bajo s.id
+        // (nuevo) o bajo s.sec (legacy), aceptamos ambos.
+        const subId = s.id || s.sec;
+        const fotosObj = s.fotos || {};
+        const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
+        const nF = fotosArr.length;
+        return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-            <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[s.sec]:!e[s.sec]}))}>
+            <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[subId]:!e[subId]}))}>
               <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <span style={{fontSize:10,color:C.caliza}}>{exp[s.sec]?"▾":"▸"}</span>
+                <span style={{fontSize:10,color:C.caliza}}>{exp[subId]?"▾":"▸"}</span>
                 <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
                 <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.sub}</span>
                 {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
@@ -5679,7 +5687,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             </div>
             <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,marginLeft:8}}>
               {editar?<><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
-                onChange={e=>setSubs(ss=>ss.map(x=>x.sec===s.sec?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
+                onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
                 style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
                   padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
               <span style={{fontSize:10,color:C.textMut}}>%</span></>
@@ -5687,15 +5695,15 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             </div>
           </div>
           <Bar pct={s.a||0} color={semA(s.a||0)}/>
-          {exp[s.sec]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
+          {exp[subId]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
             <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>
               Reporte fotográfico — {s.sec}
             </div>
             <ConceptoFotos
-              fotos={(s.fotos||{})[s.sec]||[]}
-              onAdd={editar ? (foto=>addFoto(s.sec, foto)) : (()=>{})}
-              onDel={editar ? (id=>delFoto(s.sec, id)) : (()=>{})}/>
-            {!editar && ((s.fotos||{})[s.sec]||[]).length === 0 && (
+              fotos={fotosArr}
+              onAdd={editar ? (foto=>addFoto(subId, foto)) : (()=>{})}
+              onDel={editar ? (id=>delFoto(subId, id)) : (()=>{})}/>
+            {!editar && fotosArr.length === 0 && (
               <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas en esta partida.</div>
             )}
           </div>}
@@ -7350,8 +7358,12 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       archivo: 'Presupuesto cargado'
     };
     // Convertir conceptos a formato subs para Avance físico
-    // Cada concepto del catálogo se vuelve una "subsección" capturable
-    const subsParaAvance = resultado.conceptos.map(c => ({
+    // Cada concepto del catálogo se vuelve una "subsección" capturable.
+    // id ÚNICO por sub: la clave puede repetirse en distintas zonas de la obra
+    // (ej. "demolición" en preliminares y en andador peatonal), por eso usamos
+    // un id derivado del índice en el catálogo que SÍ es único.
+    const subsParaAvance = resultado.conceptos.map((c, idx) => ({
+      id: `${c.clave || c.id || 'C'}__${idx}`,
       sec: c.clave || c.id,
       sub: c.desc || '(sin descripción)',
       imp: c.importe || 0,
@@ -8373,11 +8385,11 @@ function AvanceCliente({obra, subs}){
     <Card>
       <Tit>Avance por partida</Tit>
       <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
-        {ordenadas.map(s=>{
+        {ordenadas.map((s,i)=>{
           const pct = s.a || 0;
           const col = pct>=100 ? C.green : pct>0 ? C.blue : C.textMut;
           const pctContrato = (obra?.presupuesto||0)>0 ? ((s.imp||0)/obra.presupuesto*100) : 0;
-          return <div key={s.sec} style={{background:C.bg,borderRadius:8,padding:"9px 11px"}}>
+          return <div key={s.id || `${s.sec}-${i}`} style={{background:C.bg,borderRadius:8,padding:"9px 11px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:5}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -8416,8 +8428,8 @@ function FotosCliente({obra, subs}){
           Aún no se han cargado fotos de esta obra.
         </div>
       )}
-      {conFotos.map(s => (
-        <div key={s.sec} style={{marginBottom:14}}>
+      {conFotos.map((s,i) => (
+        <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:14}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
             borderBottom:`0.5px solid ${C.border}`}}>
             <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{s.sec}</span>
@@ -10366,19 +10378,31 @@ export default function App(){
     // antes del fix que sincroniza catálogo → subs automáticamente)
     fsGet(`obras/${obraId}/avance/subs`).then(async d=>{
       if(d && Array.isArray(d.data) && d.data.length > 0) {
-        setSubs(d.data);
+        // AUTO-MIGRACIÓN: subs viejos guardados sin id único. Si alguno no tiene
+        // id, le asignamos uno derivado de su posición (índice) que es único.
+        // Esto arregla el bug donde modificar una partida modificaba todas las
+        // que tenían la misma clave (sec) en distintas zonas de la obra.
+        const necesitaMigrar = d.data.some(s => !s.id);
+        const subsConId = necesitaMigrar
+          ? d.data.map((s, idx) => ({ ...s, id: s.id || `${s.sec || 'C'}__${idx}` }))
+          : d.data;
+        setSubs(subsConId);
+        if (necesitaMigrar) {
+          // Guardar la migración para próximas cargas (silencioso)
+          fsSet(`obras/${obraId}/avance/subs`, { data: subsConId });
+        }
       } else {
         // Sin subs: intentar derivar del catálogo si existe
         const cat = await fsGet(`obras/${obraId}/config/catalogo`);
         if (cat && Array.isArray(cat.conceptos) && cat.conceptos.length > 0) {
-          const subsFromCat = cat.conceptos.map(c => ({
+          const subsFromCat = cat.conceptos.map((c, idx) => ({
+            id: `${c.clave || c.id || 'C'}__${idx}`,
             sec: c.clave || c.id,
             sub: c.desc || '(sin descripción)',
             imp: c.importe || 0,
             n: 1, a: 0, fotos: {},
           }));
           setSubs(subsFromCat);
-          // Guardar para futuras cargas (auto-migración)
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
         }
       }
