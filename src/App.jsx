@@ -4966,6 +4966,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
           n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
           cat: s.cat || null, catDesc: s.catDesc || null,
+          ruta: s.ruta || [],
         })),
         fecha: new Date().toISOString()
       };
@@ -5668,23 +5669,51 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por concepto</Tit>
       {(() => {
-        // Agrupar conceptos por categoría preservando orden de aparición
+        // ── Construir ÁRBOL JERÁRQUICO desde la ruta de ancestros de cada concepto
+        // Cada nodo: { tipo:"categoria", clave, desc, nivel, hijos:[] } o
+        //            { tipo:"concepto", sub } (hoja)
         const subsConImp = subs.filter(s => (s.imp||0) > 0);
-        const grupos = [];     // {cat, catDesc, items, _first}
-        const huerfanos = [];  // conceptos sin categoría
-        const catIdx = new Map();
+        const raiz = { tipo: 'categoria', clave: '__root__', desc: '', nivel: 0, hijos: [] };
+        const nodoPorClave = new Map();  // clave categoría → nodo
+        nodoPorClave.set('__root__', raiz);
+
         subsConImp.forEach(s => {
-          if (!s.cat) {
-            huerfanos.push(s);
-            return;
-          }
-          if (!catIdx.has(s.cat)) {
-            const g = { cat: s.cat, catDesc: s.catDesc, items: [] };
-            catIdx.set(s.cat, g);
-            grupos.push(g);
-          }
-          catIdx.get(s.cat).items.push(s);
+          const ruta = Array.isArray(s.ruta) ? s.ruta : [];
+          let padre = raiz;
+          // Crear/encontrar cada categoría ancestro
+          ruta.forEach(catInfo => {
+            let nodo = nodoPorClave.get(catInfo.clave);
+            if (!nodo) {
+              nodo = {
+                tipo: 'categoria',
+                clave: catInfo.clave,
+                desc: catInfo.desc || '',
+                nivel: catInfo.nivel || (padre.nivel + 1),
+                hijos: [],
+              };
+              nodoPorClave.set(catInfo.clave, nodo);
+              padre.hijos.push(nodo);
+            }
+            padre = nodo;
+          });
+          // Agregar el concepto como hoja en su categoría más profunda (o raíz si huérfano)
+          padre.hijos.push({ tipo: 'concepto', sub: s });
         });
+
+        // Calcular agregados (totalImporte, avancePonderado, count) por nodo recursivamente
+        const calcAgreg = (nodo) => {
+          if (nodo.tipo === 'concepto') {
+            return { imp: nodo.sub.imp || 0, avPond: (nodo.sub.a || 0) * (nodo.sub.imp || 0), count: 1 };
+          }
+          let imp = 0, avPond = 0, count = 0;
+          nodo.hijos.forEach(h => {
+            const a = calcAgreg(h);
+            imp += a.imp; avPond += a.avPond; count += a.count;
+          });
+          nodo._agreg = { imp, avPond, count, av: imp > 0 ? avPond / imp : 0 };
+          return { imp, avPond, count };
+        };
+        raiz.hijos.forEach(calcAgreg);
 
         // Renderiza un concepto individual (sub)
         const renderConcepto = (s, indentLevel = 0) => {
@@ -5729,42 +5758,56 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           </div>;
         };
 
-        // Render de un grupo (categoría) colapsable
-        const renderGrupo = (g) => {
-          const catId = `__cat__${g.cat}`;
-          const expanded = exp[catId] !== false;  // por default expandidas
-          const totImp = g.items.reduce((t,s) => t+(s.imp||0), 0);
-          const avPond = totImp > 0
-            ? g.items.reduce((t,s) => t + (s.a||0) * (s.imp||0), 0) / totImp
-            : 0;
-          return <div key={catId} style={{marginBottom:8}}>
+        // Render RECURSIVO: cada categoría puede contener sub-categorías y/o conceptos.
+        // Los colores y tamaños cambian sutilmente según nivel (más oscuro/grande arriba).
+        const renderNodo = (nodo, indent = 0) => {
+          if (nodo.tipo === 'concepto') {
+            return renderConcepto(nodo.sub, indent);
+          }
+          // Categoría
+          const catId = `__cat__${nodo.clave}__${nodo.nivel}`;
+          // Default: nivel 1 colapsado; niveles más profundos también colapsados
+          // para no abrumar al usuario al abrir la pantalla
+          const expanded = exp[catId] === true;
+          const ag = nodo._agreg || { imp: 0, avPond: 0, count: 0, av: 0 };
+          const av = ag.av || 0;
+          // Estilo por nivel: nivel 1 = oscuro caliza, nivel 2 = azul oscuro, nivel 3+ = gris claro
+          const stylesPorNivel = {
+            1: { bg: C.caliza,  fg: C.bg,      claveColor: C.bg,        descOpacity: 0.95, fz: 12, fzClave: 12 },
+            2: { bg: C.blueDk,  fg: '#fff',    claveColor: '#fff',      descOpacity: 0.9,  fz: 11, fzClave: 11 },
+            3: { bg: '#3a4855', fg: '#fff',    claveColor: '#fff',      descOpacity: 0.85, fz: 10.5, fzClave: 10.5 },
+            4: { bg: '#e8eaf0', fg: C.textPri, claveColor: C.caliza,    descOpacity: 1,    fz: 10, fzClave: 10 },
+          };
+          const st = stylesPorNivel[nodo.nivel] || stylesPorNivel[4];
+          return <div key={catId} style={{marginBottom: 5, marginLeft: indent * 14}}>
             <div onClick={()=>setExp(e=>({...e, [catId]: !expanded}))}
-              style={{background:C.caliza,color:C.bg,borderRadius:8,padding:"9px 12px",
+              style={{background: st.bg, color: st.fg, borderRadius: 8,
+                padding: nodo.nivel === 1 ? "10px 12px" : "8px 11px",
                 cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
-                marginBottom: expanded ? 6 : 0}}>
+                marginBottom: expanded ? 5 : 0}}>
               <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,overflow:"hidden"}}>
                 <span style={{fontSize:12}}>{expanded?"▾":"▸"}</span>
-                <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.04em",flexShrink:0}}>{g.cat}</span>
-                <span style={{fontSize:11,opacity:0.9,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.catDesc||""}</span>
+                <span style={{fontSize: st.fzClave, fontWeight:700, letterSpacing:"0.04em", flexShrink:0, color: st.claveColor}}>
+                  {nodo.clave}
+                </span>
+                <span style={{fontSize: st.fz, opacity: st.descOpacity, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>
+                  {nodo.desc || ''}
+                </span>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0,fontSize:10}}>
-                <span style={{opacity:0.7}}>{g.items.length} concepto{g.items.length>1?"s":""}</span>
-                <span style={{opacity:0.7}}>{MXN(totImp)}</span>
-                <span style={{fontWeight:700,color: avPond>=75?"#a8d979" : avPond>=40?"#f3b658" : avPond>0?"#f08e8d" : C.bg, fontSize:12}}>
-                  {avPond.toFixed(0)}%
+                <span style={{opacity:0.75}}>{ag.count} concepto{ag.count!==1?"s":""}</span>
+                <span style={{opacity:0.75}}>{MXN(ag.imp)}</span>
+                <span style={{fontWeight:700, fontSize:12,
+                  color: av>=75 ? "#a8d979" : av>=40 ? "#f3b658" : av>0 ? "#f08e8d" : (nodo.nivel <= 3 ? st.fg : C.textMut)}}>
+                  {av.toFixed(0)}%
                 </span>
               </div>
             </div>
-            {expanded && g.items.map(s => renderConcepto(s, 1))}
+            {expanded && nodo.hijos.map(h => renderNodo(h, indent + 1))}
           </div>;
         };
 
-        return <>
-          {/* Conceptos sin categoría (huérfanos) van primero, sueltos */}
-          {huerfanos.map(s => renderConcepto(s, 0))}
-          {/* Grupos por categoría */}
-          {grupos.map(g => renderGrupo(g))}
-        </>;
+        return <>{raiz.hijos.map(h => renderNodo(h, 0))}</>;
       })()}
     </Card>}
 
@@ -7282,18 +7325,33 @@ function parsearPresupuesto(data, importeContrato) {
     const txt = (desc || clave || '').trim();
     return txt && PATRONES_TOTAL.some(p => p.test(txt));
   };
-  // Una fila es categoría si tiene clave jerárquica corta (A, A1, A1.5, 1.2.3)
-  // o si tiene importe pero no PU (agrupador típico de Opus)
+  // Patrón ESTRICTO de clave jerárquica para categorías:
+  //   A, AB, B, C ............ nivel 1 (capítulo)
+  //   A1, A2, A10, B1 ......... nivel 2 (sección)
+  //   A1.5, A1.5B, A1.2C ...... nivel 3+ (subsección)
+  //   1, 1.1, 1.1.5 ........... numérico puro
+  const PATRON_CLAVE_CAT = /^([A-Z]{1,3}|[A-Z]{1,3}[0-9]+[A-Z]?|[A-Z]{1,3}[0-9]+(\.[0-9]+[A-Z]?)+|[0-9]+(\.[0-9]+)*)$/;
+
+  // Una fila es categoría SOLO si su clave cumple el patrón jerárquico estricto.
+  // Esto evita que metadatos del encabezado del Excel ("120 DIAS NAT.",
+  // "Fecha de Término:", filas sueltas con importe) se interpreten como
+  // categorías. Si tiene PU > 0 nunca es categoría (es concepto).
   const esCategoria = (clave, desc, unidad, cant, pu, importe) => {
-    if (pu > 0 && cant > 0) return false;  // tiene PU y cantidad → es concepto real
+    if (pu > 0) return false;
     const claveTrim = (clave || '').trim();
-    // Patrón jerárquico: A, A1, A1.5, 1, 1.1, 1.1.5
-    const esJerarquica = /^[A-Z]?[0-9]+(\.[0-9]+)*$/i.test(claveTrim)
-                      || /^[A-Z]+$/i.test(claveTrim);
-    if (esJerarquica) return true;
-    // Sin PU pero con importe = agrupador
-    if (importe > 0 && pu === 0) return true;
-    return false;
+    if (!claveTrim) return false;
+    return PATRON_CLAVE_CAT.test(claveTrim);
+  };
+
+  // Una fila se DESCARTA por completo si no es ni concepto ni categoría
+  // válida (metadato suelto, encabezado, fila vacía con basura).
+  const esRuido = (clave, desc, unidad, cant, pu, importe) => {
+    // Concepto válido: tiene PU > 0
+    if (pu > 0) return false;
+    // Categoría válida: clave jerárquica
+    if (esCategoria(clave, desc, unidad, cant, pu, importe)) return false;
+    // Cualquier otra cosa sin PU es ruido (metadatos, totales sueltos, etc.)
+    return true;
   };
 
   // ── Parsear conceptos y categorías preservando orden
@@ -7316,6 +7374,8 @@ function parsearPresupuesto(data, importeContrato) {
     if (importe === 0 && pu === 0 && cant === 0) return;
     // Descartar totales globales (Total general, Gran total, etc.)
     if (esTotalAgregado(clave, desc)) return;
+    // Descartar ruido (metadatos, encabezados, filas sueltas sin clave válida)
+    if (esRuido(clave, desc, unidad, cant, pu, importe)) return;
 
     if (esCategoria(clave, desc, unidad, cant, pu, importe)) {
       // Calcular el "nivel" de jerarquía por número de puntos en la clave
@@ -7463,15 +7523,26 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       archivo: 'Presupuesto cargado'
     };
     // Convertir conceptos a formato subs para Avance físico.
-    // Preservamos categorías para vista jerárquica colapsable.
-    // - Conceptos con categoría padre: cat = "A1.5"
-    // - Conceptos huérfanos (sin categoría previa): cat = null → aparecen sueltos al inicio
-    // id ÚNICO por sub: la clave puede repetirse en distintas zonas de la obra,
-    // por eso usamos clave__índice que SÍ es único.
-    const cat2concepto = new Map();  // clave categoría → categoría
+    // Cada concepto guarda la RUTA COMPLETA de categorías padre (ej. ["A","A1","A1.3"])
+    // para reconstruir un árbol jerárquico verdadero en la UI.
+    // id ÚNICO por sub: la clave puede repetirse en distintas zonas de la obra.
+    const cat2concepto = new Map();  // _ri concepto → categoría inmediata
     (resultado.categorias || []).forEach(cat => {
       cat.hijos.forEach(c => cat2concepto.set(c._ri, { clave: cat.clave, desc: cat.desc, nivel: cat.nivel }));
     });
+    // Mapa clave categoría → categoría completa (para resolver ancestros)
+    const cat2cat = new Map();
+    (resultado.categorias || []).forEach(cat => cat2cat.set(cat.clave, cat));
+    // Helper: obtiene la ruta de ancestros de una categoría (de raíz a hoja)
+    const rutaAncestros = (claveCat) => {
+      const ruta = [];
+      let actual = cat2cat.get(claveCat);
+      while (actual) {
+        ruta.unshift({ clave: actual.clave, desc: actual.desc, nivel: actual.nivel });
+        actual = actual.padre ? cat2cat.get(actual.padre) : null;
+      }
+      return ruta;
+    };
     const subsParaAvance = resultado.conceptos.map((c, idx) => {
       const pertenece = cat2concepto.get(c._ri);
       return {
@@ -7482,8 +7553,11 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
         n: 1,
         a: 0,
         fotos: {},
+        // Categoría inmediata (compatibilidad)
         cat: pertenece ? pertenece.clave : null,
         catDesc: pertenece ? pertenece.desc : null,
+        // RUTA COMPLETA de ancestros: ["A", "A1", "A1.3"]
+        ruta: pertenece ? rutaAncestros(pertenece.clave) : [],
       };
     });
     // Guardamos también el árbol de categorías para reconstruir la jerarquía
@@ -10524,6 +10598,7 @@ export default function App(){
             n: 1, a: 0, fotos: {},
             cat: c.cat || null,
             catDesc: c.catDesc || null,
+            ruta: c.ruta || [],
           }));
           setSubs(subsFromCat);
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
