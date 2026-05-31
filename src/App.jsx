@@ -7314,18 +7314,22 @@ function parsearPresupuesto(data, importeContrato) {
   // ── Detector de filas-resumen / agrupadores / metadatos repetitivos
   // Cubre tanto totales como pies de página típicos de Opus:
   //   "Acumulado anterior:", "Monto esta hoja:", "Acumulado:", "GERENTE: ..."
+  //   "Fecha de Inicio:", "Fecha de Término:", "120 DIAS NAT."
   const PATRONES_TOTAL = [
     /^total\b/i, /^subtotal\b/i, /^suma\b/i,
     /\btotal\s*(general|del|de)\b/i, /^importe\s+total\b/i,
     /^(monto|gran)\s+total\b/i,
-    /^acumulado\b/i,           // "Acumulado:", "Acumulado anterior:"
-    /^monto\s+esta\s+hoja/i,   // "Monto esta hoja:"
-    /^gerente\b/i,             // "GERENTE: C. ..."
+    /^acumulado\b/i,            // "Acumulado:", "Acumulado anterior:"
+    /^monto\s+esta\s+hoja/i,    // "Monto esta hoja:"
+    /^gerente\b/i,              // "GERENTE: C. ..."
     /^residente\b/i,
     /^superintendente\b/i,
     /^elabor[óo]\b/i, /^revis[óo]\b/i, /^autoriz[óo]\b/i,
-    /^fecha\s+de\s+t[ée]rmino/i,
-    /^d[ií]as?\s+nat/i,        // "120 DIAS NAT."
+    /^fecha\s+de\s+(inicio|t[ée]rmino|entrega)/i,
+    /^d[ií]as?\s+nat/i,         // "120 DIAS NAT."
+    /^obra\b\s*:/i,             // "Obra:"
+    /^cliente\b\s*:/i,          // "Cliente:"
+    /^domicilio\b/i,
   ];
   // Detecta si una fila es:
   // - "total" / "gran total" / etc. → descartar (no aporta valor, solo duplica)
@@ -7339,17 +7343,26 @@ function parsearPresupuesto(data, importeContrato) {
   //   A, AB, B, C ............ nivel 1 (capítulo)
   //   A1, A2, A10, B1 ......... nivel 2 (sección)
   //   A1.5, A1.5B, A1.2C ...... nivel 3+ (subsección)
-  //   1, 1.1, 1.1.5 ........... numérico puro
-  const PATRON_CLAVE_CAT = /^([A-Z]{1,3}|[A-Z]{1,3}[0-9]+[A-Z]?|[A-Z]{1,3}[0-9]+(\.[0-9]+[A-Z]?)+|[0-9]+(\.[0-9]+)*)$/;
+  //   1, 1.1, 1.1.5 ........... numérico puro (máx 3 dígitos por segmento)
+  // Limitamos números a 3 dígitos por segmento para evitar fechas seriales
+  // de Excel (números tipo 46141 = 2026-04-26) o números sueltos parásitos.
+  const PATRON_CLAVE_CAT = /^([A-Z]{1,3}|[A-Z]{1,3}[0-9]{1,3}[A-Z]?|[A-Z]{1,3}[0-9]{1,3}(\.[0-9]{1,3}[A-Z]?)+|[0-9]{1,3}(\.[0-9]{1,3})*)$/;
 
   // Una fila es categoría SOLO si su clave cumple el patrón jerárquico estricto.
   // Esto evita que metadatos del encabezado del Excel ("120 DIAS NAT.",
-  // "Fecha de Término:", filas sueltas con importe) se interpreten como
-  // categorías. Si tiene PU > 0 nunca es categoría (es concepto).
+  // "Fecha de Término:", filas sueltas con importe, fechas seriales) se
+  // interpreten como categorías. Si tiene PU > 0 nunca es categoría (es concepto).
+  // Además, la descripción debe ser una descripción real (no acabar en ":" como
+  // "Fecha de Inicio:" o "Cliente:").
   const esCategoria = (clave, desc, unidad, cant, pu, importe) => {
     if (pu > 0) return false;
     const claveTrim = (clave || '').trim();
+    const descTrim = (desc || '').trim();
     if (!claveTrim) return false;
+    // Si la descripción termina en ":" es muy probable que sea metadato
+    // (ej. "Fecha de Inicio:", "Obra:", "Cliente:"). Una categoría real
+    // tiene una descripción declarativa sin ":".
+    if (descTrim.endsWith(':')) return false;
     return PATRON_CLAVE_CAT.test(claveTrim);
   };
 
