@@ -5715,7 +5715,10 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         };
         raiz.hijos.forEach(calcAgreg);
 
-        // Renderiza un concepto individual (sub)
+        // Renderiza un concepto individual (sub).
+        // Es la hoja del árbol — todo está siempre visible inline:
+        // descripción, importe, input de % avance y cuadro de fotos.
+        // No requiere ningún expandir/colapsar extra.
         const renderConcepto = (s, indentLevel = 0) => {
           const subId = s.id || s.sec;
           const fotosObj = s.fotos || {};
@@ -5723,17 +5726,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           const nF = fotosArr.length;
           return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5,
             marginLeft: indentLevel * 16}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-              <div style={{flex:1,cursor:"pointer",minWidth:0,overflow:"hidden"}} onClick={()=>setExp(e=>({...e,[subId]:!e[subId]}))}>
-                <div style={{display:"flex",alignItems:"center",gap:4}}>
-                  <span style={{fontSize:10,color:C.caliza}}>{exp[subId]?"▾":"▸"}</span>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:5,gap:8}}>
+              <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
-                  <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.sub}</span>
+                  <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>
                   {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
                 </div>
-                <div style={{fontSize:9,color:C.textMut,marginTop:1,marginLeft:12}}>{MXN(s.imp)}</div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{MXN(s.imp)}</div>
               </div>
-              <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,marginLeft:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
                 {editar?<><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
                   onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
                   style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
@@ -5743,18 +5745,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
               </div>
             </div>
             <Bar pct={s.a||0} color={semA(s.a||0)}/>
-            {exp[subId]&&<div style={{marginTop:9,borderTop:`0.5px solid ${C.border}`,paddingTop:9}}>
-              <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>
-                Reporte fotográfico — {s.sec}
-              </div>
+            {/* Cuadro de fotos siempre visible inline */}
+            <div style={{marginTop:8}}>
               <ConceptoFotos
                 fotos={fotosArr}
                 onAdd={editar ? (foto=>addFoto(subId, foto)) : (()=>{})}
                 onDel={editar ? (id=>delFoto(subId, id)) : (()=>{})}/>
               {!editar && fotosArr.length === 0 && (
-                <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas en esta partida.</div>
-            )}
-            </div>}
+                <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas.</div>
+              )}
+            </div>
           </div>;
         };
 
