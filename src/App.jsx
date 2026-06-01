@@ -5671,17 +5671,27 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     {tab==="volumenes" && subs.length > 0 && ["director_general","director_operaciones","admin_sistema"].includes(rol) && <Card style={{borderLeft:`3px solid ${C.purple}`}}>
       <Tit>Debug del catálogo (solo dirección/admin)</Tit>
       <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
-        <div><b>Total subs en estado:</b> {subs.length}</div>
+        <div><b>Versión del parser que cargó este catálogo:</b> <code style={{background:C.bg,padding:"1px 5px",borderRadius:3}}>{subs[0]?._parserVersion || 'pre-v5 (antes del fix)'}</code></div>
+        <div style={{fontSize:9,color:C.textMut,marginTop:2,fontStyle:"italic"}}>
+          {subs[0]?._parserVersion === 'v5-strict-headers'
+            ? '✓ Cargado con parser nuevo. Si las columnas siguen mal, es bug del parser.'
+            : '⚠ Cargado con parser viejo. RECARGA EL CATÁLOGO (Planeación → Presupuesto → Reemplazar) para que aplique el nuevo.'}
+        </div>
+        <div style={{marginTop:8}}><b>Total subs en estado:</b> {subs.length}</div>
         <div><b>Subs con imp &gt; 0:</b> {subs.filter(s => (s.imp||0) > 0).length}</div>
-        <div><b>Subs con clave (sec):</b> {subs.filter(s => s.sec && s.sec.trim()).length}</div>
+        <div><b>Subs con clave (sec):</b> {subs.filter(s => s.sec && s.sec.trim() && s.sec.length < 50).length} (cortas, válidas)</div>
+        <div><b>Subs donde sec parece descripción:</b> {subs.filter(s => s.sec && s.sec.length >= 50).length} (mal mapeo)</div>
         <div><b>Subs con cat asignada:</b> {subs.filter(s => s.cat).length}</div>
         <div><b>Subs con ruta:</b> {subs.filter(s => Array.isArray(s.ruta) && s.ruta.length > 0).length}</div>
         <div style={{marginTop:8}}><b>Primeras 3 subs (datos crudos):</b></div>
         <pre style={{background:C.bg,padding:8,borderRadius:6,fontSize:9,overflow:"auto",maxHeight:200,marginTop:4}}>
 {JSON.stringify(subs.slice(0,3).map(s => ({
-  id: s.id, sec: s.sec, sub: (s.sub||'').slice(0,60), imp: s.imp,
+  id: (s.id||'').slice(0,40),
+  sec: (s.sec||'').slice(0,40),
+  sub: (s.sub||'').slice(0,40),
+  imp: s.imp,
   cat: s.cat, catDesc: s.catDesc,
-  ruta: (s.ruta||[]).map(r => `${r.clave}:${(r.desc||'').slice(0,20)}`).join(' → '),
+  ruta: (s.ruta||[]).map(r => `${r.clave}:${(r.desc||'').slice(0,15)}`).join(' → '),
 })), null, 2)}
         </pre>
       </div>
@@ -7563,6 +7573,12 @@ function parsearPresupuesto(data, importeContrato) {
     totalLeido,
     cantidadesDeducidas,
     colsDetectadas: {colClave, colDesc, colUnidad, colCantidad, colPU, colImporte},
+    headerDetectado: {
+      headerRow,
+      dataStart,
+      headers: headers.slice(0, 12),
+    },
+    parserVersion: 'v5-strict-headers',  // me ayuda a saber qué versión generó el catálogo
     nFilasLeidas: dataRows.length,
   };
 }
@@ -7634,7 +7650,12 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       totalLeido: resultado.totalLeido,
       conceptos: resultado.conceptos,
       fechaCarga: new Date().toLocaleDateString('es-MX'),
-      archivo: 'Presupuesto cargado'
+      archivo: 'Presupuesto cargado',
+      // Debug metadata: nos dice qué versión del parser generó este catálogo
+      // y qué columnas detectó. Útil para diagnosticar problemas de mapeo.
+      parserVersion: resultado.parserVersion || 'unknown',
+      colsDetectadas: resultado.colsDetectadas,
+      headerDetectado: resultado.headerDetectado,
     };
     // Convertir conceptos a formato subs para Avance físico.
     // Cada concepto guarda la RUTA COMPLETA de categorías padre (ej. ["A","A1","A1.3"])
@@ -7678,6 +7699,8 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     cat.categorias = (resultado.categorias || []).map(c => ({
       clave: c.clave, desc: c.desc, nivel: c.nivel, padre: c.padre,
     }));
+    // Marcar cada sub con la versión del parser (para debug)
+    subsParaAvance.forEach(s => { s._parserVersion = resultado.parserVersion || 'unknown'; });
     try {
       await fsSetA(`obras/${obra.id}/config/catalogo`, cat,
         { modulo:"presupuesto", entidad:`catálogo ${cat.conceptos?.length||0} conceptos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
