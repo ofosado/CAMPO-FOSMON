@@ -5666,6 +5666,26 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
     )}
+    {/* DEBUG TEMPORAL del parser de catálogo — visible solo para director/admin
+        Quitar este bloque una vez que la vista jerárquica funcione bien para Oaxaca */}
+    {tab==="volumenes" && subs.length > 0 && ["director_general","director_operaciones","admin_sistema"].includes(rol) && <Card style={{borderLeft:`3px solid ${C.purple}`}}>
+      <Tit>Debug del catálogo (solo dirección/admin)</Tit>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
+        <div><b>Total subs en estado:</b> {subs.length}</div>
+        <div><b>Subs con imp &gt; 0:</b> {subs.filter(s => (s.imp||0) > 0).length}</div>
+        <div><b>Subs con clave (sec):</b> {subs.filter(s => s.sec && s.sec.trim()).length}</div>
+        <div><b>Subs con cat asignada:</b> {subs.filter(s => s.cat).length}</div>
+        <div><b>Subs con ruta:</b> {subs.filter(s => Array.isArray(s.ruta) && s.ruta.length > 0).length}</div>
+        <div style={{marginTop:8}}><b>Primeras 3 subs (datos crudos):</b></div>
+        <pre style={{background:C.bg,padding:8,borderRadius:6,fontSize:9,overflow:"auto",maxHeight:200,marginTop:4}}>
+{JSON.stringify(subs.slice(0,3).map(s => ({
+  id: s.id, sec: s.sec, sub: (s.sub||'').slice(0,60), imp: s.imp,
+  cat: s.cat, catDesc: s.catDesc,
+  ruta: (s.ruta||[]).map(r => `${r.clave}:${(r.desc||'').slice(0,20)}`).join(' → '),
+})), null, 2)}
+        </pre>
+      </div>
+    </Card>}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por concepto</Tit>
       {(() => {
