@@ -500,11 +500,18 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       ML+10, y+15);
   } else {
     // Layout: descripción a la izq, barra horizontal con marcador de "programado"
-    const rowH = 14;             // suficiente aire para que % no toque siguiente fila
-    const barX = ML + 110;       // donde empieza la barra
-    const barW = CW - 110 - 30;  // ancho de la barra (30mm para etiqueta de %)
-    const labelW = 105;          // ancho de la columna de descripción
-    const maxDescChars = 42;     // truncar descripciones largas (en mayúsculas ocupan más)
+    const rowH = 14;
+    const barX = ML + 115;       // donde empieza la barra (algo más adentro para más espacio de label)
+    const barW = CW - 115 - 30;  // ancho de la barra (30mm para etiqueta de %)
+    const maxClaveChars = 16;    // claves cortas (0219-OAX-XXX-99). Si son más largas, son datos viejos
+    const maxDescChars = 38;     // truncar descripciones largas para que no invadan la barra
+    // ENCODER seguro: trunca cualquier texto a N chars con "…" si excede
+    const truncar = (txt, n) => {
+      const t = String(txt || '').trim();
+      if (!t) return '';
+      if (t.length <= n) return t;
+      return t.slice(0, n - 1).trimEnd() + '…';
+    };
     // Encabezado de la sección
     st(K.gmu); fs(7); fw('bold');
     T('PARTIDA', ML, y+4);
@@ -519,17 +526,23 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
       const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
 
-      // Clave (sec)
+      // Si la "clave" (sec) es demasiado larga, son datos viejos donde sec quedó
+      // con la descripción. En ese caso usamos sec como descripción y omitimos
+      // la columna de clave.
+      const secEsLarga = (s.sec || '').trim().length > maxClaveChars;
+      const claveMostrar = secEsLarga ? '—' : truncar(s.sec, maxClaveChars);
+      const descRaw = secEsLarga ? (s.sec || '') : (s.sub || '');
+      const descMostrar = truncar(descRaw, maxDescChars);
+
+      // Clave (sec corta)
       st(K.ng); fs(7.5); fw('bold');
-      T(s.sec || '—', ML, y+4.5);
-      // Descripción truncada manualmente con "…" si excede
+      T(claveMostrar, ML, y+4.5);
+      // Descripción truncada
       st(K.gtx); fs(7); fw('normal');
-      let descTxt = (s.sub || '').trim();
-      if (descTxt.length > maxDescChars) descTxt = descTxt.slice(0, maxDescChars-1).trim() + '…';
-      T(descTxt, ML+15, y+4.5);
+      T(descMostrar, ML + 18, y+4.5);
       // Importe (más abajo)
       st(K.gmu); fs(6.5);
-      T(MXN(s.imp), ML+15, y+8.5);
+      T(MXN(s.imp), ML+18, y+8.5);
 
       // Fondo de la barra
       sf(K.glt); doc.rect(barX, y+2, barW, 5, 'F');
