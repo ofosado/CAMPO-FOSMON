@@ -7157,12 +7157,54 @@ function parsearPresupuesto(data, importeContrato) {
     return isNaN(n) ? 0 : n;
   };
 
-  // Encontrar fila de headers (primera fila con texto en ≥3 columnas)
+  // Encontrar fila de headers buscando PALABRAS CLAVE típicas de presupuesto.
+  // Antes buscaba "primera fila con ≥3 cols de texto" pero eso podía caer en
+  // metadatos del Excel (logo, fecha, título). Ahora exigimos que la fila
+  // contenga al menos 3 de las palabras: clave, descripción, unidad, cantidad,
+  // precio, importe, partida...
+  const PALABRAS_HEADER = [
+    /^clave\b/i, /^c[oó]digo\b/i, /^id$/i, /^no\.?$/i,
+    /descripci/i, /concepto/i, /partida/i,
+    /^unidad\b/i, /^und?\b/i, /^u\.?\s*m\.?/i,
+    /cantidad/i, /^cant\.?\b/i, /volumen/i, /^vol\.?\b/i,
+    /precio/i, /^p\.?\s*u\.?\b/i, /unitar/i,
+    /importe/i, /^total\b/i, /^monto\b/i, /^subtotal\b/i,
+    /incidencia/i, /porcent/i,
+  ];
+  const contarPalabrasHeader = (fila) => fila.filter(c => {
+    const s = String(c||'').trim();
+    if (!s || s.length > 40) return false;
+    return PALABRAS_HEADER.some(p => p.test(s));
+  }).length;
+
   let headerRow = 0;
   let dataStart = 0;
-  for (let i = 0; i < Math.min(filas.length, 20); i++) {
-    const textCols = filas[i].filter(c => c && isNaN(Number(c)) && String(c).trim().length > 1).length;
-    if (textCols >= 3) { headerRow = i; dataStart = i + 1; break; }
+  for (let i = 0; i < Math.min(filas.length, 30); i++) {
+    if (contarPalabrasHeader(filas[i]) >= 3) {
+      headerRow = i; dataStart = i + 1; break;
+    }
+  }
+  // Caso especial: Opus suele tener 2 filas de header (ej: "Precio Unitario"
+  // arriba, y debajo "Con Número | Con letra"). Si la fila siguiente al
+  // header tiene texto en columnas donde el header está vacío, saltarla.
+  if (dataStart > 0 && filas[dataStart]) {
+    const subHeader = filas[dataStart];
+    const subHeaderTienePalabras = subHeader.some(c => {
+      const s = String(c||'').trim();
+      return /^con\s+(n[uú]mero|letra)/i.test(s) || /^[a-z]+\s+/i.test(s) && s.length < 25;
+    });
+    // Si la fila tiene "Con Número" / "Con letra" claramente, es sub-header
+    const tieneConNumLetra = subHeader.some(c => /^con\s+(n[uú]mero|letra)/i.test(String(c||'').trim()));
+    if (tieneConNumLetra) {
+      dataStart = dataStart + 1;
+    }
+  }
+  // Fallback si no se encontró: usar la primera fila con ≥3 cols de texto
+  if (dataStart === 0) {
+    for (let i = 0; i < Math.min(filas.length, 20); i++) {
+      const textCols = filas[i].filter(c => c && isNaN(Number(c)) && String(c).trim().length > 1).length;
+      if (textCols >= 3) { headerRow = i; dataStart = i + 1; break; }
+    }
   }
 
   const nCols = filas[0]?.length || 0;
@@ -7199,9 +7241,18 @@ function parsearPresupuesto(data, importeContrato) {
         if (Math.abs(n) < 1) colStats[ci].fracCount++;
       } else if (isNaN(Number(s.replace(/[$,]/g,'')))) {
         colStats[ci].textCount++;
+        colStats[ci].textLengthSum = (colStats[ci].textLengthSum || 0) + s.length;
         if (s.length <= 6) colStats[ci].shortTextCount++;
+        if (s.length <= 25) colStats[ci].mediumTextCount = (colStats[ci].mediumTextCount || 0) + 1;
         if (s.length > 15) colStats[ci].longTextCount++;
-        if (/[A-Z0-9].*-.*[A-Z0-9]/i.test(s) || /^\d{4}/.test(s)) colStats[ci].codeCount++;
+        if (s.length > 50) colStats[ci].veryLongTextCount = (colStats[ci].veryLongTextCount || 0) + 1;
+        // Patrón de CLAVE de presupuesto: texto corto (≤30 chars) con guiones
+        // tipo "0219-OAX-TRAZ-03" o clave jerárquica corta como "A1.5"
+        if (s.length <= 30 && (
+          /^[0-9]{2,4}[-\s]/.test(s) ||           // empieza con código numérico ej "0219-OAX"
+          /^[A-Z]{1,3}[0-9]+(\.[0-9]+)*[A-Z]?$/i.test(s) || // jerárquica A1.5
+          /^[A-Z]{1,4}$/i.test(s)                  // letras solas A, AB
+        )) colStats[ci].codeCount++;
       }
     });
   });
@@ -7209,30 +7260,44 @@ function parsearPresupuesto(data, importeContrato) {
     cs.avgNum = cs.nums.length ? cs.nums.reduce((a,b)=>a+b,0) / cs.nums.length : 0;
     cs.maxNum = cs.nums.length ? Math.max(...cs.nums) : 0;
     cs.fracRatio = cs.numCount ? cs.fracCount / cs.numCount : 0;
+    cs.avgTextLen = cs.textCount ? (cs.textLengthSum || 0) / cs.textCount : 0;
   });
 
   // ── Asignar columnas de TEXTO (clave, descripción, unidad)
   let colClave=-1, colDesc=-1, colUnidad=-1;
 
-  // Clave: prioridad header → mayor proporción de códigos
+  // Clave: prioridad header → mayor proporción de códigos cortos.
+  // CRÍTICO: la clave debe tener TEXTO CORTO en promedio (≤30 chars).
+  // Esto evita confundir descripciones largas con clave por sus guiones internos
+  // (ej. "DEMOLICIÓN POR MEDIOS-MANUALES..." matcheaba como código por el guión).
   const claveByHeader = colStats.find(cs => headerMatch(cs.header, H_CLAVE));
   if (claveByHeader) colClave = claveByHeader.ci;
   else {
     let maxCode = 0;
     colStats.forEach(cs => {
+      // Promedio de longitud > 30 char = no puede ser clave (es descripción)
+      if (cs.avgTextLen > 30) return;
       if (cs.codeCount > maxCode && cs.textCount > dataRows.length * 0.1) {
         maxCode = cs.codeCount; colClave = cs.ci;
       }
     });
   }
 
-  // Descripción: prioridad header → mayor texto largo
+  // Descripción: prioridad header → mayor texto largo.
+  // Excluir columnas que parezcan "Precio con letra" (empiezan con * o
+  // contienen palabras como "PESOS", típicas de Opus "Con letra")
+  const pareceColLetra = (cs) => {
+    // Si la mayoría de su contenido empieza con "(" o contiene "PESOS", es Con Letra
+    // No tenemos el contenido aquí, pero el header nos delata
+    return /con\s+letra/i.test(cs.header) || /letra/i.test(cs.header);
+  };
   const descByHeader = colStats.find(cs => headerMatch(cs.header, H_DESC));
   if (descByHeader) colDesc = descByHeader.ci;
   else {
     let maxLong = 0;
     colStats.forEach(cs => {
       if (cs.ci === colClave) return;
+      if (pareceColLetra(cs)) return;
       if (cs.longTextCount > maxLong) { maxLong = cs.longTextCount; colDesc = cs.ci; }
     });
   }
