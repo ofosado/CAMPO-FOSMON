@@ -10921,6 +10921,7 @@ export default function App(){
     setHistorialAvance([]);
     setHistorialCargado(false);
     setOtrosGastos([]);
+    setFechasModulos({});
 
     // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
@@ -10966,12 +10967,27 @@ export default function App(){
     });
     fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
+      if(d?.fecha) setFechasModulos(f => ({...f, maquinaria: d.fecha}));
     });
     fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
+      if(d?.fecha) setFechasModulos(f => ({...f, materiales: d.fecha}));
     });
     fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
+    });
+    // Cargar fecha de la última semana de nómina para detectar pendientes
+    fsGet(`obras/${obraId}/nomina/historial`).then(d=>{
+      const semanas = d?.semanas;
+      if (Array.isArray(semanas) && semanas.length > 0) {
+        const ultima = semanas[semanas.length - 1];
+        // La semana tiene "fecha" como string es-MX, convertir a ISO aproximada
+        // o si trae fechaISO usarla. Como fallback, usar fecha actual menos algunos días
+        const fechaIso = ultima.fechaISO || (ultima.fecha
+          ? new Date(ultima.fecha.split('/').reverse().join('-')).toISOString()
+          : null);
+        if (fechaIso) setFechasModulos(f => ({...f, nomina: fechaIso}));
+      }
     });
   },[obraId]);
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
@@ -10985,6 +11001,8 @@ export default function App(){
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
   const[historialCargado,setHistorialCargado]=useState(false);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
+  // Fechas de última actualización por módulo, para detectar pendientes de captura
+  const[fechasModulos,setFechasModulos]=useState({});  // {maquinaria:isoDate, materiales:isoDate, nomina:isoDate}
 
   // Lazy load de historial de avance: se carga al abrir Dashboard o Avance físico
   // (Dashboard lo usa para tendencias mensuales; Avance lo usa para histórico semanal)
@@ -11142,6 +11160,43 @@ export default function App(){
   };
   const TABS=TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones;
 
+  // ── PENDIENTES DE CAPTURA EN OPERACIÓN ──
+  // Cuenta:
+  //  - Cierre semanal (si pasó el jueves y no hay snapshot oficial de esta semana)
+  //  - Almacén sin captura en últimos 7 días (si ya hay materiales registrados)
+  //  - Maquinaria sin captura en últimos 7 días
+  //  - Nómina semanal sin cargar (última semana > 7 días)
+  const pendientesOp = (() => {
+    if (screen !== "obra" || !obra) return 0;
+    let count = 0;
+    const hoy = new Date();
+    const dow = hoy.getDay(); // 0=dom,1=lun...6=sab
+    const hace7d = new Date(hoy.getTime() - 7*24*60*60*1000);
+    // 1) Cierre semanal pendiente: jueves o después y sin snapshot oficial
+    if (dow >= 4 || dow === 0) {
+      const { semana, año } = semanaISO(hoy);
+      const tieneOficial = (historialAvance||[]).some(s =>
+        s.semana === semana && s.año === año && s.tipo === 'oficial');
+      if (!tieneOficial) count++;
+    }
+    // 2) Almacén: solo si ya hay materiales registrados
+    if (materiales.length > 0 && fechasModulos.materiales) {
+      const f = new Date(fechasModulos.materiales);
+      if (!isNaN(f) && f < hace7d) count++;
+    }
+    // 3) Maquinaria: solo si ya hay equipos registrados
+    if (maquinaria.length > 0 && fechasModulos.maquinaria) {
+      const f = new Date(fechasModulos.maquinaria);
+      if (!isNaN(f) && f < hace7d) count++;
+    }
+    // 4) Nómina: si la última semana cargada es > 7 días
+    if (fechasModulos.nomina) {
+      const f = new Date(fechasModulos.nomina);
+      if (!isNaN(f) && f < hace7d) count++;
+    }
+    return count;
+  })();
+
   return <ErrorBoundary><>
     <style>{css}</style>
     {mostrarBienvenida && <WelcomeBanner usuario={usuario} onCerrar={()=>{
@@ -11224,10 +11279,23 @@ export default function App(){
 
     {screen==="obra"&&<div className="noscroll" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,
       display:"flex",overflowX:"auto",padding:"0 12px"}}>
-      {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",
-        borderBottom:`2px solid ${tab===t.id?C.blueDk:"transparent"}`,padding:"8px 12px",fontSize:11,
-        color:tab===t.id?C.blueDk:C.textSec,cursor:"pointer",whiteSpace:"nowrap",
-        fontWeight:tab===t.id?500:400,letterSpacing:"0.01em",transition:"all .15s"}}>{t.label}</button>)}
+      {TABS.map(t=>(
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",
+          borderBottom:`2px solid ${tab===t.id?C.blueDk:"transparent"}`,padding:"8px 12px",fontSize:11,
+          color:tab===t.id?C.blueDk:C.textSec,cursor:"pointer",whiteSpace:"nowrap",
+          fontWeight:tab===t.id?500:400,letterSpacing:"0.01em",transition:"all .15s",
+          display:"inline-flex",alignItems:"center",gap:6}}>
+          <span>{t.label}</span>
+          {t.id==="operacion" && pendientesOp > 0 && (
+            <span title="Capturas pendientes esta semana"
+              style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
+                borderRadius:99,minWidth:16,height:16,padding:"0 5px",
+                display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+              {pendientesOp}
+            </span>
+          )}
+        </button>
+      ))}
     </div>}
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
