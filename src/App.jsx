@@ -4656,7 +4656,249 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
   </Card>;
 }
 
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,onNavTab}){
+// ── TENDENCIAS MENSUALES ──────────────────────────────────────────────────
+// Muestra evolución mes a mes de: Avance físico %, Gasto acumulado,
+// Estimaciones cobradas y Margen. Por default últimos 6 meses.
+// Datos consolidados desde múltiples fuentes:
+// - Avance: historialAvance (semanas con avancePonderado)
+// - Gasto: gpData.semanas + otros gastos manuales + maquinaria
+// - Estimaciones: estimaciones con su periodo/fecha cobro
+// - Margen: ejecutado - gastado por mes
+function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos}) {
+  const [rango, setRango] = useState(6); // últimos N meses
+  const [metricaActiva, setMetricaActiva] = useState('avance');
+
+  // ── Generar lista de últimos N meses (YYYY-MM)
+  const meses = (() => {
+    const hoy = new Date();
+    const out = [];
+    for (let i = rango - 1; i >= 0; i--) {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+      const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      out.push({
+        ym,
+        label: d.toLocaleDateString('es-MX', {month:'short', year:'2-digit'}),
+        date: d,
+      });
+    }
+    return out;
+  })();
+
+  // ── Avance % por mes: tomar el último snapshot del mes
+  const avancePorMes = {};
+  (historialAvance || []).forEach(snap => {
+    const f = new Date(snap.fechaCaptura);
+    const ym = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
+    if (!avancePorMes[ym] || new Date(snap.fechaCaptura) > new Date(avancePorMes[ym].fechaCaptura)) {
+      avancePorMes[ym] = snap;
+    }
+  });
+
+  // ── Gasto acumulado por mes: sumar GP + otros gastos + maquinaria hasta ese mes
+  const gastoPorMes = {};
+  let acumGP = 0;
+  meses.forEach(m => {
+    // GP del Sheet (por semana, agrupar por mes)
+    if (datosObraGP?.semanas) {
+      Object.keys(datosObraGP.semanas).forEach(semKey => {
+        // semKey formato típico Wxx-yy, no tiene fecha clara. Usamos heurística:
+        // si tenemos meses, dividimos uniformemente. Mejor: usar datosObraGP.meses si existe
+      });
+    }
+    // Usar meses del GP si vienen agrupados
+    if (datosObraGP?.meses) {
+      Object.entries(datosObraGP.meses).forEach(([mesKey, val]) => {
+        // mesKey puede ser tipo "ene", "feb"... mapear
+      });
+    }
+  });
+  // Estrategia más simple: si tenemos histórico de gpData.meses con keys YYYY-MM, usar directo
+  // Si no, distribuir el gasto total entre los meses (no ideal)
+  meses.forEach(m => {
+    let g = 0;
+    // 1) GP por mes (formato YYYY-MM o "MMM-YY")
+    if (datosObraGP?.mesesPorAño) {
+      Object.values(datosObraGP.mesesPorAño).forEach(añoMeses => {
+        Object.entries(añoMeses).forEach(([k,v]) => {
+          // intentar match con ym
+          if (k === m.ym || k.includes(m.label.split(' ')[0])) g += v;
+        });
+      });
+    }
+    // 2) Otros gastos manuales con fecha
+    (otrosGastos || []).forEach(og => {
+      if (!og.fecha) return;
+      const f = new Date(og.fecha);
+      const fYm = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
+      if (fYm === m.ym) g += parseFloat(og.importe) || 0;
+    });
+    acumGP += g;
+    gastoPorMes[m.ym] = acumGP;
+  });
+
+  // ── Estimaciones cobradas (acumulado) por mes
+  const estPorMes = {};
+  let acumEst = 0;
+  meses.forEach(m => {
+    let cobrado = 0;
+    (estimaciones || []).forEach(e => {
+      const fecha = e.fechaCobro || e.fecha || e.periodo;
+      if (!fecha) return;
+      const f = new Date(fecha);
+      if (isNaN(f.getTime())) return;
+      const fYm = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
+      const estNorm = (e.estatus||'').toLowerCase();
+      const esCobrada = estNorm === 'pagada' || estNorm === 'cobrada';
+      if (fYm === m.ym && esCobrada) cobrado += e.monto || 0;
+    });
+    acumEst += cobrado;
+    estPorMes[m.ym] = acumEst;
+  });
+
+  // ── Datos por métrica
+  const datosMetricas = {
+    avance: {
+      label: 'Avance físico',
+      color: C.greenDk,
+      formato: (v) => `${(v||0).toFixed(1)}%`,
+      max: 100,
+      valores: meses.map(m => avancePorMes[m.ym]?.avancePonderado || 0),
+    },
+    gasto: {
+      label: 'Gasto acumulado',
+      color: C.redDk,
+      formato: (v) => MXN(v),
+      max: null, // auto
+      valores: meses.map(m => gastoPorMes[m.ym] || 0),
+    },
+    estimaciones: {
+      label: 'Estimaciones cobradas',
+      color: C.blueDk,
+      formato: (v) => MXN(v),
+      max: null,
+      valores: meses.map(m => estPorMes[m.ym] || 0),
+    },
+    margen: {
+      label: 'Margen',
+      color: C.purple,
+      formato: (v) => MXN(v),
+      max: null,
+      // Margen = ejecutado (avance % × presupuesto) - gasto acumulado
+      valores: meses.map(m => {
+        const avPct = avancePorMes[m.ym]?.avancePonderado || 0;
+        const ejecutado = (avPct / 100) * (obra.presupuesto || 0);
+        const gastado = gastoPorMes[m.ym] || 0;
+        return ejecutado - gastado;
+      }),
+    },
+  };
+
+  const metricaSel = datosMetricas[metricaActiva];
+  const valores = metricaSel.valores;
+  const maxValor = metricaSel.max !== null ? metricaSel.max : Math.max(...valores.map(Math.abs), 1);
+  const minValor = Math.min(...valores, 0);
+  const rangoY = maxValor - minValor || 1;
+
+  // SVG sparkline + barras
+  const W = 600, H = 140, PL = 50, PR = 12, PT = 14, PB = 26;
+  const cw = W - PL - PR, ch = H - PT - PB;
+  const xPos = (i) => PL + (cw / Math.max(meses.length - 1, 1)) * i;
+  const yPos = (v) => PT + ch - ((v - minValor) / rangoY) * ch;
+
+  return <Card>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
+      <Tit>Tendencias mes a mes</Tit>
+      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+        <select value={rango} onChange={e=>setRango(Number(e.target.value))}
+          style={{fontSize:10,padding:"3px 6px",border:`1px solid ${C.border}`,borderRadius:4,color:C.textSec}}>
+          <option value={3}>Últimos 3 meses</option>
+          <option value={6}>Últimos 6 meses</option>
+          <option value={12}>Últimos 12 meses</option>
+        </select>
+      </div>
+    </div>
+
+    {/* Selector de métrica como tabs pequeños */}
+    <div style={{display:"flex",gap:4,marginBottom:10,flexWrap:"wrap"}}>
+      {Object.entries(datosMetricas).map(([key, m]) => (
+        <button key={key} onClick={()=>setMetricaActiva(key)}
+          style={{flex:"1 1 auto",minWidth:90,padding:"6px 10px",fontSize:10,borderRadius:6,
+            background: metricaActiva===key ? m.color : "transparent",
+            border: `1px solid ${metricaActiva===key ? m.color : C.border}`,
+            color: metricaActiva===key ? "#fff" : C.textSec,
+            fontWeight: metricaActiva===key ? 600 : 400, cursor:"pointer", whiteSpace:"nowrap"}}>
+          {m.label}
+        </button>
+      ))}
+    </div>
+
+    {/* Gráfica SVG */}
+    <div style={{overflowX:"auto",width:"100%"}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:H,minWidth:400}}>
+        {/* Eje Y: 3 líneas guía */}
+        {[0, 0.5, 1].map(p => (
+          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
+            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
+        ))}
+        {/* Labels eje Y */}
+        {[0, 0.5, 1].map(p => {
+          const v = maxValor - rangoY * p;
+          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
+            textAnchor="end" fontSize="9" fill={C.textMut}>
+            {metricaSel.formato(v)}
+          </text>;
+        })}
+        {/* Barras */}
+        {meses.map((m, i) => {
+          const v = valores[i];
+          if (v <= 0 && minValor >= 0) return null;
+          const xC = xPos(i);
+          const bw = Math.min(cw / meses.length * 0.6, 40);
+          const yTop = yPos(Math.max(v, 0));
+          const yBase = yPos(0);
+          const bh = Math.abs(yBase - yTop);
+          return <rect key={m.ym}
+            x={xC - bw/2} y={Math.min(yTop, yBase)}
+            width={bw} height={bh || 1}
+            fill={v >= 0 ? metricaSel.color : C.red}
+            opacity={0.85} rx={2}/>;
+        })}
+        {/* Línea de tendencia */}
+        <polyline
+          fill="none" stroke={metricaSel.color} strokeWidth={2}
+          points={meses.map((m, i) => `${xPos(i)},${yPos(valores[i])}`).join(' ')}/>
+        {/* Puntos + valores */}
+        {meses.map((m, i) => (
+          <g key={m.ym}>
+            <circle cx={xPos(i)} cy={yPos(valores[i])} r={3} fill={metricaSel.color}/>
+            <text x={xPos(i)} y={yPos(valores[i]) - 8}
+              textAnchor="middle" fontSize="9" fill={C.textPri} fontWeight="600">
+              {valores[i] !== 0 ? metricaSel.formato(valores[i]) : ''}
+            </text>
+          </g>
+        ))}
+        {/* Eje X: labels de meses */}
+        {meses.map((m, i) => (
+          <text key={m.ym} x={xPos(i)} y={H - 8}
+            textAnchor="middle" fontSize="10" fill={C.textSec}>
+            {m.label}
+          </text>
+        ))}
+      </svg>
+    </div>
+
+    {/* Resumen del período */}
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+      marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut}}>
+      <span>Inicio del período: {metricaSel.formato(valores[0])}</span>
+      <span style={{fontWeight:600,color:metricaSel.color}}>
+        Actual: {metricaSel.formato(valores[valores.length-1])}
+      </span>
+    </div>
+  </Card>;
+}
+
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   const gt=obra.gastoGP+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
   const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
@@ -4714,6 +4956,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
       </div>
     </div>
+
+    {/* BLOQUE 1.5: TENDENCIAS MENSUALES */}
+    <TendenciasMensuales
+      obra={obra}
+      historialAvance={historialAvance}
+      gpData={gpData}
+      estimaciones={estimaciones}
+      datosObraGP={null}
+      otrosGastos={otrosGastos}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
     {totalRiesgos > 0 && (
@@ -10669,6 +10920,7 @@ export default function App(){
     setSubcontratos([]);
     setHistorialAvance([]);
     setHistorialCargado(false);
+    setOtrosGastos([]);
 
     // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
@@ -10732,18 +10984,29 @@ export default function App(){
   const[subcontratos,setSubcontratos]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
   const[historialCargado,setHistorialCargado]=useState(false);
+  const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
 
-  // Lazy load de historial de avance: solo cuando se abre el tab Avance
-  // (puede ser grande con muchas semanas + snapshots completos por subseccion)
+  // Lazy load de historial de avance: se carga al abrir Dashboard o Avance físico
+  // (Dashboard lo usa para tendencias mensuales; Avance lo usa para histórico semanal)
   useEffect(() => {
     if (!obraId || historialCargado) return;
-    if (tab === "operacion" && subTabOper === "avance") {
+    const necesario = (tab === "dash") || (tab === "operacion" && subTabOper === "avance");
+    if (necesario) {
       fsGet(`obras/${obraId}/avance/historial`).then(d=>{
         if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
         setHistorialCargado(true);
       });
     }
   }, [obraId, tab, subTabOper, historialCargado]);
+
+  // Cargar otros gastos (manuales) al entrar a la obra para que el Dashboard
+  // pueda incluirlos en las tendencias y el resumen de gasto total.
+  useEffect(() => {
+    if (!obraId) return;
+    fsGet(`obras/${obraId}/config/otros_gastos`).then(d => {
+      setOtrosGastos(Array.isArray(d?.items) ? d.items : []);
+    });
+  }, [obraId]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   useEffect(()=>{
@@ -10973,7 +11236,7 @@ export default function App(){
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} onNavTab={navTab}/>}
+      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} onNavTab={navTab}/>}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
