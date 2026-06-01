@@ -5666,36 +5666,6 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
     )}
-    {/* DEBUG TEMPORAL del parser de catálogo — visible solo para director/admin
-        Quitar este bloque una vez que la vista jerárquica funcione bien para Oaxaca */}
-    {tab==="volumenes" && subs.length > 0 && ["director_general","director_operaciones","admin_sistema"].includes(rol) && <Card style={{borderLeft:`3px solid ${C.purple}`}}>
-      <Tit>Debug del catálogo (solo dirección/admin)</Tit>
-      <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
-        <div><b>Versión del parser que cargó este catálogo:</b> <code style={{background:C.bg,padding:"1px 5px",borderRadius:3}}>{subs[0]?._parserVersion || 'pre-v5 (antes del fix)'}</code></div>
-        <div style={{fontSize:9,color:C.textMut,marginTop:2,fontStyle:"italic"}}>
-          {subs[0]?._parserVersion === 'v5-strict-headers'
-            ? '✓ Cargado con parser nuevo. Si las columnas siguen mal, es bug del parser.'
-            : '⚠ Cargado con parser viejo. RECARGA EL CATÁLOGO (Planeación → Presupuesto → Reemplazar) para que aplique el nuevo.'}
-        </div>
-        <div style={{marginTop:8}}><b>Total subs en estado:</b> {subs.length}</div>
-        <div><b>Subs con imp &gt; 0:</b> {subs.filter(s => (s.imp||0) > 0).length}</div>
-        <div><b>Subs con clave (sec):</b> {subs.filter(s => s.sec && s.sec.trim() && s.sec.length < 50).length} (cortas, válidas)</div>
-        <div><b>Subs donde sec parece descripción:</b> {subs.filter(s => s.sec && s.sec.length >= 50).length} (mal mapeo)</div>
-        <div><b>Subs con cat asignada:</b> {subs.filter(s => s.cat).length}</div>
-        <div><b>Subs con ruta:</b> {subs.filter(s => Array.isArray(s.ruta) && s.ruta.length > 0).length}</div>
-        <div style={{marginTop:8}}><b>Primeras 3 subs (datos crudos):</b></div>
-        <pre style={{background:C.bg,padding:8,borderRadius:6,fontSize:9,overflow:"auto",maxHeight:200,marginTop:4}}>
-{JSON.stringify(subs.slice(0,3).map(s => ({
-  id: (s.id||'').slice(0,40),
-  sec: (s.sec||'').slice(0,40),
-  sub: (s.sub||'').slice(0,40),
-  imp: s.imp,
-  cat: s.cat, catDesc: s.catDesc,
-  ruta: (s.ruta||[]).map(r => `${r.clave}:${(r.desc||'').slice(0,15)}`).join(' → '),
-})), null, 2)}
-        </pre>
-      </div>
-    </Card>}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
       <Tit>Avance por concepto</Tit>
       {(() => {
