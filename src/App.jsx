@@ -5231,6 +5231,11 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
           cat: s.cat || null, catDesc: s.catDesc || null,
           ruta: s.ruta || [],
+          // Campos para modo volumen
+          cant: s.cant || 0,       // cantidad del catálogo
+          pu: s.pu || 0,           // precio unitario
+          unidad: s.unidad || '',  // unidad de medida
+          cantEjec: s.cantEjec || 0,  // cantidad ejecutada acumulada
         })),
         fecha: new Date().toISOString()
       };
@@ -5979,15 +5984,30 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         };
         raiz.hijos.forEach(calcAgreg);
 
+        // Modo de captura de avance: "porcentaje" (default) o "volumen"
+        // En modo volumen se captura la cantidad ejecutada acumulada y se
+        // calcula el % derivado vs el volumen del catálogo. Si excede, badge
+        // amarillo.
+        const modoVol = (obra?.modoAvance === "volumen");
+
         // Renderiza un concepto individual (sub).
         // Es la hoja del árbol — todo está siempre visible inline:
-        // descripción, importe, input de % avance y cuadro de fotos.
-        // No requiere ningún expandir/colapsar extra.
+        // descripción, importe, input de avance y cuadro de fotos.
         const renderConcepto = (s, indentLevel = 0) => {
           const subId = s.id || s.sec;
           const fotosObj = s.fotos || {};
           const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
           const nF = fotosArr.length;
+          // En modo volumen calculamos el % derivado para la barra y el semáforo
+          const cantCat = parseFloat(s.cant) || 0;
+          const cantEjec = parseFloat(s.cantEjec) || 0;
+          const pctDerivado = cantCat > 0 ? (cantEjec / cantCat * 100) : 0;
+          const pctParaBarra = modoVol ? Math.min(100, pctDerivado) : (s.a || 0);
+          const pctDisplay = modoVol ? pctDerivado : (s.a || 0);
+          const excedePresup = modoVol && pctDerivado > 100;
+          const impEjecutado = modoVol
+            ? cantEjec * (parseFloat(s.pu) || 0)
+            : ((s.a || 0) / 100) * (s.imp || 0);
           return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5,
             marginLeft: indentLevel * 16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:5,gap:8}}>
@@ -5996,19 +6016,47 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                   <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
                   <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>
                   {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
+                  {excedePresup && <Bdg color={C.yellow} small>{`${pctDerivado.toFixed(0)}%`}</Bdg>}
                 </div>
-                <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{MXN(s.imp)}</div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
+                  {modoVol
+                    ? <>Cat: {cantCat>0?cantCat.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'} {s.unidad||''} · PU {MXN(s.pu||0)} · Ejec {MXN(impEjecutado)}</>
+                    : <>{MXN(s.imp)}</>
+                  }
+                </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
-                {editar?<><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
-                  onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
-                  style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
-                    padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
-                <span style={{fontSize:10,color:C.textMut}}>%</span></>
-                :<span style={{fontSize:13,fontWeight:700,color:semA(s.a||0)}}>{s.a||0}%</span>}
+                {editar ? (
+                  modoVol ? (
+                    // Modo volumen: input de cantidad ejecutada acumulada
+                    <><input type="number" min="0" step="0.01" placeholder="0" value={s.cantEjec||""}
+                      onChange={e=>{
+                        const v = Math.max(0, parseFloat(e.target.value)||0);
+                        const pu = parseFloat(s.pu)||0;
+                        const cCat = parseFloat(s.cant)||0;
+                        const pctNuevo = cCat > 0 ? Math.min(100, v/cCat*100) : 0;
+                        setSubs(ss=>ss.map(x=>x.id===subId?{...x,cantEjec:v,a:pctNuevo}:x));
+                      }}
+                      title="Cantidad ejecutada acumulada"
+                      style={{background:C.surface,border:`0.5px solid ${excedePresup?C.yellow:C.borderM}`,borderRadius:6,
+                        padding:"3px 6px",fontSize:12,width:75,textAlign:"right",color:C.textPri,outline:"none"}}/>
+                    <span style={{fontSize:9,color:C.textMut,minWidth:24}}>{s.unidad||''}</span></>
+                  ) : (
+                    // Modo porcentaje (default): input de % de avance
+                    <><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
+                      onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
+                      style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
+                        padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
+                    <span style={{fontSize:10,color:C.textMut}}>%</span></>
+                  )
+                ) : (
+                  <span style={{fontSize:13,fontWeight:700,color:excedePresup?C.yellowDk:semA(pctParaBarra)}}>
+                    {modoVol ? `${cantEjec.toLocaleString('es-MX',{maximumFractionDigits:2})} ${s.unidad||''}` : `${pctDisplay}%`}
+                  </span>
+                )}
               </div>
             </div>
-            <Bar pct={s.a||0} color={semA(s.a||0)}/>
+            <Bar pct={pctParaBarra} color={excedePresup?C.yellow:semA(pctParaBarra)}/>
             {/* Cuadro de fotos siempre visible inline */}
             <div style={{marginTop:8}}>
               <ConceptoFotos
@@ -7677,22 +7725,43 @@ function parsearPresupuesto(data, importeContrato) {
   // de Excel (números tipo 46141 = 2026-04-26) o números sueltos parásitos.
   const PATRON_CLAVE_CAT = /^([A-Z]{1,3}|[A-Z]{1,3}[0-9]{1,3}[A-Z]?|[A-Z]{1,3}[0-9]{1,3}(\.[0-9]{1,3}[A-Z]?)+|[0-9]{1,3}(\.[0-9]{1,3})*)$/;
 
-  // Una fila es categoría SOLO si su clave cumple el patrón jerárquico estricto.
-  // Esto evita que metadatos del encabezado del Excel ("120 DIAS NAT.",
-  // "Fecha de Término:", filas sueltas con importe, fechas seriales) se
-  // interpreten como categorías. Si tiene PU > 0 nunca es categoría (es concepto).
-  // Además, la descripción debe ser una descripción real (no acabar en ":" como
-  // "Fecha de Inicio:" o "Cliente:").
+  // Categorías de TEXTO (sin clave jerárquica): "Civil", "Eléctrico",
+  // "Mecánico & Estructural", "Tuberías"... Son una sola palabra o frase
+  // corta sin números, en filas sin PU ni cantidad ni importe.
+  // Limitamos a casos seguros para no confundir con conceptos reales.
+  const esCategoriaTexto = (clave, desc, unidad, cant, pu, importe) => {
+    if (pu > 0) return false;
+    if (importe > 0) return false;  // si tiene importe es agrupador jerárquico, no texto
+    if (cant > 0) return false;
+    const claveTrim = (clave || '').trim();
+    const descTrim = (desc || '').trim();
+    // El texto a evaluar: clave o descripción (lo que tenga contenido)
+    const txt = claveTrim || descTrim;
+    if (!txt) return false;
+    if (txt.length > 50) return false;  // muy largo = no es categoría
+    if (txt.endsWith(':')) return false;  // metadato
+    // Debe tener al menos una letra (no solo números)
+    if (!/[a-záéíóúñ]/i.test(txt)) return false;
+    // Heurística: pocas palabras (1-5), sin "P.U.O.T." ni "INCLUYE:"
+    const palabras = txt.split(/\s+/);
+    if (palabras.length > 5) return false;
+    if (/incluye|p\.u\.o\.t|mediante|consiste/i.test(txt)) return false;
+    return true;
+  };
+
+  // Una fila es categoría SOLO si:
+  //   a) su clave cumple el patrón jerárquico estricto, O
+  //   b) es una categoría de texto plano sin clave jerárquica
   const esCategoria = (clave, desc, unidad, cant, pu, importe) => {
     if (pu > 0) return false;
     const claveTrim = (clave || '').trim();
     const descTrim = (desc || '').trim();
-    if (!claveTrim) return false;
-    // Si la descripción termina en ":" es muy probable que sea metadato
-    // (ej. "Fecha de Inicio:", "Obra:", "Cliente:"). Una categoría real
-    // tiene una descripción declarativa sin ":".
     if (descTrim.endsWith(':')) return false;
-    return PATRON_CLAVE_CAT.test(claveTrim);
+    // a) Jerárquica con clave válida
+    if (claveTrim && PATRON_CLAVE_CAT.test(claveTrim)) return true;
+    // b) De texto plano
+    if (esCategoriaTexto(clave, desc, unidad, cant, pu, importe)) return true;
+    return false;
   };
 
   // Una fila se DESCARTA por completo si no es ni concepto ni categoría
@@ -7731,20 +7800,31 @@ function parsearPresupuesto(data, importeContrato) {
     // Las categorías típicamente vienen como filas SOLO con clave + descripción,
     // sin importe ni cantidad. Ej: "A1.1  TRABAJOS PRELIMINARES" sin más datos.
     if (esCategoria(clave, desc, unidad, cant, pu, importe)) {
-      // Calcular el "nivel" de jerarquía por número de puntos en la clave
-      // A = nivel 1, A1 = nivel 2 (o si es solo num: 1 = nivel 1, 1.1 = nivel 2)
+      // Caso A: clave jerárquica → calcular nivel por puntos
+      // Caso B: categoría de texto → nivel 1 por default, usar la descripción
+      // como clave si la clave está vacía
       const claveTrim = (clave || '').trim();
+      const descTrim = (desc || '').trim();
+      const esJerarquica = claveTrim && PATRON_CLAVE_CAT.test(claveTrim);
       let nivel = 1;
-      if (claveTrim) {
+      let claveFinal = claveTrim || descTrim || `CAT${ri+1}`;
+      let descFinal = descTrim;
+      if (esJerarquica) {
         nivel = claveTrim.split('.').length;
-        // Detalle: A1 también es nivel 2 (letra + número)
         if (nivel === 1 && /^[A-Z][0-9]/.test(claveTrim)) nivel = 2;
+      } else {
+        // Categoría de texto: si no hay clave, usar la descripción como "etiqueta"
+        // y dejar la descripción visible también
+        if (!claveTrim && descTrim) {
+          claveFinal = descTrim;
+          descFinal = '';
+        }
       }
       filasClasif.push({
         tipo: 'categoria',
         nivel,
-        clave: claveTrim || `CAT${ri+1}`,
-        desc: desc || '',
+        clave: claveFinal,
+        desc: descFinal,
         importe,
         _ri: ri,
       });
@@ -7927,6 +8007,11 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
         catDesc: pertenece ? pertenece.desc : null,
         // RUTA COMPLETA de ancestros: ["A", "A1", "A1.3"]
         ruta: pertenece ? rutaAncestros(pertenece.clave) : [],
+        // Datos para modo volumen (TAMSA y similares)
+        cant: c.cant || 0,
+        pu: c.pu || 0,
+        unidad: c.unidad || '',
+        cantEjec: 0,
       };
     });
     // Guardamos también el árbol de categorías para reconstruir la jerarquía
@@ -10020,6 +10105,10 @@ function Contrato({obra, setObra, rol}) {
       admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
       finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
       diasPago: obra.diasPago||30,
+      // Modo de captura de avance: "porcentaje" (default) o "volumen"
+      // Obras tipo TAMSA donde el catálogo es referencia y se captura volumen
+      // ejecutado real → modo "volumen"
+      modoAvance: obra.modoAvance || "porcentaje",
     };
     await fsSetA(`obras/${obra.id}/config/info`, datos,
       { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
@@ -10145,6 +10234,42 @@ function Contrato({obra, setObra, rol}) {
                 }
               </div>
             ))}
+          </div>
+
+          {/* Modo de captura de avance — porcentaje o volumen ejecutado */}
+          <div style={{marginTop:14,paddingTop:12,borderTop:`0.5px solid ${C.border}`}}>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              Modo de captura de avance físico
+            </div>
+            {editar ? (
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {[
+                  {v:"porcentaje", lbl:"Por porcentaje", desc:"Para obras donde cada partida se mide en % de avance acumulado. Default."},
+                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para obras tipo precio unitario donde el catálogo es referencia y los volúmenes reales pueden variar (TAMSA, servicios especializados)."},
+                ].map(opt => {
+                  const sel = (obra.modoAvance||"porcentaje") === opt.v;
+                  return <div key={opt.v} onClick={()=>f("modoAvance", opt.v)}
+                    style={{flex:"1 1 200px",cursor:"pointer",
+                      border:`1.5px solid ${sel?C.blueDk:C.border}`,
+                      background:sel?C.blueBg:"transparent",
+                      borderRadius:8,padding:"10px 12px",transition:"all .15s"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                      <span style={{width:14,height:14,borderRadius:"50%",border:`2px solid ${sel?C.blueDk:C.borderM}`,
+                        background:sel?C.blueDk:"transparent",
+                        display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+                        {sel && <span style={{width:5,height:5,borderRadius:"50%",background:"#fff"}}/>}
+                      </span>
+                      <span style={{fontSize:12,fontWeight:600,color:sel?C.blueDk:C.textPri}}>{opt.lbl}</span>
+                    </div>
+                    <div style={{fontSize:10,color:C.textMut,lineHeight:1.4,marginLeft:20}}>{opt.desc}</div>
+                  </div>;
+                })}
+              </div>
+            ) : (
+              <div style={{fontSize:12,color:C.textSec}}>
+                {(obra.modoAvance||"porcentaje") === "volumen" ? "Por volumen ejecutado" : "Por porcentaje"}
+              </div>
+            )}
           </div>
         </Card>
       )}
@@ -10972,6 +11097,10 @@ export default function App(){
             cat: c.cat || null,
             catDesc: c.catDesc || null,
             ruta: c.ruta || [],
+            cant: c.cant || 0,
+            pu: c.pu || 0,
+            unidad: c.unidad || '',
+            cantEjec: 0,
           }));
           setSubs(subsFromCat);
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
