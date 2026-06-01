@@ -17,7 +17,12 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions");
+const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
+
+// Secret de Resend para mandar correos transaccionales (resumen semanal, etc.)
+// Se carga en Cloud Functions con:  firebase functions:secrets:set RESEND_API_KEY
+const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 
 admin.initializeApp();
 setGlobalOptions({ maxInstances: 10, region: "us-central1" });
@@ -664,5 +669,293 @@ exports.refrescarGP = onCall({ region: "us-central1" }, async (request) => {
     };
   } catch (e) {
     throw new HttpsError("internal", `Error al refrescar GP: ${e.message}`);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RESUMEN SEMANAL POR CORREO — Lunes 9:07 a.m. hora México
+// ════════════════════════════════════════════════════════════════════════════
+// Envía un email a Director General, Director Operaciones y Gerente Construcción
+// con el estado consolidado del portafolio de obras activas.
+// Usa Resend (https://resend.com) como proveedor de email transaccional.
+// La API key se carga desde Google Secret Manager (no se hardcodea).
+
+const APP_URL = "https://campo-fosmon.netlify.app";
+const FROM_EMAIL = "CAMPO <campo@fosmon.com.mx>";
+const ROLES_RESUMEN_SEMANAL = ["director_general", "director_operaciones", "gerente_construccion"];
+
+const MXN_FMT = (n) => `$${Math.abs(Number(n) || 0).toLocaleString("es-MX", {
+  minimumFractionDigits: 0, maximumFractionDigits: 0,
+})}`;
+const PCT_FMT = (n, d = 0) => `${(Number(n) || 0).toFixed(d)}%`;
+const semaforoColor = (pct, modo = "avance") => {
+  // avance: >=75 verde, >=40 amarillo, <40 rojo
+  // gasto:  <=70 verde, <=90 amarillo, >90 rojo
+  if (modo === "avance") return pct >= 75 ? "#3B6D11" : pct >= 40 ? "#854F0B" : "#A32D2D";
+  return pct <= 70 ? "#3B6D11" : pct <= 90 ? "#854F0B" : "#A32D2D";
+};
+
+// Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore
+async function calcularKpisObra(obraId, gpData) {
+  const db = admin.firestore();
+  const [infoSnap, subsSnap, maqSnap, matSnap, otrosSnap, estSnap] = await Promise.all([
+    db.doc(`obras/${obraId}/config/info`).get(),
+    db.doc(`obras/${obraId}/avance/subs`).get(),
+    db.doc(`obras/${obraId}/avance/maquinaria`).get(),
+    db.doc(`obras/${obraId}/avance/materiales`).get(),
+    db.doc(`obras/${obraId}/config/otros_gastos`).get(),
+    db.doc(`obras/${obraId}/config/estimaciones`).get(),
+  ]);
+  const info = infoSnap.exists ? infoSnap.data() : {};
+  const subs = (subsSnap.exists ? (subsSnap.data().data || []) : []);
+  const maquinaria = (maqSnap.exists ? (maqSnap.data().data || []) : []);
+  const materiales = (matSnap.exists ? (matSnap.data().data || []) : []);
+  const otros = (otrosSnap.exists ? (otrosSnap.data().items || []) : []);
+  const estimaciones = (estSnap.exists ? (estSnap.data().data || []) : []);
+
+  const presupuesto = Number(info.presupuesto) || 0;
+  const modoVol = info.modoAvance === "volumen";
+
+  // Avance físico
+  let avancePct = 0;
+  if (modoVol && presupuesto > 0) {
+    const ejecutado = subs.reduce((t, s) => t + (Number(s.cantEjec) || 0) * (Number(s.pu) || 0), 0);
+    avancePct = (ejecutado / presupuesto) * 100;
+  } else if (presupuesto > 0) {
+    avancePct = subs.reduce((t, s) => t + ((Number(s.a) || 0) / 100) * ((Number(s.imp) || 0) / presupuesto) * 100, 0);
+  }
+
+  // Gasto: GP del Sheet (si existe match) + maquinaria propia + otros
+  let totGP = 0;
+  if (gpData && gpData.obras) {
+    const gpId = info.gpId;
+    const obraGP = (gpId && gpData.obras[gpId])
+      || Object.values(gpData.obras).find(o => o.id === obraId.slice(0, 4));
+    if (obraGP) {
+      totGP = obraGP.grandTotal || obraGP.totalGeneral || obraGP.total || 0;
+    }
+  }
+  const totMaq = maquinaria.reduce((t, m) => t + (Number(m.imp) || 0), 0);
+  const totOtros = otros.reduce((t, o) => t + (Number(o.importe) || 0), 0);
+  const totGasto = totGP + totMaq + totOtros;
+  const pctGasto = presupuesto > 0 ? (totGasto / presupuesto) * 100 : 0;
+
+  // Estimaciones cobradas
+  const cobrado = estimaciones
+    .filter(e => /pagada|cobrada/i.test(String(e.estatus || "")))
+    .reduce((t, e) => t + (Number(e.monto) || 0), 0);
+
+  // Última captura de avance (para alerta de pendiente)
+  const fechaUltCaptura = subsSnap.exists ? subsSnap.data().fecha : null;
+  const diasDesdeCaptura = fechaUltCaptura
+    ? Math.floor((Date.now() - new Date(fechaUltCaptura).getTime()) / 86400000)
+    : 999;
+
+  return {
+    obraId, nombre: info.nombre || obraId, contrato: info.contrato || "",
+    cliente: info.cliente || "", presupuesto,
+    avancePct, pctGasto, totGasto, cobrado,
+    diasDesdeCaptura, modoVol,
+  };
+}
+
+// HTML del email semanal — diseño compacto, mobile-friendly
+function buildEmailHTML(kpisObras, fechaCorte) {
+  const filasObras = kpisObras.map(k => {
+    const colorAvance = semaforoColor(k.avancePct, "avance");
+    const colorGasto = semaforoColor(k.pctGasto, "gasto");
+    const linkObra = `${APP_URL}/?obra=${encodeURIComponent(k.obraId)}`;
+    const alertaCaptura = k.diasDesdeCaptura > 7
+      ? `<span style="background:#FCEBEB;color:#A32D2D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">Sin captura ${k.diasDesdeCaptura}d</span>`
+      : `<span style="color:#9AA0AC;font-size:11px;">Captura: ${k.diasDesdeCaptura}d</span>`;
+    return `
+    <tr>
+      <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;vertical-align:top;">
+        <div style="font-weight:600;color:#0D1619;font-size:14px;line-height:1.3;">
+          <a href="${linkObra}" style="color:#185FA5;text-decoration:none;">${k.nombre}</a>
+        </div>
+        <div style="color:#9AA0AC;font-size:11px;margin-top:2px;">${k.contrato || "—"} · ${k.cliente || ""}</div>
+        <div style="margin-top:6px;">${alertaCaptura}</div>
+      </td>
+      <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
+        <div style="font-size:18px;font-weight:700;color:${colorAvance};">${PCT_FMT(k.avancePct, 1)}</div>
+        <div style="font-size:10px;color:#9AA0AC;">avance</div>
+      </td>
+      <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
+        <div style="font-size:14px;font-weight:600;color:${colorGasto};">${MXN_FMT(k.totGasto)}</div>
+        <div style="font-size:10px;color:#9AA0AC;">${PCT_FMT(k.pctGasto, 0)} de ${MXN_FMT(k.presupuesto)}</div>
+      </td>
+      <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
+        <div style="font-size:13px;color:#0D1619;">${MXN_FMT(k.cobrado)}</div>
+        <div style="font-size:10px;color:#9AA0AC;">cobrado</div>
+      </td>
+    </tr>`;
+  }).join("");
+
+  const totalObras = kpisObras.length;
+  const presupuestoTotal = kpisObras.reduce((t, k) => t + k.presupuesto, 0);
+  const gastoTotal = kpisObras.reduce((t, k) => t + k.totGasto, 0);
+  const cobradoTotal = kpisObras.reduce((t, k) => t + k.cobrado, 0);
+  const obrasSinCaptura = kpisObras.filter(k => k.diasDesdeCaptura > 7).length;
+
+  return `<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Resumen semanal CAMPO</title></head>
+<body style="margin:0;padding:0;background:#F0F2F5;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#0D1619;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F0F2F5;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+        <!-- Header -->
+        <tr><td style="background:#0D1619;color:#fff;padding:24px 28px;">
+          <div style="font-size:11px;letter-spacing:0.12em;opacity:0.7;">CAMPO · FOSMON CONSTRUCCIONES</div>
+          <div style="font-size:24px;font-weight:700;margin-top:6px;">Resumen semanal</div>
+          <div style="font-size:12px;opacity:0.8;margin-top:4px;">Corte del ${fechaCorte}</div>
+        </td></tr>
+        <!-- Resumen ejecutivo -->
+        <tr><td style="padding:20px 28px;background:#F8F9FB;border-bottom:1px solid #E8EAF0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:#0D1619;">${totalObras}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#185FA5;">${MXN_FMT(presupuestoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Presupuesto</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
+            </tr>
+          </table>
+          ${obrasSinCaptura > 0 ? `
+          <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
+            <b>${obrasSinCaptura} ${obrasSinCaptura === 1 ? "obra" : "obras"} sin captura en los últimos 7 días.</b> Revisa la columna "Sin captura" abajo.
+          </div>` : ""}
+        </td></tr>
+        <!-- Tabla de obras -->
+        <tr><td style="padding:0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <thead><tr style="background:#fff;border-bottom:2px solid #E8EAF0;">
+              <th style="padding:10px 12px;text-align:left;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Obra</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Avance</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Gasto</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Cobrado</th>
+            </tr></thead>
+            <tbody>${filasObras}</tbody>
+          </table>
+        </td></tr>
+        <!-- CTA -->
+        <tr><td style="padding:24px 28px;text-align:center;border-top:1px solid #E8EAF0;">
+          <a href="${APP_URL}" style="display:inline-block;background:#0D1619;color:#fff;padding:11px 24px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">Abrir CAMPO</a>
+        </td></tr>
+        <!-- Footer -->
+        <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
+          Este resumen se envía automáticamente cada lunes a las 9 a.m. (CDMX) a Dirección y Gerencia.<br>
+          CAMPO — FOSMON Construcciones · campo-fosmon.netlify.app
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+// Envía email via Resend API
+async function enviarEmailResend(apiKey, { from, to, subject, html }) {
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ from, to, subject, html }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(`Resend error ${resp.status}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// Función principal: arma y envía el resumen semanal
+async function generarYEnviarResumenSemanal(apiKey) {
+  const db = admin.firestore();
+  // 1) Lista obras activas (top-level)
+  const obrasSnap = await db.collection("obras").get();
+  const obras = obrasSnap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(o => (o.estado || "activa") !== "archivada");
+
+  // 2) Carga el GP data (resumen) para sacar el gasto de cada obra
+  const gpResumenSnap = await db.doc("global/gp_resumen").get();
+  const gpData = gpResumenSnap.exists ? gpResumenSnap.data() : null;
+
+  // 3) Calcula KPIs por obra en paralelo
+  const kpisObras = await Promise.all(
+    obras.map(o => calcularKpisObra(o.id, gpData).catch(e => {
+      console.error(`Error KPIs obra ${o.id}:`, e.message);
+      return null;
+    }))
+  );
+  const kpisValidos = kpisObras.filter(Boolean)
+    .sort((a, b) => (b.presupuesto || 0) - (a.presupuesto || 0));
+
+  // 4) Obtiene destinatarios: usuarios activos con roles del portafolio
+  const usuariosSnap = await db.collection("usuarios").get();
+  const destinatarios = usuariosSnap.docs
+    .map(d => d.data())
+    .filter(u => u.activo !== false && ROLES_RESUMEN_SEMANAL.includes(u.rol))
+    .map(u => u.email)
+    .filter(Boolean);
+
+  if (destinatarios.length === 0) {
+    console.warn("No hay destinatarios para resumen semanal");
+    return { enviados: 0, motivo: "sin_destinatarios" };
+  }
+
+  // 5) Arma el HTML
+  const fechaCorte = new Date().toLocaleDateString("es-MX", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+  const html = buildEmailHTML(kpisValidos, fechaCorte);
+
+  // 6) Envía
+  const resultado = await enviarEmailResend(apiKey, {
+    from: FROM_EMAIL,
+    to: destinatarios,
+    subject: `CAMPO · Resumen semanal · ${kpisValidos.length} obras activas`,
+    html,
+  });
+  console.log(`Resumen enviado a ${destinatarios.length} destinatarios. Resend ID: ${resultado.id}`);
+  return { enviados: destinatarios.length, destinatarios, resendId: resultado.id };
+}
+
+// SCHEDULED: lunes 9:07 a.m. hora México (después de actualizarGPSheet a las 9:00)
+exports.resumenSemanalEmail = onSchedule({
+  schedule: "7 9 * * 1",
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+  secrets: [RESEND_API_KEY],
+}, async () => {
+  console.log("Iniciando resumen semanal por correo…");
+  try {
+    const res = await generarYEnviarResumenSemanal(RESEND_API_KEY.value());
+    console.log("Resumen semanal OK:", res);
+  } catch (e) {
+    console.error("Error en resumen semanal:", e);
+    throw e;
+  }
+});
+
+// CALLABLE: para probar manualmente desde la consola o la app
+// (solo director_general, director_operaciones, admin_sistema)
+exports.probarResumenSemanal = onCall({
+  region: "us-central1",
+  secrets: [RESEND_API_KEY],
+}, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const email = (request.auth.token.email || "").toLowerCase();
+  const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(email)}`).get();
+  const rol = perfilSnap.exists ? perfilSnap.data().rol : null;
+  if (!["director_general", "director_operaciones", "admin_sistema"].includes(rol)) {
+    throw new HttpsError("permission-denied", "Solo dirección o admin puede disparar la prueba.");
+  }
+  try {
+    const res = await generarYEnviarResumenSemanal(RESEND_API_KEY.value());
+    return { ok: true, ...res };
+  } catch (e) {
+    throw new HttpsError("internal", `Error enviando resumen: ${e.message}`);
   }
 });
