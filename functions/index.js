@@ -959,3 +959,91 @@ exports.probarResumenSemanal = onCall({
     throw new HttpsError("internal", `Error enviando resumen: ${e.message}`);
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// BACKUP AUTOMÁTICO SEMANAL DE FIRESTORE
+// ════════════════════════════════════════════════════════════════════════════
+// Cada domingo 3:00 a.m. CDMX exporta toda la base de Firestore al bucket
+// dedicado de backups. Retención: 16 semanas (112 días). Los exports más
+// viejos se borran automáticamente por lifecycle del bucket.
+//
+// SETUP REQUERIDO (manual, una sola vez):
+// 1) Crear bucket en consola de Google Cloud:
+//      gsutil mb -p campo-fosmon -l us-central1 gs://campo-fosmon-backups
+// 2) Aplicar lifecycle de 112 días:
+//      gsutil lifecycle set lifecycle.json gs://campo-fosmon-backups
+//    (donde lifecycle.json contiene la regla de borrado a 112 días)
+// 3) Dar permiso al service account de Firebase para escribir al bucket:
+//      gcloud projects add-iam-policy-binding campo-fosmon \
+//        --member="serviceAccount:campo-fosmon@appspot.gserviceaccount.com" \
+//        --role="roles/datastore.importExportAdmin"
+//
+// RESTAURAR (si algún día se necesita):
+//   gcloud firestore import gs://campo-fosmon-backups/firestore/2026-06-08/
+//   Tarda 15-30 min según el tamaño. Sobrescribe documentos existentes.
+
+const BACKUP_BUCKET = "gs://campo-fosmon-backups";
+const PROJECT_ID = "campo-fosmon";
+
+async function ejecutarBackupFirestore() {
+  const fecha = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const destino = `${BACKUP_BUCKET}/firestore/${fecha}`;
+
+  // Usamos la REST API admin de Firestore para iniciar el export.
+  // Esto NO es bloqueante — devuelve una operación de larga duración (LRO).
+  // El export termina solo, en background. Para una base de tu tamaño actual
+  // típicamente tarda 1-5 min.
+  const accessToken = await admin.app().options.credential.getAccessToken();
+  const token = accessToken.access_token || accessToken;
+
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default):exportDocuments`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      outputUriPrefix: destino,
+      // collectionIds vacío = exporta TODAS las colecciones
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(`Export error ${resp.status}: ${JSON.stringify(data)}`);
+  }
+  return { destino, operationName: data.name };
+}
+
+// SCHEDULED: domingo 3:00 a.m. hora México (baja actividad)
+exports.backupSemanalFirestore = onSchedule({
+  schedule: "0 3 * * 0",
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  console.log("Iniciando backup semanal de Firestore…");
+  try {
+    const res = await ejecutarBackupFirestore();
+    console.log(`Backup iniciado OK. Destino: ${res.destino}, Op: ${res.operationName}`);
+  } catch (e) {
+    console.error("Error en backup semanal:", e);
+    throw e;
+  }
+});
+
+// CALLABLE: lanzar backup manualmente (solo director_general / admin_sistema)
+exports.probarBackup = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const email = (request.auth.token.email || "").toLowerCase();
+  const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(email)}`).get();
+  const rol = perfilSnap.exists ? perfilSnap.data().rol : null;
+  if (!["director_general", "admin_sistema"].includes(rol)) {
+    throw new HttpsError("permission-denied", "Solo dirección o admin puede lanzar backup.");
+  }
+  try {
+    const res = await ejecutarBackupFirestore();
+    return { ok: true, ...res };
+  } catch (e) {
+    throw new HttpsError("internal", `Error en backup: ${e.message}`);
+  }
+});
