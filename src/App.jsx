@@ -4342,7 +4342,9 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     </div>}
 
     {listaActual.map(o=>{
-      const pg=o.presupuesto>0?(o.gastoGP/o.presupuesto)*100:0;
+      // Gasto GP en VIVO desde el Sheet (no usar o.gastoGP que es legacy hardcoded)
+      const gastoGPLive=resolverGastoGP(o, gpData);
+      const pg=o.presupuesto>0?(gastoGPLive/o.presupuesto)*100:0;
       const col=ec[o.estado]||C.caliza;
       const archivada=o.estado==="archivada";
       return <div key={o.id} style={{background:C.card,border:`0.5px solid ${archivada?"rgba(255,254,249,0.05)":C.border}`,
@@ -4373,7 +4375,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         ) : (
           <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
-              {[["Presupuesto",MXN(o.presupuesto),C.textPri],["Gasto GP",MXN(o.gastoGP),C.red],
+              {[["Presupuesto",MXN(o.presupuesto),C.textPri],["Gasto GP",MXN(gastoGPLive),C.red],
                 ["Anticipo/FG",`${o.pctAnticipo}%/${o.pctFondoGar}%`,C.textSec]].map(([l,v,c])=>
                 <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
                   <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
