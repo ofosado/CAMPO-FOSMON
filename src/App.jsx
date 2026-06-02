@@ -10640,6 +10640,361 @@ function fmtFechaBit(iso){
   const d = new Date(iso);
   return d.toLocaleString("es-MX",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
 }
+// ── MENÚ CONFIGURACIÓN (header dropdown) ─────────────────────────────────
+// Agrupa Usuarios, Alertas y Bitácora para no saturar el header con botones.
+// Visible solo para Director General, Director Operaciones, Gerente
+// Construcción y Admin Sistema.
+function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setAbierto(false);
+    };
+    if (abierto) document.addEventListener("click", onClickOutside);
+    return () => document.removeEventListener("click", onClickOutside);
+  }, [abierto]);
+  // Algunas opciones solo para ciertos roles
+  const opciones = [
+    { id: "alertas", label: "Alertas activas", badge: alertasNoLeidas,
+      visible: true },
+    { id: "usuarios", label: "Usuarios",
+      visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
+    { id: "bitacora", label: "Bitácora",
+      visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
+  ].filter(o => o.visible);
+
+  const enConfig = ["usuarios","bitacora","alertas"].includes(screen);
+
+  return <div ref={ref} style={{position:"relative"}}>
+    <button onClick={()=>setAbierto(v=>!v)}
+      style={{background:enConfig?C.caliza:"none",
+        border:`0.5px solid ${enConfig?C.caliza:C.border}`,borderRadius:6,
+        padding:"4px 10px",fontSize:10,
+        color:enConfig?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap",
+        display:"flex",alignItems:"center",gap:5}}>
+      <span>Configuración</span>
+      {alertasNoLeidas > 0 && (
+        <span style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
+          borderRadius:99,minWidth:14,height:14,padding:"0 4px",
+          display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+          {alertasNoLeidas}
+        </span>
+      )}
+      <span style={{fontSize:8,opacity:0.7}}>▾</span>
+    </button>
+    {abierto && (
+      <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
+        background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,
+        boxShadow:"0 4px 12px rgba(0,0,0,0.1)",zIndex:200,minWidth:170,
+        overflow:"hidden"}}>
+        {opciones.map(opt => {
+          const activo = screen === opt.id;
+          return <button key={opt.id} onClick={()=>{setScreen(opt.id); setAbierto(false);}}
+            style={{display:"flex",width:"100%",alignItems:"center",justifyContent:"space-between",
+              gap:8,padding:"8px 12px",fontSize:11,
+              background: activo ? C.bg : "transparent",
+              color: activo ? C.caliza : C.textPri, fontWeight: activo ? 600 : 400,
+              border:"none",borderBottom:`0.5px solid ${C.border}`,cursor:"pointer",textAlign:"left"}}>
+            <span>{opt.label}</span>
+            {opt.badge > 0 && (
+              <span style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
+                borderRadius:99,minWidth:16,height:16,padding:"0 5px",
+                display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+                {opt.badge}
+              </span>
+            )}
+          </button>;
+        })}
+        {screen === "obras" ? null : (
+          <button onClick={()=>{setScreen("obras"); setAbierto(false);}}
+            style={{display:"block",width:"100%",padding:"8px 12px",fontSize:11,
+              background:"transparent",color:C.textMut,border:"none",cursor:"pointer",textAlign:"left"}}>
+            ← Volver a Obras
+          </button>
+        )}
+      </div>
+    )}
+  </div>;
+}
+
+// ── PANEL DE ALERTAS ACTIVAS ────────────────────────────────────────────
+// Evalúa 4 reglas sobre todas las obras activas y muestra alertas activas
+// con opción de marcar como leídas. Las leídas quedan en Firestore para que
+// la persistencia funcione entre sesiones y usuarios.
+//
+// Las 4 reglas:
+//   - Sin captura > 7 días
+//   - Gasto > 90% del presupuesto
+//   - Cierre semanal pendiente (jueves o después sin snapshot oficial)
+//   - Avance bajo programa > 15%
+//
+// Cada alerta tiene un ID determinístico por (obra, regla, semana_iso) para
+// que la misma condición en la misma semana no se duplique entre reloads.
+
+const ALERTA_REGLAS = [
+  {
+    id: "sin_captura_7d",
+    titulo: "Sin captura en más de 7 días",
+    severidad: "alto",
+    evaluar: (obra, datos, hoy) => {
+      const fechaUlt = datos.fechaUltCaptura;
+      if (!fechaUlt) return null;
+      const dias = Math.floor((hoy - new Date(fechaUlt).getTime()) / 86400000);
+      if (dias <= 7) return null;
+      return { detalle: `Última captura hace ${dias} días`, dias };
+    },
+  },
+  {
+    id: "gasto_90pct",
+    titulo: "Gasto al 90% o más del presupuesto",
+    severidad: "critico",
+    evaluar: (obra, datos, hoy) => {
+      const presup = obra.presupuesto || 0;
+      if (presup <= 0) return null;
+      const gasto = datos.totGasto || 0;
+      const pct = (gasto / presup) * 100;
+      if (pct < 90) return null;
+      return { detalle: `${pct.toFixed(0)}% del presupuesto consumido (${MXN(gasto)} de ${MXN(presup)})`, pct };
+    },
+  },
+  {
+    id: "cierre_pendiente",
+    titulo: "Cierre semanal pendiente",
+    severidad: "medio",
+    evaluar: (obra, datos, hoy) => {
+      const d = new Date(hoy);
+      const dow = d.getDay(); // 0=dom,1=lun..6=sab
+      if (dow < 4 && dow !== 0) return null; // solo de jueves a domingo aplica
+      if (datos.tieneOficialEstaSemana) return null;
+      return { detalle: `Aún no se cierra oficialmente la semana en curso` };
+    },
+  },
+  {
+    id: "avance_bajo_programa",
+    titulo: "Avance físico más de 15% bajo programa",
+    severidad: "alto",
+    evaluar: (obra, datos, hoy) => {
+      if (!obra.inicio || !obra.fin) return null;
+      const ini = new Date(obra.inicio).getTime();
+      const fin = new Date(obra.fin).getTime();
+      if (isNaN(ini) || isNaN(fin) || fin <= ini) return null;
+      const total = (fin - ini) / 86400000;
+      const transc = Math.max(0, Math.min(total, (hoy - ini) / 86400000));
+      const programado = total > 0 ? (transc / total * 100) : 0;
+      const real = datos.avancePct || 0;
+      const desviacion = programado - real;
+      if (desviacion <= 15) return null;
+      return { detalle: `Real ${real.toFixed(1)}% vs programado ${programado.toFixed(0)}% — desviación ${desviacion.toFixed(1)}%` };
+    },
+  },
+];
+
+const SEV_COLOR = { critico: "#A32D2D", alto: "#E24B4A", medio: "#854F0B" };
+const SEV_BG = { critico: "#FCEBEB", alto: "#FCEBEB", medio: "#FAEEDA" };
+
+// Devuelve un id estable por (obra, regla, semana ISO) — evita duplicados al recargar
+function alertaId(obraId, reglaId, fecha) {
+  const { semana, año } = semanaISO(fecha);
+  return `${obraId}__${reglaId}__${año}W${String(semana).padStart(2,'0')}`;
+}
+
+function PanelAlertas({obras, gpData, onCountChange}){
+  const [alertas, setAlertas] = useState([]);
+  const [leidas, setLeidas] = useState({}); // { alertaId: { leidaEn, leidaPor } }
+  const [cargando, setCargando] = useState(true);
+  const [filtro, setFiltro] = useState("no_leidas"); // no_leidas | todas | leidas
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      setCargando(true);
+      // 1) Cargar las alertas marcadas como leídas (compartido entre admins)
+      const leidasDoc = await fsGet("global/alertas_leidas");
+      const leidasMap = leidasDoc?.items || {};
+      if (cancel) return;
+      setLeidas(leidasMap);
+
+      // 2) Evaluar las 4 reglas sobre cada obra activa
+      const activas = obras.filter(o => (o.estado || "activa") !== "archivada");
+      const hoy = Date.now();
+      const resultado = [];
+      for (const obra of activas) {
+        // Cargar datos necesarios por obra
+        const [subsD, maqD, otrosD, histD, infoD] = await Promise.all([
+          fsGet(`obras/${obra.id}/avance/subs`),
+          fsGet(`obras/${obra.id}/avance/maquinaria`),
+          fsGet(`obras/${obra.id}/config/otros_gastos`),
+          fsGet(`obras/${obra.id}/avance/historial`),
+          fsGet(`obras/${obra.id}/config/info`),
+        ]);
+        const info = infoD || {};
+        const subsArr = subsD?.data || [];
+        const maquinaria = maqD?.data || [];
+        const otros = otrosD?.items || [];
+        const semanas = histD?.semanas || [];
+        // KPIs derivados
+        const presupuesto = info.presupuesto || obra.presupuesto || 0;
+        const modoVol = info.modoAvance === "volumen";
+        let avancePct = 0;
+        if (modoVol && presupuesto > 0) {
+          const ejec = subsArr.reduce((t, s) => t + (Number(s.cantEjec) || 0) * (Number(s.pu) || 0), 0);
+          avancePct = (ejec / presupuesto) * 100;
+        } else if (presupuesto > 0) {
+          avancePct = subsArr.reduce((t, s) => t + ((Number(s.a) || 0) / 100) * ((Number(s.imp) || 0) / presupuesto) * 100, 0);
+        }
+        // Gasto total
+        const gpId = info.gpId || obra.gpId;
+        let totGP = 0;
+        if (gpData?.obras) {
+          const oGP = (gpId && gpData.obras[gpId]) || Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4));
+          if (oGP) totGP = oGP.grandTotal || oGP.totalGeneral || oGP.total || 0;
+        }
+        const totMaq = maquinaria.reduce((t,m) => t + (Number(m.imp) || 0), 0);
+        const totOtros = otros.reduce((t,o) => t + (Number(o.importe) || 0), 0);
+        const totGasto = totGP + totMaq + totOtros;
+        // Última captura
+        const fechaUltCaptura = subsD?.fecha || null;
+        // ¿Tiene snapshot oficial esta semana?
+        const { semana: semHoy, año: añoHoy } = semanaISO(new Date());
+        const tieneOficialEstaSemana = semanas.some(s =>
+          s.semana === semHoy && s.año === añoHoy && s.tipo === "oficial");
+
+        const datosObra = { fechaUltCaptura, totGasto, avancePct, tieneOficialEstaSemana };
+
+        for (const regla of ALERTA_REGLAS) {
+          const r = regla.evaluar(obra, datosObra, hoy);
+          if (!r) continue;
+          const id = alertaId(obra.id, regla.id, new Date());
+          resultado.push({
+            id,
+            obraId: obra.id,
+            obraNombre: info.nombre || obra.nombre || obra.id,
+            obraContrato: info.contrato || obra.contrato || "",
+            reglaId: regla.id,
+            titulo: regla.titulo,
+            severidad: regla.severidad,
+            detalle: r.detalle,
+            leida: !!leidasMap[id],
+            leidaEn: leidasMap[id]?.leidaEn,
+            leidaPor: leidasMap[id]?.leidaPor,
+            detectadaEn: new Date().toISOString(),
+          });
+        }
+      }
+      // Ordenar: no leídas primero, luego por severidad
+      const ordenSev = { critico: 0, alto: 1, medio: 2 };
+      resultado.sort((a, b) => {
+        if (a.leida !== b.leida) return a.leida ? 1 : -1;
+        return (ordenSev[a.severidad] ?? 9) - (ordenSev[b.severidad] ?? 9);
+      });
+      if (cancel) return;
+      setAlertas(resultado);
+      setCargando(false);
+      if (onCountChange) onCountChange(resultado.filter(r => !r.leida).length);
+    })();
+    return () => { cancel = true; };
+  }, [obras, gpData, onCountChange]);
+
+  async function marcarLeida(alerta) {
+    const nuevasLeidas = {
+      ...leidas,
+      [alerta.id]: {
+        leidaEn: new Date().toISOString(),
+        leidaPor: _auditCtx.correo || "",
+      },
+    };
+    setLeidas(nuevasLeidas);
+    setAlertas(arr => {
+      const nuevas = arr.map(a => a.id === alerta.id
+        ? { ...a, leida: true, leidaEn: nuevasLeidas[alerta.id].leidaEn, leidaPor: nuevasLeidas[alerta.id].leidaPor }
+        : a);
+      if (onCountChange) onCountChange(nuevas.filter(r => !r.leida).length);
+      return nuevas;
+    });
+    await fsSetA("global/alertas_leidas", { items: nuevasLeidas },
+      { modulo: "alertas", entidad: `marcada: ${alerta.titulo} (${alerta.obraNombre})` });
+  }
+
+  const filtradas = alertas.filter(a => {
+    if (filtro === "no_leidas") return !a.leida;
+    if (filtro === "leidas") return a.leida;
+    return true;
+  });
+  const noLeidas = alertas.filter(a => !a.leida).length;
+
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+      <div>
+        <h2 style={{fontSize:16,fontWeight:600,color:C.textPri,margin:0}}>Alertas activas</h2>
+        <div style={{fontSize:11,color:C.textMut,marginTop:2}}>
+          {cargando ? "Evaluando obras…" : `${noLeidas} sin atender · ${alertas.length} en total`}
+        </div>
+      </div>
+      <div style={{display:"flex",gap:4}}>
+        {[
+          {v:"no_leidas", l:"Sin atender"},
+          {v:"todas", l:"Todas"},
+          {v:"leidas", l:"Leídas"},
+        ].map(opt => (
+          <button key={opt.v} onClick={()=>setFiltro(opt.v)}
+            style={{padding:"5px 10px",fontSize:11,borderRadius:6,border:`1px solid ${filtro===opt.v?C.caliza:C.border}`,
+              background: filtro===opt.v ? C.caliza : "transparent",
+              color: filtro===opt.v ? C.bg : C.textSec, cursor:"pointer"}}>
+            {opt.l}
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {cargando ? (
+      <Card><div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>
+        Evaluando alertas en todas las obras…
+      </div></Card>
+    ) : filtradas.length === 0 ? (
+      <Card><div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>
+        {filtro === "no_leidas" ? "Sin alertas pendientes ahora mismo." :
+         filtro === "leidas" ? "No hay alertas marcadas como leídas." :
+         "No se detectaron alertas en las obras activas."}
+      </div></Card>
+    ) : (
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {filtradas.map(a => (
+          <Card key={a.id} style={{borderLeft:`3px solid ${SEV_COLOR[a.severidad]}`, opacity: a.leida ? 0.6 : 1}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap"}}>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+                  <span style={{background:SEV_BG[a.severidad],color:SEV_COLOR[a.severidad],
+                    padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                    {a.severidad}
+                  </span>
+                  <span style={{fontSize:13,fontWeight:600,color:C.textPri}}>{a.titulo}</span>
+                </div>
+                <div style={{fontSize:11,color:C.textSec,marginBottom:3}}>
+                  <strong>{a.obraNombre}</strong>{a.obraContrato && ` · ${a.obraContrato}`}
+                </div>
+                <div style={{fontSize:11,color:C.textMut,lineHeight:1.5}}>{a.detalle}</div>
+                {a.leida && a.leidaEn && (
+                  <div style={{fontSize:9,color:C.textMut,marginTop:5,fontStyle:"italic"}}>
+                    Leída por {a.leidaPor || "—"} el {new Date(a.leidaEn).toLocaleString("es-MX",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+                  </div>
+                )}
+              </div>
+              {!a.leida && (
+                <button onClick={()=>marcarLeida(a)}
+                  style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,
+                    padding:"6px 12px",fontSize:11,color:C.textSec,cursor:"pointer",whiteSpace:"nowrap"}}>
+                  Marcar como leída
+                </button>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
+    )}
+  </div>;
+}
+
 function Bitacora({obras}){
   const [items, setItems] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -11145,6 +11500,8 @@ export default function App(){
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
   // Fechas de última actualización por módulo, para detectar pendientes de captura
   const[fechasModulos,setFechasModulos]=useState({});  // {maquinaria:isoDate, materiales:isoDate, nomina:isoDate}
+  // Conteo de alertas no leídas en el panel de Configuración (badge)
+  const[alertasNoLeidasCount,setAlertasNoLeidasCount]=useState(0);
 
   // Lazy load de historial de avance: se carga al abrir Dashboard o Avance físico
   // (Dashboard lo usa para tendencias mensuales; Avance lo usa para histórico semanal)
@@ -11366,23 +11723,8 @@ export default function App(){
         <CentroNotificaciones usuario={usuario} notificaciones={notificaciones}
           onNavTab={(t,st)=>{ setScreen("obra"); navTab(t,st); }}
           onSelectObra={(id)=>{ if(id && id!==obraId) entrar(id); }}/>
-        {["director_general","director_operaciones","admin_sistema"].includes(usuario.rol) && (
-          <button onClick={()=>setScreen(screen==="usuarios"?"obras":"usuarios")}
-            style={{background:screen==="usuarios"?C.caliza:"none",
-              border:`0.5px solid ${screen==="usuarios"?C.caliza:C.border}`,borderRadius:6,
-              padding:"4px 8px",fontSize:10,
-              color:screen==="usuarios"?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
-            {screen==="usuarios"?"← Obras":"Usuarios"}
-          </button>
-        )}
-        {["director_general","director_operaciones","admin_sistema"].includes(usuario.rol) && (
-          <button onClick={()=>setScreen(screen==="bitacora"?"obras":"bitacora")}
-            style={{background:screen==="bitacora"?C.caliza:"none",
-              border:`0.5px solid ${screen==="bitacora"?C.caliza:C.border}`,borderRadius:6,
-              padding:"4px 8px",fontSize:10,
-              color:screen==="bitacora"?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
-            {screen==="bitacora"?"← Obras":"Bitácora"}
-          </button>
+        {["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(usuario.rol) && (
+          <MenuConfiguracion screen={screen} setScreen={setScreen} alertasNoLeidas={alertasNoLeidasCount} rol={usuario.rol}/>
         )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
           padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer"}}>Salir</button>
@@ -11443,6 +11785,7 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
+      {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
