@@ -2052,11 +2052,46 @@ const archivarViejas = async (uid, notifs) => {
 };
 
 // ── Helper KPIs por obra (reutilizable para Dashboard, Panel Ejecutivo y PDF) ──
+// Resuelve el gasto GP real para UNA obra desde gpData del Sheet.
+// Antes se usaba obra.gastoGP (hardcoded en _OBRAS_BASE), que nunca se
+// actualizaba. Ahora prioriza gpData en vivo y cae a obra.gastoGP solo
+// como fallback (obras viejas sin mapeo a GP).
+const resolverGastoGP = (obra, gpData) => {
+  if (!obra) return 0;
+  if (gpData?.obras) {
+    const obrasArr = Object.values(gpData.obras);
+    // 1) Por gpId explícito capturado en Contrato
+    if (obra.gpId) {
+      const exact = obrasArr.find(o => o.id === obra.gpId);
+      if (exact) return exact.grandTotal || exact.totalGeneral || exact.total || 0;
+    }
+    // 2) Por id de CAMPO si parece código de 4 dígitos
+    if (/^\d{4}/.test(obra.id || "")) {
+      const exact = obrasArr.find(o => o.id === obra.id.slice(0, 4));
+      if (exact) return exact.grandTotal || exact.totalGeneral || exact.total || 0;
+    }
+    // 3) Por nombre normalizado (match si ≥2 palabras significativas)
+    const normalizar = s => (s||"").toString().toUpperCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+      .replace(/[^\w\s]/g," ").replace(/\s+/g," ").trim();
+    const palabrasObra = normalizar(obra.nombre).split(" ").filter(w => w.length > 3);
+    let mejor = null, score = 0;
+    for (const o of obrasArr) {
+      const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/,"").split(" ").filter(w => w.length > 3);
+      const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
+      if (matches > score) { score = matches; mejor = o; }
+    }
+    if (score >= 2 && mejor) return mejor.grandTotal || mejor.totalGeneral || mejor.total || 0;
+  }
+  // Fallback: usar el campo legacy (obras antiguas sin Sheet)
+  return obra?.gastoGP || 0;
+};
+
 // Devuelve métricas calculadas a partir de los datos de UNA obra.
 // Datos vacíos (sin Firestore) producen ceros pero no rompe la función.
-const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[]) => {
+const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[], gpData=null) => {
   const presupuesto = obra?.presupuesto || 0;
-  const gastoGP = obra?.gastoGP || 0;
+  const gastoGP = resolverGastoGP(obra, gpData);
   // Gasto total = GP del Sheet + maquinaria propia
   const gt = gastoGP + maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
   // Avance monetario ejecutado (∑ avance × importe subsección)
@@ -3910,15 +3945,15 @@ function ModalPassword({usuario, onCancel, onConfirm, busy}){
 // ── PANEL EJECUTIVO MULTI-OBRA ─────────────────────────────────────────────
 // Vista consolidada para Director General / Director Operaciones / Gerente.
 // Muestra: KPIs portafolio, cobranza agrupada por cliente (acordeón) y top obras de atención.
-function PanelEjecutivo({obras, datosPorObra, onSelectObra}){
+function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
   const[expandido,setExpandido]=useState(true);
   const[clienteAbierto,setClienteAbierto]=useState(null);
 
   const activas = obras.filter(o=>o.estado!=="archivada");
-  // Calcular KPIs para cada obra activa
+  // Calcular KPIs para cada obra activa (con gasto en VIVO desde gpData)
   const obrasConKPIs = activas.map(o => {
     const d = datosPorObra[o.id] || {subs:[],maquinaria:[],materiales:[],estimaciones:[]};
-    return { obra: o, kpis: calcularKPIsObra(o, d.subs, d.maquinaria, d.materiales, d.estimaciones) };
+    return { obra: o, kpis: calcularKPIsObra(o, d.subs, d.maquinaria, d.materiales, d.estimaciones, gpData) };
   });
 
   // Agrupar por cliente
@@ -4297,7 +4332,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
 
     {/* Panel ejecutivo multi-obra — solo roles directivos y si hay ≥2 obras activas */}
     {!verHistorial && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol) && (
-      <PanelEjecutivo obras={todasObras} datosPorObra={datosPorObra} onSelectObra={onSelect}/>
+      <PanelEjecutivo obras={todasObras} datosPorObra={datosPorObra} gpData={gpData} onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}
@@ -4913,7 +4948,10 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
 function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
-  const gt=obra.gastoGP+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
+  // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
+  const gastoGPLive = resolverGastoGP(obra, gpData);
+  const totOtros = (otrosGastos||[]).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
+  const gt=gastoGPLive+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0)+totOtros;
   const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
   const alm=materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
   const me=am+alm; const af=subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
