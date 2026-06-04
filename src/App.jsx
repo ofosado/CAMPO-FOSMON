@@ -1230,6 +1230,20 @@ const fbDb   = getFirestore(fbApp);
 const fbStor = getStorage(fbApp);
 const fbFn   = getFunctions(fbApp, "us-central1");
 
+// Exponer en window para poder llamar Cloud Functions desde la consola del
+// navegador (útil para admin/debug — ej. probarResumenSemanal, probarBackup).
+// Uso desde consola:
+//   await window.campoFn('probarResumenSemanal')
+//   await window.campoFn('probarBackup')
+if (typeof window !== 'undefined') {
+  window.campoFn = async (name, data) => {
+    const fn = httpsCallable(fbFn, name);
+    const res = await fn(data || {});
+    console.log(`[${name}]`, res.data);
+    return res.data;
+  };
+}
+
 // Helpers para llamar Cloud Functions (gestión de usuarios)
 const callFn = async (name, data) => {
   try {
