@@ -634,18 +634,55 @@ async function descargarYGuardarGP() {
   return parsed;
 }
 
+// ── HEALTH TRACKING ─────────────────────────────────────────────
+// Registra el resultado de cada ejecución de un cron job en Firestore
+// para que el Panel de Salud pueda monitorear el estado del sistema.
+// Path: global/health = { [tipo]: { ultimaEjecucion, ok, mensaje, duracionMs, meta } }
+async function registrarSalud(tipo, ok, mensaje, meta = {}) {
+  try {
+    const ref = admin.firestore().doc("global/health");
+    const snap = await ref.get();
+    const actual = snap.exists ? snap.data() : {};
+    const entry = {
+      ultimaEjecucion: new Date().toISOString(),
+      ok: !!ok,
+      mensaje: String(mensaje || ""),
+      ...meta,
+    };
+    // También guarda historial corto: últimas 10 ejecuciones por tipo
+    const histPrev = Array.isArray(actual[`${tipo}_historial`]) ? actual[`${tipo}_historial`] : [];
+    const hist = [entry, ...histPrev].slice(0, 10);
+    await ref.set({
+      ...actual,
+      [tipo]: entry,
+      [`${tipo}_historial`]: hist,
+    }, { merge: true });
+  } catch (e) {
+    console.warn(`registrarSalud(${tipo}) fallo silencioso:`, e?.message);
+  }
+}
+
 // ── SCHEDULED: cada lunes 9am hora México ──
 exports.actualizarGPSheet = onSchedule({
   schedule: "0 9 * * 1",   // lunes 9:00am
   timeZone: "America/Mexico_City",
   region: "us-central1",
 }, async () => {
+  const t0 = Date.now();
   console.log("Iniciando actualización programada de GP Sheet…");
   try {
     const parsed = await descargarYGuardarGP();
-    console.log(`Actualización OK: ${parsed.totalObras} obras, ${parsed.semanasDisponibles.length} semanas`);
+    const mensaje = `OK: ${parsed.totalObras} obras, ${parsed.semanasDisponibles.length} semanas`;
+    console.log(mensaje);
+    await registrarSalud("gp_sync", true, mensaje, {
+      duracionMs: Date.now() - t0,
+      totalObras: parsed.totalObras,
+      semanas: parsed.semanasDisponibles.length,
+      ultimaSemana: parsed.ultimaSemana,
+    });
   } catch (e) {
     console.error("Error en actualización programada de GP:", e);
+    await registrarSalud("gp_sync", false, e.message || String(e), { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
@@ -726,11 +763,35 @@ async function calcularKpisObra(obraId, gpData) {
   }
 
   // Gasto: GP del Sheet (si existe match) + maquinaria propia + otros
+  // Matching robusto (igual que resolverGastoGP del frontend):
+  //   1) Por gpId explícito capturado en Contrato
+  //   2) Por primeros 4 dígitos del id de CAMPO
+  //   3) Por nombre normalizado (≥2 palabras significativas)
   let totGP = 0;
   if (gpData && gpData.obras) {
+    const obrasArr = Object.values(gpData.obras);
     const gpId = info.gpId;
-    const obraGP = (gpId && gpData.obras[gpId])
-      || Object.values(gpData.obras).find(o => o.id === obraId.slice(0, 4));
+    let obraGP = null;
+    // 1) Por gpId
+    if (gpId) obraGP = obrasArr.find(o => o.id === gpId);
+    // 2) Por id de 4 dígitos
+    if (!obraGP && /^\d{4}/.test(obraId || "")) {
+      obraGP = obrasArr.find(o => o.id === obraId.slice(0, 4));
+    }
+    // 3) Por nombre normalizado
+    if (!obraGP) {
+      const normalizar = (s) => (s || "").toString().toUpperCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+      const palabrasObra = normalizar(info.nombre).split(" ").filter(w => w.length > 3);
+      let mejor = null, score = 0;
+      for (const o of obrasArr) {
+        const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/, "").split(" ").filter(w => w.length > 3);
+        const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
+        if (matches > score) { score = matches; mejor = o; }
+      }
+      if (score >= 2 && mejor) obraGP = mejor;
+    }
     if (obraGP) {
       totGP = obraGP.grandTotal || obraGP.totalGeneral || obraGP.total || 0;
     }
@@ -929,12 +990,20 @@ exports.resumenSemanalEmail = onSchedule({
   region: "us-central1",
   secrets: [RESEND_API_KEY],
 }, async () => {
+  const t0 = Date.now();
   console.log("Iniciando resumen semanal por correo…");
   try {
     const res = await generarYEnviarResumenSemanal(RESEND_API_KEY.value());
     console.log("Resumen semanal OK:", res);
+    await registrarSalud("email_semanal", true, `Enviado a ${res.enviados || 0} destinatarios`, {
+      duracionMs: Date.now() - t0,
+      enviados: res.enviados,
+      destinatarios: res.destinatarios,
+      resendId: res.resendId,
+    });
   } catch (e) {
     console.error("Error en resumen semanal:", e);
+    await registrarSalud("email_semanal", false, e.message || String(e), { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
@@ -1021,12 +1090,19 @@ exports.backupSemanalFirestore = onSchedule({
   timeZone: "America/Mexico_City",
   region: "us-central1",
 }, async () => {
+  const t0 = Date.now();
   console.log("Iniciando backup semanal de Firestore…");
   try {
     const res = await ejecutarBackupFirestore();
     console.log(`Backup iniciado OK. Destino: ${res.destino}, Op: ${res.operationName}`);
+    await registrarSalud("backup", true, `Iniciado: ${res.destino}`, {
+      duracionMs: Date.now() - t0,
+      destino: res.destino,
+      operationName: res.operationName,
+    });
   } catch (e) {
     console.error("Error en backup semanal:", e);
+    await registrarSalud("backup", false, e.message || String(e), { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
