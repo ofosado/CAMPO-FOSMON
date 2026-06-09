@@ -940,7 +940,10 @@ async function generarYEnviarResumenSemanal(apiKey) {
     .filter(o => (o.estado || "activa") !== "archivada");
 
   // 2) Carga el GP data (resumen) para sacar el gasto de cada obra
-  const gpResumenSnap = await db.doc("global/gp_resumen").get();
+  // El path correcto es global/gp_construct (lo guarda descargarYGuardarGP).
+  // Antes apuntaba a global/gp_resumen que NO existe → gpData=null → totGP=0
+  // siempre → el correo mostraba el gasto sin GP, solo maquinaria y otros.
+  const gpResumenSnap = await db.doc("global/gp_construct").get();
   const gpData = gpResumenSnap.exists ? gpResumenSnap.data() : null;
 
   // 3) Calcula KPIs por obra en paralelo
