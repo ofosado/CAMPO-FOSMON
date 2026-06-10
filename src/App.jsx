@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
@@ -1226,7 +1226,23 @@ const firebaseConfig = {
 
 const fbApp  = initializeApp(firebaseConfig);
 const fbAuth = getAuth(fbApp);
-const fbDb   = getFirestore(fbApp);
+// Firestore con persistencia local OFFLINE-FIRST.
+// Permite que el residente capture en obra sin conexión y se sincronice
+// automáticamente cuando recupere internet. persistentMultipleTabManager
+// permite que la PWA siga funcionando si abren múltiples pestañas.
+let fbDb;
+try {
+  fbDb = initializeFirestore(fbApp, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  });
+} catch (e) {
+  // Si initializeFirestore falla (ya inicializado o navegador no soporta IndexedDB)
+  // caemos a getFirestore normal sin perder funcionalidad.
+  console.warn("Firestore persistence offline no disponible, usando online-only:", e?.message);
+  fbDb = getFirestore(fbApp);
+}
 const fbStor = getStorage(fbApp);
 const fbFn   = getFunctions(fbApp, "us-central1");
 
@@ -11445,6 +11461,156 @@ function PermisosObra({obra, rol}){
       </div>
     </Card>
   </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// CAMPO MINIMALISTA — Vista del residente / superintendente
+// ════════════════════════════════════════════════════════════════════════════
+// 3 botones grandes en pantalla inicial:
+//  1. Mi reporte semanal (avance jerárquico + fotos + foto general + cierre)
+//  2. Reportar problema (falla / atraso / riesgo)
+//  3. Cómo va mi obra (read-only)
+// Mobile-first. Sin tabs ni menús. Pensado para usuarios con baja
+// alfabetización tecnológica que apenas saben WhatsApp.
+//
+// Roles que usan esta vista: residente, superintendente, administrador_obra
+// (los 3 verán esto en vez de la app completa)
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Helper: indicador online/offline + estado de sincronización
+function IndicadorConexion() {
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+  return <div style={{display:"inline-flex",alignItems:"center",gap:5,
+    background: online ? "#e8f5e1" : "#fde7d6",
+    color: online ? "#3B6D11" : "#854F0B",
+    padding:"4px 10px",borderRadius:99,fontSize:10,fontWeight:600}}>
+    <span style={{width:7,height:7,borderRadius:"50%",
+      background: online ? "#639922" : "#EF9F27"}}/>
+    {online ? "En línea" : "Sin internet — se guardará al reconectar"}
+  </div>;
+}
+
+// ── Pantalla: lista de obras asignadas al residente
+function ResidenteHome({usuario, obras, onSelectObra, onLogout}) {
+  // Solo mostrar las obras a las que está asignado este usuario.
+  // Si no tiene obras_asignadas, mostrar todas las activas (por compatibilidad).
+  const obrasAsignadas = Array.isArray(usuario.obras_asignadas) && usuario.obras_asignadas.length > 0
+    ? obras.filter(o => usuario.obras_asignadas.includes(o.id) && (o.estado || "activa") !== "archivada")
+    : obras.filter(o => (o.estado || "activa") !== "archivada");
+
+  return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:40}}>
+    <div style={{background:C.caliza,color:"#fff",padding:"16px 18px",
+      display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+      <div>
+        <div style={{fontSize:11,opacity:0.7,letterSpacing:"0.1em"}}>CAMPO · FOSMON</div>
+        <div style={{fontSize:15,fontWeight:600,marginTop:2}}>Hola, {(usuario.nombre||"").split(" ")[0]}</div>
+      </div>
+      <button onClick={onLogout} style={{background:"rgba(255,255,255,0.1)",
+        border:`1px solid rgba(255,255,255,0.2)`,color:"#fff",borderRadius:6,
+        padding:"5px 10px",fontSize:10,cursor:"pointer"}}>Salir</button>
+    </div>
+
+    <div style={{padding:"14px 16px"}}>
+      <IndicadorConexion/>
+    </div>
+
+    {obrasAsignadas.length === 0 ? (
+      <div style={{padding:30,textAlign:"center"}}>
+        <div style={{fontSize:14,fontWeight:600,color:C.textPri,marginBottom:8}}>
+          No tienes obras asignadas
+        </div>
+        <div style={{fontSize:12,color:C.textMut}}>
+          Pídele a tu gerente que te asigne una obra para empezar a capturar.
+        </div>
+      </div>
+    ) : (
+      <div style={{padding:"0 16px",display:"flex",flexDirection:"column",gap:10}}>
+        <div style={{fontSize:11,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginTop:4}}>
+          {obrasAsignadas.length === 1 ? "Mi obra" : "Mis obras"}
+        </div>
+        {obrasAsignadas.map(o => (
+          <button key={o.id} onClick={()=>onSelectObra(o.id)}
+            style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,
+              padding:"16px 16px",textAlign:"left",cursor:"pointer",
+              boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
+            <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:3}}>
+              {o.nombre}
+            </div>
+            <div style={{fontSize:11,color:C.textMut}}>
+              {o.contrato || "—"}{o.cliente ? ` · ${o.cliente}` : ""}
+            </div>
+          </button>
+        ))}
+      </div>
+    )}
+  </div>;
+}
+
+// ── Pantalla: obra elegida → 3 botones grandes
+function ResidenteObra({obra, usuario, onVolver, onIrA}) {
+  const Btn = ({icono, titulo, descripcion, onClick, color=C.caliza}) => (
+    <button onClick={onClick} style={{
+      background:C.card,border:`1px solid ${C.border}`,borderRadius:14,
+      padding:"24px 20px",cursor:"pointer",textAlign:"left",width:"100%",
+      borderLeft:`5px solid ${color}`,
+      boxShadow:"0 2px 6px rgba(0,0,0,0.06)",
+      display:"flex",alignItems:"center",gap:16}}>
+      <div style={{fontSize:36,lineHeight:1,flexShrink:0,width:48,textAlign:"center"}}>{icono}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:16,fontWeight:700,color:C.textPri,marginBottom:4}}>{titulo}</div>
+        <div style={{fontSize:12,color:C.textMut,lineHeight:1.4}}>{descripcion}</div>
+      </div>
+      <div style={{fontSize:20,color:C.textMut,flexShrink:0}}>›</div>
+    </button>
+  );
+
+  return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:40}}>
+    <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+      <button onClick={onVolver} style={{background:"none",border:"none",color:"#fff",
+        opacity:0.7,fontSize:11,cursor:"pointer",marginBottom:6,padding:0}}>
+        ← Mis obras
+      </button>
+      <div style={{fontSize:16,fontWeight:700,lineHeight:1.3}}>{obra.nombre}</div>
+      <div style={{fontSize:11,opacity:0.7,marginTop:2}}>{obra.contrato || ""}</div>
+    </div>
+
+    <div style={{padding:"14px 16px"}}>
+      <IndicadorConexion/>
+    </div>
+
+    <div style={{padding:"4px 16px",display:"flex",flexDirection:"column",gap:12}}>
+      <Btn icono="📋" titulo="Mi reporte semanal"
+        descripcion="Captura el avance de las partidas y sube fotos."
+        color={C.blueDk}
+        onClick={()=>onIrA("reporte")}/>
+
+      <Btn icono="🚨" titulo="Reportar problema"
+        descripcion="Falla, atraso, imprevisto o riesgo en la obra."
+        color={C.red}
+        onClick={()=>onIrA("problema")}/>
+
+      <Btn icono="📊" titulo="Cómo va mi obra"
+        descripcion="Mira el avance acumulado y semáforos."
+        color={C.greenDk}
+        onClick={()=>onIrA("estado")}/>
+    </div>
+  </div>;
+}
+
+// ── Helper para detectar si estamos en móvil
+function esMovil() {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth < 768 || /Mobi|Android|iPhone/i.test(navigator.userAgent);
 }
 
 export default function App(){
