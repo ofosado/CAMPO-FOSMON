@@ -3964,6 +3964,19 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
   const[clienteAbierto,setClienteAbierto]=useState(null);
 
   const activas = obras.filter(o=>o.estado!=="archivada");
+  // En el primer render (móvil sobre todo) el bulk de datosPorObra puede no
+  // haber llegado todavía. Si pintamos así, todos los KPIs salen en 0 y queda
+  // un panel "fantasma" que solo se actualiza al entrar/salir de una obra.
+  // Mostramos placeholder claro mientras carga.
+  const todosCargados = activas.every(o => datosPorObra[o.id]);
+  if (activas.length >= 2 && !todosCargados) {
+    return <Card accent={C.caliza} style={{marginBottom:10}}>
+      <Tit>Panel ejecutivo — cargando…</Tit>
+      <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
+        Cargando datos consolidados de {activas.length} obras activas…
+      </div>
+    </Card>;
+  }
   // Calcular KPIs para cada obra activa (con gasto en VIVO desde gpData)
   const obrasConKPIs = activas.map(o => {
     const d = datosPorObra[o.id] || {subs:[],maquinaria:[],materiales:[],estimaciones:[]};
