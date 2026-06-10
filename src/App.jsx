@@ -11613,6 +11613,768 @@ function esMovil() {
   return window.innerWidth < 768 || /Mobi|Android|iPhone/i.test(navigator.userAgent);
 }
 
+// ── Sub-flujo: Mi reporte semanal
+// Reusa el árbol jerárquico del catálogo. Por categorías colapsadas por
+// default — el residente expande la zona donde está trabajando y captura
+// avance + fotos por concepto. Al final foto general + cierre de semana.
+function ResidenteReporte({obra, usuario, onVolver}) {
+  const [subs, setSubs] = useState([]);
+  const [exp, setExp] = useState({});
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [guardado, setGuardado] = useState(false);
+  const [pendientes, setPendientes] = useState(0); // contador de cambios sin guardar
+  const [fotoGeneral, setFotoGeneral] = useState(null);
+  const [paso, setPaso] = useState("avance"); // avance | general | cierre
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const data = await fsGet(`obras/${obra.id}/avance/subs`);
+      if (cancel) return;
+      const arr = Array.isArray(data?.data) ? data.data : [];
+      // Migración: asegurar id único
+      const conId = arr.map((s, idx) => ({ ...s, id: s.id || `${s.sec || 'C'}__${idx}` }));
+      setSubs(conId);
+      setCargando(false);
+    })();
+    return () => { cancel = true; };
+  }, [obra.id]);
+
+  // Cambiar avance de un concepto
+  const setAvance = (subId, valor) => {
+    setSubs(ss => ss.map(x => x.id === subId
+      ? { ...x, a: Math.min(100, Math.max(0, valor)) }
+      : x));
+    setPendientes(p => p + 1);
+    setGuardado(false);
+  };
+
+  // Para modo volumen: capturar cantidad ejecutada
+  const setCantEjec = (subId, cantEjec) => {
+    setSubs(ss => ss.map(x => {
+      if (x.id !== subId) return x;
+      const cCat = parseFloat(x.cant) || 0;
+      const v = Math.max(0, cantEjec);
+      const pctNuevo = cCat > 0 ? Math.min(100, v / cCat * 100) : 0;
+      return { ...x, cantEjec: v, a: pctNuevo };
+    }));
+    setPendientes(p => p + 1);
+    setGuardado(false);
+  };
+
+  // Foto inline en un concepto
+  const agregarFoto = async (subId, foto) => {
+    if (!obra?.id) return;
+    try {
+      const idSafe = (foto.id || Date.now()).toString();
+      let urlFinal = foto.url;
+      if (foto.url && foto.url.startsWith('data:')) {
+        urlFinal = await uploadFoto(obra.id, `avance_${subId}`, idSafe, foto.url);
+      }
+      setSubs(ss => ss.map(s => {
+        if (s.id !== subId) return s;
+        const fotosObj = s.fotos || {};
+        const lista = fotosObj[subId] || fotosObj[s.sec] || [];
+        return { ...s, fotos: { ...fotosObj,
+          [subId]: [...lista, { id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10) }]
+        }};
+      }));
+      setPendientes(p => p + 1);
+    } catch (e) {
+      alert("Error al subir foto: " + (e.message || "intenta de nuevo"));
+    }
+  };
+
+  const eliminarFoto = (subId, fotoId) => {
+    setSubs(ss => ss.map(s => {
+      if (s.id !== subId) return s;
+      const fotosObj = s.fotos || {};
+      const lista = fotosObj[subId] || fotosObj[s.sec] || [];
+      return { ...s, fotos: { ...fotosObj, [subId]: lista.filter(f => f.id !== fotoId) }};
+    }));
+    setPendientes(p => p + 1);
+  };
+
+  // Guardar borrador (intermedio)
+  async function guardarBorrador(siguientePaso) {
+    setGuardando(true);
+    try {
+      const avanceData = {
+        data: subs.map((s, idx) => ({
+          id: s.id || `${s.sec || 'C'}__${idx}`,
+          sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
+          n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
+          cat: s.cat || null, catDesc: s.catDesc || null,
+          ruta: s.ruta || [],
+          cant: s.cant || 0, pu: s.pu || 0, unidad: s.unidad || '',
+          cantEjec: s.cantEjec || 0,
+        })),
+        fecha: new Date().toISOString(),
+      };
+      await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
+        { modulo: "avance_fisico", entidad: "captura desde residente (móvil)",
+          obraId: obra.id, obraNombre: obra.contrato || obra.nombre,
+          meta: { tipo: "intermedio_residente" }});
+      setPendientes(0);
+      setGuardado(true);
+      if (siguientePaso) setPaso(siguientePaso);
+    } catch (e) {
+      alert("Error al guardar: " + (e.message || "intenta de nuevo"));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  // Cierre oficial de semana
+  async function cerrarSemana() {
+    if (!window.confirm("¿Confirmar el cierre oficial de tu semana?\n\nQueda registrado como el reporte semanal oficial. Lo recibirá Dirección y Gerencia.")) return;
+    setGuardando(true);
+    try {
+      // Guardar el snapshot oficial
+      const snap = await crearSnapshotAvance(obra.id, subs, usuario.correo, "oficial");
+      // Notificar a directivos
+      await notifARoles(["director_general","director_operaciones","gerente_construccion"], {
+        categoria: "actividad", tipo: "cierre_semanal",
+        titulo: `Cierre semanal · ${obra.nombre}`,
+        mensaje: `${usuario.nombre || usuario.correo} cerró su semana con avance ${snap?.avancePonderado?.toFixed(1) || '?'}%`,
+        link: { obraId: obra.id, tab: "dash" },
+        creadaPor: usuario.correo,
+      });
+      alert("Cierre semanal registrado.\n\nGracias por capturar.");
+      onVolver();
+    } catch (e) {
+      alert("Error al cerrar semana: " + (e.message || "intenta de nuevo"));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  if (cargando) {
+    return <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:13}}>
+      Cargando catálogo de tu obra…
+    </div>;
+  }
+
+  const subsConImp = subs.filter(s => (s.imp || 0) > 0);
+
+  if (subsConImp.length === 0) {
+    return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:40}}>
+      <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+        <button onClick={onVolver} style={{background:"none",border:"none",color:"#fff",
+          opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Volver</button>
+        <div style={{fontSize:16,fontWeight:700}}>Mi reporte semanal</div>
+      </div>
+      <div style={{padding:30,textAlign:"center"}}>
+        <div style={{fontSize:14,fontWeight:600,color:C.textPri,marginBottom:8}}>
+          Esta obra aún no tiene presupuesto cargado
+        </div>
+        <div style={{fontSize:12,color:C.textMut}}>
+          Pídele a tu Director o Gerente que suba el catálogo de presupuesto.
+        </div>
+      </div>
+    </div>;
+  }
+
+  // ── Construir árbol jerárquico (mismo que la app completa)
+  const raiz = { tipo: 'categoria', clave: '__root__', desc: '', nivel: 0, hijos: [] };
+  const nodoPorClave = new Map();
+  nodoPorClave.set('__root__', raiz);
+  subsConImp.forEach(s => {
+    const ruta = Array.isArray(s.ruta) ? s.ruta : [];
+    let padre = raiz;
+    ruta.forEach(catInfo => {
+      let nodo = nodoPorClave.get(catInfo.clave);
+      if (!nodo) {
+        nodo = { tipo:'categoria', clave:catInfo.clave, desc:catInfo.desc||'',
+          nivel:catInfo.nivel || (padre.nivel+1), hijos:[] };
+        nodoPorClave.set(catInfo.clave, nodo);
+        padre.hijos.push(nodo);
+      }
+      padre = nodo;
+    });
+    padre.hijos.push({ tipo:'concepto', sub:s });
+  });
+  const calcAgreg = (nodo) => {
+    if (nodo.tipo === 'concepto') {
+      return { imp: nodo.sub.imp || 0, avPond: (nodo.sub.a || 0) * (nodo.sub.imp || 0), count: 1 };
+    }
+    let imp=0, avPond=0, count=0;
+    nodo.hijos.forEach(h => { const a=calcAgreg(h); imp+=a.imp; avPond+=a.avPond; count+=a.count; });
+    nodo._agreg = { imp, avPond, count, av: imp>0 ? avPond/imp : 0 };
+    return { imp, avPond, count };
+  };
+  raiz.hijos.forEach(calcAgreg);
+
+  const modoVol = obra?.modoAvance === "volumen";
+
+  // ── Render concepto (versión móvil — más grande)
+  const renderConcepto = (s, indent=0) => {
+    const subId = s.id || s.sec;
+    const fotosObj = s.fotos || {};
+    const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
+    const cantCat = parseFloat(s.cant) || 0;
+    const cantEjec = parseFloat(s.cantEjec) || 0;
+    const pctDerivado = cantCat > 0 ? (cantEjec / cantCat * 100) : 0;
+    const pctParaBarra = modoVol ? Math.min(100, pctDerivado) : (s.a || 0);
+    const excede = modoVol && pctDerivado > 100;
+    return <div key={subId} style={{background:"#fff",border:`1px solid ${C.border}`,
+      borderRadius:10,padding:"12px 14px",marginBottom:8,marginLeft: indent*8}}>
+      <div style={{marginBottom:8}}>
+        <div style={{fontSize:9,color:C.textMut,fontWeight:700,letterSpacing:"0.04em"}}>{s.sec}</div>
+        <div style={{fontSize:12,color:C.textPri,lineHeight:1.35,marginTop:2}}>{s.sub}</div>
+        <div style={{fontSize:10,color:C.textMut,marginTop:3}}>
+          {modoVol
+            ? <>Catálogo: {cantCat>0?cantCat.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'} {s.unidad||''}</>
+            : <>{MXN(s.imp)}</>
+          }
+        </div>
+      </div>
+
+      {/* Input principal de avance */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+        {modoVol ? (
+          <>
+            <input type="number" min="0" step="0.01" placeholder="0"
+              value={s.cantEjec || ""}
+              onChange={e => setCantEjec(subId, parseFloat(e.target.value)||0)}
+              style={{flex:1,fontSize:18,padding:"10px 12px",
+                border:`1.5px solid ${excede?C.yellow:C.borderM}`,borderRadius:8,
+                textAlign:"right",color:C.textPri,outline:"none",fontWeight:600}}/>
+            <div style={{fontSize:13,color:C.textSec,fontWeight:500,minWidth:50}}>{s.unidad||''}</div>
+          </>
+        ) : (
+          <>
+            <input type="number" min="0" max="100" placeholder="0"
+              value={s.a || ""}
+              onChange={e => setAvance(subId, parseFloat(e.target.value)||0)}
+              style={{flex:1,fontSize:18,padding:"10px 12px",
+                border:`1.5px solid ${C.borderM}`,borderRadius:8,
+                textAlign:"right",color:C.textPri,outline:"none",fontWeight:600}}/>
+            <div style={{fontSize:13,color:C.textSec,fontWeight:500,minWidth:40}}>%</div>
+          </>
+        )}
+      </div>
+
+      <Bar pct={pctParaBarra} color={excede?C.yellow:semA(pctParaBarra)}/>
+
+      {/* Fotos */}
+      <div style={{marginTop:10}}>
+        <ConceptoFotos
+          fotos={fotosArr}
+          onAdd={foto => agregarFoto(subId, foto)}
+          onDel={id => eliminarFoto(subId, id)}/>
+      </div>
+    </div>;
+  };
+
+  const renderNodo = (nodo, indent=0) => {
+    if (nodo.tipo === 'concepto') return renderConcepto(nodo.sub, indent);
+    const catId = `__cat__${nodo.clave}__${nodo.nivel}`;
+    const expanded = exp[catId] === true;
+    const ag = nodo._agreg || { imp:0, avPond:0, count:0, av:0 };
+    const av = ag.av || 0;
+    const colorAv = av>=75 ? C.greenDk : av>=40 ? C.yellow : av>0 ? C.red : C.textMut;
+    return <div key={catId} style={{marginBottom:6, marginLeft: indent*8}}>
+      <div onClick={()=>setExp(e=>({...e,[catId]:!expanded}))}
+        style={{background: nodo.nivel===1 ? C.caliza : nodo.nivel===2 ? C.blueDk : "#475568",
+          color:"#fff",borderRadius:10,padding:"12px 14px",cursor:"pointer",
+          display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+            <span style={{fontSize:14}}>{expanded?"▾":"▸"}</span>
+            <span style={{fontSize:12,fontWeight:700,letterSpacing:"0.04em"}}>{nodo.clave}</span>
+          </div>
+          <div style={{fontSize:11,opacity:0.9,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+            {nodo.desc || ''}
+          </div>
+          <div style={{fontSize:9,opacity:0.7,marginTop:2}}>
+            {ag.count} concepto{ag.count!==1?"s":""} · {MXN(ag.imp)}
+          </div>
+        </div>
+        <div style={{fontWeight:700,fontSize:18,flexShrink:0,
+          color: av>=75 ? "#a8d979" : av>=40 ? "#f3b658" : av>0 ? "#f08e8d" : "#fff"}}>
+          {av.toFixed(0)}%
+        </div>
+      </div>
+      {expanded && <div style={{marginTop:6}}>
+        {nodo.hijos.map(h => renderNodo(h, indent+1))}
+      </div>}
+    </div>;
+  };
+
+  // ── PASO 1: Captura de avance
+  if (paso === "avance") {
+    return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:110}}>
+      <div style={{background:C.caliza,color:"#fff",padding:"14px 18px",position:"sticky",top:0,zIndex:10}}>
+        <button onClick={onVolver} style={{background:"none",border:"none",color:"#fff",
+          opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Volver</button>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",gap:8}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:700}}>Mi reporte semanal</div>
+            <div style={{fontSize:11,opacity:0.7,marginTop:2}}>Paso 1 de 3 · Captura de avance</div>
+          </div>
+          {pendientes > 0 && (
+            <div style={{background:"#ffd66e",color:"#704102",padding:"3px 8px",
+              borderRadius:99,fontSize:10,fontWeight:700}}>
+              {pendientes} cambio{pendientes!==1?"s":""}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{padding:"12px 14px"}}>
+        <div style={{fontSize:11,color:C.textSec,lineHeight:1.5,marginBottom:14}}>
+          Toca una categoría para abrirla y captura el % de avance de cada partida.
+          Sube fotos donde aplique. Cuando termines, presiona <b>Continuar</b>.
+        </div>
+
+        {raiz.hijos.map(h => renderNodo(h, 0))}
+      </div>
+
+      {/* Botón inferior fijo */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",
+        borderTop:`1px solid ${C.border}`,padding:"12px 14px",display:"flex",gap:8,
+        boxShadow:"0 -2px 8px rgba(0,0,0,0.06)"}}>
+        <button onClick={()=>guardarBorrador(null)} disabled={guardando || pendientes===0}
+          style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+            padding:"12px",fontSize:13,fontWeight:600,color:C.textPri,
+            cursor:guardando?"wait":"pointer",opacity:(guardando||pendientes===0)?0.5:1}}>
+          {guardando ? "Guardando…" : guardado ? "Guardado ✓" : "Guardar borrador"}
+        </button>
+        <button onClick={()=>guardarBorrador("general")} disabled={guardando}
+          style={{flex:2,background:C.caliza,border:"none",borderRadius:8,
+            padding:"12px",fontSize:13,fontWeight:700,color:"#fff",
+            cursor:guardando?"wait":"pointer",opacity:guardando?0.7:1}}>
+          Continuar →
+        </button>
+      </div>
+    </div>;
+  }
+
+  // ── PASO 2: Foto general de la obra
+  if (paso === "general") {
+    return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:110}}>
+      <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+        <button onClick={()=>setPaso("avance")} style={{background:"none",border:"none",color:"#fff",
+          opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Atrás</button>
+        <div style={{fontSize:16,fontWeight:700}}>Foto general</div>
+        <div style={{fontSize:11,opacity:0.7,marginTop:2}}>Paso 2 de 3</div>
+      </div>
+
+      <div style={{padding:"14px"}}>
+        <div style={{fontSize:12,color:C.textSec,marginBottom:14,lineHeight:1.5}}>
+          Sube una foto panorámica de la obra esta semana. Sirve para que Dirección
+          vea el progreso visual aunque no haya tiempo de captura detallada.
+        </div>
+
+        {fotoGeneral ? (
+          <div style={{position:"relative",borderRadius:12,overflow:"hidden",
+            border:`1px solid ${C.border}`,marginBottom:10}}>
+            <img src={fotoGeneral} alt="Foto general" style={{width:"100%",display:"block"}}/>
+            <button onClick={()=>setFotoGeneral(null)}
+              style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.6)",
+                color:"#fff",border:"none",borderRadius:99,width:32,height:32,
+                fontSize:18,cursor:"pointer"}}>×</button>
+          </div>
+        ) : (
+          <label style={{display:"block",border:`2px dashed ${C.borderM}`,borderRadius:12,
+            padding:"40px 20px",textAlign:"center",cursor:"pointer",background:"#fff"}}>
+            <div style={{fontSize:36,marginBottom:8}}>📷</div>
+            <div style={{fontSize:13,color:C.textPri,fontWeight:600,marginBottom:4}}>
+              Tocar para tomar foto
+            </div>
+            <div style={{fontSize:11,color:C.textMut}}>
+              Cámara o galería
+            </div>
+            <input type="file" accept="image/*" capture="environment" hidden
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const reader = new FileReader();
+                reader.onload = ev => setFotoGeneral(ev.target.result);
+                reader.readAsDataURL(f);
+              }}/>
+          </label>
+        )}
+      </div>
+
+      <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",
+        borderTop:`1px solid ${C.border}`,padding:"12px 14px",display:"flex",gap:8}}>
+        <button onClick={()=>setPaso("cierre")}
+          style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+            padding:"12px",fontSize:13,fontWeight:600,color:C.textPri,cursor:"pointer"}}>
+          Omitir
+        </button>
+        <button onClick={async () => {
+          if (fotoGeneral) {
+            try {
+              await uploadFoto(obra.id, `general_${new Date().toISOString().slice(0,10)}`,
+                Date.now().toString(), fotoGeneral);
+            } catch (e) { console.warn("foto general", e); }
+          }
+          setPaso("cierre");
+        }}
+          style={{flex:2,background:C.caliza,border:"none",borderRadius:8,
+            padding:"12px",fontSize:13,fontWeight:700,color:"#fff",cursor:"pointer"}}>
+          Continuar →
+        </button>
+      </div>
+    </div>;
+  }
+
+  // ── PASO 3: Cierre de semana
+  const totalSubs = subsConImp.length;
+  const enCurso = subsConImp.filter(s => (s.a||0) > 0 && (s.a||0) < 100).length;
+  const terminadas = subsConImp.filter(s => (s.a||0) >= 100).length;
+  const avancePromedio = subsConImp.length > 0
+    ? subsConImp.reduce((t,s) => t + ((s.a||0)/100)*(s.imp||0), 0) /
+      subsConImp.reduce((t,s) => t + (s.imp||0), 0) * 100
+    : 0;
+
+  return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:110}}>
+    <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+      <button onClick={()=>setPaso("general")} style={{background:"none",border:"none",color:"#fff",
+        opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Atrás</button>
+      <div style={{fontSize:16,fontWeight:700}}>Cierre de tu semana</div>
+      <div style={{fontSize:11,opacity:0.7,marginTop:2}}>Paso 3 de 3</div>
+    </div>
+
+    <div style={{padding:"14px"}}>
+      <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:12,
+        padding:"18px",marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textMut,fontWeight:700,letterSpacing:"0.06em",
+          textTransform:"uppercase",marginBottom:10}}>Resumen de tu obra</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <div style={{fontSize:24,fontWeight:700,color:semA(avancePromedio)}}>
+              {avancePromedio.toFixed(1)}%
+            </div>
+            <div style={{fontSize:10,color:C.textMut}}>Avance ponderado</div>
+          </div>
+          <div>
+            <div style={{fontSize:24,fontWeight:700,color:C.textPri}}>{terminadas}</div>
+            <div style={{fontSize:10,color:C.textMut}}>De {totalSubs} partidas</div>
+          </div>
+          <div>
+            <div style={{fontSize:18,fontWeight:600,color:C.blueDk}}>{enCurso}</div>
+            <div style={{fontSize:10,color:C.textMut}}>En curso</div>
+          </div>
+          <div>
+            <div style={{fontSize:18,fontWeight:600,color:C.textSec}}>{totalSubs - enCurso - terminadas}</div>
+            <div style={{fontSize:10,color:C.textMut}}>Sin iniciar</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{background:"#fff7e6",border:`1px solid ${C.yellow}`,borderRadius:10,
+        padding:"14px",fontSize:12,color:C.yellowDk,lineHeight:1.5,marginBottom:14}}>
+        <b>Al cerrar tu semana:</b><br/>
+        • Se registra el snapshot oficial de avance.<br/>
+        • Dirección y Gerencia reciben aviso de que terminaste.<br/>
+        • Sirve como base para comparar la semana siguiente.<br/>
+        <br/>
+        Una vez cerrada no puedes editarla hasta la próxima semana.
+      </div>
+    </div>
+
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",
+      borderTop:`1px solid ${C.border}`,padding:"12px 14px",display:"flex",gap:8}}>
+      <button onClick={()=>setPaso("avance")}
+        style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+          padding:"12px",fontSize:13,fontWeight:600,color:C.textPri,cursor:"pointer"}}>
+        Aún no
+      </button>
+      <button onClick={cerrarSemana} disabled={guardando}
+        style={{flex:2,background:C.greenDk,border:"none",borderRadius:8,
+          padding:"12px",fontSize:13,fontWeight:700,color:"#fff",
+          cursor:guardando?"wait":"pointer",opacity:guardando?0.7:1}}>
+        {guardando ? "Cerrando…" : "Cerrar mi semana ✓"}
+      </button>
+    </div>
+  </div>;
+}
+
+// ── Sub-flujo: Reportar problema (falla / atraso / riesgo / imprevisto)
+function ResidenteProblema({obra, usuario, onVolver}) {
+  const [tipo, setTipo] = useState("");
+  const [titulo, setTitulo] = useState("");
+  const [descripcion, setDescripcion] = useState("");
+  const [foto, setFoto] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+
+  const tipos = [
+    { id:"falla", lbl:"Falla", icono:"🛠️", desc:"Equipo o material que no funciona" },
+    { id:"atraso", lbl:"Atraso", icono:"⏰", desc:"Algo se está retrasando vs lo planeado" },
+    { id:"imprevisto", lbl:"Imprevisto", icono:"⚠️", desc:"Algo no esperado que afecta la obra" },
+    { id:"riesgo", lbl:"Riesgo", icono:"🚨", desc:"Situación de peligro o seguridad" },
+  ];
+
+  async function enviar() {
+    if (!tipo || !titulo.trim()) {
+      alert("Selecciona el tipo y escribe un título corto.");
+      return;
+    }
+    setEnviando(true);
+    try {
+      let fotoUrl = null;
+      if (foto) {
+        try {
+          fotoUrl = await uploadFoto(obra.id, "riesgos", Date.now().toString(), foto);
+        } catch (e) { console.warn("foto", e); }
+      }
+      const riesgo = {
+        id: Date.now().toString(),
+        tipo,
+        titulo: titulo.trim(),
+        descripcion: descripcion.trim(),
+        foto: fotoUrl,
+        creadoPor: usuario.correo,
+        creadoPorNombre: usuario.nombre || "",
+        creadoEn: new Date().toISOString(),
+        obraId: obra.id,
+        obraNombre: obra.nombre,
+        estado: "abierto",
+      };
+      // Guardar en riesgos de la obra
+      const prev = await fsGet(`obras/${obra.id}/riesgos/lista`) || { items: [] };
+      const items = [...(prev.items || []), riesgo];
+      await fsSetA(`obras/${obra.id}/riesgos/lista`, { items },
+        { modulo: "riesgos", entidad: `nuevo ${tipo}: ${titulo}`,
+          obraId: obra.id, obraNombre: obra.contrato || obra.nombre });
+      // Notificar a directivos y gerencia
+      await notifARoles(["director_general","director_operaciones","gerente_construccion"], {
+        categoria: "riesgo", tipo: `problema_${tipo}`,
+        titulo: `${tipos.find(t=>t.id===tipo)?.lbl || "Problema"} · ${obra.nombre}`,
+        mensaje: `${usuario.nombre || usuario.correo}: ${titulo}`,
+        link: { obraId: obra.id, tab: "operacion", subTab: "riesgos" },
+        creadaPor: usuario.correo,
+      });
+      alert("Problema reportado.\n\nDirección y Gerencia ya recibieron el aviso.");
+      onVolver();
+    } catch (e) {
+      alert("Error al enviar: " + (e.message || "intenta de nuevo"));
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:110}}>
+    <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+      <button onClick={onVolver} style={{background:"none",border:"none",color:"#fff",
+        opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Volver</button>
+      <div style={{fontSize:16,fontWeight:700}}>Reportar problema</div>
+    </div>
+
+    <div style={{padding:"14px"}}>
+      <div style={{fontSize:11,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>
+        ¿Qué pasó?
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:18}}>
+        {tipos.map(t => (
+          <button key={t.id} onClick={()=>setTipo(t.id)}
+            style={{background: tipo===t.id ? C.caliza : "#fff",
+              color: tipo===t.id ? "#fff" : C.textPri,
+              border:`1.5px solid ${tipo===t.id ? C.caliza : C.border}`,
+              borderRadius:10,padding:"14px 10px",cursor:"pointer",textAlign:"center"}}>
+            <div style={{fontSize:24,marginBottom:4}}>{t.icono}</div>
+            <div style={{fontSize:12,fontWeight:700,marginBottom:2}}>{t.lbl}</div>
+            <div style={{fontSize:9,opacity:0.8,lineHeight:1.3}}>{t.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      {tipo && <>
+        <div style={{fontSize:11,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>
+          Título corto
+        </div>
+        <input type="text" value={titulo} onChange={e=>setTitulo(e.target.value)}
+          placeholder="Ej. Excavadora con falla hidráulica"
+          maxLength={80}
+          style={{width:"100%",fontSize:14,padding:"12px",border:`1.5px solid ${C.borderM}`,
+            borderRadius:8,marginBottom:14,outline:"none"}}/>
+
+        <div style={{fontSize:11,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>
+          ¿Qué más necesitas explicar? (opcional)
+        </div>
+        <textarea value={descripcion} onChange={e=>setDescripcion(e.target.value)}
+          placeholder="Detalles adicionales…" rows={4}
+          style={{width:"100%",fontSize:13,padding:"12px",border:`1.5px solid ${C.borderM}`,
+            borderRadius:8,marginBottom:14,outline:"none",resize:"vertical",fontFamily:"inherit"}}/>
+
+        <div style={{fontSize:11,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>
+          Foto (opcional pero recomendado)
+        </div>
+        {foto ? (
+          <div style={{position:"relative",borderRadius:10,overflow:"hidden",
+            border:`1px solid ${C.border}`,marginBottom:14}}>
+            <img src={foto} alt="" style={{width:"100%",display:"block"}}/>
+            <button onClick={()=>setFoto(null)}
+              style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.6)",
+                color:"#fff",border:"none",borderRadius:99,width:32,height:32,
+                fontSize:18,cursor:"pointer"}}>×</button>
+          </div>
+        ) : (
+          <label style={{display:"block",border:`2px dashed ${C.borderM}`,borderRadius:10,
+            padding:"24px 16px",textAlign:"center",cursor:"pointer",background:"#fff",marginBottom:14}}>
+            <div style={{fontSize:28,marginBottom:6}}>📷</div>
+            <div style={{fontSize:12,color:C.textSec}}>Tocar para tomar foto</div>
+            <input type="file" accept="image/*" capture="environment" hidden
+              onChange={e=>{
+                const f = e.target.files?.[0]; if(!f) return;
+                const r = new FileReader();
+                r.onload = ev => setFoto(ev.target.result);
+                r.readAsDataURL(f);
+              }}/>
+          </label>
+        )}
+      </>}
+    </div>
+
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",
+      borderTop:`1px solid ${C.border}`,padding:"12px 14px"}}>
+      <button onClick={enviar} disabled={enviando || !tipo || !titulo.trim()}
+        style={{width:"100%",background:C.red,border:"none",borderRadius:8,
+          padding:"14px",fontSize:14,fontWeight:700,color:"#fff",
+          cursor:enviando?"wait":"pointer",opacity:(enviando||!tipo||!titulo.trim())?0.5:1}}>
+        {enviando ? "Enviando…" : "Reportar problema"}
+      </button>
+    </div>
+  </div>;
+}
+
+// ── Sub-flujo: Cómo va mi obra (read-only resumen)
+function ResidenteEstado({obra, onVolver}) {
+  const [subs, setSubs] = useState([]);
+  const [cargando, setCargando] = useState(true);
+
+  useEffect(() => {
+    let cancel = false;
+    fsGet(`obras/${obra.id}/avance/subs`).then(d => {
+      if (cancel) return;
+      setSubs(Array.isArray(d?.data) ? d.data : []);
+      setCargando(false);
+    });
+    return () => { cancel = true; };
+  }, [obra.id]);
+
+  if (cargando) {
+    return <div style={{padding:30,textAlign:"center",color:C.textMut}}>Cargando…</div>;
+  }
+
+  const subsConImp = subs.filter(s => (s.imp || 0) > 0);
+  const totImp = subsConImp.reduce((t,s) => t + (s.imp || 0), 0);
+  const ejecutado = subsConImp.reduce((t,s) => t + ((s.a||0)/100)*(s.imp||0), 0);
+  const avancePct = totImp > 0 ? (ejecutado / totImp * 100) : 0;
+  const terminadas = subsConImp.filter(s => (s.a||0) >= 100).length;
+  const enCurso = subsConImp.filter(s => (s.a||0) > 0 && (s.a||0) < 100).length;
+  const sinIniciar = subsConImp.length - terminadas - enCurso;
+
+  // Color del semáforo según plazo si hay fechas
+  let semaforo = "verde";
+  let mensajeSemaforo = "Vas bien";
+  if (obra.inicio && obra.fin) {
+    const ini = new Date(obra.inicio).getTime();
+    const fin = new Date(obra.fin).getTime();
+    const hoy = Date.now();
+    if (fin > ini && hoy >= ini) {
+      const pctTiempo = Math.min(100, (hoy - ini) / (fin - ini) * 100);
+      const desvio = avancePct - pctTiempo;
+      if (desvio < -15) { semaforo = "rojo"; mensajeSemaforo = "Vas atrasado vs el programa"; }
+      else if (desvio < -5) { semaforo = "amarillo"; mensajeSemaforo = "Vas un poco atrasado"; }
+      else { semaforo = "verde"; mensajeSemaforo = "Vas en tiempo"; }
+    }
+  }
+  const colorSem = semaforo === "verde" ? C.greenDk : semaforo === "amarillo" ? C.yellowDk : C.red;
+  const bgSem = semaforo === "verde" ? "#e8f5e1" : semaforo === "amarillo" ? "#fde7d6" : "#fdecec";
+
+  return <div style={{minHeight:"100vh",background:C.bg,paddingBottom:40}}>
+    <div style={{background:C.caliza,color:"#fff",padding:"14px 18px"}}>
+      <button onClick={onVolver} style={{background:"none",border:"none",color:"#fff",
+        opacity:0.7,fontSize:11,cursor:"pointer",padding:0,marginBottom:6}}>← Volver</button>
+      <div style={{fontSize:16,fontWeight:700}}>Cómo va mi obra</div>
+    </div>
+
+    <div style={{padding:"14px"}}>
+      <div style={{background:bgSem,border:`1.5px solid ${colorSem}`,borderRadius:12,
+        padding:"18px",marginBottom:14,textAlign:"center"}}>
+        <div style={{fontSize:11,color:colorSem,fontWeight:700,letterSpacing:"0.06em",
+          textTransform:"uppercase",marginBottom:6}}>Semáforo</div>
+        <div style={{fontSize:32,fontWeight:700,color:colorSem,marginBottom:4}}>
+          {semaforo === "verde" ? "🟢" : semaforo === "amarillo" ? "🟡" : "🔴"}
+        </div>
+        <div style={{fontSize:14,fontWeight:600,color:colorSem}}>{mensajeSemaforo}</div>
+      </div>
+
+      <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:12,
+        padding:"18px",marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textMut,fontWeight:700,letterSpacing:"0.06em",
+          textTransform:"uppercase",marginBottom:10}}>Avance físico</div>
+        <div style={{fontSize:36,fontWeight:700,color:semA(avancePct),marginBottom:8}}>
+          {avancePct.toFixed(1)}%
+        </div>
+        <Bar pct={avancePct} color={semA(avancePct)}/>
+      </div>
+
+      <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:12,
+        padding:"18px"}}>
+        <div style={{fontSize:11,color:C.textMut,fontWeight:700,letterSpacing:"0.06em",
+          textTransform:"uppercase",marginBottom:10}}>Partidas</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:24,fontWeight:700,color:C.greenDk}}>{terminadas}</div>
+            <div style={{fontSize:10,color:C.textMut}}>Terminadas</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:24,fontWeight:700,color:C.blueDk}}>{enCurso}</div>
+            <div style={{fontSize:10,color:C.textMut}}>En curso</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:24,fontWeight:700,color:C.textMut}}>{sinIniciar}</div>
+            <div style={{fontSize:10,color:C.textMut}}>Sin iniciar</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+// ── Router del residente: Home → Obra → Sub-flujo
+function ResidenteApp({usuario, obras, onLogout}) {
+  const [obraId, setObraId] = useState(null);
+  const [subFlujo, setSubFlujo] = useState(null); // null | "reporte" | "problema" | "estado"
+
+  const obra = obras.find(o => o.id === obraId);
+
+  if (!obraId) {
+    return <ResidenteHome usuario={usuario} obras={obras}
+      onSelectObra={(id)=>{ setObraId(id); setSubFlujo(null); }}
+      onLogout={onLogout}/>;
+  }
+  if (!obra) {
+    setObraId(null);
+    return null;
+  }
+  if (!subFlujo) {
+    return <ResidenteObra obra={obra} usuario={usuario}
+      onVolver={()=>setObraId(null)}
+      onIrA={(f)=>setSubFlujo(f)}/>;
+  }
+  if (subFlujo === "reporte") {
+    return <ResidenteReporte obra={obra} usuario={usuario}
+      onVolver={()=>setSubFlujo(null)}/>;
+  }
+  if (subFlujo === "problema") {
+    return <ResidenteProblema obra={obra} usuario={usuario}
+      onVolver={()=>setSubFlujo(null)}/>;
+  }
+  if (subFlujo === "estado") {
+    return <ResidenteEstado obra={obra}
+      onVolver={()=>setSubFlujo(null)}/>;
+  }
+  return null;
+}
+
 export default function App(){
   const[usuario,setUsuario]=useState(null);
   const[mostrarBienvenida,setMostrarBienvenida]=useState(false);
@@ -11865,6 +12627,28 @@ export default function App(){
     setUsuario(u);
     if (u.bienvenidaVista !== true) setMostrarBienvenida(true);
   }}/></>;
+
+  // ── CAMPO MINIMALISTA — vista del equipo de obra
+  // Para residente / superintendente / administrador_obra: vista ultra-simple
+  // con 3 botones grandes. Reemplaza completamente la app actual para esos
+  // roles. Director, Gerente y Admin Sistema siguen viendo la app completa.
+  const rolesMinimalista = ["residente", "superintendente", "administrador_obra"];
+  if (rolesMinimalista.includes(usuario.rol)) {
+    const logoutMinimalista = async () => {
+      try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
+      try { await signOut(fbAuth); } catch {}
+      setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
+      setUsuario(null);
+    };
+    return <>
+      <style>{css}</style>
+      {mostrarBienvenida && <WelcomeBanner usuario={usuario} onCerrar={()=>{
+        setMostrarBienvenida(false);
+        setUsuario(u=>u?{...u,bienvenidaVista:true}:u);
+      }}/>}
+      <ResidenteApp usuario={usuario} obras={obras} onLogout={logoutMinimalista}/>
+    </>;
+  }
 
   const obra=obras.find(o=>o.id===obraId);
   const setObra=u=>setObras(oo=>oo.map(o=>o.id===u.id?u:o));
