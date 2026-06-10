@@ -12632,13 +12632,27 @@ export default function App(){
   // Para residente / superintendente / administrador_obra: vista ultra-simple
   // con 3 botones grandes. Reemplaza completamente la app actual para esos
   // roles. Director, Gerente y Admin Sistema siguen viendo la app completa.
+  //
+  // Toggle: usuarios con rol directivo pueden activar "Vista residente"
+  // para probar la experiencia sin crear usuario adicional. El toggle se
+  // guarda en localStorage para que persista entre recargas.
   const rolesMinimalista = ["residente", "superintendente", "administrador_obra"];
-  if (rolesMinimalista.includes(usuario.rol)) {
+  const puedeAlternar = ["director_general", "director_operaciones", "gerente_construccion", "admin_sistema"].includes(usuario.rol);
+  const modoVistaResidente = puedeAlternar &&
+    (typeof window !== "undefined" && localStorage.getItem("campo_modo_vista") === "residente");
+
+  if (rolesMinimalista.includes(usuario.rol) || modoVistaResidente) {
     const logoutMinimalista = async () => {
       try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
       try { await signOut(fbAuth); } catch {}
       setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
       setUsuario(null);
+    };
+    const volverAVistaCompleta = () => {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("campo_modo_vista");
+        window.location.reload();
+      }
     };
     return <>
       <style>{css}</style>
@@ -12646,6 +12660,19 @@ export default function App(){
         setMostrarBienvenida(false);
         setUsuario(u=>u?{...u,bienvenidaVista:true}:u);
       }}/>}
+      {/* Si es directivo en modo prueba, ofrecer regresar a vista completa */}
+      {puedeAlternar && modoVistaResidente && (
+        <div style={{background:"#ffd66e",color:"#704102",padding:"6px 12px",
+          fontSize:11,fontWeight:600,display:"flex",justifyContent:"space-between",
+          alignItems:"center",gap:8}}>
+          <span>🧪 Modo prueba: estás viendo la app como residente</span>
+          <button onClick={volverAVistaCompleta} style={{background:"#704102",
+            color:"#ffd66e",border:"none",borderRadius:6,padding:"3px 8px",
+            fontSize:10,fontWeight:700,cursor:"pointer"}}>
+            Salir del modo prueba
+          </button>
+        </div>
+      )}
       <ResidenteApp usuario={usuario} obras={obras} onLogout={logoutMinimalista}/>
     </>;
   }
@@ -12742,6 +12769,20 @@ export default function App(){
           onSelectObra={(id)=>{ if(id && id!==obraId) entrar(id); }}/>
         {["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(usuario.rol) && (
           <MenuConfiguracion screen={screen} setScreen={setScreen} alertasNoLeidas={alertasNoLeidasCount} rol={usuario.rol}/>
+        )}
+        {/* Toggle: alternar a vista del residente para validar el flujo simple */}
+        {["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(usuario.rol) && (
+          <button onClick={()=>{
+            if (typeof window !== "undefined") {
+              localStorage.setItem("campo_modo_vista", "residente");
+              window.location.reload();
+            }
+          }}
+            title="Ver la app como la ve un residente (modo prueba)"
+            style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
+              padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer",whiteSpace:"nowrap"}}>
+            🧪 Vista residente
+          </button>
         )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
           padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer"}}>Salir</button>
