@@ -7,11 +7,29 @@
     <meta name="description" content="CAMPO — Control de Avance, Maquinaria, Personal y Obra. FOSMON Construcciones." />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="CAMPO" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>CAMPO — FOSMON</title>
+    <style>
+      /* Safe areas iPhone: cuando la PWA se instala en iOS, evita que el header
+         se meta debajo de la barra de estado (hora, señal, batería) y el fondo
+         se pinte hasta abajo respetando el home indicator del iPhone. */
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #0D1619; /* mismo caliza del header para que no haya "flash" */
+      }
+      #root {
+        min-height: 100vh;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+        background: #F0F2F5;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
