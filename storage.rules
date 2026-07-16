@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Reglas de Firebase Storage para CAMPO
+// Aplicar con: firebase deploy --only storage
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Fotos de obras y documentos: cualquier usuario autenticado puede
+    // leer/escribir. Confiamos en Firebase Auth para bloquear anónimos.
+    match /obras/{obraId}/{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Cualquier otro path: bloqueado por seguridad
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

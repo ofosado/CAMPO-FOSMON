@@ -2169,12 +2169,30 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
 };
 
 // Helper Storage — subir foto base64 y obtener URL
+// IMPORTANTE: si el upload falla, lanzamos error. Antes había un fallback
+// silencioso que retornaba el base64url y se guardaba en Firestore, causando
+// que las fotos "desaparecieran" al recargar y no salieran en el PDF.
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   try {
     const r = storageRef(fbStor, `obras/${obraId}/fotos/${conceptoId}/${fotoId}`);
     await uploadString(r, base64url, 'data_url');
     return await getDownloadURL(r);
-  } catch(e) { console.error('uploadFoto',e); return base64url; }
+  } catch(e) {
+    console.error('uploadFoto FAILED', {
+      obraId, conceptoId, fotoId,
+      errorCode: e?.code,
+      errorMessage: e?.message,
+      base64Length: base64url ? base64url.length : 0,
+    });
+    // Casos comunes:
+    //  - storage/unauthorized: reglas de Firebase Storage bloquean el write
+    //  - storage/quota-exceeded: se acabó la cuota del plan Blaze
+    //  - storage/retry-limit-exceeded: sin internet o red inestable
+    //  - storage/unauthenticated: sesión de Firebase expiró
+    const codigo = e?.code || 'error-desconocido';
+    const mensaje = e?.message || 'error desconocido';
+    throw new Error(`Storage: ${codigo} — ${mensaje}`);
+  }
 };
 
 // Mapa de roles por correo — se carga desde Firestore
