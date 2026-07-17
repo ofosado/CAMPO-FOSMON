@@ -2066,6 +2066,21 @@ const archivarViejas = async (uid, notifs) => {
 };
 
 // ── Helper KPIs por obra (reutilizable para Dashboard, Panel Ejecutivo y PDF) ──
+// Helper: extrae el gasto TOTAL de una obra GP con la misma lógica robusta
+// que usa la vista de Gastos individual (para no tener discrepancias entre
+// Dashboard y Gastos). Si grandTotal existe úsalo. Si no, suma años + total
+// del año actual sin traslapes.
+const extraerGastoTotalGP = (datosObra) => {
+  if (!datosObra) return 0;
+  if (datosObra.grandTotal > 0) return datosObra.grandTotal;
+  const sumaAños = datosObra.años
+    ? Object.values(datosObra.años).reduce((t,v) => t + (v||0), 0)
+    : 0;
+  const totalAñoActual = datosObra.total2026
+    || (datosObra.meses ? Object.values(datosObra.meses).reduce((t,v) => t + (v||0), 0) : 0);
+  return sumaAños + totalAñoActual || datosObra.totalGeneral || datosObra.total || 0;
+};
+
 // Resuelve el gasto GP real para UNA obra desde gpData del Sheet.
 // Antes se usaba obra.gastoGP (hardcoded en _OBRAS_BASE), que nunca se
 // actualizaba. Ahora prioriza gpData en vivo y cae a obra.gastoGP solo
@@ -2077,12 +2092,12 @@ const resolverGastoGP = (obra, gpData) => {
     // 1) Por gpId explícito capturado en Contrato
     if (obra.gpId) {
       const exact = obrasArr.find(o => o.id === obra.gpId);
-      if (exact) return exact.grandTotal || exact.totalGeneral || exact.total || 0;
+      if (exact) return extraerGastoTotalGP(exact);
     }
     // 2) Por id de CAMPO si parece código de 4 dígitos
     if (/^\d{4}/.test(obra.id || "")) {
       const exact = obrasArr.find(o => o.id === obra.id.slice(0, 4));
-      if (exact) return exact.grandTotal || exact.totalGeneral || exact.total || 0;
+      if (exact) return extraerGastoTotalGP(exact);
     }
     // 3) Por nombre normalizado (match si ≥2 palabras significativas)
     const normalizar = s => (s||"").toString().toUpperCase()
@@ -2095,7 +2110,7 @@ const resolverGastoGP = (obra, gpData) => {
       const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
       if (matches > score) { score = matches; mejor = o; }
     }
-    if (score >= 2 && mejor) return mejor.grandTotal || mejor.totalGeneral || mejor.total || 0;
+    if (score >= 2 && mejor) return extraerGastoTotalGP(mejor);
   }
   // Fallback: usar el campo legacy (obras antiguas sin Sheet)
   return obra?.gastoGP || 0;
@@ -6446,14 +6461,9 @@ function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,on
   const ultimaSem = gpData?.ultimaSemana || '';
 
   // ── KPIs principales ──
-  // El acumulado total es Grand Total (suma de todos los años). Si no está disponible
-  // como columna, calculamos sumando años + total 2026 (sin traslapes con semanas/meses).
-  const totalGP = datosObra
-    ? (datosObra.grandTotal > 0
-        ? datosObra.grandTotal
-        : (datosObra.años ? Object.values(datosObra.años).reduce((t,v)=>t+v, 0) : 0)
-          + (datosObra.total2026 || (datosObra.meses ? Object.values(datosObra.meses).reduce((t,v)=>t+v, 0) : 0)))
-    : obra.gastoGP || 0;
+  // Usar el helper unificado (mismo que Dashboard/Panel Ejecutivo) para que
+  // NO haya discrepancias entre pantallas.
+  const totalGP = datosObra ? extraerGastoTotalGP(datosObra) : (obra.gastoGP || 0);
   const totalGastoObra = totalGP + totalMaq + totalOtrosGastos;
   const pctPresupuesto = obra.presupuesto > 0 ? (totalGastoObra/obra.presupuesto)*100 : 0;
 
