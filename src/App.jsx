@@ -3982,16 +3982,21 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
   const[clienteAbierto,setClienteAbierto]=useState(null);
 
   const activas = obras.filter(o=>o.estado!=="archivada");
-  // En el primer render (móvil sobre todo) el bulk de datosPorObra puede no
-  // haber llegado todavía. Si pintamos así, todos los KPIs salen en 0 y queda
-  // un panel "fantasma" que solo se actualiza al entrar/salir de una obra.
-  // Mostramos placeholder claro mientras carga.
+  // Esperar a que TODO esté cargado antes de pintar KPIs:
+  //  - datosPorObra: subs, maquinaria, materiales, estimaciones de cada obra
+  //  - gpData: gasto del Sheet de GP Construct (crítico — si falta, gasto = $0)
+  // Antes solo esperábamos datosPorObra, así que en la primera carga se pintaba
+  // el panel con gpData=null y todos los gastos aparecían en cero hasta que el
+  // usuario entraba a una obra (lo que forzaba re-render con gpData ya listo).
   const todosCargados = activas.every(o => datosPorObra[o.id]);
-  if (activas.length >= 2 && !todosCargados) {
+  const gpListo = !!(gpData && gpData.obras);
+  if (activas.length >= 2 && (!todosCargados || !gpListo)) {
     return <Card accent={C.caliza} style={{marginBottom:10}}>
       <Tit>Panel ejecutivo — cargando…</Tit>
       <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
-        Cargando datos consolidados de {activas.length} obras activas…
+        {!gpListo
+          ? "Sincronizando gastos con GP Construct…"
+          : `Cargando datos consolidados de ${activas.length} obras activas…`}
       </div>
     </Card>;
   }
@@ -5839,28 +5844,6 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
         </button>
       ))}
     </div>
-
-    {/* RESUMEN: mini-dashboard de operación con accesos rápidos */}
-    {subTab==="resumen" && (
-      <Card>
-        <Tit>Resumen de Operación</Tit>
-        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-          Reporte semanal de la obra. Selecciona la sección que quieres actualizar.
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
-          {SUBTABS_OPERACION.filter(t=>t.id!=="resumen").map(t => (
-            <div key={t.id} onClick={()=>setSubTab(t.id)}
-              style={{background:C.bg,borderRadius:8,padding:"14px 12px",cursor:"pointer",
-                border:`0.5px solid ${C.border}`,transition:"all .15s"}}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor=C.caliza;e.currentTarget.style.transform="translateY(-1px)";}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.transform="";}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.caliza,marginBottom:3}}>{t.label}</div>
-              <div style={{fontSize:9,color:C.textMut}}>Abrir ›</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-    )}
 
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
@@ -10577,8 +10560,9 @@ const TABS_POR_ROL = {
 };
 
 // SUB-TABS dentro de cada sección principal
+// (El sub-tab "resumen" se removió — duplicaba info del Dashboard y solo
+// generaba fricción. Los KPIs consolidados viven ahora solo en Dashboard.)
 const SUBTABS_OPERACION = [
-  {id:"resumen", label:"Resumen"},
   {id:"avance", label:"Avance físico"},
   {id:"almacen", label:"Almacén"},
   {id:"maquinaria", label:"Maquinaria"},
@@ -11472,7 +11456,7 @@ export default function App(){
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
   // Sub-tabs activos dentro de Operación y Planeación
-  const[subTabOper,setSubTabOper]=useState("resumen");
+  const[subTabOper,setSubTabOper]=useState("avance");
   const[subTabPlan,setSubTabPlan]=useState("contrato");
   // Helper: navegación desde Dashboard. Si pasa subTab, lo activa también.
   const navTab = (tabId, subTabId) => {
