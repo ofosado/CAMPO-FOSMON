@@ -4,6 +4,7 @@ import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { CargarOT, HistoricoOT } from "./ot.jsx";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
@@ -5912,6 +5913,14 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
     {subTab==="avance" && (
       <>
         <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
+        {/* Órdenes de Trabajo — solo si la obra tiene la bandera cargaOT (TAMSA) */}
+        {obra?.cargaOT && (
+          <>
+            <CargarOT obra={obra} subs={subs} setSubs={setSubs} fbDb={fbDb} fbStor={fbStor}
+              usuario={usuario} onCargada={()=>setCambiosPendientes&&setCambiosPendientes(true)}/>
+            <HistoricoOT obra={obra} subs={subs} fbDb={fbDb}/>
+          </>
+        )}
         <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="volumenes"
@@ -10235,6 +10244,9 @@ function Contrato({obra, setObra, rol}) {
       // Obras tipo TAMSA donde el catálogo es referencia y se captura volumen
       // ejecutado real → modo "volumen"
       modoAvance: obra.modoAvance || "porcentaje",
+      // Carga de Órdenes de Trabajo por PDF (TAMSA). Habilita el módulo OT
+      // dentro de Avance físico que parsea la OT SAP y matchea partidas.
+      cargaOT: !!obra.cargaOT,
     };
     await fsSetA(`obras/${obra.id}/config/info`, datos,
       { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
@@ -10394,6 +10406,34 @@ function Contrato({obra, setObra, rol}) {
             ) : (
               <div style={{fontSize:12,color:C.textSec}}>
                 {(obra.modoAvance||"porcentaje") === "volumen" ? "Por volumen ejecutado" : "Por porcentaje"}
+              </div>
+            )}
+          </div>
+
+          {/* Carga de Órdenes de Trabajo (PDF) — solo para obras TAMSA-like */}
+          <div style={{marginTop:14,paddingTop:12,borderTop:`0.5px solid ${C.border}`}}>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              Órdenes de Trabajo (PDF)
+            </div>
+            {editar ? (
+              <label style={{display:"flex",alignItems:"flex-start",gap:8,cursor:"pointer"}}>
+                <input type="checkbox" checked={!!obra.cargaOT}
+                  onChange={e=>f("cargaOT", e.target.checked)}
+                  style={{marginTop:3}}/>
+                <div>
+                  <div style={{fontSize:12,color:C.textPri,fontWeight:600}}>Activar carga de OT en PDF</div>
+                  <div style={{fontSize:10,color:C.textMut,lineHeight:1.4,marginTop:2}}>
+                    Muestra el bloque "Cargar Orden de Trabajo" y el histórico
+                    de OT en Avance físico. El residente puede subir el PDF de
+                    la OT SAP y el sistema detecta las partidas, suma cantidades
+                    y guarda el histórico semanal. Recomendado para TAMSA y
+                    similares.
+                  </div>
+                </div>
+              </label>
+            ) : (
+              <div style={{fontSize:12,color:C.textSec}}>
+                {obra.cargaOT ? "Activada" : "No activada"}
               </div>
             )}
           </div>
