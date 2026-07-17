@@ -4045,7 +4045,15 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
     estPag:      t.estPag      + kpis.estPag,
     estProc:     t.estProc     + kpis.estProc,
     montoAtrasado: t.montoAtrasado + kpis.montoAtrasado,
-  }), {presupuesto:0,estTotal:0,estPorCob:0,estPag:0,estProc:0,montoAtrasado:0});
+    gastoTotal:  t.gastoTotal  + (kpis.gt || 0),         // gasto GP + maquinaria propia
+    ejecutado:   t.ejecutado   + (kpis.me || 0),         // avance ejecutado + almacén
+  }), {presupuesto:0,estTotal:0,estPorCob:0,estPag:0,estProc:0,montoAtrasado:0,gastoTotal:0,ejecutado:0});
+
+  // Derivados del portafolio
+  const margenAbs = port.ejecutado - port.gastoTotal;     // margen bruto absoluto
+  const margenPct = port.ejecutado > 0 ? (margenAbs / port.ejecutado * 100) : 0;
+  const porEstimar = Math.max(port.presupuesto - port.estTotal, 0);  // lo que falta por estimar del contrato
+  const pctGastoVsPresup = port.presupuesto > 0 ? (port.gastoTotal / port.presupuesto * 100) : 0;
 
   // Top atención (por brecha avance-gasto descendente, solo brecha > 0)
   const topAtencion = [...obrasConKPIs]
@@ -4078,10 +4086,30 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
     </div>
 
     {expandido && <>
-      {/* KPIs portafolio */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:14}}>
+      {/* KPIs portafolio — Grupo 1: Contrato / Presupuesto / Gasto / Margen */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+        textTransform:"uppercase",marginBottom:6}}>PRESUPUESTO Y RENTABILIDAD</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:12}}>
         {kpiBox("Presupuesto total", MXN(port.presupuesto), C.caliza, `${activas.length} obras`)}
-        {kpiBox("Total estimado", MXN(port.estTotal), C.blue, port.presupuesto>0?`${NUM(port.estTotal/port.presupuesto*100,1)}% del contrato`:"")}
+        {kpiBox("Gasto acumulado", MXN(port.gastoTotal),
+          pctGastoVsPresup>90?C.red:pctGastoVsPresup>75?C.yellowDk:C.textPri,
+          port.presupuesto>0?`${NUM(pctGastoVsPresup,1)}% del contrato`:"GP + maquinaria")}
+        {kpiBox("Ejecutado", MXN(port.ejecutado), C.blue,
+          port.presupuesto>0?`${NUM(port.ejecutado/port.presupuesto*100,1)}% del contrato`:"avance físico + almacén")}
+        {kpiBox("Margen bruto",
+          `${margenAbs>=0?"":"-"}${MXN(Math.abs(margenAbs))}`,
+          margenPct<0?C.red:margenPct<10?C.yellowDk:C.greenDk,
+          `${NUM(margenPct,1)}% ejecutado vs gastado`)}
+      </div>
+
+      {/* KPIs portafolio — Grupo 2: Estimaciones (ciclo de cobranza) */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+        textTransform:"uppercase",marginBottom:6}}>CICLO DE ESTIMACIONES</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:14}}>
+        {kpiBox("Total estimado", MXN(port.estTotal), C.blue,
+          port.presupuesto>0?`${NUM(port.estTotal/port.presupuesto*100,1)}% del contrato`:"")}
+        {kpiBox("Por estimar", MXN(porEstimar), C.purpleDk,
+          port.presupuesto>0?`${NUM(porEstimar/port.presupuesto*100,1)}% del contrato pendiente`:"lo que falta del contrato")}
         {kpiBox("Por cobrar", MXN(port.estPorCob), port.montoAtrasado>0?C.red:C.purpleDk, "facturado + aprobado")}
         {kpiBox("Cobrado", MXN(port.estPag), C.greenDk, "pagado y liquidado")}
         {kpiBox("En proceso", MXN(port.estProc), C.yellowDk, "estimaciones en elaboración")}
@@ -4440,10 +4468,20 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         ) : (
           <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
-              {[["Presupuesto",MXN(o.presupuesto),C.textPri],["Gasto GP",MXN(gastoGPLive),C.red],
-                ["Anticipo/FG",`${o.pctAnticipo}%/${o.pctFondoGar}%`,C.textSec]].map(([l,v,c])=>
-                <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
-                  <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>Presupuesto</div>
+                <div style={{fontSize:12,fontWeight:500,color:C.textPri}}>{MXN(o.presupuesto)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>
+                  Gasto GP{gpUltActualiz ? <span style={{color:C.textMut,opacity:0.7}}> · {gpUltActualiz.split(",")[0]}</span> : ""}
+                </div>
+                <div style={{fontSize:12,fontWeight:500,color:C.red}}>{MXN(gastoGPLive)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>Anticipo/FG</div>
+                <div style={{fontSize:12,fontWeight:500,color:C.textSec}}>{o.pctAnticipo}%/{o.pctFondoGar}%</div>
+              </div>
             </div>
             <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}>
               <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
