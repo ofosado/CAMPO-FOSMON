@@ -5145,7 +5145,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
           {me===0?"Sin avance":mpct>15?"Saludable":mpct>=6?"En vigilancia":"Crítico"}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
-        {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],[MXN(gt),"Gasto total",C.red,"GP+maquinaria"],
+        {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],[MXN(gt),"Gasto total",C.red,"GP+maquinaria+otros"],
           [`${diff>=0?"+":""}${MXN(diff)}`,"Diferencia",mc,`margen ${NUM(mpct,1)}%`]].map(([v,l,c,s])=>
           <div key={l} style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${c}`}}>
             <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>{l}</div>
