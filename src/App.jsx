@@ -5918,7 +5918,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           <>
             <CargarOT obra={obra} subs={subs} setSubs={setSubs} fbDb={fbDb} fbStor={fbStor}
               usuario={usuario} onCargada={()=>setCambiosPendientes&&setCambiosPendientes(true)}/>
-            <HistoricoOT obra={obra} subs={subs} fbDb={fbDb}/>
+            <HistoricoOT obra={obra} subs={subs} setSubs={setSubs} fbDb={fbDb}/>
           </>
         )}
         <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}

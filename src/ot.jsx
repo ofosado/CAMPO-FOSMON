@@ -564,7 +564,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
 }
 
 // ── COMPONENTE: HISTÓRICO DE OT (tabla pivote partida × semana) ─────────────
-export function HistoricoOT({ obra, subs, fbDb }) {
+export function HistoricoOT({ obra, subs, setSubs, fbDb }) {
   const [ots, setOts] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [expandida, setExpandida] = useState(null);
@@ -608,15 +608,56 @@ export function HistoricoOT({ obra, subs, fbDb }) {
   }, [ots, subs]);
 
   const eliminarOT = async (ot) => {
-    if (!window.confirm(`Eliminar OT ${ot.numero}? Se van a RESTAR las cantidades del avance.`)) return;
+    // Calcular impacto antes de confirmar: cuánto se resta y de qué partidas
+    const sumaPorPartida = {}; // conceptoId → cantidad a restar
+    (ot.lineas || []).forEach(l => {
+      if (!l.conceptoId) return;
+      sumaPorPartida[l.conceptoId] = (sumaPorPartida[l.conceptoId] || 0) + (l.cantidad || 0);
+    });
+    const partidasAfectadas = Object.entries(sumaPorPartida).map(([cid, cant]) => {
+      const sub = subs.find(s => s.id === cid);
+      return { sub, cant, cid };
+    }).filter(x => x.sub);
+
+    // Detectar si alguna restaría por debajo de 0 (queda en 0 con aviso)
+    const aClamp = partidasAfectadas.filter(x => (parseFloat(x.sub.cantEjec) || 0) < x.cant);
+
+    let mensaje = `Eliminar OT ${ot.numero}?\n\n`;
+    if (partidasAfectadas.length > 0) {
+      mensaje += `Se van a RESTAR las siguientes cantidades del avance:\n\n`;
+      partidasAfectadas.forEach(x => {
+        mensaje += `  · [${x.sub.sec}] ${x.sub.sub}: -${x.cant} ${x.sub.unidad || ""}\n`;
+      });
+      if (aClamp.length > 0) {
+        mensaje += `\n${aClamp.length} partida(s) quedarían negativas y se ajustarán a 0. Revisa después si algún avance manual quedó por encima.`;
+      }
+    } else {
+      mensaje += `Esta OT no tiene partidas asignadas. Solo se elimina el registro.`;
+    }
+    mensaje += `\n\n¿Continuar?`;
+
+    if (!window.confirm(mensaje)) return;
+
     try {
+      // 1) Restar cantidades y recalcular %
+      if (partidasAfectadas.length > 0 && setSubs) {
+        setSubs(prev => prev.map(s => {
+          const restar = sumaPorPartida[s.id];
+          if (!restar) return s;
+          const cantEjecPrev = parseFloat(s.cantEjec) || 0;
+          const cantEjecNueva = Math.max(0, cantEjecPrev - restar);
+          const cantCat = parseFloat(s.cant) || 0;
+          const pctNuevo = cantCat > 0 ? Math.min(100, cantEjecNueva / cantCat * 100) : (s.a || 0);
+          return { ...s, cantEjec: cantEjecNueva, a: pctNuevo };
+        }));
+      }
+      // 2) Borrar el documento de la OT
       await deleteDoc(doc(fbDb, "obras", obra.id, "ordenes_trabajo", ot.numero));
+      // 3) Quitarla del estado local
       setOts(prev => prev.filter(o => o.numero !== ot.numero));
-      // Nota: para restar del avance real habría que actualizar subs y persistir.
-      // Lo dejamos como pendiente explícito: la app notifica al usuario que
-      // debe ajustar manualmente si es necesario.
-      alert("OT eliminada. Ajusta el avance de las partidas afectadas manualmente si es necesario.");
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) {
+      alert("Error al eliminar: " + e.message);
+    }
   };
 
   if (cargando) return <div style={{ ...S.card, fontSize: 12, color: "#555E6B" }}>Cargando histórico…</div>;
