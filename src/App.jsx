@@ -2118,11 +2118,15 @@ const resolverGastoGP = (obra, gpData) => {
 
 // Devuelve métricas calculadas a partir de los datos de UNA obra.
 // Datos vacíos (sin Firestore) producen ceros pero no rompe la función.
-const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[], gpData=null) => {
+const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[], gpData=null, otrosGastos=[]) => {
   const presupuesto = obra?.presupuesto || 0;
   const gastoGP = resolverGastoGP(obra, gpData);
-  // Gasto total = GP del Sheet + maquinaria propia
-  const gt = gastoGP + maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  // Gasto total = GP del Sheet + maquinaria propia + otros gastos manuales
+  // (mismo cálculo que la vista de Gastos individual, para que Dashboard,
+  // Panel Ejecutivo, tarjetas y Gastos siempre muestren el mismo total)
+  const gtMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
+  const gtOtros = (otrosGastos||[]).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
+  const gt = gastoGP + gtMaq + gtOtros;
   // Avance monetario ejecutado (∑ avance × importe subsección)
   const am = subs.reduce((t,s)=>t+((s.a||0)/100)*(s.imp||0), 0);
   // Almacén (materiales en sitio/tránsito)
@@ -4015,10 +4019,11 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
       </div>
     </Card>;
   }
-  // Calcular KPIs para cada obra activa (con gasto en VIVO desde gpData)
+  // Calcular KPIs para cada obra activa (con gasto en VIVO desde gpData +
+  // otros gastos manuales para que el total cuadre con la vista Gastos)
   const obrasConKPIs = activas.map(o => {
-    const d = datosPorObra[o.id] || {subs:[],maquinaria:[],materiales:[],estimaciones:[]};
-    return { obra: o, kpis: calcularKPIsObra(o, d.subs, d.maquinaria, d.materiales, d.estimaciones, gpData) };
+    const d = datosPorObra[o.id] || {subs:[],maquinaria:[],materiales:[],estimaciones:[],otrosGastos:[]};
+    return { obra: o, kpis: calcularKPIsObra(o, d.subs, d.maquinaria, d.materiales, d.estimaciones, gpData, d.otrosGastos) };
   });
 
   // Agrupar por cliente
@@ -4435,9 +4440,14 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     </div>}
 
     {listaActual.map(o=>{
-      // Gasto GP en VIVO desde el Sheet (no usar o.gastoGP que es legacy hardcoded)
+      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + otros gastos
+      // (mismo cálculo que la vista Gastos individual, así los números cuadran)
       const gastoGPLive=resolverGastoGP(o, gpData);
-      const pg=o.presupuesto>0?(gastoGPLive/o.presupuesto)*100:0;
+      const d = datosPorObra[o.id] || {};
+      const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+      const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
+      const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
+      const pg=o.presupuesto>0?(gastoTotalLive/o.presupuesto)*100:0;
       const col=ec[o.estado]||C.caliza;
       const archivada=o.estado==="archivada";
       return <div key={o.id} style={{background:C.card,border:`0.5px solid ${archivada?"rgba(255,254,249,0.05)":C.border}`,
@@ -4474,9 +4484,9 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>
-                  Gasto GP{gpUltActualiz ? <span style={{color:C.textMut,opacity:0.7}}> · {gpUltActualiz.split(",")[0]}</span> : ""}
+                  Gasto total{gpUltActualiz ? <span style={{color:C.textMut,opacity:0.7}}> · GP {gpUltActualiz.split(",")[0]}</span> : ""}
                 </div>
-                <div style={{fontSize:12,fontWeight:500,color:C.red}}>{MXN(gastoGPLive)}</div>
+                <div style={{fontSize:12,fontWeight:500,color:C.red}}>{MXN(gastoTotalLive)}</div>
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>Anticipo/FG</div>
@@ -11718,12 +11728,13 @@ export default function App(){
     const yaTodos = activas.every(o => datosPorObra[o.id]);
     if (yaTodos) return;
     Promise.all(activas.map(async(o)=>{
-      const [info, subsData, maqData, matData, estData] = await Promise.all([
+      const [info, subsData, maqData, matData, estData, otrosData] = await Promise.all([
         fsGet(`obras/${o.id}/config/info`),
         fsGet(`obras/${o.id}/avance/subs`),
         fsGet(`obras/${o.id}/avance/maquinaria`),
         fsGet(`obras/${o.id}/avance/materiales`),
         fsGet(`obras/${o.id}/config/estimaciones`),
+        fsGet(`obras/${o.id}/config/otros_gastos`),
       ]);
       let subsFinales = [];
       if(subsData && Array.isArray(subsData.data)) subsFinales = subsData.data;
@@ -11733,6 +11744,7 @@ export default function App(){
         maquinaria: (maqData && Array.isArray(maqData.data)) ? maqData.data : [],
         materiales: (matData && Array.isArray(matData.data)) ? matData.data : [],
         estimaciones: (estData && Array.isArray(estData.data)) ? estData.data : [],
+        otrosGastos: (otrosData && Array.isArray(otrosData.items)) ? otrosData.items : [],
       }];
     })).then(pares => {
       const mapa = Object.fromEntries(pares);
