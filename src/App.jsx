@@ -1243,6 +1243,40 @@ if (typeof window !== 'undefined') {
     console.log(`[${name}]`, res.data);
     return res.data;
   };
+  // Exponer handles de Firebase para debug ad-hoc desde consola.
+  // Uso: await window.campoDebug.leerObra('MALECON')
+  window.fbDb = fbDb;
+  window.fbAuth = fbAuth;
+  window.campoDebug = {
+    // Compara lo que ve CAMPO en el Sheet vs lo que tiene la obra local
+    leerObra: async (filtroNombre) => {
+      const gpSnap = await getDoc(doc(fbDb, 'global/gp_construct'));
+      const gp = gpSnap.data();
+      const rx = new RegExp(filtroNombre, 'i');
+      const obraGP = Object.values(gp?.obras || {}).find(o => rx.test(o.nombre));
+      const obrasSnap = await getDocs(collection(fbDb, 'obras'));
+      const obraCAMPO = obrasSnap.docs.map(d => d.data()).find(o => rx.test(o.nombre || ''));
+      const info = {
+        sheet: obraGP ? {
+          id: obraGP.id, nombre: obraGP.nombre,
+          grandTotal: obraGP.grandTotal, total2026: obraGP.total2026,
+          años: obraGP.años, meses: obraGP.meses,
+        } : null,
+        campo: obraCAMPO ? {
+          id: obraCAMPO.id, nombre: obraCAMPO.nombre,
+          gpId: obraCAMPO.gpId || null,
+          gastoGP_legacy: obraCAMPO.gastoGP || null,
+          presupuesto: obraCAMPO.presupuesto,
+        } : null,
+        ultimaActualizacion: gp?.ultimaActualizacion,
+      };
+      console.log('%c=== ' + filtroNombre + ' ===', 'color:#378ADD;font-weight:bold');
+      console.table(info.sheet ? { 'En el Sheet': info.sheet } : { error: 'no encontrada en gp_construct' });
+      console.table(info.campo ? { 'En CAMPO':    info.campo } : { error: 'no encontrada en /obras' });
+      console.log('Sheet actualizado:', info.ultimaActualizacion);
+      return info;
+    },
+  };
 }
 
 // Helpers para llamar Cloud Functions (gestión de usuarios)
