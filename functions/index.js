@@ -662,9 +662,12 @@ async function registrarSalud(tipo, ok, mensaje, meta = {}) {
   }
 }
 
-// ── SCHEDULED: cada lunes 9am hora México ──
+// ── SCHEDULED: cada día 8am hora México ──
+// Antes era semanal (lunes 9am), pero las facturas se agregan a GP durante
+// toda la semana y CAMPO mostraba snapshots desactualizados hasta el próximo
+// lunes. Ahora refresca diariamente para que la portada siempre esté al día.
 exports.actualizarGPSheet = onSchedule({
-  schedule: "0 9 * * 1",   // lunes 9:00am
+  schedule: "0 8 * * *",   // diario 8:00am
   timeZone: "America/Mexico_City",
   region: "us-central1",
 }, async () => {

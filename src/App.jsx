@@ -2094,6 +2094,7 @@ const resolverGastoGP = (obra, gpData) => {
     if (obra.gpId) {
       const exact = obrasArr.find(o => o.id === obra.gpId);
       if (exact) return extraerGastoTotalGP(exact);
+      console.warn(`[GP] obra "${obra.nombre}" tiene gpId="${obra.gpId}" pero no hay match en el Sheet. Cayendo a fallback por id/nombre.`);
     }
     // 2) Por id de CAMPO si parece código de 4 dígitos
     if (/^\d{4}/.test(obra.id || "")) {
@@ -2112,6 +2113,8 @@ const resolverGastoGP = (obra, gpData) => {
       if (matches > score) { score = matches; mejor = o; }
     }
     if (score >= 2 && mejor) return extraerGastoTotalGP(mejor);
+    // Ningún match encontrado en el Sheet → advertir en consola para diagnóstico
+    console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el Sheet — usando fallback obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre||'ninguno'}". Considera capturar el gpId en Planeación → Contrato.`);
   }
   // Fallback: usar el campo legacy (obras antiguas sin Sheet)
   return obra?.gastoGP || 0;
@@ -4398,11 +4401,32 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         <div style={{fontSize:11,color:C.textMut}}>
           {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
         </div>
-        {gpUltActualiz&&<div style={{fontSize:9,color:C.textMut,marginTop:2}}>
-          GP Construct: {gpUltActualiz}
-          {onRefreshGP&&<button onClick={onRefreshGP} style={{background:"none",border:"none",
-            color:C.caliza,fontSize:9,cursor:"pointer",marginLeft:6}}>↻ Actualizar</button>}
-        </div>}
+        {/* Chip de frescura del Sheet GP — visible siempre, cambia color según antigüedad */}
+        {gpUltActualiz && (() => {
+          const ms = Date.now() - new Date(gpUltActualiz.replace(',',' ')).getTime();
+          const horas = Math.floor(ms / 3600000);
+          const dias = Math.floor(horas / 24);
+          const hace = dias >= 1
+            ? `hace ${dias} día${dias!==1?'s':''}`
+            : horas >= 1 ? `hace ${horas} h` : 'hace un momento';
+          // Color: verde <30h, amarillo 30-72h, rojo >72h
+          const color = horas > 72 ? C.red : horas > 30 ? C.yellow : C.green;
+          const bg    = horas > 72 ? C.redBg : horas > 30 ? C.yellowBg : C.greenBg;
+          const txt   = horas > 72 ? C.redDk : horas > 30 ? C.yellowDk : C.greenDk;
+          return <div style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:4,
+            padding:"3px 8px",borderRadius:12,background:bg,border:`0.5px solid ${color}`}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:color}}/>
+            <span style={{fontSize:9,color:txt,fontWeight:600}}>
+              GP Sheet · {hace}
+            </span>
+            {onRefreshGP && <button onClick={onRefreshGP} disabled={gpLoading}
+              style={{background:"none",border:"none",padding:0,marginLeft:2,
+                color:txt,fontSize:9,fontWeight:700,cursor:gpLoading?"wait":"pointer",
+                textDecoration:"underline",opacity:gpLoading?0.5:1}}>
+              {gpLoading?'…':'Refrescar'}
+            </button>}
+          </div>;
+        })()}
       </div>
       {puedeGestionar&&<button onClick={()=>setModalNueva(true)}
         style={{background:C.caliza,border:"none",borderRadius:8,padding:"7px 14px",
