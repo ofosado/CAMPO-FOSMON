@@ -722,13 +722,13 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 4 — ALMACÉN (materiales en tránsito)
-  // Primero Almacén, luego Maquinaria en su propia hoja.
+  // Almacén y Maquinaria son OPCIONALES: si no hay datos capturados, la
+  // slide no se dibuja (antes salía un placeholder que no aportaba valor).
   // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('4  ALMACÉN · MATERIALES EN TRÁNSITO', y);
-
   if (matActivos.length > 0) {
+    doc.addPage(); pageFrame();
+    y=CY0;
+    y=secHead('4  ALMACÉN · MATERIALES EN TRÁNSITO', y);
     const matBody = [
       ...matActivos.map(m => [m.desc||'', m.concepto||'', m.vol||'', m.und||'', MXN(pf(m.imp))]),
       ['TOTAL ALMACÉN', '', '', '', MXN(totAlm)],
@@ -745,23 +745,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
          }
        }}
     );
-  } else {
-    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
-    st(K.gmu); fs(11); fw('bold');
-    T('Sin materiales capturados en almacén', ML + CW/2, y + 10, {align:'center'});
-    st(K.gmu); fs(8); fw('normal');
-    T('Los materiales que pasan por bodega se capturan en Operación → Almacén.',
-      ML + CW/2, y + 16, {align:'center'});
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 4 — MAQUINARIA PROPIA
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('5  MAQUINARIA PROPIA EN OBRA', y);
-
   if (maqActivos.length > 0) {
+    doc.addPage(); pageFrame();
+    y=CY0;
+    y=secHead('5  MAQUINARIA PROPIA EN OBRA', y);
     const maqBody = [
       ...maqActivos.map(m => [m.desc||'', m.vol||'', m.und||'', MXN(pf(m.pu||0)), MXN(pf(m.imp))]),
       ['TOTAL MAQUINARIA', '', '', '', MXN(totMaq)],
@@ -778,13 +767,6 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
          }
        }}
     );
-  } else {
-    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
-    st(K.gmu); fs(11); fw('bold');
-    T('Sin maquinaria propia registrada', ML + CW/2, y + 10, {align:'center'});
-    st(K.gmu); fs(8); fw('normal');
-    T('Los equipos propios en obra se capturan en Operación → Maquinaria.',
-      ML + CW/2, y + 16, {align:'center'});
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1333,6 +1315,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       {nivel:'—', tc:K.gmu, bg:K.glt},
       'Captura estimaciones, avance y nómina para ver indicadores de riesgo']);
   }
+  // Ordenar de mejor a peor: Bien → Normal → Aceptable → Atención → Crítico
+  const ordenNivel = { 'Bien':1, 'Normal':2, 'Aceptable':3, 'Atención':4, 'Crítico':5 };
+  rsgBodyCalc.sort((a, b) => (ordenNivel[a[3]?.nivel] || 99) - (ordenNivel[b[3]?.nivel] || 99));
+  // Renumerar tras ordenar
+  rsgBodyCalc.forEach((r, i) => { r[0] = i + 1; });
   const rsgBody = rsgBodyCalc;
 
   // Cada fila ahora es [n, titulo, val, {nivel,tc,bg}, desc]
@@ -1528,6 +1515,94 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     st(K.gmu); fs(7); fw('italic');
     T(`El detalle de cada subcontrato (catálogo y pagos) aparece en las hojas siguientes.`,
       ML, y+3);
+
+    // ──────────────────────────────────────────────────────────────────────
+    // PÁGINAS DE SUBCONTRATOS — una por cada subcontrato, INMEDIATAMENTE
+    // después del resumen ejecutivo (antes estaban al final del PDF, muy
+    // lejos del resumen).
+    // ──────────────────────────────────────────────────────────────────────
+    for (const sub of subcontratos) {
+      doc.addPage();
+      pageFrame();
+      let ySub = CY0;
+      ySub = secHead(`SUBCONTRATO · ${sub.nombre || sub.id}`.toUpperCase(), ySub, K.ng);
+
+      // KPIs del subcontrato
+      const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
+      const ejecSub = (sub.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
+      const avSub = totalCat > 0 ? (ejecSub/totalCat)*100 : 0;
+      const pagSub = (sub.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
+      const finSub = pf(sub.monto) > 0 ? (pagSub/pf(sub.monto))*100 : 0;
+      ySub = kpiRow([
+        ['Monto contratado', MXN(pf(sub.monto)), sub.proveedor||'Sin proveedor', K.ng],
+        ['Total catálogo',   MXN(totalCat),      `${(sub.conceptos||[]).length} conceptos`, K.az],
+        ['Ejecutado',        MXN(ejecSub),       `${PCT(avSub)} físico`, K.vd],
+        ['Pagado',           MXN(pagSub),        `${PCT(finSub)} financiero`, K.mo],
+      ], ySub);
+
+      // Datos generales
+      ySub = secHead('Datos del subcontrato', ySub, K.gtx);
+      const datosSub = [
+        ['Proveedor',   sub.proveedor||'—'],
+        ['Estado',      (sub.estado||'activa').toUpperCase()],
+        ['Inicio',      sub.fechaInicio||'—'],
+        ['Fin',         sub.fechaFin||'—'],
+        ['Descripción', sub.descripcion||'—'],
+      ];
+      ySub = autoT(['Campo','Valor'], datosSub, [50, CW-50], ML, ySub, {
+        bodyStyles: {fontSize: FS_SM},
+      });
+
+      // Catálogo de conceptos
+      if ((sub.conceptos||[]).length > 0) {
+        const yDisp = CYmax - ySub;
+        if (yDisp > 30) {
+          ySub = secHead('Catálogo de conceptos', ySub, K.gtx);
+          const filas = sub.conceptos.map(c => [
+            c.clave||'—',
+            (c.desc||'').substring(0,60),
+            c.unidad||'',
+            (pf(c.cantidad)||0).toLocaleString('es-MX',{maximumFractionDigits:2}),
+            MXN(pf(c.pu)),
+            MXN(pf(c.importe)),
+            PCT(pf(c.avance),0),
+          ]);
+          ySub = autoT(
+            ['Clave','Descripción','Und','Cant.','P.U.','Importe','Avance'],
+            filas, [25, 100, 18, 25, 30, 35, 18], ML, ySub,
+            {
+              bodyStyles: {fontSize: FS_SM, halign:'left'},
+              columnStyles: {
+                3: {halign:'right'},
+                4: {halign:'right'},
+                5: {halign:'right', fontStyle:'bold'},
+                6: {halign:'right', fontStyle:'bold'},
+              },
+            });
+        }
+      }
+
+      // Pagos del sub
+      if ((sub.pagos||[]).length > 0 && (CYmax - ySub) > 25) {
+        ySub = secHead('Historial de pagos', ySub, K.gtx);
+        const pagosFilas = sub.pagos.map(p => [
+          p.fecha||'—',
+          MXN(pf(p.monto)),
+          (p.referencia||'').substring(0,60),
+          (p.estatus||'programado').toUpperCase(),
+        ]);
+        ySub = autoT(
+          ['Fecha','Monto','Referencia','Estatus'],
+          pagosFilas, [30, 40, 130, 51], ML, ySub,
+          {
+            bodyStyles: {fontSize: FS_SM},
+            columnStyles: {
+              1: {halign:'right', fontStyle:'bold'},
+              3: {halign:'center'},
+            },
+          });
+      }
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1716,97 +1791,6 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     st(K.gtx); fs(7.5); fw('normal'); T(cargo,fx+fw3/2,yFirmas+26,{align:'center'});
     st(K.gmu); fs(7); T(rol,fx+fw3/2,yFirmas+31,{align:'center'});
   });
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PÁGINAS DE SUBCONTRATOS — una por cada subcontrato registrado
-  // ════════════════════════════════════════════════════════════════════════
-  if (subcontratos && subcontratos.length > 0) {
-    for (const sub of subcontratos) {
-      doc.addPage();
-      pageFrame();
-      // Header de sección con nombre del sub
-      let y = CY0;
-      y = secHead(`SUBCONTRATO · ${sub.nombre || sub.id}`.toUpperCase(), y, K.ng);
-
-      // KPIs del subcontrato
-      const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
-      const ejecSub = (sub.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
-      const avSub = totalCat > 0 ? (ejecSub/totalCat)*100 : 0;
-      const pagSub = (sub.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
-      const finSub = pf(sub.monto) > 0 ? (pagSub/pf(sub.monto))*100 : 0;
-      y = kpiRow([
-        ['Monto contratado', MXN(pf(sub.monto)), sub.proveedor||'Sin proveedor', K.ng],
-        ['Total catálogo', MXN(totalCat), `${(sub.conceptos||[]).length} conceptos`, K.az],
-        ['Ejecutado', MXN(ejecSub), `${PCT(avSub)} físico`, K.vd],
-        ['Pagado', MXN(pagSub), `${PCT(finSub)} financiero`, K.mo],
-      ], y);
-
-      // Datos generales del sub
-      y = secHead('Datos del subcontrato', y, K.gtx);
-      const datosSub = [
-        ['Proveedor', sub.proveedor||'—'],
-        ['Estado', (sub.estado||'activa').toUpperCase()],
-        ['Inicio', sub.fechaInicio||'—'],
-        ['Fin', sub.fechaFin||'—'],
-        ['Descripción', sub.descripcion||'—'],
-      ];
-      y = autoT(['Campo','Valor'], datosSub, [50, CW-50], ML, y, {
-        bodyStyles: {fontSize: FS_SM},
-      });
-
-      // Catálogo de conceptos del sub (si caben)
-      if ((sub.conceptos||[]).length > 0) {
-        const yDisp = CYmax - y;
-        if (yDisp > 30) {
-          y = secHead('Catálogo de conceptos', y, K.gtx);
-          const filas = sub.conceptos.map(c => [
-            c.clave||'—',
-            (c.desc||'').substring(0,60),
-            c.unidad||'',
-            (pf(c.cantidad)||0).toLocaleString('es-MX',{maximumFractionDigits:2}),
-            MXN(pf(c.pu)),
-            MXN(pf(c.importe)),
-            PCT(pf(c.avance),0),
-          ]);
-          // colW: 25 + 100 + 18 + 25 + 30 + 35 + 18 = 251 (CW)
-          y = autoT(
-            ['Clave','Descripción','Und','Cant.','P.U.','Importe','Avance'],
-            filas, [25, 100, 18, 25, 30, 35, 18], ML, y,
-            {
-              bodyStyles: {fontSize: FS_SM, halign:'left'},
-              columnStyles: {
-                3: {halign:'right'},
-                4: {halign:'right'},
-                5: {halign:'right', fontStyle:'bold'},
-                6: {halign:'right', fontStyle:'bold'},
-              },
-            });
-        }
-      }
-
-      // Pagos del sub (si hay y caben)
-      if ((sub.pagos||[]).length > 0 && (CYmax - y) > 25) {
-        y = secHead('Historial de pagos', y, K.gtx);
-        const pagosFilas = sub.pagos.map(p => [
-          p.fecha||'—',
-          MXN(pf(p.monto)),
-          (p.referencia||'').substring(0,60),
-          (p.estatus||'programado').toUpperCase(),
-        ]);
-        // colW: 30 + 40 + 130 + 51 = 251
-        y = autoT(
-          ['Fecha','Monto','Referencia','Estatus'],
-          pagosFilas, [30, 40, 130, 51], ML, y,
-          {
-            bodyStyles: {fontSize: FS_SM},
-            columnStyles: {
-              1: {halign:'right', fontStyle:'bold'},
-              3: {halign:'center'},
-            },
-          });
-      }
-    }
-  }
 
   // ── PIE DE PÁGINA CON TOTAL DE PÁGINAS ──────────────────────────────────
   // Sobrescribe "Página X" por "Página X de N" ahora que conocemos el total
@@ -2129,13 +2113,16 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
 //
 // Categorías: financiero · plazo · avance · nomina · materiales · maquinaria
 //             · subcontratos · contractual · compliance · cobranza
-// Severidades: bajo · medio · alto · critico
-
+// Severidades — mapean a la escala unificada de 5 niveles (Bien/Normal/
+// Aceptable/Atención/Crítico). El motor de detección usa 4 niveles (los
+// riesgos "Bien" no se detectan, simplemente no aparecen), pero visualmente
+// usamos los mismos colores/labels de la escala para consistencia con el
+// PDF ejecutivo.
 const SEVERIDADES = {
-  bajo:   {color:'#9AA0AC',   label:'Bajo',   peso: 1},
-  medio:  {color:'#EF9F27',   label:'Medio',  peso: 2},
-  alto:   {color:'#F43F5E',   label:'Alto',   peso: 3},
-  critico:{color:'#E24B4A',   label:'Crítico',peso: 4},
+  bajo:    {color:'#3B6D11', bg:'#DAEDC4', label:'Normal',    peso: 1},   // verde
+  medio:   {color:'#854F0B', bg:'#FAEEDA', label:'Aceptable', peso: 2},   // amarillo
+  alto:    {color:'#B84204', bg:'#FEEDD7', label:'Atención',  peso: 3},   // naranja
+  critico: {color:'#A32D2D', bg:'#FCEBEB', label:'Crítico',   peso: 4},   // rojo
 };
 
 const BIBLIOTECA_RIESGOS = [
@@ -3405,6 +3392,40 @@ const MXN = n=>(Math.abs(n)||0).toLocaleString("es-MX",{style:"currency",currenc
 const NUM = (n,d=1)=>Number(n||0).toLocaleString("es-MX",{maximumFractionDigits:d});
 const semA = p=>p>=85?C.green:p>=55?C.yellow:C.red;
 const semM = p=>p>15?C.green:p>=6?C.yellow:C.red;
+
+// ── ESCALA UNIFICADA DE 5 NIVELES (misma que el PDF ejecutivo) ─────────────
+// Bien → Normal → Aceptable → Atención → Crítico. Se usa en Dashboard, banner
+// de alertas y cualquier otro lugar donde se muestre un semáforo. Mantener
+// UN SOLO SITIO donde vive la definición para evitar divergencias.
+const NIVEL5 = {
+  bien:      { nivel:'Bien',      color:'#3B6D11', bg:'#DAEDC4' },   // verde oscuro
+  normal:    { nivel:'Normal',    color:C.greenDk, bg:C.greenBg    },// verde claro
+  aceptable: { nivel:'Aceptable', color:C.yellowDk, bg:C.yellowBg  },// amarillo
+  atencion:  { nivel:'Atención',  color:'#B84204', bg:'#FEEDD7'    },// naranja
+  critico:   { nivel:'Crítico',   color:C.redDk,   bg:C.redBg      },// rojo
+};
+// Clasificador genérico: umbrales de mejor a peor. Dirección:
+//   'alto'  = más alto es mejor (ej: margen bruto). umbrales = [bien, normal, aceptable, atencion]
+//   'bajo'  = más bajo es mejor (ej: % sin cobrar). umbrales = [bien, normal, aceptable, atencion]
+const nivel5 = (valor, umbrales, direccion = 'alto') => {
+  const [u1, u2, u3, u4] = umbrales;
+  if (direccion === 'alto') {
+    if (valor >= u1) return NIVEL5.bien;
+    if (valor >= u2) return NIVEL5.normal;
+    if (valor >= u3) return NIVEL5.aceptable;
+    if (valor >= u4) return NIVEL5.atencion;
+    return NIVEL5.critico;
+  } else {
+    if (valor <= u1) return NIVEL5.bien;
+    if (valor <= u2) return NIVEL5.normal;
+    if (valor <= u3) return NIVEL5.aceptable;
+    if (valor <= u4) return NIVEL5.atencion;
+    return NIVEL5.critico;
+  }
+};
+// Escalas específicas por indicador (mismos umbrales que el PDF)
+const nivelMargen = (mpct) => nivel5(mpct, [20, 15, 10, 5], 'alto');
+const nivelAvance = (afReal, pctPrograma) => nivel5(afReal - pctPrograma, [0, -3, -8, -15], 'alto');
 
 // ── ATOMS ──────────────────────────────────────────────────────────────────
 function Card({children,style,accent}){
@@ -5501,26 +5522,33 @@ function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[
 // ════════════════════════════════════════════════════════════════════════════
 function BannerRiesgos({riesgos, onNavTab, compacto=false}){
   const [expandido, setExpandido] = useState(false);
-  const criticos = riesgos.filter(r => r.severidad === 'critico');
-  const altos = riesgos.filter(r => r.severidad === 'alto');
-  const medios = riesgos.filter(r => r.severidad === 'medio');
-  const bajos = riesgos.filter(r => r.severidad === 'bajo');
-  const totalGrave = criticos.length + altos.length;
-  const accent = criticos.length > 0 ? C.red : altos.length > 0 ? C.red : medios.length > 0 ? C.yellow : C.textMut;
-  const mostrar = expandido ? riesgos : riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
+  // Ordenar de MEJOR a PEOR (Normal → Aceptable → Atención → Crítico)
+  // — consistente con la tabla de indicadores del PDF ejecutivo.
+  const ordenSev = { bajo:1, medio:2, alto:3, critico:4 };
+  const riesgosOrd = [...riesgos].sort((a,b) => (ordenSev[a.severidad]||99) - (ordenSev[b.severidad]||99));
+  const criticos = riesgosOrd.filter(r => r.severidad === 'critico');
+  const altos    = riesgosOrd.filter(r => r.severidad === 'alto');
+  const medios   = riesgosOrd.filter(r => r.severidad === 'medio');
+  const bajos    = riesgosOrd.filter(r => r.severidad === 'bajo');
+  // Colapsado: solo mostrar los que requieren acción (Atención + Crítico).
+  const accent = criticos.length > 0 ? C.red : altos.length > 0 ? '#B84204' :
+                 medios.length > 0 ? C.yellow : C.green;
+  const mostrar = expandido
+    ? riesgosOrd
+    : riesgosOrd.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
 
   return <Card accent={accent}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>RIESGOS DETECTADOS</span>
-        {criticos.length > 0 && <Bdg color={C.red} small>{criticos.length} crítico{criticos.length>1?'s':''}</Bdg>}
-        {altos.length > 0 && <Bdg color={C.red} small>{altos.length} alto{altos.length>1?'s':''}</Bdg>}
-        {medios.length > 0 && <Bdg color={C.yellow} small>{medios.length} medio{medios.length>1?'s':''}</Bdg>}
-        {bajos.length > 0 && expandido && <Bdg color={C.textMut} small>{bajos.length} bajo{bajos.length>1?'s':''}</Bdg>}
+        <span style={{fontSize:11,fontWeight:700,color:C.caliza,letterSpacing:"0.04em"}}>INDICADORES DE RIESGO</span>
+        {bajos.length > 0    && <Bdg color={SEVERIDADES.bajo.color}    small>{bajos.length} normal</Bdg>}
+        {medios.length > 0   && <Bdg color={SEVERIDADES.medio.color}   small>{medios.length} aceptable</Bdg>}
+        {altos.length > 0    && <Bdg color={SEVERIDADES.alto.color}    small>{altos.length} atención</Bdg>}
+        {criticos.length > 0 && <Bdg color={SEVERIDADES.critico.color} small>{criticos.length} crítico{criticos.length>1?'s':''}</Bdg>}
       </div>
       <button onClick={()=>setExpandido(!expandido)} style={{background:"none",border:"none",
         fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
-        {expandido ? "Ver solo críticos ▴" : `Ver todos (${riesgos.length}) ▾`}
+        {expandido ? "Solo Atención/Crítico ▴" : `Ver todos (${riesgos.length}) ▾`}
       </button>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:5}}>
@@ -5802,7 +5830,13 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
   const alm=materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
   const me=am+alm; const af=subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
-  const diff=me-gt; const mpct=me>0?(diff/me)*100:0; const mc=semM(mpct);
+  const diff=me-gt; const mpct=me>0?(diff/me)*100:0;
+  // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
+  const mNiv = nivelMargen(mpct);
+  const mc = mNiv.color;
+  // Personal en campo: usa NOMINA_S18 (data de muestra si no hay nómina real
+  // cargada). Cuando el módulo de nómina esté conectado a los datos reales de
+  // la obra, esto vendrá de esos datos. Por ahora lo dejamos como referencia.
   const dir=NOMINA_S18.filter(p=>p.tipo==="D").length;
   const ind=NOMINA_S18.filter(p=>p.tipo==="I").length;
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100;return{a,fg,ef:e.monto-a-fg};};
@@ -5872,9 +5906,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Monto ejecutado − Gasto total</div></div>
-        <div style={{background:`${mc}22`,border:`0.5px solid ${mc}44`,borderRadius:4,
-          padding:"3px 9px",fontSize:10,fontWeight:600,color:mc,whiteSpace:"nowrap"}}>
-          {me===0?"Sin avance":mpct>15?"Saludable":mpct>=6?"En vigilancia":"Crítico"}</div>
+        <div style={{background:mNiv.bg, border:`0.5px solid ${mc}55`, borderRadius:4,
+          padding:"3px 9px", fontSize:10, fontWeight:700, color:mc, whiteSpace:"nowrap"}}>
+          {me === 0 ? 'Sin avance' : mNiv.nivel.toUpperCase()}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
         {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],[MXN(gt),"Gasto total",C.red,"GP+maquinaria+otros"],
@@ -6010,7 +6044,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       {(()=>{
         const inicioMs=new Date(obra.inicio).getTime();
         const finMs=new Date(obra.fin).getTime();
-        const hoyMs=new Date("2026-05-27").getTime();
+        // FIX: antes estaba hardcoded "2026-05-27" — usar la fecha real de hoy
+        // para que la proyección se mueva con el tiempo real de la obra.
+        const hoyMs=Date.now();
         const plazoTotal=(finMs-inicioMs)/(1000*60*60*24);
         const plazoTrans=Math.max((hoyMs-inicioMs)/(1000*60*60*24),1);
         const plazoRest=Math.max((finMs-hoyMs)/(1000*60*60*24),0);
@@ -6051,7 +6087,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria} ampliaciones={[...(obra.finAmpliado?[{fecha:obra.finAmpliado,label:"Ampliación 1"}]:[])]}/>
 
     <Card {...clickableCard("operacion","nomina")}>
-      <Tit>Personal en campo — Semana 18 {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver n\u00f3mina ›</span>}</Tit>
+      <Tit>Personal en campo — Semana {(() => { const t = new Date(); t.setDate(t.getDate() + 4 - (t.getDay() || 7)); return Math.ceil((((t - new Date(t.getFullYear(),0,1)) / 86400000) + 1) / 7); })()} {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver nómina ›</span>}</Tit>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
         <Kpi label="Total"     value={dir+ind} sub="trabajadores"  color={C.caliza}/>
         <Kpi label="Directo"   value={dir}     sub="mano de obra"  color={C.blue}/>
@@ -6061,40 +6097,87 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
     <Card {...clickableCard("operacion","avance")}>
       <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
-      {top4.map((s,i)=>{
-        const fotos=(CATALOGO[s.sec]?.conceptos||[]).flatMap(c=>c.fotos||[]);
-        const mostrar=fotos.slice(0,2);
-        return <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:12}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,gap:6}}>
-            <span style={{display:"flex",alignItems:"center",gap:4,minWidth:0,overflow:"hidden"}}>
-              <span style={{color:C.textMut,flexShrink:0}}>{i+1}</span>
-              <span style={{color:C.caliza,fontWeight:700,flexShrink:0,fontSize:10}}>{s.sec}</span>
-              <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:C.textSec}}>{s.sub}</span>
-            </span>
-            <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0}}>
-              <Bdg color={semA(s.a)} small>{s.a}%</Bdg>
-              <span style={{fontWeight:600,fontSize:11,color:C.textPri}}>{MXN(s.imp)}</span>
+      {(() => {
+        // Helper: extraer array plano de fotos reales de una sub (schema
+        // {subId: [foto,...]}). Ordenadas por fecha descendente.
+        const fotosDeSub = (s) => {
+          if (!s?.fotos) return [];
+          const arr = Array.isArray(s.fotos)
+            ? s.fotos
+            : Object.values(s.fotos).flat().filter(f => f && typeof f === 'object');
+          return arr.slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+        };
+        // Elegir top 4: primero las que tienen delta de avance en el corte
+        // semanal actual (mismo criterio que el PDF); si no hay historial,
+        // por importe descendente.
+        const semanasOrd = (historialAvance || []).slice()
+          .sort((a,b) => (a.año - b.año) || (a.semana - b.semana));
+        const sActual = semanasOrd[semanasOrd.length - 1];
+        const sPrev   = semanasOrd[semanasOrd.length - 2];
+        const deltaMap = new Map();
+        if (sActual?.subs) {
+          sActual.subs.forEach(sa => {
+            const p = sPrev?.subs?.find(x => x.sec === sa.sec);
+            const d = (sa.a||0) - (p?.a||0);
+            if (d > 0.01) deltaMap.set(sa.sec, d * (sa.imp||0) / 100);
+          });
+        }
+        const conFotos = subs
+          .filter(s => (s.imp||0) > 0)
+          .map(s => ({ s, delta: deltaMap.get(s.sec) || 0, fotos: fotosDeSub(s) }));
+        conFotos.sort((a,b) => {
+          if (a.delta > 0 && b.delta === 0) return -1;
+          if (a.delta === 0 && b.delta > 0) return 1;
+          if (a.delta > 0 && b.delta > 0) return b.delta - a.delta;
+          if (a.fotos.length !== b.fotos.length) return b.fotos.length - a.fotos.length;
+          return (b.s.imp||0) - (a.s.imp||0);
+        });
+        const top4Real = conFotos.slice(0, 4);
+        const maxImpTop = Math.max(...top4Real.map(x => x.s.imp||0), 1);
+        if (top4Real.length === 0) {
+          return <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"16px 0"}}>
+            No hay partidas con presupuesto cargado.
+          </div>;
+        }
+        return <>{top4Real.map(({s, fotos, delta}, i) => {
+          const mostrar = fotos.slice(0, 2);
+          const badgeNivel = s.a >= 75 ? {bg:C.greenBg, tc:C.greenDk} :
+                             s.a >= 40 ? {bg:C.yellowBg, tc:C.yellowDk} :
+                                         {bg:C.redBg,    tc:C.redDk};
+          return <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,gap:6}}>
+              <span style={{display:"flex",alignItems:"center",gap:4,minWidth:0,overflow:"hidden",flex:1}}>
+                <span style={{color:C.textMut,flexShrink:0,fontSize:10}}>{i+1}</span>
+                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:C.textSec,fontSize:11}}>{s.sub || s.sec}</span>
+                {delta > 0 && <span style={{fontSize:8,fontWeight:700,color:C.greenDk,background:C.greenBg,
+                  padding:"1px 5px",borderRadius:3,flexShrink:0}}>+{MXN(delta)} esta sem</span>}
+              </span>
+              <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0}}>
+                <span style={{background:badgeNivel.bg,color:badgeNivel.tc,fontSize:10,fontWeight:700,
+                  padding:"2px 6px",borderRadius:3}}>{NUM(s.a,0)}%</span>
+                <span style={{fontWeight:600,fontSize:11,color:C.textPri}}>{MXN(s.imp)}</span>
+              </div>
             </div>
-          </div>
-          <Bar pct={(s.imp/maxI)*100} color="rgba(255,254,249,0.3)"/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
-            {[0,1].map(fi=>{
-              const foto=mostrar[fi];
-              if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in"}}
-                onClick={()=>setLbFoto(foto.url)}>
-                <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>;
-              return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
-                background:"rgba(255,254,249,0.04)",border:"1px dashed rgba(255,254,249,0.12)",
-                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
-                <span style={{fontSize:16,opacity:0.3}}></span>
-                <span style={{fontSize:8,color:C.textMut}}>Sin foto</span>
-              </div>;
-            })}
-          </div>
-        </div>;
-      })}
+            <Bar pct={((s.imp||0)/maxImpTop)*100} color="rgba(255,254,249,0.3)"/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
+              {[0,1].map(fi=>{
+                const foto=mostrar[fi];
+                if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5"}}
+                  onClick={()=>setLbFoto(foto.url)}>
+                  <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}
+                    onError={(e)=>{e.target.style.opacity=0.2;}}/></div>;
+                return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
+                  background:"rgba(0,0,0,0.03)",border:"1px dashed rgba(0,0,0,0.10)",
+                  display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
+                  <span style={{fontSize:8,color:C.textMut}}>Sin foto</span>
+                </div>;
+              })}
+            </div>
+          </div>;
+        })}</>;
+      })()}
       <div style={{fontSize:9,color:C.textMut,textAlign:"center",marginTop:4}}>
-        Agrega fotos en Capturar avance → Volúmenes
+        Agrega fotos en Operación → Avance físico
       </div>
     </Card>
   </div>;
