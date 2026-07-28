@@ -163,7 +163,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     fs(8); fw('bold');
     T(nombreCorto, PW-MR, 5, {align:'right'});
     fs(6.5); fw('normal');
-    T(`${obra.contrato||''} · ${hoy}`, PW-MR, 9.5, {align:'right'});
+    // Solo la fecha en la línea de abajo. Antes se ponía `obra.contrato`
+    // pero cuando era muy largo (ej. Oaxaca con la descripción completa
+    // del contrato SIOP) se sobreponía con "Reporte ejecutivo · FOSMON"
+    // de la izquierda, creando el "texto desastre" en el header.
+    T(hoy, PW-MR, 9.5, {align:'right'});
     // Footer (la página total se reescribe al final cuando ya conocemos totalPages)
     sf([232,234,240]); R(0,PH-FTR,PW,FTR);
     sf(K.ng); R(0,PH-FTR,PW,0.6);
@@ -345,40 +349,33 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     }}
   );
 
-  // Columna derecha: gasto por rubro — datos REALES del detalle GP.
-  // (Antes había valores hardcoded [Materiales, Sueldos, etc.] que salían
-  //  iguales en todas las obras.)
-  let rubBody, filasRubros;
-  if (gpDetalle && gpDetalle.rubros && Object.keys(gpDetalle.rubros).length > 0) {
-    const rubArr = Object.values(gpDetalle.rubros)
-      .map(r => ({ nombre: r.nombreCorto || r.nombre || r.id, monto: r.grandTotal || 0 }))
-      .filter(r => r.monto > 0)
-      .sort((a,b) => b.monto - a.monto);
-    const totRub = rubArr.reduce((t,r) => t + r.monto, 0);
-    filasRubros = rubArr.length;
-    rubBody = [
-      ...rubArr.map(r => [
-        String(r.nombre).slice(0, 34),
-        MXN(r.monto),
-        PCT(totRub > 0 ? r.monto/totRub*100 : 0),
-        PCT(PPTO > 0 ? r.monto/PPTO*100 : 0),
-      ]),
-      ['TOTAL GP', MXN(totRub), '100.0%', PCT(PPTO > 0 ? totRub/PPTO*100 : 0)],
-    ];
-  } else {
-    filasRubros = 1;
-    rubBody = [['Detalle GP no cargado','—','—','—']];
-  }
+  // Columna derecha: KPIs financieros clave, sin rubros (los rubros ahora
+  // viven en su propia hoja "Desglose por rubro" con pie chart).
+  const kpiSummary = [
+    ['GASTO GP',       MXN(totGP)],
+    ['MAQUINARIA',     MXN(totMaq)],
+    ['OTROS GASTOS',   MXN(totOtros)],
+    ['GASTO TOTAL',    MXN(totGast)],
+    ['ESTIMADO',       MXN(te)],
+    ['MARGEN BRUTO',   `${MXN(mg)} · ${PCT(mpct)}`],
+  ];
   const yAfterRub = autoT(
-    ['Rubro','Monto','% GP','% Ppto'], rubBody,
-    [RW*0.46,RW*0.22,RW*0.16,RW*0.16], xR2, y,
-    {columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}},
+    ['Concepto','Monto'], kpiSummary,
+    [RW*0.55, RW*0.45], xR2, y,
+    {columnStyles:{1:{halign:'right', fontStyle:'bold'}},
      didParseCell:(d)=>{
-       if(gpDetalle && d.row.index === filasRubros){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       if(d.column.index === 0){
+         d.cell.styles.fontStyle='bold'; d.cell.styles.textColor=K.ng;
        }
-       if(!gpDetalle) {
-         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
+       // Destacar fila GASTO TOTAL y MARGEN BRUTO
+       if(d.row.index === 3){
+         d.cell.styles.fillColor=K.ab2; d.cell.styles.textColor=K.ak2;
+       }
+       if(d.row.index === 5){
+         const val = mpct;
+         const bg = val<10?K.rb : val<15?K.ab2 : K.vb;
+         const tc = val<10?K.rk : val<15?K.ak2 : K.vk;
+         d.cell.styles.fillColor=bg; d.cell.styles.textColor=tc;
        }
      }}
   );
@@ -467,58 +464,117 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Total est.', MXN(te),  PCT(te/PPTO*100)+' contrato', K.ak],
   ], y) + 4;
 
-  // ── GRÁFICA DE ESTIMADO MES A MES ─────────────────────────────────────
-  // Agrupa estimaciones por mes de captura/periodo y dibuja barras verticales
-  // simples. Ayuda a ver la cadencia de facturación al cliente.
+  // ── GRÁFICA DE ESTIMACIONES: barras apiladas por estimación ──────────
+  // Cada barra horizontal representa una estimación. Se apila:
+  //   [efectivo neto (verde)] + [anticipo amortizado (naranja)] + [fondo garantía (rojo)]
+  // Y arriba se dibuja una línea acumulada de "efectivo pagado a la fecha".
+  // Da mucha más información que las barras mensuales anteriores.
   if (estActivas.length > 0) {
-    const parseFechaEst = (e) => {
-      // Intenta obtener una fecha del estimado: fechaFact, fecha, o parsea periodo
-      if (e.fechaFact) return new Date(e.fechaFact);
-      if (e.fecha) return new Date(e.fecha);
-      const p = e.periodo || '';
-      const m = p.match(/(\d{2,4}[-/]\d{1,2})|(\w{3,}\.?\s+\d{2,4})/i);
-      if (m) { const d = new Date(m[0]); if (!isNaN(d)) return d; }
-      return null;
-    };
-    const porMes = new Map();  // "YYYY-MM" → monto
-    estActivas.forEach(e => {
-      const f = parseFechaEst(e);
-      if (!f || isNaN(f)) return;
-      const key = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
-      porMes.set(key, (porMes.get(key) || 0) + (e.monto || 0));
+    const pctAnt = (obra.pctAnticipo || 10) / 100;
+    const pctFG  = (obra.pctFondoGar || 5) / 100;
+    // Desglose por estimación
+    const desglose = estActivas.map(e => {
+      const bruto = e.monto || 0;
+      const ant = bruto * pctAnt;
+      const fg  = bruto * pctFG;
+      const ef  = bruto - ant - fg;
+      const pagada = normEst(e.estatus) === 'pagada';
+      return { no: e.no, bruto, ant, fg, ef, pagada, periodo: e.periodo || '' };
     });
-    const mesesOrdenados = [...porMes.keys()].sort();
-    if (mesesOrdenados.length >= 1) {
-      st(K.ng); fs(FS_SEC); fw('bold');
-      T('Estimado por mes', ML, y + 4);
-      y += 6;
-      const chartH = 42, chartX = ML + 4, chartW = CW - 8;
-      const chartY = y;
-      // Fondo
-      sf(K.glt); R(chartX, chartY, chartW, chartH, 'F');
-      sd(K.gbd); lw(0.2); doc.rect(chartX, chartY, chartW, chartH, 'S');
-      // Escala vertical simple
-      const montos = mesesOrdenados.map(m => porMes.get(m));
-      const maxMonto = Math.max(...montos, 1);
-      const barGap = 3;
-      const barW = Math.max(6, (chartW - barGap * (mesesOrdenados.length + 1)) / mesesOrdenados.length);
-      mesesOrdenados.forEach((mesKey, i) => {
-        const monto = porMes.get(mesKey);
-        const h = (monto / maxMonto) * (chartH - 12);
-        const bx = chartX + barGap + i * (barW + barGap);
-        const by = chartY + chartH - h - 8;
-        sf(K.ak); R(bx, by, barW, h, 'F');
-        // Etiqueta monto arriba de la barra
-        st(K.ng); fs(6.5); fw('bold');
-        T(MXN(monto), bx + barW/2, by - 1, {align:'center'});
-        // Etiqueta mes debajo
-        st(K.gtx); fs(6); fw('normal');
-        const [yr, mo] = mesKey.split('-');
-        const mesesLbl = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-        T(`${mesesLbl[parseInt(mo)-1]} ${yr.slice(2)}`, bx + barW/2, chartY + chartH - 2, {align:'center'});
-      });
-      y = chartY + chartH + 4;
-    }
+    // Acumulados
+    let acumBruto = 0, acumEfectivo = 0;
+    const acumRows = desglose.map(d => {
+      acumBruto += d.bruto;
+      if (d.pagada) acumEfectivo += d.ef;
+      return { acumBruto, acumEfectivo };
+    });
+
+    st(K.ng); fs(FS_SEC); fw('bold');
+    T('Composición por estimación', ML, y + 4);
+    st(K.gmu); fs(7); fw('normal');
+    T(`Anticipo ${(pctAnt*100).toFixed(0)}% · Fondo garantía ${(pctFG*100).toFixed(0)}%`, PW-MR, y+4, {align:'right'});
+    y += 7;
+
+    const chartH = 8;                       // altura por barra
+    const rowGap = 4;                       // separación entre barras
+    const labelW = 46;                      // ancho de etiqueta izquierda
+    const acumW  = 48;                      // ancho de columna acumulado
+    const barX = ML + labelW;
+    const barW = CW - labelW - acumW - 8;
+    // Max bruto para escala
+    const maxBruto = Math.max(...desglose.map(d => d.bruto), 1);
+
+    // Encabezado
+    st(K.gmu); fs(6.5); fw('bold');
+    T('EST / PERIODO',        ML, y);
+    T('EFECTIVO · AMORTIZ. · F.G.', barX + barW/2, y, {align:'center'});
+    T('ACUMULADO',            ML + CW, y, {align:'right'});
+    y += 3;
+    sd(K.gbd); lw(0.2); L(ML, y, ML+CW, y);
+    y += 3;
+
+    desglose.forEach((d, i) => {
+      const rowY = y;
+      const totalWpx = (d.bruto / maxBruto) * barW;
+      const efW = totalWpx * (d.ef / d.bruto);
+      const anW = totalWpx * (d.ant / d.bruto);
+      const fgW = totalWpx * (d.fg / d.bruto);
+
+      // Etiqueta izquierda
+      st(K.ng); fs(7); fw('bold');
+      T(`EST-${String(d.no).padStart(2,'0')}`, ML, rowY + 5);
+      st(K.gmu); fs(6); fw('normal');
+      T((d.periodo || '—').slice(0, 22), ML + 14, rowY + 5);
+
+      // Fondo pálido (representa 100% del bruto)
+      sf(K.glt); R(barX, rowY, totalWpx, chartH, 'F');
+      // Segmento efectivo (verde)
+      sf(K.vd); R(barX, rowY, efW, chartH, 'F');
+      // Segmento anticipo (naranja/ámbar)
+      sf(K.am); R(barX + efW, rowY, anW, chartH, 'F');
+      // Segmento fondo garantía (rojo)
+      sf(K.rd); R(barX + efW + anW, rowY, fgW, chartH, 'F');
+      // Borde
+      sd(K.gbd); lw(0.15); doc.rect(barX, rowY, totalWpx, chartH, 'S');
+      // Etiqueta de monto bruto adentro (si cabe) o afuera
+      st(K.wh); fs(6.5); fw('bold');
+      const bruto_lbl = MXN(d.bruto);
+      if (totalWpx > 30) {
+        T(bruto_lbl, barX + 2, rowY + 5.5);
+      } else {
+        st(K.ng);
+        T(bruto_lbl, barX + totalWpx + 2, rowY + 5.5);
+      }
+      // Chip pagada (opcional)
+      if (d.pagada) {
+        st(K.vk); fs(5.5); fw('bold');
+        T('✓ PAGADA', barX + totalWpx - 12, rowY - 0.5);
+      }
+      // Columna acumulado a la derecha
+      st(K.ng); fs(7); fw('bold');
+      T(MXN(acumRows[i].acumBruto), ML + CW, rowY + 3.5, {align:'right'});
+      st(K.gmu); fs(6); fw('normal');
+      T(`efectivo cobrado ${MXN(acumRows[i].acumEfectivo)}`, ML + CW, rowY + 7, {align:'right'});
+
+      y = rowY + chartH + rowGap;
+    });
+
+    y += 2;
+
+    // Leyenda de colores
+    const legItems = [
+      [K.vd, 'Efectivo neto'],
+      [K.am, `Anticipo amortiz. (${(pctAnt*100).toFixed(0)}%)`],
+      [K.rd, `Fondo garantía (${(pctFG*100).toFixed(0)}%)`],
+    ];
+    let lx = ML;
+    legItems.forEach(([c, txt]) => {
+      sf(c); R(lx, y, 3, 3, 'F');
+      st(K.gtx); fs(6.5); fw('normal');
+      T(txt, lx + 5, y + 2.5);
+      lx += 4 + doc.getTextWidth(txt) + 8;
+    });
+    y += 6;
   }
 
   // Variables compartidas que usan secciones siguientes (totales, ejecución)
@@ -527,12 +583,150 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const totEjec=subsActivos.reduce((t,s)=>t+(s.a/100)*s.imp,0);
 
   // ════════════════════════════════════════════════════════════════════════
-  // PAG 3 — ALMACÉN (materiales en tránsito)
+  // PAG 3 — DESGLOSE DE GASTO POR RUBRO (con pie chart + top proveedores)
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y = CY0;
+  y = secHead('3  DESGLOSE DE GASTO POR RUBRO', y);
+
+  if (gpDetalle && gpDetalle.rubros && Object.keys(gpDetalle.rubros).length > 0) {
+    const rubArr = Object.values(gpDetalle.rubros)
+      .map(r => ({
+        id: r.id,
+        nombre: r.nombreCorto || r.nombre || r.id,
+        monto: r.grandTotal || 0,
+        proveedores: r.proveedores || [],
+      }))
+      .filter(r => r.monto > 0)
+      .sort((a,b) => b.monto - a.monto);
+    const totRub = rubArr.reduce((t,r) => t + r.monto, 0);
+
+    // ── Pie chart a la izquierda ──────────────────────────────────────
+    const pieCx = ML + 45;
+    const pieCy = y + 45;
+    const pieR = 34;
+
+    // Paleta de colores rotativa para segmentos
+    const paleta = [K.ak, K.vd, K.am, K.mo, K.rd, K.na, K.ak2, K.vk, K.mk, K.rk];
+
+    // Dibujar cada segmento como polígono aproximado
+    let acumAngle = -Math.PI / 2;   // empieza arriba (12 en punto)
+    rubArr.forEach((r, i) => {
+      const frac = r.monto / totRub;
+      const angleSpan = frac * 2 * Math.PI;
+      const angleEnd = acumAngle + angleSpan;
+      const steps = Math.max(6, Math.ceil(frac * 40));
+      // Puntos del polígono: centro → arco → centro
+      const puntos = [[pieCx, pieCy]];
+      for (let s = 0; s <= steps; s++) {
+        const a = acumAngle + (angleSpan * s / steps);
+        puntos.push([pieCx + pieR * Math.cos(a), pieCy + pieR * Math.sin(a)]);
+      }
+      // Dibujar polígono con doc.lines (necesita paths relativos)
+      sf(paleta[i % paleta.length]);
+      sd(K.wh); lw(0.4);
+      // Usamos triangle fan: dibujar N triángulos desde el centro
+      for (let s = 0; s < steps; s++) {
+        const a1 = acumAngle + (angleSpan * s / steps);
+        const a2 = acumAngle + (angleSpan * (s+1) / steps);
+        const p1 = [pieCx + pieR * Math.cos(a1), pieCy + pieR * Math.sin(a1)];
+        const p2 = [pieCx + pieR * Math.cos(a2), pieCy + pieR * Math.sin(a2)];
+        // Triángulo con doc.lines: paths relativos desde el punto de inicio
+        doc.lines([
+          [p1[0] - pieCx, p1[1] - pieCy],       // centro → p1
+          [p2[0] - p1[0], p2[1] - p1[1]],       // p1 → p2
+          [pieCx - p2[0], pieCy - p2[1]],       // p2 → centro
+        ], pieCx, pieCy, [1, 1], 'F');
+      }
+      acumAngle = angleEnd;
+    });
+
+    // Etiqueta al centro del pie
+    sf(K.wh); doc.circle(pieCx, pieCy, 12, 'F');
+    st(K.ng); fs(6.5); fw('normal');
+    T('GASTO GP', pieCx, pieCy - 2, {align:'center'});
+    fs(8); fw('bold');
+    T(MXN(totRub), pieCx, pieCy + 2.5, {align:'center'});
+
+    // ── Tabla de rubros a la derecha (con chips de color) ─────────────
+    const tabX = ML + 100;
+    const tabW = CW - 100;
+    // Encabezado
+    sf(K.ng); R(tabX, y, tabW, 6, 'F');
+    st(K.wh); fs(7); fw('bold');
+    T('RUBRO',    tabX + 10, y + 4);
+    T('MONTO',    tabX + tabW - 60, y + 4, {align:'right'});
+    T('% GP',     tabX + tabW - 30, y + 4, {align:'right'});
+    T('% PPTO',   tabX + tabW - 4,  y + 4, {align:'right'});
+    let ry = y + 8;
+    rubArr.slice(0, 12).forEach((r, i) => {
+      // Chip de color
+      sf(paleta[i % paleta.length]); R(tabX + 2, ry - 3, 3.5, 3.5, 'F');
+      st(K.ng); fs(8); fw('bold');
+      T(String(r.nombre).slice(0, 42), tabX + 10, ry);
+      fs(8); fw('normal');
+      T(MXN(r.monto),                       tabX + tabW - 60, ry, {align:'right'});
+      T(PCT(r.monto/totRub*100),            tabX + tabW - 30, ry, {align:'right'});
+      T(PCT(PPTO>0 ? r.monto/PPTO*100 : 0), tabX + tabW - 4,  ry, {align:'right'});
+      sd(K.gbd); lw(0.15); L(tabX, ry + 2, tabX + tabW, ry + 2);
+      ry += 6;
+    });
+    // Fila TOTAL
+    sf(K.glt); R(tabX, ry - 3, tabW, 6, 'F');
+    st(K.ng); fs(8); fw('bold');
+    T('TOTAL GP', tabX + 10, ry);
+    T(MXN(totRub), tabX + tabW - 60, ry, {align:'right'});
+    T('100.0%', tabX + tabW - 30, ry, {align:'right'});
+    T(PCT(PPTO>0 ? totRub/PPTO*100 : 0), tabX + tabW - 4, ry, {align:'right'});
+    ry += 8;
+
+    // ── Top proveedores del rubro más grande ────────────────────────
+    // Ubicado debajo del pie chart y de la tabla, cuando ambos ya terminaron
+    const yLower = Math.max(pieCy + pieR + 10, ry + 4);
+    const rubroTop = rubArr[0];
+    if (rubroTop && rubroTop.proveedores && rubroTop.proveedores.length > 0) {
+      const provOrd = [...rubroTop.proveedores]
+        .sort((a,b) => (b.total||0) - (a.total||0))
+        .slice(0, 15);
+      const totProvRubro = provOrd.reduce((t,p) => t + (p.total||0), 0);
+      st(K.ng); fs(FS_SEC); fw('bold');
+      T(`Top ${provOrd.length} proveedores de "${rubroTop.nombre}"`, ML, yLower + 3);
+      st(K.gmu); fs(7); fw('normal');
+      T(`Total del rubro: ${MXN(rubroTop.monto)}`, PW-MR, yLower + 3, {align:'right'});
+
+      const provBody = provOrd.map((p, i) => [
+        i + 1,
+        String(p.nombre || '—').slice(0, 60),
+        MXN(p.total || 0),
+        PCT(rubroTop.monto > 0 ? (p.total||0)/rubroTop.monto*100 : 0),
+      ]);
+
+      autoT(
+        ['#', 'Proveedor / Concepto', 'Monto acumulado', '% del rubro'],
+        provBody,
+        [10, CW*0.60, CW*0.20, CW*0.14],
+        ML, yLower + 6,
+        {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}}}
+      );
+    }
+  } else {
+    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 30, 'FD');
+    st(K.gmu); fs(12); fw('bold');
+    T('Detalle GP no disponible', ML + CW/2, y + 14, {align:'center'});
+    st(K.gmu); fs(8); fw('normal');
+    T('Abre la pestaña Gastos de esta obra en CAMPO al menos una vez antes',
+      ML + CW/2, y + 20, {align:'center'});
+    T('de generar el PDF, para que se cargue el detalle GP del Sheet.',
+      ML + CW/2, y + 25, {align:'center'});
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 4 — ALMACÉN (materiales en tránsito)
   // Primero Almacén, luego Maquinaria en su propia hoja.
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('3  ALMACÉN · MATERIALES EN TRÁNSITO', y);
+  y=secHead('4  ALMACÉN · MATERIALES EN TRÁNSITO', y);
 
   if (matActivos.length > 0) {
     const matBody = [
@@ -565,7 +759,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('4  MAQUINARIA PROPIA EN OBRA', y);
+  y=secHead('5  MAQUINARIA PROPIA EN OBRA', y);
 
   if (maqActivos.length > 0) {
     const maqBody = [
@@ -598,7 +792,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('5  GRÁFICA DE AVANCE FÍSICO', y);
+  y=secHead('6  GRÁFICA DE AVANCE FÍSICO', y);
 
   // KPIs resumen arriba
   const subsConAv = subs.filter(s=>s.imp>0);
@@ -723,7 +917,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('6  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
+  y=secHead('7  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
 
   // ── Gráfica de proyección ────────────────────────────────────────────────
   // Área: CW × 52mm
@@ -862,7 +1056,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('7  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
+  y=secHead('8  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
 
   // Solo usa datos reales de nómina cargada. Si no hay, muestra placeholder.
   // (Antes había fallbacks fantasma "||66" y "||53" que dejaban valores de
@@ -943,7 +1137,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('8  INDICADORES DE RIESGO · OBSERVACIONES', y);
+  y=secHead('9  INDICADORES DE RIESGO · OBSERVACIONES', y);
 
   // Indicadores de riesgo — calculados con datos reales de la obra.
   // (Antes había valores hardcoded como "+0.8pp", "1.04x", "54%", "+15%",
