@@ -815,101 +815,116 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
   ], y)+3;
 
-  // Top 9 partidas por importe — cabe dentro del área útil sin que la leyenda
-  // choque con el footer (área útil = 165mm; 9 × 14mm + KPIs + header + leyenda = ~160mm)
-  const top = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 9);
+  // Top partidas por importe. Distribuidas en hasta 2 hojas (9 por hoja
+  // → hasta 18 partidas representativas). Se elimina el código/clave y
+  // solo se muestra la descripción, que ahora tiene mucho más espacio.
+  const topAll = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 18);
+  const PART_POR_HOJA = 9;
 
-  if (top.length === 0) {
+  if (topAll.length === 0) {
     st(K.gmu); fs(10); fw('italic');
     T('No hay partidas con presupuesto cargado. Carga el catálogo en Planeación → Presupuesto.',
       ML+10, y+15);
   } else {
-    // Layout: descripción a la izq, barra horizontal con marcador de "programado"
+    // Layout: descripción amplia a la izq (sin código), barra horizontal
+    // con marcador de "programado", % al final.
     const rowH = 14;
-    const barX = ML + 115;       // donde empieza la barra (algo más adentro para más espacio de label)
-    const barW = CW - 115 - 30;  // ancho de la barra (30mm para etiqueta de %)
-    const maxClaveChars = 16;    // claves cortas (0219-OAX-XXX-99). Si son más largas, son datos viejos
-    const maxDescChars = 38;     // truncar descripciones largas para que no invadan la barra
-    // ENCODER seguro: trunca cualquier texto a N chars con "…" si excede
+    const barX = ML + 145;                    // más espacio para la descripción
+    const barW = CW - 145 - 22;               // barra + 22mm para etiqueta de %
+    const descX = ML;
+    const descW = 143;                        // ancho disponible para descripción
+    // Truncar texto para que no invada la barra
     const truncar = (txt, n) => {
       const t = String(txt || '').trim();
       if (!t) return '';
-      if (t.length <= n) return t;
-      return t.slice(0, n - 1).trimEnd() + '…';
+      return t.length <= n ? t : t.slice(0, n - 1).trimEnd() + '…';
     };
-    // Encabezado de la sección
-    st(K.gmu); fs(7); fw('bold');
-    T('PARTIDA', ML, y+4);
-    T('AVANCE REAL VS PROGRAMADO', barX, y+4);
-    T('%', barX+barW+12, y+4, {align:'center'});
-    y += 7;
-    sd(K.gbd); lw(0.3); L(ML, y, ML+CW, y);
-    y += 3;
 
-    top.forEach((s, idx) => {
-      const pctReal = Math.min(100, s.a||0);
-      const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
-      const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
+    const dibujarHoja = (partidas, yStart, esPrimera) => {
+      let yy = yStart;
+      // Encabezado de la sección
+      st(K.gmu); fs(7); fw('bold');
+      T('PARTIDA', descX, yy+4);
+      T('AVANCE REAL VS PROGRAMADO', barX, yy+4);
+      T('%', barX+barW+12, yy+4, {align:'center'});
+      yy += 7;
+      sd(K.gbd); lw(0.3); L(ML, yy, ML+CW, yy);
+      yy += 3;
 
-      // Si la "clave" (sec) es demasiado larga, son datos viejos donde sec quedó
-      // con la descripción. En ese caso usamos sec como descripción y omitimos
-      // la columna de clave.
-      const secEsLarga = (s.sec || '').trim().length > maxClaveChars;
-      const claveMostrar = secEsLarga ? '—' : truncar(s.sec, maxClaveChars);
-      const descRaw = secEsLarga ? (s.sec || '') : (s.sub || '');
-      const descMostrar = truncar(descRaw, maxDescChars);
+      partidas.forEach((s, idx) => {
+        const pctReal = Math.min(100, s.a||0);
+        const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
+        const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
 
-      // Clave (sec corta)
-      st(K.ng); fs(7.5); fw('bold');
-      T(claveMostrar, ML, y+4.5);
-      // Descripción truncada
+        // SOLO descripción (sin código/clave).
+        // Prioridad: s.sub (descripción del catálogo); fallback a s.sec si
+        // s.sub es vacío (obras viejas donde sec quedó con la descripción).
+        const descRaw = (s.sub && s.sub.trim())
+          ? s.sub
+          : (s.sec || '');
+        // Aproximadamente 62-64 caracteres caben en descW a fontSize 8.5
+        const descMostrar = truncar(descRaw, 62);
+
+        // Descripción (una sola línea, sin código)
+        st(K.ng); fs(8.5); fw('bold');
+        T(descMostrar, descX, yy+4.5);
+        // Importe (más abajo, más chico)
+        st(K.gmu); fs(6.5); fw('normal');
+        T(MXN(s.imp), descX, yy+8.5);
+
+        // Fondo de la barra
+        sf(K.glt); doc.rect(barX, yy+2, barW, 5, 'F');
+        sd(K.gbd); lw(0.15); doc.rect(barX, yy+2, barW, 5, 'S');
+
+        // Barra de avance real
+        if (pctReal > 0) {
+          sf(colReal); doc.rect(barX, yy+2, barW * pctReal/100, 5, 'F');
+        }
+
+        // Marcador vertical de "% programado"
+        if (pctProgIdeal > 0 && pctProgIdeal <= 100) {
+          const xProg = barX + barW * pctProgIdeal/100;
+          sd(K.na); lw(0.6);
+          doc.line(xProg, yy+1, xProg, yy+8);
+          sf(K.na); doc.triangle(xProg-1.2, yy+1, xProg+1.2, yy+1, xProg, yy+2.2, 'F');
+        }
+
+        // Etiqueta de % al final
+        st(colKReal); fs(9); fw('bold');
+        T(`${pctReal.toFixed(0)}%`, barX+barW+12, yy+6, {align:'center'});
+
+        yy += rowH;
+        if (idx < partidas.length-1) {
+          sd(K.gbd); lw(0.1);
+          L(ML, yy-0.5, ML+CW, yy-0.5);
+        }
+      });
+
+      // Leyenda al pie del gráfico
+      yy += 4;
+      sf(K.glt); sd(K.gbd); lw(0.2); R(ML, yy, CW, 9, 'FD');
       st(K.gtx); fs(7); fw('normal');
-      T(descMostrar, ML + 18, y+4.5);
-      // Importe (más abajo)
+      sf(K.vd); R(ML+4, yy+3, 3, 3, 'F'); T('Avance ≥ 75%', ML+9, yy+5.3);
+      sf(K.am); R(ML+42, yy+3, 3, 3, 'F'); T('40 a 74%', ML+47, yy+5.3);
+      sf(K.rd); R(ML+70, yy+3, 3, 3, 'F'); T('< 40%', ML+75, yy+5.3);
+      sf(K.na); doc.triangle(ML+96, yy+3, ML+99.5, yy+3, ML+97.7, yy+5.5, 'F');
+      T('Programado según plazo', ML+102, yy+5.3);
       st(K.gmu); fs(6.5);
-      T(MXN(s.imp), ML+18, y+8.5);
+      T(`Top ${topAll.length} partidas por importe · ${MXN(topAll.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)}`,
+        PW-MR, yy+5.3, {align:'right'});
+      return yy;
+    };
 
-      // Fondo de la barra
-      sf(K.glt); doc.rect(barX, y+2, barW, 5, 'F');
-      sd(K.gbd); lw(0.15); doc.rect(barX, y+2, barW, 5, 'S');
+    // Hoja 1: primeras 9
+    dibujarHoja(topAll.slice(0, PART_POR_HOJA), y, true);
 
-      // Barra de avance real
-      if (pctReal > 0) {
-        sf(colReal); doc.rect(barX, y+2, barW * pctReal/100, 5, 'F');
-      }
-
-      // Marcador vertical de "% programado"
-      if (pctProgIdeal > 0 && pctProgIdeal <= 100) {
-        const xProg = barX + barW * pctProgIdeal/100;
-        sd(K.na); lw(0.6);
-        doc.line(xProg, y+1, xProg, y+8);
-        sf(K.na); doc.triangle(xProg-1.2, y+1, xProg+1.2, y+1, xProg, y+2.2, 'F');
-      }
-
-      // Etiqueta de % al final
-      st(colKReal); fs(9); fw('bold');
-      T(`${pctReal.toFixed(0)}%`, barX+barW+12, y+6, {align:'center'});
-
-      y += rowH;
-      // Línea divisora: bien debajo del importe (no encima), entre filas
-      if (idx < top.length-1) {
-        sd(K.gbd); lw(0.1);
-        L(ML, y-0.5, ML+CW, y-0.5);
-      }
-    });
-
-    // Leyenda al pie del gráfico
-    y += 4;
-    sf(K.glt); sd(K.gbd); lw(0.2); R(ML, y, CW, 9, 'FD');
-    st(K.gtx); fs(7); fw('normal');
-    sf(K.vd); R(ML+4, y+3, 3, 3, 'F'); T('Avance 75% o más', ML+9, y+5.3);
-    sf(K.am); R(ML+50, y+3, 3, 3, 'F'); T('40 a 74%', ML+55, y+5.3);
-    sf(K.rd); R(ML+78, y+3, 3, 3, 'F'); T('Menos de 40%', ML+83, y+5.3);
-    sf(K.na); doc.triangle(ML+112, y+3, ML+115.5, y+3, ML+113.7, y+5.5, 'F');
-    T('Posición esperada según plazo', ML+118, y+5.3);
-    st(K.gmu); fs(6.5);
-    T(`Top ${top.length} partidas por importe (${MXN(top.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)} total)`,
-      PW-MR, y+5.3, {align:'right'});
+    // Hoja 2: siguientes 9 (si aplica)
+    if (topAll.length > PART_POR_HOJA) {
+      doc.addPage(); pageFrame();
+      let yh2 = CY0;
+      yh2 = secHead('6b  GRÁFICA DE AVANCE FÍSICO (continuación)', yh2);
+      dibujarHoja(topAll.slice(PART_POR_HOJA, PART_POR_HOJA*2), yh2, false);
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -919,135 +934,191 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=CY0;
   y=secHead('7  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
 
-  // ── Gráfica de proyección ────────────────────────────────────────────────
-  // Área: CW × 52mm
-  const GX=ML, GY=y, GW=CW, GH=52;
-  const GPL=20, GPB=8, GPR=16, GPT=8;
-  const gw=GW-GPL-GPR, gh=GH-GPB-GPT;
-  const semsReales=5, semsTot=15;
-  const ritmoG=totGP/1e6/semsReales||0.1;
-  const ritmoM=me/1e6/semsReales||0.1;
-  const PM=PPTO/1e6;
-  const maxV=Math.max(PM, totGP/1e6*2)*1.1;
+  // ── Gráfica de proyección BASADA EN FECHAS REALES ─────────────────
+  // Antes usaba semanas hardcoded (semsReales=5, semsTot=15). Ahora las
+  // fechas vienen del contrato (obra.inicio, obra.fin) y todo se calcula
+  // en base al plazo real. El eje X muestra fechas (dd/mmm) además de la
+  // semana ISO — es lo más estándar en construcción.
 
-  const gxP=i=>GX+GPL+i/(semsTot-1)*gw;
-  const gyP=v=>GY+GPT+(1-Math.min(v,maxV)/maxV)*gh;
+  const parseFecha = (s) => {
+    if (!s) return null;
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+  };
+  const fmtDDMMM = (d) => {
+    if (!d) return '—';
+    const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return `${String(d.getDate()).padStart(2,'0')}/${meses[d.getMonth()]}`;
+  };
+  const fmtDDMMMYYY = (d) => {
+    if (!d) return '—';
+    return `${fmtDDMMM(d)}/${String(d.getFullYear()).slice(2)}`;
+  };
+  const diasEntre = (a, b) => a && b ? Math.round((b - a) / 86400000) : 0;
+
+  const fIni = parseFecha(obra.inicio);
+  const fFin = parseFecha(obra.finAmpliado) || parseFecha(obra.fin);
+  const fFinOrig = parseFecha(obra.fin);
+  const hoyD = new Date();
+
+  const hayFechas = fIni && fFin;
+  const diasTot = hayFechas ? diasEntre(fIni, fFin) : 0;
+  const diasTransc = hayFechas ? Math.max(0, Math.min(diasTot, diasEntre(fIni, hoyD))) : 0;
+  const diasRest = Math.max(0, diasTot - diasTransc);
+  const pctPlazo = diasTot > 0 ? (diasTransc / diasTot) * 100 : 0;
+
+  // Área de gráfica
+  const GX=ML, GY=y, GW=CW, GH=54;
+  const GPL=22, GPB=12, GPR=18, GPT=8;
+  const gw=GW-GPL-GPR, gh=GH-GPB-GPT;
+  const PM = PPTO / 1e6;
+  const maxV = Math.max(PM, totGP/1e6*1.3, me/1e6*1.3) * 1.1 || 1;
+
+  const gxT = (fecha) => {
+    if (!hayFechas) return GX + GPL;
+    const frac = Math.max(0, Math.min(1, diasEntre(fIni, fecha) / diasTot));
+    return GX + GPL + frac * gw;
+  };
+  const gyV = (v) => GY + GPT + (1 - Math.min(v, maxV)/maxV) * gh;
 
   // Fondo blanco con borde
-  sf(K.wh); sd(K.gbd); lw(0.2); R(GX+GPL,GY+GPT,gw,gh,'FD');
+  sf(K.wh); sd(K.gbd); lw(0.2); R(GX+GPL, GY+GPT, gw, gh, 'FD');
 
-  // Grid Y
-  [0,maxV*0.25,maxV*0.5,maxV*0.75,maxV].forEach(v=>{
-    const gy2=gyP(v);
-    sd(K.gbd); lw(0.15); doc.setLineDashPattern([2,2],0);
-    if(v<maxV) L(GX+GPL,gy2,GX+GPL+gw,gy2);
+  if (hayFechas) {
+    // Grid Y con montos
+    [0, maxV*0.25, maxV*0.5, maxV*0.75, maxV].forEach(v => {
+      const gy2 = gyV(v);
+      sd(K.gbd); lw(0.15); doc.setLineDashPattern([2,2],0);
+      if (v < maxV) L(GX+GPL, gy2, GX+GPL+gw, gy2);
+      doc.setLineDashPattern([],0);
+      st(K.gmu); fs(6); fw('normal');
+      T(`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.5, {align:'right'});
+    });
+    // Línea presupuesto
+    sf(K.ng); lw(0.4); doc.setLineDashPattern([3,2],0);
+    L(GX+GPL, gyV(PM), GX+GPL+gw, gyV(PM));
     doc.setLineDashPattern([],0);
-    st(K.gmu); fs(6); fw('normal');
-    T(`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.5, {align:'right'});
-  });
-  // Línea presupuesto
-  sf(K.ng); lw(0.4); doc.setLineDashPattern([3,2],0);
-  L(GX+GPL, gyP(PM), GX+GPL+gw, gyP(PM));
-  doc.setLineDashPattern([],0);
-  st(K.ng); fs(6); fw('bold'); T('Ppto', GX+GPL+gw+1, gyP(PM)+1.5);
+    st(K.ng); fs(6); fw('bold'); T('Ppto', GX+GPL+gw+1, gyV(PM)+1.5);
 
-  // Generar datos de gráfica
-  const grafData=Array.from({length:semsTot},(_,i)=>{
-    const real=i<semsReales;
-    const g=real?totGP/1e6*(i+1)/semsReales:totGP/1e6+(i-semsReales+1)*ritmoG;
-    const m=real?me/1e6*(i+1)/semsReales:me/1e6+(i-semsReales+1)*ritmoM;
-    return {i,g:Math.min(g,PM),m:Math.min(m,PM),real};
-  });
-  const hoyIdx=semsReales-1;
+    // Zona sombreada = plazo restante (hoy → fin)
+    if (hoyD < fFin && hoyD > fIni) {
+      sf([244,250,240]); R(gxT(hoyD), GY+GPT, gxT(fFin) - gxT(hoyD), gh, 'F');
+    }
 
-  // Zona sombreada hasta plazo
-  sf([244,250,240]); R(gxP(hoyIdx),GY+GPT,gxP(semsTot-1)-gxP(hoyIdx),gh,'F');
+    // Línea vertical HOY
+    if (hoyD >= fIni && hoyD <= fFin) {
+      sd(K.gmu); lw(0.4); doc.setLineDashPattern([1.5,2],0);
+      L(gxT(hoyD), GY+GPT, gxT(hoyD), GY+GPT+gh);
+      doc.setLineDashPattern([],0);
+      st(K.gmu); fs(6); fw('bold');
+      T('HOY', gxT(hoyD), GY+GPT-2, {align:'center'});
+      T(fmtDDMMM(hoyD), gxT(hoyD), GY+GPT+gh+9.5, {align:'center'});
+    }
 
-  // Línea HOY
-  sd(K.gmu); lw(0.4); doc.setLineDashPattern([1.5,2],0);
-  L(gxP(hoyIdx),GY+GPT,gxP(hoyIdx),GY+GPT+gh);
-  doc.setLineDashPattern([],0);
-  st(K.gmu); fs(5.5); fw('normal'); T('Hoy',gxP(hoyIdx),GY+GPT+gh+5,{align:'center'});
-
-  // Línea plazo final
-  sd(K.vk); lw(0.5); doc.setLineDashPattern([3,2],0);
-  L(gxP(semsTot-1),GY+GPT,gxP(semsTot-1),GY+GPT+gh);
-  doc.setLineDashPattern([],0);
-  st(K.vk); fs(5.5); fw('bold'); T('Plazo',gxP(semsTot-1),GY+GPT-1,{align:'center'});
-
-  // X labels
-  [0,2,4,6,hoyIdx,8,10,12,14].forEach(i=>{
-    const bold=i===hoyIdx;
-    st(bold?K.ng:K.gmu); fs(5.5); fw(bold?'bold':'normal');
-    T(`S${14+i}`,gxP(i),GY+GPT+gh+5,{align:'center'});
-  });
-
-  // Líneas de datos
-  [[1,K.rk,'g'],[2,K.ak,'m']].forEach(([_,col,key])=>{
-    sd(col);
-    // Real (sólida, gruesa)
-    lw(0.9); doc.setLineDashPattern([],0);
-    for(let i=0;i<hoyIdx;i++)
-      L(gxP(i),gyP(grafData[i][key]),gxP(i+1),gyP(grafData[i+1][key]));
-    // Proyectada (punteada)
-    lw(0.6); doc.setLineDashPattern([3,3],0);
-    for(let i=hoyIdx;i<semsTot-1;i++)
-      L(gxP(i),gyP(grafData[i][key]),gxP(i+1),gyP(grafData[i+1][key]));
+    // Marcador de fin programado
+    sd(K.vk); lw(0.5); doc.setLineDashPattern([3,2],0);
+    L(gxT(fFin), GY+GPT, gxT(fFin), GY+GPT+gh);
     doc.setLineDashPattern([],0);
-    // Punto HOY
-    sf(col); doc.circle(gxP(hoyIdx),gyP(grafData[hoyIdx][key]),1.5,'F');
-    // Etiqueta
-    st(col); fs(6); fw('bold');
-    const off=key==='g'?-2:2;
-    T(`$${grafData[hoyIdx][key].toFixed(1)}M`, gxP(hoyIdx)+3, gyP(grafData[hoyIdx][key])+off);
-  });
+    st(K.vk); fs(6); fw('bold');
+    T('FIN', gxT(fFin), GY+GPT-2, {align:'center'});
+    T(fmtDDMMM(fFin), gxT(fFin), GY+GPT+gh+9.5, {align:'center'});
 
-  // Leyenda
-  st(K.gtx); fs(6); fw('normal');
-  sf(K.rk); R(GX+GPL,GY+GPT+gh+9,10,2,'F');
-  T('Gasto GP',GX+GPL+12,GY+GPT+gh+11);
-  sf(K.ak); R(GX+GPL+45,GY+GPT+gh+9,10,2,'F');
-  T('Monto ejecutado',GX+GPL+57,GY+GPT+gh+11);
-  st(K.gmu); T('— — proyección',GX+GPL+108,GY+GPT+gh+11);
-  y=GY+GH+16;
+    // Fechas iniciales / etiquetas del eje X (5 tics equidistantes)
+    const numTics = 5;
+    for (let i = 0; i <= numTics; i++) {
+      const t = new Date(fIni.getTime() + (fFin - fIni) * i / numTics);
+      const xt = gxT(t);
+      st(K.gmu); fs(5.5); fw('normal');
+      T(fmtDDMMM(t), xt, GY+GPT+gh+4, {align:'center'});
+      sd(K.gbd); lw(0.15);
+      L(xt, GY+GPT+gh, xt, GY+GPT+gh+1.5);
+    }
 
-  // ── Tablas de proyección en 2 columnas ────────────────────────────────
-  const semsRest=semsTot-semsReales;
-  const metaG=(PM-totGP/1e6)/semsRest, metaM=(PM-me/1e6)/semsRest;
-  const finG=Math.ceil(14+semsReales+(PM-totGP/1e6)/ritmoG);
-  const finM=Math.ceil(14+semsReales+(PM-me/1e6)/ritmoM);
-  const LW6=CW*0.55, RW6=CW-LW6-5;
+    // Líneas de datos: ritmo lineal desde inicio hasta hoy + proyección
+    // hasta el fin del plazo (asumiendo mismo ritmo).
+    const ritmoG_dia = diasTransc > 0 ? (totGP / 1e6) / diasTransc : 0;
+    const ritmoM_dia = diasTransc > 0 ? (me   / 1e6) / diasTransc : 0;
+    const proyGpFin  = totGP/1e6 + ritmoG_dia * diasRest;
+    const proyMeFin  = me/1e6    + ritmoM_dia * diasRest;
 
-  const proyBody=[
-    ['Ritmo semanal gasto',`$${ritmoG.toFixed(1)}M/sem`,'al ritmo actual de GP'],
-    ['Ritmo semanal avance',`$${ritmoM.toFixed(1)}M/sem`,'al ritmo actual de avance'],
-    ['Fin proyectado gasto',`S${finG}`,'al ritmo actual'],
-    ['Fin proyectado avance',`S${finM}`,'al ritmo actual'],
-    ['Meta gasto p/plazo',`$${metaG.toFixed(1)}M/sem`,`+$${(metaG-ritmoG).toFixed(1)}M/sem requerido`],
-    ['Meta avance p/plazo',`$${metaM.toFixed(1)}M/sem`,`+$${(metaM-ritmoM).toFixed(1)}M/sem requerido`],
-    ['Plazo original',obra.fin||'','contrato original'],
-    ['Plazo ampliado',obra.finAmpliado||'No registrado',obra.finAmpliado?'Convenio modificatorio':'Sin ampliación registrada'],
+    // GP (rojo): real y proyectada
+    sd(K.rk); lw(0.9); doc.setLineDashPattern([],0);
+    L(gxT(fIni), gyV(0), gxT(hoyD), gyV(totGP/1e6));
+    sd(K.rk); lw(0.6); doc.setLineDashPattern([3,3],0);
+    L(gxT(hoyD), gyV(totGP/1e6), gxT(fFin), gyV(Math.min(proyGpFin, maxV)));
+    doc.setLineDashPattern([],0);
+    sf(K.rk); doc.circle(gxT(hoyD), gyV(totGP/1e6), 1.5, 'F');
+
+    // Monto ejecutado (azul): real y proyectada
+    sd(K.ak); lw(0.9); doc.setLineDashPattern([],0);
+    L(gxT(fIni), gyV(0), gxT(hoyD), gyV(me/1e6));
+    sd(K.ak); lw(0.6); doc.setLineDashPattern([3,3],0);
+    L(gxT(hoyD), gyV(me/1e6), gxT(fFin), gyV(Math.min(proyMeFin, maxV)));
+    doc.setLineDashPattern([],0);
+    sf(K.ak); doc.circle(gxT(hoyD), gyV(me/1e6), 1.5, 'F');
+
+    // Etiquetas con valor de HOY
+    st(K.rk); fs(6.5); fw('bold');
+    T(`$${(totGP/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(totGP/1e6)-1.5);
+    st(K.ak); fs(6.5); fw('bold');
+    T(`$${(me/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(me/1e6)+2.5);
+
+    y = GY + GH + 6;
+
+    // Leyenda compacta
+    st(K.gtx); fs(7); fw('normal');
+    sf(K.rk); R(GX, y, 5, 2.5, 'F'); T('Gasto GP',   GX+7,  y+2.2);
+    sf(K.ak); R(GX+35, y, 5, 2.5, 'F'); T('Monto ejecutado', GX+42, y+2.2);
+    st(K.gmu); T('— — proyección al plazo',  GX+95, y+2.2);
+    y += 6;
+  } else {
+    // Sin fechas capturadas
+    st(K.gmu); fs(9); fw('italic');
+    T('Captura fechas de inicio y fin en Planeación → Contrato para ver la gráfica de proyección.',
+      GX + GW/2, GY + GH/2, {align:'center'});
+    y = GY + GH + 6;
+  }
+
+  // ── Indicadores esenciales del plazo (una sola tabla, sin duplicados) ──
+  const ritmoG_semanal = diasTransc > 0 ? (totGP / diasTransc * 7) : 0;
+  const ritmoM_semanal = diasTransc > 0 ? (me    / diasTransc * 7) : 0;
+  const finProyGP = hayFechas && ritmoG_semanal > 0
+    ? new Date(hoyD.getTime() + ((PPTO - totGP) / ritmoG_semanal) * 7 * 86400000)
+    : null;
+  const finProyME = hayFechas && ritmoM_semanal > 0
+    ? new Date(hoyD.getTime() + ((PPTO - me) / ritmoM_semanal) * 7 * 86400000)
+    : null;
+
+  const proyBody = [
+    ['Inicio contrato',    fmtDDMMMYYY(fIni),   ''],
+    ['Fin programado',     fmtDDMMMYYY(fFinOrig || fFin),
+     obra.finAmpliado ? `Ampliado a ${fmtDDMMMYYY(parseFecha(obra.finAmpliado))}` : 'Sin ampliación'],
+    ['Corte actual',       fmtDDMMMYYY(hoyD),   `Semana ISO ${(() => { const t=new Date(hoyD); t.setDate(t.getDate()+4-(t.getDay()||7)); const s=Math.ceil((((t-new Date(t.getFullYear(),0,1))/86400000)+1)/7); return s; })()}`],
+    ['Días transcurridos', `${diasTransc}`,     `de ${diasTot} · ${PCT(pctPlazo)}`],
+    ['Días restantes',     `${diasRest}`,       diasRest > 0 ? `hasta ${fmtDDMMMYYY(fFin)}` : 'Plazo vencido'],
+    ['Ritmo GP semanal',   `$${(ritmoG_semanal/1e6).toFixed(2)}M`, 'al ritmo actual'],
+    ['Ritmo avance semanal',`$${(ritmoM_semanal/1e6).toFixed(2)}M`,'al ritmo actual'],
+    ['Fin proy. por gasto',fmtDDMMMYYY(finProyGP),
+     finProyGP && finProyGP > fFin ? `${Math.round((finProyGP-fFin)/86400000)} días tarde` :
+     finProyGP ? `${Math.round((fFin-finProyGP)/86400000)} días holgura` : '—'],
+    ['Fin proy. por avance',fmtDDMMMYYY(finProyME),
+     finProyME && finProyME > fFin ? `${Math.round((finProyME-fFin)/86400000)} días tarde` :
+     finProyME ? `${Math.round((fFin-finProyME)/86400000)} días holgura` : '—'],
   ];
-  const yPL=autoT(
+  autoT(
     ['Indicador','Valor','Referencia'], proyBody,
-    [LW6*0.50,LW6*0.23,LW6*0.27], ML, y,
-    {columnStyles:{1:{halign:'right',fontStyle:'bold',textColor:K.ng}}}
+    [CW*0.28, CW*0.20, CW*0.52], ML, y,
+    {columnStyles:{1:{halign:'right',fontStyle:'bold',textColor:K.ng}, 2:{textColor:K.gmu}},
+     didParseCell:(d) => {
+       // Colorear "tarde" en rojo, "holgura" en verde
+       if (d.column.index === 2) {
+         const txt = String(d.cell.text[0] || '').toLowerCase();
+         if (txt.includes('tarde') || txt.includes('vencid')) d.cell.styles.textColor = K.rk;
+         else if (txt.includes('holgura')) d.cell.styles.textColor = K.vk;
+       }
+     }}
   );
-
-  const plazBody=[
-    ['Inicio contrato',obra.inicio||''],
-    ['Corte actual',hoy],
-    ['Fin programado',obra.fin||''],
-    ['Fin proy. gasto',`S${finG}`],
-    ['Días transcurridos',obra.diasTranscurridos||'—'],
-    ['Días restantes',obra.diasRestantes||'—'],
-  ];
-  const yPR=autoT(
-    ['Hito','Fecha/Valor'], plazBody,
-    [RW6*0.60,RW6*0.40], ML+LW6+5, y,
-    {columnStyles:{1:{halign:'right'}}}
-  );
-  y=Math.max(yPL,yPR);
+  y = doc.lastAutoTable.finalY;
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 5 — PERSONAL · NÓMINA · TOP PROVEEDORES
@@ -1086,9 +1157,14 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     y += 26;
   }
 
-  const LW7 = CW * 0.50, RW7 = CW - LW7 - 5;
+  // Top nómina y top proveedores — SECUENCIALES, no lado a lado.
+  // (Antes iban en 2 columnas y cuando no había datos se amontonaban.)
 
-  // Top 5 nómina (solo si hay datos)
+  // Sub-título top nómina
+  st(K.ng); fs(FS_SEC); fw('bold');
+  T('Top nómina de la semana', ML, y + 4);
+  y += 7;
+
   const nom5 = nomData.slice().sort((a,b) => (b.total||0) - (a.total||0)).slice(0,5);
   const nomBody = nom5.length > 0
     ? nom5.map((pe,i) => [
@@ -1096,9 +1172,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
       ])
     : [['—','Sin nómina capturada','—','—','—']];
-  const yNom = autoT(
+  autoT(
     ['#','Trabajador','Categoría','HE hrs','Total semana'], nomBody,
-    [8, LW7*0.44, LW7*0.28, LW7*0.12, LW7*0.16], ML, y,
+    [10, CW*0.44, CW*0.24, CW*0.12, CW*0.20], ML, y,
     {columnStyles:{0:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
      didParseCell:(d) => {
        if (nom5.length === 0) {
@@ -1113,17 +1189,22 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
        if (d.column.index === 4) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = K.ng; }
      }}
   );
+  y = doc.lastAutoTable.finalY + 6;
 
-  // Top 5 proveedores — solo si hay datos reales de la obra
+  // Sub-título top proveedores
+  st(K.ng); fs(FS_SEC); fw('bold');
+  T('Top proveedores acumulados', ML, y + 4);
+  y += 7;
+
   const provs = Array.isArray(obra.proveedores) && obra.proveedores.length > 0
     ? obra.proveedores : [];
   const totPv = provs.reduce((t,p) => t + p[1], 0);
   const pvBody = provs.length > 0
-    ? provs.map(([nm,mt],i) => [i+1, nm.slice(0,28), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
+    ? provs.slice(0, 8).map(([nm,mt],i) => [i+1, nm.slice(0,60), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
     : [['—','Sin datos en esta obra','—','—']];
   autoT(
     ['#','Proveedor','Monto acumulado','% del top'], pvBody,
-    [8, RW7*0.52, RW7*0.28, RW7*0.20], ML+LW7+5, y,
+    [10, CW*0.60, CW*0.20, CW*0.15], ML, y,
     {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}},
      didParseCell:(d) => {
        if (provs.length === 0) {
@@ -1139,18 +1220,40 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=CY0;
   y=secHead('9  INDICADORES DE RIESGO · OBSERVACIONES', y);
 
-  // Indicadores de riesgo — calculados con datos reales de la obra.
-  // (Antes había valores hardcoded como "+0.8pp", "1.04x", "54%", "+15%",
-  //  "8 trabajadores" que se veían iguales en todas las obras.)
-  // La escala de 5 niveles (Bien/Normal/Aceptable/Atención/Crítico) se
-  // implementará en fase 2. Por ahora solo se muestran indicadores con
-  // datos reales; los que no tienen fuente confiable se omiten.
-  const nivelPorPct = (pct, buenoMin, atenMin, critMin) => {
-    if (pct >= critMin) return { nivel:'Crítico',    tc:K.rk,  bg:K.rb  };
-    if (pct >= atenMin) return { nivel:'Atención',   tc:K.ak2, bg:K.ab2 };
-    if (pct >= buenoMin) return { nivel:'Normal',    tc:K.vk,  bg:K.vb  };
-    return { nivel:'Bien', tc:K.vk, bg:K.vb };
+  // Indicadores de riesgo con ESCALA DE 5 NIVELES:
+  //   Bien       (verde oscuro)  — óptimo
+  //   Normal     (verde claro)   — sano, sin acción
+  //   Aceptable  (amarillo)      — vigilancia sugerida
+  //   Atención   (naranja)       — requiere seguimiento
+  //   Crítico    (rojo)          — acción inmediata
+  // Cada indicador tiene su propia función de clasificación con umbrales
+  // específicos; están comentados por si necesitan ajuste después.
+
+  const NIVELES = {
+    bien:      { nivel:'Bien',      tc:[59,109,17], bg:[218,236,196] },   // verde oscuro
+    normal:    { nivel:'Normal',    tc:K.vk,        bg:K.vb            }, // verde
+    aceptable: { nivel:'Aceptable', tc:[133,79,11], bg:[250,238,218]   }, // amarillo/ámbar
+    atencion:  { nivel:'Atención',  tc:[184,66,4],  bg:[254,237,215]   }, // naranja
+    critico:   { nivel:'Crítico',   tc:K.rk,        bg:K.rb            }, // rojo
   };
+  // Ayudas para clasificar: "más bajo es mejor" o "más alto es mejor"
+  const clasificarMasAltoMejor = (v, umbrales) => {
+    // umbrales = [bien, normal, aceptable, atencion]  (crítico = por debajo de todos)
+    if (v >= umbrales[0]) return NIVELES.bien;
+    if (v >= umbrales[1]) return NIVELES.normal;
+    if (v >= umbrales[2]) return NIVELES.aceptable;
+    if (v >= umbrales[3]) return NIVELES.atencion;
+    return NIVELES.critico;
+  };
+  const clasificarMasBajoMejor = (v, umbrales) => {
+    // umbrales = [bien, normal, aceptable, atencion]
+    if (v <= umbrales[0]) return NIVELES.bien;
+    if (v <= umbrales[1]) return NIVELES.normal;
+    if (v <= umbrales[2]) return NIVELES.aceptable;
+    if (v <= umbrales[3]) return NIVELES.atencion;
+    return NIVELES.critico;
+  };
+
   const totProvsObra = provs.reduce((t,p) => t + (p[1]||0), 0);
   const top3Pct = totProvsObra > 0
     ? provs.slice(0,3).reduce((t,p) => t + (p[1]||0), 0) / totProvsObra * 100
@@ -1160,81 +1263,158 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const trabHE20 = nomData.filter(p => (p.horasExtra||0) >= 20).length;
 
   const rsgBodyCalc = [];
-  // 1. Estimaciones sin cobrar (real)
-  if (te > 0) {
-    const n = nivelPorPct(sinCobrarPct, 20, 40, 60);
-    rsgBodyCalc.push([1,'Estimaciones sin cobrar', PCT(sinCobrarPct), n.nivel, n.tc, n.bg,
-      `${MXN(pco+epc)} pendientes de ${MXN(te)}`]);
+  let idxRiesgo = 1;
+
+  // 1. MARGEN BRUTO — más alto es mejor
+  // Umbrales: ≥20 Bien, 15-20 Normal, 10-15 Aceptable, 5-10 Atención, <5 Crítico
+  if (me > 0) {
+    const n = clasificarMasAltoMejor(mpct, [20, 15, 10, 5]);
+    rsgBodyCalc.push([idxRiesgo++, 'Margen bruto', PCT(mpct), n,
+      `Ejecutado ${MXN(me)} · Gasto ${MXN(totGast)} · Margen ${MXN(mg)}`]);
   }
-  // 2. Frentes sin iniciar (real)
+
+  // 2. AVANCE vs PLAZO — más alto es mejor (avance real - avance programado)
+  if (hayFechas) {
+    const desv = af - pctPlazo;   // positivo = adelantado, negativo = atrasado
+    // Umbrales: ≥0 Bien, -3 Normal, -8 Aceptable, -15 Atención, <-15 Crítico
+    const n = clasificarMasAltoMejor(desv, [0, -3, -8, -15]);
+    rsgBodyCalc.push([idxRiesgo++, 'Avance vs programa',
+      `${desv >= 0 ? '+' : ''}${desv.toFixed(1)}pp`, n,
+      `Real ${PCT(af)} · Programado ${PCT(pctPlazo)} · ${diasRest} días restantes`]);
+  }
+
+  // 3. GASTO vs AVANCE — proporción sana: por cada $ ejecutado, cuánto se gastó
+  // Ideal: gasto/ejecución ≈ 1 - margen_esperado (ej. 0.8 para margen 20%)
+  // Umbrales: <=0.75 Bien, <=0.85 Normal, <=0.95 Aceptable, <=1.05 Atención, >1.05 Crítico
+  if (me > 0) {
+    const ratio = totGast / me;
+    const n = clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05]);
+    rsgBodyCalc.push([idxRiesgo++, 'Gasto vs ejecución', `${ratio.toFixed(2)}x`, n,
+      `Por cada $1 ejecutado se ha gastado $${ratio.toFixed(2)}`]);
+  }
+
+  // 4. ESTIMACIONES SIN COBRAR — más bajo es mejor
+  // Umbrales: ≤10 Bien, ≤25 Normal, ≤40 Aceptable, ≤60 Atención, >60 Crítico
+  if (te > 0) {
+    const n = clasificarMasBajoMejor(sinCobrarPct, [10, 25, 40, 60]);
+    rsgBodyCalc.push([idxRiesgo++, 'Estimaciones sin cobrar', PCT(sinCobrarPct), n,
+      `${MXN(pco + epc)} pendientes de ${MXN(te)}`]);
+  }
+
+  // 5. FRENTES SIN INICIAR — % del total de partidas
   if (subs.length > 0) {
-    const pctSin = subs.length > 0 ? (frentesSinIniciar / subs.length) * 100 : 0;
-    const n = nivelPorPct(pctSin, 30, 50, 70);
-    rsgBodyCalc.push([2,'Frentes sin iniciar', `${frentesSinIniciar}`, n.nivel, n.tc, n.bg,
+    const pctSin = (frentesSinIniciar / subs.length) * 100;
+    // Umbrales: ≤10 Bien, ≤25 Normal, ≤45 Aceptable, ≤65 Atención, >65 Crítico
+    const n = clasificarMasBajoMejor(pctSin, [10, 25, 45, 65]);
+    rsgBodyCalc.push([idxRiesgo++, 'Frentes sin iniciar', `${frentesSinIniciar}`, n,
       `de ${subs.length} partidas con importe (${PCT(pctSin)})`]);
   }
-  // 3. Concentración proveedores (real, solo si hay datos)
+
+  // 6. CONCENTRACIÓN DE PROVEEDORES — más bajo es mejor
+  // Umbrales: ≤30 Bien, ≤45 Normal, ≤60 Aceptable, ≤75 Atención, >75 Crítico
   if (provs.length >= 3) {
-    const n = nivelPorPct(top3Pct, 40, 55, 70);
-    rsgBodyCalc.push([3,'Concentración proveedores', PCT(top3Pct), n.nivel, n.tc, n.bg,
-      `Top 3 acumulan ${PCT(top3Pct)} del gasto de proveedores`]);
+    const n = clasificarMasBajoMejor(top3Pct, [30, 45, 60, 75]);
+    rsgBodyCalc.push([idxRiesgo++, 'Concentración de proveedores', PCT(top3Pct), n,
+      `Top 3 acumulan ${PCT(top3Pct)} del gasto en proveedores`]);
   }
-  // 4. Trabajadores con HE ≥ 20hrs (solo si hay nómina cargada)
+
+  // 7. TRABAJADORES CON HE EXCESIVAS — solo si hay nómina
   if (hayNomina) {
-    const n = nivelPorPct(trabHE20, 1, 3, 5);
-    rsgBodyCalc.push([4,'Trabajadores HE ≥ 20 hrs', `${trabHE20}`,
-      trabHE20 === 0 ? 'Bien' : n.nivel,
-      trabHE20 === 0 ? K.vk : n.tc,
-      trabHE20 === 0 ? K.vb : n.bg,
-      trabHE20 === 0 ? 'Sin horas extra excesivas' : `${trabHE20} trabajador(es) con HE excesivas`]);
+    // Umbrales: 0 Bien, ≤2 Normal, ≤4 Aceptable, ≤7 Atención, >7 Crítico
+    const n = clasificarMasBajoMejor(trabHE20, [0, 2, 4, 7]);
+    rsgBodyCalc.push([idxRiesgo++, 'Trabajadores con HE ≥ 20 hrs', `${trabHE20}`, n,
+      trabHE20 === 0 ? 'Sin horas extra excesivas'
+      : `${trabHE20} trabajador(es) con HE excesivas — revisar turnos`]);
   }
-  // Si NO hay ningún indicador (obra muy nueva), agregar placeholder
+
+  // Si NO hay ningún indicador (obra muy nueva), placeholder
   if (rsgBodyCalc.length === 0) {
-    rsgBodyCalc.push([1,'Sin datos suficientes','—','—', K.gmu, K.glt,
+    rsgBodyCalc.push([1,'Sin datos suficientes','—',
+      {nivel:'—', tc:K.gmu, bg:K.glt},
       'Captura estimaciones, avance y nómina para ver indicadores de riesgo']);
   }
   const rsgBody = rsgBodyCalc;
 
-  const rsgBodyClean=rsgBody.map(([n,titulo,val,,tc,,desc])=>[n,titulo,val,rsgBody.find(r=>r[0]===n)?.[3]||'',desc]);
-  const col4w=CW-10-CW*0.29-36-46-6;
+  // Cada fila ahora es [n, titulo, val, {nivel,tc,bg}, desc]
+  const rsgBodyClean = rsgBody.map(([n, titulo, val, nivelObj, desc]) =>
+    [n, titulo, val, nivelObj?.nivel || '—', desc]);
+  const col4w = CW - 10 - CW*0.30 - 32 - 30 - 6;
   autoT(
     ['#','Indicador','Valor','Nivel','Descripción'], rsgBodyClean,
-    [10,CW*0.29,36,46,col4w], ML, y,
-    {columnStyles:{0:{halign:'center'},2:{halign:'right',fontStyle:'bold'},3:{halign:'center',fontStyle:'bold'}},
-     didParseCell:(d)=>{
-       if(d.column.index===3){
-         const r=rsgBody[d.row.index];
-         if(r){d.cell.styles.textColor=r[4]; d.cell.styles.fillColor=r[5];}
+    [10, CW*0.30, 32, 30, col4w], ML, y,
+    {columnStyles:{0:{halign:'center'}, 2:{halign:'right',fontStyle:'bold'}, 3:{halign:'center',fontStyle:'bold'}},
+     didParseCell:(d) => {
+       if (d.column.index === 3) {
+         const nivelObj = rsgBody[d.row.index]?.[3];
+         if (nivelObj) {
+           d.cell.styles.textColor = nivelObj.tc;
+           d.cell.styles.fillColor = nivelObj.bg;
+         }
        }
      }}
   );
-  y=doc.lastAutoTable.finalY+5;
+  y = doc.lastAutoTable.finalY + 3;
+
+  // Leyenda de la escala
+  st(K.gmu); fs(6.5); fw('bold');
+  T('ESCALA DE NIVELES:', ML, y + 3);
+  let lx = ML + 32;
+  ['bien','normal','aceptable','atencion','critico'].forEach(k => {
+    const n = NIVELES[k];
+    sf(n.bg); R(lx, y + 0.5, 3, 3, 'F');
+    st(n.tc); fs(6.5); fw('bold');
+    T(n.nivel, lx + 4, y + 3);
+    lx += 4 + doc.getTextWidth(n.nivel) + 8;
+  });
+  y += 6;
 
   y=secHead('Observaciones y alertas', y);
-  // Observaciones automáticas basadas SOLO en datos reales de la obra.
-  // (Antes había mensajes hardcoded que se veían en todas las obras aunque
-  //  no aplicaran.)
+  // Observaciones alineadas a la nueva escala de 5 niveles.
   const obs = [];
-  if (mpct < 5) obs.push([K.rk, K.rb, 'CRÍTICO', `Margen bruto ${PCT(mpct)} — muy bajo, revisar productividad y sobrecostos.`]);
-  else if (mpct < 10) obs.push([K.ak2, K.ab2, 'ATENCIÓN', `Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`]);
-  if (epc > 0) obs.push([K.ak, K.ab, 'PENDIENTE', `${MXN(epc)} en proceso de facturación — dar seguimiento con el cliente.`]);
-  if (trabHE20 >= 5) obs.push([K.rk, K.rb, 'CRÍTICO', `${trabHE20} trabajador(es) con HE ≥ 20 hrs — revisar organización de turnos.`]);
+  // Margen (mismos umbrales de la tabla)
+  if (me > 0) {
+    if (mpct < 5) obs.push([NIVELES.critico, `Margen bruto ${PCT(mpct)} — muy bajo, revisar productividad y sobrecostos.`]);
+    else if (mpct < 10) obs.push([NIVELES.atencion, `Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`]);
+    else if (mpct < 15) obs.push([NIVELES.aceptable, `Margen bruto ${PCT(mpct)} — dentro de rango aceptable pero mejorable.`]);
+  }
+  // Estimaciones sin cobrar
+  if (epc > 0) obs.push([NIVELES.atencion,
+    `${MXN(epc)} en proceso de facturación — dar seguimiento con el cliente.`]);
+  // HE excesivas
+  if (trabHE20 >= 5) obs.push([NIVELES.critico,
+    `${trabHE20} trabajador(es) con HE ≥ 20 hrs — revisar organización de turnos.`]);
+  else if (trabHE20 >= 3) obs.push([NIVELES.aceptable,
+    `${trabHE20} trabajador(es) con HE ≥ 20 hrs — vigilar rendimiento.`]);
+  // Anticipo por recuperar
   if (obra.pctAnticipo && te > 0) {
     const porRecuperar = te * (obra.pctAnticipo / 100);
-    if (porRecuperar > 0) obs.push([K.mk, K.mb, 'FINANCIERO', `Anticipo por recuperar: ${MXN(porRecuperar)}`]);
+    if (porRecuperar > 0) obs.push([{nivel:'FINANCIERO', tc:K.mk, bg:K.mb},
+      `Anticipo por recuperar: ${MXN(porRecuperar)}`]);
   }
-  if (obs.length === 0) obs.push([K.vk, K.vb, 'BIEN', 'No se detectaron alertas automáticas con los datos actuales de la obra.']);
+  // Desviación de plazo
+  if (hayFechas) {
+    const desv = af - pctPlazo;
+    if (desv < -15) obs.push([NIVELES.critico,
+      `Atraso significativo: avance real ${PCT(af)} vs programado ${PCT(pctPlazo)} (${desv.toFixed(1)}pp).`]);
+    else if (desv < -8) obs.push([NIVELES.atencion,
+      `Retraso: avance real ${PCT(af)} vs programado ${PCT(pctPlazo)} (${desv.toFixed(1)}pp).`]);
+  }
+  if (obs.length === 0) obs.push([NIVELES.bien,
+    'No se detectaron alertas automáticas con los datos actuales de la obra.']);
 
-  // Tabla plana de observaciones
-  const obsBody=obs.map(([tc,bg,nv,txt])=>[nv,txt]);
+  // Tabla plana de observaciones — nueva estructura: [nivelObj, texto]
+  const obsBody = obs.map(([nivelObj, txt]) => [nivelObj.nivel.toUpperCase(), txt]);
   autoT(
     ['Nivel','Observación'], obsBody,
-    [26,CW-26], ML, y,
-    {columnStyles:{0:{halign:'center',fontStyle:'bold'},1:{halign:'left'}},
-     didParseCell:(d)=>{
-       const r=obs[d.row.index];
-       if(!r) return;
-       if(d.column.index===0){d.cell.styles.textColor=r[0]; d.cell.styles.fillColor=r[1];}
+    [28, CW - 28], ML, y,
+    {columnStyles:{0:{halign:'center', fontStyle:'bold'}, 1:{halign:'left'}},
+     didParseCell:(d) => {
+       const r = obs[d.row.index];
+       if (!r) return;
+       if (d.column.index === 0) {
+         d.cell.styles.textColor = r[0].tc;
+         d.cell.styles.fillColor = r[0].bg;
+       }
      }}
   );
 
