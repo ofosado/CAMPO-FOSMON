@@ -8,7 +8,7 @@ import { CargarOT, HistoricoOT } from "./ot.jsx";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = []) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -968,28 +968,128 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   // ════════════════════════════════════════════════════════════════════════
   // PAGS — FOTOGRAFÍAS
+  // Criterio de selección (corregido jul-2026):
+  //   1. Priorizar partidas con MAYOR DELTA de avance en el corte semanal
+  //      actual vs el anterior (más monto ejecutado esta semana).
+  //   2. Para cada partida seleccionada, tomar sus fotos MÁS RECIENTES.
+  //   3. Si no hay historial (obra nueva o sin snapshots), fallback a las
+  //      partidas con MÁS FOTOS disponibles (proxy de actividad reciente).
+  //   4. Rellenar hasta 12 fotos combinando partidas.
   // ════════════════════════════════════════════════════════════════════════
-  const fotosAll=[];
-  subs.forEach(s=>{
-    const fArr=Array.isArray(s.fotos)?s.fotos:Object.values(s.fotos||{});
-    fArr.forEach(f=>fotosAll.push({sec:s.sec,sub:s.sub||'',conc:f.conc||f.concepto||'',fecha:f.fecha||hoy,url:f.url||null}));
+
+  // Helper: obtener el array plano de fotos de una sub (schema mixto)
+  const fotosDeSub = (s) => {
+    if (!s?.fotos) return [];
+    // s.fotos puede ser: array directo, o objeto {subId: [foto,...], ...}
+    const arr = Array.isArray(s.fotos)
+      ? s.fotos
+      : Object.values(s.fotos).flat().filter(f => f && typeof f === 'object');
+    // Ordenar por fecha descendente (más recientes primero)
+    return arr.slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  };
+
+  // Calcular delta por partida usando historialAvance
+  // El delta representa cuánto avanzó la partida en el último corte
+  const semanasOrd = (historialAvance || []).slice()
+    .sort((a,b) => (a.año - b.año) || (a.semana - b.semana));
+  const snapActual = semanasOrd[semanasOrd.length - 1];
+  const snapAnterior = semanasOrd[semanasOrd.length - 2];
+
+  // Mapa sec → delta monto avanzado esta semana
+  const deltaPorSec = new Map();
+  if (snapActual && Array.isArray(snapActual.subs)) {
+    snapActual.subs.forEach(sa => {
+      const sPrev = snapAnterior?.subs?.find(x => x.sec === sa.sec);
+      const aPrev = sPrev?.a || 0;
+      const delta = (sa.a || 0) - aPrev;
+      if (delta > 0.01) {
+        const deltaMonto = delta * (sa.imp || 0) / 100;
+        deltaPorSec.set(sa.sec, deltaMonto);
+      }
+    });
+  }
+
+  // Rankear partidas: primero por delta semanal, luego por #fotos como fallback
+  const subsConFotos = subs
+    .map(s => ({ s, fotos: fotosDeSub(s), delta: deltaPorSec.get(s.sec) || 0 }))
+    .filter(x => x.fotos.length > 0);
+
+  subsConFotos.sort((a,b) => {
+    // Priorizar las que tienen delta > 0 (avance esta semana)
+    if (a.delta > 0 && b.delta === 0) return -1;
+    if (a.delta === 0 && b.delta > 0) return 1;
+    // Entre las que tienen delta, ordenar por delta descendente
+    if (a.delta > 0 && b.delta > 0) return b.delta - a.delta;
+    // Fallback: por número de fotos (más fotos = más actividad reciente)
+    return b.fotos.length - a.fotos.length;
   });
 
-  const FOTOS_DEF=[
-    {sec:'A1.4',   conc:'Piso recinto negro 10×10cm',   fecha:'27 May 2026'},
-    {sec:'A1.4',   conc:'Guía podotáctil instalada',    fecha:'27 May 2026'},
-    {sec:'A1.7.1', conc:'Relleno base hidráulica',      fecha:'25 May 2026'},
-    {sec:'A1.7.1', conc:'Firme concreto MR-42',          fecha:'25 May 2026'},
-    {sec:'A1.3',   conc:'Instalación tubería PEAD',     fecha:'24 May 2026'},
-    {sec:'A1.3',   conc:'Acostillado y relleno',        fecha:'24 May 2026'},
-    {sec:'B1.9.1', conc:'Cisterna — colado muros',      fecha:'23 May 2026'},
-    {sec:'B1.7',   conc:'Acceso vehicular — base',      fecha:'22 May 2026'},
-    {sec:'B1.4',   conc:'Andador Calle Const.',          fecha:'21 May 2026'},
-    {sec:'A1.5',   conc:'Jardinería — nivelación',      fecha:'20 May 2026'},
-    {sec:'B1.7B',  conc:'Sist. infiltración — zanja',   fecha:'19 May 2026'},
-    {sec:'B1.10.1',conc:'Mobiliario — replanteo',       fecha:'18 May 2026'},
-  ];
-  const fotos12=fotosAll.length>=6?fotosAll.slice(0,12):FOTOS_DEF;
+  // Construir lista de hasta 12 fotos, distribuyendo entre partidas
+  // (para no llenarlo todo con 12 fotos de una sola partida)
+  const fotosAll = [];
+  const MAX_FOTOS_POR_PARTIDA_PRIMER_PASE = 2;
+  // Primer pase: hasta 2 fotos por partida
+  subsConFotos.forEach(({s, fotos}) => {
+    if (fotosAll.length >= 12) return;
+    fotos.slice(0, MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
+      if (fotosAll.length >= 12) return;
+      fotosAll.push({
+        sec: s.sec, sub: s.sub || '',
+        conc: f.conc || f.concepto || s.sub || '',
+        fecha: f.fecha || hoy, url: f.url || null,
+      });
+    });
+  });
+  // Segundo pase: si queda espacio, rellenar con fotos adicionales
+  // de las mismas partidas (más recientes)
+  if (fotosAll.length < 12) {
+    subsConFotos.forEach(({s, fotos}) => {
+      if (fotosAll.length >= 12) return;
+      fotos.slice(MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
+        if (fotosAll.length >= 12) return;
+        fotosAll.push({
+          sec: s.sec, sub: s.sub || '',
+          conc: f.conc || f.concepto || s.sub || '',
+          fecha: f.fecha || hoy, url: f.url || null,
+        });
+      });
+    });
+  }
+
+  // Si NO hay fotos reales, mostrar placeholders informativos (sin datos DEMO)
+  const fotos12 = fotosAll.length > 0 ? fotosAll : Array.from({length:6}, (_,i) => ({
+    sec:'—', sub:'', conc:'Sin fotos capturadas', fecha:'', url:null,
+  }));
+
+  // ── PRE-CARGAR fotos de Storage a base64 ──
+  // jsPDF.addImage no hace fetch async: si le pasamos una URL HTTP, falla
+  // silenciosamente si la imagen no está ya en cache del navegador.
+  // Solución: fetch → blob → data URL antes de dibujar.
+  const urlABase64 = async (url) => {
+    if (!url) return null;
+    if (url.startsWith('data:')) return url;  // ya es base64
+    try {
+      const resp = await fetch(url, { mode: 'cors' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      return await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onloadend = () => res(reader.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+    } catch (e) {
+      console.warn('PDF: no pude cargar foto', url, e?.message || e);
+      return null;
+    }
+  };
+  // Pre-cargar en paralelo — timeout suave para no bloquear el PDF si Storage tarda
+  await Promise.all(fotos12.map(async (f, i) => {
+    if (!f.url) return;
+    const timeout = new Promise(res => setTimeout(() => res(null), 8000));
+    const cargada = await Promise.race([urlABase64(f.url), timeout]);
+    fotos12[i] = { ...f, url: cargada };  // reemplaza URL http por data:image/...;base64,
+  }));
 
   const FW=(CW-8)/3, FH=FW*0.64;
 
@@ -1005,7 +1105,16 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         // Placeholder / foto
         sf(K.bg); sd(K.gbd); lw(0.2); R(fx,fy,FW,FH,'FD');
         if(foto.url){
-          try{ doc.addImage(foto.url,'JPEG',fx,fy,FW,FH,'','FAST'); }catch(e){}
+          try {
+            // Detectar formato: data:image/png o data:image/jpeg
+            const fmt = /^data:image\/(png|jpeg|jpg)/i.exec(foto.url);
+            const tipo = fmt && /png/i.test(fmt[1]) ? 'PNG' : 'JPEG';
+            doc.addImage(foto.url, tipo, fx, fy, FW, FH, '', 'FAST');
+          } catch(e) {
+            console.warn('PDF addImage falló para', foto.sec, e?.message || e);
+            st(K.gmu); fs(6); fw('normal');
+            T('Foto no disponible', fx+FW/2, fy+FH/2, {align:'center'});
+          }
         } else {
           st(K.gmu); fs(10); fw('bold'); T(foto.sec,fx+FW/2,fy+FH/2-3,{align:'center'});
           fs(6); fw('normal'); T('Sin foto — Capturar avance',fx+FW/2,fy+FH/2+4,{align:'center'});
@@ -11997,7 +12106,7 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales,subcontratos)}
+      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales,subcontratos,{},historialAvance)}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
           margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
