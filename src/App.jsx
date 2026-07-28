@@ -11751,12 +11751,21 @@ export default function App(){
   }, [obraId]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
+  // onSnapshot en vez de fsGet — así cuando otro usuario (ej. Aldo en obra)
+  // sube una estimación, aparece en tiempo real sin reiniciar la app.
   useEffect(()=>{
-    if(!obraId||estCargadas) return;
-    fsGet(`obras/${obraId}/config/estimaciones`).then(d=>{
-      if(d&&Array.isArray(d.data)) setEstimaciones(d.data);
+    if(!obraId) return;
+    const ref = doc(fbDb, 'obras', obraId, 'config', 'estimaciones');
+    const unsub = onSnapshot(ref, (snap) => {
+      const d = snap.exists() ? snap.data() : null;
+      if (d && Array.isArray(d.data)) setEstimaciones(d.data);
+      else setEstimaciones([]);
+      setEstCargadas(true);
+    }, (err) => {
+      console.error('estimaciones snapshot', err);
       setEstCargadas(true);
     });
+    return () => unsub();
   },[obraId]);
 
   // ── CARGAR OBRAS desde Firestore al hacer login ──
@@ -11809,10 +11818,11 @@ export default function App(){
     return () => unsub();
   }, [usuario?.uid]);
 
-  // ── CARGA BULK LAZY: datos de obras para el Panel Ejecutivo ──
+  // ── CARGA BULK CON LISTENERS: datos de obras para el Panel Ejecutivo ──
   // Solo se ejecuta cuando: (1) hay usuario, (2) está en pantalla "obras"
   // (donde vive el Panel Ejecutivo), (3) tiene rol que ve el panel.
-  // Si está dentro de una sola obra, NO se necesita el bulk.
+  // Usa onSnapshot por obra para que estimaciones/otros gastos/etc de
+  // cualquier residente aparezcan en tiempo real sin reiniciar la app.
   const[datosPorObra,setDatosPorObra]=useState({});
   const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
   const verPanelEjecutivo = usuario && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol);
@@ -11822,37 +11832,51 @@ export default function App(){
     if(!verPanelEjecutivo) return;   // solo si va a ver el Panel Ejecutivo
     const activas = obras.filter(o=>o.estado!=="archivada");
     if(activas.length<2) return;     // el Panel Ejecutivo solo se muestra con ≥2 obras
-    // Si ya tenemos los datos de todas las activas, no recargar
-    const yaTodos = activas.every(o => datosPorObra[o.id]);
-    if (yaTodos) return;
-    Promise.all(activas.map(async(o)=>{
-      const [info, subsData, maqData, matData, estData, otrosData] = await Promise.all([
-        fsGet(`obras/${o.id}/config/info`),
-        fsGet(`obras/${o.id}/avance/subs`),
-        fsGet(`obras/${o.id}/avance/maquinaria`),
-        fsGet(`obras/${o.id}/avance/materiales`),
-        fsGet(`obras/${o.id}/config/estimaciones`),
-        fsGet(`obras/${o.id}/config/otros_gastos`),
-      ]);
-      let subsFinales = [];
-      if(subsData && Array.isArray(subsData.data)) subsFinales = subsData.data;
-      return [o.id, {
-        info: info || {},
-        subs: subsFinales,
-        maquinaria: (maqData && Array.isArray(maqData.data)) ? maqData.data : [],
-        materiales: (matData && Array.isArray(matData.data)) ? matData.data : [],
-        estimaciones: (estData && Array.isArray(estData.data)) ? estData.data : [],
-        otrosGastos: (otrosData && Array.isArray(otrosData.items)) ? otrosData.items : [],
-      }];
-    })).then(pares => {
-      const mapa = Object.fromEntries(pares);
-      setDatosPorObra(mapa);
-      // Enriquecer obras con info de Firestore
-      setObras(oo => oo.map(o => {
-        const inf = mapa[o.id]?.info || {};
-        return { ...o, ...inf };
-      }));
+
+    // Helper para actualizar una parte del mapa datosPorObra sin pisar otras
+    const patch = (id, parcial) => setDatosPorObra(prev => ({
+      ...prev,
+      [id]: { ...(prev[id] || {info:{},subs:[],maquinaria:[],materiales:[],estimaciones:[],otrosGastos:[]}), ...parcial },
+    }));
+
+    // Un listener por documento por obra. Se limpian todos al cambiar obras
+    // activas o al salir de la pantalla.
+    const unsubs = [];
+    activas.forEach(o => {
+      // info general (para enriquecer la obra)
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'info'), snap => {
+        const info = snap.exists() ? snap.data() : {};
+        patch(o.id, { info });
+        setObras(oo => oo.map(ob => ob.id === o.id ? { ...ob, ...info } : ob));
+      }, err => console.warn('bulk info', o.id, err)));
+      // subs (avance)
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'subs'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        patch(o.id, { subs: (d && Array.isArray(d.data)) ? d.data : [] });
+      }, err => console.warn('bulk subs', o.id, err)));
+      // maquinaria
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'maquinaria'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        patch(o.id, { maquinaria: (d && Array.isArray(d.data)) ? d.data : [] });
+      }, err => console.warn('bulk maq', o.id, err)));
+      // materiales
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'materiales'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        patch(o.id, { materiales: (d && Array.isArray(d.data)) ? d.data : [] });
+      }, err => console.warn('bulk mat', o.id, err)));
+      // estimaciones — LO QUE FALTABA para el dashboard portafolio
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'estimaciones'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        patch(o.id, { estimaciones: (d && Array.isArray(d.data)) ? d.data : [] });
+      }, err => console.warn('bulk est', o.id, err)));
+      // otros gastos
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'otros_gastos'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
+      }, err => console.warn('bulk otros', o.id, err)));
     });
+
+    return () => unsubs.forEach(u => u());
   },[usuario, obrasActivasKey, screen, verPanelEjecutivo]);
 
   if(!usuario) return <><style>{css}</style><Login onLogin={u=>{
