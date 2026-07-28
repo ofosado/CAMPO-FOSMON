@@ -8,7 +8,7 @@ import { CargarOT, HistoricoOT } from "./ot.jsx";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = []) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -72,13 +72,52 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;
   const hoy  = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
 
+  // ── Resolver obra GP del Sheet (para tomar nombre corto + gasto en vivo) ──
+  // Prioriza gpId explícito, luego id de 4 dígitos, luego match por nombre.
+  const obraGP = (() => {
+    if (!gpData?.obras) return null;
+    const arr = Object.values(gpData.obras);
+    if (obra?.gpId) {
+      const m = arr.find(o => o.id === obra.gpId);
+      if (m) return m;
+    }
+    if (/^\d{4}/.test(obra?.id || '')) {
+      const m = arr.find(o => o.id === obra.id.slice(0, 4));
+      if (m) return m;
+    }
+    const norm = s => (s||'').toString().toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+    const palabrasObra = norm(obra?.nombre).split(' ').filter(w => w.length > 3);
+    let mejor = null, score = 0;
+    for (const o of arr) {
+      const palGP = norm(o.nombre).replace(/^\d{4}\s*/,'').split(' ').filter(w => w.length > 3);
+      const matches = palabrasObra.filter(p => palGP.some(g => g.includes(p) || p.includes(g))).length;
+      if (matches > score) { score = matches; mejor = o; }
+    }
+    return score >= 2 ? mejor : null;
+  })();
+
+  // Nombre corto: quita el prefijo de 4 dígitos y el sufijo tipo "0526".
+  // Ej: "0125 TAMSA VER SERVICIOS ESPECIALIZADOS 0526" → "TAMSA VER SERVICIOS ESPECIALIZADOS".
+  const nombreCorto = ((obraGP?.nombre) || obra?.nombre || '')
+    .replace(/^\d{4}\s+/, '')
+    .replace(/\s+\d{4}\s*$/, '')
+    .trim() || (obra?.nombre || 'Obra');
+
   // KPIs derivados — con campos reales del app
   const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
   const maqActivos = maquinaria.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
   const totAlm  = matActivos.reduce((t,m)=>t+pf(m.imp),0);
   const totMaq  = maqActivos.reduce((t,m)=>t+pf(m.imp),0);
-  const totGP   = pf(obra.gastoGP);
-  const totGast = totGP + totMaq;
+  // Gasto GP: preferir grandTotal en vivo del Sheet; fallback al legacy.
+  const totGP = obraGP
+    ? (obraGP.grandTotal || obraGP.total2026 || pf(obra.gastoGP))
+    : pf(obra.gastoGP);
+  // Otros gastos manuales (Gastos → Otros gastos)
+  const totOtros = (otrosGastos || []).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
+  // Gasto total = GP + maquinaria propia + otros gastos
+  // (mismo criterio que Dashboard y Panel Ejecutivo — evita discrepancias)
+  const totGast = totGP + totMaq + totOtros;
   const am      = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
   const me      = am + totAlm;
   const af      = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
@@ -122,7 +161,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     fs(6.5); fw('normal');
     T(`Reporte ejecutivo · ${B.empresa}`, ML+10, 9.5);
     fs(8); fw('bold');
-    T(obra.nombre||'', PW-MR, 5, {align:'right'});
+    T(nombreCorto, PW-MR, 5, {align:'right'});
     fs(6.5); fw('normal');
     T(`${obra.contrato||''} · ${hoy}`, PW-MR, 9.5, {align:'right'});
     // Footer (la página total se reescribe al final cuando ya conocemos totalPages)
@@ -223,7 +262,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   fs(7.5); fw('normal'); T('REPORTE DE AVANCE DE OBRA', ML, 64);
   sd(K.wh); lw(0.4); L(ML, 66.5, ML+55, 66.5);
   fs(13); fw('bold');
-  const nomLines=doc.splitTextToSize(obra.nombre||'',PW*0.38);
+  const nomLines=doc.splitTextToSize(nombreCorto, PW*0.38);
   T(nomLines, ML, 74);
   fs(7.5); fw('normal');
   T(obra.ubicacion||'FOSMON Construcciones', ML, 82);
@@ -306,27 +345,50 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     }}
   );
 
-  // Columna derecha: gasto por rubro — misma Y de inicio
-  const rubros=[['Materiales',13203452],['Sueldos y salarios',11677695],
-    ['Indirectos',3547181],['Renta y maquinaria',652372],['Subcontratos',249500]];
-  const totRub=rubros.reduce((t,r)=>t+r[1],0);
-  const rubBody=[
-    ...rubros.map(([nm,mt])=>[nm,MXN(mt),PCT(mt/totRub*100),PCT(mt/PPTO*100)]),
-    ['TOTAL GP',MXN(totRub),'100.0%',PCT(totRub/PPTO*100)],
-  ];
+  // Columna derecha: gasto por rubro — datos REALES del detalle GP.
+  // (Antes había valores hardcoded [Materiales, Sueldos, etc.] que salían
+  //  iguales en todas las obras.)
+  let rubBody, filasRubros;
+  if (gpDetalle && gpDetalle.rubros && Object.keys(gpDetalle.rubros).length > 0) {
+    const rubArr = Object.values(gpDetalle.rubros)
+      .map(r => ({ nombre: r.nombreCorto || r.nombre || r.id, monto: r.grandTotal || 0 }))
+      .filter(r => r.monto > 0)
+      .sort((a,b) => b.monto - a.monto);
+    const totRub = rubArr.reduce((t,r) => t + r.monto, 0);
+    filasRubros = rubArr.length;
+    rubBody = [
+      ...rubArr.map(r => [
+        String(r.nombre).slice(0, 34),
+        MXN(r.monto),
+        PCT(totRub > 0 ? r.monto/totRub*100 : 0),
+        PCT(PPTO > 0 ? r.monto/PPTO*100 : 0),
+      ]),
+      ['TOTAL GP', MXN(totRub), '100.0%', PCT(PPTO > 0 ? totRub/PPTO*100 : 0)],
+    ];
+  } else {
+    filasRubros = 1;
+    rubBody = [['Detalle GP no cargado','—','—','—']];
+  }
   const yAfterRub = autoT(
     ['Rubro','Monto','% GP','% Ppto'], rubBody,
     [RW*0.46,RW*0.22,RW*0.16,RW*0.16], xR2, y,
     {columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}},
      didParseCell:(d)=>{
-       if(d.row.index===rubros.length){
+       if(gpDetalle && d.row.index === filasRubros){
          d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+       }
+       if(!gpDetalle) {
+         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
        }
      }}
   );
   y=Math.max(yAfterCont, yAfterRub)+2;
 
-  // ── Estimaciones ─────────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG — ESTIMACIONES AL CLIENTE (hoja propia + gráfica mensual)
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
   y=secHead('2  ESTIMACIONES AL CLIENTE', y);
 
   // Filtrar solo estimaciones con datos reales
@@ -403,72 +465,140 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Por cobrar', MXN(pco), 'facturado + aprobado',  K.mk],
     ['En proceso', MXN(epc), 'en elaboración',         K.ak2],
     ['Total est.', MXN(te),  PCT(te/PPTO*100)+' contrato', K.ak],
-  ], y);
+  ], y) + 4;
 
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 3 — ALMACÉN + MAQUINARIA
-  // (El avance físico detallado se ve mejor en la gráfica visual de la pág 4.
-  // El catálogo completo de partidas puede tener cientos de renglones y no
-  // aporta valor ejecutivo, por eso ya no se incluye aquí.)
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
+  // ── GRÁFICA DE ESTIMADO MES A MES ─────────────────────────────────────
+  // Agrupa estimaciones por mes de captura/periodo y dibuja barras verticales
+  // simples. Ayuda a ver la cadencia de facturación al cliente.
+  if (estActivas.length > 0) {
+    const parseFechaEst = (e) => {
+      // Intenta obtener una fecha del estimado: fechaFact, fecha, o parsea periodo
+      if (e.fechaFact) return new Date(e.fechaFact);
+      if (e.fecha) return new Date(e.fecha);
+      const p = e.periodo || '';
+      const m = p.match(/(\d{2,4}[-/]\d{1,2})|(\w{3,}\.?\s+\d{2,4})/i);
+      if (m) { const d = new Date(m[0]); if (!isNaN(d)) return d; }
+      return null;
+    };
+    const porMes = new Map();  // "YYYY-MM" → monto
+    estActivas.forEach(e => {
+      const f = parseFechaEst(e);
+      if (!f || isNaN(f)) return;
+      const key = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
+      porMes.set(key, (porMes.get(key) || 0) + (e.monto || 0));
+    });
+    const mesesOrdenados = [...porMes.keys()].sort();
+    if (mesesOrdenados.length >= 1) {
+      st(K.ng); fs(FS_SEC); fw('bold');
+      T('Estimado por mes', ML, y + 4);
+      y += 6;
+      const chartH = 42, chartX = ML + 4, chartW = CW - 8;
+      const chartY = y;
+      // Fondo
+      sf(K.glt); R(chartX, chartY, chartW, chartH, 'F');
+      sd(K.gbd); lw(0.2); doc.rect(chartX, chartY, chartW, chartH, 'S');
+      // Escala vertical simple
+      const montos = mesesOrdenados.map(m => porMes.get(m));
+      const maxMonto = Math.max(...montos, 1);
+      const barGap = 3;
+      const barW = Math.max(6, (chartW - barGap * (mesesOrdenados.length + 1)) / mesesOrdenados.length);
+      mesesOrdenados.forEach((mesKey, i) => {
+        const monto = porMes.get(mesKey);
+        const h = (monto / maxMonto) * (chartH - 12);
+        const bx = chartX + barGap + i * (barW + barGap);
+        const by = chartY + chartH - h - 8;
+        sf(K.ak); R(bx, by, barW, h, 'F');
+        // Etiqueta monto arriba de la barra
+        st(K.ng); fs(6.5); fw('bold');
+        T(MXN(monto), bx + barW/2, by - 1, {align:'center'});
+        // Etiqueta mes debajo
+        st(K.gtx); fs(6); fw('normal');
+        const [yr, mo] = mesKey.split('-');
+        const mesesLbl = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+        T(`${mesesLbl[parseInt(mo)-1]} ${yr.slice(2)}`, bx + barW/2, chartY + chartH - 2, {align:'center'});
+      });
+      y = chartY + chartH + 4;
+    }
+  }
 
   // Variables compartidas que usan secciones siguientes (totales, ejecución)
   const subsActivos=subs.filter(s=>s.imp>0);
   const totImp=subsActivos.reduce((t,s)=>t+s.imp,0);
   const totEjec=subsActivos.reduce((t,s)=>t+(s.a/100)*s.imp,0);
 
-  // ── Almacén + Maquinaria en 2 columnas ──────────────────────────────────
-  y=secHead('3  ALMACÉN · MATERIALES EN TRÁNSITO · MAQUINARIA PROPIA', y);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 3 — ALMACÉN (materiales en tránsito)
+  // Primero Almacén, luego Maquinaria en su propia hoja.
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('3  ALMACÉN · MATERIALES EN TRÁNSITO', y);
 
-  const LW5=CW*0.56, RW5=CW-LW5-5;
-  // Si no hay materiales, mostrar un renglón vacío indicando que no se ha capturado
-  const matBody = matActivos.length > 0
-    ? [...matActivos.map(m=>[m.desc||'',m.concepto||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
-       ['TOTAL ALMACÉN','','','',MXN(totAlm)]]
-    : [['Sin materiales capturados','','','','—']];
-  const yAM=autoT(
-    ['Material','Condición','Vol.','Und','Importe'], matBody,
-    [LW5*0.40,LW5*0.22,LW5*0.10,LW5*0.10,LW5*0.18],
-    ML, y,
-    {columnStyles:{2:{halign:'right'},4:{halign:'right'}},
-     didParseCell:(d)=>{
-       if(matActivos.length > 0 && d.row.index===matActivos.length){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
-       }
-       if(matActivos.length === 0){
-         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
-       }
-     }}
-  );
+  if (matActivos.length > 0) {
+    const matBody = [
+      ...matActivos.map(m => [m.desc||'', m.concepto||'', m.vol||'', m.und||'', MXN(pf(m.imp))]),
+      ['TOTAL ALMACÉN', '', '', '', MXN(totAlm)],
+    ];
+    autoT(
+      ['Material', 'Condición', 'Vol.', 'Und', 'Importe'], matBody,
+      [CW*0.42, CW*0.22, CW*0.10, CW*0.10, CW*0.16],
+      ML, y,
+      {columnStyles:{2:{halign:'right'}, 4:{halign:'right'}},
+       didParseCell:(d) => {
+         if (d.row.index === matActivos.length) {
+           d.cell.styles.fillColor = K.ng; d.cell.styles.textColor = K.wh;
+           d.cell.styles.fontStyle = 'bold';
+         }
+       }}
+    );
+  } else {
+    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
+    st(K.gmu); fs(11); fw('bold');
+    T('Sin materiales capturados en almacén', ML + CW/2, y + 10, {align:'center'});
+    st(K.gmu); fs(8); fw('normal');
+    T('Los materiales que pasan por bodega se capturan en Operación → Almacén.',
+      ML + CW/2, y + 16, {align:'center'});
+  }
 
-  const maqBody = maqActivos.length > 0
-    ? [...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.imp))]),
-       ['TOTAL MAQUINARIA','','',MXN(totMaq)]]
-    : [['Sin maquinaria capturada','','','—']];
-  const yMQ=autoT(
-    ['Equipo','Cant.','Unidad','Importe'], maqBody,
-    [RW5*0.62,RW5*0.12,RW5*0.11,RW5*0.15],
-    ML+LW5+5, y,
-    {columnStyles:{1:{halign:'center'},3:{halign:'right'}},
-     didParseCell:(d)=>{
-       if(maqActivos.length > 0 && d.row.index===maqActivos.length){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
-       }
-       if(maqActivos.length === 0){
-         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
-       }
-     }}
-  );
-  y=Math.max(yAM,yMQ);
+  // ════════════════════════════════════════════════════════════════════════
+  // PAG 4 — MAQUINARIA PROPIA
+  // ════════════════════════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  y=CY0;
+  y=secHead('4  MAQUINARIA PROPIA EN OBRA', y);
+
+  if (maqActivos.length > 0) {
+    const maqBody = [
+      ...maqActivos.map(m => [m.desc||'', m.vol||'', m.und||'', MXN(pf(m.pu||0)), MXN(pf(m.imp))]),
+      ['TOTAL MAQUINARIA', '', '', '', MXN(totMaq)],
+    ];
+    autoT(
+      ['Equipo', 'Cant.', 'Unidad', 'P.U.', 'Importe'], maqBody,
+      [CW*0.50, CW*0.10, CW*0.10, CW*0.15, CW*0.15],
+      ML, y,
+      {columnStyles:{1:{halign:'center'}, 3:{halign:'right'}, 4:{halign:'right'}},
+       didParseCell:(d) => {
+         if (d.row.index === maqActivos.length) {
+           d.cell.styles.fillColor = K.ng; d.cell.styles.textColor = K.wh;
+           d.cell.styles.fontStyle = 'bold';
+         }
+       }}
+    );
+  } else {
+    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
+    st(K.gmu); fs(11); fw('bold');
+    T('Sin maquinaria propia registrada', ML + CW/2, y + 10, {align:'center'});
+    st(K.gmu); fs(8); fw('normal');
+    T('Los equipos propios en obra se capturan en Operación → Maquinaria.',
+      ML + CW/2, y + 16, {align:'center'});
+  }
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 4 — GRÁFICA VISUAL DE AVANCE (top partidas + comparativo)
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('4  GRÁFICA DE AVANCE FÍSICO', y);
+  y=secHead('5  GRÁFICA DE AVANCE FÍSICO', y);
 
   // KPIs resumen arriba
   const subsConAv = subs.filter(s=>s.imp>0);
@@ -593,7 +723,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('5  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
+  y=secHead('6  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
 
   // ── Gráfica de proyección ────────────────────────────────────────────────
   // Área: CW × 52mm
@@ -726,87 +856,84 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=Math.max(yPL,yPR);
 
   // ════════════════════════════════════════════════════════════════════════
-  // PAG 5 — PERSONAL · NÓMINA · PROVEEDORES · MAQUINARIA
+  // PAG 5 — PERSONAL · NÓMINA · TOP PROVEEDORES
+  // (La sección de MAQUINARIA se dibuja en su propia página junto con
+  //  ALMACÉN — no se duplica aquí como antes.)
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('6  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
+  y=secHead('7  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
 
-  const nomData=typeof NOMINA_S18!=='undefined'?NOMINA_S18:[];
-  const dir=nomData.filter(p=>p.tipo==='D').length;
-  const ind=nomData.filter(p=>p.tipo==='I').length;
-  const tot=dir+ind||66;
-  const conHE=nomData.filter(p=>(p.horasExtra||0)>0).length||53;
+  // Solo usa datos reales de nómina cargada. Si no hay, muestra placeholder.
+  // (Antes había fallbacks fantasma "||66" y "||53" que dejaban valores de
+  // muestra de una versión de demo.)
+  const nomData = typeof NOMINA_S18 !== 'undefined' ? NOMINA_S18 : [];
+  const hayNomina = nomData.length > 0;
+  const dir = nomData.filter(p => p.tipo === 'D').length;
+  const ind = nomData.filter(p => p.tipo === 'I').length;
+  const tot = dir + ind;
+  const conHE = nomData.filter(p => (p.horasExtra || 0) > 0).length;
 
-  y=kpiRow([
-    ['Total personal',String(tot),'trabajadores en sitio',K.ng],
-    ['Directo',String(dir),'mano de obra',K.ak],
-    ['Indirecto',String(ind),'administración',K.mk],
-    ['Con horas extra',String(conHE),'semana actual',K.ak2],
-  ], y)+2;
+  if (hayNomina) {
+    y = kpiRow([
+      ['Total personal',  String(tot),   'trabajadores en sitio', K.ng],
+      ['Directo',         String(dir),   'mano de obra',          K.ak],
+      ['Indirecto',       String(ind),   'administración',        K.mk],
+      ['Con horas extra', String(conHE), 'semana actual',         K.ak2],
+    ], y) + 2;
+  } else {
+    // Placeholder cuando no hay nómina cargada
+    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
+    st(K.gmu); fs(11); fw('bold');
+    T('Nómina pendiente de cargar', ML + CW/2, y + 10, {align:'center'});
+    st(K.gmu); fs(8); fw('normal');
+    T('El Administrador de Obra sube el Excel semanal desde Operación → Nómina.',
+      ML + CW/2, y + 16, {align:'center'});
+    y += 26;
+  }
 
-  const LW7=CW*0.50, RW7=CW-LW7-5;
+  const LW7 = CW * 0.50, RW7 = CW - LW7 - 5;
 
-  // Top 5 nómina (renglón vacío si no hay)
-  const nom5=nomData.slice().sort((a,b)=>(b.total||0)-(a.total||0)).slice(0,5);
+  // Top 5 nómina (solo si hay datos)
+  const nom5 = nomData.slice().sort((a,b) => (b.total||0) - (a.total||0)).slice(0,5);
   const nomBody = nom5.length > 0
-    ? nom5.map((pe,i)=>[
+    ? nom5.map((pe,i) => [
         i+1, pe.nombre||'', pe.categoria||pe.cat||'',
         `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
       ])
     : [['—','Sin nómina capturada','—','—','—']];
-  const yNom=autoT(
+  const yNom = autoT(
     ['#','Trabajador','Categoría','HE hrs','Total semana'], nomBody,
-    [8,LW7*0.44,LW7*0.28,LW7*0.12,LW7*0.16], ML, y,
+    [8, LW7*0.44, LW7*0.28, LW7*0.12, LW7*0.16], ML, y,
     {columnStyles:{0:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
-     didParseCell:(d)=>{
-       if(nom5.length === 0){
-         d.cell.styles.textColor=K.gmu; d.cell.styles.fontStyle='italic';
+     didParseCell:(d) => {
+       if (nom5.length === 0) {
+         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
          return;
        }
-       if(d.column.index===3){
-         const he=parseFloat(d.cell.text[0])||0;
-         d.cell.styles.textColor=he>=20?K.rk:K.ak2;
-         d.cell.styles.fontStyle='bold';
+       if (d.column.index === 3) {
+         const he = parseFloat(d.cell.text[0]) || 0;
+         d.cell.styles.textColor = he >= 20 ? K.rk : K.ak2;
+         d.cell.styles.fontStyle = 'bold';
        }
-       if(d.column.index===4){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=K.ng;}
+       if (d.column.index === 4) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = K.ng; }
      }}
   );
 
   // Top 5 proveedores — solo si hay datos reales de la obra
   const provs = Array.isArray(obra.proveedores) && obra.proveedores.length > 0
     ? obra.proveedores : [];
-  const totPv = provs.reduce((t,p)=>t+p[1],0);
-  // El % se calcula sobre el total de los proveedores mostrados (no contra totGP
-  // de toda la obra, que puede ser muy distinto y producir porcentajes absurdos)
+  const totPv = provs.reduce((t,p) => t + p[1], 0);
   const pvBody = provs.length > 0
     ? provs.map(([nm,mt],i) => [i+1, nm.slice(0,28), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
     : [['—','Sin datos en esta obra','—','—']];
-  const yPv=autoT(
+  autoT(
     ['#','Proveedor','Monto acumulado','% del top'], pvBody,
-    [8,RW7*0.52,RW7*0.28,RW7*0.20], ML+LW7+5, y,
+    [8, RW7*0.52, RW7*0.28, RW7*0.20], ML+LW7+5, y,
     {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}},
      didParseCell:(d) => {
        if (provs.length === 0) {
-         d.cell.styles.textColor = K.gmu;
-         d.cell.styles.fontStyle = 'italic';
-       }
-     }}
-  );
-  y=Math.max(yNom,yPv)+3;
-
-  y=secHead('Maquinaria propia en obra', y);
-  const maq2Body=[
-    ...maqActivos.map(m=>[m.desc||'',m.vol||'',m.und||'',MXN(pf(m.pu||0)),MXN(pf(m.imp))]),
-    ['TOTAL MAQUINARIA','','','',MXN(totMaq)],
-  ];
-  autoT(
-    ['Equipo','Cant.','Unidad','P.U.','Importe'], maq2Body,
-    [CW*0.53,CW*0.08,CW*0.10,CW*0.15,CW*0.14], ML, y,
-    {columnStyles:{1:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
-     didParseCell:(d)=>{
-       if(d.row.index===maqActivos.length){
-         d.cell.styles.fillColor=K.ng; d.cell.styles.textColor=K.wh; d.cell.styles.fontStyle='bold';
+         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
        }
      }}
   );
@@ -816,17 +943,63 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ════════════════════════════════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y=CY0;
-  y=secHead('7  INDICADORES DE RIESGO · OBSERVACIONES', y);
+  y=secHead('8  INDICADORES DE RIESGO · OBSERVACIONES', y);
 
-  const rsgBody=[
-    [1,'Brecha avance vs gasto','+0.8pp','Normal',K.vk,K.vb,'Avance y gasto alineados'],
-    [2,'Velocidad quema presupuesto','1.04x','Vigilancia',K.ak2,K.ab2,'Ritmo ligeramente acelerado'],
-    [3,'Estimaciones sin cobrar',PCT((pco+epc)/Math.max(te,1)*100),'Vigilancia',K.ak2,K.ab2,'Monto pendiente de cobro'],
-    [4,'Frentes sin iniciar',String(subs.filter(s=>s.a===0).length),'Vigilancia',K.ak2,K.ab2,'Frentes con avance 0%'],
-    [5,'Concentración proveedores','54%','Vigilancia',K.ak2,K.ab2,'Top 3 = 54% del gasto GP'],
-    [6,'Incremento nómina s/s','+15%','Vigilancia',K.ak2,K.ab2,'Incremento moderado, revisar HE'],
-    [7,'Trabajadores HE ≥ 20hrs',String(nomData.filter(p=>(p.horasExtra||0)>=20).length||8)+' pers.','Crítico',K.rk,K.rb,'8 trabajadores con HE excesivas'],
-  ];
+  // Indicadores de riesgo — calculados con datos reales de la obra.
+  // (Antes había valores hardcoded como "+0.8pp", "1.04x", "54%", "+15%",
+  //  "8 trabajadores" que se veían iguales en todas las obras.)
+  // La escala de 5 niveles (Bien/Normal/Aceptable/Atención/Crítico) se
+  // implementará en fase 2. Por ahora solo se muestran indicadores con
+  // datos reales; los que no tienen fuente confiable se omiten.
+  const nivelPorPct = (pct, buenoMin, atenMin, critMin) => {
+    if (pct >= critMin) return { nivel:'Crítico',    tc:K.rk,  bg:K.rb  };
+    if (pct >= atenMin) return { nivel:'Atención',   tc:K.ak2, bg:K.ab2 };
+    if (pct >= buenoMin) return { nivel:'Normal',    tc:K.vk,  bg:K.vb  };
+    return { nivel:'Bien', tc:K.vk, bg:K.vb };
+  };
+  const totProvsObra = provs.reduce((t,p) => t + (p[1]||0), 0);
+  const top3Pct = totProvsObra > 0
+    ? provs.slice(0,3).reduce((t,p) => t + (p[1]||0), 0) / totProvsObra * 100
+    : 0;
+  const sinCobrarPct = te > 0 ? (pco + epc) / te * 100 : 0;
+  const frentesSinIniciar = subs.filter(s => (s.a||0) === 0 && (s.imp||0) > 0).length;
+  const trabHE20 = nomData.filter(p => (p.horasExtra||0) >= 20).length;
+
+  const rsgBodyCalc = [];
+  // 1. Estimaciones sin cobrar (real)
+  if (te > 0) {
+    const n = nivelPorPct(sinCobrarPct, 20, 40, 60);
+    rsgBodyCalc.push([1,'Estimaciones sin cobrar', PCT(sinCobrarPct), n.nivel, n.tc, n.bg,
+      `${MXN(pco+epc)} pendientes de ${MXN(te)}`]);
+  }
+  // 2. Frentes sin iniciar (real)
+  if (subs.length > 0) {
+    const pctSin = subs.length > 0 ? (frentesSinIniciar / subs.length) * 100 : 0;
+    const n = nivelPorPct(pctSin, 30, 50, 70);
+    rsgBodyCalc.push([2,'Frentes sin iniciar', `${frentesSinIniciar}`, n.nivel, n.tc, n.bg,
+      `de ${subs.length} partidas con importe (${PCT(pctSin)})`]);
+  }
+  // 3. Concentración proveedores (real, solo si hay datos)
+  if (provs.length >= 3) {
+    const n = nivelPorPct(top3Pct, 40, 55, 70);
+    rsgBodyCalc.push([3,'Concentración proveedores', PCT(top3Pct), n.nivel, n.tc, n.bg,
+      `Top 3 acumulan ${PCT(top3Pct)} del gasto de proveedores`]);
+  }
+  // 4. Trabajadores con HE ≥ 20hrs (solo si hay nómina cargada)
+  if (hayNomina) {
+    const n = nivelPorPct(trabHE20, 1, 3, 5);
+    rsgBodyCalc.push([4,'Trabajadores HE ≥ 20 hrs', `${trabHE20}`,
+      trabHE20 === 0 ? 'Bien' : n.nivel,
+      trabHE20 === 0 ? K.vk : n.tc,
+      trabHE20 === 0 ? K.vb : n.bg,
+      trabHE20 === 0 ? 'Sin horas extra excesivas' : `${trabHE20} trabajador(es) con HE excesivas`]);
+  }
+  // Si NO hay ningún indicador (obra muy nueva), agregar placeholder
+  if (rsgBodyCalc.length === 0) {
+    rsgBodyCalc.push([1,'Sin datos suficientes','—','—', K.gmu, K.glt,
+      'Captura estimaciones, avance y nómina para ver indicadores de riesgo']);
+  }
+  const rsgBody = rsgBodyCalc;
 
   const rsgBodyClean=rsgBody.map(([n,titulo,val,,tc,,desc])=>[n,titulo,val,rsgBody.find(r=>r[0]===n)?.[3]||'',desc]);
   const col4w=CW-10-CW*0.29-36-46-6;
@@ -844,12 +1017,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=doc.lastAutoTable.finalY+5;
 
   y=secHead('Observaciones y alertas', y);
-  const obs=[
-    [K.ak2,K.ab2,'VIGILANCIA',`Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`],
-    [K.ak,K.ab,'PENDIENTE',`EST en proceso ${MXN(epc)} — gestionar cobro prioritario con el cliente.`],
-    [K.rk,K.rb,'CRÍTICO','Trabajadores con HE ≥ 20hrs — revisar organización de turnos.'],
-    [K.mk,K.mb,'FINANCIERO',`Anticipo por recuperar: ${MXN(te*(obra.pctAnticipo||10)/100)}`],
-  ];
+  // Observaciones automáticas basadas SOLO en datos reales de la obra.
+  // (Antes había mensajes hardcoded que se veían en todas las obras aunque
+  //  no aplicaran.)
+  const obs = [];
+  if (mpct < 5) obs.push([K.rk, K.rb, 'CRÍTICO', `Margen bruto ${PCT(mpct)} — muy bajo, revisar productividad y sobrecostos.`]);
+  else if (mpct < 10) obs.push([K.ak2, K.ab2, 'ATENCIÓN', `Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`]);
+  if (epc > 0) obs.push([K.ak, K.ab, 'PENDIENTE', `${MXN(epc)} en proceso de facturación — dar seguimiento con el cliente.`]);
+  if (trabHE20 >= 5) obs.push([K.rk, K.rb, 'CRÍTICO', `${trabHE20} trabajador(es) con HE ≥ 20 hrs — revisar organización de turnos.`]);
+  if (obra.pctAnticipo && te > 0) {
+    const porRecuperar = te * (obra.pctAnticipo / 100);
+    if (porRecuperar > 0) obs.push([K.mk, K.mb, 'FINANCIERO', `Anticipo por recuperar: ${MXN(porRecuperar)}`]);
+  }
+  if (obs.length === 0) obs.push([K.vk, K.vb, 'BIEN', 'No se detectaron alertas automáticas con los datos actuales de la obra.']);
 
   // Tabla plana de observaciones
   const obsBody=obs.map(([tc,bg,nv,txt])=>[nv,txt]);
@@ -865,10 +1045,20 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   );
 
   // ════════════════════════════════════════════════════════════════════════
-  // RESUMEN EJECUTIVO DE SUBCONTRATOS (tabla compacta de todos)
-  // Solo aparece si hay subcontratos. Va antes del detalle individual.
+  // SUBCONTRATOS: resumen ejecutivo + slide individual por subcontrato
+  // Si NO hay subcontratos, un slide con placeholder informativo y ya.
   // ════════════════════════════════════════════════════════════════════════
-  if (subcontratos && subcontratos.length > 0) {
+  if (!subcontratos || subcontratos.length === 0) {
+    doc.addPage(); pageFrame();
+    y = CY0;
+    y = secHead('SUBCONTRATOS', y);
+    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 26, 'FD');
+    st(K.gmu); fs(12); fw('bold');
+    T('Sin subcontratos registrados en esta obra', ML + CW/2, y + 12, {align:'center'});
+    st(K.gmu); fs(8); fw('normal');
+    T('Los subcontratistas activos se registran en Operación → Subcontratos.',
+      ML + CW/2, y + 19, {align:'center'});
+  } else {
     doc.addPage(); pageFrame();
     y = CY0;
     y = secHead('RESUMEN EJECUTIVO DE SUBCONTRATOS', y);
@@ -1256,7 +1446,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   }
 
   // ── GUARDAR ──────────────────────────────────────────────────────────────
-  const nombre=`Reporte_CAMPO_${(obra.nombre||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
+  const nombre=`Reporte_CAMPO_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
 
   } catch(e) {
@@ -12106,7 +12296,16 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {obra&&<button onClick={()=>generarPDFObra(obra,subs,estimaciones,maquinaria,materiales,subcontratos,{},historialAvance)}
+      {obra&&<button onClick={async ()=>{
+          // Cargar el detalle GP de esta obra para tener rubros reales en el PDF
+          // (si aún no está en cache). Sin await no bloqueamos el resto.
+          let detalle = null;
+          try {
+            const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
+            if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
+          } catch (e) { console.warn('gpDetalle no disponible', e); }
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle);
+        }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
           margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
