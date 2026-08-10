@@ -649,36 +649,58 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     T(MXN(totRub), pieCx, pieCy + 2.5, {align:'center'});
 
     // ── Tabla de rubros a la derecha (con chips de color) ─────────────
+    // Layout con más aire: cada fila = 9mm de alto, chip 4×4mm centrado
+    // verticalmente con el texto, columnas alineadas a la derecha con
+    // suficiente separación entre monto/%. Antes las filas eran 6mm y
+    // los chips se veían amontonados con el nombre.
     const tabX = ML + 100;
     const tabW = CW - 100;
+    const HDR_H = 7;       // altura del header negro
+    const ROW_H = 9;       // altura por fila de rubro
+    const CHIP_S = 4;      // lado del chip cuadrado de color
+
     // Encabezado
-    sf(K.ng); R(tabX, y, tabW, 6, 'F');
+    sf(K.ng); R(tabX, y, tabW, HDR_H, 'F');
     st(K.wh); fs(7); fw('bold');
-    T('RUBRO',    tabX + 10, y + 4);
-    T('MONTO',    tabX + tabW - 60, y + 4, {align:'right'});
-    T('% GP',     tabX + tabW - 30, y + 4, {align:'right'});
-    T('% PPTO',   tabX + tabW - 4,  y + 4, {align:'right'});
-    let ry = y + 8;
+    T('RUBRO',    tabX + 10,          y + 4.5);
+    T('MONTO',    tabX + tabW - 68,   y + 4.5, {align:'right'});
+    T('% GP',     tabX + tabW - 35,   y + 4.5, {align:'right'});
+    T('% PPTO',   tabX + tabW - 4,    y + 4.5, {align:'right'});
+
+    let ry = y + HDR_H;
     rubArr.slice(0, 12).forEach((r, i) => {
-      // Chip de color
-      sf(paleta[i % paleta.length]); R(tabX + 2, ry - 3, 3.5, 3.5, 'F');
+      // Fondo alternado sutil para leer mejor
+      if (i % 2 === 1) {
+        sf(K.glt); R(tabX, ry, tabW, ROW_H, 'F');
+      }
+      // Chip de color, centrado verticalmente con el texto (baseline en
+      // ry + ROW_H/2 + 1). El chip queda a ry + (ROW_H - CHIP_S)/2.
+      const chipY = ry + (ROW_H - CHIP_S) / 2;
+      sf(paleta[i % paleta.length]);
+      R(tabX + 3, chipY, CHIP_S, CHIP_S, 'F');
+      // Texto (nombre del rubro)
+      const textY = ry + ROW_H / 2 + 1.5;
       st(K.ng); fs(8); fw('bold');
-      T(String(r.nombre).slice(0, 42), tabX + 10, ry);
+      T(String(r.nombre).slice(0, 40), tabX + 10, textY);
       fs(8); fw('normal');
-      T(MXN(r.monto),                       tabX + tabW - 60, ry, {align:'right'});
-      T(PCT(r.monto/totRub*100),            tabX + tabW - 30, ry, {align:'right'});
-      T(PCT(PPTO>0 ? r.monto/PPTO*100 : 0), tabX + tabW - 4,  ry, {align:'right'});
-      sd(K.gbd); lw(0.15); L(tabX, ry + 2, tabX + tabW, ry + 2);
-      ry += 6;
+      T(MXN(r.monto),                       tabX + tabW - 68, textY, {align:'right'});
+      T(PCT(r.monto/totRub*100),            tabX + tabW - 35, textY, {align:'right'});
+      T(PCT(PPTO>0 ? r.monto/PPTO*100 : 0), tabX + tabW - 4,  textY, {align:'right'});
+      // Línea divisora ligera al pie de la fila
+      sd(K.gbd); lw(0.15);
+      L(tabX, ry + ROW_H, tabX + tabW, ry + ROW_H);
+      ry += ROW_H;
     });
-    // Fila TOTAL
-    sf(K.glt); R(tabX, ry - 3, tabW, 6, 'F');
-    st(K.ng); fs(8); fw('bold');
-    T('TOTAL GP', tabX + 10, ry);
-    T(MXN(totRub), tabX + tabW - 60, ry, {align:'right'});
-    T('100.0%', tabX + tabW - 30, ry, {align:'right'});
-    T(PCT(PPTO>0 ? totRub/PPTO*100 : 0), tabX + tabW - 4, ry, {align:'right'});
-    ry += 8;
+
+    // Fila TOTAL — con más contraste
+    sf(K.ng); R(tabX, ry, tabW, ROW_H, 'F');
+    st(K.wh); fs(8.5); fw('bold');
+    const totY = ry + ROW_H / 2 + 1.5;
+    T('TOTAL GP', tabX + 10, totY);
+    T(MXN(totRub), tabX + tabW - 68, totY, {align:'right'});
+    T('100.0%', tabX + tabW - 35, totY, {align:'right'});
+    T(PCT(PPTO>0 ? totRub/PPTO*100 : 0), tabX + tabW - 4, totY, {align:'right'});
+    ry += ROW_H + 4;
 
     // ── Top proveedores del rubro más grande ────────────────────────
     // Ubicado debajo del pie chart y de la tabla, cuando ambos ya terminaron
@@ -2814,6 +2836,43 @@ const resolverGastoGP = (obra, gpData) => {
   return obra?.gastoGP || 0;
 };
 
+// Resuelve el nombre CORTO de una obra a partir del Sheet GP.
+// Reglas: toma el nombre GP (con match igual que resolverGastoGP), quita
+// el prefijo de 4 dígitos y el sufijo tipo "0526". Si no hay match GP,
+// devuelve obra.nombre tal cual. Se usa en el header de la obra y en
+// tarjetas del dashboard para no mostrar el nombre largo del contrato.
+const resolverNombreCortoObra = (obra, gpData) => {
+  if (!obra) return '';
+  const fallback = obra.nombre || '';
+  if (!gpData?.obras) return fallback;
+  const arr = Object.values(gpData.obras);
+  let obraGP = null;
+  if (obra.gpId) {
+    obraGP = arr.find(o => o.id === obra.gpId) || null;
+  }
+  if (!obraGP && /^\d{4}/.test(obra.id || '')) {
+    obraGP = arr.find(o => o.id === obra.id.slice(0, 4)) || null;
+  }
+  if (!obraGP) {
+    const norm = s => (s||'').toString().toUpperCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+    const palabras = norm(obra.nombre).split(' ').filter(w => w.length > 3);
+    let mejor = null, score = 0;
+    for (const o of arr) {
+      const palGP = norm(o.nombre).replace(/^\d{4}\s*/, '').split(' ').filter(w => w.length > 3);
+      const matches = palabras.filter(p => palGP.some(g => g.includes(p) || p.includes(g))).length;
+      if (matches > score) { score = matches; mejor = o; }
+    }
+    if (score >= 2) obraGP = mejor;
+  }
+  if (!obraGP) return fallback;
+  return String(obraGP.nombre || fallback)
+    .replace(/^\d{4}\s+/, '')
+    .replace(/\s+\d{4}\s*$/, '')
+    .trim() || fallback;
+};
+
 // Devuelve métricas calculadas a partir de los datos de UNA obra.
 // Datos vacíos (sin Firestore) producen ceros pero no rompe la función.
 const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[], gpData=null, otrosGastos=[]) => {
@@ -2838,12 +2897,18 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   // Margen
   const diff = me - gt;
   const mpct = me > 0 ? (diff/me)*100 : 0;
-  // Estimaciones
-  const estPag    = estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+(e.monto||0), 0);
-  const estPorCob = estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
-  const estProc   = estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+(e.monto||0), 0);
-  const estFact   = estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+(e.monto||0), 0);
-  const estTotal  = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
+  // Estimaciones — normalizador case-insensitive
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const estPag    = estimaciones.filter(e => _ne(e.estatus) === 'pagada').reduce((t,e) => t + (e.monto||0), 0);
+  // Por cobrar = TODO lo que NO está pagado (aprobado + facturado + en proceso)
+  // Antes: solo "Facturada" + "Aprobada" (excluía "En proceso").
+  const estPorCob = estimaciones.filter(e => {
+    const s = _ne(e.estatus);
+    return s === 'facturada' || s === 'aprobada' || s.includes('proceso');
+  }).reduce((t,e) => t + (e.monto||0), 0);
+  const estProc   = estimaciones.filter(e => _ne(e.estatus).includes('proceso')).reduce((t,e) => t + (e.monto||0), 0);
+  const estFact   = estimaciones.filter(e => _ne(e.estatus) === 'facturada').reduce((t,e) => t + (e.monto||0), 0);
+  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
   // Brecha = % gasto vs % avance físico (riesgo #1 del semáforo)
   const pctGasto = presupuesto > 0 ? (gt/presupuesto)*100 : 0;
   const brecha = pctGasto - af;
@@ -4847,9 +4912,11 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
           port.presupuesto>0?`${NUM(port.estTotal/port.presupuesto*100,1)}% del contrato`:"")}
         {kpiBox("Por estimar", MXN(porEstimar), C.purpleDk,
           port.presupuesto>0?`${NUM(porEstimar/port.presupuesto*100,1)}% del contrato pendiente`:"lo que falta del contrato")}
-        {kpiBox("Por cobrar", MXN(port.estPorCob), port.montoAtrasado>0?C.red:C.purpleDk, "facturado + aprobado")}
+        {kpiBox("Por cobrar", MXN(port.estPorCob), port.montoAtrasado>0?C.red:C.purpleDk, "en proceso + facturado + aprobado")}
         {kpiBox("Cobrado", MXN(port.estPag), C.greenDk, "pagado y liquidado")}
-        {kpiBox("En proceso", MXN(port.estProc), C.yellowDk, "estimaciones en elaboración")}
+        {/* "En proceso" ya está incluido dentro de "Por cobrar" — se muestra
+            aparte solo como informativo del pipeline temprano. */}
+        {kpiBox("En proceso", MXN(port.estProc), C.yellowDk, "en elaboración (incluido en Por cobrar)")}
         {kpiBox("Atrasado", MXN(port.montoAtrasado), port.montoAtrasado>0?C.red:C.green, port.montoAtrasado>0?"fuera del plazo":"todo dentro de plazo")}
       </div>
 
@@ -4889,7 +4956,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
                 <div key={obra.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                   padding:"6px 0",borderBottom:`0.5px solid ${C.border}`,gap:8}}>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{obra.id} · {obra.nombre}</div>
+                    <div title={obra.contrato||obra.nombre} style={{fontSize:11,fontWeight:600,color:C.caliza}}>{resolverNombreCortoObra(obra, gpData)}</div>
                     <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                       Avance: {NUM(kpis.af,1)}% · Estimado: {MXN(kpis.estTotal)} · Por cobrar: {MXN(kpis.estPorCob)}
                       {kpis.maxAtraso>0 && <span style={{color:C.red,marginLeft:6}}>· Atraso {kpis.maxAtraso}d</span>}
@@ -4924,7 +4991,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
                 <span style={{fontSize:10,color:C.textMut,fontWeight:700}}>{i+1}.</span>
-                <span style={{fontSize:11,fontWeight:700,color:C.caliza}}>{obra.id} · {obra.nombre}</span>
+                <span title={obra.contrato||obra.nombre} style={{fontSize:11,fontWeight:700,color:C.caliza}}>{resolverNombreCortoObra(obra, gpData)}</span>
               </div>
               <div style={{fontSize:9,color:C.textSec,marginTop:3}}>{motivos.join(" · ")}</div>
             </div>
@@ -5193,14 +5260,29 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     </div>}
 
     {listaActual.map(o=>{
-      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + otros gastos
-      // (mismo cálculo que la vista Gastos individual, así los números cuadran)
+      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + almacén + otros gastos
       const gastoGPLive=resolverGastoGP(o, gpData);
       const d = datosPorObra[o.id] || {};
       const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+      const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
       const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
-      const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
-      const pg=o.presupuesto>0?(gastoTotalLive/o.presupuesto)*100:0;
+      const gastoTotalLive = gastoGPLive + maqTotal + matTotal + otrosTotal;
+      // Avance físico ponderado
+      const subsO = d.subs || [];
+      const avanceFisico = (o.presupuesto > 0 && subsO.length > 0)
+        ? subsO.reduce((t,s) => t + ((s.a||0)/100) * ((s.imp||0) / o.presupuesto) * 100, 0)
+        : 0;
+      // Estimado total (todas las estimaciones sin importar estatus)
+      const estTotalO = (d.estimaciones || []).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
+      // Monto ejecutado = avance monetario + almacén
+      const amO  = subsO.reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
+      const meO  = amO + matTotal;
+      // Margen bruto (mismo criterio Dashboard/PDF)
+      const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
+      const mNiv = nivelMargen(margenPct);
+      const pg = o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0;
+      // Nombre corto (mismo formato que el PDF y el header de obra)
+      const nombreShort = resolverNombreCortoObra(o, gpData);
       const col=ec[o.estado]||C.caliza;
       const archivada=o.estado==="archivada";
       return <div key={o.id} style={{background:C.card,border:`0.5px solid ${archivada?"rgba(255,254,249,0.05)":C.border}`,
@@ -5209,17 +5291,18 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         onClick={()=>!archivada&&onSelect(o.id)}
         onMouseEnter={e=>{if(!archivada)e.currentTarget.style.borderColor="rgba(255,254,249,0.35)"}}
         onMouseLeave={e=>e.currentTarget.style.borderColor=archivada?"rgba(255,254,249,0.05)":C.border}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:13,fontWeight:600,color:C.textPri,marginBottom:2}}>{o.nombre}</div>
-            <div style={{fontSize:10,color:C.textMut}}>{o.contrato} · {o.cliente}</div>
+            {/* Solo nombre corto (viene de GP) + cliente. Ya no se muestra
+                el nombre largo del contrato para dejar la tarjeta más limpia. */}
+            <div title={o.contrato||o.nombre} style={{fontSize:13,fontWeight:700,color:C.textPri,marginBottom:2}}>{nombreShort}</div>
+            {o.cliente && <div style={{fontSize:10,color:C.textMut}}>{o.cliente}</div>}
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3,flexShrink:0,marginLeft:10}}>
             <Bdg color={col}>{o.estado.toUpperCase()}</Bdg>
-            <span style={{fontSize:9,color:C.textMut}}>Act: {o.ultimaAct}</span>
+            {o.ultimaAct && <span style={{fontSize:9,color:C.textMut}}>Act: {o.ultimaAct}</span>}
           </div>
         </div>
-        {/* Datos visibles según rol: cliente solo ve presupuesto e info pública, no costos */}
         {usuario.rol === "cliente" ? (
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
             {[["Presupuesto",MXN(o.presupuesto),C.textPri],
@@ -5230,23 +5313,33 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
           </div>
         ) : (
           <>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:9}}>
+            {/* KPIs por obra: Presupuesto · Avance · Gasto Total · Estimado · Margen */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:8,marginBottom:9}}>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>Presupuesto</div>
-                <div style={{fontSize:12,fontWeight:500,color:C.textPri}}>{MXN(o.presupuesto)}</div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Presupuesto</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{MXN(o.presupuesto)}</div>
               </div>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>
-                  Gasto total{gpUltActualiz ? <span style={{color:C.textMut,opacity:0.7}}> · GP {gpUltActualiz.split(",")[0]}</span> : ""}
-                </div>
-                <div style={{fontSize:12,fontWeight:500,color:C.red}}>{MXN(gastoTotalLive)}</div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Avance</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{NUM(avanceFisico,1)}%</div>
               </div>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>Anticipo/FG</div>
-                <div style={{fontSize:12,fontWeight:500,color:C.textSec}}>{o.pctAnticipo}%/{o.pctFondoGar}%</div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}
+                  title="GP + Almacén + Maquinaria + Otros gastos">Gasto total</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.red}}>{MXN(gastoTotalLive)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Estimado</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.purpleDk}}>{MXN(estTotalO)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Margen bruto</div>
+                <div style={{fontSize:12,fontWeight:700,color:mNiv.color,background:mNiv.bg,
+                  padding:"1px 6px",borderRadius:3,display:"inline-block"}}>{meO>0 ? `${NUM(margenPct,1)}%` : '—'}</div>
               </div>
             </div>
-            <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}>
+            <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
+              title={`Gasto total ${NUM(pg,1)}% del presupuesto`}>
               <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
                 background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
             </div>
@@ -5579,104 +5672,162 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
   </Card>;
 }
 
-// ── TENDENCIAS MENSUALES ──────────────────────────────────────────────────
-// Muestra evolución mes a mes de: Avance físico %, Gasto acumulado,
-// Estimaciones cobradas y Margen. Por default últimos 6 meses.
-// Datos consolidados desde múltiples fuentes:
-// - Avance: historialAvance (semanas con avancePonderado)
-// - Gasto: gpData.semanas + otros gastos manuales + maquinaria
-// - Estimaciones: estimaciones con su periodo/fecha cobro
-// - Margen: ejecutado - gastado por mes
-function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos}) {
-  const [rango, setRango] = useState(6); // últimos N meses
+// ── TENDENCIAS SEMANALES ──────────────────────────────────────────────────
+// Antes eran mensuales, pero daban poca información (1-2 puntos por trimestre
+// en obras cortas). Ahora es semana ISO por semana ISO.
+// Datos consolidados:
+// - Avance: historialAvance (ya vive por semana ISO — un snapshot por semana)
+// - Gasto GP: gpData.obras[...].semanas (viene del Sheet, por semana ISO)
+// - Otros gastos y maquinaria: se agregan a la semana ISO de su fecha
+// - Margen semanal = ejecutado semanal (avance % × presupuesto) - gasto acumulado
+function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria}) {
+  const [rango, setRango] = useState(12);          // últimas N semanas
   const [metricaActiva, setMetricaActiva] = useState('avance');
 
-  // ── Generar lista de últimos N meses (YYYY-MM)
-  const meses = (() => {
+  // Helper: semana ISO como {sem, año} y su etiqueta corta
+  const semanaISOLocal = (fecha) => {
+    const d = new Date(fecha);
+    if (isNaN(d)) return null;
+    d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const inicioAño = new Date(d.getFullYear(), 0, 1);
+    return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
+  };
+  const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
+
+  // ── Generar lista de últimas N semanas ISO
+  const semanas = (() => {
     const hoy = new Date();
     const out = [];
     for (let i = rango - 1; i >= 0; i--) {
-      const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-      const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      out.push({
-        ym,
-        label: d.toLocaleDateString('es-MX', {month:'short', year:'2-digit'}),
-        date: d,
-      });
+      const d = new Date(hoy);
+      d.setDate(d.getDate() - i * 7);
+      const iso = semanaISOLocal(d);
+      if (!iso) continue;
+      const key = skey(iso.sem, iso.año);
+      // Etiqueta corta: "S22 · 27/05"
+      const jueves = new Date(d);
+      jueves.setDate(jueves.getDate() + 4 - (jueves.getDay() || 7));
+      const dd = String(jueves.getDate()).padStart(2,'0');
+      const mm = String(jueves.getMonth()+1).padStart(2,'0');
+      out.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
     }
-    return out;
+    // Dedup (por si dos días caen en la misma semana)
+    const map = new Map();
+    out.forEach(s => map.set(s.key, s));
+    return [...map.values()];
   })();
 
-  // ── Avance % por mes: tomar el último snapshot del mes
-  const avancePorMes = {};
+  // ── Avance % por semana ISO: usar el snapshot correspondiente
+  const avancePorSem = {};
   (historialAvance || []).forEach(snap => {
-    const f = new Date(snap.fechaCaptura);
-    const ym = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
-    if (!avancePorMes[ym] || new Date(snap.fechaCaptura) > new Date(avancePorMes[ym].fechaCaptura)) {
-      avancePorMes[ym] = snap;
+    const key = skey(snap.semana, snap.año);
+    if (!avancePorSem[key] || new Date(snap.fechaCaptura) > new Date(avancePorSem[key].fechaCaptura)) {
+      avancePorSem[key] = snap;
     }
   });
 
-  // ── Gasto acumulado por mes: sumar GP + otros gastos + maquinaria hasta ese mes
-  const gastoPorMes = {};
-  let acumGP = 0;
-  meses.forEach(m => {
-    // GP del Sheet (por semana, agrupar por mes)
-    if (datosObraGP?.semanas) {
-      Object.keys(datosObraGP.semanas).forEach(semKey => {
-        // semKey formato típico Wxx-yy, no tiene fecha clara. Usamos heurística:
-        // si tenemos meses, dividimos uniformemente. Mejor: usar datosObraGP.meses si existe
-      });
-    }
-    // Usar meses del GP si vienen agrupados
-    if (datosObraGP?.meses) {
-      Object.entries(datosObraGP.meses).forEach(([mesKey, val]) => {
-        // mesKey puede ser tipo "ene", "feb"... mapear
-      });
-    }
-  });
-  // Estrategia más simple: si tenemos histórico de gpData.meses con keys YYYY-MM, usar directo
-  // Si no, distribuir el gasto total entre los meses (no ideal)
-  meses.forEach(m => {
-    let g = 0;
-    // 1) GP por mes (formato YYYY-MM o "MMM-YY")
-    if (datosObraGP?.mesesPorAño) {
-      Object.values(datosObraGP.mesesPorAño).forEach(añoMeses => {
-        Object.entries(añoMeses).forEach(([k,v]) => {
-          // intentar match con ym
-          if (k === m.ym || k.includes(m.label.split(' ')[0])) g += v;
-        });
-      });
-    }
-    // 2) Otros gastos manuales con fecha
-    (otrosGastos || []).forEach(og => {
-      if (!og.fecha) return;
-      const f = new Date(og.fecha);
-      const fYm = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
-      if (fYm === m.ym) g += parseFloat(og.importe) || 0;
+  // ── Gasto acumulado por semana: GP del Sheet (semanas) + otros + maquinaria
+  // El Sheet trae claves tipo "S22", "S23"... (asume año actual). Además
+  // agregamos otros gastos manuales y maquinaria mapeados a su semana ISO.
+  const gastoIncremPorSem = {};
+  // GP: intentar leer datosObraGP.semanas donde el key es "S22" o "S22-2026"
+  if (datosObraGP?.semanas) {
+    Object.entries(datosObraGP.semanas).forEach(([k, v]) => {
+      // Intentar extraer semana + año del key
+      const m = String(k).match(/S?(\d{1,2})(?:[-_](\d{4}))?/);
+      if (!m) return;
+      const sem = parseInt(m[1], 10);
+      const año = m[2] ? parseInt(m[2], 10) : new Date().getFullYear();
+      const key = skey(sem, año);
+      gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(v) || 0);
     });
-    acumGP += g;
-    gastoPorMes[m.ym] = acumGP;
+  }
+  // Otros gastos manuales
+  (otrosGastos || []).forEach(og => {
+    if (!og.fecha) return;
+    const iso = semanaISOLocal(og.fecha);
+    if (!iso) return;
+    const key = skey(iso.sem, iso.año);
+    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(og.importe) || 0);
+  });
+  // Maquinaria (usa fecha si está disponible; si no, se suma en la última
+  // semana visible como aproximación, para que aparezca en el gasto).
+  (maquinaria || []).forEach(m => {
+    const fecha = m.fecha || m.fechaCaptura;
+    if (!fecha) return;
+    const iso = semanaISOLocal(fecha);
+    if (!iso) return;
+    const key = skey(iso.sem, iso.año);
+    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(m.imp) || 0);
   });
 
-  // ── Estimaciones cobradas (acumulado) por mes
-  const estPorMes = {};
+  // Gasto ACUMULADO por semana (suma corrida)
+  const gastoAcumPorSem = {};
+  let acum = 0;
+  // Primero suma TODO el gasto anterior a la primera semana visible para
+  // que el acumulado arranque en el nivel correcto (no en cero)
+  const primeraKey = semanas[0]?.key;
+  if (primeraKey) {
+    Object.keys(gastoIncremPorSem).forEach(k => {
+      if (k < primeraKey) acum += gastoIncremPorSem[k];
+    });
+  }
+  semanas.forEach(s => {
+    acum += gastoIncremPorSem[s.key] || 0;
+    gastoAcumPorSem[s.key] = acum;
+  });
+
+  // ── Estimaciones acumuladas COBRADAS (pagadas) por semana
+  const estPorSem = {};
   let acumEst = 0;
-  meses.forEach(m => {
-    let cobrado = 0;
-    (estimaciones || []).forEach(e => {
-      const fecha = e.fechaCobro || e.fecha || e.periodo;
-      if (!fecha) return;
-      const f = new Date(fecha);
-      if (isNaN(f.getTime())) return;
-      const fYm = `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}`;
-      const estNorm = (e.estatus||'').toLowerCase();
-      const esCobrada = estNorm === 'pagada' || estNorm === 'cobrada';
-      if (fYm === m.ym && esCobrada) cobrado += e.monto || 0;
+  const estOrd = (estimaciones || [])
+    .filter(e => {
+      const s = (e.estatus||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+      return s === 'pagada' || s === 'cobrada';
+    })
+    .map(e => ({ ...e, _fecha: new Date(e.fechaCobro || e.fecha || e.periodo || 0) }))
+    .filter(e => !isNaN(e._fecha))
+    .sort((a,b) => a._fecha - b._fecha);
+  // Suma pre-rango
+  const primeraSemFecha = (() => {
+    const s = semanas[0];
+    if (!s) return null;
+    const d = new Date(s.año, 0, 1);
+    d.setDate(d.getDate() + (s.sem-1)*7);
+    return d;
+  })();
+  if (primeraSemFecha) {
+    estOrd.forEach(e => { if (e._fecha < primeraSemFecha) acumEst += (e.monto||0); });
+  }
+  semanas.forEach(s => {
+    // Todas las cobradas cuya fecha cae en esta semana ISO
+    estOrd.forEach(e => {
+      const iso = semanaISOLocal(e._fecha);
+      if (!iso) return;
+      if (iso.sem === s.sem && iso.año === s.año) acumEst += (e.monto||0);
     });
-    acumEst += cobrado;
-    estPorMes[m.ym] = acumEst;
+    // Nota: como estOrd está ordenado, esta suma "por semana" cuenta cada
+    // estimación una sola vez. Cuando cambiamos de semana, sigue acumulando.
+    estPorSem[s.key] = acumEst;
   });
+  // Corrección: la lógica de arriba puede doble-contar. Recalculamos limpio:
+  {
+    let a = 0;
+    if (primeraSemFecha) {
+      estOrd.forEach(e => { if (e._fecha < primeraSemFecha) a += (e.monto||0); });
+    }
+    semanas.forEach(s => {
+      // Restamos lo pre-rango ya sumado + sumamos lo de esta semana exacta
+      const semSum = estOrd.reduce((t,e) => {
+        const iso = semanaISOLocal(e._fecha);
+        if (iso && iso.sem === s.sem && iso.año === s.año) return t + (e.monto||0);
+        return t;
+      }, 0);
+      a += semSum;
+      estPorSem[s.key] = a;
+    });
+  }
 
   // ── Datos por métrica
   const datosMetricas = {
@@ -5685,36 +5836,37 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       color: C.greenDk,
       formato: (v) => `${(v||0).toFixed(1)}%`,
       max: 100,
-      valores: meses.map(m => avancePorMes[m.ym]?.avancePonderado || 0),
+      valores: semanas.map(s => avancePorSem[s.key]?.avancePonderado || 0),
     },
     gasto: {
       label: 'Gasto acumulado',
       color: C.redDk,
       formato: (v) => MXN(v),
-      max: null, // auto
-      valores: meses.map(m => gastoPorMes[m.ym] || 0),
+      max: null,
+      valores: semanas.map(s => gastoAcumPorSem[s.key] || 0),
     },
     estimaciones: {
       label: 'Estimaciones cobradas',
       color: C.blueDk,
       formato: (v) => MXN(v),
       max: null,
-      valores: meses.map(m => estPorMes[m.ym] || 0),
+      valores: semanas.map(s => estPorSem[s.key] || 0),
     },
     margen: {
       label: 'Margen',
       color: C.purple,
       formato: (v) => MXN(v),
       max: null,
-      // Margen = ejecutado (avance % × presupuesto) - gasto acumulado
-      valores: meses.map(m => {
-        const avPct = avancePorMes[m.ym]?.avancePonderado || 0;
+      valores: semanas.map(s => {
+        const avPct = avancePorSem[s.key]?.avancePonderado || 0;
         const ejecutado = (avPct / 100) * (obra.presupuesto || 0);
-        const gastado = gastoPorMes[m.ym] || 0;
+        const gastado = gastoAcumPorSem[s.key] || 0;
         return ejecutado - gastado;
       }),
     },
   };
+  // Renombrar variable local para que el resto del componente siga funcionando
+  const meses = semanas;
 
   const metricaSel = datosMetricas[metricaActiva];
   const valores = metricaSel.valores;
@@ -5730,13 +5882,14 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
   return <Card>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
-      <Tit>Tendencias mes a mes</Tit>
+      <Tit>Tendencias semana a semana</Tit>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         <select value={rango} onChange={e=>setRango(Number(e.target.value))}
           style={{fontSize:10,padding:"3px 6px",border:`1px solid ${C.border}`,borderRadius:4,color:C.textSec}}>
-          <option value={3}>Últimos 3 meses</option>
-          <option value={6}>Últimos 6 meses</option>
-          <option value={12}>Últimos 12 meses</option>
+          <option value={4}>Últimas 4 semanas</option>
+          <option value={8}>Últimas 8 semanas</option>
+          <option value={12}>Últimas 12 semanas</option>
+          <option value={26}>Últimas 26 semanas</option>
         </select>
       </div>
     </div>
@@ -5800,12 +5953,18 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
             </text>
           </g>
         ))}
-        {/* Eje X: labels de meses */}
+        {/* Eje X: labels de semanas (S## + fecha del jueves ISO abajo) */}
         {meses.map((m, i) => (
-          <text key={m.ym} x={xPos(i)} y={H - 8}
-            textAnchor="middle" fontSize="10" fill={C.textSec}>
-            {m.label}
-          </text>
+          <g key={m.key || m.ym}>
+            <text x={xPos(i)} y={H - 14}
+              textAnchor="middle" fontSize="10" fill={C.textSec} fontWeight="600">
+              {m.label}
+            </text>
+            {m.fecha && <text x={xPos(i)} y={H - 4}
+              textAnchor="middle" fontSize="8" fill={C.textMut}>
+              {m.fecha}
+            </text>}
+          </g>
         ))}
       </svg>
     </div>
@@ -5840,14 +5999,19 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const dir=NOMINA_S18.filter(p=>p.tipo==="D").length;
   const ind=NOMINA_S18.filter(p=>p.tipo==="I").length;
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100;return{a,fg,ef:e.monto-a-fg};};
-  const estPag   =estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+e.monto,0);
-  const estPorCob=estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+e.monto,0);
-  const estProc  =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
-  const estTotal =estimaciones.reduce((t,e)=>t+e.monto,0);
-  const estFact  =estPorCob;
-  const estRet   =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
-  const estAmort =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
-  const totalEst =estTotal;
+  // Normalizador de estatus (case-insensitive, sin acentos)
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const estPag    = estimaciones.filter(e => _ne(e.estatus) === 'pagada').reduce((t,e) => t + (e.monto||0), 0);
+  // Por cobrar = En proceso + Facturada + Aprobada (todo lo que no está pagado)
+  const estPorCob = estimaciones.filter(e => {
+    const s = _ne(e.estatus);
+    return s === 'facturada' || s === 'aprobada' || s.includes('proceso');
+  }).reduce((t,e) => t + (e.monto||0), 0);
+  // Total estimado = TODAS las estimaciones sin importar estatus
+  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
+  const totalEst  = estTotal;
+  // (estProc / estFact / estRet / estAmort dejaron de mostrarse en el
+  //  dashboard según el nuevo diseño de 3 KPIs.)
   const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
 
   // ── ALERTAS desde la biblioteca de riesgos ──
@@ -5889,14 +6053,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </div>
     </div>
 
-    {/* BLOQUE 1.5: TENDENCIAS MENSUALES */}
+    {/* BLOQUE 1.5: TENDENCIAS SEMANALES */}
     <TendenciasMensuales
       obra={obra}
       historialAvance={historialAvance}
       gpData={gpData}
       estimaciones={estimaciones}
-      datosObraGP={null}
-      otrosGastos={otrosGastos}/>
+      datosObraGP={datosObraGP}
+      otrosGastos={otrosGastos}
+      maquinaria={maquinaria}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
     {totalRiesgos > 0 && (
@@ -5933,11 +6098,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         <Tit>Estimaciones {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
         <span style={{fontSize:9,color:C.textMut}}>{estimaciones.length} est. · Amort {obra.pctAnticipo}% · FG {obra.pctFondoGar}%</span>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-        <Kpi label="Pagado"        value={MXN(estPag)}    sub="cobrado y liquidado"    color={C.greenDk}  size={12}/>
-        <Kpi label="Por cobrar"    value={MXN(estPorCob)} sub="facturado + aprobado"   color={C.purpleDk} size={12}/>
-        <Kpi label="En proceso"    value={MXN(estProc)}   sub="en elaboración"          color={C.yellowDk} size={12}/>
-        <Kpi label="Total estimado"value={MXN(estTotal)}  sub={`${(estTotal/obra.presupuesto*100).toFixed(1)}% del contrato`} color={C.blueDk} size={12}/>
+      {/* 3 KPIs conforme al nuevo diseño:
+          - Estimado: TODAS las estimaciones (aprobadas, en proceso, facturadas, pagadas)
+          - Por cobrar: en proceso + facturadas + aprobadas (todo lo pendiente de pago)
+          - Pagado: solo las pagadas
+      */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:8}}>
+        <Kpi label="Estimado"   value={MXN(estTotal)}  sub={`${(estTotal/obra.presupuesto*100).toFixed(1)}% del contrato`} color={C.blueDk}   size={12}/>
+        <Kpi label="Por cobrar" value={MXN(estPorCob)} sub="en proceso + facturado + aprobado" color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado"     value={MXN(estPag)}    sub="cobrado y liquidado" color={C.greenDk}  size={12}/>
       </div>
     </Card>
     {/* ── SUBCONTRATOS (resumen en Dashboard) ── */}
@@ -12721,7 +12890,7 @@ export default function App(){
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        {screen==="obra"&&obra&&<span style={{fontSize:9,color:C.textMut,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{obra.contrato}</span>}
+        {screen==="obra"&&obra&&<span title={obra.contrato||obra.nombre} style={{fontSize:10,fontWeight:600,color:C.textPri,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{resolverNombreCortoObra(obra, gpData)}</span>}
         <div style={{textAlign:"right"}}>
           <div style={{fontSize:9,color:C.textSec}}>{usuario.nombre.split(" ")[0]}</div>
           <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
