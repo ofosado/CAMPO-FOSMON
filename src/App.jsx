@@ -2839,12 +2839,18 @@ const resolverGastoGP = (obra, gpData) => {
 // Resuelve el nombre CORTO de una obra a partir del Sheet GP.
 // Reglas: toma el nombre GP (con match igual que resolverGastoGP), quita
 // el prefijo de 4 dígitos y el sufijo tipo "0526". Si no hay match GP,
-// devuelve obra.nombre tal cual. Se usa en el header de la obra y en
-// tarjetas del dashboard para no mostrar el nombre largo del contrato.
+// aplica la misma limpieza a obra.nombre local. Se usa en el header de
+// la obra y en tarjetas del dashboard para no mostrar el nombre largo
+// del contrato.
+const limpiarNombreObra = (s) => String(s || '')
+  .replace(/^\d{4}\s+/, '')       // prefijo tipo "0125 "
+  .replace(/\s+\d{4}\s*$/, '')    // sufijo tipo " 0526"
+  .trim();
+
 const resolverNombreCortoObra = (obra, gpData) => {
   if (!obra) return '';
-  const fallback = obra.nombre || '';
-  if (!gpData?.obras) return fallback;
+  const fallback = limpiarNombreObra(obra.nombre || '');
+  if (!gpData?.obras) return fallback || obra.nombre || '';
   const arr = Object.values(gpData.obras);
   let obraGP = null;
   if (obra.gpId) {
@@ -2866,11 +2872,8 @@ const resolverNombreCortoObra = (obra, gpData) => {
     }
     if (score >= 2) obraGP = mejor;
   }
-  if (!obraGP) return fallback;
-  return String(obraGP.nombre || fallback)
-    .replace(/^\d{4}\s+/, '')
-    .replace(/\s+\d{4}\s*$/, '')
-    .trim() || fallback;
+  if (!obraGP) return fallback || obra.nombre || '';
+  return limpiarNombreObra(obraGP.nombre) || fallback || obra.nombre || '';
 };
 
 // Devuelve métricas calculadas a partir de los datos de UNA obra.
@@ -5293,10 +5296,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         onMouseLeave={e=>e.currentTarget.style.borderColor=archivada?"rgba(255,254,249,0.05)":C.border}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
           <div style={{flex:1,minWidth:0}}>
-            {/* Solo nombre corto (viene de GP) + cliente. Ya no se muestra
-                el nombre largo del contrato para dejar la tarjeta más limpia. */}
-            <div title={o.contrato||o.nombre} style={{fontSize:13,fontWeight:700,color:C.textPri,marginBottom:2}}>{nombreShort}</div>
-            {o.cliente && <div style={{fontSize:10,color:C.textMut}}>{o.cliente}</div>}
+            {/* SOLO nombre corto (viene de GP). Antes se mostraba también
+                obra.cliente y obra.contrato debajo, pero en varias obras esos
+                campos están contaminados con la descripción completa del
+                contrato SIOP (párrafos larguísimos). Se dejaron fuera para
+                que la tarjeta quede limpia y consistente. El nombre largo
+                completo aparece en el tooltip al hover. */}
+            <div title={o.nombre || ''} style={{fontSize:13,fontWeight:700,color:C.textPri}}>{nombreShort}</div>
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3,flexShrink:0,marginLeft:10}}>
             <Bdg color={col}>{o.estado.toUpperCase()}</Bdg>
@@ -5313,29 +5319,31 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
           </div>
         ) : (
           <>
-            {/* KPIs por obra: Presupuesto · Avance · Gasto Total · Estimado · Margen */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5, 1fr)",gap:8,marginBottom:9}}>
+            {/* KPIs por obra — MISMOS 4 que el Panel Ejecutivo del portafolio:
+                PRESUPUESTO / GASTO ACUMULADO / EJECUTADO / MARGEN BRUTO.
+                (Antes: Presupuesto/Avance/Gasto Total/Estimado/Margen — cambiado
+                por consistencia con el Panel Ejecutivo.) */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:8,marginBottom:9}}>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Presupuesto</div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Presupuesto total</div>
                 <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{MXN(o.presupuesto)}</div>
               </div>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Avance</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{NUM(avanceFisico,1)}%</div>
+                <div title="GP + Almacén + Maquinaria + Otros gastos" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
+                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && pg>90?C.red:o.presupuesto>0 && pg>75?C.yellowDk:C.textPri}}>{MXN(gastoTotalLive)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(pg,1)}% del contrato</div>}
               </div>
               <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}
-                  title="GP + Almacén + Maquinaria + Otros gastos">Gasto total</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.red}}>{MXN(gastoTotalLive)}</div>
-              </div>
-              <div>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Estimado</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.purpleDk}}>{MXN(estTotalO)}</div>
+                <div title="Avance físico ponderado por importe + almacén" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Ejecutado</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(meO)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(meO/o.presupuesto*100,1)}% del contrato</div>}
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Margen bruto</div>
-                <div style={{fontSize:12,fontWeight:700,color:mNiv.color,background:mNiv.bg,
-                  padding:"1px 6px",borderRadius:3,display:"inline-block"}}>{meO>0 ? `${NUM(margenPct,1)}%` : '—'}</div>
+                <div style={{fontSize:12,fontWeight:700,color:mNiv.color}}>
+                  {meO>0 ? `${margenPct>=0?'':'-'}${MXN(Math.abs(meO-gastoTotalLive))}` : '—'}
+                </div>
+                {meO>0 && <div style={{fontSize:9,color:mNiv.color,marginTop:1,fontWeight:600}}>{NUM(margenPct,1)}% ejec. vs gastado</div>}
               </div>
             </div>
             <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
@@ -6037,21 +6045,40 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   } : {};
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {/* BLOQUE 1: KPIs PRINCIPALES (clickables) */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:8}}>
-      <div {...clickableCard("operacion","avance")}>
-        <Kpi label="Avance físico"   value={`${NUM(af,1)}%`} sub="ver avance ›"   color={semA(af)}/>
-      </div>
-      <div {...clickableCard("operacion","estimaciones")}>
-        <Kpi label="Monto ejecutado" value={MXN(me)}         sub="vs estimaciones ›" color={C.blue} size={12}/>
-      </div>
-      <div {...clickableCard("gastos")}>
-        <Kpi label="Gasto total"     value={MXN(gt)}         sub="ver gastos GP ›"   color={C.red}  size={12}/>
-      </div>
-      <div {...clickableCard("operacion","nomina")}>
-        <Kpi label="Personal campo"  value={dir+ind}         sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
-      </div>
-    </div>
+    {/* BLOQUE 1: KPIs PRINCIPALES — mismos que el Panel Ejecutivo del portafolio
+        para consistencia. Presupuesto Total / Gasto Acumulado / Ejecutado /
+        Margen Bruto + Personal. */}
+    {(() => {
+      const pctGP    = obra.presupuesto > 0 ? (gt / obra.presupuesto) * 100 : 0;
+      const pctEjec  = obra.presupuesto > 0 ? (me / obra.presupuesto) * 100 : 0;
+      const margenAbs = me - gt;   // ejecutado - gastado
+      const colGasto  = pctGP > 90 ? C.red : pctGP > 75 ? C.yellowDk : C.textPri;
+      return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <div>
+          <Kpi label="Presupuesto total" value={MXN(obra.presupuesto)}
+            sub="contrato base" color={C.caliza} size={12}/>
+        </div>
+        <div {...clickableCard("gastos")}>
+          <Kpi label="Gasto acumulado" value={MXN(gt)}
+            sub={obra.presupuesto>0 ? `${NUM(pctGP,1)}% del contrato · ver ›` : "GP + Alm + Maq + Otros"}
+            color={colGasto} size={12}/>
+        </div>
+        <div {...clickableCard("operacion","avance")}>
+          <Kpi label="Ejecutado" value={MXN(me)}
+            sub={obra.presupuesto>0 ? `${NUM(pctEjec,1)}% del contrato · ver avance ›` : "avance + almacén"}
+            color={C.blueDk} size={12}/>
+        </div>
+        <div>
+          <Kpi label="Margen bruto" value={`${margenAbs>=0?'':'-'}${MXN(Math.abs(margenAbs))}`}
+            sub={me>0 ? `${NUM(mpct,1)}% ejec. vs gastado — ${mNiv.nivel}` : 'sin avance ejecutado'}
+            color={mc} size={12}/>
+        </div>
+        <div {...clickableCard("operacion","nomina")}>
+          <Kpi label="Personal campo" value={dir+ind}
+            sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
+        </div>
+      </div>;
+    })()}
 
     {/* BLOQUE 1.5: TENDENCIAS SEMANALES */}
     <TendenciasMensuales
