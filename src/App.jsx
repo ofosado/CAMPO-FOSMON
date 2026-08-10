@@ -3382,6 +3382,7 @@ const ROL_LABEL = {
   superintendente:     "Superintendente",
   residente:           "Residente",
   administrador_obra:  "Administrador de Obra",
+  supervisor:          "Supervisor",
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
 };
@@ -3398,6 +3399,11 @@ const PERMISOS = {
   superintendente:     { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   residente:           { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
+  // Supervisor: acceso TOTAL de solo lectura a las obras que se le asignan.
+  // Ve todo (Dashboard, Operación, Gastos, Planeación) pero no puede editar.
+  // Útil para roles de auditoría / observador externo / cliente interno que
+  // necesita visibilidad completa sin poder modificar datos.
+  supervisor:          { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
   admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
   cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
 };
@@ -4677,12 +4683,15 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
   });
 
   const ROLES = [
-    ["director_general","Director General"],
+    ["director_general",    "Director General"],
     ["director_operaciones","Director de Operaciones"],
     ["gerente_construccion","Gerente de Construcción"],
-    ["administrador_obra","Administrador de Obra"],
-    ["admin_sistema","Administrador de Sistema"],
-    ["cliente","Cliente"],
+    ["superintendente",     "Superintendente"],
+    ["residente",           "Residente"],
+    ["administrador_obra",  "Administrador de Obra"],
+    ["supervisor",          "Supervisor (solo lectura)"],
+    ["admin_sistema",       "Administrador de Sistema"],
+    ["cliente",             "Cliente"],
   ];
 
   const toggleObra = (id) => setForm(f=>{
@@ -11663,6 +11672,7 @@ const TABS_POR_ROL = {
   superintendente:     [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   residente:           [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  supervisor:          [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 };
@@ -11732,6 +11742,12 @@ const PASOS_BIENVENIDA = {
   admin_sistema: [
     { t:"Administrador de Sistema", d:"Tienes acceso a todas las obras en modo lectura para soporte técnico." },
     { t:"Usuarios", d:"Puedes dar de alta o desactivar usuarios desde la pantalla de Administración." },
+  ],
+  supervisor: [
+    { t:"Modo observador", d:"Tienes acceso completo a las obras asignadas pero en solo lectura. Puedes ver todo sin poder modificar nada." },
+    { t:"Dashboard", d:"Al entrar a una obra verás los KPIs clave, tendencias semanales y semáforo de riesgos." },
+    { t:"Operación y Gastos", d:"Consulta avance físico, fotos, estimaciones, subcontratos y todos los gastos de la obra." },
+    { t:"Reporte ejecutivo", d:"En cada obra puedes descargar el PDF ejecutivo desde el botón arriba a la derecha." },
   ],
   cliente: [
     { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
@@ -12380,7 +12396,7 @@ function Bitacora({obras}){
 // ── MATRIZ DE PERMISOS POR OBRA ──────────────────────────────────────────
 // Permite a Director/Director Op./Admin Sistema sobre-escribir los permisos
 // del equipo operativo (super/residente/admin_obra) en una obra específica.
-const ROLES_OVERRIDE = ["superintendente","residente","administrador_obra"];
+const ROLES_OVERRIDE = ["superintendente","residente","administrador_obra","supervisor"];
 const MODULOS_OVERRIDE = [
   {id:"captura",      label:"Avance físico"},
   {id:"gastos",       label:"Gastos"},
@@ -12461,6 +12477,7 @@ function PermisosObra({obra, rol}){
       <Tit>Matriz de permisos por obra</Tit>
       <div style={{fontSize:11,color:C.textSec,lineHeight:1.5,marginBottom:12}}>
         Por default, Superintendente, Residente y Administrador de Obra pueden editar todo dentro de esta obra.
+        Supervisor tiene acceso completo pero en solo lectura (no puede editar).
         En obras grandes o con equipos más numerosos puedes restringir acciones específicas por rol.
         Los cambios solo aplican a <strong>esta obra</strong>.
         {!puedeEditar && <div style={{marginTop:6,color:C.textMut,fontStyle:"italic"}}>Solo lectura — necesitas rol Director o Admin de Sistema para modificar.</div>}
