@@ -5870,14 +5870,58 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     });
   }
 
-  // ── Datos por métrica
+  // ── Datos por métrica ─────────────────────────────────────────────────────
+  // REGLA IMPORTANTE (agosto 2026): si el equipo de obra NO captura avance
+  // una semana, el snapshot NO existe → antes se mostraba 0% y la gráfica
+  // caía del cielo. Ahora ARRASTRAMOS el último valor conocido: si la
+  // semana pasada iban en 80% y no hubo captura esta semana, sigue en 80%.
+  // Esto aplica al avance físico y al margen (que depende del avance).
+  // El gasto acumulado NO necesita este tratamiento porque siempre suma.
+
+  // Antes de calcular las series, buscar el PRIMER avance conocido (histórico
+  // completo, no solo dentro de la ventana visible). Si aún no hay ningún
+  // snapshot antes de la primera semana visible, arrancamos en null (se
+  // pinta como 0 hasta que aparece el primer dato real).
+  const primerSemanaVisible = semanas[0]?.key;
+  let ultimoAvanceConocido = null;
+  if (primerSemanaVisible) {
+    // Recorrer TODO el historial ordenado y quedarnos con el más reciente
+    // ANTERIOR a la primera semana visible.
+    const anteriores = Object.entries(avancePorSem)
+      .filter(([k]) => k < primerSemanaVisible)
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (anteriores.length > 0) {
+      ultimoAvanceConocido = anteriores[anteriores.length - 1][1]?.avancePonderado ?? null;
+    }
+  }
+
+  // Serie de avance físico con arrastre del último valor conocido
+  const avanceSeries = [];
+  let avAcarreo = ultimoAvanceConocido;
+  semanas.forEach(s => {
+    const snap = avancePorSem[s.key];
+    if (snap && typeof snap.avancePonderado === 'number') {
+      avAcarreo = snap.avancePonderado;
+    }
+    avanceSeries.push(avAcarreo ?? 0);
+  });
+
+  // Serie de margen: usa el mismo criterio de arrastre para el avance.
+  // Gasto acumulado sí toma su propio valor (siempre disponible por sheet).
+  const margenSeries = semanas.map((s, i) => {
+    const avPct = avanceSeries[i];
+    const ejecutado = (avPct / 100) * (obra.presupuesto || 0);
+    const gastado = gastoAcumPorSem[s.key] || 0;
+    return ejecutado - gastado;
+  });
+
   const datosMetricas = {
     avance: {
       label: 'Avance físico',
       color: C.greenDk,
       formato: (v) => `${(v||0).toFixed(1)}%`,
       max: 100,
-      valores: semanas.map(s => avancePorSem[s.key]?.avancePonderado || 0),
+      valores: avanceSeries,
     },
     gasto: {
       label: 'Gasto acumulado',
@@ -5886,24 +5930,16 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       max: null,
       valores: semanas.map(s => gastoAcumPorSem[s.key] || 0),
     },
-    estimaciones: {
-      label: 'Estimaciones cobradas',
-      color: C.blueDk,
-      formato: (v) => MXN(v),
-      max: null,
-      valores: semanas.map(s => estPorSem[s.key] || 0),
-    },
+    // "Estimaciones cobradas" se eliminó de las tendencias — daba poca
+    // información y saturaba el selector. El detalle de estimaciones
+    // (Estimado / Por cobrar / Pagado) se ve en el bloque de Estimaciones
+    // debajo del Dashboard.
     margen: {
       label: 'Margen',
       color: C.purple,
       formato: (v) => MXN(v),
       max: null,
-      valores: semanas.map(s => {
-        const avPct = avancePorSem[s.key]?.avancePonderado || 0;
-        const ejecutado = (avPct / 100) * (obra.presupuesto || 0);
-        const gastado = gastoAcumPorSem[s.key] || 0;
-        return ejecutado - gastado;
-      }),
+      valores: margenSeries,
     },
   };
   // Renombrar variable local para que el resto del componente siga funcionando
