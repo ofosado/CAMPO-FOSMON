@@ -34,6 +34,7 @@ const ROLES_VALIDOS = [
   "superintendente",
   "residente",
   "administrador_obra",
+  "supervisor",           // Supervisor de Obra — solo lectura, acceso completo
   "admin_sistema",
   "cliente",
 ];

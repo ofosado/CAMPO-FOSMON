@@ -4702,7 +4702,7 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     ["superintendente",     "Superintendente de Obra"],
     ["residente",           "Residente de Obra"],
     ["administrador_obra",  "Administrador de Obra"],
-    ["supervisor",          "Supervisor de Obra (solo lectura)"],
+    ["supervisor",          "Supervisor de Obra"],
     // Externo
     ["cliente",             "Cliente"],
   ];
