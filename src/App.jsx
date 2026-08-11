@@ -3379,10 +3379,10 @@ const ROL_LABEL = {
   director_general:    "Director General",
   director_operaciones:"Director de Operaciones",
   gerente_construccion:"Gerente de Construcción",
-  superintendente:     "Superintendente",
-  residente:           "Residente",
+  superintendente:     "Superintendente de Obra",
+  residente:           "Residente de Obra",
   administrador_obra:  "Administrador de Obra",
-  supervisor:          "Supervisor",
+  supervisor:          "Supervisor de Obra",
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
 };
@@ -3392,19 +3392,27 @@ const ROL_LABEL = {
 // modulos: 'dash','captura','gastos','estimaciones','riesgo','personal_detalle','todas_obras'
 // Equipo de obra (super/residente/admin_obra): mismos permisos por default.
 // Puede afinarse por obra desde Planeación → Permisos (override).
+// ── PERMISOS POR ROL ────────────────────────────────────────────────────────
+// Roles EJECUTIVOS (todas_obras:true, edición completa):
+//   Director General · Director de Operaciones · Gerente de Construcción ·
+//   Administrador de Sistema
+// Roles de OBRA (todas_obras:false, acceso solo a las obras que se les asignen):
+//   Superintendente de Obra · Residente de Obra · Administrador de Obra
+//   (los 3 pueden editar) · Supervisor de Obra (solo lectura, observador)
+// Rol externo:
+//   Cliente (solo ve avance/fotos/estimaciones de sus obras asignadas)
 const PERMISOS = {
-  director_general:    { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
-  director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
-  gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  director_general:    { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
+  director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
+  gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
+  admin_sistema:       { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
   superintendente:     { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   residente:           { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
-  // Supervisor: acceso TOTAL de solo lectura a las obras que se le asignan.
-  // Ve todo (Dashboard, Operación, Gastos, Planeación) pero no puede editar.
-  // Útil para roles de auditoría / observador externo / cliente interno que
-  // necesita visibilidad completa sin poder modificar datos.
+  // Supervisor de Obra: acceso TOTAL de solo lectura a las obras que se le
+  // asignan. Ve todo (Dashboard, Operación, Gastos, Planeación) pero no puede
+  // editar. Útil para roles de auditoría / observador externo.
   supervisor:          { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
-  admin_sistema:       { dash:"ver", captura:null,      gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
   cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
 };
 
@@ -4682,15 +4690,20 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     password: "",
   });
 
+  // Roles agrupados por tipo. Los ejecutivos ven todas las obras; los "de Obra"
+  // deben asignarse explícitamente a las obras que van a ver/editar.
   const ROLES = [
+    // Ejecutivos (acceso a todas las obras, con edición completa)
     ["director_general",    "Director General"],
     ["director_operaciones","Director de Operaciones"],
     ["gerente_construccion","Gerente de Construcción"],
-    ["superintendente",     "Superintendente"],
-    ["residente",           "Residente"],
-    ["administrador_obra",  "Administrador de Obra"],
-    ["supervisor",          "Supervisor (solo lectura)"],
     ["admin_sistema",       "Administrador de Sistema"],
+    // Roles de obra (asignados a obras específicas)
+    ["superintendente",     "Superintendente de Obra"],
+    ["residente",           "Residente de Obra"],
+    ["administrador_obra",  "Administrador de Obra"],
+    ["supervisor",          "Supervisor de Obra (solo lectura)"],
+    // Externo
     ["cliente",             "Cliente"],
   ];
 
@@ -4739,12 +4752,17 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
       </div>
 
       {/* Asignación de obras — útil para clientes y admin de obra */}
-      {(form.rol==="cliente" || form.rol==="administrador_obra") && obras && obras.length>0 && (
+      {/* Selector de obras para todos los roles que NO son ejecutivos.
+          Los 4 roles de obra (superintendente, residente, admin_obra, supervisor)
+          y cliente necesitan asignación explícita.
+          Se detecta consultando PERMISOS[rol].todas_obras — si es false,
+          hay que asignar obras. */}
+      {form.rol && PERMISOS[form.rol] && !PERMISOS[form.rol].todas_obras && obras && obras.length>0 && (
         <div style={{marginBottom:10}}>
           <div style={{fontSize:9,color:C.textMut,marginBottom:5,textTransform:"uppercase"}}>
-            Obras asignadas {form.rol==="cliente"?"(qué obras puede ver el cliente)":"(qué obras administra)"}
+            Obras asignadas — {ROL_LABEL[form.rol]} solo verá las que marques
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:140,overflow:"auto",
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:180,overflow:"auto",
             border:`0.5px solid ${C.border}`,borderRadius:6,padding:8}}>
             {obras.map(o=>(
               <label key={o.id} style={{display:"flex",alignItems:"center",gap:8,fontSize:11,cursor:"pointer"}}>
@@ -4754,6 +4772,12 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
               </label>
             ))}
           </div>
+          {form.obras_asignadas.length === 0 && (
+            <div style={{fontSize:10,color:C.yellowDk,marginTop:5,background:C.yellowBg,
+              padding:"5px 8px",borderRadius:4}}>
+              ⚠ Sin obras asignadas el usuario no verá ninguna obra al iniciar sesión.
+            </div>
+          )}
         </div>
       )}
 
