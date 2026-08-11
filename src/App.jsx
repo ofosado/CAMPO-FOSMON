@@ -5719,9 +5719,10 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
 // Datos consolidados:
 // - Avance: historialAvance (ya vive por semana ISO — un snapshot por semana)
 // - Gasto GP: gpData.obras[...].semanas (viene del Sheet, por semana ISO)
-// - Otros gastos y maquinaria: se agregan a la semana ISO de su fecha
+// - Otros gastos, maquinaria y almacén (materiales): se agregan a la
+//   semana ISO de su fecha para armar el Gasto TOTAL semana a semana.
 // - Margen semanal = ejecutado semanal (avance % × presupuesto) - gasto acumulado
-function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria}) {
+function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria, materiales}) {
   const [rango, setRango] = useState(12);          // últimas N semanas
   const [metricaActiva, setMetricaActiva] = useState('avance');
 
@@ -5768,39 +5769,43 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     }
   });
 
-  // ── Gasto acumulado por semana: GP del Sheet (semanas) + otros + maquinaria
-  // El Sheet trae claves tipo "S22", "S23"... (asume año actual). Además
-  // agregamos otros gastos manuales y maquinaria mapeados a su semana ISO.
+  // ── Gasto TOTAL acumulado por semana ──────────────────────────────────
+  // Fuentes: GP del Sheet (por semana ISO) + almacén (materiales) +
+  // maquinaria + otros gastos manuales — mismo criterio que en las
+  // tarjetas del portafolio y el Dashboard, para que los números cuadren.
+  // Antes solo se sumaba GP + otros + maquinaria (faltaba almacén).
   const gastoIncremPorSem = {};
-  // GP: intentar leer datosObraGP.semanas donde el key es "S22" o "S22-2026"
+  const sumar = (key, monto) => {
+    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + monto;
+  };
+  const sumarConFecha = (fecha, monto) => {
+    if (!fecha || !monto) return;
+    const iso = semanaISOLocal(fecha);
+    if (!iso) return;
+    sumar(skey(iso.sem, iso.año), monto);
+  };
+
+  // 1) GP del Sheet — claves tipo "S22" o "S22-2026"
   if (datosObraGP?.semanas) {
     Object.entries(datosObraGP.semanas).forEach(([k, v]) => {
-      // Intentar extraer semana + año del key
       const m = String(k).match(/S?(\d{1,2})(?:[-_](\d{4}))?/);
       if (!m) return;
       const sem = parseInt(m[1], 10);
       const año = m[2] ? parseInt(m[2], 10) : new Date().getFullYear();
-      const key = skey(sem, año);
-      gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(v) || 0);
+      sumar(skey(sem, año), parseFloat(v) || 0);
     });
   }
-  // Otros gastos manuales
-  (otrosGastos || []).forEach(og => {
-    if (!og.fecha) return;
-    const iso = semanaISOLocal(og.fecha);
-    if (!iso) return;
-    const key = skey(iso.sem, iso.año);
-    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(og.importe) || 0);
-  });
-  // Maquinaria (usa fecha si está disponible; si no, se suma en la última
-  // semana visible como aproximación, para que aparezca en el gasto).
+  // 2) Otros gastos manuales (fecha capturada)
+  (otrosGastos || []).forEach(og => sumarConFecha(og.fecha, parseFloat(og.importe) || 0));
+  // 3) Maquinaria propia (usa fecha si está disponible)
   (maquinaria || []).forEach(m => {
     const fecha = m.fecha || m.fechaCaptura;
-    if (!fecha) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    const key = skey(iso.sem, iso.año);
-    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + (parseFloat(m.imp) || 0);
+    sumarConFecha(fecha, parseFloat(m.imp) || 0);
+  });
+  // 4) Almacén / materiales (mismo criterio de fecha)
+  (materiales || []).forEach(m => {
+    const fecha = m.fecha || m.fechaCaptura;
+    sumarConFecha(fecha, parseFloat(m.imp) || 0);
   });
 
   // Gasto ACUMULADO por semana (suma corrida)
@@ -6157,7 +6162,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       estimaciones={estimaciones}
       datosObraGP={datosObraGP}
       otrosGastos={otrosGastos}
-      maquinaria={maquinaria}/>
+      maquinaria={maquinaria}
+      materiales={materiales}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
     {totalRiesgos > 0 && (
