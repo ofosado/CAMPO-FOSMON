@@ -5718,11 +5718,39 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
 // en obras cortas). Ahora es semana ISO por semana ISO.
 // Datos consolidados:
 // - Avance: historialAvance (ya vive por semana ISO — un snapshot por semana)
-// - Gasto GP: gpData.obras[...].semanas (viene del Sheet, por semana ISO)
-// - Otros gastos, maquinaria y almacén (materiales): se agregan a la
-//   semana ISO de su fecha para armar el Gasto TOTAL semana a semana.
-// - Margen semanal = ejecutado semanal (avance % × presupuesto) - gasto acumulado
-function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria, materiales}) {
+// - Gasto TOTAL por semana = último GP conocido + Almacén + Maquinaria + Otros.
+//   El GP del Sheet ya viene como acumulado por semana; los otros conceptos
+//   se suman a la semana ISO de su fecha.
+// - Margen semanal = ejecutado semanal (∑ a% × imp por sub) - gasto acumulado
+//   [MISMA fórmula que el Dashboard, no "avance% × presupuesto"]
+// - Necesita 'subs' para calcular el monto ejecutado real por semana; si no
+//   se pasan, cae a "avance% × presupuesto" como aproximación.
+function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria, materiales, subs}) {
+  // Si el caller no pasa datosObraGP (bug histórico: el Dashboard llamaba
+  // con datosObraGP={null}), lo resolvemos aquí con la misma lógica que
+  // el resto de la app.
+  if (!datosObraGP && gpData?.obras && obra) {
+    const arr = Object.values(gpData.obras);
+    let match = null;
+    if (obra.gpId) match = arr.find(o => o.id === obra.gpId);
+    if (!match && /^\d{4}/.test(obra.id || '')) {
+      match = arr.find(o => o.id === obra.id.slice(0, 4));
+    }
+    if (!match) {
+      const norm = s => (s||'').toString().toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+      const palabras = norm(obra.nombre).split(' ').filter(w => w.length > 3);
+      let mejor = null, score = 0;
+      for (const o of arr) {
+        const palGP = norm(o.nombre).replace(/^\d{4}\s*/,'').split(' ').filter(w => w.length > 3);
+        const m = palabras.filter(p => palGP.some(g => g.includes(p) || p.includes(g))).length;
+        if (m > score) { score = m; mejor = o; }
+      }
+      if (score >= 2) match = mejor;
+    }
+    datosObraGP = match;
+  }
   const [rango, setRango] = useState(12);          // últimas N semanas
   const [metricaActiva, setMetricaActiva] = useState('avance');
 
@@ -5770,58 +5798,70 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   });
 
   // ── Gasto TOTAL acumulado por semana ──────────────────────────────────
-  // Fuentes: GP del Sheet (por semana ISO) + almacén (materiales) +
-  // maquinaria + otros gastos manuales — mismo criterio que en las
-  // tarjetas del portafolio y el Dashboard, para que los números cuadren.
-  // Antes solo se sumaba GP + otros + maquinaria (faltaba almacén).
-  const gastoIncremPorSem = {};
-  const sumar = (key, monto) => {
-    gastoIncremPorSem[key] = (gastoIncremPorSem[key] || 0) + monto;
-  };
-  const sumarConFecha = (fecha, monto) => {
-    if (!fecha || !monto) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    sumar(skey(iso.sem, iso.año), monto);
-  };
+  // IMPORTANTE (agosto 2026): el GP del Sheet ya viene como GASTO
+  // ACUMULADO por semana ISO (no incremental). Antes lo estábamos
+  // sumando como si fuera incremental, lo que producía escalones
+  // artificiales en obras con historial largo. Además el mapeo sin año
+  // asumía año actual → gastos 2024/2025 se acumulaban en 2026.
+  //
+  // Nueva lógica:
+  //   Gasto total por semana = último GP acumulado conocido para esa
+  //                            semana o anterior
+  //                          + almacén + maquinaria + otros gastos
+  //                            manuales acumulados hasta esa semana.
 
-  // 1) GP del Sheet — claves tipo "S22" o "S22-2026"
+  const gastoGPAcumPorSem = {};    // "YYYY-Wnn" → GP acumulado del Sheet
   if (datosObraGP?.semanas) {
     Object.entries(datosObraGP.semanas).forEach(([k, v]) => {
+      // El Sheet trae claves tipo "S22" (año implícito por la posición
+      // en el sheet). Solo tenemos año único = año actual disponible.
+      // Si el proyecto es multi-año esto puede quedar corto, pero es lo
+      // que hay hoy — mejor eso que sumar años distintos.
       const m = String(k).match(/S?(\d{1,2})(?:[-_](\d{4}))?/);
       if (!m) return;
       const sem = parseInt(m[1], 10);
       const año = m[2] ? parseInt(m[2], 10) : new Date().getFullYear();
-      sumar(skey(sem, año), parseFloat(v) || 0);
+      gastoGPAcumPorSem[skey(sem, año)] = parseFloat(v) || 0;
     });
   }
-  // 2) Otros gastos manuales (fecha capturada)
-  (otrosGastos || []).forEach(og => sumarConFecha(og.fecha, parseFloat(og.importe) || 0));
-  // 3) Maquinaria propia (usa fecha si está disponible)
-  (maquinaria || []).forEach(m => {
-    const fecha = m.fecha || m.fechaCaptura;
-    sumarConFecha(fecha, parseFloat(m.imp) || 0);
-  });
-  // 4) Almacén / materiales (mismo criterio de fecha)
-  (materiales || []).forEach(m => {
-    const fecha = m.fecha || m.fechaCaptura;
-    sumarConFecha(fecha, parseFloat(m.imp) || 0);
-  });
 
-  // Gasto ACUMULADO por semana (suma corrida)
+  // Gastos manuales por semana (INCREMENTALES): almacén + maquinaria + otros
+  const gastoManualIncrem = {};
+  const sumarManual = (fecha, monto) => {
+    if (!fecha || !monto) return;
+    const iso = semanaISOLocal(fecha);
+    if (!iso) return;
+    const key = skey(iso.sem, iso.año);
+    gastoManualIncrem[key] = (gastoManualIncrem[key] || 0) + monto;
+  };
+  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
+  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
+  (materiales || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
+
+  // Combinar: gasto total acumulado = GP acumulado más reciente ≤ semana
+  //                                 + manuales incrementales acumulados hasta semana
   const gastoAcumPorSem = {};
-  let acum = 0;
-  // Primero suma TODO el gasto anterior a la primera semana visible para
-  // que el acumulado arranque en el nivel correcto (no en cero)
+  // Ordenar keys de GP para poder buscar la más reciente ≤ semana visible
+  const gpKeysOrdenadas = Object.keys(gastoGPAcumPorSem).sort();
+  let acumManual = 0;
   const primeraKey = semanas[0]?.key;
   if (primeraKey) {
-    Object.keys(gastoIncremPorSem).forEach(k => {
-      if (k < primeraKey) acum += gastoIncremPorSem[k];
+    Object.keys(gastoManualIncrem).forEach(k => {
+      if (k < primeraKey) acumManual += gastoManualIncrem[k];
     });
   }
+  const ultimoGPAcumHasta = (semKey) => {
+    // Devuelve el último GP acumulado con key ≤ semKey.
+    let ult = 0;
+    for (const k of gpKeysOrdenadas) {
+      if (k <= semKey) ult = gastoGPAcumPorSem[k];
+      else break;
+    }
+    return ult;
+  };
   semanas.forEach(s => {
-    acum += gastoIncremPorSem[s.key] || 0;
-    gastoAcumPorSem[s.key] = acum;
+    acumManual += gastoManualIncrem[s.key] || 0;
+    gastoAcumPorSem[s.key] = ultimoGPAcumHasta(s.key) + acumManual;
   });
 
   // ── Estimaciones acumuladas COBRADAS (pagadas) por semana
@@ -5911,13 +5951,75 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     avanceSeries.push(avAcarreo ?? 0);
   });
 
-  // Serie de margen: usa el mismo criterio de arrastre para el avance.
-  // Gasto acumulado sí toma su propio valor (siempre disponible por sheet).
-  const margenSeries = semanas.map((s, i) => {
-    const avPct = avanceSeries[i];
-    const ejecutado = (avPct / 100) * (obra.presupuesto || 0);
+  // Serie de MARGEN semanal (misma fórmula que el Dashboard):
+  //   margen = ejecutado - gasto total
+  //   ejecutado = ∑(a% × imp) por sub + almacén acumulado en la semana
+  //
+  // Antes se calculaba como (avance% × presupuesto) - gasto, lo que daba
+  // números irreales (avance% × presupuesto no es el monto ejecutado real,
+  // es el "monto contractual proporcional al avance"). Con presupuestos
+  // grandes y avance parcial, esto inflaba el ejecutado a cifras absurdas
+  // (ej. 20% × $520M = $104M "ejecutado", cuando en realidad el ejecutado
+  // real venía siendo mucho menor).
+  //
+  // Nueva fórmula: usar el snapshot semanal del historial que ya trae
+  // subs[{sec,a,imp}] — el mismo array que usa el Dashboard para 'am'.
+  // Si la semana no tiene snapshot, se hereda el ejecutado anterior
+  // (mismo tratamiento que el avance).
+
+  // Ejecutado por semana desde el snapshot
+  const ejecutadoPorSem = {};
+  Object.entries(avancePorSem).forEach(([k, snap]) => {
+    if (!snap?.subs || !Array.isArray(snap.subs)) return;
+    // Preferir montoEjecutado si el snapshot lo trae calculado; si no,
+    // calcularlo desde subs (∑ a% × imp).
+    if (typeof snap.montoEjecutado === 'number') {
+      ejecutadoPorSem[k] = snap.montoEjecutado;
+    } else {
+      ejecutadoPorSem[k] = snap.subs.reduce(
+        (t, sb) => t + ((sb.a || 0) / 100) * (sb.imp || 0), 0
+      );
+    }
+  });
+
+  // Buscar último ejecutado anterior a la ventana visible para arranque
+  let ultimoEjecutadoConocido = 0;
+  if (primerSemanaVisible) {
+    const anteriores = Object.entries(ejecutadoPorSem)
+      .filter(([k]) => k < primerSemanaVisible)
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (anteriores.length > 0) {
+      ultimoEjecutadoConocido = anteriores[anteriores.length - 1][1];
+    }
+  }
+
+  // Almacén acumulado por semana (para sumar al ejecutado real)
+  const almacenIncremPorSem = {};
+  (materiales || []).forEach(m => {
+    const fecha = m.fecha || m.fechaCaptura;
+    if (!fecha) return;
+    const iso = semanaISOLocal(fecha);
+    if (!iso) return;
+    const key = skey(iso.sem, iso.año);
+    almacenIncremPorSem[key] = (almacenIncremPorSem[key] || 0) + (parseFloat(m.imp) || 0);
+  });
+  let almAcum = 0;
+  if (primeraKey) {
+    Object.keys(almacenIncremPorSem).forEach(k => {
+      if (k < primeraKey) almAcum += almacenIncremPorSem[k];
+    });
+  }
+
+  const margenSeries = [];
+  let ejecAcarreo = ultimoEjecutadoConocido;
+  semanas.forEach(s => {
+    if (typeof ejecutadoPorSem[s.key] === 'number') {
+      ejecAcarreo = ejecutadoPorSem[s.key];
+    }
+    almAcum += almacenIncremPorSem[s.key] || 0;
+    const ejecutado = ejecAcarreo + almAcum;
     const gastado = gastoAcumPorSem[s.key] || 0;
-    return ejecutado - gastado;
+    margenSeries.push(ejecutado - gastado);
   });
 
   const datosMetricas = {
@@ -6163,7 +6265,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       datosObraGP={datosObraGP}
       otrosGastos={otrosGastos}
       maquinaria={maquinaria}
-      materiales={materiales}/>
+      materiales={materiales}
+      subs={subs}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
     {totalRiesgos > 0 && (
