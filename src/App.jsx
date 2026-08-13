@@ -6010,16 +6010,63 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     });
   }
 
-  const margenSeries = [];
+  // Serie ejecutado por semana (con arrastre)
+  const ejecutadoSeries = [];
   let ejecAcarreo = ultimoEjecutadoConocido;
+  let almAcumEjec = almAcum;  // clonar para no mutar el acumulado de gasto
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
       ejecAcarreo = ejecutadoPorSem[s.key];
     }
-    almAcum += almacenIncremPorSem[s.key] || 0;
-    const ejecutado = ejecAcarreo + almAcum;
-    const gastado = gastoAcumPorSem[s.key] || 0;
-    margenSeries.push(ejecutado - gastado);
+    almAcumEjec += almacenIncremPorSem[s.key] || 0;
+    ejecutadoSeries.push(ejecAcarreo + almAcumEjec);
+  });
+
+  // ── ANCLAJE AL VALOR ACTUAL DEL DASHBOARD ─────────────────────────────
+  // Los snapshots del historial pueden estar desactualizados o incompletos
+  // (subs viejas, precios modificados). Para que el ÚLTIMO PUNTO de la
+  // serie cuadre exactamente con lo que muestra el KPI del Dashboard, se
+  // sobrescribe el último valor de la ventana con los cálculos actuales
+  // usando los props subs/materiales/gpData (mismos que usa el Dashboard).
+  const _gastoGPLive = (subs && obra) ? resolverGastoGP(obra, gpData) : 0;
+  const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
+  const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+  const _totAlm   = (materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+  const gtActual  = _gastoGPLive + _totMaq + _totOtros + _totAlm;
+  const meActualAvance = (subs || []).reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
+  const meActual  = meActualAvance + _totAlm;
+  if (semanas.length > 0) {
+    const ultimoIdx = semanas.length - 1;
+    // Solo sobrescribir si tenemos datos reales del Dashboard
+    if (gtActual > 0) {
+      const gastoAcumFix = gastoAcumPorSem[semanas[ultimoIdx].key] || 0;
+      // Ajuste: aplicar diferencia proporcional para que último punto coincida
+      const deltaGasto = gtActual - gastoAcumFix;
+      gastoAcumPorSem[semanas[ultimoIdx].key] = gtActual;
+      // Si la diferencia es grande, también ajustamos el ejecutado y margen
+      if (Math.abs(deltaGasto) > 100) {
+        ejecutadoSeries[ultimoIdx] = meActual;
+      }
+    }
+  }
+
+  // Gasto SEMANAL (delta por semana, no acumulado). El usuario prefiere
+  // ver "cuánto se gastó ESTA semana" en lugar del acumulado.
+  //   gasto_semana = gasto_acum_semana - gasto_acum_semana_anterior
+  // Para la primera semana visible NO tenemos referencia anterior real, se
+  // deja como el delta desde 0 (podría ser grande si es una obra madura;
+  // el usuario elige rangos más cortos si quiere ver solo los últimos deltas).
+  const gastoSemanalSeries = semanas.map((s, i) => {
+    if (i === 0) return gastoAcumPorSem[s.key] || 0;
+    const act = gastoAcumPorSem[s.key] || 0;
+    const prev = gastoAcumPorSem[semanas[i-1].key] || 0;
+    return Math.max(0, act - prev);
+  });
+
+  // Serie de MARGEN semanal (misma fórmula que el Dashboard):
+  //   margen = ejecutado - gasto total (ambos acumulados a la fecha)
+  const margenSeries = semanas.map((s, i) => {
+    return ejecutadoSeries[i] - (gastoAcumPorSem[s.key] || 0);
   });
 
   const datosMetricas = {
@@ -6031,16 +6078,15 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       valores: avanceSeries,
     },
     gasto: {
-      label: 'Gasto acumulado',
+      // Cambiado a SEMANAL (delta), no acumulado. Etiqueta más corta
+      // porque ya está dentro de "Tendencias semana a semana".
+      label: 'Gasto',
       color: C.redDk,
       formato: (v) => MXN(v),
       max: null,
-      valores: semanas.map(s => gastoAcumPorSem[s.key] || 0),
+      valores: gastoSemanalSeries,
     },
-    // "Estimaciones cobradas" se eliminó de las tendencias — daba poca
-    // información y saturaba el selector. El detalle de estimaciones
-    // (Estimado / Por cobrar / Pagado) se ve en el bloque de Estimaciones
-    // debajo del Dashboard.
+    // "Estimaciones cobradas" se eliminó de las tendencias.
     margen: {
       label: 'Margen',
       color: C.purple,
@@ -6059,10 +6105,24 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   const rangoY = maxValor - minValor || 1;
 
   // SVG sparkline + barras
-  const W = 600, H = 140, PL = 50, PR = 12, PT = 14, PB = 26;
+  // - PT ampliado a 22 para que las etiquetas de valor no se corten arriba
+  // - PL ampliado a 62 para labels tipo "$100M" del eje Y
+  // - PR ampliado a 18 para que el último punto y su label no se corten
+  // - viewBox más ancho para 12+ semanas y mejor legibilidad
+  // - Formato COMPACTO en labels: "$1.2M" en vez de "$1,234,567" para
+  //   evitar que se amontonen las etiquetas sobre las barras.
+  const W = 720, H = 170, PL = 62, PR = 18, PT = 22, PB = 32;
   const cw = W - PL - PR, ch = H - PT - PB;
   const xPos = (i) => PL + (cw / Math.max(meses.length - 1, 1)) * i;
   const yPos = (v) => PT + ch - ((v - minValor) / rangoY) * ch;
+  // Formato compacto para labels DENTRO del gráfico (evita colisiones)
+  const fmtCompacto = (v) => {
+    const abs = Math.abs(v || 0);
+    if (metricaActiva === 'avance') return `${(v||0).toFixed(0)}%`;
+    if (abs >= 1e6) return `$${(v/1e6).toFixed(1)}M`;
+    if (abs >= 1e3) return `$${(v/1e3).toFixed(0)}k`;
+    return `$${(v||0).toFixed(0)}`;
+  };
 
   return <Card>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
@@ -6094,57 +6154,72 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
     {/* Gráfica SVG */}
     <div style={{overflowX:"auto",width:"100%"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:H,minWidth:400}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:500}}
+        preserveAspectRatio="xMidYMid meet">
         {/* Eje Y: 3 líneas guía */}
         {[0, 0.5, 1].map(p => (
           <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
             stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
         ))}
-        {/* Labels eje Y */}
+        {/* Labels eje Y — formato compacto para evitar overflow */}
         {[0, 0.5, 1].map(p => {
           const v = maxValor - rangoY * p;
           return <text key={p} x={PL - 6} y={PT + ch * p + 3}
             textAnchor="end" fontSize="9" fill={C.textMut}>
-            {metricaSel.formato(v)}
+            {fmtCompacto(v)}
           </text>;
         })}
-        {/* Barras */}
+        {/* Barras (barra angosta si son muchas semanas para dejar aire entre ellas) */}
         {meses.map((m, i) => {
           const v = valores[i];
           if (v <= 0 && minValor >= 0) return null;
           const xC = xPos(i);
-          const bw = Math.min(cw / meses.length * 0.6, 40);
+          const bw = Math.min(cw / meses.length * 0.55, 28);
           const yTop = yPos(Math.max(v, 0));
           const yBase = yPos(0);
           const bh = Math.abs(yBase - yTop);
-          return <rect key={m.ym}
+          return <rect key={m.key || m.ym}
             x={xC - bw/2} y={Math.min(yTop, yBase)}
             width={bw} height={bh || 1}
             fill={v >= 0 ? metricaSel.color : C.red}
-            opacity={0.85} rx={2}/>;
+            opacity={0.75} rx={2}/>;
         })}
         {/* Línea de tendencia */}
         <polyline
-          fill="none" stroke={metricaSel.color} strokeWidth={2}
+          fill="none" stroke={metricaSel.color} strokeWidth={1.8}
           points={meses.map((m, i) => `${xPos(i)},${yPos(valores[i])}`).join(' ')}/>
-        {/* Puntos + valores */}
-        {meses.map((m, i) => (
-          <g key={m.ym}>
-            <circle cx={xPos(i)} cy={yPos(valores[i])} r={3} fill={metricaSel.color}/>
-            <text x={xPos(i)} y={yPos(valores[i]) - 8}
-              textAnchor="middle" fontSize="9" fill={C.textPri} fontWeight="600">
-              {valores[i] !== 0 ? metricaSel.formato(valores[i]) : ''}
-            </text>
-          </g>
-        ))}
+        {/* Puntos + valores. Se ROTAN 15° cuando hay muchas semanas para
+            evitar que se enciman. Formato compacto ($1.2M) para no ocupar
+            tanto ancho. Solo se muestran valores no-cero. */}
+        {meses.map((m, i) => {
+          const v = valores[i];
+          if (!v && v !== 0) return null;
+          const x = xPos(i);
+          const y = yPos(v);
+          // Alternar posición arriba/abajo si son muchas semanas para
+          // dar más aire (solo cuando son ≥12 semanas)
+          const arriba = meses.length < 12 || i % 2 === 0;
+          const yLabel = arriba ? y - 8 : y + 14;
+          const rotar = meses.length >= 12;
+          return <g key={m.key || m.ym}>
+            <circle cx={x} cy={y} r={2.5} fill={metricaSel.color}/>
+            {v !== 0 && <text
+              x={x} y={yLabel}
+              textAnchor={rotar ? "start" : "middle"}
+              fontSize="8.5" fill={C.textPri} fontWeight="600"
+              transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
+              {fmtCompacto(v)}
+            </text>}
+          </g>;
+        })}
         {/* Eje X: labels de semanas (S## + fecha del jueves ISO abajo) */}
         {meses.map((m, i) => (
           <g key={m.key || m.ym}>
-            <text x={xPos(i)} y={H - 14}
-              textAnchor="middle" fontSize="10" fill={C.textSec} fontWeight="600">
+            <text x={xPos(i)} y={H - 16}
+              textAnchor="middle" fontSize="9.5" fill={C.textSec} fontWeight="600">
               {m.label}
             </text>
-            {m.fecha && <text x={xPos(i)} y={H - 4}
+            {m.fecha && <text x={xPos(i)} y={H - 5}
               textAnchor="middle" fontSize="8" fill={C.textMut}>
               {m.fecha}
             </text>}
@@ -6153,10 +6228,11 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       </svg>
     </div>
 
-    {/* Resumen del período */}
+    {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
+        separador de miles) porque no tiene el problema de amontonarse. */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-      marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut}}>
-      <span>Inicio del período: {metricaSel.formato(valores[0])}</span>
+      marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
+      <span>Inicio: <b style={{color:C.textSec}}>{metricaSel.formato(valores[0])}</b></span>
       <span style={{fontWeight:600,color:metricaSel.color}}>
         Actual: {metricaSel.formato(valores[valores.length-1])}
       </span>
