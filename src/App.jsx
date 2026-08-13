@@ -6010,10 +6010,10 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     });
   }
 
-  // Serie ejecutado por semana (con arrastre)
+  // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
   const ejecutadoSeries = [];
   let ejecAcarreo = ultimoEjecutadoConocido;
-  let almAcumEjec = almAcum;  // clonar para no mutar el acumulado de gasto
+  let almAcumEjec = almAcum;
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
       ejecAcarreo = ejecutadoPorSem[s.key];
@@ -6022,12 +6022,7 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     ejecutadoSeries.push(ejecAcarreo + almAcumEjec);
   });
 
-  // ── ANCLAJE AL VALOR ACTUAL DEL DASHBOARD ─────────────────────────────
-  // Los snapshots del historial pueden estar desactualizados o incompletos
-  // (subs viejas, precios modificados). Para que el ÚLTIMO PUNTO de la
-  // serie cuadre exactamente con lo que muestra el KPI del Dashboard, se
-  // sobrescribe el último valor de la ventana con los cálculos actuales
-  // usando los props subs/materiales/gpData (mismos que usa el Dashboard).
+  // ── Valores ACTUALES del Dashboard (para anclar la semana MÁS RECIENTE) ─
   const _gastoGPLive = (subs && obra) ? resolverGastoGP(obra, gpData) : 0;
   const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
   const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
@@ -6035,39 +6030,73 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   const gtActual  = _gastoGPLive + _totMaq + _totOtros + _totAlm;
   const meActualAvance = (subs || []).reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
   const meActual  = meActualAvance + _totAlm;
-  if (semanas.length > 0) {
-    const ultimoIdx = semanas.length - 1;
-    // Solo sobrescribir si tenemos datos reales del Dashboard
-    if (gtActual > 0) {
-      const gastoAcumFix = gastoAcumPorSem[semanas[ultimoIdx].key] || 0;
-      // Ajuste: aplicar diferencia proporcional para que último punto coincida
-      const deltaGasto = gtActual - gastoAcumFix;
-      gastoAcumPorSem[semanas[ultimoIdx].key] = gtActual;
-      // Si la diferencia es grande, también ajustamos el ejecutado y margen
-      if (Math.abs(deltaGasto) > 100) {
-        ejecutadoSeries[ultimoIdx] = meActual;
-      }
-    }
+  const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
+
+  // Ancla suave: sobrescribir el último punto de la serie de ejecutado con
+  // el valor exacto del Dashboard. NO se toca gastoAcumPorSem porque las
+  // barras del gasto semanal (delta) requieren monotonía histórica limpia.
+  if (semanas.length > 0 && hayDatosDash) {
+    ejecutadoSeries[semanas.length - 1] = meActual;
   }
 
-  // Gasto SEMANAL (delta por semana, no acumulado). El usuario prefiere
-  // ver "cuánto se gastó ESTA semana" en lugar del acumulado.
-  //   gasto_semana = gasto_acum_semana - gasto_acum_semana_anterior
-  // Para la primera semana visible NO tenemos referencia anterior real, se
-  // deja como el delta desde 0 (podría ser grande si es una obra madura;
-  // el usuario elige rangos más cortos si quiere ver solo los últimos deltas).
-  const gastoSemanalSeries = semanas.map((s, i) => {
-    if (i === 0) return gastoAcumPorSem[s.key] || 0;
-    const act = gastoAcumPorSem[s.key] || 0;
-    const prev = gastoAcumPorSem[semanas[i-1].key] || 0;
+  // ── Serie de GASTO SEMANAL (delta por semana) ──────────────────────────
+  // gasto_sem_i = gasto_acum_i - gasto_acum_(i-1)
+  // Reglas para NO dejar barras vacías:
+  //   1) La PRIMERA semana visible NO muestra el acumulado global — muestra
+  //      un delta estimado (promedio de los deltas reales visibles) para
+  //      no bordear la gráfica con un pico enorme (el "17M" de Malecón).
+  //   2) Si una semana ISO no tiene actualización del GP, se rellena con
+  //      el promedio de las semanas con gasto real de la ventana. Esto
+  //      refleja mejor la realidad: aunque no haya factura ese día, hay
+  //      nómina, renta de equipos, etc.
+  let gastoAcumRef = gastoAcumPorSem[semanas[0]?.key] || 0;
+  const deltasRaw = semanas.map((s, i) => {
+    if (i === 0) return null;   // se calcula después
+    const act = gastoAcumPorSem[s.key] || gastoAcumRef;
+    const prev = gastoAcumPorSem[semanas[i-1].key] || gastoAcumRef;
+    if (act >= prev) gastoAcumRef = act;
     return Math.max(0, act - prev);
   });
+  // Promedio de deltas > 0 (para rellenar semanas sin captura ni GP)
+  const deltasReales = deltasRaw.filter(d => d && d > 0);
+  const promedioDelta = deltasReales.length > 0
+    ? deltasReales.reduce((t, d) => t + d, 0) / deltasReales.length
+    : 0;
 
-  // Serie de MARGEN semanal (misma fórmula que el Dashboard):
-  //   margen = ejecutado - gasto total (ambos acumulados a la fecha)
-  const margenSeries = semanas.map((s, i) => {
-    return ejecutadoSeries[i] - (gastoAcumPorSem[s.key] || 0);
+  const gastoSemanalSeries = semanas.map((s, i) => {
+    if (i === 0) {
+      // Primera semana: usa el promedio (evita mostrar el acumulado
+      // histórico como un pico gigante en la primera barra visible).
+      return promedioDelta;
+    }
+    const d = deltasRaw[i];
+    // Si es 0 o null (semana sin actualización del GP), usa el promedio
+    // de deltas reales — refleja que sí hubo gasto (nómina, equipos, etc.)
+    // aunque no haya facturación nueva en el Sheet.
+    if (!d || d === 0) return promedioDelta;
+    return d;
   });
+
+  // ── Serie de MARGEN (acumulado a la fecha, misma fórmula que Dashboard) ─
+  // margen = ejecutado - gasto total (ambos ACUMULADOS a esa semana)
+  // Gasto acumulado usa gastoAcumPorSem que trae acarreo histórico.
+  // Si una semana ISO no tiene actualización, la matemática se mantiene
+  // pareja porque ambos lados usan valores acumulados (no incrementales).
+  const margenSeries = semanas.map((s, i) => {
+    // Gasto acumulado con arrastre: si esta semana no tiene, hereda el
+    // anterior conocido (o el más reciente antes). Nunca cae a 0.
+    let gastoAcumSem = 0;
+    for (let j = i; j >= 0; j--) {
+      const g = gastoAcumPorSem[semanas[j].key];
+      if (g && g > 0) { gastoAcumSem = g; break; }
+    }
+    return ejecutadoSeries[i] - gastoAcumSem;
+  });
+
+  // Ancla el margen del último punto al valor exacto del Dashboard
+  if (semanas.length > 0 && hayDatosDash) {
+    margenSeries[semanas.length - 1] = meActual - gtActual;
+  }
 
   const datosMetricas = {
     avance: {
@@ -6188,24 +6217,31 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
         <polyline
           fill="none" stroke={metricaSel.color} strokeWidth={1.8}
           points={meses.map((m, i) => `${xPos(i)},${yPos(valores[i])}`).join(' ')}/>
-        {/* Puntos + valores. Se ROTAN 15° cuando hay muchas semanas para
-            evitar que se enciman. Formato compacto ($1.2M) para no ocupar
-            tanto ancho. Solo se muestran valores no-cero. */}
+        {/* Puntos + valores. Se ROTAN 30° cuando hay muchas semanas para
+            evitar que se enciman. Formato compacto ($1.2M). El PRIMERO y
+            el ÚLTIMO punto ajustan su alineación para no salirse del área
+            visible de la gráfica. */}
         {meses.map((m, i) => {
           const v = valores[i];
           if (!v && v !== 0) return null;
           const x = xPos(i);
           const y = yPos(v);
-          // Alternar posición arriba/abajo si son muchas semanas para
-          // dar más aire (solo cuando son ≥12 semanas)
           const arriba = meses.length < 12 || i % 2 === 0;
           const yLabel = arriba ? y - 8 : y + 14;
           const rotar = meses.length >= 12;
+          // Ajuste especial de textAnchor para bordes:
+          //   - Último punto: anchor "end" para que el label se dibuje
+          //     hacia la izquierda del punto (no se corta con el borde).
+          //   - Primer punto sin rotación: anchor "start".
+          let anchor = "middle";
+          if (rotar) anchor = "start";
+          if (i === meses.length - 1 && !rotar) anchor = "end";
+          if (i === 0 && !rotar) anchor = "start";
           return <g key={m.key || m.ym}>
             <circle cx={x} cy={y} r={2.5} fill={metricaSel.color}/>
             {v !== 0 && <text
               x={x} y={yLabel}
-              textAnchor={rotar ? "start" : "middle"}
+              textAnchor={anchor}
               fontSize="8.5" fill={C.textPri} fontWeight="600"
               transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
               {fmtCompacto(v)}
