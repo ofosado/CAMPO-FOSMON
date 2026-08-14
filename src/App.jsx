@@ -2123,6 +2123,55 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
   }
 };
 
+// ── Snapshot de avance del SUBCONTRATO (histórico semanal por sub) ──
+// Estructura Firestore: obras/{obraId}/subcontratos/historial_{subId} = { semanas: [...] }
+// Cada snapshot: { id, semana, año, fechaCaptura, tipo, capturadoPor,
+//                  conceptos: [{clave, desc, avance, importe, cantEjec}],
+//                  avancePonderado, montoEjecutado }
+// Se dispara automáticamente al guardar cambios de avance del sub.
+const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, tipo = "intermedio") => {
+  if (!obraId || !subId || !Array.isArray(conceptos) || conceptos.length === 0) return null;
+  try {
+    const ahora = new Date();
+    const { semana, año } = semanaISO(ahora);
+    const id = snapshotId(semana, año);
+    const totalImporte = conceptos.reduce((t, c) => t + (parseFloat(c.importe) || 0), 0);
+    const avancePonderado = totalImporte > 0
+      ? conceptos.reduce((t, c) => t + ((c.avance || 0) / 100) * ((parseFloat(c.importe) || 0) / totalImporte) * 100, 0)
+      : 0;
+    const montoEjecutado = conceptos.reduce((t, c) => t + ((c.avance || 0) / 100) * (parseFloat(c.importe) || 0), 0);
+    const snap = {
+      id, semana, año,
+      fechaCaptura: ahora.toISOString(),
+      fechaCierre: tipo === "oficial" ? ahora.toISOString() : null,
+      tipo, capturadoPor: capturadoPor || 'sistema',
+      conceptos: conceptos.map(c => ({
+        clave: c.clave || '', desc: c.desc || '',
+        avance: c.avance || 0, importe: parseFloat(c.importe) || 0,
+        cantEjec: parseFloat(c.cantEjec) || 0,
+      })),
+      avancePonderado, montoEjecutado,
+    };
+    const path = `obras/${obraId}/subcontratos/historial_${subId}`;
+    const hist = await fsGet(path) || { semanas: [] };
+    const semanas = (hist.semanas || []).slice();
+    const idx = semanas.findIndex(s => s.id === id);
+    if (idx >= 0) {
+      if (semanas[idx].tipo === "oficial" && tipo !== "oficial") return null;
+      semanas[idx] = snap;
+    } else {
+      semanas.push(snap);
+    }
+    semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
+    const recortadas = semanas.slice(-52);
+    await fsSet(path, { semanas: recortadas });
+    return snap;
+  } catch (e) {
+    console.error('crearSnapshotAvanceSub', e);
+    return null;
+  }
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // BIBLIOTECA DE RIESGOS
 // ════════════════════════════════════════════════════════════════════════════
@@ -10907,7 +10956,85 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     else validacion = { color: C.red, txt: "Revisar", icon: "⚠" };
   }
 
-  const SUBTABS = [["datos","Datos generales"],["catalogo","Catálogo de conceptos"],["fotos","Fotos por concepto"],["pagos","Pagos"]];
+  // Sub-tabs del detalle. "Avance físico" reemplaza "Catálogo de conceptos"
+  // y agrega captura % / volumen + fotos inline (mismo UX que la obra madre).
+  // Se agrega "Estimaciones" que refleja el ciclo de facturación al sub.
+  // "Fotos por concepto" se mantiene como galería de respaldo.
+  const SUBTABS = [
+    ["datos",       "Datos generales"],
+    ["avance",      "Avance físico"],
+    ["estimaciones","Estimaciones"],
+    ["fotos",       "Fotos por concepto"],
+    ["pagos",       "Pagos"],
+  ];
+
+  // ── Modo de captura de avance del subcontrato ──
+  // Igual que en la obra madre: "porcentaje" (default) o "volumen".
+  const modoAvance = sub.modoAvance || "porcentaje";
+
+  // ── ESTIMACIONES del subcontrato ──
+  // Estructura: { id, no, fecha, periodo, monto, estatus, referencia }
+  // Estatus: 'En proceso' / 'Autorizada' / 'Pagada'
+  // Al marcar 'Pagada', se crea automáticamente un pago en sub.pagos para
+  // mantener ambos módulos sincronizados.
+  const estimacionesSub = Array.isArray(sub.estimaciones) ? sub.estimaciones : [];
+  const _neEst = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const estSubTotal   = estimacionesSub.reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
+  const estSubPagado  = estimacionesSub.filter(e => _neEst(e.estatus) === 'pagada').reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
+  const estSubPorPagar= estimacionesSub.filter(e => {
+    const st = _neEst(e.estatus);
+    return st === 'autorizada' || st === 'aprobada' || st.includes('proceso');
+  }).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
+
+  const agregarEstimacion = () => {
+    const nextNo = estimacionesSub.length > 0
+      ? Math.max(...estimacionesSub.map(e => parseInt(e.no)||0)) + 1
+      : 1;
+    const nueva = {
+      id: Date.now(),
+      no: nextNo,
+      fecha: new Date().toISOString().slice(0,10),
+      periodo: "",
+      monto: 0,
+      estatus: "En proceso",
+      referencia: "",
+    };
+    onUpdate({ estimaciones: [...estimacionesSub, nueva] });
+  };
+  const actualizarEstimacion = (idx, cambios) => {
+    const nuevas = estimacionesSub.map((e,i) => i === idx ? {...e, ...cambios} : e);
+    // Si acaba de marcarse "Pagada" y antes no lo era, crear pago automático
+    const antes = estimacionesSub[idx];
+    const ahora = { ...antes, ...cambios };
+    if (cambios.estatus && _neEst(cambios.estatus) === 'pagada' && _neEst(antes.estatus) !== 'pagada' && (ahora.monto||0) > 0) {
+      const nuevoPago = {
+        id: Date.now(),
+        fecha: new Date().toISOString().slice(0,10),
+        monto: ahora.monto,
+        referencia: `EST-${String(ahora.no).padStart(2,'0')}${ahora.periodo ? ' · '+ahora.periodo : ''}`,
+        estatus: 'pagado',
+        origenEstimacionId: ahora.id,
+      };
+      onUpdate({
+        estimaciones: nuevas,
+        pagos: [...pagos, nuevoPago],
+      });
+      // Notif a directivos
+      notifARoles(['director_general','director_operaciones','admin_sistema'], {
+        categoria: 'financiero', tipo: 'estimacion_sub_pagada',
+        titulo: `Estimación pagada · ${sub.proveedor || sub.nombre}`,
+        mensaje: `EST-${String(ahora.no).padStart(2,'0')} · ${MXN(ahora.monto)} · ${obra.nombre || obra.id}`,
+        link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
+        creadaPor: usuario?.correo || 'sistema',
+      });
+    } else {
+      onUpdate({ estimaciones: nuevas });
+    }
+  };
+  const eliminarEstimacion = (idx) => {
+    if (!window.confirm('¿Eliminar esta estimación? Si tenía pago asociado, ese pago NO se elimina automáticamente — revísalo en la pestaña Pagos.')) return;
+    onUpdate({ estimaciones: estimacionesSub.filter((_,i) => i !== idx) });
+  };
 
   // ── PAGOS AL SUBCONTRATISTA ──
   // Cada pago: { id, fecha, monto, referencia (folio/cheque/concepto), estatus (programado/pagado/cancelado) }
@@ -11040,15 +11167,31 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   // Helpers de edición de conceptos
   const agregarConcepto = () => {
     onUpdate({conceptos: [...sub.conceptos,
-      {id: Date.now(), clave:"", desc:"", unidad:"", cantidad:0, pu:0, importe:0, avance:0, fotos:[]}]});
+      {id: Date.now(), clave:"", desc:"", unidad:"", cantidad:0, pu:0, importe:0, avance:0, cantEjec:0, fotos:[]}]});
+  };
+  // ── Snapshot semanal automático (debounced) ──
+  // Se dispara 3s después del último cambio para evitar escribir Firestore
+  // por cada tecla. Solo se agenda si el cambio afectó el avance real
+  // (avance% o cantEjec).
+  const snapshotDebounceRef = useRef(null);
+  const agendarSnapshot = (conceptosNuevos) => {
+    if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current);
+    snapshotDebounceRef.current = setTimeout(() => {
+      crearSnapshotAvanceSub(obra.id, sub.id, conceptosNuevos, usuario?.correo);
+    }, 3000);
   };
   const actualizarConcepto = (idx, cambios) => {
-    onUpdate({conceptos: sub.conceptos.map((c,i) => {
+    const nuevosConceptos = sub.conceptos.map((c,i) => {
       if(i !== idx) return c;
       const nuevo = {...c, ...cambios};
       if(("cantidad" in cambios) || ("pu" in cambios)) nuevo.importe = (nuevo.cantidad||0)*(nuevo.pu||0);
       return nuevo;
-    })});
+    });
+    onUpdate({conceptos: nuevosConceptos});
+    // Snapshot solo si cambió el avance
+    if ("avance" in cambios || "cantEjec" in cambios) {
+      agendarSnapshot(nuevosConceptos);
+    }
   };
   const eliminarConcepto = (idx) => {
     onUpdate({conceptos: sub.conceptos.filter((_,i) => i !== idx)});
@@ -11099,11 +11242,13 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
           </div>
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7}}>
-        <Kpi label="Monto contrato" value={MXN(montoContrato)} color={C.caliza} size={12}/>
-        <Kpi label="Total catálogo"  value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "captura conceptos"} color={validacion?.color || C.blue} size={12}/>
-        <Kpi label="Ejecutado"       value={MXN(ejecutado)}   sub={`${NUM(pctAvance,1)}% del cat\u00e1logo`} color={C.greenDk} size={12}/>
-        <Kpi label="Pagado"          value={MXN(totalPagado)} sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.purpleDk} size={12}/>
+      {/* 5 KPIs (mismo lenguaje visual que el Dashboard de obra) */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:7}}>
+        <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="contratado con el sub" color={C.caliza} size={12}/>
+        <Kpi label="Catálogo"       value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "suma de conceptos"} color={validacion?.color || C.blue} size={12}/>
+        <Kpi label="Ejecutado"      value={MXN(ejecutado)}   sub={`${NUM(pctAvance,1)}% del cat\u00e1logo`} color={C.blueDk} size={12}/>
+        <Kpi label="Estimado"       value={MXN(estSubTotal)} sub={`por pagar ${MXN(estSubPorPagar)}`} color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado"         value={MXN(totalPagado)} sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.greenDk} size={12}/>
       </div>
       {/* Validador de monto: barra y mensaje */}
       {validacion && (
@@ -11243,10 +11388,33 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       </div>}
     </Card>}
 
-    {/* CATÁLOGO DE CONCEPTOS */}
-    {subtab==="catalogo" && <Card>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:6}}>
-        <Tit>Catálogo de conceptos</Tit>
+    {/* AVANCE FÍSICO — reemplaza al viejo "Catálogo de conceptos".
+        Mismo UX que Avance físico de la obra madre: modo % o volumen,
+        captura inline con fotos, importar desde Excel, snapshot al guardar. */}
+    {subtab==="avance" && <Card>
+      {/* Selector de modo */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:8,flexWrap:"wrap"}}>
+        <Tit>Avance físico del subcontrato</Tit>
+        {editar && (
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <span style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Modo captura</span>
+            <div style={{display:"flex",gap:0,border:`0.5px solid ${C.border}`,borderRadius:6,overflow:"hidden"}}>
+              {[["porcentaje","% avance"],["volumen","Volumen ejecutado"]].map(([v,l]) => (
+                <button key={v} onClick={()=>onUpdate({modoAvance: v})}
+                  style={{background: modoAvance===v ? C.caliza : C.card, color: modoAvance===v ? C.bg : C.textSec,
+                    border:"none", padding:"5px 10px", fontSize:10, fontWeight:600, cursor:"pointer"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:6,flexWrap:"wrap"}}>
+        <div style={{fontSize:10,color:C.textMut}}>
+          {sub.conceptos.length} concepto(s) · Ejecutado {MXN(ejecutado)} de {MXN(totalCat)} ({NUM(pctAvance,1)}%)
+        </div>
         {editar && (
           <div style={{display:"flex",gap:6}}>
             <SecBtn onClick={()=>setImportPanel(!importPanel)}>{importPanel ? "Cerrar" : "+ Importar catálogo"}</SecBtn>
@@ -11255,14 +11423,12 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         )}
       </div>
 
-      {/* PANEL DE IMPORTACIÓN */}
+      {/* PANEL DE IMPORTACIÓN — mismo que antes */}
       {importPanel && editar && (
         <div style={{background:C.bg,border:`0.5px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:12}}>
           <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:8}}>
             Importar catálogo desde archivo
           </div>
-
-          {/* Selector de modo (reemplazar vs agregar) */}
           {sub.conceptos.length > 0 && (
             <div style={{display:"flex",gap:14,marginBottom:10}}>
               <label style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:C.textSec,cursor:"pointer"}}>
@@ -11277,10 +11443,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               </label>
             </div>
           )}
-
-          {/* Dropzone */}
-          <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:8,padding:18,textAlign:"center",
-            cursor:"pointer",transition:"border-color .2s"}}
+          <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:8,padding:18,textAlign:"center",cursor:"pointer"}}
             onClick={()=>fileImportRef.current?.click()}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor=C.caliza;}}
             onDragLeave={e=>{e.currentTarget.style.borderColor=C.borderM;}}
@@ -11294,92 +11457,250 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                   <div style={{fontSize:9,color:C.textMut}}>
                     Formatos: .xlsx, .xls, .csv · El parser detecta automáticamente clave, descripción, unidad, cantidad, P.U. e importe
                   </div>
-                  <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
-                    Para PDF: adjúntalo como respaldo en "Datos generales" y captura el catálogo a mano.
-                  </div>
                 </>}
           </div>
           <input ref={fileImportRef} type="file" accept=".xlsx,.xls,.csv" style={{display:"none"}}
             onChange={e=>{ if(e.target.files?.[0]) procesarImport(e.target.files[0]); e.target.value=""; }}/>
-
           {importError && (
             <div style={{background:`${C.red}15`,border:`0.5px solid ${C.red}55`,borderRadius:6,
               padding:"7px 10px",fontSize:10,color:C.redDk,marginTop:8}}>
               {importError}
             </div>
           )}
-
-          {/* Preview de resultados */}
           {importResultado && (
             <div style={{marginTop:12}}>
-              {(() => {
-                const dif = importResultado.totalLeido - montoContrato;
-                const pct = montoContrato > 0 ? Math.abs(dif/montoContrato)*100 : 0;
-                const ok = montoContrato === 0 ? null : pct <= 1 ? {color:C.green,txt:"Cuadra"} : pct <= 5 ? {color:C.yellow,txt:"Desviación menor"} : {color:C.red,txt:"Revisar"};
-                return <>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginBottom:8}}>
-                    <Kpi label="Conceptos" value={importResultado.conceptos.length} sub={`de ${importResultado.nFilasLeidas} filas`} color={C.blue}/>
-                    <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="capturado" color={C.caliza} size={12}/>
-                    <Kpi label="Total leído"   value={MXN(importResultado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
-                    {ok && <Kpi label="Diferencia" value={MXN(Math.abs(dif))} sub={`${ok.txt} (${NUM(pct,2)}%)`} color={ok.color} size={12}/>}
-                  </div>
-                  <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:10}}>
-                    <SecBtn onClick={()=>{setImportResultado(null);setImportError("");}}>Limpiar</SecBtn>
-                    <button onClick={confirmarImport}
-                      style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
-                        fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
-                      {importModo==="reemplazar" ? "Reemplazar catálogo" : "Agregar conceptos"}
-                    </button>
-                  </div>
-                </>;
-              })()}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginBottom:8}}>
+                <Kpi label="Conceptos" value={importResultado.conceptos.length} sub={`de ${importResultado.nFilasLeidas} filas`} color={C.blue}/>
+                <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="capturado" color={C.caliza} size={12}/>
+                <Kpi label="Total leído"   value={MXN(importResultado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:10}}>
+                <SecBtn onClick={()=>{setImportResultado(null);setImportError("");}}>Limpiar</SecBtn>
+                <button onClick={confirmarImport}
+                  style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+                    fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>
+                  {importModo==="reemplazar" ? "Reemplazar catálogo" : "Agregar conceptos"}
+                </button>
+              </div>
             </div>
           )}
         </div>
       )}
 
       {sub.conceptos.length === 0 && !importPanel && (
-        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
-          {editar?'Sin conceptos. Click "+ Concepto" para capturar a mano o "+ Importar catálogo" para subir desde Excel.':'Sin conceptos registrados.'}
+        <div style={{padding:24,textAlign:"center",color:C.textMut,fontSize:11,background:C.bg,borderRadius:8}}>
+          {editar
+            ? 'Aún no hay conceptos. Click "+ Concepto" para capturar a mano o "+ Importar catálogo" para subir desde Excel.'
+            : 'Sin conceptos registrados en el catálogo.'}
         </div>
       )}
-      {sub.conceptos.map((c,i)=>(
-        <div key={c.id||i} style={{background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:8,
-          borderLeft:`3px solid ${(c.avance||0)>=100?C.green:(c.avance||0)>0?C.blue:C.textMut}`}}>
-          <div style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 90px 90px 110px 70px 30px",gap:6,alignItems:"center"}}>
-            {editar ? (<>
-              <Inp type="text" value={c.clave||""} placeholder="Clave" style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{clave:e.target.value})}/>
-              <Inp type="text" value={c.desc||""} placeholder="Descripción" style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{desc:e.target.value})}/>
-              <Inp type="text" value={c.unidad||""} placeholder="Und" style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{unidad:e.target.value})}/>
-              <Inp type="number" value={c.cantidad||0} placeholder="Cant" style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{cantidad:parseFloat(e.target.value)||0})}/>
-              <Inp type="number" value={c.pu||0} placeholder="P.U." style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{pu:parseFloat(e.target.value)||0})}/>
-              <div style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(c.importe||0)}</div>
-              <Inp type="number" value={c.avance||0} placeholder="%" style={{fontSize:10}}
-                onChange={e=>actualizarConcepto(i,{avance:Math.min(Math.max(parseFloat(e.target.value)||0,0),100)})}/>
-              <button onClick={()=>eliminarConcepto(i)} style={{background:"none",border:"none",
-                color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
-            </>) : (<>
-              <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{c.clave||"—"}</span>
-              <span style={{fontSize:11,color:C.textPri}}>{c.desc||"—"}</span>
-              <span style={{fontSize:10,color:C.textSec}}>{c.unidad||"—"}</span>
-              <span style={{fontSize:10,color:C.textSec,textAlign:"right"}}>{NUM(c.cantidad||0,2)}</span>
-              <span style={{fontSize:10,color:C.textSec,textAlign:"right"}}>{MXN(c.pu||0)}</span>
-              <span style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(c.importe||0)}</span>
-              <span style={{fontSize:11,fontWeight:600,color:(c.avance||0)>=100?C.green:C.blue,textAlign:"right"}}>{NUM(c.avance||0,0)}%</span>
-              <span></span>
-            </>)}
+
+      {/* CONCEPTOS con captura inline (modo % o volumen) + fotos */}
+      {sub.conceptos.map((c,i)=>{
+        const cant = parseFloat(c.cantidad)||0;
+        const cantEjec = parseFloat(c.cantEjec)||0;
+        const pctReal = cant > 0 ? Math.min(100, (cantEjec/cant)*100) : (c.avance||0);
+        const excedePresup = modoAvance === "volumen" && cant > 0 && cantEjec > cant;
+        const pctDisplay = modoAvance === "volumen" ? pctReal : (c.avance||0);
+        const impEjec = modoAvance === "volumen"
+          ? cantEjec * (parseFloat(c.pu)||0)
+          : ((c.avance||0)/100) * (c.importe||0);
+        const nFotos = (c.fotos||[]).length;
+        const colorBadge = pctDisplay >= 100 ? C.green : pctDisplay > 0 ? C.blue : C.textMut;
+
+        return <div key={c.id||i} style={{background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:8,
+          borderLeft:`3px solid ${colorBadge}`}}>
+          {/* Fila superior: clave / descripción / avance */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{c.clave||`#${i+1}`}</span>
+                <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{c.desc||"(sin descripción)"}</span>
+                {nFotos > 0 && <Bdg color={C.purple} small>{nFotos}</Bdg>}
+                {excedePresup && <Bdg color={C.yellow} small>{`${pctReal.toFixed(0)}%`}</Bdg>}
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
+                {modoAvance === "volumen"
+                  ? <>Cat: {cant>0?cant.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'} {c.unidad||''} · PU {MXN(c.pu||0)} · Imp {MXN(c.importe||0)} · Ejec {MXN(impEjec)}</>
+                  : <>{MXN(c.importe||0)} · {c.unidad||"—"} · {NUM(cant,2)} × {MXN(c.pu||0)}</>
+                }
+              </div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+              {editar ? (
+                modoAvance === "volumen" ? (
+                  <>
+                    <input type="number" min="0" step="0.01" placeholder="0" value={c.cantEjec||""}
+                      onChange={e=>{
+                        const v = Math.max(0, parseFloat(e.target.value)||0);
+                        const pctNuevo = cant > 0 ? Math.min(100, v/cant*100) : 0;
+                        actualizarConcepto(i, {cantEjec: v, avance: pctNuevo});
+                      }}
+                      title="Cantidad ejecutada acumulada"
+                      style={{width:74,padding:"5px 6px",fontSize:11,fontWeight:600,textAlign:"right",
+                        border:`0.5px solid ${C.border}`,borderRadius:5,outline:"none"}}/>
+                    <span style={{fontSize:9,color:C.textMut,minWidth:24}}>{c.unidad||""}</span>
+                  </>
+                ) : (
+                  <>
+                    <input type="number" min="0" max="100" step="1" value={c.avance||0}
+                      onChange={e=>actualizarConcepto(i, {avance: Math.min(Math.max(parseFloat(e.target.value)||0, 0), 100)})}
+                      style={{width:56,padding:"5px 6px",fontSize:11,fontWeight:600,textAlign:"right",
+                        border:`0.5px solid ${C.border}`,borderRadius:5,outline:"none"}}/>
+                    <span style={{fontSize:11,color:C.textSec,fontWeight:600}}>%</span>
+                  </>
+                )
+              ) : (
+                <span style={{fontSize:12,fontWeight:700,color:colorBadge}}>{NUM(pctDisplay,0)}%</span>
+              )}
+              {editar && <button onClick={()=>eliminarConcepto(i)}
+                title="Eliminar concepto"
+                style={{background:"none",border:"none",color:C.red,fontSize:14,cursor:"pointer",padding:"0 4px"}}>×</button>}
+            </div>
           </div>
-          {(c.avance||0) > 0 && <div style={{marginTop:6}}>
-            <Bar pct={c.avance||0} color={(c.avance||0)>=100?C.green:C.blue}/>
-          </div>}
-        </div>
-      ))}
+
+          {/* Barra de avance */}
+          <div style={{marginBottom:6}}>
+            <Bar pct={Math.min(100, pctDisplay)} color={pctDisplay>=100?C.green:C.blue}/>
+          </div>
+
+          {/* Edición de campos base (clave/desc/unidad/cant/pu) — colapsable */}
+          {editar && (
+            <details style={{marginTop:6}}>
+              <summary style={{fontSize:9,color:C.textMut,cursor:"pointer",userSelect:"none"}}>Editar datos del concepto</summary>
+              <div style={{display:"grid",gridTemplateColumns:"80px 1fr 60px 90px 90px",gap:6,alignItems:"center",marginTop:8}}>
+                <Inp type="text" value={c.clave||""} placeholder="Clave" style={{fontSize:10}}
+                  onChange={e=>actualizarConcepto(i,{clave:e.target.value})}/>
+                <Inp type="text" value={c.desc||""} placeholder="Descripción" style={{fontSize:10}}
+                  onChange={e=>actualizarConcepto(i,{desc:e.target.value})}/>
+                <Inp type="text" value={c.unidad||""} placeholder="Und" style={{fontSize:10}}
+                  onChange={e=>actualizarConcepto(i,{unidad:e.target.value})}/>
+                <Inp type="number" value={c.cantidad||0} placeholder="Cant" style={{fontSize:10}}
+                  onChange={e=>actualizarConcepto(i,{cantidad:parseFloat(e.target.value)||0})}/>
+                <Inp type="number" value={c.pu||0} placeholder="P.U." style={{fontSize:10}}
+                  onChange={e=>actualizarConcepto(i,{pu:parseFloat(e.target.value)||0})}/>
+              </div>
+            </details>
+          )}
+
+          {/* FOTOS INLINE */}
+          <div style={{marginTop:8}}>
+            {(c.fotos||[]).length > 0 && (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(80px,1fr))",gap:4,marginBottom:5}}>
+                {(c.fotos||[]).map((f,fi)=>{
+                  const url = typeof f === "string" ? f : f.url;
+                  return <div key={fi} style={{position:"relative",aspectRatio:"4/3",borderRadius:5,overflow:"hidden",background:C.card}}>
+                    <img src={url} onClick={()=>setLightbox(url)}
+                      style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
+                    {editar && <button onClick={()=>eliminarFotoConcepto(i, fi)}
+                      style={{position:"absolute",top:2,right:2,background:"rgba(0,0,0,0.7)",
+                        border:"none",color:"#fff",borderRadius:99,width:18,height:18,fontSize:10,cursor:"pointer"}}>×</button>}
+                  </div>;
+                })}
+              </div>
+            )}
+            {editar && (
+              <label style={{display:"inline-block",background:C.card,border:`0.5px dashed ${C.borderM}`,
+                borderRadius:5,padding:"4px 10px",fontSize:10,color:C.textSec,cursor:"pointer"}}>
+                + Foto
+                <input type="file" accept="image/*" style={{display:"none"}}
+                  onChange={e=>{ if(e.target.files?.[0]) subirFotoConcepto(i, e.target.files[0]); e.target.value=""; }}/>
+              </label>
+            )}
+          </div>
+        </div>;
+      })}
     </Card>}
+
+    {/* ESTIMACIONES DEL SUBCONTRATO ────────────────────────────────────
+        Ciclo de facturación del subcontratista hacia FOSMON. Similar al
+        módulo de Estimaciones de la obra madre pero simplificado (sin
+        anticipo/fondo garantía porque son términos del contrato principal,
+        no del sub). Al marcar "Pagada" crea automáticamente un pago en
+        sub.pagos para mantener ambos módulos sincronizados. */}
+    {subtab==="estimaciones" && <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {/* KPIs resumen */}
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <Tit>Resumen de estimaciones</Tit>
+          <span style={{fontSize:9,color:C.textMut}}>{estimacionesSub.length} registrada(s)</span>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:8}}>
+          <Kpi label="Estimado"  value={MXN(estSubTotal)}   sub="todas las estimaciones"                  color={C.blueDk}   size={12}/>
+          <Kpi label="Por pagar" value={MXN(estSubPorPagar)} sub="en proceso + autorizadas"               color={C.purpleDk} size={12}/>
+          <Kpi label="Pagado"    value={MXN(estSubPagado)}  sub={`${NUM(estSubTotal>0 ? estSubPagado/estSubTotal*100 : 0,1)}% del estimado`} color={C.greenDk}  size={12}/>
+        </div>
+      </Card>
+
+      {/* Lista de estimaciones */}
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <Tit>Relación de estimaciones</Tit>
+          {editar && <SecBtn onClick={agregarEstimacion}>+ Nueva estimación</SecBtn>}
+        </div>
+
+        {estimacionesSub.length === 0 && (
+          <div style={{padding:24,textAlign:"center",color:C.textMut,fontSize:11,background:C.bg,borderRadius:8}}>
+            {editar
+              ? 'Sin estimaciones registradas. Click "+ Nueva estimación" para capturar la primera.'
+              : 'Sin estimaciones registradas.'}
+          </div>
+        )}
+
+        {estimacionesSub.length > 0 && (
+          <>
+            {/* Header */}
+            <div style={{display:"grid",gridTemplateColumns:"60px 110px 1fr 120px 120px 30px",gap:6,
+              padding:"4px 10px",marginBottom:4,fontSize:9,color:C.textMut,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              <div>No.</div>
+              <div>Fecha</div>
+              <div>Periodo / Referencia</div>
+              <div style={{textAlign:"right"}}>Monto</div>
+              <div>Estatus</div>
+              <div></div>
+            </div>
+            {estimacionesSub.map((e, i) => {
+              const stNorm = _neEst(e.estatus);
+              const stCol = stNorm === 'pagada' ? C.greenDk
+                          : stNorm === 'autorizada' || stNorm === 'aprobada' ? C.blueDk
+                          : C.yellowDk;
+              return <div key={e.id || i} style={{display:"grid",gridTemplateColumns:"60px 110px 1fr 120px 120px 30px",gap:6,
+                padding:"8px 10px",marginBottom:5,background:C.bg,borderRadius:8,alignItems:"center",
+                borderLeft:`3px solid ${stCol}`}}>
+                {editar ? (<>
+                  <Inp type="number" value={e.no||i+1} style={{fontSize:11,fontWeight:600}}
+                    onChange={ev=>actualizarEstimacion(i,{no:parseInt(ev.target.value)||i+1})}/>
+                  <Inp type="date" value={e.fecha||""} style={{fontSize:10}}
+                    onChange={ev=>actualizarEstimacion(i,{fecha:ev.target.value})}/>
+                  <Inp type="text" value={e.periodo||""} placeholder="Ej: Julio 2026 / Ref. XYZ" style={{fontSize:10}}
+                    onChange={ev=>actualizarEstimacion(i,{periodo:ev.target.value})}/>
+                  <Inp type="number" value={e.monto||0} style={{fontSize:11,fontWeight:600,textAlign:"right"}}
+                    onChange={ev=>actualizarEstimacion(i,{monto:parseFloat(ev.target.value)||0})}/>
+                  <Sel value={e.estatus||"En proceso"} style={{fontSize:10,padding:"4px 6px"}}
+                    onChange={ev=>actualizarEstimacion(i,{estatus:ev.target.value})}>
+                    <option value="En proceso">En proceso</option>
+                    <option value="Autorizada">Autorizada</option>
+                    <option value="Pagada">Pagada</option>
+                  </Sel>
+                  <button onClick={()=>eliminarEstimacion(i)}
+                    style={{background:"none",border:"none",color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
+                </>) : (<>
+                  <span style={{fontSize:11,fontWeight:700,color:C.caliza}}>EST-{String(e.no||i+1).padStart(2,'0')}</span>
+                  <span style={{fontSize:11,color:C.textSec}}>{e.fecha||"—"}</span>
+                  <span style={{fontSize:10,color:C.textSec}}>{e.periodo||"—"}</span>
+                  <span style={{fontSize:12,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(e.monto||0)}</span>
+                  <Bdg color={stCol} small>{(e.estatus||"En proceso").toUpperCase()}</Bdg>
+                  <span></span>
+                </>)}
+              </div>;
+            })}
+            <div style={{fontSize:9,color:C.textMut,marginTop:6,fontStyle:"italic"}}>
+              Al marcar una estimación como "Pagada" se crea automáticamente un pago en la pestaña Pagos.
+            </div>
+          </>
+        )}
+      </Card>
+    </div>}
 
     {/* FOTOS POR CONCEPTO */}
     {subtab==="fotos" && <Card>
