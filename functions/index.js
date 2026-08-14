@@ -1130,3 +1130,309 @@ exports.probarBackup = onCall({ region: "us-central1" }, async (request) => {
     throw new HttpsError("internal", `Error en backup: ${e.message}`);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RECORDATORIOS DE CAPTURA (A1-A4)
+// ─────────────────────────────────────────────────────────────────────────
+// Escribe notificaciones INTERNAS en notificaciones/{uid}/items para que
+// aparezcan en la campana de CAMPO. En una siguiente fase estos mismos
+// eventos se emitirán como push nativos (FCM).
+//
+// A1 · Viernes 4pm: recordatorio de captura semanal — obra
+//      Para residente/superintendente/administrador_obra
+// A2 · Viernes 5pm: recordatorio de captura semanal — subcontratos
+//      Para los mismos + PM (supervisor)
+// A3 · Lunes 9am: alerta "3+ pendientes en Operación"
+// A4 · Lunes 9am: alerta "10+ días sin capturar"
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Helper: semana ISO {sem, año} para una fecha dada
+function semanaISOFn(fecha) {
+  const d = new Date(fecha);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const inicioAño = new Date(d.getFullYear(), 0, 1);
+  return {
+    semana: Math.ceil(((d - inicioAño) / 86400000 + 1) / 7),
+    año: d.getFullYear(),
+  };
+}
+function snapIdFn(sem, año) { return `S${String(sem).padStart(2, "0")}-${año}`; }
+
+// Helper: crear notificación interna para 1 usuario
+async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) {
+  try {
+    await admin.firestore()
+      .collection(`notificaciones/${uid}/items`)
+      .add({
+        categoria: categoria || "recordatorio",
+        tipo: tipo || "generic",
+        titulo,
+        mensaje,
+        link: link || null,
+        leida: false,
+        fecha: admin.firestore.FieldValue.serverTimestamp(),
+        creadaPor: "sistema:recordatorios",
+      });
+  } catch (e) {
+    console.warn(`crearNotifCloud fallo para uid=${uid}:`, e.message);
+  }
+}
+
+// Helper: lista de usuarios activos que pueden capturar avance en una obra
+// (Superintendente, Residente, Admin de Obra) según usuario.obras_asignadas.
+// Filtra: solo usuarios ACTIVOS con la obra en su lista.
+async function usuariosCapturaDeObra(obraId, incluirSupervisor = false) {
+  const rolesCaptura = ["superintendente", "residente", "administrador_obra"];
+  if (incluirSupervisor) rolesCaptura.push("supervisor");
+  const snap = await admin.firestore().collection("usuarios")
+    .where("activo", "!=", false).get();
+  const out = [];
+  snap.forEach(doc => {
+    const u = doc.data();
+    if (!rolesCaptura.includes(u.rol)) return;
+    const asignadas = Array.isArray(u.obras_asignadas) ? u.obras_asignadas : [];
+    if (asignadas.includes(obraId)) {
+      out.push({ uid: u.uid || doc.id, email: u.email, nombre: u.nombre, rol: u.rol });
+    }
+  });
+  return out;
+}
+
+// Helper: obtener nombre corto (o largo) de la obra para la notificación
+function nombreObraNotif(obra) {
+  const n = String(obra.nombre || obra.id || "obra");
+  return n.replace(/^\d{4}\s+/, "").replace(/\s+\d{4}\s*$/, "").trim() || n;
+}
+
+// A1 · Viernes 4pm — Recordatorio de captura semanal (obra)
+exports.recordatorioCapturaObra = onSchedule({
+  schedule: "0 16 * * 5",   // viernes 16:00
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  const t0 = Date.now();
+  try {
+    const { semana, año } = semanaISOFn(new Date());
+    const idSem = snapIdFn(semana, año);
+    const obrasSnap = await admin.firestore().collection("obras").get();
+    let contadorNotifs = 0;
+    let obrasSinCaptura = 0;
+
+    for (const obraDoc of obrasSnap.docs) {
+      const obra = { id: obraDoc.id, ...obraDoc.data() };
+      if (obra.estado === "archivada") continue;
+
+      // ¿Hay snapshot esta semana?
+      const histSnap = await admin.firestore()
+        .doc(`obras/${obra.id}/avance/historial`).get();
+      const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
+      const yaCapturado = semanas.some(s => s.id === idSem);
+      if (yaCapturado) continue;
+
+      obrasSinCaptura++;
+      const usuarios = await usuariosCapturaDeObra(obra.id, false);
+      const nombreCorto = nombreObraNotif(obra);
+      for (const u of usuarios) {
+        if (!u.uid) continue;
+        await crearNotifCloud(u.uid, {
+          categoria: "recordatorio",
+          tipo: "captura_obra_pendiente",
+          titulo: `Cierre semanal · ${nombreCorto}`,
+          mensaje: `Falta capturar avance físico de la S${semana}. Aprovecha antes del corte del viernes.`,
+          link: { tab: "operacion", subTab: "avance", obraId: obra.id },
+        });
+        contadorNotifs++;
+      }
+    }
+    await registrarSalud("recordatorio_obra", true,
+      `${contadorNotifs} notifs a ${obrasSinCaptura} obras sin capturar`,
+      { duracionMs: Date.now() - t0, obrasSinCaptura, notifsEnviadas: contadorNotifs });
+  } catch (e) {
+    console.error("recordatorioCapturaObra falló:", e);
+    await registrarSalud("recordatorio_obra", false, e.message || String(e),
+      { duracionMs: Date.now() - t0 });
+  }
+});
+
+// A2 · Viernes 5pm — Recordatorio de captura de subcontratos
+exports.recordatorioCapturaSubs = onSchedule({
+  schedule: "0 17 * * 5",   // viernes 17:00
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  const t0 = Date.now();
+  try {
+    const { semana, año } = semanaISOFn(new Date());
+    const idSem = snapIdFn(semana, año);
+    const obrasSnap = await admin.firestore().collection("obras").get();
+    let contadorNotifs = 0;
+    let subsSinCaptura = 0;
+
+    for (const obraDoc of obrasSnap.docs) {
+      const obra = { id: obraDoc.id, ...obraDoc.data() };
+      if (obra.estado === "archivada") continue;
+
+      // Cargar lista de subs de la obra
+      const listaSnap = await admin.firestore()
+        .doc(`obras/${obra.id}/subcontratos/lista`).get();
+      if (!listaSnap.exists) continue;
+      const items = listaSnap.data().items || [];
+      const subsActivos = items.filter(s => (s.estado || "activa") === "activa"
+        && Array.isArray(s.conceptos) && s.conceptos.length > 0);
+      if (subsActivos.length === 0) continue;
+
+      // Para cada sub, revisar si ya tiene snapshot esta semana
+      const subsSinSnap = [];
+      for (const sub of subsActivos) {
+        const path = `obras/${obra.id}/subcontratos/historial_${sub.id}`;
+        const histSnap = await admin.firestore().doc(path).get();
+        const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
+        const yaCapturado = semanas.some(s => s.id === idSem);
+        if (!yaCapturado) subsSinSnap.push(sub);
+      }
+      if (subsSinSnap.length === 0) continue;
+
+      subsSinCaptura += subsSinSnap.length;
+      const usuarios = await usuariosCapturaDeObra(obra.id, true);
+      const nombreCorto = nombreObraNotif(obra);
+      for (const u of usuarios) {
+        if (!u.uid) continue;
+        const nSubs = subsSinSnap.length;
+        await crearNotifCloud(u.uid, {
+          categoria: "recordatorio",
+          tipo: "captura_sub_pendiente",
+          titulo: `Subcontratos sin cierre · ${nombreCorto}`,
+          mensaje: `${nSubs} subcontrato${nSubs > 1 ? "s" : ""} sin capturar avance esta semana (S${semana}).`,
+          link: { tab: "operacion", subTab: "subcontratos", obraId: obra.id },
+        });
+        contadorNotifs++;
+      }
+    }
+    await registrarSalud("recordatorio_subs", true,
+      `${contadorNotifs} notifs, ${subsSinCaptura} subs sin captura`,
+      { duracionMs: Date.now() - t0, subsSinCaptura, notifsEnviadas: contadorNotifs });
+  } catch (e) {
+    console.error("recordatorioCapturaSubs falló:", e);
+    await registrarSalud("recordatorio_subs", false, e.message || String(e),
+      { duracionMs: Date.now() - t0 });
+  }
+});
+
+// A3+A4 · Lunes 9am — alertas de arranque de semana
+// A3: obras con 3+ pendientes en Operación (avance viejo, almacén/maq/nómina viejo)
+// A4: obras con última captura >10 días
+exports.recordatorioLunes = onSchedule({
+  schedule: "0 9 * * 1",   // lunes 09:00
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  const t0 = Date.now();
+  try {
+    const hoy = new Date();
+    const obrasSnap = await admin.firestore().collection("obras").get();
+    let contadorNotifs = 0;
+
+    for (const obraDoc of obrasSnap.docs) {
+      const obra = { id: obraDoc.id, ...obraDoc.data() };
+      if (obra.estado === "archivada") continue;
+
+      // Sumar pendientes: mismo criterio que el numerito rojo del frontend
+      let pendientes = 0;
+      const razones = [];
+
+      // (a) ¿Se cerró la semana pasada?
+      const histSnap = await admin.firestore()
+        .doc(`obras/${obra.id}/avance/historial`).get();
+      const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
+      const ultimoSnap = semanas.length > 0
+        ? [...semanas].sort((a, b) => (b.año - a.año) || (b.semana - a.semana))[0]
+        : null;
+      let diasDesdeUltima = 999;
+      if (ultimoSnap?.fechaCaptura) {
+        diasDesdeUltima = Math.floor((hoy - new Date(ultimoSnap.fechaCaptura)) / 86400000);
+      }
+      if (diasDesdeUltima > 7) { pendientes++; razones.push("cierre semanal"); }
+
+      // (b) Almacén — leer materiales
+      const matSnap = await admin.firestore()
+        .doc(`obras/${obra.id}/avance/materiales`).get();
+      if (matSnap.exists) {
+        const mats = matSnap.data().data || [];
+        const conMats = mats.filter(m => m.desc && m.desc.trim() && (parseFloat(m.imp) || 0) > 0);
+        if (conMats.length > 0) {
+          const upd = matSnap.updateTime?.toDate?.() || null;
+          if (upd && (hoy - upd) / 86400000 > 7) {
+            pendientes++;
+            razones.push("almacén");
+          }
+        }
+      }
+
+      // (c) Maquinaria
+      const maqSnap = await admin.firestore()
+        .doc(`obras/${obra.id}/avance/maquinaria`).get();
+      if (maqSnap.exists) {
+        const maq = maqSnap.data().data || [];
+        const conMaq = maq.filter(m => m.desc && m.desc.trim() && (parseFloat(m.imp) || 0) > 0);
+        if (conMaq.length > 0) {
+          const upd = maqSnap.updateTime?.toDate?.() || null;
+          if (upd && (hoy - upd) / 86400000 > 7) {
+            pendientes++;
+            razones.push("maquinaria");
+          }
+        }
+      }
+
+      // Notif A3: 3+ pendientes
+      if (pendientes >= 3) {
+        const usuarios = await usuariosCapturaDeObra(obra.id, false);
+        const nombreCorto = nombreObraNotif(obra);
+        for (const u of usuarios) {
+          if (!u.uid) continue;
+          await crearNotifCloud(u.uid, {
+            categoria: "recordatorio",
+            tipo: "pendientes_lunes",
+            titulo: `${pendientes} pendientes esta semana · ${nombreCorto}`,
+            mensaje: `Aún faltan por capturar: ${razones.join(", ")}.`,
+            link: { tab: "operacion", obraId: obra.id },
+          });
+          contadorNotifs++;
+        }
+      }
+
+      // Notif A4: sin capturar en 10+ días
+      if (diasDesdeUltima > 10 && diasDesdeUltima < 300) {
+        // También al gerente / dirección de operaciones
+        const usuariosObra = await usuariosCapturaDeObra(obra.id, false);
+        const gerentesSnap = await admin.firestore().collection("usuarios")
+          .where("rol", "in", ["gerente_construccion", "director_operaciones"]).get();
+        const gerentes = [];
+        gerentesSnap.forEach(d => {
+          const u = d.data();
+          if (u.activo !== false) gerentes.push({ uid: u.uid || d.id, email: u.email, nombre: u.nombre });
+        });
+        const receptores = [...usuariosObra, ...gerentes];
+        const nombreCorto = nombreObraNotif(obra);
+        for (const u of receptores) {
+          if (!u.uid) continue;
+          await crearNotifCloud(u.uid, {
+            categoria: "alerta",
+            tipo: "sin_captura_10d",
+            titulo: `Sin captura hace ${diasDesdeUltima} días · ${nombreCorto}`,
+            mensaje: `La última captura fue el ${ultimoSnap?.fechaCaptura?.slice(0, 10) || "?"}. Revisar con el equipo.`,
+            link: { tab: "dash", obraId: obra.id },
+          });
+          contadorNotifs++;
+        }
+      }
+    }
+    await registrarSalud("recordatorio_lunes", true,
+      `${contadorNotifs} notifs enviadas`,
+      { duracionMs: Date.now() - t0, notifsEnviadas: contadorNotifs });
+  } catch (e) {
+    console.error("recordatorioLunes falló:", e);
+    await registrarSalud("recordatorio_lunes", false, e.message || String(e),
+      { duracionMs: Date.now() - t0 });
+  }
+});

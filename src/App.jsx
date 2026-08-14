@@ -8,7 +8,7 @@ import { CargarOT, HistoricoOT } from "./ot.jsx";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, historialSubs = {}) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -1574,6 +1574,136 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       ySub = autoT(['Campo','Valor'], datosSub, [50, CW-50], ML, ySub, {
         bodyStyles: {fontSize: FS_SM},
       });
+
+      // Balance físico-financiero (bloque destacado)
+      {
+        const deltaMonto = ejecSub - pagSub;
+        const deltaPct   = avSub - finSub;
+        const positivo   = deltaMonto >= 0;
+        const absPct     = Math.abs(deltaPct);
+        const col        = absPct < 5 ? K.vk : absPct < 15 ? K.ak2 : K.rk;
+        const bg         = absPct < 5 ? K.vb : absPct < 15 ? K.ab2 : K.rb;
+        const etiqueta   = positivo ? "Rezago de pago" : "Adelanto de pago";
+        const explicacion = positivo
+          ? "El sub ha ejecutado más obra que lo pagado."
+          : "Al sub se le ha pagado más de lo ejecutado.";
+        const bloqueH = 14;
+        sf(bg); doc.rect(ML, ySub, CW, bloqueH, 'F');
+        st(K.gtx); fs(FS_KL); fw('bold');
+        doc.text('BALANCE FÍSICO-FINANCIERO', ML + 3, ySub + 4.5);
+        st(col); fs(FS_TD); fw('bold');
+        doc.text(etiqueta, ML + 3, ySub + 9.5);
+        st(K.gmu); fs(6.5); fw('normal');
+        doc.text(explicacion, ML + 3, ySub + 12.5);
+        st(col); fs(FS_KV - 2); fw('bold');
+        doc.text(`${positivo ? '+' : ''}${MXN(Math.abs(deltaMonto))}`, ML + CW - 3, ySub + 6, { align: 'right' });
+        fs(FS_KL); doc.text(`${positivo ? '+' : ''}${deltaPct.toFixed(1)} pp`, ML + CW - 3, ySub + 11, { align: 'right' });
+        ySub += bloqueH + 3;
+      }
+
+      // Tendencia semanal del subcontrato (si hay historial)
+      const histSub = historialSubs[sub.id] || [];
+      if (histSub.length >= 2 && (CYmax - ySub) > 45) {
+        ySub = secHead('Tendencia semanal · Ejecutado vs Pagado', ySub, K.gtx);
+        // Construir series
+        const semanaISOLocalPDF = (fecha) => {
+          const d = new Date(fecha);
+          if (isNaN(d)) return null;
+          d.setHours(0,0,0,0);
+          d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+          const inicioAño = new Date(d.getFullYear(), 0, 1);
+          return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
+        };
+        const ordenados = [...histSub].sort((a,b) => (a.año-b.año) || (a.semana-b.semana));
+        const pagosPorSemMap = new Map();
+        (sub.pagos || []).filter(p => p.estatus === 'pagado' && p.fecha).forEach(p => {
+          const iso = semanaISOLocalPDF(p.fecha);
+          if (!iso) return;
+          const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
+          pagosPorSemMap.set(k, (pagosPorSemMap.get(k) || 0) + (pf(p.monto) || 0));
+        });
+        const primKey = `${ordenados[0].año}-W${String(ordenados[0].semana).padStart(2,'0')}`;
+        let acumP = 0;
+        pagosPorSemMap.forEach((v, k) => { if (k < primKey) acumP += v; });
+        const puntos = ordenados.map(s => {
+          const k = `${s.año}-W${String(s.semana).padStart(2,'0')}`;
+          acumP += pagosPorSemMap.get(k) || 0;
+          return {
+            sem: s.semana, año: s.año,
+            pctEjec: pf(sub.monto) > 0 && s.montoEjecutado > 0 ? (s.montoEjecutado / pf(sub.monto)) * 100 : 0,
+            pctPag: pf(sub.monto) > 0 ? Math.min(100, (acumP / pf(sub.monto)) * 100) : 0,
+          };
+        });
+        // Área del gráfico: 30mm alto x CW ancho
+        const gX = ML, gY = ySub, gW = CW, gH = 32;
+        const gPL = 12, gPR = 6, gPT = 4, gPB = 10;
+        const cw2 = gW - gPL - gPR;
+        const ch2 = gH - gPT - gPB;
+        const maxYPDF = Math.min(100, Math.max(...puntos.map(p => Math.max(p.pctEjec, p.pctPag))) + 10);
+        const xP = (i) => gX + gPL + (cw2 / Math.max(puntos.length - 1, 1)) * i;
+        const yP = (v) => gY + gPT + ch2 - (Math.min(v, maxYPDF) / maxYPDF) * ch2;
+        // Fondo
+        sf(K.glt); doc.rect(gX + gPL, gY + gPT, cw2, ch2, 'F');
+        // Grid Y
+        [0, 0.5, 1].forEach(p => {
+          sd(K.gbd); doc.setLineWidth(0.15);
+          doc.line(gX + gPL, gY + gPT + ch2 * p, gX + gPL + cw2, gY + gPT + ch2 * p);
+          const v = maxYPDF - maxYPDF * p;
+          st(K.gmu); fs(6);
+          doc.text(`${v.toFixed(0)}%`, gX + gPL - 1, gY + gPT + ch2 * p + 1.5, { align: 'right' });
+        });
+        // Área sombreada entre las dos series
+        const ultimo = puntos[puntos.length - 1];
+        const areaCol = ultimo.pctEjec >= ultimo.pctPag ? K.vd : K.am;
+        // Triangulación simple: para cada par consecutivo, dibujar polígono
+        for (let i = 0; i < puntos.length - 1; i++) {
+          const p1 = puntos[i], p2 = puntos[i + 1];
+          const x1 = xP(i), x2 = xP(i + 1);
+          const y1e = yP(p1.pctEjec), y2e = yP(p2.pctEjec);
+          const y1p = yP(p1.pctPag),  y2p = yP(p2.pctPag);
+          sf([...areaCol, 0.2]);
+          // Rombo entre 4 puntos
+          doc.setFillColor(...areaCol);
+          const opacityHack = doc.setGState
+            ? doc.setGState(new doc.GState({ opacity: 0.2 }))
+            : null;
+          doc.triangle(x1, y1e, x1, y1p, x2, y2p, 'F');
+          doc.triangle(x1, y1e, x2, y1e, x2, y2p, 'F');
+          if (opacityHack) doc.setGState(new doc.GState({ opacity: 1 }));
+        }
+        // Línea de % ejecutado (azul, sólida)
+        sd(K.ak); doc.setLineWidth(0.6);
+        for (let i = 0; i < puntos.length - 1; i++) {
+          doc.line(xP(i), yP(puntos[i].pctEjec), xP(i+1), yP(puntos[i+1].pctEjec));
+        }
+        // Línea de % pagado (verde, sólida — el dashed no siempre se ve bien)
+        sd(K.vk); doc.setLineWidth(0.6);
+        for (let i = 0; i < puntos.length - 1; i++) {
+          doc.line(xP(i), yP(puntos[i].pctPag), xP(i+1), yP(puntos[i+1].pctPag));
+        }
+        // Puntos + valor último
+        puntos.forEach((p, i) => {
+          sf(K.ak); doc.circle(xP(i), yP(p.pctEjec), 0.7, 'F');
+          sf(K.vk); doc.circle(xP(i), yP(p.pctPag),  0.7, 'F');
+        });
+        st(K.ak); fs(7); fw('bold');
+        doc.text(`${ultimo.pctEjec.toFixed(1)}%`, xP(puntos.length-1) - 1, yP(ultimo.pctEjec) - 1, { align:'right' });
+        st(K.vk); doc.text(`${ultimo.pctPag.toFixed(1)}%`, xP(puntos.length-1) - 1, yP(ultimo.pctPag) + 3.5, { align:'right' });
+        // Labels X (primera y última semana)
+        st(K.gtx); fs(6.5); fw('normal');
+        doc.text(`S${puntos[0].sem}`, xP(0), gY + gH - 1, { align:'center' });
+        doc.text(`S${ultimo.sem}`, xP(puntos.length-1), gY + gH - 1, { align:'center' });
+        // Leyenda
+        ySub = gY + gH + 3;
+        sf(K.ak); doc.rect(ML, ySub, 3, 1.5, 'F');
+        st(K.gtx); fs(6.5); fw('normal');
+        doc.text('% Ejecutado', ML + 4, ySub + 1.4);
+        sf(K.vk); doc.rect(ML + 32, ySub, 3, 1.5, 'F');
+        doc.text('% Pagado', ML + 36, ySub + 1.4);
+        sf(areaCol); doc.rect(ML + 60, ySub - 0.5, 3, 2.5, 'F');
+        doc.text(`Balance ${ultimo.pctEjec >= ultimo.pctPag ? '(rezago)' : '(adelanto)'}`, ML + 64, ySub + 1.4);
+        ySub += 6;
+      }
 
       // Catálogo de conceptos
       if ((sub.conceptos||[]).length > 0) {
@@ -10928,6 +11058,166 @@ function ModalNuevoSubcontrato({onSave, onClose}){
   </div>;
 }
 
+// ── GRÁFICA SEMANAL DEL SUBCONTRATO ─────────────────────────────────────
+// 2 líneas: % ejecutado y % pagado (relativos al monto contratado).
+// Área sombreada entre ambas = "Balance físico-financiero":
+//   verde si el sub ejecutó más de lo que se le pagó (rezago de pago),
+//   ámbar si el sub cobró más de lo que ejecutó (adelanto de pago).
+// Reutiliza el mismo enfoque de tendencia de la obra madre.
+function GraficaSemanalSub({sub, historial, pagos}) {
+  // Semanas ordenadas y su porcentaje de ejecución
+  const semanas = [...historial]
+    .sort((a,b) => (a.año - b.año) || (a.semana - b.semana))
+    .map(s => ({
+      key: `${s.año}-W${String(s.semana).padStart(2,'0')}`,
+      sem: s.semana, año: s.año,
+      pctEjec: s.montoEjecutado > 0 && sub.monto > 0 ? (s.montoEjecutado / sub.monto) * 100 : 0,
+      fecha: s.fechaCaptura,
+    }));
+  // Calcular % pagado acumulado por semana ISO
+  const semanaISOLocal = (fecha) => {
+    const d = new Date(fecha);
+    if (isNaN(d)) return null;
+    d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const inicioAño = new Date(d.getFullYear(), 0, 1);
+    return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
+  };
+  // Sumar pagos por semana ISO
+  const pagosPorSem = new Map();
+  (pagos || []).filter(p => p.estatus === 'pagado' && p.fecha).forEach(p => {
+    const iso = semanaISOLocal(p.fecha);
+    if (!iso) return;
+    const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
+    pagosPorSem.set(k, (pagosPorSem.get(k) || 0) + (parseFloat(p.monto) || 0));
+  });
+  // Recorrer semanas cronológicamente y acumular pagos hasta la fecha
+  let acumPag = 0;
+  // Primero: pagos anteriores a la primera semana visible
+  if (semanas[0]) {
+    const primKey = semanas[0].key;
+    pagosPorSem.forEach((v, k) => { if (k < primKey) acumPag += v; });
+  }
+  const puntos = semanas.map(s => {
+    acumPag += pagosPorSem.get(s.key) || 0;
+    return { ...s, pctPag: sub.monto > 0 ? Math.min(100, (acumPag / sub.monto) * 100) : 0 };
+  });
+
+  if (puntos.length < 2) return null;
+
+  // Rango del eje Y: 0 a max(ejec, pag) + 10, tope 100
+  const maxY = Math.min(100, Math.max(...puntos.map(p => Math.max(p.pctEjec, p.pctPag))) + 10);
+
+  // SVG
+  const W = 720, H = 170, PL = 40, PR = 18, PT = 22, PB = 32;
+  const cw = W - PL - PR, ch = H - PT - PB;
+  const xPos = (i) => PL + (cw / Math.max(puntos.length - 1, 1)) * i;
+  const yPos = (v) => PT + ch - (Math.min(v, maxY) / maxY) * ch;
+
+  // Ruta del área sombreada entre las 2 líneas (para relleno)
+  const areaPath = (() => {
+    const top = puntos.map((p, i) => `${xPos(i)},${yPos(Math.max(p.pctEjec, p.pctPag))}`);
+    const bot = [...puntos].reverse().map((p, i) => {
+      const idx = puntos.length - 1 - i;
+      return `${xPos(idx)},${yPos(Math.min(p.pctEjec, p.pctPag))}`;
+    });
+    return `M ${top.join(' L ')} L ${bot.join(' L ')} Z`;
+  })();
+
+  // Color del área: verde si en promedio ejec > pag (rezago de pago),
+  // ámbar si pag > ejec (adelanto de pago). El "peor" define el color.
+  const ultimo = puntos[puntos.length - 1];
+  const areaColor = ultimo.pctEjec >= ultimo.pctPag ? C.green : C.yellow;
+
+  return <Card>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:6}}>
+      <Tit>Tendencia semanal del subcontrato</Tit>
+      <span style={{fontSize:9,color:C.textMut}}>
+        {puntos.length} semana(s) con snapshot
+      </span>
+    </div>
+    {/* Leyenda */}
+    <div style={{display:"flex",gap:12,marginBottom:6,fontSize:10,color:C.textSec,flexWrap:"wrap"}}>
+      <div style={{display:"flex",alignItems:"center",gap:5}}>
+        <span style={{display:"inline-block",width:14,height:2,background:C.blueDk}}/>
+        % Ejecutado
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:5}}>
+        <span style={{display:"inline-block",width:14,height:2,background:C.greenDk,borderStyle:"dashed"}}/>
+        % Pagado
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:5}}>
+        <span style={{display:"inline-block",width:12,height:8,background:areaColor,opacity:0.25,borderRadius:2}}/>
+        Balance físico-financiero
+      </div>
+    </div>
+    <div style={{overflowX:"auto",width:"100%"}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:500}}
+        preserveAspectRatio="xMidYMid meet">
+        {/* Eje Y: 3 líneas guía */}
+        {[0, 0.5, 1].map(p => (
+          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
+            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
+        ))}
+        {[0, 0.5, 1].map(p => {
+          const v = maxY - maxY * p;
+          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
+            textAnchor="end" fontSize="9" fill={C.textMut}>
+            {v.toFixed(0)}%
+          </text>;
+        })}
+        {/* Área sombreada entre las 2 líneas */}
+        <path d={areaPath} fill={areaColor} opacity={0.2}/>
+        {/* Línea de % ejecutado */}
+        <polyline
+          fill="none" stroke={C.blueDk} strokeWidth={2}
+          points={puntos.map((p, i) => `${xPos(i)},${yPos(p.pctEjec)}`).join(' ')}/>
+        {/* Línea de % pagado (dashed para diferenciar) */}
+        <polyline
+          fill="none" stroke={C.greenDk} strokeWidth={2} strokeDasharray="4,3"
+          points={puntos.map((p, i) => `${xPos(i)},${yPos(p.pctPag)}`).join(' ')}/>
+        {/* Puntos + valores en último */}
+        {puntos.map((p, i) => (
+          <g key={p.key}>
+            <circle cx={xPos(i)} cy={yPos(p.pctEjec)} r={2.5} fill={C.blueDk}/>
+            <circle cx={xPos(i)} cy={yPos(p.pctPag)}  r={2.5} fill={C.greenDk}/>
+            {i === puntos.length - 1 && <>
+              <text x={xPos(i) - 4} y={yPos(p.pctEjec) - 4}
+                textAnchor="end" fontSize="9" fill={C.blueDk} fontWeight="700">
+                {p.pctEjec.toFixed(1)}%
+              </text>
+              <text x={xPos(i) - 4} y={yPos(p.pctPag) + 10}
+                textAnchor="end" fontSize="9" fill={C.greenDk} fontWeight="700">
+                {p.pctPag.toFixed(1)}%
+              </text>
+            </>}
+          </g>
+        ))}
+        {/* Eje X: labels de semanas cada N para no encimar */}
+        {puntos.map((p, i) => {
+          // Mostrar máximo 6 labels distribuidos
+          const step = Math.max(1, Math.floor(puntos.length / 6));
+          if (i % step !== 0 && i !== puntos.length - 1) return null;
+          return <text key={p.key} x={xPos(i)} y={H - 12}
+            textAnchor="middle" fontSize="9" fill={C.textSec} fontWeight="600">
+            S{p.sem}
+          </text>;
+        })}
+      </svg>
+    </div>
+    {/* Resumen abajo — mismo lenguaje que el KPI del header */}
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+      marginTop:6,paddingTop:6,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
+      <span>Ejecutado <b style={{color:C.blueDk}}>{ultimo.pctEjec.toFixed(1)}%</b> · Pagado <b style={{color:C.greenDk}}>{ultimo.pctPag.toFixed(1)}%</b></span>
+      <span style={{fontWeight:600,color:areaColor}}>
+        {(ultimo.pctEjec - ultimo.pctPag) >= 0
+          ? `Rezago de pago +${(ultimo.pctEjec - ultimo.pctPag).toFixed(1)}pp`
+          : `Adelanto de pago ${(ultimo.pctEjec - ultimo.pctPag).toFixed(1)}pp`}
+      </span>
+    </div>
+  </Card>;
+}
+
 // ── DETALLE DE UN SUBCONTRATO ──
 function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, usuario}){
   const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
@@ -10941,6 +11231,18 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   const fileImportRef = useRef();
   const fileAdjuntoRef = useRef();
   const[uploadingAdj,setUploadingAdj]=useState(false);
+
+  // ── HISTORIAL SEMANAL DEL SUB ──
+  // Carga snapshots guardados por crearSnapshotAvanceSub para graficar la
+  // evolución de % ejecutado y % pagado semana a semana.
+  const [historialSub, setHistorialSub] = useState([]);
+  const [historialLoaded, setHistorialLoaded] = useState(false);
+  useEffect(() => {
+    fsGet(`obras/${obra.id}/subcontratos/historial_${sub.id}`).then(d => {
+      setHistorialSub(Array.isArray(d?.semanas) ? d.semanas : []);
+      setHistorialLoaded(true);
+    });
+  }, [obra.id, sub.id]);
 
   const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
   const ejecutado = sub.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
@@ -11273,7 +11575,50 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       <div style={{marginTop:10}}>
         <Bar pct={pctAvance} color={pctAvance>=100?C.green:C.blue}/>
       </div>
+
+      {/* BALANCE FÍSICO-FINANCIERO — delta entre lo ejecutado y lo pagado
+          del subcontratista, tanto en $ como en pp. Positivo = al sub le
+          debemos trabajo (rezago de pago). Negativo = se le está pagando
+          por adelantado (adelanto de pago). */}
+      {(montoContrato > 0 || ejecutado > 0 || totalPagado > 0) && (() => {
+        const deltaMonto = ejecutado - totalPagado;
+        const deltaPct   = pctAvance - pctFinanciero;
+        const positivo   = deltaMonto >= 0;
+        const col        = Math.abs(deltaPct) < 5 ? C.green : Math.abs(deltaPct) < 15 ? C.yellow : C.red;
+        const bg         = Math.abs(deltaPct) < 5 ? C.greenBg : Math.abs(deltaPct) < 15 ? C.yellowBg : C.redBg;
+        const etiqueta   = positivo ? "Rezago de pago" : "Adelanto de pago";
+        const explicacion = positivo
+          ? "El sub ha ejecutado más obra de lo que se le ha pagado (le debemos trabajo)."
+          : "Se ha pagado al sub más de lo que ha ejecutado (adelanto sobre la obra).";
+        return <div style={{marginTop:10,background:bg,border:`0.5px solid ${col}55`,borderRadius:8,
+          padding:"9px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2}}>
+              Balance físico-financiero
+            </div>
+            <div style={{fontSize:11,fontWeight:600,color:col}}>{etiqueta}</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{explicacion}</div>
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:14,fontWeight:700,color:col,lineHeight:1}}>
+              {positivo ? "+" : ""}{MXN(Math.abs(deltaMonto))}
+            </div>
+            <div style={{fontSize:10,color:col,marginTop:2,fontWeight:600}}>
+              {positivo ? "+" : ""}{NUM(deltaPct,1)} pp
+            </div>
+          </div>
+        </div>;
+      })()}
     </Card>
+
+    {/* GRÁFICA SEMANAL DEL SUB — 2 líneas + área sombreada del delta ────
+        Muestra la evolución semanal de: % ejecutado y % pagado (relativos
+        al monto contratado). El área entre ambas es el "balance físico-
+        financiero". Solo aparece si hay al menos 2 snapshots en el
+        historial (una semana sola no forma tendencia). */}
+    {historialLoaded && historialSub.length >= 2 && (
+      <GraficaSemanalSub sub={sub} historial={historialSub} pagos={pagos}/>
+    )}
 
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
@@ -13590,13 +13935,21 @@ export default function App(){
       </span>}
       {obra&&<button onClick={async ()=>{
           // Cargar el detalle GP de esta obra para tener rubros reales en el PDF
-          // (si aún no está en cache). Sin await no bloqueamos el resto.
           let detalle = null;
           try {
             const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
             if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
           } catch (e) { console.warn('gpDetalle no disponible', e); }
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle);
+          // Cargar el historial semanal de cada subcontrato (para las
+          // gráficas de tendencia en los slides individuales del PDF).
+          const historialSubs = {};
+          try {
+            await Promise.all((subcontratos||[]).map(async (s) => {
+              const h = await fsGet(`obras/${obra.id}/subcontratos/historial_${s.id}`);
+              historialSubs[s.id] = Array.isArray(h?.semanas) ? h.semanas : [];
+            }));
+          } catch(e) { console.warn('historialSubs no disponible', e); }
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, historialSubs);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
