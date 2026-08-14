@@ -5968,18 +5968,33 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // (mismo tratamiento que el avance).
 
   // Ejecutado por semana desde el snapshot
+  // IMPORTANTE: los snapshots viejos tienen 'imp' con precios/composición
+  // del momento del snapshot. Si el catálogo se actualizó después (nuevos
+  // precios unitarios, cantidades ajustadas), el ejecutado histórico
+  // quedaría desalineado respecto al gasto actual → margen se ve
+  // "escalonado" en lugar de plano.
+  // Solución: RECALCULAR el ejecutado histórico usando el % del snapshot
+  // pero el 'imp' ACTUAL del catálogo. Esto normaliza la serie contra
+  // los precios de hoy y hace que la relación con el gasto (que siempre
+  // es "actual") sea consistente semana a semana.
+  const subsActualMap = new Map();
+  (subs || []).forEach(s => {
+    const k1 = s.id;
+    const k2 = s.sec;
+    if (k1) subsActualMap.set(k1, s);
+    if (k2 && !subsActualMap.has(k2)) subsActualMap.set(k2, s);
+  });
+
   const ejecutadoPorSem = {};
   Object.entries(avancePorSem).forEach(([k, snap]) => {
     if (!snap?.subs || !Array.isArray(snap.subs)) return;
-    // Preferir montoEjecutado si el snapshot lo trae calculado; si no,
-    // calcularlo desde subs (∑ a% × imp).
-    if (typeof snap.montoEjecutado === 'number') {
-      ejecutadoPorSem[k] = snap.montoEjecutado;
-    } else {
-      ejecutadoPorSem[k] = snap.subs.reduce(
-        (t, sb) => t + ((sb.a || 0) / 100) * (sb.imp || 0), 0
-      );
-    }
+    // Recalcular con imp actual del catálogo (si existe la partida hoy)
+    // Fallback al imp del snapshot si la partida ya no existe.
+    ejecutadoPorSem[k] = snap.subs.reduce((t, sb) => {
+      const actual = subsActualMap.get(sb.id) || subsActualMap.get(sb.sec);
+      const imp = actual ? (parseFloat(actual.imp) || 0) : (parseFloat(sb.imp) || 0);
+      return t + ((sb.a || 0) / 100) * imp;
+    }, 0);
   });
 
   // Buscar último ejecutado anterior a la ventana visible para arranque
@@ -6011,8 +6026,13 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   }
 
   // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
+  // Si no hay snapshots ni antes ni durante la ventana, arranca desde el
+  // ejecutado actual del Dashboard (dato conservador — mejor que 0).
+  const ejecutadoActualParaFallback =
+    (subs || []).reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
+  const hayAlgunSnapshot = Object.keys(ejecutadoPorSem).length > 0;
   const ejecutadoSeries = [];
-  let ejecAcarreo = ultimoEjecutadoConocido;
+  let ejecAcarreo = ultimoEjecutadoConocido || (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
   let almAcumEjec = almAcum;
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
