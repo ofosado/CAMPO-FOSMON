@@ -1550,10 +1550,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       ySub = secHead(`SUBCONTRATO · ${sub.nombre || sub.id}`.toUpperCase(), ySub, K.ng);
 
       // KPIs del subcontrato
+      // Pagado = estimaciones Pagadas + pagos legacy sin origenEstimacionId
+      // (mismo criterio que la app tras el refactor de subs).
       const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
       const ejecSub = (sub.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
       const avSub = totalCat > 0 ? (ejecSub/totalCat)*100 : 0;
-      const pagSub = (sub.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
+      const _neEstPDF = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+      const pagSubEsts = (sub.estimaciones||[])
+        .filter(e => _neEstPDF(e.estatus) === 'pagada')
+        .reduce((t,e)=>t+pf(e.monto), 0);
+      const pagSubLegacy = (sub.pagos||[])
+        .filter(p => p.estatus==='pagado' && !p.origenEstimacionId)
+        .reduce((t,p)=>t+pf(p.monto), 0);
+      const pagSub = pagSubEsts + pagSubLegacy;
       const finSub = pf(sub.monto) > 0 ? (pagSub/pf(sub.monto))*100 : 0;
       ySub = kpiRow([
         ['Monto contratado', MXN(pf(sub.monto)), sub.proveedor||'Sin proveedor', K.ng],
@@ -1615,12 +1624,21 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
           return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
         };
         const ordenados = [...histSub].sort((a,b) => (a.año-b.año) || (a.semana-b.semana));
+        // Fuente de "pagado" acumulado: estimaciones marcadas Pagada +
+        // pagos legacy sin origenEstimacionId (para no doble-contar).
         const pagosPorSemMap = new Map();
-        (sub.pagos || []).filter(p => p.estatus === 'pagado' && p.fecha).forEach(p => {
-          const iso = semanaISOLocalPDF(p.fecha);
+        const sumarASem = (fecha, monto) => {
+          if (!fecha || !monto) return;
+          const iso = semanaISOLocalPDF(fecha);
           if (!iso) return;
           const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
-          pagosPorSemMap.set(k, (pagosPorSemMap.get(k) || 0) + (pf(p.monto) || 0));
+          pagosPorSemMap.set(k, (pagosPorSemMap.get(k) || 0) + monto);
+        };
+        (sub.estimaciones || []).forEach(e => {
+          if (_neEstPDF(e.estatus) === 'pagada') sumarASem(e.fecha, pf(e.monto));
+        });
+        (sub.pagos || []).filter(p => p.estatus === 'pagado' && !p.origenEstimacionId).forEach(p => {
+          sumarASem(p.fecha, pf(p.monto));
         });
         const primKey = `${ordenados[0].año}-W${String(ordenados[0].semana).padStart(2,'0')}`;
         let acumP = 0;
@@ -1734,23 +1752,27 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         }
       }
 
-      // Pagos del sub
-      if ((sub.pagos||[]).length > 0 && (CYmax - ySub) > 25) {
-        ySub = secHead('Historial de pagos', ySub, K.gtx);
-        const pagosFilas = sub.pagos.map(p => [
-          p.fecha||'—',
-          MXN(pf(p.monto)),
-          (p.referencia||'').substring(0,60),
-          (p.estatus||'programado').toUpperCase(),
+      // Estimaciones del sub (reemplaza al viejo "Historial de pagos")
+      // Cada estimación trae su estatus (En proceso / Autorizada / Pagada);
+      // el total pagado equivale a la suma de las estimaciones Pagadas.
+      const estsSub = Array.isArray(sub.estimaciones) ? sub.estimaciones : [];
+      if (estsSub.length > 0 && (CYmax - ySub) > 25) {
+        ySub = secHead('Historial de estimaciones', ySub, K.gtx);
+        const estFilas = estsSub.map(e => [
+          `EST-${String(e.no || '').padStart(2,'0')}`,
+          e.fecha || '—',
+          (e.periodo || e.referencia || '').substring(0, 60),
+          MXN(pf(e.monto)),
+          (e.estatus || 'En proceso').toUpperCase(),
         ]);
         ySub = autoT(
-          ['Fecha','Monto','Referencia','Estatus'],
-          pagosFilas, [30, 40, 130, 51], ML, ySub,
+          ['No.','Fecha','Periodo / Referencia','Monto','Estatus'],
+          estFilas, [22, 30, 118, 40, 41], ML, ySub,
           {
             bodyStyles: {fontSize: FS_SM},
             columnStyles: {
-              1: {halign:'right', fontStyle:'bold'},
-              3: {halign:'center'},
+              3: {halign:'right', fontStyle:'bold'},
+              4: {halign:'center'},
             },
           });
       }
@@ -5475,13 +5497,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     </div>}
 
     {listaActual.map(o=>{
-      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + almacén + otros gastos
+      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + otros gastos
+      // IMPORTANTE: el ALMACÉN NO se suma al gasto. Almacén son insumos ya
+      // reportados en GP que están en tránsito/bodega esperando ser instalados
+      // para poder cobrarse al cliente — por eso suman al EJECUTADO (meO), no
+      // al gasto. (Aclaración del usuario ago-2026.)
       const gastoGPLive=resolverGastoGP(o, gpData);
       const d = datosPorObra[o.id] || {};
       const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
       const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
       const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
-      const gastoTotalLive = gastoGPLive + maqTotal + matTotal + otrosTotal;
+      const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
       // Avance físico ponderado
       const subsO = d.subs || [];
       const avanceFisico = (o.presupuesto > 0 && subsO.length > 0)
@@ -5541,7 +5567,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
                 <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{MXN(o.presupuesto)}</div>
               </div>
               <div>
-                <div title="GP + Almacén + Maquinaria + Otros gastos" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
+                <div title="GP + Maquinaria + Otros gastos (el Almacén ya está incluido en el GP y suma al Ejecutado, no al Gasto)" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
                 <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && pg>90?C.red:o.presupuesto>0 && pg>75?C.yellowDk:C.textPri}}>{MXN(gastoTotalLive)}</div>
                 {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(pg,1)}% del contrato</div>}
               </div>
@@ -5897,7 +5923,8 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
 // en obras cortas). Ahora es semana ISO por semana ISO.
 // Datos consolidados:
 // - Avance: historialAvance (ya vive por semana ISO — un snapshot por semana)
-// - Gasto TOTAL por semana = último GP conocido + Almacén + Maquinaria + Otros.
+// - Gasto TOTAL por semana = último GP conocido + Maquinaria + Otros.
+//   (Almacén NO suma al gasto — ya está en GP; suma al Ejecutado.)
 //   El GP del Sheet ya viene como acumulado por semana; los otros conceptos
 //   se suman a la semana ISO de su fecha.
 // - Margen semanal = ejecutado semanal (∑ a% × imp por sub) - gasto acumulado
@@ -6015,7 +6042,8 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   };
   (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
   (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
-  (materiales || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
+  // NOTA: Almacén (materiales) NO se suma al gasto. Ese gasto ya viene
+  // en GP; los materiales en tránsito/bodega suman al EJECUTADO, no aquí.
 
   // Combinar: gasto total acumulado = GP acumulado más reciente ≤ semana
   //                                 + manuales incrementales acumulados hasta semana
@@ -6222,13 +6250,14 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   });
 
   // ── Valores ACTUALES del Dashboard (para anclar la semana MÁS RECIENTE) ─
+  // Almacén NO va en el gasto (ya está en GP). Solo va en el ejecutado.
   const _gastoGPLive = (subs && obra) ? resolverGastoGP(obra, gpData) : 0;
   const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
   const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
   const _totAlm   = (materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-  const gtActual  = _gastoGPLive + _totMaq + _totOtros + _totAlm;
+  const gtActual  = _gastoGPLive + _totMaq + _totOtros;   // sin almacén
   const meActualAvance = (subs || []).reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
-  const meActual  = meActualAvance + _totAlm;
+  const meActual  = meActualAvance + _totAlm;             // sí almacén
   const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
 
   // Ancla suave: sobrescribir el último punto de la serie de ejecutado con
@@ -6547,7 +6576,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         </div>
         <div {...clickableCard("gastos")}>
           <Kpi label="Gasto acumulado" value={MXN(gt)}
-            sub={obra.presupuesto>0 ? `${NUM(pctGP,1)}% del contrato · ver ›` : "GP + Alm + Maq + Otros"}
+            sub={obra.presupuesto>0 ? `${NUM(pctGP,1)}% del contrato · ver ›` : "GP + Maq + Otros"}
             color={colGasto} size={12}/>
         </div>
         <div {...clickableCard("operacion","avance")}>
@@ -11064,7 +11093,7 @@ function ModalNuevoSubcontrato({onSave, onClose}){
 //   verde si el sub ejecutó más de lo que se le pagó (rezago de pago),
 //   ámbar si el sub cobró más de lo que ejecutó (adelanto de pago).
 // Reutiliza el mismo enfoque de tendencia de la obra madre.
-function GraficaSemanalSub({sub, historial, pagos}) {
+function GraficaSemanalSub({sub, historial, pagos, estimaciones}) {
   // Semanas ordenadas y su porcentaje de ejecución
   const semanas = [...historial]
     .sort((a,b) => (a.año - b.año) || (a.semana - b.semana))
@@ -11083,13 +11112,22 @@ function GraficaSemanalSub({sub, historial, pagos}) {
     const inicioAño = new Date(d.getFullYear(), 0, 1);
     return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
   };
-  // Sumar pagos por semana ISO
+  // Sumar "pagado" por semana ISO — desde estimaciones Pagadas +
+  // pagos legacy sin origenEstimacionId (para no doble-contar).
+  const _neS = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const pagosPorSem = new Map();
-  (pagos || []).filter(p => p.estatus === 'pagado' && p.fecha).forEach(p => {
-    const iso = semanaISOLocal(p.fecha);
+  const sumarASemLocal = (fecha, monto) => {
+    if (!fecha || !monto) return;
+    const iso = semanaISOLocal(fecha);
     if (!iso) return;
     const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
-    pagosPorSem.set(k, (pagosPorSem.get(k) || 0) + (parseFloat(p.monto) || 0));
+    pagosPorSem.set(k, (pagosPorSem.get(k) || 0) + monto);
+  };
+  (estimaciones || []).forEach(e => {
+    if (_neS(e.estatus) === 'pagada') sumarASemLocal(e.fecha, parseFloat(e.monto) || 0);
+  });
+  (pagos || []).filter(p => p.estatus === 'pagado' && !p.origenEstimacionId).forEach(p => {
+    sumarASemLocal(p.fecha, parseFloat(p.monto) || 0);
   });
   // Recorrer semanas cronológicamente y acumular pagos hasta la fecha
   let acumPag = 0;
@@ -11258,16 +11296,17 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     else validacion = { color: C.red, txt: "Revisar", icon: "⚠" };
   }
 
-  // Sub-tabs del detalle. "Avance físico" reemplaza "Catálogo de conceptos"
-  // y agrega captura % / volumen + fotos inline (mismo UX que la obra madre).
-  // Se agrega "Estimaciones" que refleja el ciclo de facturación al sub.
-  // "Fotos por concepto" se mantiene como galería de respaldo.
+  // Sub-tabs del detalle (simplificadas ago-2026):
+  // - "Fotos por concepto" se quitó → las fotos viven inline en cada
+  //   concepto dentro de Avance físico.
+  // - "Pagos" se quitó → el estatus de pago vive en cada estimación
+  //   (estatus === "Pagada" cuenta como pago). El módulo era redundante.
+  // Los datos legacy (sub.pagos y sub.fotos) se conservan en Firestore
+  // para no perder historia, solo dejaron de renderizarse.
   const SUBTABS = [
     ["datos",       "Datos generales"],
     ["avance",      "Avance físico"],
     ["estimaciones","Estimaciones"],
-    ["fotos",       "Fotos por concepto"],
-    ["pagos",       "Pagos"],
   ];
 
   // ── Modo de captura de avance del subcontrato ──
@@ -11305,23 +11344,12 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   };
   const actualizarEstimacion = (idx, cambios) => {
     const nuevas = estimacionesSub.map((e,i) => i === idx ? {...e, ...cambios} : e);
-    // Si acaba de marcarse "Pagada" y antes no lo era, crear pago automático
     const antes = estimacionesSub[idx];
     const ahora = { ...antes, ...cambios };
-    if (cambios.estatus && _neEst(cambios.estatus) === 'pagada' && _neEst(antes.estatus) !== 'pagada' && (ahora.monto||0) > 0) {
-      const nuevoPago = {
-        id: Date.now(),
-        fecha: new Date().toISOString().slice(0,10),
-        monto: ahora.monto,
-        referencia: `EST-${String(ahora.no).padStart(2,'0')}${ahora.periodo ? ' · '+ahora.periodo : ''}`,
-        estatus: 'pagado',
-        origenEstimacionId: ahora.id,
-      };
-      onUpdate({
-        estimaciones: nuevas,
-        pagos: [...pagos, nuevoPago],
-      });
-      // Notif a directivos
+    onUpdate({ estimaciones: nuevas });
+    // Notif a directivos si acaba de marcarse Pagada
+    if (cambios.estatus && _neEst(cambios.estatus) === 'pagada'
+        && _neEst(antes.estatus) !== 'pagada' && (ahora.monto||0) > 0) {
       notifARoles(['director_general','director_operaciones','admin_sistema'], {
         categoria: 'financiero', tipo: 'estimacion_sub_pagada',
         titulo: `Estimación pagada · ${sub.proveedor || sub.nombre}`,
@@ -11329,44 +11357,42 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
         creadaPor: usuario?.correo || 'sistema',
       });
-    } else {
-      onUpdate({ estimaciones: nuevas });
     }
   };
   const eliminarEstimacion = (idx) => {
-    if (!window.confirm('¿Eliminar esta estimación? Si tenía pago asociado, ese pago NO se elimina automáticamente — revísalo en la pestaña Pagos.')) return;
+    if (!window.confirm('¿Eliminar esta estimación?')) return;
     onUpdate({ estimaciones: estimacionesSub.filter((_,i) => i !== idx) });
   };
 
-  // ── PAGOS AL SUBCONTRATISTA ──
-  // Cada pago: { id, fecha, monto, referencia (folio/cheque/concepto), estatus (programado/pagado/cancelado) }
+  // ── PAGOS AL SUBCONTRATISTA ──────────────────────────────────────────
+  // IMPORTANTE: los pagos a subcontratistas NO se suman al gasto total
+  // de la obra. Esos pagos ya vienen reflejados en GP Construct (el
+  // Sheet). Aquí solo llevamos un control PARALELO por sub para saber
+  // dónde estamos con cada uno (ejecutado vs pagado).
+  //
+  // Refactor ago-2026: la fuente de verdad de "cuánto se le ha pagado al
+  // sub" son las ESTIMACIONES con estatus "Pagada". Los pagos legacy
+  // (sub.pagos) se preservan para compatibilidad pero NO se dan de alta
+  // nuevos desde el UI.
+  //
+  // Para evitar doble conteo:
+  //   - Pagos con origenEstimacionId → ya vienen de una estimación,
+  //     NO se suman aparte (la estimación ya cuenta).
+  //   - Pagos sin origen (legacy, capturados antes del refactor) → sí
+  //     se suman al total pagado.
   const pagos = Array.isArray(sub.pagos) ? sub.pagos : [];
-  const totalPagado = pagos.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0), 0);
+  const pagosLegacyPagados = pagos.filter(p => p.estatus === "pagado" && !p.origenEstimacionId);
+  const totalPagadoLegacy = pagosLegacyPagados.reduce((t,p) => t + (parseFloat(p.monto) || 0), 0);
+  // estSubPagado ya suma las estimaciones con estatus Pagada
+  const totalPagado = estSubPagado + totalPagadoLegacy;
   const totalProgramado = pagos.filter(p=>p.estatus==="programado").reduce((t,p)=>t+(p.monto||0), 0);
   const pctFinanciero = montoContrato > 0 ? (totalPagado/montoContrato)*100 : 0;
 
-  const agregarPago = () => {
-    const nuevos = [...pagos, {id: Date.now(), fecha: new Date().toISOString().slice(0,10), monto: 0, referencia: "", estatus: "programado"}];
-    onUpdate({pagos: nuevos});
-  };
-  const actualizarPago = (idx, cambios) => {
-    const pagoPrev = pagos[idx];
-    const pagoNuevo = {...pagoPrev, ...cambios};
-    onUpdate({pagos: pagos.map((p,i) => i===idx ? pagoNuevo : p)});
-    // Notif si pasó a "pagado" y antes no lo estaba
-    if (cambios.estatus === 'pagado' && pagoPrev.estatus !== 'pagado' && pagoNuevo.monto > 0) {
-      notifARoles(['director_general','director_operaciones','admin_sistema'], {
-        categoria: 'financiero', tipo: 'pago_sub',
-        titulo: `Pago registrado · ${sub.proveedor || sub.nombre}`,
-        mensaje: `${MXN(pagoNuevo.monto)} · ${obra.nombre || obra.id}${pagoNuevo.referencia ? ' · '+pagoNuevo.referencia : ''}`,
-        link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
-        creadaPor: usuario?.correo || 'sistema',
-      });
-    }
-  };
-  const eliminarPago = (idx) => {
-    onUpdate({pagos: pagos.filter((_,i) => i !== idx)});
-  };
+  // (Helpers agregarPago/actualizarPago/eliminarPago eliminados ago-2026
+  //  junto con la sub-tab "Pagos". Los pagos ahora se marcan cambiando el
+  //  estatus de la estimación correspondiente a "Pagada". Los pagos
+  //  legacy en sub.pagos siguen contando en totalPagado pero no se
+  //  pueden editar desde el UI.)
 
   // ── IMPORTAR CATÁLOGO DESDE EXCEL/CSV ──
   // Carga SheetJS si no está
@@ -11617,7 +11643,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         financiero". Solo aparece si hay al menos 2 snapshots en el
         historial (una semana sola no forma tendencia). */}
     {historialLoaded && historialSub.length >= 2 && (
-      <GraficaSemanalSub sub={sub} historial={historialSub} pagos={pagos}/>
+      <GraficaSemanalSub sub={sub} historial={historialSub} pagos={pagos} estimaciones={estimacionesSub}/>
     )}
 
     {/* Sub-tabs */}
@@ -12040,145 +12066,17 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               </div>;
             })}
             <div style={{fontSize:9,color:C.textMut,marginTop:6,fontStyle:"italic"}}>
-              Al marcar una estimación como "Pagada" se crea automáticamente un pago en la pestaña Pagos.
+              El total "Pagado" del header suma las estimaciones marcadas como Pagada.
             </div>
           </>
         )}
       </Card>
     </div>}
 
-    {/* FOTOS POR CONCEPTO */}
-    {subtab==="fotos" && <Card>
-      <Tit>Fotografías por concepto</Tit>
-      <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        Histórico de avance fotográfico de cada concepto
-      </div>
-      {sub.conceptos.length === 0 && (
-        <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
-          Agrega conceptos en el catálogo primero para poder cargar fotos.
-        </div>
-      )}
-      {sub.conceptos.map((c,i)=>{
-        const fotos = c.fotos || [];
-        return <div key={c.id||i} style={{marginBottom:16,paddingBottom:12,borderBottom:`0.5px solid ${C.border}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:8}}>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{c.clave||`#${i+1}`}</span>
-                <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{c.desc||"(sin descripción)"}</span>
-                <Bdg color={C.blue} small>{fotos.length} foto{fotos.length===1?"":"s"}</Bdg>
-              </div>
-              <div style={{fontSize:9,color:C.textMut,marginTop:2}}>Avance: {NUM(c.avance||0,0)}%</div>
-            </div>
-            {editar && <label style={{background:C.caliza,color:C.bg,padding:"4px 10px",borderRadius:6,
-              fontSize:10,fontWeight:600,cursor:"pointer",flexShrink:0}}>
-              + Foto
-              <input type="file" accept="image/*" style={{display:"none"}}
-                onChange={e=>{ if(e.target.files?.[0]) subirFotoConcepto(i, e.target.files[0]); e.target.value=""; }}/>
-            </label>}
-          </div>
-          {fotos.length === 0 ? (
-            <div style={{padding:14,background:C.bg,borderRadius:6,textAlign:"center",color:C.textMut,fontSize:10}}>
-              Sin fotos
-            </div>
-          ) : (
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:6}}>
-              {fotos.map((f,fi)=>{
-                const url = typeof f === "string" ? f : f.url;
-                return <div key={fi} style={{position:"relative",aspectRatio:"4/3",borderRadius:6,overflow:"hidden",background:C.bg}}>
-                  <img src={url} onClick={()=>setLightbox(url)}
-                    style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer",display:"block"}}/>
-                  {f.fecha && <div style={{position:"absolute",bottom:0,left:0,right:0,
-                    background:"linear-gradient(transparent,rgba(0,0,0,0.6))",color:"#fff",
-                    fontSize:8,padding:"4px 6px"}}>{f.fecha}</div>}
-                  {editar && <button onClick={()=>eliminarFotoConcepto(i, fi)}
-                    style={{position:"absolute",top:4,right:4,background:"rgba(0,0,0,0.6)",
-                      border:"none",color:"#fff",borderRadius:99,width:20,height:20,fontSize:11,cursor:"pointer"}}>×</button>}
-                </div>;
-              })}
-            </div>
-          )}
-        </div>;
-      })}
-    </Card>}
-
-    {/* PAGOS AL SUBCONTRATISTA */}
-    {subtab==="pagos" && <div style={{display:"flex",flexDirection:"column",gap:10}}>
-      {/* Resumen */}
-      <Card>
-        <Tit>Resumen de pagos al subcontratista</Tit>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7,marginTop:8}}>
-          <Kpi label="Monto contrato" value={MXN(montoContrato)}                                  color={C.caliza}    size={12}/>
-          <Kpi label="Pagado"         value={MXN(totalPagado)}     sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.greenDk}   size={12}/>
-          <Kpi label="Programado"     value={MXN(totalProgramado)} sub="pendiente de pago"                  color={C.yellowDk} size={12}/>
-          <Kpi label="Por pagar"      value={MXN(Math.max(montoContrato - totalPagado, 0))} sub="saldo del contrato" color={C.blueDk} size={12}/>
-        </div>
-        <div style={{marginTop:10}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
-            <span>Avance financiero</span>
-            <span style={{color:C.greenDk,fontWeight:600}}>{NUM(pctFinanciero,1)}%</span>
-          </div>
-          <Bar pct={pctFinanciero} color={pctFinanciero>=100?C.green:C.greenDk}/>
-        </div>
-        {/* Alerta de desfase obra vs pago */}
-        {sub.conceptos.length > 0 && Math.abs(pctAvance - pctFinanciero) > 10 && (
-          <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
-            padding:"7px 11px",marginTop:10,fontSize:10,color:C.yellowDk}}>
-            ⚠ Desfase entre avance físico ({NUM(pctAvance,1)}%) y financiero ({NUM(pctFinanciero,1)}%) de {NUM(Math.abs(pctAvance-pctFinanciero),1)}pp.
-            {pctAvance > pctFinanciero ? " El subcontratista lleva más obra ejecutada que pagos recibidos." : " Se le ha pagado más de lo que ha ejecutado."}
-          </div>
-        )}
-      </Card>
-
-      {/* Lista de pagos */}
-      <Card>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-          <Tit>Historial de pagos</Tit>
-          {editar && <SecBtn onClick={agregarPago}>+ Pago</SecBtn>}
-        </div>
-        {pagos.length === 0 && (
-          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
-            {editar?'Sin pagos registrados. Click "+ Pago" para empezar.':'Sin pagos registrados.'}
-          </div>
-        )}
-        {/* Header */}
-        {pagos.length > 0 && (
-          <div style={{display:"grid",gridTemplateColumns:"110px 130px 1fr 110px 30px",gap:6,
-            padding:"4px 10px",marginBottom:4,fontSize:9,color:C.textMut,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em"}}>
-            <div>Fecha</div><div>Monto</div><div>Referencia / Concepto</div><div>Estatus</div><div></div>
-          </div>
-        )}
-        {pagos.map((p,i)=>{
-          const estCol = p.estatus==="pagado"?C.green : p.estatus==="cancelado"?C.red : C.yellow;
-          return <div key={p.id||i} style={{display:"grid",gridTemplateColumns:"110px 130px 1fr 110px 30px",gap:6,
-            padding:"7px 10px",marginBottom:5,background:C.bg,borderRadius:8,alignItems:"center",
-            borderLeft:`3px solid ${estCol}`,opacity:p.estatus==="cancelado"?0.5:1}}>
-            {editar ? (<>
-              <Inp type="date" value={p.fecha||""} style={{fontSize:10}}
-                onChange={e=>actualizarPago(i,{fecha:e.target.value})}/>
-              <Inp type="number" value={p.monto||0} style={{fontSize:11,fontWeight:600}}
-                onChange={e=>actualizarPago(i,{monto:parseFloat(e.target.value)||0})}/>
-              <Inp type="text" value={p.referencia||""} placeholder="Folio, cheque, concepto..." style={{fontSize:10}}
-                onChange={e=>actualizarPago(i,{referencia:e.target.value})}/>
-              <Sel value={p.estatus||"programado"} style={{fontSize:10,padding:"4px 6px"}}
-                onChange={e=>actualizarPago(i,{estatus:e.target.value})}>
-                <option value="programado">Programado</option>
-                <option value="pagado">Pagado</option>
-                <option value="cancelado">Cancelado</option>
-              </Sel>
-              <button onClick={()=>eliminarPago(i)} style={{background:"none",border:"none",
-                color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
-            </>) : (<>
-              <span style={{fontSize:11,color:C.textSec}}>{p.fecha||"—"}</span>
-              <span style={{fontSize:12,fontWeight:600,color:C.caliza}}>{MXN(p.monto||0)}</span>
-              <span style={{fontSize:10,color:C.textSec}}>{p.referencia||"—"}</span>
-              <Bdg color={estCol} small>{(p.estatus||"programado").toUpperCase()}</Bdg>
-              <span></span>
-            </>)}
-          </div>;
-        })}
-      </Card>
-    </div>}
+    {/* Sub-tabs "Fotos por concepto" y "Pagos" eliminadas (ago-2026).
+        Las fotos viven inline en cada concepto de Avance físico.
+        Los pagos vienen del estatus "Pagada" de cada estimación —
+        control PARALELO al GP, no se suma al gasto total de la obra. */}
 
     {/* Lightbox */}
     {lightbox && <div onClick={()=>setLightbox(null)}
