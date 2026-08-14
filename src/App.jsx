@@ -5971,9 +5971,21 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   };
   const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
 
-  // ── Generar lista de últimas N semanas ISO
+  // ── Generar lista de semanas ISO ──
+  // La gráfica arranca en la SEMANA DE INICIO DEL CONTRATO (obra.inicio)
+  // y termina hoy. Si el rango pedido (últimas N semanas) es menor al
+  // plazo transcurrido, se usa el rango; si es mayor, se recorta al
+  // inicio del contrato para no mostrar semanas huecas antes de existir.
+  const fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  const inicioValido = fechaInicio && !isNaN(fechaInicio);
   const semanas = (() => {
     const hoy = new Date();
+    // Semana ISO de hoy y del inicio del contrato
+    const isoHoy = semanaISOLocal(hoy);
+    const keyHoy = isoHoy ? skey(isoHoy.sem, isoHoy.año) : null;
+    const isoInicio = inicioValido ? semanaISOLocal(fechaInicio) : null;
+    const keyInicio = isoInicio ? skey(isoInicio.sem, isoInicio.año) : null;
+
     const out = [];
     for (let i = rango - 1; i >= 0; i--) {
       const d = new Date(hoy);
@@ -5981,17 +5993,42 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       const iso = semanaISOLocal(d);
       if (!iso) continue;
       const key = skey(iso.sem, iso.año);
-      // Etiqueta corta: "S22 · 27/05"
+      // Si tenemos fecha de inicio, no mostrar semanas anteriores al arranque
+      if (keyInicio && key < keyInicio) continue;
       const jueves = new Date(d);
       jueves.setDate(jueves.getDate() + 4 - (jueves.getDay() || 7));
       const dd = String(jueves.getDate()).padStart(2,'0');
       const mm = String(jueves.getMonth()+1).padStart(2,'0');
       out.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
     }
-    // Dedup (por si dos días caen en la misma semana)
+    // Si el contrato empezó DESPUÉS de la ventana pedida por el rango,
+    // out queda vacío o corto — completar hacia adelante desde la
+    // semana de inicio hasta hoy.
+    if (keyInicio && (out.length === 0 || out[0].key > keyInicio)) {
+      const primeraKey = out[0]?.key || keyHoy;
+      // Empezar desde la semana de inicio y avanzar hasta la primera
+      // semana que ya estaba en out (o hoy si out estaba vacío).
+      let dCursor = new Date(fechaInicio);
+      // Alinear al jueves de esa semana ISO
+      dCursor.setHours(0,0,0,0);
+      dCursor.setDate(dCursor.getDate() + 4 - (dCursor.getDay() || 7));
+      const insertados = [];
+      while (true) {
+        const iso = semanaISOLocal(dCursor);
+        if (!iso) break;
+        const key = skey(iso.sem, iso.año);
+        if (primeraKey && key >= primeraKey) break;
+        const dd = String(dCursor.getDate()).padStart(2,'0');
+        const mm = String(dCursor.getMonth()+1).padStart(2,'0');
+        insertados.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
+        dCursor.setDate(dCursor.getDate() + 7);
+      }
+      out.unshift(...insertados);
+    }
+    // Dedup
     const map = new Map();
     out.forEach(s => map.set(s.key, s));
-    return [...map.values()];
+    return [...map.values()].sort((a,b) => a.key.localeCompare(b.key));
   })();
 
   // ── Avance % por semana ISO: usar el snapshot correspondiente
@@ -6233,13 +6270,20 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   }
 
   // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
-  // Si no hay snapshots ni antes ni durante la ventana, arranca desde el
-  // ejecutado actual del Dashboard (dato conservador — mejor que 0).
+  // Reglas para no dejar semanas en 0 innecesariamente:
+  //   1) Si esta semana tiene snapshot, se usa ese valor.
+  //   2) Si no, se HEREDA el último valor conocido (semanas anteriores).
+  //   3) Si no hay ningún snapshot conocido todavía (obra recién arrancada),
+  //      arranca en 0 y sube conforme lleguen snapshots.
+  //   4) Fallback especial: si NO hay snapshots en TODA la historia pero sí
+  //      hay avance actual en subs, se muestra ese valor sostenido a lo
+  //      largo de toda la ventana visible.
   const ejecutadoActualParaFallback =
     (subs || []).reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
   const hayAlgunSnapshot = Object.keys(ejecutadoPorSem).length > 0;
   const ejecutadoSeries = [];
-  let ejecAcarreo = ultimoEjecutadoConocido || (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
+  let ejecAcarreo = ultimoEjecutadoConocido
+    ?? (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
   let almAcumEjec = almAcum;
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
@@ -6305,26 +6349,28 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     return d;
   });
 
-  // ── Serie de MARGEN (acumulado a la fecha, misma fórmula que Dashboard) ─
-  // margen = ejecutado - gasto total (ambos ACUMULADOS a esa semana)
-  // Gasto acumulado usa gastoAcumPorSem que trae acarreo histórico.
-  // Si una semana ISO no tiene actualización, la matemática se mantiene
-  // pareja porque ambos lados usan valores acumulados (no incrementales).
+  // ── Serie de MARGEN semanal ──────────────────────────────────────────
+  // Fórmula (misma que el Dashboard):
+  //   margen_semana = ejecutado_acumulado_semana − gasto_acumulado_semana
+  //
+  // Ambos lados con ARRASTRE del último valor conocido si esa semana no
+  // tuvo captura. Esto asegura que la línea no baje artificialmente
+  // cuando el residente no capturó avance esa semana pero el gasto sí
+  // creció (o viceversa) — se mantiene la relación entre ambos.
+  //
+  // Nota: el ancla al último valor del Dashboard se removió — hacía que
+  // el último punto saltara y rompía la continuidad visual. La serie
+  // semanal viene de snapshots y es autoconsistente.
   const margenSeries = semanas.map((s, i) => {
-    // Gasto acumulado con arrastre: si esta semana no tiene, hereda el
-    // anterior conocido (o el más reciente antes). Nunca cae a 0.
+    // Gasto acumulado con arrastre
     let gastoAcumSem = 0;
     for (let j = i; j >= 0; j--) {
       const g = gastoAcumPorSem[semanas[j].key];
       if (g && g > 0) { gastoAcumSem = g; break; }
     }
+    // Ejecutado ya viene con arrastre desde ejecutadoSeries
     return ejecutadoSeries[i] - gastoAcumSem;
   });
-
-  // Ancla el margen del último punto al valor exacto del Dashboard
-  if (semanas.length > 0 && hayDatosDash) {
-    margenSeries[semanas.length - 1] = meActual - gtActual;
-  }
 
   const datosMetricas = {
     avance: {
@@ -6409,88 +6455,153 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       ))}
     </div>
 
-    {/* Gráfica SVG */}
-    <div style={{overflowX:"auto",width:"100%"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:500}}
-        preserveAspectRatio="xMidYMid meet">
-        {/* Eje Y: 3 líneas guía */}
-        {[0, 0.5, 1].map(p => (
-          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
-            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
-        ))}
-        {/* Labels eje Y — formato compacto para evitar overflow */}
-        {[0, 0.5, 1].map(p => {
-          const v = maxValor - rangoY * p;
-          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
-            textAnchor="end" fontSize="9" fill={C.textMut}>
-            {fmtCompacto(v)}
-          </text>;
-        })}
-        {/* Barras (barra angosta si son muchas semanas para dejar aire entre ellas) */}
-        {meses.map((m, i) => {
-          const v = valores[i];
-          if (v <= 0 && minValor >= 0) return null;
-          const xC = xPos(i);
-          const bw = Math.min(cw / meses.length * 0.55, 28);
-          const yTop = yPos(Math.max(v, 0));
-          const yBase = yPos(0);
-          const bh = Math.abs(yBase - yTop);
-          return <rect key={m.key || m.ym}
-            x={xC - bw/2} y={Math.min(yTop, yBase)}
-            width={bw} height={bh || 1}
-            fill={v >= 0 ? metricaSel.color : C.red}
-            opacity={0.75} rx={2}/>;
-        })}
-        {/* Línea de tendencia */}
-        <polyline
-          fill="none" stroke={metricaSel.color} strokeWidth={1.8}
-          points={meses.map((m, i) => `${xPos(i)},${yPos(valores[i])}`).join(' ')}/>
-        {/* Puntos + valores. Se ROTAN 30° cuando hay muchas semanas para
-            evitar que se enciman. Formato compacto ($1.2M). El PRIMERO y
-            el ÚLTIMO punto ajustan su alineación para no salirse del área
-            visible de la gráfica. */}
-        {meses.map((m, i) => {
-          const v = valores[i];
-          if (!v && v !== 0) return null;
-          const x = xPos(i);
-          const y = yPos(v);
-          const arriba = meses.length < 12 || i % 2 === 0;
-          const yLabel = arriba ? y - 8 : y + 14;
-          const rotar = meses.length >= 12;
-          // Ajuste especial de textAnchor para bordes:
-          //   - Último punto: anchor "end" para que el label se dibuje
-          //     hacia la izquierda del punto (no se corta con el borde).
-          //   - Primer punto sin rotación: anchor "start".
-          let anchor = "middle";
-          if (rotar) anchor = "start";
-          if (i === meses.length - 1 && !rotar) anchor = "end";
-          if (i === 0 && !rotar) anchor = "start";
-          return <g key={m.key || m.ym}>
-            <circle cx={x} cy={y} r={2.5} fill={metricaSel.color}/>
-            {v !== 0 && <text
-              x={x} y={yLabel}
-              textAnchor={anchor}
-              fontSize="8.5" fill={C.textPri} fontWeight="600"
-              transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
+    {/* Gráfica SVG con líneas curvas y área con degradado ────────────────
+        - Path Bezier suavizado (Catmull-Rom to Cubic) para curvas
+          orgánicas en lugar de picos angulares.
+        - Área bajo la curva con GRADIENT vertical (color arriba, transparente
+          abajo). Si la métrica es 'margen' y hay valores negativos, la
+          parte positiva se sombrea con verde suave y la negativa con rojo
+          suave para dar señal visual del signo.
+        - IDs de gradient con sufijo aleatorio por si hay múltiples
+          instancias en la misma página. */}
+    {(() => {
+      // ID único por instancia (evita colisiones entre múltiples gráficas)
+      const gid = `grad-${metricaActiva}-${Math.floor(rango)}`;
+      // Path suavizado con Bezier — Catmull-Rom → Cubic
+      const smoothPath = (pts, closed = false) => {
+        if (pts.length < 2) return '';
+        const d = [`M ${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p0 = pts[i - 1] || pts[i];
+          const p1 = pts[i];
+          const p2 = pts[i + 1];
+          const p3 = pts[i + 2] || p2;
+          // Control points para cubic bezier con tensión 0.5
+          const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+          const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+          const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+          const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+          d.push(`C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`);
+        }
+        return d.join(' ');
+      };
+      // Puntos base de la serie
+      const pts = meses.map((m, i) => [xPos(i), yPos(valores[i])]);
+      // Path de la línea principal
+      const dLinea = smoothPath(pts);
+      // Path del área: mismo camino + bajada al 0 (o al minValor si <0)
+      const yZero = yPos(0);
+      const dArea = pts.length >= 2
+        ? `${dLinea} L ${pts[pts.length-1][0].toFixed(2)},${yZero.toFixed(2)} L ${pts[0][0].toFixed(2)},${yZero.toFixed(2)} Z`
+        : '';
+      // Para margen con valores negativos, dibujar 2 áreas (positiva y negativa)
+      // usando el signo del valor punto por punto.
+      const hayNegativos = valores.some(v => v < 0);
+      const esMargen = metricaActiva === 'margen';
+
+      return <div style={{overflowX:"auto",width:"100%"}}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:500}}
+          preserveAspectRatio="xMidYMid meet">
+          <defs>
+            {/* Degradado principal: color arriba, transparente abajo */}
+            <linearGradient id={`${gid}-pos`} x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%"   stopColor={metricaSel.color} stopOpacity="0.35"/>
+              <stop offset="100%" stopColor={metricaSel.color} stopOpacity="0.02"/>
+            </linearGradient>
+            {/* Degradado negativo (rojo suave) — solo para margen */}
+            <linearGradient id={`${gid}-neg`} x1="0" x2="0" y1="1" y2="0">
+              <stop offset="0%"   stopColor={C.red} stopOpacity="0.35"/>
+              <stop offset="100%" stopColor={C.red} stopOpacity="0.02"/>
+            </linearGradient>
+            {/* Clip para dividir área positiva y negativa por la línea del 0 */}
+            <clipPath id={`${gid}-clip-pos`}>
+              <rect x={PL} y={PT} width={cw} height={Math.max(0, yZero - PT)}/>
+            </clipPath>
+            <clipPath id={`${gid}-clip-neg`}>
+              <rect x={PL} y={yZero} width={cw} height={Math.max(0, PT + ch - yZero)}/>
+            </clipPath>
+          </defs>
+
+          {/* Eje Y: 3 líneas guía */}
+          {[0, 0.5, 1].map(p => (
+            <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
+              stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
+          ))}
+          {/* Labels eje Y */}
+          {[0, 0.5, 1].map(p => {
+            const v = maxValor - rangoY * p;
+            return <text key={p} x={PL - 6} y={PT + ch * p + 3}
+              textAnchor="end" fontSize="9" fill={C.textMut}>
               {fmtCompacto(v)}
-            </text>}
-          </g>;
-        })}
-        {/* Eje X: labels de semanas (S## + fecha del jueves ISO abajo) */}
-        {meses.map((m, i) => (
-          <g key={m.key || m.ym}>
-            <text x={xPos(i)} y={H - 16}
-              textAnchor="middle" fontSize="9.5" fill={C.textSec} fontWeight="600">
-              {m.label}
-            </text>
-            {m.fecha && <text x={xPos(i)} y={H - 5}
-              textAnchor="middle" fontSize="8" fill={C.textMut}>
-              {m.fecha}
-            </text>}
-          </g>
-        ))}
-      </svg>
-    </div>
+            </text>;
+          })}
+          {/* Línea del 0 (destacada si hay negativos) */}
+          {hayNegativos && (
+            <line x1={PL} y1={yZero} x2={PL + cw} y2={yZero}
+              stroke={C.textMut} strokeWidth={0.8} strokeDasharray="2,2"/>
+          )}
+
+          {/* ÁREA con degradado (curva) */}
+          {dArea && (
+            <>
+              {/* Área positiva (por encima del 0) */}
+              <path d={dArea} fill={`url(#${gid}-pos)`}
+                clipPath={esMargen && hayNegativos ? `url(#${gid}-clip-pos)` : undefined}/>
+              {/* Área negativa (por debajo del 0) — solo si es margen con negativos */}
+              {esMargen && hayNegativos && (
+                <path d={dArea} fill={`url(#${gid}-neg)`}
+                  clipPath={`url(#${gid}-clip-neg)`}/>
+              )}
+            </>
+          )}
+
+          {/* LÍNEA suavizada */}
+          <path d={dLinea} fill="none"
+            stroke={metricaSel.color} strokeWidth={2.2}
+            strokeLinecap="round" strokeLinejoin="round"/>
+
+          {/* Puntos + labels */}
+          {meses.map((m, i) => {
+            const v = valores[i];
+            if (v === undefined || v === null) return null;
+            const x = xPos(i);
+            const y = yPos(v);
+            const arriba = meses.length < 12 || i % 2 === 0;
+            const yLabel = arriba ? y - 8 : y + 14;
+            const rotar = meses.length >= 12;
+            let anchor = "middle";
+            if (rotar) anchor = "start";
+            if (i === meses.length - 1 && !rotar) anchor = "end";
+            if (i === 0 && !rotar) anchor = "start";
+            return <g key={m.key || m.ym}>
+              <circle cx={x} cy={y} r={2.5} fill={metricaSel.color}
+                stroke="white" strokeWidth={1}/>
+              {v !== 0 && <text
+                x={x} y={yLabel}
+                textAnchor={anchor}
+                fontSize="8.5" fill={v < 0 ? C.redDk : C.textPri} fontWeight="600"
+                transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
+                {fmtCompacto(v)}
+              </text>}
+            </g>;
+          })}
+
+          {/* Eje X: labels de semanas (S## + fecha del jueves ISO) */}
+          {meses.map((m, i) => (
+            <g key={m.key || m.ym}>
+              <text x={xPos(i)} y={H - 16}
+                textAnchor="middle" fontSize="9.5" fill={C.textSec} fontWeight="600">
+                {m.label}
+              </text>
+              {m.fecha && <text x={xPos(i)} y={H - 5}
+                textAnchor="middle" fontSize="8" fill={C.textMut}>
+                {m.fecha}
+              </text>}
+            </g>
+          ))}
+        </svg>
+      </div>;
+    })()}
 
     {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
         separador de miles) porque no tiene el problema de amontonarse. */}
