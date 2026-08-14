@@ -1138,9 +1138,9 @@ exports.probarBackup = onCall({ region: "us-central1" }, async (request) => {
 // aparezcan en la campana de CAMPO. En una siguiente fase estos mismos
 // eventos se emitirán como push nativos (FCM).
 //
-// A1 · Viernes 4pm: recordatorio de captura semanal — obra
+// A1 · Viernes 10am: recordatorio de captura semanal — obra
 //      Para residente/superintendente/administrador_obra
-// A2 · Viernes 5pm: recordatorio de captura semanal — subcontratos
+// A2 · Viernes 12pm: recordatorio de captura semanal — subcontratos
 //      Para los mismos + PM (supervisor)
 // A3 · Lunes 9am: alerta "3+ pendientes en Operación"
 // A4 · Lunes 9am: alerta "10+ días sin capturar"
@@ -1205,9 +1205,9 @@ function nombreObraNotif(obra) {
   return n.replace(/^\d{4}\s+/, "").replace(/\s+\d{4}\s*$/, "").trim() || n;
 }
 
-// A1 · Viernes 4pm — Recordatorio de captura semanal (obra)
+// A1 · Viernes 10am — Recordatorio de captura semanal (obra)
 exports.recordatorioCapturaObra = onSchedule({
-  schedule: "0 16 * * 5",   // viernes 16:00
+  schedule: "0 10 * * 5",   // viernes 10:00
   timeZone: "America/Mexico_City",
   region: "us-central1",
 }, async () => {
@@ -1255,9 +1255,9 @@ exports.recordatorioCapturaObra = onSchedule({
   }
 });
 
-// A2 · Viernes 5pm — Recordatorio de captura de subcontratos
+// A2 · Viernes 12pm — Recordatorio de captura de subcontratos
 exports.recordatorioCapturaSubs = onSchedule({
-  schedule: "0 17 * * 5",   // viernes 17:00
+  schedule: "0 12 * * 5",   // viernes 12:00
   timeZone: "America/Mexico_City",
   region: "us-central1",
 }, async () => {
