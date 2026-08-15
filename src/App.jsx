@@ -6230,34 +6230,25 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // Si la semana no tiene snapshot, se hereda el ejecutado anterior
   // (mismo tratamiento que el avance).
 
-  // Ejecutado por semana desde el snapshot
-  // IMPORTANTE: los snapshots viejos tienen 'imp' con precios/composición
-  // del momento del snapshot. Si el catálogo se actualizó después (nuevos
-  // precios unitarios, cantidades ajustadas), el ejecutado histórico
-  // quedaría desalineado respecto al gasto actual → margen se ve
-  // "escalonado" en lugar de plano.
-  // Solución: RECALCULAR el ejecutado histórico usando el % del snapshot
-  // pero el 'imp' ACTUAL del catálogo. Esto normaliza la serie contra
-  // los precios de hoy y hace que la relación con el gasto (que siempre
-  // es "actual") sea consistente semana a semana.
-  const subsActualMap = new Map();
-  (subs || []).forEach(s => {
-    const k1 = s.id;
-    const k2 = s.sec;
-    if (k1) subsActualMap.set(k1, s);
-    if (k2 && !subsActualMap.has(k2)) subsActualMap.set(k2, s);
-  });
-
+  // Ejecutado por semana — FÓRMULA SIMPLE (usuario, agosto 2026 iter 4):
+  //   ejecutado_semana = avance_ponderado%_snapshot × presupuesto_obra
+  //
+  // Antes usábamos ∑(a × imp_actual) + almacén_acum, que se inflaba porque
+  // el catálogo actual puede tener precios/composición diferentes a cuando
+  // se hizo el snapshot, y el almacén acumulado sumaba fuerte. Resultado:
+  // márgenes históricos de 120M-141M vs 37M actual del Dashboard.
+  //
+  // Con avance% × presupuesto:
+  //  - Es la misma definición que usa el usuario mentalmente ("obra 100M
+  //    al 80% = 80M de avance").
+  //  - Los números crecen suavemente (el avance no salta 20 puntos).
+  //  - Coincide bien con el KPI del Dashboard cuando el catálogo cubre
+  //    el 100% del presupuesto.
+  const presObra = parseFloat(obra?.presupuesto) || 0;
   const ejecutadoPorSem = {};
   Object.entries(avancePorSem).forEach(([k, snap]) => {
-    if (!snap?.subs || !Array.isArray(snap.subs)) return;
-    // Recalcular con imp actual del catálogo (si existe la partida hoy)
-    // Fallback al imp del snapshot si la partida ya no existe.
-    ejecutadoPorSem[k] = snap.subs.reduce((t, sb) => {
-      const actual = subsActualMap.get(sb.id) || subsActualMap.get(sb.sec);
-      const imp = actual ? (parseFloat(actual.imp) || 0) : (parseFloat(sb.imp) || 0);
-      return t + ((sb.a || 0) / 100) * imp;
-    }, 0);
+    if (typeof snap?.avancePonderado !== 'number') return;
+    ejecutadoPorSem[k] = (snap.avancePonderado / 100) * presObra;
   });
 
   // Buscar último ejecutado anterior a la ventana visible para arranque
@@ -6271,64 +6262,43 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     }
   }
 
-  // Almacén acumulado por semana (para sumar al ejecutado real)
-  const almacenIncremPorSem = {};
-  (materiales || []).forEach(m => {
-    const fecha = m.fecha || m.fechaCaptura;
-    if (!fecha) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    const key = skey(iso.sem, iso.año);
-    almacenIncremPorSem[key] = (almacenIncremPorSem[key] || 0) + (parseFloat(m.imp) || 0);
-  });
-  let almAcum = 0;
-  if (primeraKey) {
-    Object.keys(almacenIncremPorSem).forEach(k => {
-      if (k < primeraKey) almAcum += almacenIncremPorSem[k];
-    });
-  }
-
   // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
-  // Reglas para no dejar semanas en 0 innecesariamente:
+  // Con la nueva fórmula (avance% × presupuesto), NO se suma almacén —
+  // el "ejecutado" ahora es puramente el avance físico convertido a
+  // pesos usando el presupuesto contratado. Consistente con la
+  // definición mental del usuario.
+  // Reglas:
   //   1) Si esta semana tiene snapshot, se usa ese valor.
   //   2) Si no, se HEREDA el último valor conocido (semanas anteriores).
-  //   3) Si no hay ningún snapshot conocido todavía (obra recién arrancada),
-  //      arranca en 0 y sube conforme lleguen snapshots.
-  //   4) Fallback especial: si NO hay snapshots en TODA la historia pero sí
-  //      hay avance actual en subs, se muestra ese valor sostenido a lo
-  //      largo de toda la ventana visible.
-  const ejecutadoActualParaFallback =
-    (subs || []).reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
+  //   3) Si no hay ningún snapshot, arranca en 0 (o al fallback del
+  //      avance actual si tampoco hay ninguno histórico).
+  const ejecutadoActualParaFallback = avanceActualParaFallback > 0
+    ? (avanceActualParaFallback / 100) * presObra
+    : 0;
   const hayAlgunSnapshot = Object.keys(ejecutadoPorSem).length > 0;
   const ejecutadoSeries = [];
   let ejecAcarreo = ultimoEjecutadoConocido
     ?? (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
-  let almAcumEjec = almAcum;
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
       ejecAcarreo = ejecutadoPorSem[s.key];
     }
-    almAcumEjec += almacenIncremPorSem[s.key] || 0;
-    ejecutadoSeries.push(ejecAcarreo + almAcumEjec);
+    ejecutadoSeries.push(ejecAcarreo);
   });
 
   // ── Valores ACTUALES del Dashboard (para anclar la semana MÁS RECIENTE) ─
-  // Almacén NO va en el gasto (ya está en GP). Solo va en el ejecutado.
   const _gastoGPLive = (subs && obra) ? resolverGastoGP(obra, gpData) : 0;
   const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
   const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-  const _totAlm   = (materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-  const gtActual  = _gastoGPLive + _totMaq + _totOtros;   // sin almacén
-  const meActualAvance = (subs || []).reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
-  const meActual  = meActualAvance + _totAlm;             // sí almacén
+  const gtActual  = _gastoGPLive + _totMaq + _totOtros;
+  // Ejecutado actual con la MISMA fórmula: avance% actual × presupuesto
+  const meActual  = ejecutadoActualParaFallback;
   const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
 
-  // Ancla suave: sobrescribir el último punto de la serie de ejecutado
-  // con el valor exacto del Dashboard, PERO conservar el gasto acumulado
-  // histórico (los deltas semanales lo necesitan monotónico).
-  // Para el MARGEN del último punto se ancla al gtActual usando una
-  // variable auxiliar (ver margenSeries más abajo).
-  if (semanas.length > 0 && hayDatosDash) {
+  // Ancla suave: sobrescribir el último punto del ejecutado con el
+  // valor "avance actual × presupuesto" para que coincida con la fila
+  // de avance físico y con el KPI del Dashboard.
+  if (semanas.length > 0 && hayDatosDash && meActual > 0) {
     ejecutadoSeries[semanas.length - 1] = meActual;
   }
 
