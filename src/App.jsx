@@ -6374,69 +6374,41 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // Fórmula (misma que el Dashboard):
   //   margen_semana = ejecutado_acumulado_semana − gasto_acumulado_semana
   //
-  // IMPORTANTE (usuario, agosto 2026, iteración 2):
-  //   - Último punto DEBE coincidir con el KPI del Dashboard.
-  //   - Puntos anteriores deben ser COHERENTES con el último (no saltar
-  //     de 141M a 37M en una semana). El problema es que
-  //     `gastoAcumPorSem` viene del Sheet, que puede no cubrir todas las
-  //     semanas o traer valores subestimados vs `resolverGastoGP`. Esto
-  //     hacía que el gasto histórico se quedara "pequeño" y el margen
-  //     apareciera inflado.
-  //   - Solución: CALIBRAR ambas series al valor del Dashboard aplicando
-  //     un factor proporcional. Así el histórico crece en la MISMA
-  //     proporción que reporta el Sheet, pero escalado al total real de
-  //     hoy. La forma de la curva se conserva, pero los números absolutos
-  //     cuadran con lo que el usuario ve en el Dashboard.
-  //   - Para el EJECUTADO también aplicamos factor por el mismo motivo:
-  //     el snapshot recalculado con imp actual + almAcum puede dar
-  //     números diferentes a `meActual` en semanas anteriores.
-  //
-  // Calibrar gasto histórico ────────────────────────────────────────────
-  let ultGastoHist = 0;
-  if (semanas.length > 0) {
-    for (let j = semanas.length - 1; j >= 0; j--) {
-      const g = gastoAcumPorSem[semanas[j].key];
-      if (g && g > 0) { ultGastoHist = g; break; }
+  // REGLA (usuario, agosto 2026, iteración 3):
+  //   Muchas obras acumulan GASTO ANTES de empezar a capturar avance
+  //   físico (compras iniciales, movilización, etc.). Si calculamos
+  //   margen en esas semanas, sale muy negativo porque hay gasto sin
+  //   ejecutado — número engañoso.
+  //   → El margen SÓLO se grafica desde la PRIMERA semana con snapshot
+  //     real de avance. Antes de eso queda null (no se dibuja).
+  //   → Si una semana intermedia no tiene captura, se ARRASTRA el
+  //     último valor conocido (para ejecutado y gasto).
+  //   → El último punto se ancla exactamente al KPI del Dashboard.
+  //   → SIN factor de calibración — la iteración anterior modificaba
+  //     los valores reales del histórico y arrojaba datos raros.
+  const idxPrimerAvance = (() => {
+    for (let i = 0; i < semanas.length; i++) {
+      if (avancePorSem[semanas[i].key]) return i;
     }
-  }
-  const factorGasto = (hayDatosDash && ultGastoHist > 0) ? (gtActual / ultGastoHist) : 1;
-
-  // Calibrar ejecutado histórico ────────────────────────────────────────
-  // ejecutadoSeries[último] ya fue anclado a meActual antes; usamos el
-  // ANTERIOR (semanas.length-2) como referencia del "histórico crudo"
-  // vs el nuevo ancla del último, para evitar dividir por el propio ancla.
-  // Aplicamos el factor sólo si hay ≥2 semanas.
-  let factorEjec = 1;
-  if (semanas.length >= 2 && hayDatosDash) {
-    // Calculamos el valor "crudo" del último ejecutado ANTES del ancla,
-    // reproduciendo la lógica sin el override
-    let ejecCrudoUlt = 0;
-    let ejAc = ultimoEjecutadoConocido
-      ?? (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
-    let alAc = almAcum;
-    semanas.forEach(s => {
-      if (typeof ejecutadoPorSem[s.key] === 'number') ejAc = ejecutadoPorSem[s.key];
-      alAc += almacenIncremPorSem[s.key] || 0;
-      ejecCrudoUlt = ejAc + alAc;
-    });
-    if (ejecCrudoUlt > 0) factorEjec = meActual / ejecCrudoUlt;
-  }
+    return -1;
+  })();
 
   const margenSeries = semanas.map((s, i) => {
+    // Antes de la primera semana con avance capturado: no hay margen
+    if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
     const esUltimo = i === semanas.length - 1;
-    // Gasto acumulado calibrado con arrastre
+    // Gasto acumulado con arrastre del último GP conocido
     let gastoAcumSem = 0;
     if (esUltimo && hayDatosDash) {
       gastoAcumSem = gtActual;
     } else {
       for (let j = i; j >= 0; j--) {
         const g = gastoAcumPorSem[semanas[j].key];
-        if (g && g > 0) { gastoAcumSem = g * factorGasto; break; }
+        if (g && g > 0) { gastoAcumSem = g; break; }
       }
     }
-    // Ejecutado calibrado (el último ya vino anclado desde ejecutadoSeries)
-    const ejecCal = esUltimo ? ejecutadoSeries[i] : ejecutadoSeries[i] * factorEjec;
-    return ejecCal - gastoAcumSem;
+    // Ejecutado ya viene con arrastre desde ejecutadoSeries
+    return ejecutadoSeries[i] - gastoAcumSem;
   });
 
   const datosMetricas = {
@@ -6470,8 +6442,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
   const metricaSel = datosMetricas[metricaActiva];
   const valores = metricaSel.valores;
-  const maxValor = metricaSel.max !== null ? metricaSel.max : Math.max(...valores.map(Math.abs), 1);
-  const minValor = Math.min(...valores, 0);
+  // Ignorar null (semanas sin dato — p.ej. margen antes del primer avance)
+  const valoresValidos = valores.filter(v => v !== null && v !== undefined);
+  const maxValor = metricaSel.max !== null
+    ? metricaSel.max
+    : Math.max(...valoresValidos.map(Math.abs), 1);
+  const minValor = Math.min(...valoresValidos, 0);
   const rangoY = maxValor - minValor || 1;
 
   // SVG sparkline + barras
@@ -6552,8 +6528,14 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
         }
         return d.join(' ');
       };
-      // Puntos base de la serie
-      const pts = meses.map((m, i) => [xPos(i), yPos(valores[i])]);
+      // Puntos base de la serie — omitir semanas con null (p.ej. margen
+      // antes del primer avance capturado). El path arranca en el primer
+      // valor válido y termina en el último.
+      const pts = meses
+        .map((m, i) => (valores[i] === null || valores[i] === undefined)
+          ? null
+          : [xPos(i), yPos(valores[i])])
+        .filter(Boolean);
       // Path de la línea principal
       const dLinea = smoothPath(pts);
       // Path del área: mismo camino + bajada al 0 (o al minValor si <0)
@@ -6563,7 +6545,7 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
         : '';
       // Para margen con valores negativos, dibujar 2 áreas (positiva y negativa)
       // usando el signo del valor punto por punto.
-      const hayNegativos = valores.some(v => v < 0);
+      const hayNegativos = valores.some(v => v !== null && v !== undefined && v < 0);
       const esMargen = metricaActiva === 'margen';
 
       return <div style={{overflowX:"auto",width:"100%"}}>
@@ -6675,9 +6657,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
         separador de miles) porque no tiene el problema de amontonarse. */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
       marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
-      <span>Inicio: <b style={{color:C.textSec}}>{metricaSel.formato(valores[0])}</b></span>
+      <span>Inicio: <b style={{color:C.textSec}}>{metricaSel.formato(valoresValidos[0] ?? 0)}</b></span>
       <span style={{fontWeight:600,color:metricaSel.color}}>
-        Actual: {metricaSel.formato(valores[valores.length-1])}
+        Actual: {metricaSel.formato(valoresValidos[valoresValidos.length-1] ?? 0)}
       </span>
     </div>
   </Card>;
