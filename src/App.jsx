@@ -6374,27 +6374,69 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // Fórmula (misma que el Dashboard):
   //   margen_semana = ejecutado_acumulado_semana − gasto_acumulado_semana
   //
-  // IMPORTANTE (usuario, agosto 2026): el último punto DEBE coincidir con
-  // el KPI "Margen Bruto" del Dashboard (para Oaxaca: 37.7 mdp). Antes
-  // mostraba ~113 mdp porque `gastoAcumPorSem` (basado en el Sheet
-  // histórico) no siempre iguala a `gt` del Dashboard (`resolverGastoGP`
-  // puede tener diferencias con la última semana del Sheet). Solución:
-  // anclar el gasto del último punto a `gtActual`. Los puntos anteriores
-  // conservan el arrastre histórico.
+  // IMPORTANTE (usuario, agosto 2026, iteración 2):
+  //   - Último punto DEBE coincidir con el KPI del Dashboard.
+  //   - Puntos anteriores deben ser COHERENTES con el último (no saltar
+  //     de 141M a 37M en una semana). El problema es que
+  //     `gastoAcumPorSem` viene del Sheet, que puede no cubrir todas las
+  //     semanas o traer valores subestimados vs `resolverGastoGP`. Esto
+  //     hacía que el gasto histórico se quedara "pequeño" y el margen
+  //     apareciera inflado.
+  //   - Solución: CALIBRAR ambas series al valor del Dashboard aplicando
+  //     un factor proporcional. Así el histórico crece en la MISMA
+  //     proporción que reporta el Sheet, pero escalado al total real de
+  //     hoy. La forma de la curva se conserva, pero los números absolutos
+  //     cuadran con lo que el usuario ve en el Dashboard.
+  //   - Para el EJECUTADO también aplicamos factor por el mismo motivo:
+  //     el snapshot recalculado con imp actual + almAcum puede dar
+  //     números diferentes a `meActual` en semanas anteriores.
+  //
+  // Calibrar gasto histórico ────────────────────────────────────────────
+  let ultGastoHist = 0;
+  if (semanas.length > 0) {
+    for (let j = semanas.length - 1; j >= 0; j--) {
+      const g = gastoAcumPorSem[semanas[j].key];
+      if (g && g > 0) { ultGastoHist = g; break; }
+    }
+  }
+  const factorGasto = (hayDatosDash && ultGastoHist > 0) ? (gtActual / ultGastoHist) : 1;
+
+  // Calibrar ejecutado histórico ────────────────────────────────────────
+  // ejecutadoSeries[último] ya fue anclado a meActual antes; usamos el
+  // ANTERIOR (semanas.length-2) como referencia del "histórico crudo"
+  // vs el nuevo ancla del último, para evitar dividir por el propio ancla.
+  // Aplicamos el factor sólo si hay ≥2 semanas.
+  let factorEjec = 1;
+  if (semanas.length >= 2 && hayDatosDash) {
+    // Calculamos el valor "crudo" del último ejecutado ANTES del ancla,
+    // reproduciendo la lógica sin el override
+    let ejecCrudoUlt = 0;
+    let ejAc = ultimoEjecutadoConocido
+      ?? (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
+    let alAc = almAcum;
+    semanas.forEach(s => {
+      if (typeof ejecutadoPorSem[s.key] === 'number') ejAc = ejecutadoPorSem[s.key];
+      alAc += almacenIncremPorSem[s.key] || 0;
+      ejecCrudoUlt = ejAc + alAc;
+    });
+    if (ejecCrudoUlt > 0) factorEjec = meActual / ejecCrudoUlt;
+  }
+
   const margenSeries = semanas.map((s, i) => {
     const esUltimo = i === semanas.length - 1;
+    // Gasto acumulado calibrado con arrastre
     let gastoAcumSem = 0;
     if (esUltimo && hayDatosDash) {
-      // Último punto: usar exactamente el Dashboard
       gastoAcumSem = gtActual;
     } else {
-      // Puntos anteriores: arrastre del último GP acumulado conocido
       for (let j = i; j >= 0; j--) {
         const g = gastoAcumPorSem[semanas[j].key];
-        if (g && g > 0) { gastoAcumSem = g; break; }
+        if (g && g > 0) { gastoAcumSem = g * factorGasto; break; }
       }
     }
-    return ejecutadoSeries[i] - gastoAcumSem;
+    // Ejecutado calibrado (el último ya vino anclado desde ejecutadoSeries)
+    const ejecCal = esUltimo ? ejecutadoSeries[i] : ejecutadoSeries[i] * factorEjec;
+    return ejecCal - gastoAcumSem;
   });
 
   const datosMetricas = {
