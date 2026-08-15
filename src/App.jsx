@@ -6001,29 +6001,27 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       const mm = String(jueves.getMonth()+1).padStart(2,'0');
       out.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
     }
-    // Si el contrato empezó DESPUÉS de la ventana pedida por el rango,
-    // out queda vacío o corto — completar hacia adelante desde la
-    // semana de inicio hasta hoy.
-    if (keyInicio && (out.length === 0 || out[0].key > keyInicio)) {
-      const primeraKey = out[0]?.key || keyHoy;
-      // Empezar desde la semana de inicio y avanzar hasta la primera
-      // semana que ya estaba en out (o hoy si out estaba vacío).
+    // Caso edge: out vacío (obra en futuro o algo raro) — llenar desde
+    // la semana de inicio hasta hoy. En operación normal esto no aplica
+    // porque el for loop ya generó las semanas del rango recortadas por
+    // el inicio del contrato. La versión anterior de este bloque tenía
+    // la condición `out[0].key > keyInicio` que se activaba SIEMPRE que
+    // el contrato empezara antes de la ventana → agregaba todas las
+    // semanas antiguas y rompía el selector de rango.
+    if (keyInicio && out.length === 0) {
       let dCursor = new Date(fechaInicio);
-      // Alinear al jueves de esa semana ISO
       dCursor.setHours(0,0,0,0);
       dCursor.setDate(dCursor.getDate() + 4 - (dCursor.getDay() || 7));
-      const insertados = [];
       while (true) {
         const iso = semanaISOLocal(dCursor);
         if (!iso) break;
         const key = skey(iso.sem, iso.año);
-        if (primeraKey && key >= primeraKey) break;
+        if (keyHoy && key > keyHoy) break;
         const dd = String(dCursor.getDate()).padStart(2,'0');
         const mm = String(dCursor.getMonth()+1).padStart(2,'0');
-        insertados.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
+        out.push({ key, sem: iso.sem, año: iso.año, label: `S${iso.sem}`, fecha: `${dd}/${mm}` });
         dCursor.setDate(dCursor.getDate() + 7);
       }
-      out.unshift(...insertados);
     }
     // Dedup
     const map = new Map();
