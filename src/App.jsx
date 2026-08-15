@@ -6654,6 +6654,425 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   </Card>;
 }
 
+// ── PROYECCIÓN DE AVANCE Y GASTO ─────────────────────────────────────────
+// Toma la serie histórica semanal de gasto y ejecutado, calcula el RITMO
+// (promedio de deltas semanales de las últimas N semanas) y extiende ambas
+// series con líneas PUNTEADAS hasta que el ejecutado llegue al presupuesto
+// contratado (fin de obra proyectado).
+//
+// - Línea sólida: histórico real (semana de inicio → hoy).
+// - Línea punteada: proyección (hoy → fin de obra estimado).
+// - Área sombreada entre curvas:
+//     verde = ejecutado > gasto (margen positivo)
+//     rojo  = gasto > ejecutado (margen negativo, sobregasto)
+// - Marca vertical: "Hoy" y "Fin proyectado".
+function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otrosGastos, maquinaria, subs}) {
+  // Resolver datosObraGP igual que TendenciasMensuales
+  if (!datosObraGP && gpData?.obras && obra) {
+    const arr = Object.values(gpData.obras);
+    let match = null;
+    if (obra.gpId) match = arr.find(o => o.id === obra.gpId);
+    if (!match && /^\d{4}/.test(obra.id || '')) {
+      match = arr.find(o => o.id === obra.id.slice(0, 4));
+    }
+    datosObraGP = match;
+  }
+
+  const [ritmoBase, setRitmoBase] = useState(8); // semanas para promediar el ritmo
+
+  const semanaISOLocal = (fecha) => {
+    const d = new Date(fecha);
+    if (isNaN(d)) return null;
+    d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const inicioAño = new Date(d.getFullYear(), 0, 1);
+    return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
+  };
+  const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
+  const jueveDeSemana = (año, sem) => {
+    const d = new Date(año, 0, 1);
+    d.setDate(d.getDate() + (sem - 1) * 7);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    return d;
+  };
+
+  const presupuesto = parseFloat(obra?.presupuesto) || 0;
+  const fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  const inicioValido = fechaInicio && !isNaN(fechaInicio);
+  if (!presupuesto || !inicioValido) {
+    return <Card>
+      <Tit>Proyección de avance y gasto</Tit>
+      <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
+        Falta presupuesto o fecha de inicio del contrato para proyectar.
+      </div>
+    </Card>;
+  }
+
+  // Semanas del histórico (inicio contrato → hoy)
+  const hoy = new Date();
+  const isoInicio = semanaISOLocal(fechaInicio);
+  const isoHoy = semanaISOLocal(hoy);
+  const semanasHist = [];
+  {
+    let d = jueveDeSemana(isoInicio.año, isoInicio.sem);
+    while (true) {
+      const iso = semanaISOLocal(d);
+      const key = skey(iso.sem, iso.año);
+      semanasHist.push({ key, sem: iso.sem, año: iso.año, fecha: new Date(d) });
+      if (iso.sem === isoHoy.sem && iso.año === isoHoy.año) break;
+      d.setDate(d.getDate() + 7);
+      // Safety: máx 500 semanas (~10 años)
+      if (semanasHist.length > 500) break;
+    }
+  }
+
+  // ── GASTO ACUMULADO por semana ────────────────────────────────────────
+  // Mismo cálculo que TendenciasMensuales: deltas del Sheet año actual +
+  // años previos como base + manuales incrementales.
+  const gastoGPAcumPorSem = {};
+  if (datosObraGP?.semanas) {
+    const añoActual = new Date().getFullYear();
+    let baseAcumulada = 0;
+    if (datosObraGP.años) {
+      Object.entries(datosObraGP.años).forEach(([kAño, v]) => {
+        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
+        if (!isNaN(y) && y < añoActual) baseAcumulada += (parseFloat(v) || 0);
+      });
+    }
+    const semanasDelta = Object.entries(datosObraGP.semanas)
+      .map(([k, v]) => {
+        const m = String(k).match(/S?(\d{1,2})/);
+        if (!m) return null;
+        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.sem - b.sem);
+    let acum = baseAcumulada;
+    semanasDelta.forEach(({ sem, delta }) => {
+      acum += delta;
+      gastoGPAcumPorSem[skey(sem, añoActual)] = acum;
+    });
+  }
+
+  const gastoManualIncrem = {};
+  const sumarManual = (fecha, monto) => {
+    if (!fecha || !monto) return;
+    const iso = semanaISOLocal(fecha);
+    if (!iso) return;
+    const key = skey(iso.sem, iso.año);
+    gastoManualIncrem[key] = (gastoManualIncrem[key] || 0) + monto;
+  };
+  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
+  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
+
+  const gpKeysOrdenadas = Object.keys(gastoGPAcumPorSem).sort();
+  const ultimoGPAcumHasta = (semKey) => {
+    let ult = 0;
+    for (const k of gpKeysOrdenadas) {
+      if (k <= semKey) ult = gastoGPAcumPorSem[k]; else break;
+    }
+    return ult;
+  };
+  let acumManual = 0;
+  const gastoAcum = semanasHist.map(s => {
+    acumManual += gastoManualIncrem[s.key] || 0;
+    return ultimoGPAcumHasta(s.key) + acumManual;
+  });
+
+  // Ancla último punto con Dashboard
+  const _gpLive = resolverGastoGP(obra, gpData);
+  const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
+  const _totMaq = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+  const gtActual = _gpLive + _totMaq + _totOtros;
+  if (semanasHist.length > 0 && gtActual > 0) {
+    gastoAcum[gastoAcum.length - 1] = gtActual;
+  }
+
+  // ── EJECUTADO ACUMULADO por semana (avance% × presupuesto) ────────────
+  const avancePorSem = {};
+  (historialAvance || []).forEach(snap => {
+    const key = skey(snap.semana, snap.año);
+    if (!avancePorSem[key] || new Date(snap.fechaCaptura) > new Date(avancePorSem[key].fechaCaptura)) {
+      avancePorSem[key] = snap;
+    }
+  });
+  const avanceActual = (() => {
+    if (!subs || subs.length === 0) return 0;
+    const totImp = subs.reduce((t, s) => t + (parseFloat(s.imp) || 0), 0);
+    if (totImp <= 0) return 0;
+    const ejec = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
+    return (ejec / totImp) * 100;
+  })();
+  let avAcarreo = 0;
+  const ejecAcum = semanasHist.map(s => {
+    const snap = avancePorSem[s.key];
+    if (snap && typeof snap.avancePonderado === 'number') avAcarreo = snap.avancePonderado;
+    return (avAcarreo / 100) * presupuesto;
+  });
+  if (semanasHist.length > 0 && avanceActual > 0) {
+    ejecAcum[ejecAcum.length - 1] = (avanceActual / 100) * presupuesto;
+  }
+
+  // ── RITMO SEMANAL (promedio de deltas de las últimas N semanas) ───────
+  const calcularRitmo = (serie) => {
+    if (serie.length < 2) return 0;
+    const inicio = Math.max(1, serie.length - ritmoBase);
+    let suma = 0, cuenta = 0;
+    for (let i = inicio; i < serie.length; i++) {
+      const d = serie[i] - serie[i-1];
+      if (d > 0) { suma += d; cuenta++; }
+    }
+    return cuenta > 0 ? suma / cuenta : 0;
+  };
+  const ritmoGasto = calcularRitmo(gastoAcum);
+  const ritmoEjec = calcularRitmo(ejecAcum);
+
+  // ── PROYECCIÓN: continuar hasta que ejecutado alcance el presupuesto ──
+  const gastoUlt = gastoAcum[gastoAcum.length - 1] || 0;
+  const ejecUlt = ejecAcum[ejecAcum.length - 1] || 0;
+  const semanasProy = [];
+  const gastoProy = [];
+  const ejecProy = [];
+  if (ritmoEjec > 0) {
+    const pendiente = presupuesto - ejecUlt;
+    const semanasNecesarias = Math.ceil(pendiente / ritmoEjec);
+    // Cap a 200 semanas para no volarse
+    const nProy = Math.min(semanasNecesarias, 200);
+    let dCursor = new Date(semanasHist[semanasHist.length - 1].fecha);
+    let gAcum = gastoUlt;
+    let eAcum = ejecUlt;
+    for (let i = 1; i <= nProy; i++) {
+      dCursor = new Date(dCursor);
+      dCursor.setDate(dCursor.getDate() + 7);
+      const iso = semanaISOLocal(dCursor);
+      gAcum += ritmoGasto;
+      eAcum = Math.min(presupuesto, eAcum + ritmoEjec);
+      semanasProy.push({ key: skey(iso.sem, iso.año), sem: iso.sem, año: iso.año, fecha: new Date(dCursor) });
+      gastoProy.push(gAcum);
+      ejecProy.push(eAcum);
+      if (eAcum >= presupuesto) break;
+    }
+  }
+
+  // Serie completa (hist + proy) para escalar el gráfico
+  const todasSemanas = [...semanasHist, ...semanasProy];
+  const todosGasto = [...gastoAcum, ...gastoProy];
+  const todosEjec = [...ejecAcum, ...ejecProy];
+  const maxValor = Math.max(...todosGasto, ...todosEjec, presupuesto);
+
+  // Fecha fin proyectado
+  const finProyectado = semanasProy.length > 0
+    ? semanasProy[semanasProy.length - 1].fecha
+    : null;
+  const gastoFinProy = gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt;
+  const margenFinProy = presupuesto - gastoFinProy;
+
+  // ── SVG ──────────────────────────────────────────────────────────────
+  const W = 720, H = 200, PL = 62, PR = 18, PT = 22, PB = 42;
+  const cw = W - PL - PR, ch = H - PT - PB;
+  const n = todasSemanas.length;
+  const xPos = (i) => PL + (cw / Math.max(n - 1, 1)) * i;
+  const yPos = (v) => PT + ch - (v / maxValor) * ch;
+  const idxHoy = semanasHist.length - 1;
+
+  const fmtCompacto = (v) => {
+    const abs = Math.abs(v || 0);
+    if (abs >= 1e6) return `$${(v/1e6).toFixed(1)}M`;
+    if (abs >= 1e3) return `$${(v/1e3).toFixed(0)}k`;
+    return `$${(v||0).toFixed(0)}`;
+  };
+  const fmtFecha = (d) => d ? `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}` : '—';
+
+  // Path Bezier suave (Catmull-Rom → Cubic)
+  const smoothPath = (pts) => {
+    if (pts.length < 2) return '';
+    const d = [`M ${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+      const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+      const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d.push(`C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`);
+    }
+    return d.join(' ');
+  };
+
+  // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
+  const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);
+  const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
+  const ptsGastoProy = ptsGastoHist.length > 0
+    ? [ptsGastoHist[ptsGastoHist.length - 1], ...gastoProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
+    : [];
+  const ptsEjecProy  = ptsEjecHist.length > 0
+    ? [ptsEjecHist[ptsEjecHist.length - 1], ...ejecProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
+    : [];
+
+  // Ticks eje X — mostrar cada N semanas para no saturar
+  const stepX = Math.max(1, Math.ceil(n / 10));
+
+  return <Card>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
+      <div>
+        <Tit>Proyección de avance y gasto</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-4}}>
+          Ritmo actual proyectado hasta cierre estimado de obra
+        </div>
+      </div>
+      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+        <span style={{fontSize:9,color:C.textMut}}>Ritmo:</span>
+        <select value={ritmoBase} onChange={e=>setRitmoBase(Number(e.target.value))}
+          style={{fontSize:10,padding:"3px 6px",border:`1px solid ${C.border}`,borderRadius:4,color:C.textSec}}>
+          <option value={4}>Últimas 4 sem</option>
+          <option value={8}>Últimas 8 sem</option>
+          <option value={12}>Últimas 12 sem</option>
+        </select>
+      </div>
+    </div>
+
+    <div style={{overflowX:"auto",width:"100%"}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:520}}
+        preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="pgrad-ejec" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={C.blueDk} stopOpacity="0.30"/>
+            <stop offset="100%" stopColor={C.blueDk} stopOpacity="0.02"/>
+          </linearGradient>
+          <linearGradient id="pgrad-gasto" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={C.redDk} stopOpacity="0.25"/>
+            <stop offset="100%" stopColor={C.redDk} stopOpacity="0.02"/>
+          </linearGradient>
+        </defs>
+
+        {/* Guías eje Y */}
+        {[0, 0.5, 1].map(p => (
+          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
+            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
+        ))}
+        {[0, 0.5, 1].map(p => {
+          const v = maxValor * (1 - p);
+          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
+            textAnchor="end" fontSize="9" fill={C.textMut}>
+            {fmtCompacto(v)}
+          </text>;
+        })}
+
+        {/* Línea presupuesto (referencia horizontal) */}
+        <line x1={PL} y1={yPos(presupuesto)} x2={PL+cw} y2={yPos(presupuesto)}
+          stroke={C.caliza} strokeWidth={0.8} strokeDasharray="4,3" opacity="0.7"/>
+        <text x={PL + 4} y={yPos(presupuesto) - 3} fontSize="8.5" fill={C.caliza} fontWeight="600">
+          Presupuesto {fmtCompacto(presupuesto)}
+        </text>
+
+        {/* Marca vertical HOY */}
+        {idxHoy >= 0 && (
+          <>
+            <line x1={xPos(idxHoy)} y1={PT} x2={xPos(idxHoy)} y2={PT + ch}
+              stroke={C.textMut} strokeWidth={0.8} strokeDasharray="3,3"/>
+            <text x={xPos(idxHoy) + 3} y={PT + 10} fontSize="9" fill={C.textMut} fontWeight="600">Hoy</text>
+          </>
+        )}
+
+        {/* Áreas sombreadas — histórico */}
+        {ptsGastoHist.length >= 2 && (
+          <path d={`${smoothPath(ptsGastoHist)} L ${ptsGastoHist[ptsGastoHist.length-1][0]},${yPos(0)} L ${ptsGastoHist[0][0]},${yPos(0)} Z`}
+            fill="url(#pgrad-gasto)"/>
+        )}
+        {ptsEjecHist.length >= 2 && (
+          <path d={`${smoothPath(ptsEjecHist)} L ${ptsEjecHist[ptsEjecHist.length-1][0]},${yPos(0)} L ${ptsEjecHist[0][0]},${yPos(0)} Z`}
+            fill="url(#pgrad-ejec)"/>
+        )}
+
+        {/* Líneas HISTÓRICAS (sólidas) */}
+        <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
+          strokeLinecap="round" strokeLinejoin="round"/>
+        <path d={smoothPath(ptsEjecHist)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
+          strokeLinecap="round" strokeLinejoin="round"/>
+
+        {/* Líneas PROYECTADAS (punteadas) */}
+        {ptsGastoProy.length >= 2 && (
+          <path d={smoothPath(ptsGastoProy)} fill="none" stroke={C.redDk} strokeWidth={2}
+            strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
+        )}
+        {ptsEjecProy.length >= 2 && (
+          <path d={smoothPath(ptsEjecProy)} fill="none" stroke={C.blueDk} strokeWidth={2}
+            strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
+        )}
+
+        {/* Puntos: inicio, hoy, fin proyectado */}
+        {ptsEjecHist[0] && (
+          <circle cx={ptsEjecHist[0][0]} cy={ptsEjecHist[0][1]} r={3} fill={C.blueDk} stroke="white" strokeWidth={1}/>
+        )}
+        {idxHoy >= 0 && ptsEjecHist[idxHoy] && (
+          <>
+            <circle cx={ptsEjecHist[idxHoy][0]} cy={ptsEjecHist[idxHoy][1]} r={3.5} fill={C.blueDk} stroke="white" strokeWidth={1.2}/>
+            <circle cx={ptsGastoHist[idxHoy][0]} cy={ptsGastoHist[idxHoy][1]} r={3.5} fill={C.redDk} stroke="white" strokeWidth={1.2}/>
+          </>
+        )}
+        {ptsEjecProy.length > 0 && (
+          <>
+            <line x1={ptsEjecProy[ptsEjecProy.length-1][0]} y1={PT}
+              x2={ptsEjecProy[ptsEjecProy.length-1][0]} y2={PT + ch}
+              stroke={C.greenDk} strokeWidth={0.8} strokeDasharray="3,3" opacity="0.6"/>
+            <text x={ptsEjecProy[ptsEjecProy.length-1][0] - 3} y={PT + 10}
+              textAnchor="end" fontSize="9" fill={C.greenDk} fontWeight="600">
+              Fin proy.
+            </text>
+            <circle cx={ptsEjecProy[ptsEjecProy.length-1][0]} cy={ptsEjecProy[ptsEjecProy.length-1][1]}
+              r={3.5} fill={C.greenDk} stroke="white" strokeWidth={1.2}/>
+          </>
+        )}
+
+        {/* Eje X */}
+        {todasSemanas.map((s, i) => {
+          if (i % stepX !== 0 && i !== n - 1 && i !== idxHoy) return null;
+          const dd = String(s.fecha.getDate()).padStart(2,'0');
+          const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
+          return <g key={s.key}>
+            <text x={xPos(i)} y={H - 22} textAnchor="middle" fontSize="8.5" fill={C.textSec}>
+              S{s.sem}
+            </text>
+            <text x={xPos(i)} y={H - 12} textAnchor="middle" fontSize="7.5" fill={C.textMut}>
+              {dd}/{mm}
+            </text>
+          </g>;
+        })}
+      </svg>
+    </div>
+
+    {/* Leyenda + KPIs proyección */}
+    <div style={{display:"flex",gap:14,marginTop:6,fontSize:10,color:C.textSec,flexWrap:"wrap",justifyContent:"center"}}>
+      <span><span style={{display:"inline-block",width:10,height:2,background:C.blueDk,verticalAlign:"middle",marginRight:4}}/>Ejecutado</span>
+      <span><span style={{display:"inline-block",width:10,height:2,background:C.redDk,verticalAlign:"middle",marginRight:4}}/>Gasto</span>
+      <span style={{color:C.textMut}}>· · · Proyección</span>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,
+      marginTop:10,paddingTop:8,borderTop:`0.5px solid ${C.border}`}}>
+      <div>
+        <div style={{fontSize:9,color:C.textMut}}>Ritmo ejecutado</div>
+        <div style={{fontSize:12,fontWeight:700,color:C.blueDk}}>{fmtCompacto(ritmoEjec)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
+      </div>
+      <div>
+        <div style={{fontSize:9,color:C.textMut}}>Ritmo gasto</div>
+        <div style={{fontSize:12,fontWeight:700,color:C.redDk}}>{fmtCompacto(ritmoGasto)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
+      </div>
+      <div>
+        <div style={{fontSize:9,color:C.textMut}}>Fin de obra proyectado</div>
+        <div style={{fontSize:12,fontWeight:700,color:C.greenDk}}>{fmtFecha(finProyectado)}</div>
+      </div>
+      <div>
+        <div style={{fontSize:9,color:C.textMut}}>Margen proyectado al cierre</div>
+        <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
+          {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
+        </div>
+      </div>
+    </div>
+  </Card>;
+}
+
 function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
@@ -6756,6 +7175,16 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       otrosGastos={otrosGastos}
       maquinaria={maquinaria}
       materiales={materiales}
+      subs={subs}/>
+
+    {/* BLOQUE 1.6: PROYECCIÓN DE AVANCE Y GASTO */}
+    <ProyeccionAvanceGasto
+      obra={obra}
+      historialAvance={historialAvance}
+      gpData={gpData}
+      datosObraGP={datosObraGP}
+      otrosGastos={otrosGastos}
+      maquinaria={maquinaria}
       subs={subs}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
@@ -12697,11 +13126,11 @@ const TABS_POR_ROL = {
 // generaba fricción. Los KPIs consolidados viven ahora solo en Dashboard.)
 const SUBTABS_OPERACION = [
   {id:"avance", label:"Avance físico"},
-  {id:"almacen", label:"Almacén"},
-  {id:"maquinaria", label:"Maquinaria"},
-  {id:"nomina", label:"Nómina"},
   {id:"estimaciones", label:"Estimaciones"},
+  {id:"nomina", label:"Nómina"},
   {id:"subcontratos", label:"Subcontratos"},
+  {id:"maquinaria", label:"Maquinaria"},
+  {id:"almacen", label:"Almacén"},
 ];
 
 const SUBTABS_PLANEACION = [
