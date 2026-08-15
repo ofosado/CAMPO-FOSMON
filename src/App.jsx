@@ -6053,18 +6053,39 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   //                          + almacén + maquinaria + otros gastos
   //                            manuales acumulados hasta esa semana.
 
-  const gastoGPAcumPorSem = {};    // "YYYY-Wnn" → GP acumulado del Sheet
+  // IMPORTANTE (agosto 2026 iter 5): `datosObraGP.semanas["S22"]` es el
+  // gasto DE esa semana (delta), NO el acumulado. Además solo cubre el
+  // año actual (2026); los años anteriores están en `datosObraGP.años`.
+  //
+  // Para obtener el acumulado real semana a semana:
+  //   1) Base = suma de todos los años anteriores al año actual
+  //   2) Ordenar semanas del año actual cronológicamente
+  //   3) Sumar deltas acumulando desde la base
+  const gastoGPAcumPorSem = {};    // "YYYY-Wnn" → GP acumulado real
   if (datosObraGP?.semanas) {
-    Object.entries(datosObraGP.semanas).forEach(([k, v]) => {
-      // El Sheet trae claves tipo "S22" (año implícito por la posición
-      // en el sheet). Solo tenemos año único = año actual disponible.
-      // Si el proyecto es multi-año esto puede quedar corto, pero es lo
-      // que hay hoy — mejor eso que sumar años distintos.
-      const m = String(k).match(/S?(\d{1,2})(?:[-_](\d{4}))?/);
-      if (!m) return;
-      const sem = parseInt(m[1], 10);
-      const año = m[2] ? parseInt(m[2], 10) : new Date().getFullYear();
-      gastoGPAcumPorSem[skey(sem, año)] = parseFloat(v) || 0;
+    const añoActual = new Date().getFullYear();
+    // Base: sumar años PREVIOS al actual
+    let baseAcumulada = 0;
+    if (datosObraGP.años) {
+      Object.entries(datosObraGP.años).forEach(([kAño, v]) => {
+        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
+        if (!isNaN(y) && y < añoActual) baseAcumulada += (parseFloat(v) || 0);
+      });
+    }
+    // Semanas del año actual, ordenadas cronológicamente
+    const semanasDelta = Object.entries(datosObraGP.semanas)
+      .map(([k, v]) => {
+        const m = String(k).match(/S?(\d{1,2})/);
+        if (!m) return null;
+        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.sem - b.sem);
+    // Acumular deltas desde la base
+    let acum = baseAcumulada;
+    semanasDelta.forEach(({ sem, delta }) => {
+      acum += delta;
+      gastoGPAcumPorSem[skey(sem, añoActual)] = acum;
     });
   }
 
