@@ -6185,8 +6185,22 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   }
 
   // Serie de avance físico con arrastre del último valor conocido
+  // FALLBACK (agosto 2026, feedback usuario): si aún no hay snapshots
+  // cargados (historialAvance llega async desde Firestore) pero SÍ hay
+  // subs con avance actual, usar el avance ponderado actual como base
+  // sostenida — así la gráfica no aparece plana en 0% mientras carga
+  // y "salta" a los valores reales medio segundo después.
+  const avanceActualParaFallback = (() => {
+    if (!subs || subs.length === 0) return 0;
+    const totImp = subs.reduce((t, s) => t + (parseFloat(s.imp) || 0), 0);
+    if (totImp <= 0) return 0;
+    const ejec = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
+    return (ejec / totImp) * 100;
+  })();
+  const hayAlgunAvanceSnap = Object.keys(avancePorSem).length > 0;
   const avanceSeries = [];
-  let avAcarreo = ultimoAvanceConocido;
+  let avAcarreo = ultimoAvanceConocido
+    ?? (hayAlgunAvanceSnap ? null : avanceActualParaFallback);
   semanas.forEach(s => {
     const snap = avancePorSem[s.key];
     if (snap && typeof snap.avancePonderado === 'number') {
@@ -6194,6 +6208,11 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     }
     avanceSeries.push(avAcarreo ?? 0);
   });
+  // Anclar último punto al avance actual para que coincida con el KPI
+  // del Dashboard (mismo tratamiento que ejecutado / margen).
+  if (semanas.length > 0 && subs && subs.length > 0 && avanceActualParaFallback > 0) {
+    avanceSeries[semanas.length - 1] = avanceActualParaFallback;
+  }
 
   // Serie de MARGEN semanal (misma fórmula que el Dashboard):
   //   margen = ejecutado - gasto total
@@ -6304,9 +6323,11 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   const meActual  = meActualAvance + _totAlm;             // sí almacén
   const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
 
-  // Ancla suave: sobrescribir el último punto de la serie de ejecutado con
-  // el valor exacto del Dashboard. NO se toca gastoAcumPorSem porque las
-  // barras del gasto semanal (delta) requieren monotonía histórica limpia.
+  // Ancla suave: sobrescribir el último punto de la serie de ejecutado
+  // con el valor exacto del Dashboard, PERO conservar el gasto acumulado
+  // histórico (los deltas semanales lo necesitan monotónico).
+  // Para el MARGEN del último punto se ancla al gtActual usando una
+  // variable auxiliar (ver margenSeries más abajo).
   if (semanas.length > 0 && hayDatosDash) {
     ejecutadoSeries[semanas.length - 1] = meActual;
   }
@@ -6353,22 +6374,26 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // Fórmula (misma que el Dashboard):
   //   margen_semana = ejecutado_acumulado_semana − gasto_acumulado_semana
   //
-  // Ambos lados con ARRASTRE del último valor conocido si esa semana no
-  // tuvo captura. Esto asegura que la línea no baje artificialmente
-  // cuando el residente no capturó avance esa semana pero el gasto sí
-  // creció (o viceversa) — se mantiene la relación entre ambos.
-  //
-  // Nota: el ancla al último valor del Dashboard se removió — hacía que
-  // el último punto saltara y rompía la continuidad visual. La serie
-  // semanal viene de snapshots y es autoconsistente.
+  // IMPORTANTE (usuario, agosto 2026): el último punto DEBE coincidir con
+  // el KPI "Margen Bruto" del Dashboard (para Oaxaca: 37.7 mdp). Antes
+  // mostraba ~113 mdp porque `gastoAcumPorSem` (basado en el Sheet
+  // histórico) no siempre iguala a `gt` del Dashboard (`resolverGastoGP`
+  // puede tener diferencias con la última semana del Sheet). Solución:
+  // anclar el gasto del último punto a `gtActual`. Los puntos anteriores
+  // conservan el arrastre histórico.
   const margenSeries = semanas.map((s, i) => {
-    // Gasto acumulado con arrastre
+    const esUltimo = i === semanas.length - 1;
     let gastoAcumSem = 0;
-    for (let j = i; j >= 0; j--) {
-      const g = gastoAcumPorSem[semanas[j].key];
-      if (g && g > 0) { gastoAcumSem = g; break; }
+    if (esUltimo && hayDatosDash) {
+      // Último punto: usar exactamente el Dashboard
+      gastoAcumSem = gtActual;
+    } else {
+      // Puntos anteriores: arrastre del último GP acumulado conocido
+      for (let j = i; j >= 0; j--) {
+        const g = gastoAcumPorSem[semanas[j].key];
+        if (g && g > 0) { gastoAcumSem = g; break; }
+      }
     }
-    // Ejecutado ya viene con arrastre desde ejecutadoSeries
     return ejecutadoSeries[i] - gastoAcumSem;
   });
 
@@ -6566,8 +6591,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
             if (v === undefined || v === null) return null;
             const x = xPos(i);
             const y = yPos(v);
-            const arriba = meses.length < 12 || i % 2 === 0;
-            const yLabel = arriba ? y - 8 : y + 14;
+            // Regla (usuario, agosto 2026): labels SIEMPRE arriba del punto
+            // — antes alternaban arriba/abajo y era confuso de leer.
+            const yLabel = y - 8;
             const rotar = meses.length >= 12;
             let anchor = "middle";
             if (rotar) anchor = "start";
