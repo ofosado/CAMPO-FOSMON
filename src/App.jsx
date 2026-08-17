@@ -5618,243 +5618,6 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
 }
 
 
-// ── GRÁFICA INTERACTIVA DE PROYECCIÓN ─────────────────────────────────────
-function GraficaProyeccion({obra, subs, estimaciones, maquinaria, ampliaciones=[]}) {
-  const [hovered, setHovered] = React.useState(null);
-  const [activeLines, setActiveLines] = React.useState({
-    gasto:true, monto:true, estimado:true, metaG:true, metaA:true
-  });
-  const svgRef = useRef();
-
-  // Calcular datos reales de la obra
-  const presupuesto = obra.presupuesto / 1e6;
-  const gastoGP     = obra.gastoGP / 1e6;
-  const am          = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0) / 1e6;
-  const alm         = 0; // materiales en almacén
-  const montoEjec   = am + alm;
-  const totalEst    = estimaciones.reduce((t,e)=>t+e.monto,0) / 1e6;
-
-  // Semanas simuladas históricas + proyección
-  const HOY_IDX = 4;
-  const ritmoG  = gastoGP / 18;  // aprox semanas transcurridas
-  const ritmoM  = montoEjec / 18;
-  const SEMANAS_DATA = Array.from({length:20}, (_,i) => {
-    const esReal = i <= HOY_IDX;
-    const factor = i / HOY_IDX;
-    return {
-      s: `S${14+i}`,
-      g: esReal ? +(gastoGP * factor).toFixed(1) : +(gastoGP + ritmoG*(i-HOY_IDX)).toFixed(1),
-      m: esReal ? +(montoEjec * factor).toFixed(1) : +(montoEjec + ritmoM*(i-HOY_IDX)).toFixed(1),
-      e: esReal ? (i<3?0:+(totalEst*(i/HOY_IDX)).toFixed(1)) : +(totalEst + (presupuesto*0.15)*(i-HOY_IDX)/3).toFixed(1),
-      p: esReal ? +(am/presupuesto*100 * factor).toFixed(1) : +(am/presupuesto*100 + (am/presupuesto*100/HOY_IDX)*(i-HOY_IDX)).toFixed(1),
-      real: esReal,
-    };
-  });
-
-  const PLAZO_ORIG = Math.round((new Date(obra.fin)-new Date(obra.inicio))/(7*24*60*60*1000));
-  const PLAZO_IDX  = Math.min(Math.round(PLAZO_ORIG/1), 16);
-  const PLAZOA_IDX = Math.min(PLAZO_IDX + 4, 19);
-
-  const n = SEMANAS_DATA.length;
-  const PAD = {top:24,right:80,bottom:38,left:52};
-  const SW = 680; const SH = 260;
-  const W = SW-PAD.left-PAD.right; const H = SH-PAD.top-PAD.bottom;
-  const maxY = presupuesto * 1.08;
-  const xS = i => (i/(n-1))*W;
-  const yS = v => H - (v/maxY)*H;
-
-  const makePath = (fn, fromIdx=0) => SEMANAS_DATA
-    .slice(fromIdx).map((s,i) => `${i===0?'M':'L'} ${xS(fromIdx+i)} ${yS(fn(s))}`).join(' ');
-  const makeRealPath  = fn => SEMANAS_DATA.filter(s=>s.real).map((s,i)=>`${i===0?'M':'L'} ${xS(SEMANAS_DATA.indexOf(s))} ${yS(fn(s))}`).join(' ');
-  const makeProjPath  = fn => SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(fn(s))}`).filter(Boolean).join(' ');
-
-  const semsFinG = Math.ceil((presupuesto - gastoGP) / ritmoG);
-  const semsFinM = Math.ceil((presupuesto - montoEjec) / ritmoM);
-  const semsRest = PLAZO_IDX - HOY_IDX;
-  const metaG = semsRest > 0 ? (presupuesto - gastoGP) / semsRest : ritmoG * 1.5;
-  const metaM = semsRest > 0 ? (presupuesto - montoEjec) / semsRest : ritmoM * 1.5;
-
-  const metaGPath = SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(Math.min(gastoGP+metaG*(i-HOY_IDX),presupuesto))}`).filter(Boolean).join(' ');
-  const metaMPath = SEMANAS_DATA.map((s,i)=>i<HOY_IDX?null:`${i===HOY_IDX?'M':'L'} ${xS(i)} ${yS(Math.min(montoEjec+metaM*(i-HOY_IDX),presupuesto))}`).filter(Boolean).join(' ');
-
-  const hovD = hovered!==null ? SEMANAS_DATA[hovered] : null;
-
-  const toggleLine = k => setActiveLines(p=>({...p,[k]:!p[k]}));
-
-  return (
-    <Card>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10,flexWrap:'wrap',gap:8}}>
-        <div>
-          <Tit>Proyección de avance y gasto</Tit>
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-            Pasa el cursor sobre la gráfica para ver el detalle por semana
-          </div>
-        </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[
-            {k:'gasto',   col:C.red,    lbl:'Gasto GP'},
-            {k:'monto',   col:C.blue,   lbl:'Monto ejecutado'},
-            {k:'estimado',col:C.green,  lbl:'Estimado'},
-            {k:'metaG',   col:C.orange, lbl:'Meta gasto'},
-            {k:'metaA',   col:C.purple, lbl:'Meta avance'},
-          ].map(({k,col,lbl})=>(
-            <button key={k} onClick={()=>toggleLine(k)}
-              style={{display:'flex',alignItems:'center',gap:4,background:'none',
-                border:`0.5px solid ${activeLines[k]?col:'rgba(255,254,249,0.12)'}`,
-                borderRadius:99,padding:'2px 8px',cursor:'pointer',
-                opacity:activeLines[k]?1:0.4,transition:'all .2s'}}>
-              <div style={{width:14,height:2,background:col,borderRadius:1}}/>
-              <span style={{fontSize:9,color:activeLines[k]?C.caliza:C.textMut}}>{lbl}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{position:'relative',overflowX:'auto'}}>
-        <svg ref={svgRef} width={SW} height={SH}
-          onMouseMove={e=>{const r=svgRef.current?.getBoundingClientRect();if(!r)return;const mx=e.clientX-r.left-PAD.left;const idx=Math.round((mx/W)*(n-1));if(idx>=0&&idx<n)setHovered(idx);}}
-          onMouseLeave={()=>setHovered(null)}
-          style={{cursor:'crosshair',overflow:'visible',display:'block'}}>
-          <defs>
-            <linearGradient id="gR" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.red} stopOpacity="0.2"/>
-              <stop offset="100%" stopColor={C.red} stopOpacity="0.01"/>
-            </linearGradient>
-            <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.blue} stopOpacity="0.15"/>
-              <stop offset="100%" stopColor={C.blue} stopOpacity="0.01"/>
-            </linearGradient>
-            <filter id="gl"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-          </defs>
-          <g transform={`translate(${PAD.left},${PAD.top})`}>
-            {/* Grid */}
-            {[0,25,50,75,100,presupuesto].map(v=>(
-              <g key={v}>
-                <line x1={0} y1={yS(v*presupuesto/100)} x2={W} y2={yS(v*presupuesto/100)}
-                  stroke={v===100?C.caliza:C.border} strokeWidth={v===100?0.6:0.3}
-                  strokeDasharray={v===100?'4,4':''} opacity={v===100?0.3:0.5}/>
-                <text x={-6} y={yS(v*presupuesto/100)+4} fill={C.textMut} fontSize={8} textAnchor="end">
-                  {v===100?'Ppto':`$${(v*presupuesto/100).toFixed(0)}M`}
-                </text>
-              </g>
-            ))}
-            {/* Zonas plazo */}
-            {PLAZO_IDX < n && <rect x={xS(HOY_IDX+1)} y={0} width={xS(PLAZO_IDX)-xS(HOY_IDX+1)} height={H} fill={C.green} fillOpacity={0.04}/>}
-            {ampliaciones.length>0 && PLAZOA_IDX < n && PLAZO_IDX < n && <rect x={xS(PLAZO_IDX)} y={0} width={xS(PLAZOA_IDX)-xS(PLAZO_IDX)} height={H} fill={C.yellow} fillOpacity={0.06}/>}
-            {/* Líneas plazo */}
-            {PLAZO_IDX<n && <><line x1={xS(PLAZO_IDX)} y1={0} x2={xS(PLAZO_IDX)} y2={H} stroke={C.green} strokeWidth={1} strokeDasharray="4,4" opacity={0.55}/>
-            <text x={xS(PLAZO_IDX)-3} y={12} fill={C.green} fontSize={7.5} textAnchor="end" fontWeight="600" opacity={0.8}>Plazo orig.</text></>}
-            {ampliaciones.length>0 && PLAZOA_IDX<n && <><line x1={xS(PLAZOA_IDX)} y1={0} x2={xS(PLAZOA_IDX)} y2={H} stroke={C.yellow} strokeWidth={1} strokeDasharray="3,4" opacity={0.65}/>
-            <text x={xS(PLAZOA_IDX)+3} y={12} fill={C.yellow} fontSize={7.5} textAnchor="start" fontWeight="600" opacity={0.8}>Amp.</text></>}
-          {/* Ampliaciones adicionales desde Contrato */}
-          {ampliaciones.map((amp,ai)=>{
-            if(!amp.fecha||!obra.inicio) return null;
-            const ampMs=(new Date(amp.fecha)-new Date(obra.inicio))/(7*24*60*60*1000);
-            const ampIdx=Math.min(Math.round(ampMs),n-1);
-            const col=[C.yellow,C.orange,C.pink][ai]||C.orange;
-            return <g key={amp.id||ai}>
-              <line x1={xS(ampIdx)} y1={0} x2={xS(ampIdx)} y2={H} stroke={col} strokeWidth={1.2} strokeDasharray="4,3" opacity={0.7}/>
-              <text x={xS(ampIdx)+3} y={24+ai*10} fill={col} fontSize={7} textAnchor="start" fontWeight="600" opacity={0.85}>{amp.label||`Amp.${ai+1}`}</text>
-            </g>;
-          })}
-            {/* Línea HOY */}
-            <line x1={xS(HOY_IDX)} y1={0} x2={xS(HOY_IDX)} y2={H} stroke={C.textMut} strokeWidth={0.8} opacity={0.5}/>
-            <text x={xS(HOY_IDX)} y={H+28} fill={C.textMut} fontSize={7.5} textAnchor="middle">Hoy</text>
-            {/* Áreas */}
-            {activeLines.gasto&&<path d={`${makeRealPath(s=>s.g)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gR)" opacity={0.7}/>}
-            {activeLines.monto&&<path d={`${makeRealPath(s=>s.m)} L ${xS(HOY_IDX)} ${H} L ${xS(0)} ${H} Z`} fill="url(#gB)" opacity={0.6}/>}
-            {/* Metas */}
-            {activeLines.metaG&&<path d={metaGPath} fill="none" stroke={C.orange} strokeWidth={1.2} strokeDasharray="3,5" opacity={0.5}/>}
-            {activeLines.metaA&&<path d={metaMPath} fill="none" stroke={C.purple} strokeWidth={1.2} strokeDasharray="3,5" opacity={0.5}/>}
-            {/* Proyecciones punteadas */}
-            {activeLines.gasto&&<path d={makeProjPath(s=>s.g)} fill="none" stroke={C.red} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.45}/>}
-            {activeLines.monto&&<path d={makeProjPath(s=>s.m)} fill="none" stroke={C.blue} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.45}/>}
-            {activeLines.estimado&&<path d={makeProjPath(s=>s.e)} fill="none" stroke={C.green} strokeWidth={1.6} strokeDasharray="5,4" opacity={0.4}/>}
-            {/* Líneas reales */}
-            {activeLines.gasto&&<path d={makeRealPath(s=>s.g)} fill="none" stroke={C.red} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
-            {activeLines.monto&&<path d={makeRealPath(s=>s.m)} fill="none" stroke={C.blue} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
-            {activeLines.estimado&&<path d={makeRealPath(s=>s.e)} fill="none" stroke={C.green} strokeWidth={2.2} filter="url(#gl)" strokeLinecap="round" strokeLinejoin="round"/>}
-            {/* Puntos reales */}
-            {SEMANAS_DATA.filter(s=>s.real).map((s,i)=>{
-              const idx=SEMANAS_DATA.indexOf(s);
-              return <g key={s.s}>
-                {activeLines.gasto&&<circle cx={xS(idx)} cy={yS(s.g)} r={hovered===idx?5.5:3.5} fill={C.red} stroke={C.bg} strokeWidth={1.5} style={{transition:'r .15s'}}/>}
-                {activeLines.monto&&<rect x={xS(idx)-3} y={yS(s.m)-3} width={hovered===idx?7:5} height={hovered===idx?7:5} fill={C.blue} stroke={C.bg} strokeWidth={1.5} style={{transition:'all .15s'}}/>}
-                {activeLines.estimado&&<polygon points={`${xS(idx)},${yS(s.e)-4.5} ${xS(idx)+3.5},${yS(s.e)+3} ${xS(idx)-3.5},${yS(s.e)+3}`} fill={C.green} stroke={C.bg} strokeWidth={1.5}/>}
-              </g>;
-            })}
-            {/* Crosshair hover */}
-            {hovered!==null&&<>
-              <line x1={xS(hovered)} y1={0} x2={xS(hovered)} y2={H} stroke={C.caliza} strokeWidth={0.7} opacity={0.25} strokeDasharray="2,3"/>
-              {activeLines.gasto&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].g)} r={6} fill="none" stroke={C.red} strokeWidth={1.8} opacity={0.8}/>}
-              {activeLines.monto&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].m)} r={6} fill="none" stroke={C.blue} strokeWidth={1.8} opacity={0.8}/>}
-              {activeLines.estimado&&<circle cx={xS(hovered)} cy={yS(SEMANAS_DATA[hovered].e)} r={6} fill="none" stroke={C.green} strokeWidth={1.8} opacity={0.8}/>}
-            </>}
-            {/* X labels */}
-            {SEMANAS_DATA.map((s,i)=>i%3===0&&(
-              <text key={s.s} x={xS(i)} y={H+16} fill={i===HOY_IDX?C.caliza:C.textMut}
-                fontSize={8} textAnchor="middle" fontWeight={i===HOY_IDX?'700':'400'} opacity={i===HOY_IDX?1:0.65}>{s.s}</text>
-            ))}
-          </g>
-        </svg>
-
-        {/* Tooltip */}
-        {hovD&&(
-          <div style={{position:'absolute',left:Math.min(PAD.left+xS(hovered)+12,490),top:PAD.top+10,
-            background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',
-            padding:'10px 14px',boxShadow:'0 8px 32px rgba(0,0,0,0.7)',pointerEvents:'none',minWidth:180,
-            backdropFilter:'blur(12px)'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <span style={{fontSize:13,fontWeight:700,color:C.caliza,fontFamily:'monospace'}}>{hovD.s}</span>
-              <Bdg color={hovD.real?C.green:C.yellow} small>{hovD.real?'REAL':'PROYECT.'}</Bdg>
-            </div>
-            {[
-              {lbl:'Gasto GP acumulado', val:`$${hovD.g.toFixed(1)}M`, col:C.red,    show:activeLines.gasto},
-              {lbl:'Monto ejecutado',    val:`$${hovD.m.toFixed(1)}M`, col:C.blue,   show:activeLines.monto},
-              {lbl:'Estimado al cliente',val:`$${hovD.e.toFixed(1)}M`, col:C.green,  show:activeLines.estimado},
-              {lbl:'Avance físico',      val:`${hovD.p.toFixed(1)}%`,  col:C.caliza, show:true},
-            ].filter(r=>r.show).map(r=>(
-              <div key={r.lbl} style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4,gap:10}}>
-                <div style={{display:'flex',alignItems:'center',gap:5}}>
-                  <div style={{width:7,height:7,borderRadius:'50%',background:r.col,flexShrink:0}}/>
-                  <span style={{fontSize:9,color:C.textSec}}>{r.lbl}</span>
-                </div>
-                <span style={{fontSize:10,fontWeight:700,color:r.col,fontFamily:'monospace'}}>{r.val}</span>
-              </div>
-            ))}
-            {!hovD.real&&<>
-              <div style={{height:1,background:C.border,margin:'6px 0'}}/>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:8.5,color:C.textMut,marginTop:2}}>
-                <span>Meta gasto:</span>
-                <span style={{color:C.orange}}>${Math.min(gastoGP+metaG*(hovered-HOY_IDX),presupuesto).toFixed(1)}M</span>
-              </div>
-              <div style={{display:'flex',justifyContent:'space-between',fontSize:8.5,color:C.textMut,marginTop:2}}>
-                <span>Meta avance:</span>
-                <span style={{color:C.purple}}>${Math.min(montoEjec+metaM*(hovered-HOY_IDX),presupuesto).toFixed(1)}M</span>
-              </div>
-            </>}
-          </div>
-        )}
-      </div>
-
-      {/* Resumen inferior */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
-        {[
-          ['Ritmo gasto/sem', `$${(ritmoG).toFixed(1)}M`, C.red],
-          ['Ritmo avance/sem', `$${(ritmoM).toFixed(1)}M`, C.blue],
-          [`Fin proyect. (gasto)`, `S${14+semsFinG}`, C.red],
-          [`Fin proyect. (avance)`, `S${14+semsFinM}`, C.blue],
-        ].map(([l,v,c])=>(
-          <div key={l} style={{background:C.bg,borderRadius:7,padding:'7px 9px',borderLeft:`2px solid ${c}`}}>
-            <div style={{fontSize:8,color:C.textMut,marginBottom:2}}>{l}</div>
-            <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:'monospace'}}>{v}</div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 // BANNER DE RIESGOS — Dashboard
@@ -6679,6 +6442,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   }
 
   const [ritmoBase, setRitmoBase] = useState(8); // semanas para promediar el ritmo
+  const [hover, setHover] = useState(null);       // índice de semana con cursor encima
+  const svgRef = useRef();
 
   const semanaISOLocal = (fecha) => {
     const d = new Date(fecha);
@@ -6813,16 +6578,19 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     ejecAcum[ejecAcum.length - 1] = (avanceActual / 100) * presupuesto;
   }
 
-  // ── RITMO SEMANAL (promedio de deltas de las últimas N semanas) ───────
+  // ── RITMO SEMANAL ─────────────────────────────────────────────────────
+  // Se calcula como: (valor_final − valor_inicio_ventana) / semanas_ventana
+  // Antes se hacía promedio de deltas > 0, pero como muchas semanas no
+  // tienen captura (delta = 0), el filtro dejaba pocos puntos y cambiar
+  // 4/8/12 daba casi el mismo resultado. Ahora divide el cambio TOTAL
+  // entre TODAS las semanas del rango — sí varía al cambiar la ventana.
   const calcularRitmo = (serie) => {
     if (serie.length < 2) return 0;
-    const inicio = Math.max(1, serie.length - ritmoBase);
-    let suma = 0, cuenta = 0;
-    for (let i = inicio; i < serie.length; i++) {
-      const d = serie[i] - serie[i-1];
-      if (d > 0) { suma += d; cuenta++; }
-    }
-    return cuenta > 0 ? suma / cuenta : 0;
+    const nVentana = Math.min(ritmoBase, serie.length - 1);
+    if (nVentana < 1) return 0;
+    const idxIni = serie.length - 1 - nVentana;
+    const cambio = serie[serie.length - 1] - serie[idxIni];
+    return cambio > 0 ? cambio / nVentana : 0;
   };
   const ritmoGasto = calcularRitmo(gastoAcum);
   const ritmoEjec = calcularRitmo(ejecAcum);
@@ -6919,7 +6687,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       <div>
         <Tit>Proyección de avance y gasto</Tit>
         <div style={{fontSize:9,color:C.textMut,marginTop:-4}}>
-          Ritmo actual proyectado hasta cierre estimado de obra
+          Pasa el cursor sobre la gráfica para ver el detalle por semana
         </div>
       </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
@@ -6933,9 +6701,21 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       </div>
     </div>
 
-    <div style={{overflowX:"auto",width:"100%"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:520}}
-        preserveAspectRatio="xMidYMid meet">
+    <div style={{overflowX:"auto",width:"100%",position:"relative"}}>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`}
+        style={{width:"100%",height:"auto",minWidth:520,cursor:"crosshair",display:"block"}}
+        preserveAspectRatio="xMidYMid meet"
+        onMouseMove={e => {
+          const r = svgRef.current?.getBoundingClientRect();
+          if (!r) return;
+          // Convertir mouse a coordenadas viewBox
+          const vx = ((e.clientX - r.left) / r.width) * W;
+          if (vx < PL || vx > PL + cw) { setHover(null); return; }
+          const rel = (vx - PL) / cw;
+          const idx = Math.round(rel * (n - 1));
+          if (idx >= 0 && idx < n) setHover(idx);
+        }}
+        onMouseLeave={() => setHover(null)}>
         <defs>
           <linearGradient id="pgrad-ejec" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor={C.blueDk} stopOpacity="0.30"/>
@@ -7040,7 +6820,69 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
             </text>
           </g>;
         })}
+
+        {/* Crosshair + puntos resaltados en hover */}
+        {hover !== null && todasSemanas[hover] && (
+          <g pointerEvents="none">
+            <line x1={xPos(hover)} y1={PT} x2={xPos(hover)} y2={PT + ch}
+              stroke={C.caliza} strokeWidth={0.7} strokeDasharray="2,3" opacity={0.5}/>
+            <circle cx={xPos(hover)} cy={yPos(todosGasto[hover])} r={5}
+              fill="none" stroke={C.redDk} strokeWidth={1.8}/>
+            <circle cx={xPos(hover)} cy={yPos(todosEjec[hover])} r={5}
+              fill="none" stroke={C.blueDk} strokeWidth={1.8}/>
+          </g>
+        )}
       </svg>
+
+      {/* Tooltip flotante */}
+      {hover !== null && todasSemanas[hover] && (() => {
+        const s = todasSemanas[hover];
+        const esProy = hover > idxHoy;
+        const g = todosGasto[hover] || 0;
+        const e = todosEjec[hover] || 0;
+        const pctAv = presupuesto > 0 ? (e / presupuesto) * 100 : 0;
+        const margen = e - g;
+        const dd = String(s.fecha.getDate()).padStart(2,'0');
+        const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
+        const yy = String(s.fecha.getFullYear()).slice(2);
+        // Posicionar tooltip: seguir cursor por izquierda/derecha
+        const relX = hover / Math.max(n - 1, 1);
+        const leftPct = relX < 0.6 ? `${(PL + xPos(hover) - PL) / W * 100 + 3}%` : 'auto';
+        const rightPct = relX >= 0.6 ? `${(1 - (xPos(hover) / W)) * 100 + 3}%` : 'auto';
+        return <div style={{
+          position:"absolute", top:8, left:leftPct, right:rightPct,
+          background:C.surface, border:`1px solid ${C.border}`, borderRadius:8,
+          padding:"8px 10px", minWidth:170, boxShadow:"0 4px 14px rgba(0,0,0,0.12)",
+          pointerEvents:"none", fontSize:10, zIndex:5
+        }}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.textPri}}>S{s.sem} · {dd}/{mm}/{yy}</span>
+            <span style={{fontSize:8,padding:"1px 5px",borderRadius:3,fontWeight:600,
+              background: esProy ? C.yellow+"22" : C.green+"22",
+              color: esProy ? C.yellowDk : C.greenDk}}>
+              {esProy ? "PROYECT." : "REAL"}
+            </span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
+            <span style={{color:C.textSec}}><span style={{display:"inline-block",width:8,height:8,background:C.blueDk,borderRadius:2,marginRight:5,verticalAlign:"middle"}}/>Ejecutado</span>
+            <span style={{fontWeight:700,color:C.blueDk}}>{fmtCompacto(e)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
+            <span style={{color:C.textSec}}><span style={{display:"inline-block",width:8,height:8,background:C.redDk,borderRadius:2,marginRight:5,verticalAlign:"middle"}}/>Gasto acum.</span>
+            <span style={{fontWeight:700,color:C.redDk}}>{fmtCompacto(g)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:8,paddingTop:4,marginTop:4,borderTop:`0.5px solid ${C.border}`}}>
+            <span style={{color:C.textSec}}>Avance</span>
+            <span style={{fontWeight:700,color:C.textPri}}>{pctAv.toFixed(1)}%</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginTop:2}}>
+            <span style={{color:C.textSec}}>Margen</span>
+            <span style={{fontWeight:700,color: margen >= 0 ? C.greenDk : C.red}}>
+              {margen >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margen))}
+            </span>
+          </div>
+        </div>;
+      })()}
     </div>
 
     {/* Leyenda + KPIs proyección */}
@@ -7376,8 +7218,6 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         </div>;
       })()}
     </Card>
-
-    <GraficaProyeccion obra={obra} subs={subs} estimaciones={estimaciones} maquinaria={maquinaria} ampliaciones={[...(obra.finAmpliado?[{fecha:obra.finAmpliado,label:"Ampliación 1"}]:[])]}/>
 
     <Card {...clickableCard("operacion","nomina")}>
       <Tit>Personal en campo — Semana {(() => { const t = new Date(); t.setDate(t.getDate() + 4 - (t.getDay() || 7)); return Math.ceil((((t - new Date(t.getFullYear(),0,1)) / 86400000) + 1) / 7); })()} {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver nómina ›</span>}</Tit>
