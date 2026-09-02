@@ -5141,6 +5141,63 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
           `${NUM(margenPct,1)}% ejecutado vs gastado`)}
       </div>
 
+      {/* KPIs portafolio — Grupo 1.5: MANO DE OBRA (consolidado semana actual) */}
+      {(() => {
+        // Consolidar el último snapshot de nómina de cada obra
+        let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0, heTotal = 0, obrasConDato = 0;
+        let obraTop = null, tendencia = null;
+        const detallePorObra = [];
+        obrasConKPIs.forEach(({obra, kpis}) => {
+          const d = datosPorObra[obra.id] || {};
+          const semanas = d.nominaSemanas || [];
+          if (semanas.length === 0) return;
+          const ult = semanas[semanas.length - 1];
+          const nEmp = (ult.totalDir || 0) + (ult.totalInd || 0);
+          totalEmp += nEmp;
+          dir += (ult.totalDir || 0);
+          ind += (ult.totalInd || 0);
+          nomTotal += (ult.totalNomina || 0);
+          heTotal += (ult.totalHE || 0);
+          obrasConDato++;
+          detallePorObra.push({obra, ult, nEmp});
+          if (!obraTop || (ult.totalNomina || 0) > (obraTop.totalNomina || 0)) obraTop = {obra, ...ult};
+          // Tendencia % vs semana anterior si aplica
+          if (semanas.length >= 2) {
+            const prev = semanas[semanas.length - 2];
+            tendencia = (tendencia||0) + ((ult.totalNomina || 0) - (prev.totalNomina || 0));
+          }
+        });
+        const pctInd = totalEmp > 0 ? (ind / totalEmp) * 100 : 0;
+        const costoProm = totalEmp > 0 ? nomTotal / totalEmp : 0;
+        // Solo mostrar el bloque si al menos 1 obra tiene nómina cargada
+        if (obrasConDato === 0) return null;
+        return <>
+          <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+            textTransform:"uppercase",marginBottom:6}}>
+            MANO DE OBRA · SEMANA ACTUAL
+            <span style={{fontWeight:400,color:C.textMut,textTransform:"none",marginLeft:8}}>
+              ({obrasConDato} de {activas.length} obras con nómina cargada)
+            </span>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:12}}>
+            {kpiBox("Trabajadores", `${totalEmp}`, C.caliza, `${dir} directos · ${ind} indirectos`)}
+            {kpiBox("Nómina semanal", MXN(nomTotal), C.blueDk,
+              tendencia !== null
+                ? `${tendencia>=0?'▲':'▼'} ${MXN(Math.abs(tendencia))} vs sem. anterior`
+                : "primera semana registrada")}
+            {kpiBox("Horas extra", `${heTotal.toLocaleString('es-MX', {maximumFractionDigits:0})} h`,
+              heTotal > 500 ? C.yellowDk : C.textPri,
+              nomTotal > 0 ? `promedio ${(heTotal/Math.max(totalEmp,1)).toFixed(1)} h/persona` : "")}
+            {kpiBox("Costo prom. semanal", MXN(costoProm), C.purpleDk, "por trabajador")}
+            {kpiBox("% Indirectos", `${NUM(pctInd,1)}%`,
+              pctInd > 25 ? C.yellowDk : C.greenDk,
+              pctInd > 25 ? "revisar overhead" : "estructura saludable")}
+            {obraTop && kpiBox("Mayor nómina", obraTop.obra.nombre ? String(obraTop.obra.nombre).slice(0,18) : "—",
+              C.orange, MXN(obraTop.totalNomina))}
+          </div>
+        </>;
+      })()}
+
       {/* KPIs portafolio — Grupo 2: Estimaciones (ciclo de cobranza) */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
         textTransform:"uppercase",marginBottom:6}}>CICLO DE ESTIMACIONES</div>
@@ -10534,16 +10591,22 @@ function parsearNomina(data) {
   };
 
   // Si no hay headers claros, detectar por patrón de datos
-  let colNombre   = find('nombre','trabajador','empleado','personal');
-  let colCategoria= find('categoria','puesto','cargo','clasificacion','categ');
-  let colTipo     = find('tipo','frente','directo','indirecto');
-  let colSalDia   = find('salario dia','sal dia','s.d.','diario');
-  let colSalSem   = find('salario sem','sal sem','semanal','semana');
-  let colDias     = find('dias trab','d.t.','dias','jornada');
-  let colHE       = find('horas ext','t.e.','he ','h.e.','extra');
-  let colImpDias  = find('importe dia','imp dia','imp. d');
-  let colImpHE    = find('importe ext','imp ext','imp. he','imp he');
-  let colTotal    = find('total','importe total','pago','neto');
+  let colNombre   = find('nombre del trabajador','nombre','trabajador','empleado','personal');
+  let colCategoria= find('categoria','categoría','puesto','cargo','categ');
+  let colClasif   = find('clasificacion','clasificación','clasif');
+  // Tipo D/I es específico — buscar primero "tipo" exacto antes de "frente"
+  let colTipo     = find('tipo (d/i)','tipo d/i','tipo','directo','indirecto');
+  if (colTipo < 0) colTipo = find('frente');
+  let colSalDia   = find('salario diario','salario dia','sal dia','s.d.','diario');
+  let colSalSem   = find('salario base sem','salario base','salario sem','sal sem','semanal','semana');
+  let colDias     = find('d.t.','dias trab','días trab','dias','días','jornada');
+  let colHE       = find('t.e. (hrs)','t.e.','horas ext','he ','h.e.','extra');
+  let colImpDias  = find('importe días trab','importe dias trab','importe dia','importe día','imp dia','imp. d');
+  let colImpHE    = find('importe t.e.','importe te','importe ext','imp ext','imp. he','imp he','tiempo extra');
+  let colViatico  = find('viático','viatico');
+  let colBono     = find('bono','otros');
+  // IMPORTE TOTAL debe ir después de otras — buscar la palabra "importe total" explícito primero
+  let colTotal    = find('importe total','importe  total','total','pago','neto');
   let colImss     = find('imss','seguro');
   let colInfonavit= find('infonavit','fonacot');
 
@@ -10603,8 +10666,18 @@ function parsearNomina(data) {
     if (total === 0 && ri > 0) return;
 
     const categoria  = colCategoria  >= 0 ? String(row[colCategoria] ||'').trim() : '';
+    const clasif     = colClasif     >= 0 ? String(row[colClasif]    ||'').trim() : '';
     const tipoRaw    = colTipo       >= 0 ? String(row[colTipo]      ||'').trim().toUpperCase() : '';
-    const tipo       = tipoRaw.includes('IND') ? 'I' : 'D';
+    // Tipo D/I: 'I' explícito, o Indirecto, o categoría/clasif contiene keywords admin
+    let tipo = 'D';
+    if (tipoRaw === 'I' || tipoRaw.includes('IND')) tipo = 'I';
+    else if (!tipoRaw) {
+      const catUp = (categoria + ' ' + clasif).toUpperCase();
+      const tagsInd = ['GERENTE','ADMINISTRAT','CONTROL','HSE','COORDINADOR','SUPERINT','SUPERVISOR','INGENIERO','AUX','ESTIMACION','JEFE','ADMIN'];
+      if (tagsInd.some(t => catUp.includes(t))) tipo = 'I';
+    }
+    const viatico    = colViatico    >= 0 ? Math.abs(parseFloat(String(row[colViatico]   ||'').replace(/[$,]/g,''))||0) : 0;
+    const bono       = colBono       >= 0 ? Math.abs(parseFloat(String(row[colBono]      ||'').replace(/[$,]/g,''))||0) : 0;
     const salDia     = colSalDia     >= 0 ? Math.abs(parseFloat(String(row[colSalDia]    ||'').replace(/[$,]/g,''))||0) : 0;
     const salSem     = colSalSem     >= 0 ? Math.abs(parseFloat(String(row[colSalSem]    ||'').replace(/[$,]/g,''))||0) : 0;
     const dias       = colDias       >= 0 ? Math.abs(parseFloat(String(row[colDias]      ||'').replace(/[$,]/g,''))||0) : 0;
@@ -10616,8 +10689,8 @@ function parsearNomina(data) {
 
     trabajadores.push({
       id: `${ri}-${nombre.slice(0,10)}`,
-      nombre, categoria, tipo, salDia, salSem, dias,
-      horasExtra, impDias, impHE, imss, infonavit, total
+      nombre, categoria, clasif, tipo, salDia, salSem, dias,
+      horasExtra, impDias, impHE, viatico, bono, imss, infonavit, total
     });
   });
 
@@ -14127,6 +14200,12 @@ export default function App(){
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, err => console.warn('bulk otros', o.id, err)));
+      // Historial de nómina semanal — se usa el ÚLTIMO snapshot para KPIs de mano de obra
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
+        patch(o.id, { nominaSemanas: semanas });
+      }, err => console.warn('bulk nomina', o.id, err)));
     });
 
     return () => unsubs.forEach(u => u());
