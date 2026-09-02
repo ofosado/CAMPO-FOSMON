@@ -8130,7 +8130,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                     <span style={{fontSize:9,color:C.textMut,minWidth:24}}>{s.unidad||''}</span></>
                   ) : (
                     // Modo porcentaje (default): input de % de avance
-                    <><input type="number" min="0" max="100" placeholder="0" value={s.a||""}
+                    <><input type="number" min="0" max="100" step="0.01" placeholder="0" value={s.a||""}
                       onChange={e=>setSubs(ss=>ss.map(x=>x.id===subId?{...x,a:Math.min(100,Math.max(0,parseFloat(e.target.value)||0))}:x))}
                       style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:6,
                         padding:"3px 6px",fontSize:12,width:50,textAlign:"right",color:C.textPri,outline:"none"}}/>
@@ -12333,7 +12333,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                   </>
                 ) : (
                   <>
-                    <input type="number" min="0" max="100" step="1" value={c.avance||0}
+                    <input type="number" min="0" max="100" step="0.01" value={c.avance||0}
                       onChange={e=>actualizarConcepto(i, {avance: Math.min(Math.max(parseFloat(e.target.value)||0, 0), 100)})}
                       style={{width:56,padding:"5px 6px",fontSize:11,fontWeight:600,textAlign:"right",
                         border:`0.5px solid ${C.border}`,borderRadius:5,outline:"none"}}/>
@@ -12365,9 +12365,9 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                   onChange={e=>actualizarConcepto(i,{desc:e.target.value})}/>
                 <Inp type="text" value={c.unidad||""} placeholder="Und" style={{fontSize:10}}
                   onChange={e=>actualizarConcepto(i,{unidad:e.target.value})}/>
-                <Inp type="number" value={c.cantidad||0} placeholder="Cant" style={{fontSize:10}}
+                <Inp type="number" step="0.01" value={c.cantidad||0} placeholder="Cant" style={{fontSize:10}}
                   onChange={e=>actualizarConcepto(i,{cantidad:parseFloat(e.target.value)||0})}/>
-                <Inp type="number" value={c.pu||0} placeholder="P.U." style={{fontSize:10}}
+                <Inp type="number" step="0.01" value={c.pu||0} placeholder="P.U." style={{fontSize:10}}
                   onChange={e=>actualizarConcepto(i,{pu:parseFloat(e.target.value)||0})}/>
               </div>
             </details>
