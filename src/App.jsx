@@ -10691,6 +10691,140 @@ function parsearNomina(data) {
   return {trabajadores, semana, colsDetectadas:{colNombre,colCategoria,colTipo,colHE,colTotal}};
 }
 
+// ── VALIDACIÓN de nómina — detecta duplicidades, sumas raras y anomalías
+// Devuelve { errores: [...], advertencias: [...] }.
+//   - errores: bloqueantes (recomendable no guardar hasta corregir)
+//   - advertencias: no bloquean, se muestran al usuario para revisar
+function validarNomina(trabajadores, semanaAnterior) {
+  const errores = [];
+  const advertencias = [];
+  if (!trabajadores || trabajadores.length === 0) {
+    errores.push({ tipo: 'sin_datos', msg: 'No se encontraron trabajadores en el archivo.' });
+    return { errores, advertencias };
+  }
+
+  // 1) DUPLICIDAD dentro del archivo (mismo nombre 2+ veces)
+  const conteoNombres = new Map();
+  trabajadores.forEach(t => {
+    const key = (t.nombre || '').trim().toLowerCase().replace(/\s+/g,' ');
+    if (!key) return;
+    conteoNombres.set(key, (conteoNombres.get(key) || 0) + 1);
+  });
+  for (const [nom, cnt] of conteoNombres) {
+    if (cnt > 1) {
+      errores.push({
+        tipo: 'duplicado',
+        msg: `"${nom.toUpperCase()}" aparece ${cnt} veces en el archivo. Podría causar doble pago.`,
+        trabajador: nom
+      });
+    }
+  }
+
+  // 2) SUMAS que no cuadran por trabajador
+  //    total debería ser ≈ impDias + impHE + viatico + bono (tolerancia $1)
+  const TOL = 1.0;
+  trabajadores.forEach((t, i) => {
+    const suma = (t.impDias||0) + (t.impHE||0) + (t.viatico||0) + (t.bono||0);
+    if (t.total > 0 && Math.abs(suma - t.total) > TOL) {
+      advertencias.push({
+        tipo: 'suma_incongruente',
+        msg: `${t.nombre}: total $${t.total.toFixed(2)} ≠ suma componentes $${suma.toFixed(2)} (diff $${(suma - t.total).toFixed(2)}).`,
+        trabajador: t.nombre
+      });
+    }
+    // impDias debería ≈ dias × salDia (tolerancia $5 por redondeos)
+    if (t.dias > 0 && t.salDia > 0 && t.impDias > 0) {
+      const esperado = t.dias * t.salDia;
+      if (Math.abs(esperado - t.impDias) > 5) {
+        advertencias.push({
+          tipo: 'impDias_incongruente',
+          msg: `${t.nombre}: importe días $${t.impDias.toFixed(2)} no cuadra con ${t.dias}d × $${t.salDia.toFixed(2)}.`,
+          trabajador: t.nombre
+        });
+      }
+    }
+  });
+
+  // 3) VALORES ANÓMALOS
+  trabajadores.forEach(t => {
+    if (t.dias > 7) {
+      errores.push({
+        tipo: 'dias_excede',
+        msg: `${t.nombre}: ${t.dias} días trabajados en una semana (máx 7).`,
+        trabajador: t.nombre
+      });
+    }
+    if (t.horasExtra > 60) {
+      advertencias.push({
+        tipo: 'he_muy_alta',
+        msg: `${t.nombre}: ${t.horasExtra} horas extra en una semana (revisar).`,
+        trabajador: t.nombre
+      });
+    }
+    if (t.total > 0 && t.salSem === 0 && t.salDia === 0) {
+      advertencias.push({
+        tipo: 'sin_salario_base',
+        msg: `${t.nombre}: recibe $${t.total.toFixed(2)} pero sin salario base capturado.`,
+        trabajador: t.nombre
+      });
+    }
+    if (t.total > 30000) {
+      advertencias.push({
+        tipo: 'monto_alto',
+        msg: `${t.nombre}: recibe $${t.total.toFixed(2)} en una semana (revisar).`,
+        trabajador: t.nombre
+      });
+    }
+  });
+
+  // 4) COMPARATIVA con semana anterior (opcional)
+  if (semanaAnterior && Array.isArray(semanaAnterior.trabajadores)) {
+    const anteriorMap = new Map(
+      semanaAnterior.trabajadores.map(t => [
+        (t.nombre || '').trim().toLowerCase().replace(/\s+/g,' '),
+        t
+      ])
+    );
+    const nombresActuales = new Set();
+    trabajadores.forEach(t => {
+      const key = (t.nombre || '').trim().toLowerCase().replace(/\s+/g,' ');
+      nombresActuales.add(key);
+      const prev = anteriorMap.get(key);
+      if (!prev) {
+        advertencias.push({
+          tipo: 'alta',
+          msg: `${t.nombre}: NUEVO trabajador esta semana (no estaba en la anterior).`,
+          trabajador: t.nombre
+        });
+      } else {
+        // Cambio de salario > 30%
+        if (prev.salSem > 0 && t.salSem > 0) {
+          const cambio = Math.abs(t.salSem - prev.salSem) / prev.salSem;
+          if (cambio > 0.30) {
+            advertencias.push({
+              tipo: 'cambio_salario',
+              msg: `${t.nombre}: salario base cambió de $${prev.salSem} a $${t.salSem} (${(cambio*100).toFixed(0)}%).`,
+              trabajador: t.nombre
+            });
+          }
+        }
+      }
+    });
+    // Bajas
+    for (const [key, prev] of anteriorMap) {
+      if (!nombresActuales.has(key)) {
+        advertencias.push({
+          tipo: 'baja',
+          msg: `${prev.nombre}: NO aparece esta semana (venía en la anterior).`,
+          trabajador: prev.nombre
+        });
+      }
+    }
+  }
+
+  return { errores, advertencias };
+}
+
 function Nomina({obra, rol}) {
   // Cargar SheetJS dinámicamente al montar
   useEffect(() => {
@@ -10710,11 +10844,24 @@ function Nomina({obra, rol}) {
   const [error, setError]         = useState('');
   const [vistaTab, setVistaTab]   = useState('actual'); // actual | historico | analisis
   const [semanaVer, setSemanaVer] = useState(0); // índice del historial
+  const [pendienteRevisar, setPendienteRevisar] = useState(null); // {nueva, errores, advertencias}
   const fileRef = useRef();
   const editar  = can(rol, 'captura', 'editar');
 
   const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
   const semanaAnterior = historial.length > 1 ? historial[historial.length - 2] : null;
+
+  // Guardar semana en Firestore (extraído para reusar entre carga directa y confirmación de warnings)
+  function guardarSemana(nueva) {
+    const nuevo_hist = [...historial, nueva];
+    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
+      { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+        meta:{ totalNomina: nueva.totalNomina } });
+    setHistorial(nuevo_hist);
+    setVistaTab('actual');
+    setSemanaVer(nuevo_hist.length - 1);
+    setPendienteRevisar(null);
+  }
 
   function procesarArchivo(file) {
     if (!file) return;
@@ -10737,6 +10884,8 @@ function Nomina({obra, rol}) {
           setError('No se encontraron trabajadores en el archivo. Verifica el formato.');
           setCargando(false); return;
         }
+        // Verificar si esa semana ya está cargada (por nombre de semana)
+        const yaCargada = historial.find(h => (h.semana||'').toLowerCase() === (resultado.semana||'').toLowerCase());
         const nueva = {
           semana: resultado.semana,
           fecha: new Date().toLocaleDateString('es-MX'),
@@ -10747,13 +10896,20 @@ function Nomina({obra, rol}) {
           totalDir: resultado.trabajadores.filter(p=>p.tipo==='D').length,
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
         };
-        const nuevo_hist = [...historial, nueva];
-        fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
-          { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
-            meta:{ totalNomina: nueva.totalNomina } });
-        setHistorial(nuevo_hist);
-        setVistaTab('actual');
-        setSemanaVer(nuevo_hist.length - 1);
+        // Validar
+        const {errores, advertencias} = validarNomina(resultado.trabajadores, semanaAnterior);
+        if (yaCargada) {
+          advertencias.unshift({
+            tipo: 'semana_duplicada',
+            msg: `Ya existe una carga previa con el nombre "${resultado.semana}" (${yaCargada.fecha}). Cargar de nuevo duplicaría los registros.`,
+          });
+        }
+        // Si hay algo que revisar, mostrar diálogo; si no, guardar directo
+        if (errores.length > 0 || advertencias.length > 0) {
+          setPendienteRevisar({ nueva, errores, advertencias });
+        } else {
+          guardarSemana(nueva);
+        }
       } catch(err) {
         setError('Error al leer el archivo: ' + err.message);
       }
@@ -10839,6 +10995,84 @@ function Nomina({obra, rol}) {
             borderRadius:7,padding:'8px 12px',fontSize:11,color:C.red,marginTop:8}}>{error}</div>
         )}
       </Card>
+
+      {/* MODAL: revisar errores/advertencias antes de guardar */}
+      {pendienteRevisar && (() => {
+        const {nueva, errores, advertencias} = pendienteRevisar;
+        const bloqueado = errores.length > 0;
+        return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',
+          zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+          onClick={()=>setPendienteRevisar(null)}>
+          <div style={{background:C.surface,borderRadius:12,maxWidth:560,width:'100%',
+            maxHeight:'85vh',overflowY:'auto',boxShadow:'0 12px 48px rgba(0,0,0,0.4)'}}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{background:bloqueado?C.red:C.yellow,color:'#fff',
+              padding:'14px 18px',borderRadius:'12px 12px 0 0'}}>
+              <div style={{fontSize:14,fontWeight:700}}>
+                {bloqueado ? 'Errores detectados — revisar antes de cargar' : 'Advertencias — verifica antes de guardar'}
+              </div>
+              <div style={{fontSize:10,marginTop:4,opacity:0.95}}>
+                {nueva.semana} · {nueva.trabajadores.length} trabajadores · Total ${nueva.totalNomina.toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}
+              </div>
+            </div>
+            <div style={{padding:'14px 18px'}}>
+              {errores.length > 0 && (
+                <>
+                  <div style={{fontSize:11,fontWeight:700,color:C.red,textTransform:'uppercase',
+                    letterSpacing:'0.05em',marginBottom:6}}>
+                    Errores ({errores.length}) — Corregir antes de cargar
+                  </div>
+                  <div style={{marginBottom:14}}>
+                    {errores.map((er,i) => (
+                      <div key={i} style={{background:'rgba(220,38,38,0.08)',
+                        border:'0.5px solid rgba(220,38,38,0.25)',borderRadius:6,
+                        padding:'8px 10px',fontSize:11,marginBottom:5,color:C.textPri,lineHeight:1.4}}>
+                        <span style={{fontWeight:700,color:C.red,marginRight:6}}>●</span>{er.msg}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {advertencias.length > 0 && (
+                <>
+                  <div style={{fontSize:11,fontWeight:700,color:C.yellowDk,textTransform:'uppercase',
+                    letterSpacing:'0.05em',marginBottom:6}}>
+                    Advertencias ({advertencias.length})
+                  </div>
+                  <div style={{maxHeight:280,overflowY:'auto'}}>
+                    {advertencias.map((ad,i) => (
+                      <div key={i} style={{background:'rgba(239,159,39,0.08)',
+                        border:'0.5px solid rgba(239,159,39,0.25)',borderRadius:6,
+                        padding:'7px 10px',fontSize:10.5,marginBottom:4,color:C.textPri,lineHeight:1.35}}>
+                        <span style={{display:'inline-block',fontSize:9,fontWeight:700,
+                          color:C.yellowDk,marginRight:6,textTransform:'uppercase'}}>
+                          {ad.tipo.replace(/_/g,' ')}
+                        </span>
+                        {ad.msg}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div style={{padding:'12px 18px',borderTop:`0.5px solid ${C.border}`,
+              display:'flex',justifyContent:'flex-end',gap:8}}>
+              <button onClick={()=>setPendienteRevisar(null)}
+                style={{background:'transparent',border:`0.5px solid ${C.border}`,
+                  padding:'8px 14px',borderRadius:6,fontSize:11,cursor:'pointer',color:C.textSec}}>
+                Cancelar
+              </button>
+              {!bloqueado && (
+                <button onClick={()=>guardarSemana(nueva)}
+                  style={{background:C.caliza,border:'none',color:C.bg,
+                    padding:'8px 16px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer'}}>
+                  Guardar de todos modos
+                </button>
+              )}
+            </div>
+          </div>
+        </div>;
+      })()}
 
       {historial.length === 0 && (
         <Card>
