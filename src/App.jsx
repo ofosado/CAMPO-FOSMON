@@ -10648,6 +10648,39 @@ function parsearNomina(data) {
   }
   if (!semana) semana = `Semana ${new Date().toLocaleDateString('es-MX')}`;
 
+  // Helper: parsear celda numérica — ignora fórmulas (strings que empiezan
+  // con "=") porque openpyxl las escribe SIN evaluar y XLSX.js las lee como
+  // texto. Se calculan después desde columnas base (días × salario, etc.).
+  const numCell = (val) => {
+    if (val === null || val === undefined) return 0;
+    const s = String(val).trim();
+    if (!s || s.startsWith('=')) return 0;   // fórmula sin evaluar → 0
+    return Math.abs(parseFloat(s.replace(/[$,\s]/g,'')) || 0);
+  };
+  // Helper: sumar celdas de un rango de columnas (para D.T. y T.E. cuando
+  // vienen como fórmula). Toma columnas de días individuales.
+  const sumarDias = (row) => {
+    // Buscar columnas cuyo header sea 1 letra (J,V,S,D,L,M,M) o "día"
+    let s = 0;
+    headers.forEach((h, ci) => {
+      // Días son las columnas con headers 1-3 chars como "j","v","s","d","l","m"
+      // O bien "jue (día)", "vie (día)"... (nuestro formato FOSMON)
+      const hh = h.replace(/\s+/g,' ').trim();
+      const esDia = /^(j|v|s|d|l|m|jue|vie|sáb|sab|dom|lun|mar|mié|mie)( \(d[íi]a\))?$/i.test(hh);
+      if (esDia) s += numCell(row[ci]);
+    });
+    return s;
+  };
+  const sumarHE = (row) => {
+    let s = 0;
+    headers.forEach((h, ci) => {
+      const hh = h.replace(/\s+/g,' ').trim();
+      const esHE = /^(h\.?\s*e\.?|he)( \(hrs?\))?$|\(he\)$/i.test(hh);
+      if (esHE) s += numCell(row[ci]);
+    });
+    return s;
+  };
+
   // Parsear trabajadores
   const trabajadores = [];
   dataRows.forEach((row, ri) => {
@@ -10655,9 +10688,6 @@ function parsearNomina(data) {
     if (!nombre || nombre.length < 3) return;
     // Filtrar filas de totales/subtotales
     if (/^total|^subtotal|^suma/i.test(nombre)) return;
-    // Filtrar si no hay importe
-    const total = colTotal >= 0 ? Math.abs(parseFloat(String(row[colTotal]||'').replace(/[$,]/g,''))||0) : 0;
-    if (total === 0 && ri > 0) return;
 
     const categoria  = colCategoria  >= 0 ? String(row[colCategoria] ||'').trim() : '';
     const clasif     = colClasif     >= 0 ? String(row[colClasif]    ||'').trim() : '';
@@ -10670,16 +10700,42 @@ function parsearNomina(data) {
       const tagsInd = ['GERENTE','ADMINISTRAT','CONTROL','HSE','COORDINADOR','SUPERINT','SUPERVISOR','INGENIERO','AUX','ESTIMACION','JEFE','ADMIN'];
       if (tagsInd.some(t => catUp.includes(t))) tipo = 'I';
     }
-    const viatico    = colViatico    >= 0 ? Math.abs(parseFloat(String(row[colViatico]   ||'').replace(/[$,]/g,''))||0) : 0;
-    const bono       = colBono       >= 0 ? Math.abs(parseFloat(String(row[colBono]      ||'').replace(/[$,]/g,''))||0) : 0;
-    const salDia     = colSalDia     >= 0 ? Math.abs(parseFloat(String(row[colSalDia]    ||'').replace(/[$,]/g,''))||0) : 0;
-    const salSem     = colSalSem     >= 0 ? Math.abs(parseFloat(String(row[colSalSem]    ||'').replace(/[$,]/g,''))||0) : 0;
-    const dias       = colDias       >= 0 ? Math.abs(parseFloat(String(row[colDias]      ||'').replace(/[$,]/g,''))||0) : 0;
-    const horasExtra = colHE         >= 0 ? Math.abs(parseFloat(String(row[colHE]        ||'').replace(/[$,]/g,''))||0) : 0;
-    const impDias    = colImpDias    >= 0 ? Math.abs(parseFloat(String(row[colImpDias]   ||'').replace(/[$,]/g,''))||0) : 0;
-    const impHE      = colImpHE      >= 0 ? Math.abs(parseFloat(String(row[colImpHE]     ||'').replace(/[$,]/g,''))||0) : 0;
-    const imss       = colImss       >= 0 ? Math.abs(parseFloat(String(row[colImss]      ||'').replace(/[$,]/g,''))||0) : 0;
-    const infonavit  = colInfonavit  >= 0 ? Math.abs(parseFloat(String(row[colInfonavit] ||'').replace(/[$,]/g,''))||0) : 0;
+
+    // Leer todos los campos numéricos (fórmulas devuelven 0)
+    const viatico    = colViatico    >= 0 ? numCell(row[colViatico])   : 0;
+    const bono       = colBono       >= 0 ? numCell(row[colBono])      : 0;
+    let   salSem     = colSalSem     >= 0 ? numCell(row[colSalSem])    : 0;
+    let   salDia     = colSalDia     >= 0 ? numCell(row[colSalDia])    : 0;
+    let   dias       = colDias       >= 0 ? numCell(row[colDias])      : 0;
+    let   horasExtra = colHE         >= 0 ? numCell(row[colHE])        : 0;
+    let   impDias    = colImpDias    >= 0 ? numCell(row[colImpDias])   : 0;
+    let   impHE      = colImpHE      >= 0 ? numCell(row[colImpHE])     : 0;
+    let   total      = colTotal      >= 0 ? numCell(row[colTotal])     : 0;
+    const imss       = colImss       >= 0 ? numCell(row[colImss])      : 0;
+    const infonavit  = colInfonavit  >= 0 ? numCell(row[colInfonavit]) : 0;
+
+    // ── RECÁLCULO cuando las fórmulas del Excel no se evaluaron ────────
+    // salDia = salSem / 6 (si viene 0 pero hay salSem)
+    if (salDia === 0 && salSem > 0) salDia = salSem / 6;
+    if (salSem === 0 && salDia > 0) salSem = salDia * 6;
+    // días = suma de columnas de días individuales
+    if (dias === 0) dias = sumarDias(row);
+    // HE = suma de columnas de HE individuales
+    if (horasExtra === 0) horasExtra = sumarHE(row);
+    // impDias = dias × salDia
+    if (impDias === 0 && dias > 0 && salDia > 0) impDias = dias * salDia;
+    // impHE = horasExtra × (salDia/8) × 2 (fallback genérico proporcional)
+    // Si el archivo original venía con multiplicador fijo (ej. $120/h en
+    // Cangrejera), el valor cargado sería el fórmula "=..." → 0. Este
+    // recálculo usa proporcional al salario como aproximación segura.
+    if (impHE === 0 && horasExtra > 0 && salDia > 0) impHE = horasExtra * (salDia / 8) * 2;
+    // total = impDias + impHE + viatico + bono
+    if (total === 0) total = impDias + impHE + viatico + bono;
+
+    // Filtro final: si SIGUE sin nombre/datos útiles después del recálculo,
+    // saltar la fila. Antes bloqueábamos por total===0 pero eso rompía con
+    // archivos con fórmulas sin evaluar; ahora comprobamos salario o dias.
+    if (total === 0 && salSem === 0 && dias === 0) return;
 
     trabajadores.push({
       id: `${ri}-${nombre.slice(0,10)}`,
