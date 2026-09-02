@@ -5143,25 +5143,20 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
 
       {/* KPIs portafolio — Grupo 1.5: MANO DE OBRA (consolidado semana actual) */}
       {(() => {
-        // Consolidar el último snapshot de nómina de cada obra
-        let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0, heTotal = 0, obrasConDato = 0;
-        let obraTop = null, tendencia = null;
-        const detallePorObra = [];
-        obrasConKPIs.forEach(({obra, kpis}) => {
+        // Consolidar el último snapshot de nómina de TODAS las obras (SUMA)
+        let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0, heTotal = 0;
+        let obrasConDato = 0, tendencia = null;
+        obrasConKPIs.forEach(({obra}) => {
           const d = datosPorObra[obra.id] || {};
           const semanas = d.nominaSemanas || [];
           if (semanas.length === 0) return;
           const ult = semanas[semanas.length - 1];
-          const nEmp = (ult.totalDir || 0) + (ult.totalInd || 0);
-          totalEmp += nEmp;
-          dir += (ult.totalDir || 0);
-          ind += (ult.totalInd || 0);
+          totalEmp += (ult.totalDir || 0) + (ult.totalInd || 0);
+          dir      += (ult.totalDir || 0);
+          ind      += (ult.totalInd || 0);
           nomTotal += (ult.totalNomina || 0);
-          heTotal += (ult.totalHE || 0);
+          heTotal  += (ult.totalHE || 0);
           obrasConDato++;
-          detallePorObra.push({obra, ult, nEmp});
-          if (!obraTop || (ult.totalNomina || 0) > (obraTop.totalNomina || 0)) obraTop = {obra, ...ult};
-          // Tendencia % vs semana anterior si aplica
           if (semanas.length >= 2) {
             const prev = semanas[semanas.length - 2];
             tendencia = (tendencia||0) + ((ult.totalNomina || 0) - (prev.totalNomina || 0));
@@ -5174,26 +5169,25 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
         return <>
           <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
             textTransform:"uppercase",marginBottom:6}}>
-            MANO DE OBRA · SEMANA ACTUAL
+            MANO DE OBRA CONSOLIDADA · SEMANA ACTUAL
             <span style={{fontWeight:400,color:C.textMut,textTransform:"none",marginLeft:8}}>
-              ({obrasConDato} de {activas.length} obras con nómina cargada)
+              (suma de {obrasConDato} de {activas.length} obras con nómina cargada)
             </span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:12}}>
-            {kpiBox("Trabajadores", `${totalEmp}`, C.caliza, `${dir} directos · ${ind} indirectos`)}
-            {kpiBox("Nómina semanal", MXN(nomTotal), C.blueDk,
+            {kpiBox("Total trabajadores", `${totalEmp}`, C.caliza,
+              `en todas las obras`)}
+            {kpiBox("Directos", `${dir}`, C.blueDk, "mano de obra en frente")}
+            {kpiBox("Indirectos", `${ind}`, C.purpleDk,
+              `${NUM(pctInd,1)}% del total${pctInd > 25 ? ' · overhead alto' : ''}`)}
+            {kpiBox("Nómina semanal total", MXN(nomTotal), C.greenDk,
               tendencia !== null
                 ? `${tendencia>=0?'▲':'▼'} ${MXN(Math.abs(tendencia))} vs sem. anterior`
                 : "primera semana registrada")}
-            {kpiBox("Horas extra", `${heTotal.toLocaleString('es-MX', {maximumFractionDigits:0})} h`,
+            {kpiBox("Horas extra totales", `${heTotal.toLocaleString('es-MX', {maximumFractionDigits:0})} h`,
               heTotal > 500 ? C.yellowDk : C.textPri,
-              nomTotal > 0 ? `promedio ${(heTotal/Math.max(totalEmp,1)).toFixed(1)} h/persona` : "")}
-            {kpiBox("Costo prom. semanal", MXN(costoProm), C.purpleDk, "por trabajador")}
-            {kpiBox("% Indirectos", `${NUM(pctInd,1)}%`,
-              pctInd > 25 ? C.yellowDk : C.greenDk,
-              pctInd > 25 ? "revisar overhead" : "estructura saludable")}
-            {obraTop && kpiBox("Mayor nómina", obraTop.obra.nombre ? String(obraTop.obra.nombre).slice(0,18) : "—",
-              C.orange, MXN(obraTop.totalNomina))}
+              totalEmp > 0 ? `promedio ${(heTotal/totalEmp).toFixed(1)} h/persona` : "")}
+            {kpiBox("Costo prom. semanal", MXN(costoProm), C.textPri, "por trabajador (todas las obras)")}
           </div>
         </>;
       })()}
