@@ -10893,13 +10893,21 @@ function Nomina({obra, rol}) {
   const [historial, setHistorial] = useState([]);
   useEffect(()=>{
     fsGet(`obras/${obra.id}/nomina/historial`).then(d=>{
-      if(d&&Array.isArray(d.semanas)) setHistorial(d.semanas);
+      if(d&&Array.isArray(d.semanas)) {
+        setHistorial(d.semanas);
+        // Al cargar, apuntar SIEMPRE a la última semana (más reciente)
+        setSemanaVer(Math.max(0, d.semanas.length - 1));
+      }
     });
   },[obra.id]);
   const [cargando, setCargando]   = useState(false);
   const [error, setError]         = useState('');
   const [vistaTab, setVistaTab]   = useState('actual'); // actual | historico | analisis
-  const [semanaVer, setSemanaVer] = useState(0); // índice del historial
+  // Índice de la semana que se está viendo en el historial. Arranca en 0
+  // pero se actualiza al último índice apenas llega el historial (ver
+  // useEffect arriba). Antes se quedaba en 0 → mostraba la primera semana
+  // cargada (la más antigua), no la más reciente.
+  const [semanaVer, setSemanaVer] = useState(0);
   const [pendienteRevisar, setPendienteRevisar] = useState(null); // {nueva, errores, advertencias}
   const fileRef = useRef();
   const editar  = can(rol, 'captura', 'editar');
