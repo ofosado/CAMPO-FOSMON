@@ -6524,9 +6524,38 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   };
 
   const presupuesto = parseFloat(obra?.presupuesto) || 0;
-  const fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
-  const inicioValido = fechaInicio && !isNaN(fechaInicio);
-  if (!presupuesto || !inicioValido) {
+  let fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  let inicioValido = fechaInicio && !isNaN(fechaInicio);
+
+  // Fallback fecha de inicio: si no está en contrato pero hay datos de GP,
+  // usar la primera semana con gasto reportado. Así TAMSA (u obras sin
+  // fecha de inicio capturada) sí ven la gráfica de gasto.
+  if (!inicioValido && datosObraGP?.semanas) {
+    const añoActual = new Date().getFullYear();
+    const semanasNums = Object.keys(datosObraGP.semanas)
+      .map(k => { const m = String(k).match(/S?(\d{1,2})/); return m ? parseInt(m[1],10) : null; })
+      .filter(n => n !== null)
+      .sort((a,b) => a-b);
+    if (semanasNums.length > 0) {
+      // Aproximar: enero 1 + (sem-1) × 7 días
+      const primSem = semanasNums[0];
+      fechaInicio = new Date(añoActual, 0, 1);
+      fechaInicio.setDate(fechaInicio.getDate() + (primSem - 1) * 7);
+      inicioValido = true;
+    }
+  }
+
+  // ¿Hay algo de gasto reportado? (GP o manuales)
+  const hayGasto = (datosObraGP?.grandTotal || 0) > 0
+    || (otrosGastos && otrosGastos.length > 0)
+    || (maquinaria && maquinaria.length > 0);
+
+  // Modo "solo gasto": cuando NO hay presupuesto o catálogo cargado, pero
+  // SÍ hay gasto de GP. Muestra únicamente la línea de gasto acumulado,
+  // sin proyección de ejecutado ni fin proyectado.
+  const soloGasto = !presupuesto || !subs || subs.length === 0;
+
+  if (!inicioValido && !hayGasto) {
     return <Card>
       <Tit>Proyección de avance y gasto</Tit>
       <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
@@ -6688,7 +6717,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const todasSemanas = [...semanasHist, ...semanasProy];
   const todosGasto = [...gastoAcum, ...gastoProy];
   const todosEjec = [...ejecAcum, ...ejecProy];
-  const maxValor = Math.max(...todosGasto, ...todosEjec, presupuesto);
+  // Base para escalar: incluir presupuesto solo si aplica (modo completo)
+  const maxValor = Math.max(...todosGasto, ...todosEjec, presupuesto || 0, 1);
 
   // Fecha fin proyectado
   const finProyectado = semanasProy.length > 0
@@ -6802,12 +6832,16 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           </text>;
         })}
 
-        {/* Línea presupuesto (referencia horizontal) */}
-        <line x1={PL} y1={yPos(presupuesto)} x2={PL+cw} y2={yPos(presupuesto)}
-          stroke={C.caliza} strokeWidth={0.8} strokeDasharray="4,3" opacity="0.7"/>
-        <text x={PL + 4} y={yPos(presupuesto) - 3} fontSize="8.5" fill={C.caliza} fontWeight="600">
-          Presupuesto {fmtCompacto(presupuesto)}
-        </text>
+        {/* Línea presupuesto (referencia horizontal) — solo si aplica */}
+        {!soloGasto && presupuesto > 0 && (
+          <>
+            <line x1={PL} y1={yPos(presupuesto)} x2={PL+cw} y2={yPos(presupuesto)}
+              stroke={C.caliza} strokeWidth={0.8} strokeDasharray="4,3" opacity="0.7"/>
+            <text x={PL + 4} y={yPos(presupuesto) - 3} fontSize="8.5" fill={C.caliza} fontWeight="600">
+              Presupuesto {fmtCompacto(presupuesto)}
+            </text>
+          </>
+        )}
 
         {/* Marca vertical HOY */}
         {idxHoy >= 0 && (
@@ -6823,7 +6857,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           <path d={`${smoothPath(ptsGastoHist)} L ${ptsGastoHist[ptsGastoHist.length-1][0]},${yPos(0)} L ${ptsGastoHist[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-gasto)"/>
         )}
-        {ptsEjecHist.length >= 2 && (
+        {!soloGasto && ptsEjecHist.length >= 2 && (
           <path d={`${smoothPath(ptsEjecHist)} L ${ptsEjecHist[ptsEjecHist.length-1][0]},${yPos(0)} L ${ptsEjecHist[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-ejec)"/>
         )}
@@ -6831,30 +6865,32 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         {/* Líneas HISTÓRICAS (sólidas) */}
         <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
           strokeLinecap="round" strokeLinejoin="round"/>
-        <path d={smoothPath(ptsEjecHist)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
-          strokeLinecap="round" strokeLinejoin="round"/>
+        {!soloGasto && (
+          <path d={smoothPath(ptsEjecHist)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
+            strokeLinecap="round" strokeLinejoin="round"/>
+        )}
 
-        {/* Líneas PROYECTADAS (punteadas) */}
-        {ptsGastoProy.length >= 2 && (
+        {/* Líneas PROYECTADAS (punteadas) — solo si hay ejecutado con ritmo */}
+        {!soloGasto && ptsGastoProy.length >= 2 && (
           <path d={smoothPath(ptsGastoProy)} fill="none" stroke={C.redDk} strokeWidth={2}
             strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
         )}
-        {ptsEjecProy.length >= 2 && (
+        {!soloGasto && ptsEjecProy.length >= 2 && (
           <path d={smoothPath(ptsEjecProy)} fill="none" stroke={C.blueDk} strokeWidth={2}
             strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
         )}
 
         {/* Puntos: inicio, hoy, fin proyectado */}
-        {ptsEjecHist[0] && (
+        {!soloGasto && ptsEjecHist[0] && (
           <circle cx={ptsEjecHist[0][0]} cy={ptsEjecHist[0][1]} r={3} fill={C.blueDk} stroke="white" strokeWidth={1}/>
         )}
-        {idxHoy >= 0 && ptsEjecHist[idxHoy] && (
-          <>
-            <circle cx={ptsEjecHist[idxHoy][0]} cy={ptsEjecHist[idxHoy][1]} r={3.5} fill={C.blueDk} stroke="white" strokeWidth={1.2}/>
-            <circle cx={ptsGastoHist[idxHoy][0]} cy={ptsGastoHist[idxHoy][1]} r={3.5} fill={C.redDk} stroke="white" strokeWidth={1.2}/>
-          </>
+        {idxHoy >= 0 && ptsGastoHist[idxHoy] && (
+          <circle cx={ptsGastoHist[idxHoy][0]} cy={ptsGastoHist[idxHoy][1]} r={3.5} fill={C.redDk} stroke="white" strokeWidth={1.2}/>
         )}
-        {ptsEjecProy.length > 0 && (
+        {!soloGasto && idxHoy >= 0 && ptsEjecHist[idxHoy] && (
+          <circle cx={ptsEjecHist[idxHoy][0]} cy={ptsEjecHist[idxHoy][1]} r={3.5} fill={C.blueDk} stroke="white" strokeWidth={1.2}/>
+        )}
+        {!soloGasto && ptsEjecProy.length > 0 && (
           <>
             <line x1={ptsEjecProy[ptsEjecProy.length-1][0]} y1={PT}
               x2={ptsEjecProy[ptsEjecProy.length-1][0]} y2={PT + ch}
@@ -6949,30 +6985,46 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
 
     {/* Leyenda + KPIs proyección */}
     <div style={{display:"flex",gap:14,marginTop:6,fontSize:10,color:C.textSec,flexWrap:"wrap",justifyContent:"center"}}>
-      <span><span style={{display:"inline-block",width:10,height:2,background:C.blueDk,verticalAlign:"middle",marginRight:4}}/>Ejecutado</span>
+      {!soloGasto && <span><span style={{display:"inline-block",width:10,height:2,background:C.blueDk,verticalAlign:"middle",marginRight:4}}/>Ejecutado</span>}
       <span><span style={{display:"inline-block",width:10,height:2,background:C.redDk,verticalAlign:"middle",marginRight:4}}/>Gasto</span>
-      <span style={{color:C.textMut}}>· · · Proyección</span>
+      {!soloGasto && <span style={{color:C.textMut}}>· · · Proyección</span>}
     </div>
+    {soloGasto && (
+      <div style={{marginTop:8,padding:'8px 12px',background:C.yellowBg,
+        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.textSec}}>
+        Solo se muestra el <b>gasto acumulado</b> porque no hay {!presupuesto?'presupuesto capturado':'catálogo de avance físico'}. Al cargar el {!presupuesto?'presupuesto en Planeación → Contrato':'catálogo en Planeación → Presupuesto'}, aparecerá la línea de ejecutado y la proyección de fin de obra.
+      </div>
+    )}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,
       marginTop:10,paddingTop:8,borderTop:`0.5px solid ${C.border}`}}>
-      <div>
-        <div style={{fontSize:9,color:C.textMut}}>Ritmo ejecutado</div>
-        <div style={{fontSize:12,fontWeight:700,color:C.blueDk}}>{fmtCompacto(ritmoEjec)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
-      </div>
+      {!soloGasto && (
+        <div>
+          <div style={{fontSize:9,color:C.textMut}}>Ritmo ejecutado</div>
+          <div style={{fontSize:12,fontWeight:700,color:C.blueDk}}>{fmtCompacto(ritmoEjec)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
+        </div>
+      )}
       <div>
         <div style={{fontSize:9,color:C.textMut}}>Ritmo gasto</div>
         <div style={{fontSize:12,fontWeight:700,color:C.redDk}}>{fmtCompacto(ritmoGasto)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
       </div>
       <div>
-        <div style={{fontSize:9,color:C.textMut}}>Fin de obra proyectado</div>
-        <div style={{fontSize:12,fontWeight:700,color:C.greenDk}}>{fmtFecha(finProyectado)}</div>
+        <div style={{fontSize:9,color:C.textMut}}>Gasto acumulado a hoy</div>
+        <div style={{fontSize:12,fontWeight:700,color:C.caliza}}>{fmtCompacto(gastoUlt)}</div>
       </div>
-      <div>
-        <div style={{fontSize:9,color:C.textMut}}>Margen proyectado al cierre</div>
-        <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
-          {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
-        </div>
-      </div>
+      {!soloGasto && (
+        <>
+          <div>
+            <div style={{fontSize:9,color:C.textMut}}>Fin de obra proyectado</div>
+            <div style={{fontSize:12,fontWeight:700,color:C.greenDk}}>{fmtFecha(finProyectado)}</div>
+          </div>
+          <div>
+            <div style={{fontSize:9,color:C.textMut}}>Margen proyectado al cierre</div>
+            <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
+              {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   </Card>;
 }
