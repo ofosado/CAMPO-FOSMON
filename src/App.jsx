@@ -5144,7 +5144,8 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
       {/* KPIs portafolio — Grupo 1.5: MANO DE OBRA (consolidado semana actual) */}
       {(() => {
         // Consolidar el último snapshot de nómina de TODAS las obras (SUMA)
-        let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0, heTotal = 0;
+        let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0;
+        let heHrs = 0, heImp = 0;
         let obrasConDato = 0, tendencia = null;
         obrasConKPIs.forEach(({obra}) => {
           const d = datosPorObra[obra.id] || {};
@@ -5155,7 +5156,14 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
           dir      += (ult.totalDir || 0);
           ind      += (ult.totalInd || 0);
           nomTotal += (ult.totalNomina || 0);
-          heTotal  += (ult.totalHE || 0);
+          // HE HRS: usar totalHEHrs (nuevo). Fallback: recalcular desde
+          // trabajadores del snapshot. Nunca usar totalHE (que es IMPORTE).
+          if (typeof ult.totalHEHrs === 'number') {
+            heHrs += ult.totalHEHrs;
+          } else if (Array.isArray(ult.trabajadores)) {
+            heHrs += ult.trabajadores.reduce((t,p)=>t+(p.horasExtra||0),0);
+          }
+          heImp += (ult.totalHEImp || ult.totalHE || 0);
           obrasConDato++;
           if (semanas.length >= 2) {
             const prev = semanas[semanas.length - 2];
@@ -5184,9 +5192,12 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
               tendencia !== null
                 ? `${tendencia>=0?'▲':'▼'} ${MXN(Math.abs(tendencia))} vs sem. anterior`
                 : "primera semana registrada")}
-            {kpiBox("Horas extra totales", `${heTotal.toLocaleString('es-MX', {maximumFractionDigits:0})} h`,
-              heTotal > 500 ? C.yellowDk : C.textPri,
-              totalEmp > 0 ? `promedio ${(heTotal/totalEmp).toFixed(1)} h/persona` : "")}
+            {kpiBox("Horas extra totales",
+              `${heHrs.toLocaleString('es-MX', {maximumFractionDigits:0})} h`,
+              heHrs > 500 ? C.yellowDk : C.textPri,
+              totalEmp > 0
+                ? `promedio ${(heHrs/totalEmp).toFixed(1)} h/persona · ${MXN(heImp)} pagado`
+                : "")}
             {kpiBox("Costo prom. semanal", MXN(costoProm), C.textPri, "por trabajador (todas las obras)")}
           </div>
         </>;
@@ -11026,6 +11037,7 @@ function Nomina({obra, rol}) {
   // cargada (la más antigua), no la más reciente.
   const [semanaVer, setSemanaVer] = useState(0);
   const [pendienteRevisar, setPendienteRevisar] = useState(null); // {nueva, errores, advertencias}
+  const [ordenTabla, setOrdenTabla] = useState({col:'total', dir:'desc'}); // ordenamiento de la tabla
   const fileRef = useRef();
   const editar  = can(rol, 'captura', 'editar');
 
@@ -11073,7 +11085,13 @@ function Nomina({obra, rol}) {
           archivo: file.name,
           trabajadores: resultado.trabajadores,
           totalNomina: resultado.trabajadores.reduce((t,p)=>t+p.total,0),
+          // OJO: totalHE guarda el IMPORTE de HE (pesos), NO las horas.
+          // Se mantiene por compatibilidad con snapshots viejos.
           totalHE: resultado.trabajadores.reduce((t,p)=>t+p.impHE,0),
+          // Nuevos campos con la unidad correcta:
+          totalHEHrs: resultado.trabajadores.reduce((t,p)=>t+(p.horasExtra||0),0),
+          totalHEImp: resultado.trabajadores.reduce((t,p)=>t+(p.impHE||0),0),
+          totalDias: resultado.trabajadores.reduce((t,p)=>t+(p.dias||0),0),
           totalDir: resultado.trabajadores.filter(p=>p.tipo==='D').length,
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
         };
@@ -11334,17 +11352,56 @@ function Nomina({obra, rol}) {
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
                 <thead>
                   <tr>
-                    {['Nombre','Categoría','Tipo','Días','HE hrs','Total','+ vs ant.'].map(h=>(
-                      <th key={h} style={{padding:'6px 8px',textAlign:h==='Nombre'||h==='Categoría'?'left':'right',
-                        fontSize:9,color:C.textMut,fontWeight:600,textTransform:'uppercase',
-                        letterSpacing:'0.04em',borderBottom:`0.5px solid ${C.border}`,whiteSpace:'nowrap'}}>
-                        {h}
-                      </th>
-                    ))}
+                    {[
+                      {lbl:'Nombre',    col:'nombre',    align:'left'},
+                      {lbl:'Categoría', col:'categoria', align:'left'},
+                      {lbl:'Tipo',      col:'tipo',      align:'right'},
+                      {lbl:'Días',      col:'dias',      align:'right'},
+                      {lbl:'HE hrs',    col:'horasExtra',align:'right'},
+                      {lbl:'Total',     col:'total',     align:'right'},
+                      {lbl:'+ vs ant.', col:'delta',     align:'right'},
+                    ].map(h=>{
+                      const activo = ordenTabla.col === h.col;
+                      const flecha = activo ? (ordenTabla.dir==='desc' ? ' ↓' : ' ↑') : '';
+                      return (
+                        <th key={h.col} onClick={()=>{
+                            setOrdenTabla(prev => ({
+                              col: h.col,
+                              dir: prev.col === h.col && prev.dir === 'desc' ? 'asc' : 'desc'
+                            }));
+                          }}
+                          style={{padding:'6px 8px',textAlign:h.align,
+                          fontSize:9,color:activo?C.caliza:C.textMut,fontWeight:activo?700:600,
+                          textTransform:'uppercase',cursor:'pointer',userSelect:'none',
+                          letterSpacing:'0.04em',borderBottom:`0.5px solid ${activo?C.caliza:C.border}`,whiteSpace:'nowrap'}}>
+                          {h.lbl}{flecha}
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>
-                  {semVer.trabajadores.slice().sort((a,b)=>b.total-a.total).map((p,i)=>{
+                  {semVer.trabajadores.slice().sort((a,b)=>{
+                    const {col, dir} = ordenTabla;
+                    const signo = dir === 'desc' ? -1 : 1;
+                    let va, vb;
+                    if (col === 'delta') {
+                      const anteriorMap = semanaAnterior
+                        ? new Map(semanaAnterior.trabajadores.map(t=>[t.nombre.trim().toLowerCase(), t.total]))
+                        : null;
+                      va = a.total - (anteriorMap?.get(a.nombre.trim().toLowerCase()) || 0);
+                      vb = b.total - (anteriorMap?.get(b.nombre.trim().toLowerCase()) || 0);
+                    } else if (col === 'dias') {
+                      va = diasReales(a); vb = diasReales(b);
+                    } else {
+                      va = a[col]; vb = b[col];
+                    }
+                    // Comparar: strings alfabéticamente, números numérico
+                    if (typeof va === 'string' && typeof vb === 'string') {
+                      return signo * va.localeCompare(vb, 'es', {sensitivity:'base'});
+                    }
+                    return signo * ((Number(vb)||0) - (Number(va)||0));
+                  }).map((p,i)=>{
                     const prevTotal = semanaAnterior && semVer===semanaActual
                       ? semanaAnterior.trabajadores.find(x=>x.nombre.trim().toLowerCase()===p.nombre.trim().toLowerCase())?.total || 0
                       : 0;
