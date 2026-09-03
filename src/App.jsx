@@ -10052,6 +10052,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 
   // Cargar catálogo desde Firestore
   const [catalogoGuardado, setCatalogoGuardado] = useState(null);
+  const [confirmarReemplazo, setConfirmarReemplazo] = useState(false);
   useEffect(()=>{
     fsGet(`obras/${obra.id}/config/catalogo`).then(d=>{
       if(d) setCatalogoGuardado(d);
@@ -10125,16 +10126,34 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       }
       return ruta;
     };
+    // PRESERVAR AVANCE al reemplazar catálogo: si ya hay un catálogo
+    // guardado, leer los subs actuales y mantener a/cantEjec/fotos de
+    // partidas cuya CLAVE coincida con las del nuevo catálogo.
+    let subsPreviosMap = new Map();
+    if (catalogoGuardado) {
+      try {
+        const subsPrev = await fsGet(`obras/${obra.id}/avance/subs`);
+        const arr = (subsPrev && Array.isArray(subsPrev.data)) ? subsPrev.data : [];
+        arr.forEach(s => {
+          if (s.sec) subsPreviosMap.set(String(s.sec).trim().toLowerCase(), s);
+        });
+      } catch (e) {
+        console.warn('No se pudo leer avance previo:', e);
+      }
+    }
     const subsParaAvance = resultado.conceptos.map((c, idx) => {
       const pertenece = cat2concepto.get(c._ri);
+      const clave = c.clave || c.id;
+      const prev = clave ? subsPreviosMap.get(String(clave).trim().toLowerCase()) : null;
       return {
-        id: `${c.clave || c.id || 'C'}__${idx}`,
-        sec: c.clave || c.id,
+        id: `${clave || 'C'}__${idx}`,
+        sec: clave,
         sub: c.desc || '(sin descripción)',
         imp: c.importe || 0,
         n: 1,
-        a: 0,
-        fotos: {},
+        // Preservar avance si esta partida existía en el catálogo previo
+        a: prev ? (prev.a || 0) : 0,
+        fotos: prev && prev.fotos ? prev.fotos : {},
         // Categoría inmediata (compatibilidad)
         cat: pertenece ? pertenece.clave : null,
         catDesc: pertenece ? pertenece.desc : null,
@@ -10144,9 +10163,14 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
         cant: c.cant || 0,
         pu: c.pu || 0,
         unidad: c.unidad || '',
-        cantEjec: 0,
+        cantEjec: prev ? (prev.cantEjec || 0) : 0,
       };
     });
+    // Contar cuántas partidas preservaron avance (para reporte al usuario)
+    const preservadas = subsParaAvance.filter(s => s.a > 0 || s.cantEjec > 0).length;
+    if (catalogoGuardado && preservadas > 0) {
+      console.log(`[Catálogo] ${preservadas} partidas conservaron su avance previo por coincidencia de clave.`);
+    }
     // Guardamos también el árbol de categorías para reconstruir la jerarquía
     cat.categorias = (resultado.categorias || []).map(c => ({
       clave: c.clave, desc: c.desc, nivel: c.nivel, padre: c.padre,
@@ -10239,7 +10263,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
           )}
         </div>
         <div style={{fontSize:10,color:C.textMut}}>
-          El presupuesto se carga una única vez por obra. Define las partidas con las que se medirá el avance físico.
+          Define las partidas con las que se medirá el avance físico. Puede reemplazarse cuando el catálogo cambie; las partidas cuya clave coincida conservan su avance capturado.
         </div>
       </Card>
 
@@ -10253,8 +10277,57 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             <Kpi label="Diferencia" value={MXN(Math.abs(catalogoGuardado.importeContrato - catalogoGuardado.totalLeido))}
               sub={pctLeido >= 98 ? ' Cuadra' : 'Revisar'} color={pctLeido >= 98 ? C.green : C.yellow} size={12}/>
           </div>
-          {editar && <SecBtn onClick={() => setFase('inicio_nuevo')}>Reemplazar catálogo</SecBtn>}
+          {editar && (
+            <button onClick={() => setConfirmarReemplazo(true)}
+              style={{background:C.yellow,border:'none',borderRadius:7,padding:'8px 14px',
+                fontSize:11,fontWeight:700,color:C.caliza,cursor:'pointer'}}>
+              Reemplazar catálogo con archivo nuevo
+            </button>
+          )}
         </Card>
+      )}
+
+      {/* MODAL: confirmar reemplazo de catálogo */}
+      {confirmarReemplazo && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',
+          zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+          onClick={()=>setConfirmarReemplazo(false)}>
+          <div style={{background:C.surface,borderRadius:12,maxWidth:520,width:'100%',
+            boxShadow:'0 12px 48px rgba(0,0,0,0.4)'}}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{background:C.yellow,color:C.caliza,padding:'14px 18px',
+              borderRadius:'12px 12px 0 0',fontSize:13,fontWeight:700}}>
+              Reemplazar catálogo de presupuesto
+            </div>
+            <div style={{padding:'16px 18px',fontSize:11,color:C.textPri,lineHeight:1.5}}>
+              <p style={{margin:'0 0 10px'}}>Vas a cargar un catálogo nuevo que sustituirá al actual (<b>{catalogoGuardado?.conceptos?.length||0} partidas</b>).</p>
+              <p style={{margin:'0 0 10px',padding:'10px 12px',background:C.greenBg,
+                border:`0.5px solid ${C.green}55`,borderRadius:6,color:C.textPri}}>
+                <b>Bueno:</b> las partidas del catálogo nuevo cuya <b>clave</b> coincida con las actuales <b>conservarán su % de avance y sus fotos capturadas</b>. Los snapshots semanales de avance también se preservan.
+              </p>
+              <p style={{margin:'0 0 10px',padding:'10px 12px',background:C.yellowBg,
+                border:`0.5px solid ${C.yellow}55`,borderRadius:6,color:C.textPri}}>
+                <b>Cuidado:</b> las partidas <b>nuevas</b> arrancan en 0%. Las partidas <b>que ya no vengan</b> en el catálogo nuevo <b>desaparecen</b> junto con su avance. Los importes de todas se toman del archivo nuevo (aunque la clave coincida).
+              </p>
+              <p style={{margin:'0 0 10px',color:C.textSec}}>
+                Recomendación: si es sólo un ajuste de precios/cantidades del mismo catálogo, mantén las mismas claves para no perder avance.
+              </p>
+            </div>
+            <div style={{padding:'12px 18px',borderTop:`0.5px solid ${C.border}`,
+              display:'flex',justifyContent:'flex-end',gap:8}}>
+              <button onClick={()=>setConfirmarReemplazo(false)}
+                style={{background:'transparent',border:`0.5px solid ${C.border}`,
+                  padding:'8px 14px',borderRadius:6,fontSize:11,cursor:'pointer',color:C.textSec}}>
+                Cancelar
+              </button>
+              <button onClick={()=>{setConfirmarReemplazo(false); setFase('inicio_nuevo');}}
+                style={{background:C.caliza,border:'none',color:C.bg,
+                  padding:'8px 16px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer'}}>
+                Sí, reemplazar catálogo
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* UPLOAD — estado inicial o reemplazo */}
