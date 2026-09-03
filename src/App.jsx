@@ -10671,6 +10671,18 @@ function parsearNomina(data) {
     });
     return s;
   };
+  // Contar días REALES (cuenta columnas con valor > 0, no suma). Para
+  // obras que capturan horas por día (TAMSA), esto da el número de días
+  // trabajados en vez de las horas acumuladas.
+  const contarDias = (row) => {
+    let n = 0;
+    headers.forEach((h, ci) => {
+      const hh = h.replace(/\s+/g,' ').trim();
+      const esDia = /^(j|v|s|d|l|m|jue|vie|sáb|sab|dom|lun|mar|mié|mie)( \(d[íi]a\))?$/i.test(hh);
+      if (esDia && numCell(row[ci]) > 0) n++;
+    });
+    return n;
+  };
   const sumarHE = (row) => {
     let s = 0;
     headers.forEach((h, ci) => {
@@ -10747,12 +10759,23 @@ function parsearNomina(data) {
     // total = impDias + impHE + viatico + bono
     if (total === 0) total = impDias + impHE + viatico + bono;
 
+    // ── NORMALIZAR a "días reales" para el KPI de DÍAS ────────────────
+    // Si la captura es en horas (TAMSA 11h × 5d = 55), el KPI "Días"
+    // debe mostrar 5 (número de días con asistencia), no 55.
+    // Guardamos también las horas efectivas para no perder info.
+    let horasEfectivas = 0;
+    if (capturaEnHoras) {
+      horasEfectivas = dias;       // los "días" leídos son en realidad horas
+      dias = contarDias(row);       // días reales = cuenta de días con horas > 0
+    }
+
     // Filtro final
     if (total === 0 && salSem === 0 && dias === 0) return;
 
     trabajadores.push({
       id: `${ri}-${nombre.slice(0,10)}`,
       nombre, categoria, clasif, tipo, salDia, salSem, dias,
+      horasEfectivas,   // horas totales trabajadas (solo TAMSA-like)
       horasExtra, impDias, impHE, viatico, bono, imss, infonavit, total
     });
   });
@@ -10791,14 +10814,6 @@ function validarNomina(trabajadores, semanaAnterior) {
 
   // 2) SUMAS que no cuadran por trabajador
   //    total debería ser ≈ impDias + impHE + viatico + bono (tolerancia $1)
-  //    Detectar convención (D.T. en horas vs días) igual que en el parser
-  //    para no marcar como error las nóminas de TAMSA que usan horas.
-  const _trabConDias = trabajadores.filter(t => (t.dias||0) > 0);
-  const _promDT = _trabConDias.length > 0
-    ? _trabConDias.reduce((s,t)=>s+t.dias,0) / _trabConDias.length
-    : 0;
-  const _capturaEnHoras = _promDT > 15;
-  const _unidadDT = _capturaEnHoras ? 'h' : 'd';
   const TOL = 1.0;
   trabajadores.forEach((t, i) => {
     const suma = (t.impDias||0) + (t.impHE||0) + (t.viatico||0) + (t.bono||0);
@@ -10810,14 +10825,18 @@ function validarNomina(trabajadores, semanaAnterior) {
       });
     }
     // impDias esperado:
-    //   · Días  (convención estándar): dias × salDia
-    //   · Horas (TAMSA):               (dias/8) × salDia
+    //   · Días (default):     dias × salDia
+    //   · Horas (TAMSA-like): (horasEfectivas/8) × salDia
+    // Los "dias" ya vienen normalizados a días reales por el parser; para
+    // el cálculo del importe se usa horasEfectivas cuando existe.
     if (t.dias > 0 && t.salDia > 0 && t.impDias > 0) {
-      const esperado = _capturaEnHoras ? (t.dias / 8) * t.salDia : t.dias * t.salDia;
+      const hEf = t.horasEfectivas || 0;
+      const esperado = hEf > 0 ? (hEf / 8) * t.salDia : t.dias * t.salDia;
+      const unidad = hEf > 0 ? `${hEf}h` : `${t.dias}d`;
       if (Math.abs(esperado - t.impDias) > 5) {
         advertencias.push({
           tipo: 'impDias_incongruente',
-          msg: `${t.nombre}: importe días $${t.impDias.toFixed(2)} no cuadra con ${t.dias}${_unidadDT} × $${t.salDia.toFixed(2)} (esperado $${esperado.toFixed(2)}).`,
+          msg: `${t.nombre}: importe días $${t.impDias.toFixed(2)} no cuadra con ${unidad} × $${t.salDia.toFixed(2)} (esperado $${esperado.toFixed(2)}).`,
           trabajador: t.nombre
         });
       }
@@ -10825,25 +10844,13 @@ function validarNomina(trabajadores, semanaAnterior) {
   });
 
   // 3) VALORES ANÓMALOS
-  // Detectar si la obra captura en HORAS por día (ej. TAMSA: 11h × 5 días = 55)
-  // en vez de "1 = presente / 0 = ausente" como el resto.
-  // Umbral: si el promedio de D.T. de trabajadores con datos > 15, muy probable
-  // que la nómina esté en horas — cambiamos la validación de umbral.
-  const trabConDatos = trabajadores.filter(t => t.dias > 0);
-  const promDias = trabConDatos.length > 0
-    ? trabConDatos.reduce((s,t)=>s+t.dias,0) / trabConDatos.length
-    : 0;
-  const capturaEnHoras = promDias > 15;   // typical: 11h × 5-6d = 55-66h
-  const maxDT = capturaEnHoras ? 84 : 7;  // 84 = 12h × 7d como máximo razonable
-  const unidadDT = capturaEnHoras ? 'horas' : 'días';
-
+  // dias ya viene normalizado a días reales (0-7) por el parser incluso
+  // cuando la obra captura horas por día (TAMSA). Umbral simple: 7.
   trabajadores.forEach(t => {
-    if (t.dias > maxDT) {
-      // Sigue siendo advertencia solo (no error) — el residente puede capturar
-      // valores altos por convención. Antes esto bloqueaba la carga de TAMSA.
+    if (t.dias > 7) {
       advertencias.push({
         tipo: 'dt_excede',
-        msg: `${t.nombre}: ${t.dias} ${unidadDT} trabajados en una semana (máx razonable ${maxDT}).`,
+        msg: `${t.nombre}: ${t.dias} días trabajados en una semana (máx 7).`,
         trabajador: t.nombre
       });
     }
