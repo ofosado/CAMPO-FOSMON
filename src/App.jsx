@@ -11026,6 +11026,22 @@ function Nomina({obra, rol}) {
     reader.readAsArrayBuffer(file);
   }
 
+  // Helper: días reales para display. Si el snapshot viene de una carga
+  // vieja donde la obra capturaba horas (TAMSA: 55h) sin normalizar,
+  // aplica la heurística: dividir por 11 horas por día (turno TAMSA).
+  // Snapshots nuevos ya vienen normalizados (dias 0-7) desde el parser.
+  const diasReales = (p) => {
+    if (!p) return 0;
+    if (typeof p.horasEfectivas === 'number' && p.horasEfectivas > 0) {
+      return p.dias;   // ya normalizado en el nuevo parser
+    }
+    if (p.dias > 7) {
+      // Snapshot viejo con dias en horas — estimar días reales
+      return Math.round(p.dias / 11);
+    }
+    return p.dias || 0;
+  };
+
   function eliminarSemana(idx) {
     const semPrev = historial[idx];
     const nuevo = historial.filter((_,i) => i !== idx);
@@ -11273,7 +11289,7 @@ function Nomina({obra, rol}) {
                         <td style={{padding:'5px 8px',textAlign:'right'}}>
                           <Bdg color={p.tipo==='D'?C.blue:C.purple} small>{p.tipo==='D'?'D':'I'}</Bdg>
                         </td>
-                        <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>{p.dias||'—'}</td>
+                        <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>{diasReales(p)||'—'}</td>
                         <td style={{padding:'5px 8px',textAlign:'right',
                           color:p.horasExtra>=20?C.red:p.horasExtra>0?C.orange:C.textMut,fontWeight:p.horasExtra>=20?700:400}}>
                           {p.horasExtra>0?`${p.horasExtra}hrs`:'—'}
