@@ -10681,6 +10681,23 @@ function parsearNomina(data) {
     return s;
   };
 
+  // ── PASADA 1: detectar convención de captura (días vs horas) ─────────
+  // Algunas obras (ej. TAMSA) capturan HORAS por día en las columnas de
+  // asistencia (ej. 11h × 5d = 55) en vez de "1 = presente / 0 = ausente".
+  // Esto hace que D.T. > 7 sea normal. Detectamos promediando D.T. leído
+  // o suma de días individuales cuando hay > 10 filas con datos.
+  let sumaDT = 0, cuentaDT = 0;
+  dataRows.forEach((row) => {
+    const nombre = colNombre >= 0 ? String(row[colNombre]||'').trim() : '';
+    if (!nombre || nombre.length < 3) return;
+    if (/^total|^subtotal|^suma/i.test(nombre)) return;
+    let dt = colDias >= 0 ? numCell(row[colDias]) : 0;
+    if (dt === 0) dt = sumarDias(row);
+    if (dt > 0) { sumaDT += dt; cuentaDT++; }
+  });
+  const promDT = cuentaDT > 0 ? sumaDT / cuentaDT : 0;
+  const capturaEnHoras = promDT > 15;   // 11h × 5d = 55 típico
+
   // Parsear trabajadores
   const trabajadores = [];
   dataRows.forEach((row, ri) => {
@@ -10715,26 +10732,22 @@ function parsearNomina(data) {
     const infonavit  = colInfonavit  >= 0 ? numCell(row[colInfonavit]) : 0;
 
     // ── RECÁLCULO cuando las fórmulas del Excel no se evaluaron ────────
-    // salDia = salSem / 6 (si viene 0 pero hay salSem)
     if (salDia === 0 && salSem > 0) salDia = salSem / 6;
     if (salSem === 0 && salDia > 0) salSem = salDia * 6;
-    // días = suma de columnas de días individuales
     if (dias === 0) dias = sumarDias(row);
-    // HE = suma de columnas de HE individuales
     if (horasExtra === 0) horasExtra = sumarHE(row);
-    // impDias = dias × salDia
-    if (impDias === 0 && dias > 0 && salDia > 0) impDias = dias * salDia;
-    // impHE = horasExtra × (salDia/8) × 2 (fallback genérico proporcional)
-    // Si el archivo original venía con multiplicador fijo (ej. $120/h en
-    // Cangrejera), el valor cargado sería el fórmula "=..." → 0. Este
-    // recálculo usa proporcional al salario como aproximación segura.
+    // impDias — depende de la convención:
+    //   · Días (Cangrejera, Nave, Malecón, etc.): dias × salDia
+    //   · Horas (TAMSA): (dias horas / 8h) × salDia = dias × salDia / 8
+    if (impDias === 0 && dias > 0 && salDia > 0) {
+      impDias = capturaEnHoras ? (dias / 8) * salDia : dias * salDia;
+    }
+    // impHE = horasExtra × (salDia/8) × 2 (fallback proporcional al salario)
     if (impHE === 0 && horasExtra > 0 && salDia > 0) impHE = horasExtra * (salDia / 8) * 2;
     // total = impDias + impHE + viatico + bono
     if (total === 0) total = impDias + impHE + viatico + bono;
 
-    // Filtro final: si SIGUE sin nombre/datos útiles después del recálculo,
-    // saltar la fila. Antes bloqueábamos por total===0 pero eso rompía con
-    // archivos con fórmulas sin evaluar; ahora comprobamos salario o dias.
+    // Filtro final
     if (total === 0 && salSem === 0 && dias === 0) return;
 
     trabajadores.push({
@@ -10802,11 +10815,25 @@ function validarNomina(trabajadores, semanaAnterior) {
   });
 
   // 3) VALORES ANÓMALOS
+  // Detectar si la obra captura en HORAS por día (ej. TAMSA: 11h × 5 días = 55)
+  // en vez de "1 = presente / 0 = ausente" como el resto.
+  // Umbral: si el promedio de D.T. de trabajadores con datos > 15, muy probable
+  // que la nómina esté en horas — cambiamos la validación de umbral.
+  const trabConDatos = trabajadores.filter(t => t.dias > 0);
+  const promDias = trabConDatos.length > 0
+    ? trabConDatos.reduce((s,t)=>s+t.dias,0) / trabConDatos.length
+    : 0;
+  const capturaEnHoras = promDias > 15;   // typical: 11h × 5-6d = 55-66h
+  const maxDT = capturaEnHoras ? 84 : 7;  // 84 = 12h × 7d como máximo razonable
+  const unidadDT = capturaEnHoras ? 'horas' : 'días';
+
   trabajadores.forEach(t => {
-    if (t.dias > 7) {
-      errores.push({
-        tipo: 'dias_excede',
-        msg: `${t.nombre}: ${t.dias} días trabajados en una semana (máx 7).`,
+    if (t.dias > maxDT) {
+      // Sigue siendo advertencia solo (no error) — el residente puede capturar
+      // valores altos por convención. Antes esto bloqueaba la carga de TAMSA.
+      advertencias.push({
+        tipo: 'dt_excede',
+        msg: `${t.nombre}: ${t.dias} ${unidadDT} trabajados en una semana (máx razonable ${maxDT}).`,
         trabajador: t.nombre
       });
     }
