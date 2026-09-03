@@ -10791,6 +10791,14 @@ function validarNomina(trabajadores, semanaAnterior) {
 
   // 2) SUMAS que no cuadran por trabajador
   //    total debería ser ≈ impDias + impHE + viatico + bono (tolerancia $1)
+  //    Detectar convención (D.T. en horas vs días) igual que en el parser
+  //    para no marcar como error las nóminas de TAMSA que usan horas.
+  const _trabConDias = trabajadores.filter(t => (t.dias||0) > 0);
+  const _promDT = _trabConDias.length > 0
+    ? _trabConDias.reduce((s,t)=>s+t.dias,0) / _trabConDias.length
+    : 0;
+  const _capturaEnHoras = _promDT > 15;
+  const _unidadDT = _capturaEnHoras ? 'h' : 'd';
   const TOL = 1.0;
   trabajadores.forEach((t, i) => {
     const suma = (t.impDias||0) + (t.impHE||0) + (t.viatico||0) + (t.bono||0);
@@ -10801,13 +10809,15 @@ function validarNomina(trabajadores, semanaAnterior) {
         trabajador: t.nombre
       });
     }
-    // impDias debería ≈ dias × salDia (tolerancia $5 por redondeos)
+    // impDias esperado:
+    //   · Días  (convención estándar): dias × salDia
+    //   · Horas (TAMSA):               (dias/8) × salDia
     if (t.dias > 0 && t.salDia > 0 && t.impDias > 0) {
-      const esperado = t.dias * t.salDia;
+      const esperado = _capturaEnHoras ? (t.dias / 8) * t.salDia : t.dias * t.salDia;
       if (Math.abs(esperado - t.impDias) > 5) {
         advertencias.push({
           tipo: 'impDias_incongruente',
-          msg: `${t.nombre}: importe días $${t.impDias.toFixed(2)} no cuadra con ${t.dias}d × $${t.salDia.toFixed(2)}.`,
+          msg: `${t.nombre}: importe días $${t.impDias.toFixed(2)} no cuadra con ${t.dias}${_unidadDT} × $${t.salDia.toFixed(2)} (esperado $${esperado.toFixed(2)}).`,
           trabajador: t.nombre
         });
       }
