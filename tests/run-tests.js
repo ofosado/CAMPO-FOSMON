@@ -253,6 +253,11 @@ async function correrPruebas() {
   await seedFirestore(`obras/${OBRA_A}/avance/materiales`, { data: [] });
   await seedFirestore(`global/historial_obras`, { obras: [] });
   await seedFirestore(`global/gp_construct`, { obras: {} });
+  await seedFirestore(`global/gp_detalle/obras/gp_${OBRA_A}`, { rubros: [] });
+  // Bitácora (pre-cargada para pruebas de lectura por rol)
+  await seedFirestore(`obras/${OBRA_A}/bitacora/entrada_seed`, {
+    modulo: "avance", descripcion: "seed", fecha: "2026-09-14"
+  });
   await seedFirestore(`notificaciones/uid_residente/items/n1`, { titulo: "hola" });
   await seedFirestore(`notificaciones/otro_uid/items/n2`, { titulo: "ajena" });
   await seedFirestore(`usuarios/otro_usuario`, { rol: "residente" });
@@ -316,31 +321,52 @@ async function correrPruebas() {
   }
 
   // ─── SUPERVISOR ────────────────────────────────────────────────────
+  // Decisión (2026-09-14): supervisor es AUDITOR INTERNO de solo lectura.
+  //   · SÍ lee nómina, GP Construct y bitácora
+  //   · NO escribe nada en ninguna colección
   {
     const u = U.supervisor;
     await caso("supervisor", u, "read obras/A", "pass", (v) => fsRead(v, `obras/${OBRA_A}`));
-    await caso("supervisor", u, "read obras/B → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_B}`));
+    await caso("supervisor", u, "read obras/B → DENY (no asignada)", "fail", (v) => fsRead(v, `obras/${OBRA_B}`));
+    // Escritura denegada en todos los frentes
     await caso("supervisor", u, "write obras/A/avance/subs → DENY", "fail", (v) => fsWrite(v, `obras/${OBRA_A}/avance/subs`, { data: [] }));
-    await caso("supervisor", u, "read obras/A/nomina/historial", "pass", (v) => fsRead(v, `obras/${OBRA_A}/nomina/historial`));
     await caso("supervisor", u, "write obras/A/nomina/historial → DENY", "fail", (v) => fsWrite(v, `obras/${OBRA_A}/nomina/historial`, { semanas: [] }));
+    await caso("supervisor", u, "write obras/A/config/otros_gastos → DENY", "fail", (v) => fsWrite(v, `obras/${OBRA_A}/config/otros_gastos`, { items: [] }));
+    await caso("supervisor", u, "write obras/A/bitacora → DENY", "fail", (v) => fsWrite(v, `obras/${OBRA_A}/bitacora/nueva`, { modulo: "x" }));
+    // Lectura permitida en TODO lo interno de la obra asignada
+    await caso("supervisor", u, "READ nómina — DECISIÓN 2026-09-14", "pass", (v) => fsRead(v, `obras/${OBRA_A}/nomina/historial`));
+    await caso("supervisor", u, "READ GP Construct — DECISIÓN 2026-09-14", "pass", (v) => fsRead(v, `global/gp_construct`));
+    await caso("supervisor", u, "READ bitácora — DECISIÓN 2026-09-14", "pass", (v) => fsRead(v, `obras/${OBRA_A}/bitacora/entrada_seed`));
     await caso("supervisor", u, "read obras/A/config/otros_gastos", "pass", (v) => fsRead(v, `obras/${OBRA_A}/config/otros_gastos`));
-    await caso("supervisor", u, "read global/gp_construct", "pass", (v) => fsRead(v, `global/gp_construct`));
+    await caso("supervisor", u, "read obras/A/avance/maquinaria", "pass", (v) => fsRead(v, `obras/${OBRA_A}/avance/maquinaria`));
+    await caso("supervisor", u, "read obras/A/subcontratos/lista", "pass", (v) => fsRead(v, `obras/${OBRA_A}/subcontratos/lista`));
+    await caso("supervisor", u, "read global/gp_detalle", "pass", (v) => fsRead(v, `global/gp_detalle/obras/gp_${OBRA_A}`));
   }
 
   // ─── CLIENTE ───────────────────────────────────────────────────────
+  // Decisión (2026-09-14): cliente NO ve GP Construct ni gp_detalle ni bitácora.
   {
     const u = U.cliente;
+    // Permitido — su subconjunto reducido
     await caso("cliente", u, "read obras/A", "pass", (v) => fsRead(v, `obras/${OBRA_A}`));
-    await caso("cliente", u, "read obras/B → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_B}`));
     await caso("cliente", u, "read obras/A/avance/subs (% avance)", "pass", (v) => fsRead(v, `obras/${OBRA_A}/avance/subs`));
     await caso("cliente", u, "read obras/A/config/estimaciones", "pass", (v) => fsRead(v, `obras/${OBRA_A}/config/estimaciones`));
+    await caso("cliente", u, "read obras/A/config/catalogo", "pass", (v) => fsRead(v, `obras/${OBRA_A}/config/catalogo`));
     await caso("cliente", u, "read obras/A/contrato/plazos", "pass", (v) => fsRead(v, `obras/${OBRA_A}/contrato/plazos`));
+    // Denegado — datos internos
+    await caso("cliente", u, "read obras/B → DENY (no asignada)", "fail", (v) => fsRead(v, `obras/${OBRA_B}`));
     await caso("cliente", u, "read obras/A/nomina/historial → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/nomina/historial`));
     await caso("cliente", u, "read obras/A/config/otros_gastos → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/config/otros_gastos`));
     await caso("cliente", u, "read obras/A/avance/maquinaria → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/avance/maquinaria`));
+    await caso("cliente", u, "read obras/A/avance/materiales → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/avance/materiales`));
     await caso("cliente", u, "read obras/A/subcontratos/lista → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/subcontratos/lista`));
+    await caso("cliente", u, "read obras/A/contrato/documentos → DENY", "fail", (v) => fsRead(v, `obras/${OBRA_A}/contrato/documentos`));
+    // Escritura siempre denegada
     await caso("cliente", u, "write obras/A/avance/subs → DENY", "fail", (v) => fsWrite(v, `obras/${OBRA_A}/avance/subs`, { data: [] }));
-    await caso("cliente", u, "read global/gp_construct (autenticado)", "pass", (v) => fsRead(v, `global/gp_construct`));
+    // DECISIONES 2026-09-14 — cliente NO ve estos globales/bitacora
+    await caso("cliente", u, "read global/gp_construct → DENY — DECISIÓN 2026-09-14", "fail", (v) => fsRead(v, `global/gp_construct`));
+    await caso("cliente", u, "read global/gp_detalle → DENY — DECISIÓN 2026-09-14", "fail", (v) => fsRead(v, `global/gp_detalle/obras/gp_${OBRA_A}`));
+    await caso("cliente", u, "read bitácora → DENY — DECISIÓN 2026-09-14", "fail", (v) => fsRead(v, `obras/${OBRA_A}/bitacora/entrada_seed`));
   }
 
   // ─── NOTIFICACIONES + AUDITORÍA ────────────────────────────────────

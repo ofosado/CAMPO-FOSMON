@@ -192,14 +192,18 @@ service cloud.firestore {
 
     // ─────────────────────────────────────────────────────────────────────
     // global/* — datos compartidos (cache GP, historial de obras archivadas)
+    //
+    // GP Construct: NO lo lee el cliente (información interna de costos).
+    // Directivos + equipo de obra + supervisor sí lo leen. Escritura solo
+    // por Cloud Function (Admin SDK bypasa reglas).
     // ─────────────────────────────────────────────────────────────────────
     match /global/gp_construct {
-      allow read: if esAuth();       // cualquier autenticado ve GP (Gastos + Dashboard)
-      allow write: if false;         // solo Cloud Function (admin SDK bypasa)
+      allow read: if esAuth() && !esCliente();
+      allow write: if false;
     }
     match /global/gp_detalle/obras/{obraGPId} {
-      allow read: if esAuth();
-      allow write: if false;         // solo Cloud Function
+      allow read: if esAuth() && !esCliente();
+      allow write: if false;
     }
     match /global/historial_obras {
       allow read: if esDirectivo();

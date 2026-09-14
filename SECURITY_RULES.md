@@ -2,6 +2,15 @@
 
 **Rama:** `claude/rules-seguridad` · **Estado:** listo para revisar, **NO desplegado**.
 
+> ⚠️ **Nota sobre el rol `supervisor`.** En CAMPO FOSMON, `supervisor` es un
+> **auditor interno de solo lectura**: entra a las obras que se le asignan
+> para revisar avance/gastos/nómina sin capturar nada.
+> **NO es lo mismo** que el rol `supervisor_obra` que aparecerá en la
+> edición municipal del sistema, que será **externo** y sí captura en campo
+> (verifica in situ el trabajo de contratistas). Pendiente de renombrar
+> este rol a algo tipo `auditor` en la etapa de organizaciones/multi-tenant
+> para evitar la colisión de nombres.
+
 Este documento traduce a lenguaje humano lo que las nuevas reglas
 `firestore.rules` y `storage.rules` permiten y bloquean para cada uno de
 los 9 roles. Revísalo contra la operación real y avísame de cualquier
@@ -199,12 +208,15 @@ Referencia rápida por documento típico de una obra:
 
 ---
 
-## Cosas que puede ser importante ajustar
+## Decisiones tomadas (2026-09-14)
 
-1. **Supervisor y nómina**: hoy el supervisor puede leer `obras/{id}/nomina/historial`. Si prefieres que la nómina sea confidencial solo para `administrador_obra` + directivos, dime y ajusto para que ni supervisor ni superintendente/residente la vean (solo administrador_obra).
-2. **Cliente y `global/gp_construct`**: hoy cualquier autenticado (incluido cliente) puede leerlo. Si es información interna, hay que restringir a no-cliente.
-3. **Bitácora y cliente**: cliente no ve bitácora. Si quieres que la vea (bitácora "pública" de avance), hay que abrir.
-4. **Notificaciones cross-user (create)**: la app hoy crea notificaciones para otros usuarios (ej. al cambiar estatus de estimación se le avisa al director). Las reglas permiten `create` para cualquier autenticado. Esto es intencionado.
+Estas ya están reflejadas en las reglas de esta rama:
+
+1. **Supervisor SÍ lee nómina, GP Construct y bitácora.** Sigue siendo solo lectura. Todas las escrituras están denegadas.
+2. **Cliente NO lee `global/gp_construct` ni `global/gp_detalle/**` ni `/bitacora`.** Solo ve: nombre y datos generales de la obra, `config/estimaciones`, `config/catalogo`, `avance/subs`, `contrato/plazos`. Todas las escrituras denegadas.
+3. **Notificaciones cross-user (create)**: la app hoy crea notificaciones para otros usuarios (ej. al cambiar estatus de estimación se le avisa al director). Las reglas permiten `create` para cualquier autenticado. Intencional.
+
+Ver `AUDITORIA_CONSULTAS.md` para el análisis de qué consultas del frontend quedan denegadas con estas reglas y qué requiere ajuste de código en `src/App.jsx` antes de desplegar.
 
 ---
 
