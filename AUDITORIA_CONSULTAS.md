@@ -2,6 +2,13 @@
 
 Rama: `claude/rules-seguridad` · Fecha: 2026-09-14
 
+## Estado de rompimientos detectados
+
+| # | Rompimiento | Estado |
+|---|---|---|
+| A | `getDocs(collection('obras'))` deja lista vacía a no-directivos | ✅ **RESUELTO** en commit posterior — ver sección 1 abajo. |
+| D | `notifARoles` / `notifAEmail` cross-user no funciona para no-admin | ⚠ **DEGRADACIÓN CONOCIDA — aceptada temporalmente.** Ver sección 4. |
+
 Este documento lista cada consulta que hace hoy el frontend contra Firestore/Storage y confirma si las reglas nuevas la permiten para los roles `residente`, `supervisor` y `cliente`.
 
 Legenda: **✓** = permitida · **✗** = denegada · **N/A** = módulo no visible para el rol (el frontend no llega a llamarla)
@@ -18,28 +25,30 @@ Legenda: **✓** = permitida · **✗** = denegada · **N/A** = módulo no visib
 | `obras/{o.id}/config/info` | get | App raíz — enriquece cada obra | ✓ (si asignada) | ✓ (si asignada) | ✓ (si asignada) |
 | `notificaciones/{uid}/items` | onSnapshot | Campanita | ✓ | ✓ | ✓ |
 
-### #A — Problema crítico: `getDocs(collection('obras'))`
+### #A — RESUELTO (commit posterior)
 
-Con las reglas nuevas, los roles no-directivos SOLO pueden leer `obras/{id}` si están asignados. `getDocs` de la colección completa **fallará con `permission-denied`** para residente/supervisor/cliente porque intenta traer docs no permitidos.
+**Problema:** con las reglas nuevas, los roles no-directivos SOLO pueden leer `obras/{id}` si están asignados. `getDocs(collection('obras'))` traía la colección entera y Firestore rules-based queries rechazan queries cuya salida no es subconjunto garantizado de lo permitido.
 
-**Comportamiento actual:** Firestore rules-based queries requieren que el query resultante sea garantizadamente subconjunto de lo que las reglas permiten. Sin un `.where('id', 'in', obras_asignadas)`, Firestore rechaza el query completo.
+**Fix aplicado en `src/App.jsx` (bloque "CARGAR OBRAS desde Firestore al hacer login"):**
 
-**Consecuencia si desplegamos así:**
-- Un residente/supervisor/cliente hace login → `getDocs('obras')` rechazado → `catch` traga el error → **`obras` queda vacío** → la app muestra "no hay obras" aunque tenga asignadas.
+- Directivo (`PERMISOS[rol]?.todas_obras === true`): sigue el mismo path anterior — `getDocs(collection(fbDb, 'obras'))`. Nada cambia para ellos.
+- No-directivo: en vez del `getDocs`, hace `Promise.all` de `getDoc(doc('obras', id))` por cada id en `usuario.obras_asignadas`. Si no tiene asignadas, la lista queda vacía (mismo estado final que antes cuando el filtro de `PantallaObras` recortaba a las asignadas — o si no tenía ninguna).
 
-**Fix necesario en `src/App.jsx` ANTES de desplegar reglas:**
+**Efecto neto:** el `state.obras` termina exactamente igual que antes porque el componente `PantallaObras` ya filtraba por `obras_asignadas` (línea 5326 en `App.jsx`). Directivos ven la lista completa igual, no-directivos ven sus asignadas igual. Solo cambió la fuente de los datos: antes se cargaba de más y se filtraba en front; ahora se carga solo lo permitido.
 
-Hay que cambiar el query para roles no-directivos:
-```js
-// En vez de: getDocs(collection(fbDb, 'obras'))
-if (perfil.rol es directivo) {
-  const snap = await getDocs(collection(fbDb, 'obras'));
-} else {
-  // Solo obras asignadas — máx 30 con 'in', o hacer N gets paralelos
-  const obraIds = perfil.obras_asignadas || [];
-  const docs = await Promise.all(obraIds.map(id => getDoc(doc(fbDb, 'obras', id))));
-}
-```
+**Cosas que se verificaron equivalentes:**
+- Panel Ejecutivo: solo para directivos (gate `verPanelEjecutivo`), ellos siguen viendo `state.obras` con todas → sin cambio.
+- Bulk loader `datosPorObra`: idéntica dependencia — dispara para directivos con ≥2 obras activas.
+- `PantallaObras`: filtra `obras.filter(o => asignadas.includes(o.id))` para no-directivos → funciona igual.
+- `GestionUsuarios` (asignar obras): solo directivos entran ahí, siguen viendo la lista completa.
+- `PanelAlertas`: solo directivos entran a `screen==="alertas"`.
+- `entrar(id)` desde deep-link de notif:
+  - Directivo: `obras.find(x=>x.id===id)` funciona (todas cargadas).
+  - No-directivo con obra asignada: funciona (está en state).
+  - No-directivo con obra NO asignada: `obras.find` = undefined → auditoría queda sin nombre, y las reglas denegarán los sub-fetch de la obra. Comportamiento correcto (no debería tener acceso).
+- `useEffect` de carga: dependencias `[usuario?.uid]` sin cambio — para ver cambio en `obras_asignadas` el usuario debe re-loggear igual que antes.
+
+**Build:** `npm run build` OK después del cambio.
 
 ---
 
@@ -99,22 +108,56 @@ Se llama desde `GastosGP` que **NO se renderiza para cliente** (no tiene tab Gas
 | `query(collection('usuarios'), where('rol','in',...))` | getDocs — `notifARoles` | **✗** ver #D | **✗** ver #D | N/A |
 | `doc('usuarios/{email}')` | get — `notifAEmail` | **✗** ver #D | N/A | N/A |
 
-### #D — Notificaciones cross-user rotas para no-admin
+### #D — DEGRADACIÓN CONOCIDA, aceptada temporalmente
 
-`notifARoles(['director_general', ...])` y `notifAEmail(email)` se disparan desde:
-- **Estimaciones** — cuando se crea/factura/paga/aprueba una estimación (línea 9309-9332). Lo dispara `administrador_obra` (rol operativo). Con reglas nuevas → `getDocs('usuarios')` denegado → notif no se crea.
-- **Subcontratos** — al agregar/eliminar sub (línea 11981, 12379).
+**Estado:** aceptada como conocida. NO se implementa fix en este ciclo — se hará como trabajo separado.
+
+**Qué se rompe:** `notifARoles(['director_general', ...])` y `notifAEmail(email)` se disparan desde:
+- **Estimaciones** — cuando se crea/factura/paga/aprueba (líneas 9309-9332).
+- **Subcontratos** — al agregar/eliminar sub (líneas 11981, 12379).
 - **Otros gastos** — al capturar un gasto (línea 5398).
 - **Presupuesto** — al reemplazar catálogo (línea 7471).
 
-**Consecuencia:** los directivos dejan de recibir notif automática de eventos disparados por administradores de obra. La operación NO se rompe (los datos sí se guardan), solo las notif silenciosamente dejan de aparecer.
+Todos estos triggers son ejecutados por roles operativos (`administrador_obra`, `superintendente`, `residente`). Con reglas endurecidas, esos roles no pueden hacer `getDocs('usuarios')` ni `getDoc('usuarios/{id}')` de terceros → **la notificación silenciosamente NO se crea**. El `try/catch` de `notifARoles` traga el error de permisos.
 
-**Fix necesario ANTES de desplegar reglas:**
-- Opción A: cambiar `notifARoles` para que llame a una **Cloud Function** (con Admin SDK bypasa reglas y hace el query de `usuarios`). Es lo correcto arquitectónicamente.
-- Opción B: en las reglas, permitir `read` de `usuarios/*` a cualquier autenticado con rol operativo (limitando a campos no sensibles: rol + uid + activo). Pero mezcla concerns y expone la lista de usuarios a cualquiera.
-- Opción C: cambiar la regla a `allow list: if esAuth()` para queries filtradas por rol. Riesgo: expone emails de todos los usuarios a residentes/clientes.
+**Qué NO se rompe:**
+- La operación en sí funciona: datos se guardan, estimaciones se registran, catálogos se reemplazan.
+- Los directivos que estén activamente en el Panel Ejecutivo o entrando a la obra sí ven los cambios reflejados (viene del bulk loader real-time).
+- Las notificaciones que dispara un directivo (ej. Aldo director asigna obra a residente) sí funcionan — porque el que ejecuta `notifARoles` sí es admin y sí puede leer `usuarios`.
 
-**Recomendación:** opción A. Requiere código adicional (Cloud Function `dispararNotifARoles`) — trabajo fuera del alcance de este PR.
+**Qué SÍ se pierde temporalmente:**
+- La campanita de un director general no le avisa automáticamente cuando un administrador de obra crea una estimación nueva o cambia el estatus de una a "Facturada"/"Pagada"/"Aprobada".
+- Idem para altas/bajas de subcontratos, captura de otros gastos, y reemplazo de catálogo.
+
+**Impacto de negocio:** el flujo de captura semanal no se rompe. Los directivos entran manualmente a las obras y ven lo capturado. La notificación era conveniente, no crítica.
+
+**Ruta de solución propuesta (para siguiente ciclo):**
+
+Opción A — **Recomendada. Cloud Function callable `dispararNotifARoles`:**
+
+1. Crear en `functions/index.js` una nueva callable:
+   ```
+   exports.dispararNotifARoles = onCall(async (request) => {
+     // Validar request.auth existe (cualquier autenticado)
+     // Recibir { roles, payload }
+     // Validar payload (categorias, tipos permitidos, longitudes)
+     // Con Admin SDK: query usuarios where rol in roles, activo != false
+     // Escribir notif a cada uno con crearNotifPara
+     return { ok: true, enviadas: N }
+   });
+   ```
+
+2. En `App.jsx`, reemplazar los helpers `notifARoles` y `notifAEmail` para que en vez de leer Firestore directo, invoquen la callable con `httpsCallable(fbFunctions, 'dispararNotifARoles')`.
+
+3. Validar en el backend que el payload no permita spam (rate limit + validaciones estrictas de contenido).
+
+**Alternativas descartadas:**
+
+- Permitir `list` en `usuarios/*` a cualquier autenticado con rol operativo: expone la lista completa de usuarios (nombres, emails, roles, obras asignadas) a cualquier residente. Los residentes de una obra podrían ver datos de residentes de otras obras. Rechazado.
+- Permitir `read` de un doc específico de `usuarios/{id}` a cualquier autenticado: sigue permitiendo enumerar users si alguien conoce el patrón de `emailAId`. Rechazado.
+- Cambiar el frontend para que cada trigger conozca los UIDs específicos y no requiera `getDocs`: rompe el modelo actual donde las notif se dirigen por ROL, no por UID.
+
+**Trabajo pendiente creado:** implementar la Cloud Function `dispararNotifARoles` y migrar los 8 callsites en `App.jsx`. Estimación: 2-3 h de código + pruebas contra emulador.
 
 ---
 
@@ -143,13 +186,12 @@ Sin cambios respecto a reglas nuevas — todo alineado.
 
 ---
 
-## Resumen ejecutivo
+## Resumen ejecutivo (actualizado)
 
 ### Consultas que quedarían denegadas y ROMPEN funcionalidad si desplegamos hoy:
 
-1. **`getDocs(collection('obras'))` al login** — residente/supervisor/cliente verían la lista vacía. **Fix requerido en frontend antes de deploy.**
-
-2. **`notifARoles` / `notifAEmail` cross-user** — administradores de obra ya no dispararán notif a directivos. **No rompe operación**, solo se pierden notificaciones automáticas de estimaciones/subcontratos/otros gastos. Fix requerido para restaurar funcionalidad.
+1. ~~`getDocs(collection('obras'))` al login~~ — ✅ **RESUELTO**. Ver #A arriba.
+2. **`notifARoles` / `notifAEmail` cross-user** — ⚠ **DEGRADACIÓN CONOCIDA, aceptada**. Ver #D arriba.
 
 ### Consultas denegadas ESPERADAS (comportamiento deseado):
 
@@ -159,12 +201,16 @@ Sin cambios respecto a reglas nuevas — todo alineado.
 
 ### Recomendación
 
-**NO desplegar reglas hasta resolver #A** (getDocs de obras) — es una regresión visible que rompe login para ~70% de los usuarios. La reparación es un cambio de ~15 líneas en `src/App.jsx` bien acotado.
+Reglas **ya pueden desplegarse** desde el lado de bloqueos duros:
+- #A resuelto: no-directivos verán su lista de obras al login.
+- #D pendiente como degradación conocida: los directivos dejan de recibir notif automáticas de eventos disparados por operativos, pero la captura funciona normal.
 
-**#D (notifARoles)** puede diferirse — degrada la UX pero no bloquea captura. Se puede desplegar reglas con nota conocida.
+**Nueva verificación necesaria antes de deploy** (fuera del alcance de este PR):
+- Confirmar con el usuario que la degradación #D es aceptable temporalmente.
+- Alinear con el usuario cuándo hacer el trabajo separado de la Cloud Function `dispararNotifARoles`.
 
-## Cambios pendientes en `src/App.jsx` (fuera del alcance de este PR)
+## Cambios pendientes en `src/App.jsx` / `functions/index.js` (fuera del alcance de este PR)
 
-- [ ] Reemplazar `getDocs(collection('obras'))` en línea ~14638 por load por-obra según `usuario.obras_asignadas` cuando no es directivo.
-- [ ] Migrar `notifARoles` y `notifAEmail` a Cloud Function callable con Admin SDK.
-- [ ] Envolver `onSnapshot(doc(fbDb, 'global/gp_construct'))` con `if (rol !== 'cliente')` para evitar errores en consola.
+- [x] ~~Reemplazar `getDocs(collection('obras'))` en línea ~14638~~ — ✅ hecho en esta rama.
+- [ ] Cloud Function callable `dispararNotifARoles` y migración de los 8 callsites (`notifARoles` / `notifAEmail`).
+- [ ] Envolver `onSnapshot(doc(fbDb, 'global/gp_construct'))` con `if (rol !== 'cliente')` para evitar errores en consola del cliente. Cosmético.

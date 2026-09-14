@@ -14631,12 +14631,42 @@ export default function App(){
   // ── CARGAR OBRAS desde Firestore al hacer login ──
   // Las obras viven en colecciones top-level `obras/{id}` con sub-doc /config/info.
   // También unimos info de /config/info que puede tener datos más recientes.
+  //
+  // FIX #A rules-seguridad (2026-09-14):
+  //   Con las reglas nuevas por rol, `getDocs(collection('obras'))` es
+  //   rechazado para roles no-directivos (residente/supervisor/cliente/etc.)
+  //   porque Firestore requiere que TODAS las docs del query sean legibles.
+  //   Solución: para roles con `todas_obras=true` (directivos) seguimos
+  //   listando la colección completa; para los demás, cargamos SOLO las
+  //   obras asignadas en `usuario.obras_asignadas` con gets paralelos.
+  //   Los directivos siguen viendo lo mismo que antes (misma lista, mismo
+  //   orden). Los no-directivos ven exactamente el subconjunto que el
+  //   componente PantallaObras ya filtraba por asignadas — sin diferencia
+  //   visible.
   useEffect(() => {
     if (!usuario) return;
     (async () => {
       try {
-        const snap = await getDocs(collection(fbDb, 'obras'));
-        const obrasFromDB = snap.docs.map(d => ({id: d.id, ...d.data()}));
+        const esDirectivo = PERMISOS[usuario.rol]?.todas_obras === true;
+        let obrasFromDB;
+        if (esDirectivo) {
+          // Directivos: lista completa (mismo comportamiento previo)
+          const snap = await getDocs(collection(fbDb, 'obras'));
+          obrasFromDB = snap.docs.map(d => ({id: d.id, ...d.data()}));
+        } else {
+          // No-directivos: solo obras asignadas. Sin asignadas → lista vacía.
+          const asignadas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
+          if (asignadas.length === 0) {
+            obrasFromDB = [];
+          } else {
+            const docs = await Promise.all(
+              asignadas.map(id => getDoc(doc(fbDb, 'obras', id)))
+            );
+            obrasFromDB = docs
+              .filter(d => d.exists())
+              .map(d => ({ id: d.id, ...d.data() }));
+          }
+        }
         // Para cada obra, si hay un /config/info más completo, mergear (info de Contrato editado)
         await Promise.all(obrasFromDB.map(async (o, idx) => {
           const info = await fsGet(`obras/${o.id}/config/info`);
