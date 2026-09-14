@@ -59,10 +59,17 @@ service cloud.firestore {
     function emailAId(email) {
       return email.lower().replace('@','_').replace('.','_');
     }
+    // OJO: esOwnUserDoc NO usa esAuth() porque necesita funcionar ANTES de
+    // que los custom claims estén en el token (caso login inicial: el usuario
+    // se autentica, pero su token JWT aún no trae rol/todas/obras porque el
+    // trigger sincronizarClaims corrió después. Sin poder leer su propio
+    // perfil en ese momento, se queda con rol default 'administrador_obra'
+    // y no ve sus obras asignadas). La única verificación es que el email
+    // del token (siempre presente al autenticarse) mapee al docId pedido.
     function esOwnUserDoc(docId) {
-      return esAuth()
-          && tokenGet('email', null) != null
-          && docId == emailAId(tokenGet('email', ''));
+      return request.auth != null
+          && request.auth.token.email != null
+          && docId == emailAId(request.auth.token.email);
     }
     // Cliente ve subconjunto reducido: dashboard, avance, fotos, estimaciones, plazos
     // (los campos internos como márgenes/costos NO viven en documentos separados,

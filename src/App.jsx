@@ -3933,6 +3933,7 @@ function Login({onLogin}){
       fsAudit("login", { modulo: "sesion", entidad: email });
       onLogin({
         correo: email,
+        email,  // duplicado por compatibilidad con código que usa usuario.email
         nombre: perfil.nombre,
         rol: perfil.rol,
         uid: cred.user.uid,
@@ -5529,7 +5530,14 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingBottom:6}}>
       <div>
         <div style={{fontSize:15,fontWeight:700,color:C.textPri,marginBottom:3}}>
-          Hola, {(usuario.nombre||'').split(' ').find(p=>p.length>2&&!p.endsWith('.'))||''}!
+          Hola, {(() => {
+            const n = usuario.nombre || '';
+            // Si el "nombre" es en realidad un email (fallback cuando no hay
+            // perfil o el read del perfil falla por reglas), extraer la parte
+            // antes de la @ para no saludar con dirección completa.
+            if (n.includes('@')) return n.split('@')[0];
+            return n.split(' ').find(p => p.length > 2 && !p.endsWith('.')) || n || '';
+          })()}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
           {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
