@@ -14659,12 +14659,35 @@ export default function App(){
           if (asignadas.length === 0) {
             obrasFromDB = [];
           } else {
-            const docs = await Promise.all(
-              asignadas.map(id => getDoc(doc(fbDb, 'obras', id)))
+            // Cada getDoc envuelto en try/catch: si un id no existe (dato
+            // huérfano en obras_asignadas) o el read es denegado por reglas,
+            // esa obra se omite y las demás siguen cargando. NO se tumba el
+            // Promise.all completo por un id malo.
+            const resultados = await Promise.all(
+              asignadas.map(async (id) => {
+                try {
+                  const d = await getDoc(doc(fbDb, 'obras', id));
+                  if (!d.exists()) return { id, motivo: 'no_existe' };
+                  return { id, ok: true, doc: d };
+                } catch (e) {
+                  return { id, motivo: 'error', code: e?.code || 'desconocido', msg: e?.message };
+                }
+              })
             );
-            obrasFromDB = docs
-              .filter(d => d.exists())
-              .map(d => ({ id: d.id, ...d.data() }));
+            obrasFromDB = resultados
+              .filter(r => r.ok)
+              .map(r => ({ id: r.doc.id, ...r.doc.data() }));
+            // Reportar en consola cuáles fallaron para diagnóstico
+            const fallidas = resultados.filter(r => !r.ok);
+            if (fallidas.length > 0) {
+              console.warn(
+                `[cargar obras] ${fallidas.length} de ${asignadas.length} obras asignadas no se cargaron:`,
+                fallidas.map(f => f.motivo === 'no_existe'
+                  ? `${f.id} (no existe)`
+                  : `${f.id} (${f.code}: ${f.msg || ''})`
+                ).join(' · ')
+              );
+            }
           }
         }
         // Para cada obra, si hay un /config/info más completo, mergear (info de Contrato editado)
