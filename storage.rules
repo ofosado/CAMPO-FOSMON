@@ -1,16 +1,83 @@
 rules_version = '2';
 
-// Reglas de Firebase Storage para CAMPO
-// Aplicar con: firebase deploy --only storage
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPO — Reglas de Firebase Storage
+// Alineado con firestore.rules: mismo esquema de claims (rol, todas, obras).
+// Denegar por defecto — cualquier path no declarado cae en `deny`.
+// ─────────────────────────────────────────────────────────────────────────────
+
 service firebase.storage {
   match /b/{bucket}/o {
-    // Fotos de obras y documentos: cualquier usuario autenticado puede
-    // leer/escribir. Confiamos en Firebase Auth para bloquear anónimos.
-    match /obras/{obraId}/{allPaths=**} {
-      allow read, write: if request.auth != null;
+
+    // Helpers (usar .get para no fallar con claims ausentes — Storage rules
+    // no soporta encadenamiento de undefined con !=)
+    function tokenGet(k, def) { return request.auth.token.get(k, def); }
+    function esAuth() {
+      return request.auth != null
+          && tokenGet('inactivo', false) != true
+          && tokenGet('rol', null) != null;
+    }
+    function rol() { return tokenGet('rol', ''); }
+    function todasObras() { return tokenGet('todas', false) == true; }
+    function obrasAsignadas() { return tokenGet('obras', []); }
+    function esDirectivo() {
+      return esAuth() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
+    }
+    function esEquipoObraEditor() {
+      return esAuth() && rol() in ['superintendente','residente','administrador_obra'];
+    }
+    function esCliente() {
+      return esAuth() && rol() == 'cliente';
+    }
+    function puedeVerObra(obraId) {
+      return esDirectivo()
+          || (esAuth()
+              && rol() in ['superintendente','residente','administrador_obra','supervisor','cliente']
+              && (todasObras() || obraId in obrasAsignadas()));
+    }
+    function puedeEditarObra(obraId) {
+      return esDirectivo()
+          || (esEquipoObraEditor()
+              && (todasObras() || obraId in obrasAsignadas()));
     }
 
-    // Cualquier otro path: bloqueado por seguridad
+    // ── Fotos por obra: acceso según permisos de obra.
+    //    Cliente SÍ puede ver fotos (vista Fotos del cliente).
+    match /obras/{obraId}/fotos/{allPaths=**} {
+      allow read: if puedeVerObra(obraId);
+      allow write: if puedeEditarObra(obraId);
+    }
+
+    // ── Documentos por obra (contratos, PDFs, planos). Cliente NO.
+    match /obras/{obraId}/docs/{allPaths=**} {
+      allow read: if puedeVerObra(obraId) && !esCliente();
+      allow write: if puedeEditarObra(obraId);
+    }
+    match /obras/{obraId}/documentos/{allPaths=**} {
+      allow read: if puedeVerObra(obraId) && !esCliente();
+      allow write: if puedeEditarObra(obraId);
+    }
+
+    // ── Adjuntos de subcontratos (facturas, contratos escaneados). NO cliente.
+    match /obras/{obraId}/subcontratos/{allPaths=**} {
+      allow read: if puedeVerObra(obraId) && !esCliente();
+      allow write: if puedeEditarObra(obraId);
+    }
+
+    // ── Nómina — archivos Excel semanales subidos. NO cliente.
+    match /obras/{obraId}/nomina/{allPaths=**} {
+      allow read: if puedeVerObra(obraId) && !esCliente();
+      allow write: if puedeEditarObra(obraId);
+    }
+
+    // ── Fallback bajo /obras/{obraId}/**: si el frontend crea paths ad-hoc
+    //    dentro de la obra, aplican los permisos de la obra sin cliente.
+    match /obras/{obraId}/{allPaths=**} {
+      allow read: if puedeVerObra(obraId) && !esCliente();
+      allow write: if puedeEditarObra(obraId);
+    }
+
+    // ── DENY por defecto: cualquier ruta fuera de /obras/{obraId}/**
     match /{allPaths=**} {
       allow read, write: if false;
     }

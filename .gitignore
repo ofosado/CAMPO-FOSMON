@@ -25,3 +25,9 @@ dist-ssr
 
 # Claude Code worktrees y estado local
 .claude/
+# Nunca commitear node_modules ni logs de emulador
+tests/node_modules/
+firebase-debug.log
+firestore-debug.log
+storage-debug.log
+*.log
