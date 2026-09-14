@@ -11196,8 +11196,17 @@ function Nomina({obra, rol}) {
           totalDir: resultado.trabajadores.filter(p=>p.tipo==='D').length,
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
         };
-        // Validar
-        const {errores, advertencias} = validarNomina(resultado.trabajadores, semanaAnterior);
+        // Validar contra la ÚLTIMA semana del historial (que ES la anterior
+        // respecto a la que se está por cargar). OJO: el state `semanaAnterior`
+        // es la penúltima del historial — sirve para la UI al ver el detalle,
+        // pero NO para comparar contra una carga nueva.
+        // Ejemplo: al subir SEM 37 con solo SEM 36 en historial:
+        //   historial = [SEM 36]
+        //   semanaActual   = SEM 36 (última cargada = anterior a la nueva)
+        //   semanaAnterior = null   (no hay penúltima)
+        // La comparativa correcta es contra semanaActual.
+        const previaParaComparar = semanaActual;
+        const {errores, advertencias} = validarNomina(resultado.trabajadores, previaParaComparar);
         if (yaCargada) {
           advertencias.unshift({
             tipo: 'semana_duplicada',
