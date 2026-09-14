@@ -11121,7 +11121,16 @@ function Nomina({obra, rol}) {
           rows = text.split('\n').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g,'')));
         } else {
           const wb = window.XLSX.read(e.target.result, {type:'array'});
-          const ws = wb.Sheets[wb.SheetNames[0]];
+          // Preferir la hoja "Nómina" (formato FOSMON estándar generado por
+          // el script de unificación) cuando exista. Los archivos FOSMON
+          // conservan la hoja del cliente como primera pestaña (ej. la
+          // hoja "CANGREJERA" original con 65K filas de plantilla), lo que
+          // hacía que el parser mordiera el archivo equivocado.
+          // Fallback: primera hoja. Match case-insensitive y con/sin acento.
+          const nomHoja = wb.SheetNames.find(n =>
+            n.toLowerCase().replace(/[óo]/g, 'o').replace(/\s+/g, '').includes('nomina')
+          ) || wb.SheetNames[0];
+          const ws = wb.Sheets[nomHoja];
           rows = window.XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
         }
         const resultado = parsearNomina(rows);
