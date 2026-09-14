@@ -40,6 +40,17 @@ export default defineConfig({
             }
           },
           {
+            // SheetJS y jsPDF viven en cdnjs.cloudflare.com — sin esta
+            // regla, en PWA standalone el script tarda mucho o falla,
+            // dejando el botón "Cargar nómina" pegado en spinner.
+            urlPattern: /^https:\/\/cdnjs\.cloudflare\.com\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'cdnjs-cache',
+              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 }
+            }
+          },
+          {
             urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
             handler: 'NetworkFirst',
             options: {

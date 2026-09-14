@@ -3165,6 +3165,45 @@ const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   }
 };
 
+// Helper: carga SheetJS bajo demanda y devuelve una promesa que se resuelve
+// cuando window.XLSX está disponible. Necesario porque en PWA standalone
+// el timing de la carga de scripts externos es distinto al browser normal —
+// si el usuario hace click en "Cargar nómina" antes de que baje, la vieja
+// lógica hacía window.XLSX.read(undefined) y tragaba el error.
+// Timeout 15s por si la red está muy mala.
+let _xlsxPromise = null;
+const ensureXLSX = () => {
+  if (typeof window.XLSX !== 'undefined') return Promise.resolve(window.XLSX);
+  if (_xlsxPromise) return _xlsxPromise;
+  _xlsxPromise = new Promise((resolve, reject) => {
+    const src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    // Si ya hay un <script> con ese src (ej. montaje previo del componente),
+    // no lo dupliques — engancha el load al existente.
+    let s = Array.from(document.head.getElementsByTagName('script')).find(x => x.src === src);
+    if (!s) {
+      s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      document.head.appendChild(s);
+    }
+    const timeout = setTimeout(() => {
+      _xlsxPromise = null;
+      reject(new Error('SheetJS tardó demasiado en cargar (>15s). Revisa tu conexión.'));
+    }, 15000);
+    s.addEventListener('load', () => {
+      clearTimeout(timeout);
+      if (typeof window.XLSX !== 'undefined') resolve(window.XLSX);
+      else { _xlsxPromise = null; reject(new Error('SheetJS cargó pero window.XLSX no está disponible.')); }
+    }, { once: true });
+    s.addEventListener('error', () => {
+      clearTimeout(timeout);
+      _xlsxPromise = null;
+      reject(new Error('No se pudo bajar SheetJS. Verifica tu conexión.'));
+    }, { once: true });
+  });
+  return _xlsxPromise;
+};
+
 // Mapa de roles por correo — se carga desde Firestore
 // Si no existe en Firestore, usa este default
 const ROLES_DEFAULT = {
@@ -10094,14 +10133,9 @@ function parsearPresupuesto(data, importeContrato) {
 }
 
 function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
-  // Cargar SheetJS dinámicamente
-  useEffect(() => {
-    if (typeof window.XLSX === 'undefined') {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-      document.head.appendChild(s);
-    }
-  }, []);
+  // Pre-cargar SheetJS al montar (fire-and-forget; procesarArchivo
+  // vuelve a llamar ensureXLSX() para garantizar disponibilidad antes de usarlo)
+  useEffect(() => { ensureXLSX().catch(() => {}); }, []);
   const [fase, setFase] = useState('inicio'); // inicio | revisando | confirmado
   const [importeContrato, setImporteContrato] = useState(obra.presupuesto || 0);
   const [resultado, setResultado] = useState(null);
@@ -10126,11 +10160,8 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     if (!file) return;
     setCargando(true); setError('');
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = async e => {
       try {
-        // Parsear Excel con SheetJS (cargado via CDN en el HTML)
-        // Como no tenemos SheetJS aquí, simulamos con CSV parsing para .csv
-        // Para .xlsx necesitamos SheetJS
         const ext = file.name.split('.').pop().toLowerCase();
         if (ext === 'csv') {
           const text = new TextDecoder().decode(e.target.result);
@@ -10138,8 +10169,10 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
           const res = parsearPresupuesto(rows, importeContrato);
           setResultado(res); setFase('revisando');
         } else {
-          // xlsx: usar SheetJS que se carga dinámicamente
-          const wb = window.XLSX.read(e.target.result, {type:'array'});
+          // Esperar SheetJS (importante en PWA — sin await el spinner se
+          // colgaba porque window.XLSX aún no cargaba)
+          const XLSX = await ensureXLSX();
+          const wb = XLSX.read(e.target.result, {type:'array'});
           const ws = wb.Sheets[wb.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
           const res = parsearPresupuesto(rows, importeContrato);
@@ -11062,14 +11095,9 @@ function validarNomina(trabajadores, semanaAnterior) {
 }
 
 function Nomina({obra, rol}) {
-  // Cargar SheetJS dinámicamente al montar
-  useEffect(() => {
-    if (typeof window.XLSX === 'undefined') {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-      document.head.appendChild(s);
-    }
-  }, []);
+  // Pre-cargar SheetJS al montar (procesarArchivo vuelve a llamar
+  // ensureXLSX() para garantizar disponibilidad antes de usarlo)
+  useEffect(() => { ensureXLSX().catch(() => {}); }, []);
   const [historial, setHistorial] = useState([]);
   useEffect(()=>{
     fsGet(`obras/${obra.id}/nomina/historial`).then(d=>{
@@ -11112,7 +11140,7 @@ function Nomina({obra, rol}) {
     if (!file) return;
     setCargando(true); setError('');
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = async e => {
       try {
         let rows;
         const ext = file.name.split('.').pop().toLowerCase();
@@ -11120,7 +11148,11 @@ function Nomina({obra, rol}) {
           const text = new TextDecoder().decode(e.target.result);
           rows = text.split('\n').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g,'')));
         } else {
-          const wb = window.XLSX.read(e.target.result, {type:'array'});
+          // Esperar a que SheetJS esté cargado (crítico en PWA standalone,
+          // donde el script tarda más que en browser normal). Sin este await
+          // el usuario que da click rápido veía el spinner colgado.
+          const XLSX = await ensureXLSX();
+          const wb = XLSX.read(e.target.result, {type:'array'});
           // Preferir la hoja "Nómina" (formato FOSMON estándar generado por
           // el script de unificación) cuando exista. Los archivos FOSMON
           // conservan la hoja del cliente como primera pestaña (ej. la
@@ -11131,7 +11163,7 @@ function Nomina({obra, rol}) {
             n.toLowerCase().replace(/[óo]/g, 'o').replace(/\s+/g, '').includes('nomina')
           ) || wb.SheetNames[0];
           const ws = wb.Sheets[nomHoja];
-          rows = window.XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+          rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
         }
         const resultado = parsearNomina(rows);
         if (resultado.trabajadores.length === 0) {
@@ -12430,20 +12462,14 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   //  pueden editar desde el UI.)
 
   // ── IMPORTAR CATÁLOGO DESDE EXCEL/CSV ──
-  // Carga SheetJS si no está
-  useEffect(() => {
-    if (typeof window.XLSX === 'undefined') {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-      document.head.appendChild(s);
-    }
-  }, []);
+  // Pre-cargar SheetJS al montar
+  useEffect(() => { ensureXLSX().catch(() => {}); }, []);
 
   const procesarImport = (file) => {
     if(!file) return;
     setImportBusy(true); setImportError(""); setImportResultado(null);
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = async e => {
       try {
         const ext = file.name.split('.').pop().toLowerCase();
         let rows;
@@ -12451,14 +12477,11 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
           const text = new TextDecoder().decode(e.target.result);
           rows = text.split('\n').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g,'')));
         } else if (ext === 'xlsx' || ext === 'xls') {
-          if (typeof window.XLSX === 'undefined') {
-            setImportError("La librería XLSX está cargando. Espera 2 segundos y vuelve a intentar.");
-            setImportBusy(false);
-            return;
-          }
-          const wb = window.XLSX.read(e.target.result, {type:'array'});
+          // Esperar SheetJS (crítico en PWA)
+          const XLSX = await ensureXLSX();
+          const wb = XLSX.read(e.target.result, {type:'array'});
           const ws = wb.Sheets[wb.SheetNames[0]];
-          rows = window.XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+          rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
         } else {
           setImportError("Formato no soportado para parseo automático. Usa .xlsx, .xls o .csv. Para PDF, adjúntalo en 'Datos generales' como respaldo y captura el catálogo manualmente.");
           setImportBusy(false);
