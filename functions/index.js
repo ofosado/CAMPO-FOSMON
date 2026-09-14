@@ -16,6 +16,7 @@
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
@@ -1435,4 +1436,134 @@ exports.recordatorioLunes = onSchedule({
     await registrarSalud("recordatorio_lunes", false, e.message || String(e),
       { duracionMs: Date.now() - t0 });
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CUSTOM CLAIMS — sincronización del rol al token de Firebase Auth
+// ─────────────────────────────────────────────────────────────────────────
+// Las reglas de Firestore/Storage necesitan conocer el rol y las obras
+// asignadas del usuario SIN hacer un read por cada operación (costo + latencia).
+// Se guardan como custom claims en el token JWT de Auth:
+//   claims = { rol: 'residente', todas: false, obras: ['0126','0127'] }
+//     · rol   → PERMISOS[rol] define qué puede leer/escribir por módulo
+//     · todas → true = ve todas las obras (directivos), false = solo asignadas
+//     · obras → array de IDs de obras cuando todas=false
+//
+// Cabe en los 1000 bytes que Firebase permite por token (rol=~30, todas=~15,
+// obras suele ser <300 chars aún con 20 obras asignadas).
+//
+// Trigger: cada vez que se escribe usuarios/{docId} — reactivo, no requiere
+// modificar crearUsuario/actualizarUsuario (siguen escribiendo el doc igual).
+// ════════════════════════════════════════════════════════════════════════════
+
+// Roles con acceso a todas las obras (todas_obras=true)
+const ROLES_TODAS_OBRAS = new Set([
+  "director_general",
+  "director_operaciones",
+  "gerente_construccion",
+  "admin_sistema",
+]);
+
+// Aplica los custom claims correspondientes a un perfil Firestore.
+// Retorna { ok:true, uid, claims } o { ok:false, motivo }.
+async function aplicarClaimsUsuario(perfil) {
+  const email = (perfil.email || "").toLowerCase().trim();
+  if (!email) return { ok: false, motivo: "sin_email" };
+  const rol = perfil.rol;
+  if (!rol || !ROLES_VALIDOS.includes(rol)) {
+    return { ok: false, motivo: "rol_invalido", rol };
+  }
+  // Localizar usuario en Auth
+  let userRecord;
+  try {
+    userRecord = perfil.uid
+      ? await admin.auth().getUser(perfil.uid).catch(() => null)
+      : null;
+    if (!userRecord) userRecord = await admin.auth().getUserByEmail(email);
+  } catch (e) {
+    return { ok: false, motivo: "auth_no_encontrado", email, err: e.message };
+  }
+  const todas = ROLES_TODAS_OBRAS.has(rol);
+  // Si es directivo, no incluimos array de obras (todas=true implica todas)
+  const obras = todas
+    ? []
+    : (Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas.map(String) : []);
+  // Si activo:false → limpiar rol para bloquear reglas (aunque Auth también se marca disabled)
+  const activo = perfil.activo !== false;
+  const claims = activo
+    ? { rol, todas, obras }
+    : { rol: null, todas: false, obras: [], inactivo: true };
+  // Solo actualizar si difieren, evita invalidar tokens innecesariamente
+  const existentes = userRecord.customClaims || {};
+  const iguales =
+    existentes.rol === claims.rol &&
+    existentes.todas === claims.todas &&
+    JSON.stringify(existentes.obras || []) === JSON.stringify(claims.obras || []) &&
+    (existentes.inactivo || false) === (claims.inactivo || false);
+  if (iguales) {
+    return { ok: true, uid: userRecord.uid, claims, sinCambios: true };
+  }
+  await admin.auth().setCustomUserClaims(userRecord.uid, claims);
+  return { ok: true, uid: userRecord.uid, claims };
+}
+
+// TRIGGER: se dispara cada vez que se crea o actualiza un doc usuarios/{docId}
+exports.sincronizarClaims = onDocumentWritten(
+  { document: "usuarios/{docId}", region: "us-central1" },
+  async (event) => {
+    const after = event.data?.after?.data();
+    // Documento eliminado → limpiar claims del user en Auth (si sigue existiendo)
+    if (!after) {
+      const before = event.data?.before?.data();
+      if (!before?.email) return null;
+      try {
+        const user = await admin.auth().getUserByEmail(String(before.email).toLowerCase());
+        await admin.auth().setCustomUserClaims(user.uid, { rol: null, todas: false, obras: [], inactivo: true });
+        console.log(`sincronizarClaims: limpiado claims de ${before.email} (doc eliminado)`);
+      } catch (e) {
+        console.warn("sincronizarClaims: no se pudo limpiar claims tras delete:", e.message);
+      }
+      return null;
+    }
+    const res = await aplicarClaimsUsuario(after);
+    if (!res.ok) {
+      console.warn(`sincronizarClaims [${event.params.docId}] no aplicó:`, res);
+    } else if (res.sinCambios) {
+      // No log innecesario
+    } else {
+      console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length}`);
+    }
+    return null;
+  }
+);
+
+// CALLABLE (admin only): recorre TODOS los usuarios y aplica claims. Usar como
+// backfill después de desplegar por primera vez. Idempotente — no re-escribe
+// si los claims ya están correctos.
+exports.backfillClaims = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request.auth);
+  const snap = await admin.firestore().collection("usuarios").get();
+  const resultados = [];
+  for (const doc of snap.docs) {
+    const perfil = doc.data();
+    const res = await aplicarClaimsUsuario(perfil);
+    resultados.push({
+      docId: doc.id,
+      email: perfil.email,
+      rol: perfil.rol,
+      ok: res.ok,
+      motivo: res.motivo || null,
+      sinCambios: !!res.sinCambios,
+    });
+  }
+  const aplicados = resultados.filter(r => r.ok && !r.sinCambios).length;
+  const sinCambios = resultados.filter(r => r.ok && r.sinCambios).length;
+  const fallidos = resultados.filter(r => !r.ok).length;
+  return {
+    total: resultados.length,
+    aplicados,
+    sinCambios,
+    fallidos,
+    detalle: resultados,
+  };
 });

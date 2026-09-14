@@ -1,0 +1,248 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPO — Reglas de seguridad de Firestore
+// Diseño: replica PERMISOS[rol][modulo] + can(rol, modulo, accion) del frontend.
+// Denegar por defecto — cualquier path no declarado abajo cae en `deny`.
+//
+// Claims esperados en request.auth.token (asignados por sincronizarClaims):
+//   rol      : uno de los 9 roles ('director_general', ..., 'cliente')
+//   todas    : bool — true = ve todas las obras, false = solo asignadas
+//   obras    : array<string> con los IDs de obras asignadas (si !todas)
+//   inactivo : bool — true bloquea todo (usuario desactivado)
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── HELPERS ────────────────────────────────────────────────────────────
+    // Nota: request.auth.token es un Map. Usar .get(k, default) para no fallar
+    // cuando el claim no existe (undefined en operadores da undefined, no false).
+    function tokenGet(k, def) { return request.auth.token.get(k, def); }
+    function esAuth() {
+      return request.auth != null
+          && tokenGet('inactivo', false) != true
+          && tokenGet('rol', null) != null;
+    }
+    function rol() { return tokenGet('rol', ''); }
+    function todasObras() { return tokenGet('todas', false) == true; }
+    function obrasAsignadas() { return tokenGet('obras', []); }
+    function esDirectivo() {
+      return esAuth() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
+    }
+    function esAdminSistema() {
+      return esAuth() && rol() in ['director_general','director_operaciones','admin_sistema'];
+    }
+    function esEquipoObraEditor() {
+      return esAuth() && rol() in ['superintendente','residente','administrador_obra'];
+    }
+    function esSupervisorObra() {
+      return esAuth() && rol() == 'supervisor';
+    }
+    function esCliente() {
+      return esAuth() && rol() == 'cliente';
+    }
+    // Puede VER la obra: directivo (todas) o equipo/supervisor/cliente asignado
+    function puedeVerObra(obraId) {
+      return esDirectivo()
+          || (esAuth()
+              && rol() in ['superintendente','residente','administrador_obra','supervisor','cliente']
+              && (todasObras() || obraId in obrasAsignadas()));
+    }
+    // Puede EDITAR la obra: directivo o equipo de obra editor con la obra asignada
+    function puedeEditarObra(obraId) {
+      return esDirectivo()
+          || (esEquipoObraEditor()
+              && (todasObras() || obraId in obrasAsignadas()));
+    }
+    // Email normalizado a docId (mismo esquema del frontend: email.replace('@','_').replace('.','_'))
+    function emailAId(email) {
+      return email.lower().replace('@','_').replace('.','_');
+    }
+    function esOwnUserDoc(docId) {
+      return esAuth()
+          && tokenGet('email', null) != null
+          && docId == emailAId(tokenGet('email', ''));
+    }
+    // Cliente ve subconjunto reducido: dashboard, avance, fotos, estimaciones, plazos
+    // (los campos internos como márgenes/costos NO viven en documentos separados,
+    //  así que 'cliente' NO puede leer /avance ni /nomina — solo lo que la vista
+    //  cliente carga: config/info, avance/subs (para % y descripciones), fotos
+    //  (via Storage), config/estimaciones (montos), contrato/plazos.
+    //  Explícitamente NO puede leer /nomina, /avance/materiales, /avance/maquinaria,
+    //  /config/otros_gastos ni /subcontratos.)
+
+    // ─────────────────────────────────────────────────────────────────────
+    // usuarios/{docId} — perfil de cada usuario
+    //   · Cada quien lee/escribe SU propio doc (excepto rol, obras, activo).
+    //   · Los admin_sistema/directivos gestionan todos (via callable server-side
+    //     usa admin SDK y bypasa reglas — aquí solo permitimos read para UI).
+    // ─────────────────────────────────────────────────────────────────────
+    match /usuarios/{docId} {
+      allow read: if esOwnUserDoc(docId) || esAdminSistema();
+      // Cualquier write al doc de usuarios SOLO por admin_sistema/directivos.
+      // Los usuarios NO deben poder cambiarse su propio rol/obras — esto viene
+      // del CallableFunction del admin. El auto-alta en Login sí crea perfil
+      // propio con rol default por lo que también permitimos create own doc.
+      allow create: if esOwnUserDoc(docId) || esAdminSistema();
+      allow update: if esAdminSistema();
+      allow delete: if esAdminSistema();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // obras/{obraId} — doc top-level y todas sus subcolecciones
+    // ─────────────────────────────────────────────────────────────────────
+    match /obras/{obraId} {
+      // Lectura del doc principal: cualquier rol con acceso a la obra
+      allow read: if puedeVerObra(obraId);
+      // Crear / editar / archivar: directivos (equipo de obra NO crea obras)
+      allow create: if esDirectivo();
+      allow update: if esDirectivo();
+      allow delete: if esDirectivo();
+
+      // ── config/info: datos generales (nombre, cliente, presupuesto, fechas)
+      match /config/info {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── config/parametros: pctAnticipo/FG/Retención — parte de estimaciones
+      match /config/parametros {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── config/estimaciones: array de estimaciones — cliente sí lee, edita equipo
+      match /config/estimaciones {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── config/catalogo: catálogo de conceptos (presupuesto) — cliente sí lee
+      match /config/catalogo {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── config/otros_gastos: gastos que no vienen de GP — NO cliente
+      match /config/otros_gastos {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── config/permisos: override de permisos por obra — solo directivos
+      match /config/permisos {
+        allow read: if puedeVerObra(obraId);
+        allow write: if esDirectivo();
+      }
+
+      // ── avance/subs: catálogo con % avance — cliente sí lee (necesario para vista Avance)
+      match /avance/subs {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── avance/maquinaria: NO cliente (costo interno)
+      match /avance/maquinaria {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── avance/materiales: NO cliente (almacén interno)
+      match /avance/materiales {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── avance/historial: snapshots semanales — NO cliente
+      match /avance/historial {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+
+      // ── nomina/historial: NÓMINA — NO cliente, NO supervisor
+      //    (supervisor tiene acceso solo-lectura al resto pero la nómina es
+      //     información particularmente sensible; hoy la UI lo muestra a
+      //     todos los operativos, si necesitas restringir a admin_obra solo,
+      //     cámbialo aquí.)
+      match /nomina/historial {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+
+      // ── contrato/plazos: cliente sí lee (vista Plazos)
+      match /contrato/plazos {
+        allow read: if puedeVerObra(obraId);
+        allow write: if puedeEditarObra(obraId);
+      }
+      // ── contrato/documentos: NO cliente
+      match /contrato/documentos {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+
+      // ── subcontratos/lista: NO cliente
+      match /subcontratos/lista {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow write: if puedeEditarObra(obraId);
+      }
+
+      // ── bitacora/{id}: NO cliente. Directivos + equipo obra escriben; append-only.
+      match /bitacora/{id} {
+        allow read: if puedeVerObra(obraId) && !esCliente();
+        allow create: if puedeEditarObra(obraId);
+        // Bitácora es append-only: no update ni delete (excepto directivos)
+        allow update, delete: if esDirectivo();
+      }
+
+      // Cualquier otro doc bajo /obras/{obraId}/**/{whatever} → deny por default.
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // global/* — datos compartidos (cache GP, historial de obras archivadas)
+    // ─────────────────────────────────────────────────────────────────────
+    match /global/gp_construct {
+      allow read: if esAuth();       // cualquier autenticado ve GP (Gastos + Dashboard)
+      allow write: if false;         // solo Cloud Function (admin SDK bypasa)
+    }
+    match /global/gp_detalle/obras/{obraGPId} {
+      allow read: if esAuth();
+      allow write: if false;         // solo Cloud Function
+    }
+    match /global/historial_obras {
+      allow read: if esDirectivo();
+      allow write: if esDirectivo();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // notificaciones/{uid}/items/{notifId} — solo el propio usuario
+    // ─────────────────────────────────────────────────────────────────────
+    match /notificaciones/{uid}/items/{notifId} {
+      allow read: if esAuth() && request.auth.uid == uid;
+      allow update: if esAuth() && request.auth.uid == uid;   // marcar leída/archivada
+      allow delete: if esAuth() && request.auth.uid == uid;
+      // Crear notificaciones desde el CLIENTE está permitido para roles operativos
+      // (la app hace notifs cross-usuario al cambiar estatus de estimaciones, etc.)
+      // Las Cloud Functions usan admin SDK y bypasan estas reglas.
+      allow create: if esAuth();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // auditoria/{id} — log append-only. Solo directivos leen. Cualquier
+    // usuario autenticado escribe (create), pero NADIE puede modificar o
+    // borrar (integridad del log).
+    // ─────────────────────────────────────────────────────────────────────
+    match /auditoria/{id} {
+      allow read: if esDirectivo();
+      allow create: if esAuth();
+      allow update, delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // health/* — panel de salud (interno; solo admin_sistema)
+    // ─────────────────────────────────────────────────────────────────────
+    match /health/{path=**} {
+      allow read: if esAdminSistema();
+      allow write: if false;   // solo Cloud Functions
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // DENY por defecto — cualquier otra ruta no declarada.
+    // ─────────────────────────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

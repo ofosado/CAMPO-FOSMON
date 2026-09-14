@@ -1,0 +1,17 @@
+{
+  "name": "campo-rules-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pruebas de seguridad Firestore + Storage con emulador Firebase",
+  "scripts": {
+    "test": "node run-tests.js"
+  },
+  "dependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase": "9.23.0",
+    "firebase-admin": "^13.6.0"
+  },
+  "overrides": {
+    "firebase": "9.23.0"
+  }
+}
