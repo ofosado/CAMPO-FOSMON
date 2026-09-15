@@ -261,6 +261,14 @@ async function correrPruebas() {
   await seedFirestore(`notificaciones/uid_residente/items/n1`, { titulo: "hola" });
   await seedFirestore(`notificaciones/otro_uid/items/n2`, { titulo: "ajena" });
   await seedFirestore(`usuarios/otro_usuario`, { rol: "residente" });
+  // Docs de usuarios con emails de MÚLTIPLES puntos (bug 2026-09-15:
+  // emailAId en rules solo reemplazaba primer punto → deny read del propio doc).
+  await seedFirestore(`usuarios/lgomez_fosmon_com_mx`, {
+    email: "lgomez@fosmon.com.mx", rol: "supervisor", obras_asignadas: ["0126"], activo: true
+  });
+  await seedFirestore(`usuarios/simple_test_com`, {
+    email: "simple@test.com", rol: "residente", obras_asignadas: ["0126"], activo: true
+  });
   await seedStorage(`obras/${OBRA_A}/fotos/foto1.jpg`, "binario");
   await seedStorage(`obras/${OBRA_A}/nomina/nom.xlsx`, "excel");
   await seedStorage(`obras/${OBRA_B}/fotos/otra.jpg`, "binario");
@@ -381,6 +389,36 @@ async function correrPruebas() {
     await caso("auditoria", dg,  "read auditoria (directivo)", "pass", (v) => fsRead(v, `auditoria/nueva1`));
     await caso("auditoria", dg,  "update auditoria → DENY", "fail", (v) => fsWrite(v, `auditoria/nueva1`, { m: 1 }));
     await caso("auditoria", dg,  "delete auditoria → DENY", "fail", (v) => fsDelete(v, `auditoria/nueva1`));
+  }
+
+  // ─── LOGIN INICIAL: leer propio doc SIN claims (bug 2026-09-15) ────
+  // Antes del fix, un usuario recién autenticado (token sin claims aún)
+  // no podía leer su propio doc de perfil → caía a fallback vacío.
+  // Además, emailAId en rules reemplazaba solo el primer punto, así que
+  // emails tipo x@y.com.mx nunca coincidían con su docId real.
+  {
+    // Token con SOLO email, sin claims (rol/todas/obras) — simula el
+    // momento post-autenticación antes de que sincronizarClaims propague.
+    const tokenSinClaims = (email) => ({ email, email_verified: true });
+
+    const uNormal = { uid: "uid_simple_no_claims",
+      jwt: makeToken("uid_simple_no_claims", tokenSinClaims("simple@test.com")),
+      claims: tokenSinClaims("simple@test.com") };
+    await caso("login_inicial", uNormal,
+      "leer propio doc (email 1 punto) SIN claims — BUG 2026-09-15",
+      "pass", (v) => fsRead(v, `usuarios/simple_test_com`));
+
+    const uMultipunto = { uid: "uid_lgomez_no_claims",
+      jwt: makeToken("uid_lgomez_no_claims", tokenSinClaims("lgomez@fosmon.com.mx")),
+      claims: tokenSinClaims("lgomez@fosmon.com.mx") };
+    await caso("login_inicial", uMultipunto,
+      "leer propio doc (email 2+ puntos: .com.mx) SIN claims — BUG 2026-09-15",
+      "pass", (v) => fsRead(v, `usuarios/lgomez_fosmon_com_mx`));
+
+    // No debe poder leer OTRO doc de usuario aunque sea sin claims
+    await caso("login_inicial", uMultipunto,
+      "leer doc de otro usuario SIN claims → DENY",
+      "fail", (v) => fsRead(v, `usuarios/simple_test_com`));
   }
 
   // ─── STORAGE ───────────────────────────────────────────────────────

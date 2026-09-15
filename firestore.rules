@@ -56,16 +56,21 @@ service cloud.firestore {
               && (todasObras() || obraId in obrasAsignadas()));
     }
     // Email normalizado a docId (mismo esquema del frontend: email.replace('@','_').replace('.','_'))
+    // OJO: en Firebase Rules `.replace(str, str)` reemplaza solo la PRIMERA
+    // ocurrencia. Usar split().join() garantiza reemplazo global de todos
+    // los puntos (crítico para emails tipo x@y.com.mx que tienen 2+ puntos —
+    // sin esto, emailAId('lgomez@fosmon.com.mx') devolvía 'lgomez_fosmon_com.mx'
+    // en vez de 'lgomez_fosmon_com_mx' y esOwnUserDoc() denegaba el read).
+    // BUG 2026-09-15: en Firebase Rules `.replace(re, sub)` y `.split(re)`
+    // interpretan el patrón como REGEX (RE2). El punto `.` es metacaracter
+    // "cualquier char", NO literal. Escapar con `\\.` es obligatorio.
+    // Sin escape, .split('.') dividía entre CADA carácter → todo string vacío.
+    // Emails como lgomez@fosmon.com.mx fallaban silenciosamente en emailAId.
     function emailAId(email) {
-      return email.lower().replace('@','_').replace('.','_');
+      return email.lower().replace('@', '_').replace('\\.', '_');
     }
     // OJO: esOwnUserDoc NO usa esAuth() porque necesita funcionar ANTES de
-    // que los custom claims estén en el token (caso login inicial: el usuario
-    // se autentica, pero su token JWT aún no trae rol/todas/obras porque el
-    // trigger sincronizarClaims corrió después. Sin poder leer su propio
-    // perfil en ese momento, se queda con rol default 'administrador_obra'
-    // y no ve sus obras asignadas). La única verificación es que el email
-    // del token (siempre presente al autenticarse) mapee al docId pedido.
+    // que los custom claims estén en el token (caso login inicial).
     function esOwnUserDoc(docId) {
       return request.auth != null
           && request.auth.token.email != null
