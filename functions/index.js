@@ -1617,6 +1617,17 @@ async function aplicarClaimsUsuario(perfil) {
 }
 
 // TRIGGER: se dispara cada vez que se crea o actualiza un doc usuarios/{docId}
+//
+// fix/refresh-token (2026-09-16): además de mantener los custom claims al día,
+// esta función incrementa `claimsVersion` en el propio doc cuando los claims
+// resultantes cambian. El cliente escucha ese campo con onSnapshot y, al
+// detectar el incremento, llama getIdToken(true) para traer un JWT nuevo con
+// los claims actualizados. Reemplaza la espera de hasta ~1 hora al auto-refresh.
+//
+// GUARDARRAÍL ANTI-BUCLE: cuando esta CF actualiza `claimsVersion` +
+// `_claimsSyncedAt`, ese update dispara sincronizarClaims otra vez. Para no
+// bucear, si detectamos que los ÚNICOS campos que cambiaron respecto al doc
+// previo son esos dos marcadores internos, retornamos sin hacer nada.
 exports.sincronizarClaims = onDocumentWritten(
   { document: "usuarios/{docId}", region: "us-central1" },
   async (event) => {
@@ -1634,13 +1645,55 @@ exports.sincronizarClaims = onDocumentWritten(
       }
       return null;
     }
+
+    // Anti-bucle: si el update trae SOLO los marcadores internos que la propia
+    // CF escribe, esto es un eco del incremento previo. Nada que hacer.
+    const before = event.data?.before?.data();
+    if (before) {
+      const camposInternos = new Set(["claimsVersion", "_claimsSyncedAt"]);
+      const allKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
+      let algoNoInternoCambio = false;
+      for (const k of allKeys) {
+        if (camposInternos.has(k)) continue;
+        // Compara por serialización JSON (arrays/objetos anidados)
+        if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) {
+          algoNoInternoCambio = true;
+          break;
+        }
+      }
+      if (!algoNoInternoCambio) {
+        // Solo cambiaron claimsVersion/_claimsSyncedAt → es nuestro propio update
+        return null;
+      }
+    }
+
     const res = await aplicarClaimsUsuario(after);
     if (!res.ok) {
       console.warn(`sincronizarClaims [${event.params.docId}] no aplicó:`, res);
-    } else if (res.sinCambios) {
-      // No log innecesario
-    } else {
-      console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length}`);
+      return null;
+    }
+    if (res.sinCambios) {
+      // Claims idénticos a los que ya tenía Auth: no invalidamos token, no
+      // incrementamos claimsVersion. El cliente NO se entera.
+      return null;
+    }
+    // Claims realmente cambiaron y ya se escribieron en Auth. Ahora
+    // incrementamos claimsVersion para que el cliente refresque su token.
+    // ORDEN IMPORTANTE: primero setCustomUserClaims (ya hecho por
+    // aplicarClaimsUsuario), luego el increment. Si se invirtiera, el
+    // snapshot podría llegarle al cliente antes que el token nuevo esté
+    // disponible en Auth.
+    try {
+      await admin.firestore().doc(`usuarios/${event.params.docId}`).update({
+        claimsVersion: admin.firestore.FieldValue.increment(1),
+        _claimsSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length} — claimsVersion incrementado`);
+    } catch (e) {
+      // Si el increment falla, no es catastrófico: los claims YA están en Auth,
+      // el usuario los recibirá en el próximo auto-refresh (~1h) o al re-login.
+      // Log para investigar.
+      console.error(`sincronizarClaims [${event.params.docId}] no pudo incrementar claimsVersion:`, e.message);
     }
     return null;
   }

@@ -79,6 +79,55 @@ la operación real y avísame de cualquier mismatch antes de desplegar.
   `sincronizarClaims` los asigna al escribir `usuarios/{docId}`. El script
   `scripts/backfill-claims.js` los asigna a los usuarios existentes una sola vez.
 
+## Refresh proactivo del token (fix/refresh-token, 2026-09-16)
+
+Cuando la Cloud Function `sincronizarClaims` detecta que los claims
+resultantes cambiaron respecto a los que Auth ya tiene, hace dos cosas:
+
+1. `setCustomUserClaims` en Auth (claims viejos → claims nuevos).
+2. Incrementa `usuarios/{docId}.claimsVersion` y setea `_claimsSyncedAt`.
+
+El cliente escucha `usuarios/{emailId}` con `onSnapshot`. Al detectar que
+`claimsVersion` aumentó respecto a la versión que ya vio, llama
+`getIdToken(true)` para forzar refresh del JWT desde Auth. El usuario ve
+un toast persistente "Tus permisos se actualizaron" con la línea concreta
+del cambio (rol nuevo, obras agregadas o quitadas). Sin este mecanismo,
+los cambios tardaban hasta 1 hora en propagarse (auto-refresh de Firebase).
+
+**Anti-bucle**: la propia CF, al escribir `claimsVersion` + `_claimsSyncedAt`,
+dispara su propio trigger `onDocumentWritten`. La CF detecta que los
+únicos campos que cambiaron son esos marcadores internos y retorna sin
+hacer nada. Guardarraíl obligatorio para no bucear.
+
+**Refresh al arranque de sesión**: adicionalmente a lo anterior, en el
+`handleLogin` se llama `getIdToken(true)` incondicionalmente justo después
+de `signInWithEmailAndPassword`. Esto cubre el caso "el usuario abre la
+app después de que le cambiaron los permisos" — perfil típico en CAMPO
+(entrar, capturar, cerrar; no dejar la app abierta todo el día). El
+`signInWithEmailAndPassword` ya devuelve un JWT nuevo por sí solo, pero
+el refresh explícito es cinturón de seguridad ante cambios futuros de
+persistencia. Costo: 200-500 ms extra en login. Si falla por falta de
+red, se logea warning y continúa con el token de `signIn` (que también
+viene fresco de la misma llamada al servidor).
+
+**Campos reservados en `usuarios/{docId}`** (escritos solo por la CF, no
+por el cliente):
+- `claimsVersion` (number, ≥1): contador monotónico creciente.
+- `_claimsSyncedAt` (timestamp): último instante en que la CF sincronizó.
+
+Las reglas actuales de `usuarios/{docId}` permiten `update` solo a
+`esAdminSistemaOSoporte()`, por lo que el cliente no puede alterar estos
+campos ni auto-disparar refresh.
+
+**Rescate de fotos huérfanas**: cuando el usuario sube una foto o
+documento y **entre el `uploadBytes` a Storage y el commit del metadata
+a Firestore** pierde acceso a la obra, el commit falla con
+`permission-denied`. El código atrapa esa falla y llama `deleteObject`
+para borrar el archivo huérfano de Storage. Si el delete también falla
+(el usuario ya no tiene write), el objeto queda temporalmente hasta que
+un job de limpieza lo detecte. No hay cola local ni reintentos —
+decisión explícita para no complicar el manejo de un caso raro.
+
 ## Custom claims en el token
 
 Cada usuario tiene en su JWT:
