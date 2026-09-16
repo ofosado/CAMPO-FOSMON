@@ -4,7 +4,8 @@
   "private": true,
   "description": "Pruebas de seguridad Firestore + Storage con emulador Firebase",
   "scripts": {
-    "test": "node run-tests.js"
+    "test": "node run-tests.js",
+    "test:cambiar-password": "node test-cambiar-password.cjs"
   },
   "dependencies": {
     "@firebase/rules-unit-testing": "^3.0.4",

@@ -282,7 +282,24 @@ exports.cambiarPassword = onCall(async (request) => {
     throw new HttpsError("not-found", "Usuario no encontrado.");
   }
   await admin.auth().updateUser(userRecord.uid, { password: nuevaPassword });
-  return { ok: true };
+  // fix/revoke-on-password (2026-09-16): cerrar sesiones activas del usuario.
+  // Sin esto, cambiar la contraseña NO invalida los JWTs vigentes: el usuario
+  // sigue autenticado hasta ~1h en el dispositivo que ya tenía sesión, con la
+  // contraseña vieja aún "válida" para su token. revokeRefreshTokens avanza
+  // tokensValidAfterTime al momento actual; el próximo checkRevoked o refresh
+  // rechaza cualquier token emitido antes.
+  //
+  // Nota: firebase-admin no falla si revokeRefreshTokens tiene un hiccup, pero
+  // envolvemos igual para que un error transitorio no rompa el resto de la
+  // respuesta. El cambio de contraseña ya se aplicó.
+  let sesionesRevocadas = true;
+  try {
+    await admin.auth().revokeRefreshTokens(userRecord.uid);
+  } catch (e) {
+    console.warn(`cambiarPassword: revokeRefreshTokens falló para ${email}: ${e.message}`);
+    sesionesRevocadas = false;
+  }
+  return { ok: true, sesionesRevocadas };
 });
 
 // ──────────────────────────────────────────────────────────────────────────
