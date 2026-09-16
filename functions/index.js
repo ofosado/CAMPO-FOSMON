@@ -28,19 +28,76 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 admin.initializeApp();
 setGlobalOptions({ maxInstances: 10, region: "us-central1" });
 
+// ────────────────────────────────────────────────────────────────────────────
+// ORGANIZACIONES: modelo multi-tenant (feature/organizaciones — 2026-09)
+// Una organización es de tipo 'constructora' (empresa que ejecuta obra) o
+// 'dependencia' (gobierno/municipio que licita/supervisa obra a contratistas).
+// El tipo se fija al crear la organización y NO es editable después.
+// Cada rol pertenece a UN tipo, salvo el rol cross-tipo 'soporte'.
+// ────────────────────────────────────────────────────────────────────────────
+const TIPOS_ORG = ["constructora", "dependencia"];
+
+// Roles válidos por tipo de organización.
+// El label visible en UI se define en src/App.jsx (ROLES_LABEL).
+const ROLES_POR_TIPO = {
+  constructora: [
+    "director_general",
+    "director_operaciones",
+    "gerente_construccion",
+    "superintendente",
+    "residente",
+    "administrador_obra",
+    "auditor",              // antes "supervisor"; renombrado 2026-09
+    "admin_sistema",
+    "cliente",
+  ],
+  dependencia: [
+    "director_obras",
+    "subdirector",
+    "jefe_supervision",
+    "supervisor_obra",      // distinto del auditor de constructora
+    "administrativo",
+    "contralor",
+    "contratista",          // equivalente a "cliente" en dependencia
+  ],
+};
+
+// Rol cross-tipo: puede crear organizaciones y usuarios en cualquier org,
+// pero NO puede leer avances, montos, evidencia ni comparativos. Todo su
+// acceso queda registrado en /auditoria (append-only).
+const ROLES_CROSS = ["soporte"];
+
+// Módulos declarados por tipo (documental — la UI se implementa cuando toque)
+const MODULOS_POR_TIPO = {
+  constructora: ["nomina", "gastos", "margen", "almacen", "maquinaria"],
+  dependencia: ["contratistas", "supervisores", "comparativo", "programa", "SIMVER"],
+};
+
+// Colecciones que van a vivir bajo /orgs/{orgId}/ por tipo. Las reglas
+// niegan desde ya el acceso cruzado aunque los datos aún no existan.
+const COLS_POR_TIPO = {
+  constructora: ["nomina", "gastos", "almacen", "maquinaria"],
+  dependencia: ["contratistas", "supervisores", "programa", "convenios", "evidencia"],
+};
+
+// Unión de todos los roles válidos (usado en validaciones básicas)
 const ROLES_VALIDOS = [
-  "director_general",
-  "director_operaciones",
-  "gerente_construccion",
-  "superintendente",
-  "residente",
-  "administrador_obra",
-  "supervisor",           // Supervisor de Obra — solo lectura, acceso completo
-  "admin_sistema",
-  "cliente",
+  ...ROLES_POR_TIPO.constructora,
+  ...ROLES_POR_TIPO.dependencia,
+  ...ROLES_CROSS,
 ];
 
-const ROLES_ADMIN = ["director_general", "director_operaciones", "admin_sistema"];
+// Roles con acceso administrativo para gestionar usuarios/organizaciones
+//   · director_general / director_operaciones / admin_sistema: dentro de su org
+//   · soporte: cross-tipo (crea orgs y usuarios pero no lee operación)
+const ROLES_ADMIN = [
+  "director_general",
+  "director_operaciones",
+  "admin_sistema",
+  "director_obras",       // equivalente en dependencia
+  "subdirector",          // segunda línea en dependencia
+  "soporte",
+];
 
 // Normaliza email para usarlo como ID de documento Firestore (igual que en CAMPO frontend)
 const emailAId = (email) => email.toLowerCase().replace(/@/g, "_").replace(/\./g, "_");
@@ -1444,25 +1501,51 @@ exports.recordatorioLunes = onSchedule({
 // Las reglas de Firestore/Storage necesitan conocer el rol y las obras
 // asignadas del usuario SIN hacer un read por cada operación (costo + latencia).
 // Se guardan como custom claims en el token JWT de Auth:
-//   claims = { rol: 'residente', todas: false, obras: ['0126','0127'] }
+//   claims = { rol, orgId, tipo, todas, obras }
 //     · rol   → PERMISOS[rol] define qué puede leer/escribir por módulo
-//     · todas → true = ve todas las obras (directivos), false = solo asignadas
+//     · orgId → id de la organización a la que pertenece (null para 'soporte')
+//     · tipo  → 'constructora' | 'dependencia' | null (para 'soporte')
+//     · todas → true = ve todas las obras de su org, false = solo asignadas
 //     · obras → array de IDs de obras cuando todas=false
 //
-// Cabe en los 1000 bytes que Firebase permite por token (rol=~30, todas=~15,
-// obras suele ser <300 chars aún con 20 obras asignadas).
+// Peor caso ~350 bytes: cabe holgado en los 1000 bytes permitidos por token.
 //
 // Trigger: cada vez que se escribe usuarios/{docId} — reactivo, no requiere
 // modificar crearUsuario/actualizarUsuario (siguen escribiendo el doc igual).
 // ════════════════════════════════════════════════════════════════════════════
 
-// Roles con acceso a todas las obras (todas_obras=true)
+// Roles con acceso a todas las obras de SU organización (todas_obras=true).
+// Nota: el tipo de organización a la que aplica cada rol se valida contra
+// ROLES_POR_TIPO en aplicarClaimsUsuario.
 const ROLES_TODAS_OBRAS = new Set([
+  // constructora
   "director_general",
   "director_operaciones",
   "gerente_construccion",
   "admin_sistema",
+  // dependencia
+  "director_obras",
+  "subdirector",
+  "jefe_supervision",
+  "contralor",
 ]);
+
+// Devuelve el tipo ('constructora' | 'dependencia') al que pertenece el rol,
+// o null si es cross-tipo (soporte) o rol desconocido.
+function tipoDeRol(rol) {
+  if (ROLES_POR_TIPO.constructora.includes(rol)) return "constructora";
+  if (ROLES_POR_TIPO.dependencia.includes(rol)) return "dependencia";
+  return null;
+}
+
+// Lee /orgs/{orgId} y devuelve { tipo, activa } o null si no existe.
+async function leerOrg(orgId) {
+  if (!orgId) return null;
+  const snap = await admin.firestore().doc(`orgs/${orgId}`).get();
+  if (!snap.exists) return null;
+  const d = snap.data() || {};
+  return { tipo: d.tipo || null, activa: d.activa !== false, nombre: d.nombre || null };
+}
 
 // Aplica los custom claims correspondientes a un perfil Firestore.
 // Retorna { ok:true, uid, claims } o { ok:false, motivo }.
@@ -1472,6 +1555,27 @@ async function aplicarClaimsUsuario(perfil) {
   const rol = perfil.rol;
   if (!rol || !ROLES_VALIDOS.includes(rol)) {
     return { ok: false, motivo: "rol_invalido", rol };
+  }
+  // Resolver organización y tipo
+  const esCross = ROLES_CROSS.includes(rol);
+  let orgId = null;
+  let tipo = null;
+  if (!esCross) {
+    orgId = perfil.orgId || null;
+    // Compatibilidad hacia atrás: si el perfil aún no tiene orgId (etapa
+    // previa a la migración), NO fallamos — asumimos org por defecto null
+    // y las reglas denegarán hasta que el script crear-org-fosmon.js corra.
+    if (orgId) {
+      const org = await leerOrg(orgId);
+      if (!org) return { ok: false, motivo: "org_no_existe", orgId };
+      if (!org.activa) return { ok: false, motivo: "org_inactiva", orgId };
+      tipo = org.tipo;
+      // Validar que el rol pertenece al tipo de la org
+      const rolesDelTipo = ROLES_POR_TIPO[tipo] || [];
+      if (!rolesDelTipo.includes(rol)) {
+        return { ok: false, motivo: "rol_no_pertenece_tipo", rol, tipo };
+      }
+    }
   }
   // Localizar usuario en Auth
   let userRecord;
@@ -1484,19 +1588,24 @@ async function aplicarClaimsUsuario(perfil) {
     return { ok: false, motivo: "auth_no_encontrado", email, err: e.message };
   }
   const todas = ROLES_TODAS_OBRAS.has(rol);
-  // Si es directivo, no incluimos array de obras (todas=true implica todas)
   const obras = todas
     ? []
     : (Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas.map(String) : []);
-  // Si activo:false → limpiar rol para bloquear reglas (aunque Auth también se marca disabled)
   const activo = perfil.activo !== false;
   const claims = activo
-    ? { rol, todas, obras }
-    : { rol: null, todas: false, obras: [], inactivo: true };
+    ? { rol, orgId, tipo, todas, obras }
+    : { rol: null, orgId: null, tipo: null, todas: false, obras: [], inactivo: true };
+  // Guardarraíl: verificar que el claim no supere los 1000 bytes del token
+  const claimBytes = Buffer.byteLength(JSON.stringify(claims), "utf8");
+  if (claimBytes > 900) {  // margen de 100 bytes por headers/firmas de Firebase
+    return { ok: false, motivo: "claim_muy_grande", bytes: claimBytes };
+  }
   // Solo actualizar si difieren, evita invalidar tokens innecesariamente
   const existentes = userRecord.customClaims || {};
   const iguales =
     existentes.rol === claims.rol &&
+    existentes.orgId === claims.orgId &&
+    existentes.tipo === claims.tipo &&
     existentes.todas === claims.todas &&
     JSON.stringify(existentes.obras || []) === JSON.stringify(claims.obras || []) &&
     (existentes.inactivo || false) === (claims.inactivo || false);
@@ -1518,7 +1627,7 @@ exports.sincronizarClaims = onDocumentWritten(
       if (!before?.email) return null;
       try {
         const user = await admin.auth().getUserByEmail(String(before.email).toLowerCase());
-        await admin.auth().setCustomUserClaims(user.uid, { rol: null, todas: false, obras: [], inactivo: true });
+        await admin.auth().setCustomUserClaims(user.uid, { rol: null, orgId: null, tipo: null, todas: false, obras: [], inactivo: true });
         console.log(`sincronizarClaims: limpiado claims de ${before.email} (doc eliminado)`);
       } catch (e) {
         console.warn("sincronizarClaims: no se pudo limpiar claims tras delete:", e.message);
@@ -1531,7 +1640,7 @@ exports.sincronizarClaims = onDocumentWritten(
     } else if (res.sinCambios) {
       // No log innecesario
     } else {
-      console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length}`);
+      console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length}`);
     }
     return null;
   }

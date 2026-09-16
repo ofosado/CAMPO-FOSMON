@@ -2,13 +2,22 @@ rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CAMPO — Reglas de seguridad de Firestore
-// Diseño: replica PERMISOS[rol][modulo] + can(rol, modulo, accion) del frontend.
-// Denegar por defecto — cualquier path no declarado abajo cae en `deny`.
+// feature/organizaciones (2026-09):
+//  · Añade colección /orgs/{orgId} con tipo ('constructora'|'dependencia'),
+//    inmutable después de create.
+//  · Propaga orgId + tipo al claim.
+//  · Todas las colecciones de constructora exigen tipo=='constructora'.
+//  · Declara paths de dependencia denegados a constructora (y viceversa)
+//    aunque los datos aún no existan.
+//  · Añade rol 'soporte' cross-tipo: puede crear /orgs y /usuarios, NO puede
+//    leer avances, montos, evidencia ni comparativos.
 //
 // Claims esperados en request.auth.token (asignados por sincronizarClaims):
-//   rol      : uno de los 9 roles ('director_general', ..., 'cliente')
-//   todas    : bool — true = ve todas las obras, false = solo asignadas
-//   obras    : array<string> con los IDs de obras asignadas (si !todas)
+//   rol      : uno de los roles válidos (constructora, dependencia o cross)
+//   orgId    : string — id de la organización (null para 'soporte')
+//   tipo     : 'constructora' | 'dependencia' | null (null para 'soporte')
+//   todas    : bool — true = ve todas las obras de SU org
+//   obras    : array<string> con IDs de obras asignadas (si !todas)
 //   inactivo : bool — true bloquea todo (usuario desactivado)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -16,8 +25,6 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ─── HELPERS ────────────────────────────────────────────────────────────
-    // Nota: request.auth.token es un Map. Usar .get(k, default) para no fallar
-    // cuando el claim no existe (undefined en operadores da undefined, no false).
     function tokenGet(k, def) { return request.auth.token.get(k, def); }
     function esAuth() {
       return request.auth != null
@@ -25,201 +32,276 @@ service cloud.firestore {
           && tokenGet('rol', null) != null;
     }
     function rol() { return tokenGet('rol', ''); }
+    function orgId() { return tokenGet('orgId', ''); }
+    function tipoOrg() { return tokenGet('tipo', ''); }
     function todasObras() { return tokenGet('todas', false) == true; }
     function obrasAsignadas() { return tokenGet('obras', []); }
-    function esDirectivo() {
-      return esAuth() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
+
+    function esConstructora() { return esAuth() && tipoOrg() == 'constructora'; }
+    function esDependencia() { return esAuth() && tipoOrg() == 'dependencia'; }
+    function esSoporte() { return esAuth() && rol() == 'soporte'; }
+
+    // ── Directivos constructora (ven toda su org constructora) ──
+    function esDirectivoC() {
+      return esConstructora() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
     }
-    function esAdminSistema() {
-      return esAuth() && rol() in ['director_general','director_operaciones','admin_sistema'];
+    // Admin de gestión (crea usuarios) por org constructora
+    function esAdminSistemaC() {
+      return esConstructora() && rol() in ['director_general','director_operaciones','admin_sistema'];
     }
     function esEquipoObraEditor() {
-      return esAuth() && rol() in ['superintendente','residente','administrador_obra'];
+      return esConstructora() && rol() in ['superintendente','residente','administrador_obra'];
     }
-    function esSupervisorObra() {
-      return esAuth() && rol() == 'supervisor';
+    function esAuditorC() {
+      return esConstructora() && rol() == 'auditor';
     }
     function esCliente() {
-      return esAuth() && rol() == 'cliente';
+      return esConstructora() && rol() == 'cliente';
     }
-    // Puede VER la obra: directivo (todas) o equipo/supervisor/cliente asignado
-    function puedeVerObra(obraId) {
-      return esDirectivo()
-          || (esAuth()
-              && rol() in ['superintendente','residente','administrador_obra','supervisor','cliente']
-              && (todasObras() || obraId in obrasAsignadas()));
+
+    // ── Directivos dependencia ──
+    // esDirectivoD: lectura amplia (incluye contralor — fiscalización sin edición)
+    function esDirectivoD() {
+      return esDependencia() && rol() in ['director_obras','subdirector','jefe_supervision','contralor'];
     }
-    // Puede EDITAR la obra: directivo o equipo de obra editor con la obra asignada
-    function puedeEditarObra(obraId) {
-      return esDirectivo()
+    // esDirectivoDEditor: escritura amplia (excluye contralor). Contralor
+    // tiene acceso de solo lectura por diseño (decisión 2026-09).
+    function esDirectivoDEditor() {
+      return esDependencia() && rol() in ['director_obras','subdirector','jefe_supervision'];
+    }
+    function esAdminSistemaD() {
+      return esDependencia() && rol() in ['director_obras','subdirector'];
+    }
+    function esSupervisorObra() {
+      return esDependencia() && rol() == 'supervisor_obra';
+    }
+    function esContratista() {
+      return esDependencia() && rol() == 'contratista';
+    }
+
+    // Unión: cualquier admin de sistema (por org) o soporte cross-tipo.
+    function esAdminSistemaOSoporte() {
+      return esAdminSistemaC() || esAdminSistemaD() || esSoporte();
+    }
+
+    // Puede VER una obra de CONSTRUCTORA: directivo (todas) o rol operativo
+    // asignado a esa obra. Cliente ve solo las suyas.
+    function puedeVerObraC(id) {
+      return esDirectivoC()
+          || (esConstructora()
+              && rol() in ['superintendente','residente','administrador_obra','auditor','cliente']
+              && (todasObras() || id in obrasAsignadas()));
+    }
+    function puedeEditarObraC(id) {
+      return esDirectivoC()
           || (esEquipoObraEditor()
-              && (todasObras() || obraId in obrasAsignadas()));
+              && (todasObras() || id in obrasAsignadas()));
     }
-    // Email normalizado a docId (mismo esquema del frontend: email.replace('@','_').replace('.','_'))
-    // OJO: en Firebase Rules `.replace(str, str)` reemplaza solo la PRIMERA
-    // ocurrencia. Usar split().join() garantiza reemplazo global de todos
-    // los puntos (crítico para emails tipo x@y.com.mx que tienen 2+ puntos —
-    // sin esto, emailAId('lgomez@fosmon.com.mx') devolvía 'lgomez_fosmon_com.mx'
-    // en vez de 'lgomez_fosmon_com_mx' y esOwnUserDoc() denegaba el read).
-    // BUG 2026-09-15: en Firebase Rules `.replace(re, sub)` y `.split(re)`
-    // interpretan el patrón como REGEX (RE2). El punto `.` es metacaracter
-    // "cualquier char", NO literal. Escapar con `\\.` es obligatorio.
-    // Sin escape, .split('.') dividía entre CADA carácter → todo string vacío.
-    // Emails como lgomez@fosmon.com.mx fallaban silenciosamente en emailAId.
+
+    // Puede VER una obra de DEPENDENCIA: directivo (todas) o rol operativo
+    // asignado. Contratista solo las suyas.
+    function puedeVerObraD(id) {
+      return esDirectivoD()
+          || (esDependencia()
+              && rol() in ['supervisor_obra','administrativo','contratista']
+              && (todasObras() || id in obrasAsignadas()));
+    }
+    function puedeEditarObraD(id) {
+      return esDirectivoDEditor()
+          || ((esSupervisorObra() || rol() == 'administrativo')
+              && (todasObras() || id in obrasAsignadas()));
+    }
+
+    // Email normalizado a docId
+    // BUG 2026-09-15: en Firebase Rules `.replace(re, sub)` interpreta el
+    // patrón como REGEX (RE2). El punto `.` es metacaracter, escapar con `\\.`.
     function emailAId(email) {
       return email.lower().replace('@', '_').replace('\\.', '_');
     }
-    // OJO: esOwnUserDoc NO usa esAuth() porque necesita funcionar ANTES de
-    // que los custom claims estén en el token (caso login inicial).
     function esOwnUserDoc(docId) {
       return request.auth != null
           && request.auth.token.email != null
           && docId == emailAId(request.auth.token.email);
     }
-    // Cliente ve subconjunto reducido: dashboard, avance, fotos, estimaciones, plazos
-    // (los campos internos como márgenes/costos NO viven en documentos separados,
-    //  así que 'cliente' NO puede leer /avance ni /nomina — solo lo que la vista
-    //  cliente carga: config/info, avance/subs (para % y descripciones), fotos
-    //  (via Storage), config/estimaciones (montos), contrato/plazos.
-    //  Explícitamente NO puede leer /nomina, /avance/materiales, /avance/maquinaria,
-    //  /config/otros_gastos ni /subcontratos.)
+
+    // ─────────────────────────────────────────────────────────────────────
+    // orgs/{orgId} — organización (constructora o dependencia)
+    // · tipo INMUTABLE después de create
+    // · Crea/edita: admin de sistema de la propia org o soporte cross-tipo
+    // ─────────────────────────────────────────────────────────────────────
+    match /orgs/{oid} {
+      // Lectura: cualquier miembro de la org, o soporte
+      allow read: if (esAuth() && orgId() == oid) || esSoporte();
+      // Crear: soporte (bootstrap) o admin de sistema (para casos edge)
+      allow create: if (esSoporte() || esAdminSistemaC() || esAdminSistemaD())
+                    && request.resource.data.tipo in ['constructora','dependencia']
+                    && request.resource.data.nombre is string
+                    && request.resource.data.activa is bool;
+      // Update: soporte o admin de la propia org. `tipo` NO se puede cambiar.
+      allow update: if (esSoporte() || (esAdminSistemaOSoporte() && orgId() == oid))
+                    && request.resource.data.tipo == resource.data.tipo;
+      allow delete: if false;  // orgs no se borran, se marcan activa=false
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // usuarios/{docId} — perfil de cada usuario
-    //   · Cada quien lee/escribe SU propio doc (excepto rol, obras, activo).
-    //   · Los admin_sistema/directivos gestionan todos (via callable server-side
-    //     usa admin SDK y bypasa reglas — aquí solo permitimos read para UI).
+    //   · Cada quien lee/crea SU propio doc (auto-alta al login).
+    //   · Update lo hace admin de gestión (de la org del usuario) o soporte.
     // ─────────────────────────────────────────────────────────────────────
     match /usuarios/{docId} {
-      allow read: if esOwnUserDoc(docId) || esAdminSistema();
-      // Cualquier write al doc de usuarios SOLO por admin_sistema/directivos.
-      // Los usuarios NO deben poder cambiarse su propio rol/obras — esto viene
-      // del CallableFunction del admin. El auto-alta en Login sí crea perfil
-      // propio con rol default por lo que también permitimos create own doc.
-      allow create: if esOwnUserDoc(docId) || esAdminSistema();
-      allow update: if esAdminSistema();
-      allow delete: if esAdminSistema();
+      allow read: if esOwnUserDoc(docId) || esAdminSistemaOSoporte();
+      allow create: if esOwnUserDoc(docId) || esAdminSistemaOSoporte();
+      allow update: if esAdminSistemaOSoporte();
+      allow delete: if esAdminSistemaOSoporte();
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // obras/{obraId} — doc top-level y todas sus subcolecciones
-    // ─────────────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════════
+    // CONSTRUCTORA — obras/{obraId} (path legacy, no migrado aún)
+    // Todas las lecturas/escrituras exigen tipo=='constructora'.
+    // Soporte NUNCA puede leer estos paths (deny explícito por diseño).
+    // ═════════════════════════════════════════════════════════════════════
     match /obras/{obraId} {
-      // Lectura del doc principal: cualquier rol con acceso a la obra
-      allow read: if puedeVerObra(obraId);
-      // Crear / editar / archivar: directivos (equipo de obra NO crea obras)
-      allow create: if esDirectivo();
-      allow update: if esDirectivo();
-      allow delete: if esDirectivo();
+      allow read: if puedeVerObraC(obraId);
+      allow create, update, delete: if esDirectivoC();
 
-      // ── config/info: datos generales (nombre, cliente, presupuesto, fechas)
       match /config/info {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── config/parametros: pctAnticipo/FG/Retención — parte de estimaciones
       match /config/parametros {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── config/estimaciones: array de estimaciones — cliente sí lee, edita equipo
       match /config/estimaciones {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── config/catalogo: catálogo de conceptos (presupuesto) — cliente sí lee
       match /config/catalogo {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── config/otros_gastos: gastos que no vienen de GP — NO cliente
       match /config/otros_gastos {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── config/permisos: override de permisos por obra — solo directivos
       match /config/permisos {
-        allow read: if puedeVerObra(obraId);
-        allow write: if esDirectivo();
+        allow read: if puedeVerObraC(obraId);
+        allow write: if esDirectivoC();
       }
 
-      // ── avance/subs: catálogo con % avance — cliente sí lee (necesario para vista Avance)
       match /avance/subs {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── avance/maquinaria: NO cliente (costo interno)
       match /avance/maquinaria {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── avance/materiales: NO cliente (almacén interno)
       match /avance/materiales {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── avance/historial: snapshots semanales — NO cliente
       match /avance/historial {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
 
-      // ── nomina/historial: NÓMINA — NO cliente, NO supervisor
-      //    (supervisor tiene acceso solo-lectura al resto pero la nómina es
-      //     información particularmente sensible; hoy la UI lo muestra a
-      //     todos los operativos, si necesitas restringir a admin_obra solo,
-      //     cámbialo aquí.)
       match /nomina/historial {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
 
-      // ── contrato/plazos: cliente sí lee (vista Plazos)
       match /contrato/plazos {
-        allow read: if puedeVerObra(obraId);
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
       }
-      // ── contrato/documentos: NO cliente
       match /contrato/documentos {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
 
-      // ── subcontratos/lista: NO cliente
       match /subcontratos/lista {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow write: if puedeEditarObra(obraId);
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
       }
 
-      // ── bitacora/{id}: NO cliente. Directivos + equipo obra escriben; append-only.
       match /bitacora/{id} {
-        allow read: if puedeVerObra(obraId) && !esCliente();
-        allow create: if puedeEditarObra(obraId);
-        // Bitácora es append-only: no update ni delete (excepto directivos)
-        allow update, delete: if esDirectivo();
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow create: if puedeEditarObraC(obraId);
+        allow update, delete: if esDirectivoC();
       }
+    }
 
-      // Cualquier otro doc bajo /obras/{obraId}/**/{whatever} → deny por default.
+    // ═════════════════════════════════════════════════════════════════════
+    // DEPENDENCIA — /orgs/{orgId}/obras/{obraId} (declarado sin datos)
+    // Reglas ya blindan aunque no haya UI.
+    // Constructora / cliente / soporte NO pueden leer estos paths.
+    // ═════════════════════════════════════════════════════════════════════
+    match /orgs/{oid}/obras/{obraId} {
+      allow read: if oid == orgId() && puedeVerObraD(obraId);
+      allow create, update, delete: if oid == orgId() && esDirectivoD();
+
+      // Contratista solo ve el contratista de su propia obra
+      match /contratistas/{cid} {
+        allow read: if oid == orgId() && (
+          esDirectivoD()
+          || (esSupervisorObra() && obraId in obrasAsignadas())
+          || (esContratista() && obraId in obrasAsignadas() && cid == request.auth.uid)
+        );
+        allow write: if oid == orgId() && esDirectivoD();
+      }
+      match /supervisores/{sid} {
+        allow read: if oid == orgId() && esDirectivoD();
+        allow write: if oid == orgId() && esDirectivoD();
+      }
+      match /programa/{pid} {
+        allow read: if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /convenios/{cid} {
+        allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoD());
+      }
+      match /evidencia/{eid} {
+        // Supervisor de obra captura evidencia
+        allow read: if oid == orgId() && puedeVerObraD(obraId);
+        allow create: if oid == orgId() && (esSupervisorObra() || esDirectivoD() || rol() == 'administrativo')
+                      && obraId in obrasAsignadas();
+        allow update, delete: if oid == orgId() && esDirectivoD();
+      }
+    }
+
+    // Comparativo cross-obras SOLO para director_obras/subdirector.
+    // Explícitamente NO para contralor (según decisión 2026-09).
+    match /orgs/{oid}/comparativo/{docId} {
+      allow read: if oid == orgId() && esDependencia() && rol() in ['director_obras','subdirector'];
+      allow write: if oid == orgId() && rol() == 'director_obras';
+    }
+
+    // Padrón general de contratistas (no ligado a obra específica)
+    match /orgs/{oid}/contratistas/{cid} {
+      allow read: if oid == orgId() && esDependencia() && rol() in ['director_obras','subdirector','jefe_supervision','contralor','administrativo'];
+      // Contratista solo ve su propio doc
+      allow read: if oid == orgId() && esContratista() && cid == request.auth.uid;
+      allow write: if oid == orgId() && rol() in ['director_obras','subdirector','administrativo'];
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // global/* — datos compartidos (cache GP, historial de obras archivadas)
-    //
-    // GP Construct: NO lo lee el cliente (información interna de costos).
-    // Directivos + equipo de obra + supervisor sí lo leen. Escritura solo
-    // por Cloud Function (Admin SDK bypasa reglas).
+    // Colecciones globales de constructora (path legacy, sin org prefix)
+    // Exigen tipo=='constructora'. Soporte NO lee (no ve montos).
+    // Cliente NO lee (info interna).
     // ─────────────────────────────────────────────────────────────────────
     match /global/gp_construct {
-      allow read: if esAuth() && !esCliente();
+      allow read: if esConstructora() && !esCliente();
       allow write: if false;
     }
     match /global/gp_detalle/obras/{obraGPId} {
-      allow read: if esAuth() && !esCliente();
+      allow read: if esConstructora() && !esCliente();
       allow write: if false;
     }
     match /global/historial_obras {
-      allow read: if esDirectivo();
-      allow write: if esDirectivo();
+      allow read: if esDirectivoC();
+      allow write: if esDirectivoC();
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -227,31 +309,29 @@ service cloud.firestore {
     // ─────────────────────────────────────────────────────────────────────
     match /notificaciones/{uid}/items/{notifId} {
       allow read: if esAuth() && request.auth.uid == uid;
-      allow update: if esAuth() && request.auth.uid == uid;   // marcar leída/archivada
+      allow update: if esAuth() && request.auth.uid == uid;
       allow delete: if esAuth() && request.auth.uid == uid;
-      // Crear notificaciones desde el CLIENTE está permitido para roles operativos
-      // (la app hace notifs cross-usuario al cambiar estatus de estimaciones, etc.)
-      // Las Cloud Functions usan admin SDK y bypasan estas reglas.
       allow create: if esAuth();
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // auditoria/{id} — log append-only. Solo directivos leen. Cualquier
-    // usuario autenticado escribe (create), pero NADIE puede modificar o
-    // borrar (integridad del log).
+    // auditoria/{id} — log append-only.
+    // Lectura: directivos de constructora, directivos de dependencia.
+    // (Soporte NO puede leer: sus propios registros los verá el auditor de
+    //  la org que corresponda.)
     // ─────────────────────────────────────────────────────────────────────
     match /auditoria/{id} {
-      allow read: if esDirectivo();
-      allow create: if esAuth();
+      allow read: if esDirectivoC() || esDirectivoD();
+      allow create: if esAuth();  // incluye soporte — cada acción se registra
       allow update, delete: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // health/* — panel de salud (interno; solo admin_sistema)
+    // health/* — panel de salud (solo admin_sistema constructora)
     // ─────────────────────────────────────────────────────────────────────
     match /health/{path=**} {
-      allow read: if esAdminSistema();
-      allow write: if false;   // solo Cloud Functions
+      allow read: if esConstructora() && rol() == 'admin_sistema';
+      allow write: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────

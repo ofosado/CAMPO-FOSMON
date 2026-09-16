@@ -1447,14 +1447,26 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     y = secHead('RESUMEN EJECUTIVO DE SUBCONTRATOS', y);
 
     // KPIs resumen
+    // "Pagado" alineado con el detalle del sub y con la UI (ago-2026):
+    // estimaciones Pagadas + pagos legacy sin origenEstimacionId
+    // (para no doble-contar cuando la estimación pagada ya generó un pago).
+    const _neEstResumen = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const pagadoDeSub = (s) => {
+      const ests = (s.estimaciones||[])
+        .filter(e => _neEstResumen(e.estatus) === 'pagada')
+        .reduce((t,e)=>t+pf(e.monto), 0);
+      const legacy = (s.pagos||[])
+        .filter(p => p.estatus==='pagado' && !p.origenEstimacionId)
+        .reduce((t,p)=>t+pf(p.monto), 0);
+      return ests + legacy;
+    };
     const totContratado = subcontratos.reduce((t,s)=>t+pf(s.monto), 0);
     const totEjecutado  = subcontratos.reduce((t,s)=>{
       const totCat = (s.conceptos||[]).reduce((tt,c)=>tt+pf(c.importe), 0);
       const ejec = (s.conceptos||[]).reduce((tt,c)=>tt+((pf(c.avance)/100)*pf(c.importe)), 0);
       return t + ejec;
     }, 0);
-    const totPagado = subcontratos.reduce((t,s)=>
-      t + (s.pagos||[]).filter(p=>p.estatus==='pagado').reduce((tt,p)=>tt+pf(p.monto), 0), 0);
+    const totPagado = subcontratos.reduce((t,s)=>t + pagadoDeSub(s), 0);
     const activos = subcontratos.filter(s=>(s.estado||'activa')==='activa').length;
 
     y = kpiRow([
@@ -1469,7 +1481,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       const totCat = (s.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
       const ejec   = (s.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
       const avPct  = totCat > 0 ? (ejec/totCat)*100 : 0;
-      const pag    = (s.pagos||[]).filter(p=>p.estatus==='pagado').reduce((t,p)=>t+pf(p.monto), 0);
+      const pag    = pagadoDeSub(s);
       const finPct = pf(s.monto) > 0 ? (pag/pf(s.monto))*100 : 0;
       const pendiente = pf(s.monto) - pag;
       return [
@@ -1535,7 +1547,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
     // Nota al pie
     st(K.gmu); fs(7); fw('italic');
-    T(`El detalle de cada subcontrato (catálogo y pagos) aparece en las hojas siguientes.`,
+    T(`El detalle de cada subcontrato (catálogo y estimaciones) aparece en las hojas siguientes.`,
       ML, y+3);
 
     // ──────────────────────────────────────────────────────────────────────
@@ -3615,16 +3627,56 @@ function EmblemaFOSMON({ size=22, dark=false, opacity=1 }) {
 // ── ROLES Y USUARIOS ───────────────────────────────────────────────────────
 // Usuarios ahora en Firebase Auth + Firestore
 
+// ── MULTI-TENANT: TIPOS DE ORGANIZACIÓN Y CATÁLOGO DE ROLES ────────────────
+// Introducido en feature/organizaciones (2026-09). En esta etapa FOSMON queda
+// declarada como constructora y los usuarios existentes no cambian de UI. Los
+// roles de dependencia se declaran pero aún no hay interfaz para ellos.
+const TIPOS_ORG = ["constructora", "dependencia"];
+
+const ROLES_POR_TIPO = {
+  constructora: [
+    "director_general","director_operaciones","gerente_construccion",
+    "superintendente","residente","administrador_obra",
+    "auditor",              // renombrado desde "supervisor" (2026-09)
+    "admin_sistema","cliente",
+  ],
+  dependencia: [
+    "director_obras","subdirector","jefe_supervision",
+    "supervisor_obra","administrativo","contralor",
+    "contratista",          // equivalente a "cliente" en dependencia
+  ],
+};
+
+// Cross-tipo: soporte puede crear orgs/usuarios pero no lee operación.
+// Toda su actividad queda registrada en /auditoria.
+const ROLES_CROSS = ["soporte"];
+
+const MODULOS_POR_TIPO = {
+  constructora: ["nomina","gastos","margen","almacen","maquinaria"],
+  dependencia: ["contratistas","supervisores","comparativo","programa","SIMVER"],
+};
+
 const ROL_LABEL = {
+  // Constructora
   director_general:    "Director General",
   director_operaciones:"Director de Operaciones",
   gerente_construccion:"Gerente de Construcción",
   superintendente:     "Superintendente de Obra",
   residente:           "Residente de Obra",
   administrador_obra:  "Administrador de Obra",
-  supervisor:          "Supervisor de Obra",
+  auditor:             "Auditor Interno",   // antes "Supervisor de Obra" — 3 usuarios externos (hytorc/noleaks)
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
+  // Dependencia (declarados, sin UI aún)
+  director_obras:      "Director de Obras",
+  subdirector:         "Subdirector",
+  jefe_supervision:    "Jefe de Supervisión",
+  supervisor_obra:     "Supervisor de Obra",
+  administrativo:      "Administrativo",
+  contralor:           "Contralor",
+  contratista:         "Contratista",
+  // Cross-tipo
+  soporte:             "Soporte",
 };
 
 // Permisos: can(rol, modulo, accion)
@@ -3633,15 +3685,16 @@ const ROL_LABEL = {
 // Equipo de obra (super/residente/admin_obra): mismos permisos por default.
 // Puede afinarse por obra desde Planeación → Permisos (override).
 // ── PERMISOS POR ROL ────────────────────────────────────────────────────────
-// Roles EJECUTIVOS (todas_obras:true, edición completa):
-//   Director General · Director de Operaciones · Gerente de Construcción ·
-//   Administrador de Sistema
-// Roles de OBRA (todas_obras:false, acceso solo a las obras que se les asignen):
-//   Superintendente de Obra · Residente de Obra · Administrador de Obra
-//   (los 3 pueden editar) · Supervisor de Obra (solo lectura, observador)
-// Rol externo:
-//   Cliente (solo ve avance/fotos/estimaciones de sus obras asignadas)
+// Constructora:
+//   EJECUTIVOS (todas_obras:true): director_general, director_operaciones,
+//     gerente_construccion, admin_sistema.
+//   OBRA (todas_obras:false, editan): superintendente, residente, administrador_obra.
+//   AUDITOR (todas_obras:false, solo lectura): auditor.
+//   EXTERNO: cliente (solo ve avance/fotos/estimaciones de sus obras).
+// Dependencia y soporte: declarados en PERMISOS abajo pero SIN UI implementada
+// en esta etapa. La UI seguirá viéndose exactamente igual para constructora.
 const PERMISOS = {
+  // ── Constructora ──
   director_general:    { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
   director_operaciones:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
   gerente_construccion:{ dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
@@ -3649,11 +3702,25 @@ const PERMISOS = {
   superintendente:     { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   residente:           { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
   administrador_obra:  { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:false },
-  // Supervisor de Obra: acceso TOTAL de solo lectura a las obras que se le
-  // asignan. Ve todo (Dashboard, Operación, Gastos, Planeación) pero no puede
-  // editar. Útil para roles de auditoría / observador externo.
-  supervisor:          { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
+  // Auditor Interno (antes "supervisor"): acceso TOTAL de solo lectura a las
+  // obras asignadas. 3 usuarios externos (2 @hytorc.com.mx, 1 @noleaks.com.mx)
+  // auditando una obra que FOSMON ejecuta en conjunto con esas empresas.
+  auditor:             { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
   cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
+  // ── Dependencia (declarados; UI se implementa cuando toque) ──
+  director_obras:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
+  subdirector:         { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
+  jefe_supervision:    { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:true  },
+  supervisor_obra:     { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:false },
+  administrativo:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  // Contralor: lectura amplia sin edición. NO ve comparativo (queda restringido
+  // a director_obras y subdirector).
+  contralor:           { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  contratista:         { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
+  // ── Cross-tipo ──
+  // Soporte: NO puede ver operación (avances/montos/evidencia/comparativos).
+  // Solo crea/edita orgs y usuarios — permiso enforceado por reglas Firestore.
+  soporte:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
 };
 
 // Override de permisos por obra: { [rol]: { [modulo]: "ver"|"editar"|null } }
@@ -4943,7 +5010,7 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     ["superintendente",     "Superintendente de Obra"],
     ["residente",           "Residente de Obra"],
     ["administrador_obra",  "Administrador de Obra"],
-    ["supervisor",          "Supervisor de Obra"],
+    ["auditor",             "Auditor Interno"],
     // Externo
     ["cliente",             "Cliente"],
   ];
@@ -4994,7 +5061,7 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
 
       {/* Asignación de obras — útil para clientes y admin de obra */}
       {/* Selector de obras para todos los roles que NO son ejecutivos.
-          Los 4 roles de obra (superintendente, residente, admin_obra, supervisor)
+          Los 4 roles de obra (superintendente, residente, admin_obra, auditor)
           y cliente necesitan asignación explícita.
           Se detecta consultando PERMISOS[rol].todas_obras — si es false,
           hay que asignar obras. */}
@@ -13612,7 +13679,7 @@ const TABS_POR_ROL = {
   superintendente:     [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   residente:           [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   administrador_obra:  [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
-  supervisor:          [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
+  auditor:             [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 };
@@ -13683,8 +13750,8 @@ const PASOS_BIENVENIDA = {
     { t:"Administrador de Sistema", d:"Tienes acceso a todas las obras en modo lectura para soporte técnico." },
     { t:"Usuarios", d:"Puedes dar de alta o desactivar usuarios desde la pantalla de Administración." },
   ],
-  supervisor: [
-    { t:"Modo observador", d:"Tienes acceso completo a las obras asignadas pero en solo lectura. Puedes ver todo sin poder modificar nada." },
+  auditor: [
+    { t:"Auditor Interno", d:"Tienes acceso completo a las obras asignadas pero en solo lectura. Puedes ver todo sin poder modificar nada." },
     { t:"Dashboard", d:"Al entrar a una obra verás los KPIs clave, tendencias semanales y semáforo de riesgos." },
     { t:"Operación y Gastos", d:"Consulta avance físico, fotos, estimaciones, subcontratos y todos los gastos de la obra." },
     { t:"Reporte ejecutivo", d:"En cada obra puedes descargar el PDF ejecutivo desde el botón arriba a la derecha." },
@@ -14336,7 +14403,7 @@ function Bitacora({obras}){
 // ── MATRIZ DE PERMISOS POR OBRA ──────────────────────────────────────────
 // Permite a Director/Director Op./Admin Sistema sobre-escribir los permisos
 // del equipo operativo (super/residente/admin_obra) en una obra específica.
-const ROLES_OVERRIDE = ["superintendente","residente","administrador_obra","supervisor"];
+const ROLES_OVERRIDE = ["superintendente","residente","administrador_obra","auditor"];
 const MODULOS_OVERRIDE = [
   {id:"captura",      label:"Avance físico"},
   {id:"gastos",       label:"Gastos"},
@@ -14683,7 +14750,7 @@ export default function App(){
   //
   // FIX #A rules-seguridad (2026-09-14):
   //   Con las reglas nuevas por rol, `getDocs(collection('obras'))` es
-  //   rechazado para roles no-directivos (residente/supervisor/cliente/etc.)
+  //   rechazado para roles no-directivos (residente/auditor/cliente/etc.)
   //   porque Firestore requiere que TODAS las docs del query sean legibles.
   //   Solución: para roles con `todas_obras=true` (directivos) seguimos
   //   listando la colección completa; para los demás, cargamos SOLO las

@@ -1,20 +1,70 @@
 # CAMPO — Reglas de seguridad por rol
 
-**Rama:** `claude/rules-seguridad` · **Estado:** listo para revisar, **NO desplegado**.
+**Rama:** `feature/organizaciones` · **Estado:** listo para revisar, **NO desplegado**.
 
-> ⚠️ **Nota sobre el rol `supervisor`.** En CAMPO FOSMON, `supervisor` es un
-> **auditor interno de solo lectura**: entra a las obras que se le asignan
-> para revisar avance/gastos/nómina sin capturar nada.
-> **NO es lo mismo** que el rol `supervisor_obra` que aparecerá en la
-> edición municipal del sistema, que será **externo** y sí captura en campo
-> (verifica in situ el trabajo de contratistas). Pendiente de renombrar
-> este rol a algo tipo `auditor` en la etapa de organizaciones/multi-tenant
-> para evitar la colisión de nombres.
+## Modelo multi-tenant (2026-09, feature/organizaciones)
 
-Este documento traduce a lenguaje humano lo que las nuevas reglas
-`firestore.rules` y `storage.rules` permiten y bloquean para cada uno de
-los 9 roles. Revísalo contra la operación real y avísame de cualquier
-mismatch antes de desplegar.
+CAMPO introduce el concepto de **organización** (`orgs/{orgId}`) con
+`tipo ∈ {"constructora","dependencia"}`, **inmutable después de create**.
+
+- FOSMON = organización `fosmon`, tipo `constructora`.
+- Dependencia (municipio/gobierno) tendrá su propia org, tipo `dependencia`.
+- Cada rol pertenece a **UN** tipo de org. Excepción: `soporte` es
+  cross-tipo (crea orgs y usuarios pero NO lee operación).
+- Reglas hacen cumplir el aislamiento por tipo desde YA, aunque las
+  colecciones de dependencia todavía no existan como datos.
+
+### Roles por tipo
+
+**Constructora (9 roles):**
+
+| Rol | Etiqueta UI | Nota |
+|---|---|---|
+| `director_general` | Director General | ejecutivo, todas las obras |
+| `director_operaciones` | Director de Operaciones | ejecutivo, todas las obras |
+| `gerente_construccion` | Gerente de Construcción | ejecutivo, todas las obras |
+| `superintendente` | Superintendente de Obra | editor de obras asignadas |
+| `residente` | Residente de Obra | editor de obras asignadas |
+| `administrador_obra` | Administrador de Obra | editor de obras asignadas |
+| `auditor` | **Auditor Interno** *(antes "supervisor")* | solo lectura obras asignadas |
+| `admin_sistema` | Administrador de Sistema | ejecutivo, todas las obras |
+| `cliente` | Cliente | externo, ve avance/fotos/estimaciones |
+
+**Dependencia (7 roles, declarados, UI pendiente):**
+
+| Rol | Notas |
+|---|---|
+| `director_obras` | máxima autoridad; ve comparativo |
+| `subdirector` | segunda línea; ve comparativo |
+| `jefe_supervision` | responsable del cuerpo de supervisión |
+| `supervisor_obra` | supervisor municipal; captura evidencia en obras asignadas |
+| `administrativo` | back-office; escribe convenios |
+| `contralor` | fiscalización, lectura amplia sin edición, **NO ve comparativo** |
+| `contratista` | equivalente a `cliente`; solo su obra, sin datos de otros |
+
+**Cross-tipo (1 rol):**
+
+| Rol | Notas |
+|---|---|
+| `soporte` | crea orgs y usuarios; **NO** lee avances, montos, evidencia ni comparativos; todo acceso registrado en `/auditoria` |
+
+### Migración incluida
+
+- Rol `supervisor` → `auditor` en usuarios existentes (3 usuarios externos:
+  2 `@hytorc.com.mx`, 1 `@noleaks.com.mx`, auditando una obra que FOSMON
+  ejecuta en conjunto con esas empresas). Script:
+  `scripts/migrar-supervisor-a-auditor.js`.
+- Creación de `orgs/fosmon` y etiquetado de todos los usuarios con
+  `orgId="fosmon"`. Script: `scripts/crear-org-fosmon.js`. **No mueve
+  datos de obras** — las obras siguen viviendo en `/obras/*`.
+
+---
+
+## Referencia (documento anterior, roles constructora)
+
+Este documento traduce a lenguaje humano lo que las reglas
+`firestore.rules` y `storage.rules` permiten y bloquean. Revísalo contra
+la operación real y avísame de cualquier mismatch antes de desplegar.
 
 ## Cambios respecto a hoy
 
@@ -36,16 +86,22 @@ Cada usuario tiene en su JWT:
 ```json
 {
   "rol":      "residente",
+  "orgId":    "fosmon",
+  "tipo":     "constructora",
   "todas":    false,
   "obras":    ["0126","0127"],
   "inactivo": false
 }
 ```
 
-- `rol`: uno de los 9 roles definidos.
-- `todas`: `true` para directivos (`director_general`, `director_operaciones`, `gerente_construccion`, `admin_sistema`) → ven todas las obras.
+- `rol`: uno de los roles válidos (constructora, dependencia o cross-tipo).
+- `orgId`: id de la organización (`null` para `soporte`).
+- `tipo`: `constructora` | `dependencia` | `null` (para `soporte`).
+- `todas`: `true` para roles que ven todas las obras de SU org.
 - `obras`: lista de IDs de obras asignadas (solo cuando `todas=false`).
 - `inactivo`: si el perfil se marca activo:false, se pone `true` y las reglas rechazan cualquier acceso.
+
+Peor caso ~350 bytes: cabe holgado en los 1000 bytes permitidos por token.
 
 ---
 
@@ -283,3 +339,72 @@ Si algo se rompe en producción tras desplegar:
    ```
    gcloud firestore import gs://campo-fosmon-backups/firestore/2026-09-11-preseguridad
    ```
+
+---
+
+## Pendientes conocidos
+
+### 1. `auditor` lee `global/gp_construct` completo (multi-obra)
+
+**Problema:** el rol `auditor` (antes `supervisor`) puede leer
+`/global/gp_construct`, que es un blob único con el gasto de **todas**
+las obras de FOSMON. Un auditor asignado a la obra `0126` técnicamente
+puede ver los gastos de `0127`, `0128`, etc. — no solo los suyos.
+
+**Impacto:** filtración cross-obra dentro de FOSMON. Los 3 auditores en
+producción (`@hytorc.com.mx`, `@noleaks.com.mx`) están auditando una
+obra conjunta y no tienen razón para ver el gasto de otras obras.
+
+**Solución propuesta (no implementada en esta etapa):**
+- Deprecar la lectura del blob `gp_construct` para roles no-directivos.
+- Migrar todas las lecturas del frontend a `/global/gp_detalle/obras/{obraId}`,
+  que ya está particionada por obra.
+- Modificar la regla `/global/gp_detalle/obras/{obraGPId}` para que exija
+  que `obraGPId` esté relacionada con una obra en `obrasAsignadas()`
+  (necesita mapping obraId ↔ gpId; hoy usamos convención `gp_{obraId}`).
+- Mantener `gp_construct` accesible solo a directivos (`esDirectivoC()`).
+
+**Por qué no lo resolvemos ahora:** requiere tocar `Dashboard`, `Panel
+Ejecutivo` y `PantallaObras` en el frontend para reemplazar la lectura
+del blob por lecturas paginadas. Es un refactor con riesgo de UI. La
+migración `feature/organizaciones` es puramente de modelo y aisla los
+tenants primero; el fix `gp_construct` va en una rama siguiente.
+
+### 2. Colecciones de dependencia sin datos ni UI
+
+Las rutas `/orgs/{orgId}/obras/{obraId}/{contratistas|supervisores|programa|convenios|evidencia}`
+tienen reglas de acceso pero no tienen UI ni datos. Cuando toque
+implementar la edición dependencia se creará:
+- Módulos: padrón de contratistas, supervisores, comparativo, programa,
+  convenios, evidencia, SIMVER.
+- Interfaz para roles `director_obras`, `subdirector`, `jefe_supervision`,
+  `supervisor_obra`, `administrativo`, `contralor`, `contratista`.
+
+### 3. Auditoría de accesos de `soporte`
+
+Cada acción de `soporte` debe generar entrada en `/auditoria`. Las reglas
+lo permiten (allow create), pero **el frontend debe llamarlo explícitamente**
+al crear una org o usuario desde una futura pantalla de administración
+cross-tenant. Trigger de Cloud Function opcional a implementar si se
+detecta que el frontend puede olvidarse.
+
+### 4. Cuentas de prueba dedicadas por rol
+
+Hoy verificamos el comportamiento de cada rol usando cuentas de personas
+reales (por ejemplo, `lgomez@fosmon.com.mx` era la cuenta de prueba del
+rol `supervisor` antes de la migración a `auditor`). Esto contamina:
+
+- **Trazabilidad de `/auditoria`**: cada acción de prueba queda registrada
+  como si la persona real la hubiera hecho.
+- **Bitácora por obra**: eventos de captura hechos para verificar se
+  atribuyen a la persona, no a "prueba".
+- **Notificaciones cross-usuario**: la persona real recibe notificaciones
+  generadas por pruebas de otro rol.
+
+**Solución propuesta (no implementada):** crear cuentas dedicadas por rol
+con emails del estilo `test-<rol>@fosmon.com.mx`, marcadas con un flag
+`_prueba: true` en el perfil. El frontend puede filtrarlas de listas de
+usuario visibles, y `/auditoria` puede omitirlas o marcarlas visualmente.
+
+**Prioridad:** media. No bloquea nada pero ensucia la bitácora conforme
+crece el uso real de CAMPO.
