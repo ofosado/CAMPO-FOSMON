@@ -457,3 +457,46 @@ usuario visibles, y `/auditoria` puede omitirlas o marcarlas visualmente.
 
 **Prioridad:** media. No bloquea nada pero ensucia la bitácora conforme
 crece el uso real de CAMPO.
+
+### 5. Falta `onAuthStateChanged` en el frontend
+
+**Problema:** el frontend no registra un listener a `onAuthStateChanged`
+de Firebase Auth. El estado React `usuario` solo se popula al pasar por
+`handleLogin` (email+password). Al restaurar sesión desde IndexedDB (auto
+persistencia de Firebase), el componente `App()` arranca con `usuario:null`
+y renderiza `<Login/>`; el usuario teclea de nuevo su password.
+
+**Consecuencia relevante después de `fix/revoke-on-password` (2026-09-16):**
+cuando un directivo cambia la contraseña de un usuario, la Cloud Function
+`cambiarPassword` ejecuta `revokeRefreshTokens(uid)` — todos los JWT
+vigentes de ese usuario quedan inválidos. Con un listener de
+`onAuthStateChanged` bien configurado, esto dispararía un `signOut`
+inmediato en el dispositivo del usuario. Sin él, el usuario queda en
+**estado zombie**: la UI de CAMPO sigue cargada, pero cualquier consulta
+a Firestore/Storage falla con `permission-denied` porque el token está
+revocado. Solo al cerrar y volver a abrir la app (o al agotar el token,
+~1 hora), el flujo de login vuelve a arrancar normal.
+
+Otras consecuencias del mismo hueco:
+- Sesión persistente (Firebase default) queda desaprovechada — el usuario
+  igual re-teclea password en cada arranque.
+- Los cambios de permisos hechos con `sincronizarClaims` solo se propagan
+  al dispositivo cuando la app está abierta y el listener de
+  `claimsVersion` los recibe (cubierto por `fix/refresh-token`).
+
+**Solución propuesta (no implementada):**
+- Añadir `onAuthStateChanged(fbAuth, async (user) => { ... })` al mount de
+  `App()`. Si `user != null`, restaurar `usuario` state leyendo
+  `usuarios/{emailAId(user.email)}`. Si `user == null`, hacer
+  `setUsuario(null)` (equivale a logout, muestra `<Login/>`).
+- Manejar el caso `user.disabled === true` (usuario desactivado): forzar
+  `signOut` y mostrar mensaje.
+- Al agregarlo, decidir si activar sesión persistente formal (ver
+  discusión de riesgos en dispositivos compartidos de obra: timeout de
+  inactividad, verificar `activo:true` al restaurar, botón visible
+  "Cambiar de usuario").
+
+**Prioridad:** media-alta. No es una vulnerabilidad de seguridad
+(el token revocado no permite operar), pero degrada la UX y hace que la
+funcionalidad de "cerrar sesión al cambiar contraseña" no se sienta en
+tiempo real.
