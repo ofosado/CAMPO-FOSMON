@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
-import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
@@ -3154,11 +3154,17 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
 // IMPORTANTE: si el upload falla, lanzamos error. Antes había un fallback
 // silencioso que retornaba el base64url y se guardaba en Firestore, causando
 // que las fotos "desaparecieran" al recargar y no salieran en el PDF.
+//
+// fix/refresh-token (2026-09-16): devuelve {url, ref} para que el caller
+// pueda hacer deleteObject(ref) si el commit posterior a Firestore falla
+// (ej. el usuario perdió acceso a la obra justo después de subir la foto).
+// Sin ese rescate quedan objetos huérfanos en Storage.
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   try {
     const r = storageRef(fbStor, `obras/${obraId}/fotos/${conceptoId}/${fotoId}`);
     await uploadString(r, base64url, 'data_url');
-    return await getDownloadURL(r);
+    const url = await getDownloadURL(r);
+    return { url, ref: r };
   } catch(e) {
     console.error('uploadFoto FAILED', {
       obraId, conceptoId, fotoId,
@@ -3168,12 +3174,31 @@ const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
     });
     // Casos comunes:
     //  - storage/unauthorized: reglas de Firebase Storage bloquean el write
+    //    → puede indicar que el usuario perdió acceso a esta obra en vivo
+    //      (ver claimsVersion listener). Traducimos a mensaje explícito.
     //  - storage/quota-exceeded: se acabó la cuota del plan Blaze
     //  - storage/retry-limit-exceeded: sin internet o red inestable
     //  - storage/unauthenticated: sesión de Firebase expiró
     const codigo = e?.code || 'error-desconocido';
+    if (codigo === 'storage/unauthorized') {
+      throw new Error(`No se pudo subir la foto: ya no tienes acceso a esta obra.`);
+    }
     const mensaje = e?.message || 'error desconocido';
     throw new Error(`Storage: ${codigo} — ${mensaje}`);
+  }
+};
+
+// Helper: rescate de objeto huérfano en Storage cuando el commit a Firestore
+// falla después de un uploadFoto exitoso (típico: usuario perdió acceso a la
+// obra entre el upload y el commit). Silencioso si el delete también falla.
+const borrarFotoHuerfana = async (fotoRef) => {
+  if (!fotoRef) return;
+  try {
+    await deleteObject(fotoRef);
+  } catch (e) {
+    // Si el delete también falla (el usuario ya no tiene write), el objeto
+    // queda huérfano hasta que un job de limpieza lo detecte.
+    console.warn('borrarFotoHuerfana: no se pudo borrar objeto huérfano', e?.code || e?.message);
   }
 };
 
@@ -8198,21 +8223,32 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   // addFoto/delFoto reciben el id ÚNICO de la sub (no la clave sec, que puede repetirse)
   const addFoto = async (subId, foto) => {
     if (!obra?.id) return;
+    let subidoRef = null;   // ref al objeto en Storage — para rescate si el commit local falla
     try {
       const idSafe = (foto.id || Date.now()).toString();
       let urlFinal = foto.url;
       if (foto.url && foto.url.startsWith('data:')) {
-        urlFinal = await uploadFoto(obra.id, `avance_${subId}`, idSafe, foto.url);
+        const subida = await uploadFoto(obra.id, `avance_${subId}`, idSafe, foto.url);
+        urlFinal = subida.url;
+        subidoRef = subida.ref;
       }
-      setSubs(ss => ss.map(s => {
-        if (s.id !== subId) return s;
-        const fotosObj = s.fotos || {};
-        // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
-        return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
-      }));
+      try {
+        setSubs(ss => ss.map(s => {
+          if (s.id !== subId) return s;
+          const fotosObj = s.fotos || {};
+          // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
+          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
+        }));
+      } catch (commitErr) {
+        // El commit al estado local nunca debería fallar, pero si algún día
+        // se conecta a Firestore directo aquí y falla por permission-denied,
+        // el objeto en Storage quedaría huérfano.
+        if (subidoRef) await borrarFotoHuerfana(subidoRef);
+        throw commitErr;
+      }
     } catch (e) {
       console.error('addFoto error', e);
-      alert('Error al subir foto: ' + (e.message || 'desconocido'));
+      alert(e.message || 'Error al subir foto');
     }
   };
   const delFoto=(subId, fotoId)=>setSubs(ss=>ss.map(s=>{
@@ -12618,7 +12654,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       try {
         const ext = file.name.split('.').pop().toLowerCase();
         const fileId = `cotizacion_${Date.now()}`;
-        const url = await uploadFoto(obra.id, `subdoc_${sub.id}`, fileId, e.target.result);
+        const { url } = await uploadFoto(obra.id, `subdoc_${sub.id}`, fileId, e.target.result);
         onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: new Date().toISOString().slice(0,10) } });
       } catch (err) {
         console.error(err);
@@ -12673,11 +12709,11 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     const reader = new FileReader();
     reader.onload = async e => {
       try {
-        const url = await uploadFoto(obra.id, `sub_${sub.id}_${conceptoIdx}`, Date.now().toString(), e.target.result);
+        const { url } = await uploadFoto(obra.id, `sub_${sub.id}_${conceptoIdx}`, Date.now().toString(), e.target.result);
         const concepto = sub.conceptos[conceptoIdx];
         const fotos = [...(concepto.fotos||[]), {url, fecha: new Date().toISOString().slice(0,10)}];
         actualizarConcepto(conceptoIdx, {fotos});
-      } catch(err){ console.error(err); alert("Error al subir foto"); }
+      } catch(err){ console.error(err); alert(err.message || "Error al subir foto"); }
     };
     reader.readAsDataURL(file);
   };
@@ -13312,23 +13348,34 @@ function Contrato({obra, setObra, rol}) {
     setUploading(true);
     const reader = new FileReader();
     reader.onload = async e => {
+      let subidoRef = null;   // rescate si el commit a Firestore falla
       try {
         // Subir a Firebase Storage
-        const url = await uploadFoto(obra.id, "documentos", Date.now().toString(),
-                                     e.target.result);
+        const subida = await uploadFoto(obra.id, "documentos", Date.now().toString(),
+                                        e.target.result);
+        subidoRef = subida.ref;
         const doc = {
           id: Date.now(),
           nombre: file.name,
           tipo: file.type,
           tamaño: file.size,
-          url,
+          url: subida.url,
           fecha: new Date().toLocaleDateString("es-MX"),
           subidoPor: "",
         };
         const nuevos = [...docs, doc];
-        setDocs(nuevos);
-        await fsSetA(`obras/${obra.id}/contrato/documentos`, {lista: nuevos},
-          { modulo:"contrato", entidad:`documento ${file.name}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+        try {
+          await fsSetA(`obras/${obra.id}/contrato/documentos`, {lista: nuevos},
+            { modulo:"contrato", entidad:`documento ${file.name}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+          setDocs(nuevos);
+        } catch (commitErr) {
+          // Commit a Firestore falló (posiblemente porque el usuario perdió
+          // acceso a la obra entre el upload y el commit). Borra el objeto
+          // huérfano de Storage para no dejar basura.
+          await borrarFotoHuerfana(subidoRef);
+          alert("No se pudo guardar el documento: ya no tienes acceso a esta obra.");
+          throw commitErr;
+        }
       } catch(e) { console.error(e); }
       setUploading(false);
     };
@@ -14583,6 +14630,9 @@ function PermisosObra({obra, rol}){
 
 export default function App(){
   const[usuario,setUsuario]=useState(null);
+  // Toast persistente para avisos de permisos actualizados
+  // (fix/refresh-token 2026-09-16). null = oculto.
+  const[toastPermisos,setToastPermisos]=useState(null);
   const[mostrarBienvenida,setMostrarBienvenida]=useState(false);
   const[screen,setScreen]=useState("obras");
   const[obraId,setObraId]=useState(null);
@@ -14599,6 +14649,89 @@ export default function App(){
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
+
+  // ── fix/refresh-token (2026-09-16) ──
+  // Listener a usuarios/{emailId}: cuando la CF sincronizarClaims detecta un
+  // cambio real de permisos (rol, obras, activo, orgId, tipo), incrementa
+  // usuarios/{emailId}.claimsVersion. Aquí escuchamos ese incremento, forzamos
+  // getIdToken(true) para traer el JWT nuevo, refrescamos el perfil local y
+  // mostramos un toast. Reemplaza la espera de ~1 hora al auto-refresh.
+  //
+  // Guardarraíl anti-bucle: la primera pasada (mount) captura claimsVersion
+  // inicial en versionRef.current y NO refresca. Solo refrescamos si la nueva
+  // versión es ESTRICTAMENTE MAYOR a la que ya vimos.
+  const versionRef = useRef(null);
+  useEffect(() => {
+    if (!usuario?.emailId) return;
+    const perfilRef = doc(fbDb, `usuarios/${usuario.emailId}`);
+    const unsub = onSnapshot(perfilRef, async (snap) => {
+      if (!snap.exists()) return;
+      const perfil = snap.data();
+      const nuevaVer = typeof perfil.claimsVersion === 'number' ? perfil.claimsVersion : 0;
+      // Primera pasada: captura versión inicial sin refrescar.
+      if (versionRef.current === null) {
+        versionRef.current = nuevaVer;
+        return;
+      }
+      // Sin incremento → nada que hacer.
+      if (nuevaVer <= versionRef.current) return;
+      versionRef.current = nuevaVer;
+      try {
+        // Guardar snapshot del estado viejo ANTES del refresh para poder
+        // comparar (creció vs redujo) y armar el mensaje del toast.
+        const rolViejo = usuario.rol;
+        const obrasViejas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
+        // Forzar refresh del JWT: trae los custom claims nuevos desde Auth.
+        // Firebase invalida el token viejo en cache y devuelve uno con
+        // los claims ya actualizados por la Cloud Function.
+        if (fbAuth.currentUser) {
+          await getIdToken(fbAuth.currentUser, true);
+        }
+        // Refrescar el perfil local con los datos del snapshot recién llegado.
+        setUsuario(u => u ? {
+          ...u,
+          rol: perfil.rol,
+          nombre: perfil.nombre || u.nombre,
+          obras_asignadas: Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [],
+        } : u);
+        // Toast: dos mensajes concretos. Si la lógica de decidir se enreda,
+        // caemos al mensaje neutro.
+        const rolNuevo = perfil.rol;
+        const obrasNuevas = Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [];
+        let detalle = null;
+        try {
+          if (rolNuevo !== rolViejo) {
+            detalle = `Tu rol cambió a ${ROL_LABEL[rolNuevo] || rolNuevo}.`;
+          } else if (obrasNuevas.length > obrasViejas.length) {
+            detalle = `Se agregó ${obrasNuevas.length - obrasViejas.length} obra(s) a tu lista.`;
+          } else if (obrasNuevas.length < obrasViejas.length) {
+            detalle = `Se te quitó ${obrasViejas.length - obrasNuevas.length} obra(s) de tu lista.`;
+          } else {
+            // Mismo número de obras — puede ser cambio lateral (sustituir una por otra),
+            // cambio de orgId, activo→inactivo u otro. Neutro.
+            detalle = 'Revisa la barra lateral para ver los cambios.';
+          }
+        } catch {
+          detalle = null;
+        }
+        setToastPermisos({
+          titulo: 'Tus permisos se actualizaron',
+          detalle,
+        });
+      } catch (e) {
+        console.error('refresh de token falló', e);
+        // No mostramos toast si falló el refresh — el usuario no debería ver un
+        // aviso engañoso. El auto-refresh de Firebase (~1h) tomará el relevo.
+      }
+    }, (err) => {
+      // El listener puede fallar por deny transitorio; no rompe la app.
+      console.warn('listener de perfil falló', err?.code || err?.message);
+    });
+    return () => {
+      unsub();
+      versionRef.current = null;
+    };
+  }, [usuario?.emailId]);
 
   // Al entrar a una obra, RESETEAR todo a vacío primero (evita ver datos de la obra
   // anterior) y luego cargar lo que haya en Firestore. Si Firestore no tiene datos,
@@ -15140,5 +15273,30 @@ export default function App(){
       </div>
       <span style={{fontSize:9,color:C.textMut}}>v1.0 · 2026</span>
     </div>
+    {/* Toast persistente de "permisos actualizados" — fix/refresh-token */}
+    {toastPermisos && (
+      <div role="alert" style={{
+        position:"fixed", right:14, bottom:44, zIndex:1000, maxWidth:340,
+        background:C.card, border:`1px solid ${C.border}`, borderLeft:`3px solid ${C.blueDk}`,
+        borderRadius:8, padding:"11px 13px", boxShadow:"0 4px 12px rgba(0,0,0,0.15)",
+      }}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.textPri,marginBottom:3}}>
+              {toastPermisos.titulo}
+            </div>
+            {toastPermisos.detalle && (
+              <div style={{fontSize:11,color:C.textSec,lineHeight:1.4}}>
+                {toastPermisos.detalle}
+              </div>
+            )}
+          </div>
+          <button onClick={()=>setToastPermisos(null)} style={{
+            background:"none",border:"none",fontSize:14,color:C.textMut,cursor:"pointer",
+            padding:0,lineHeight:1,marginTop:-2,
+          }} aria-label="Cerrar">×</button>
+        </div>
+      </div>
+    )}
   </></ErrorBoundary>;
 }

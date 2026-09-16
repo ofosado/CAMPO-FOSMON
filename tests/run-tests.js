@@ -736,6 +736,38 @@ async function correrPruebas() {
       "fail", (v) => fsRead(v, `usuarios/aoliva_fosmon_com_mx`));
   }
 
+  // ─── CLAIMS VERSION — fix/refresh-token 2026-09-16 ────────────────
+  // La CF sincronizarClaims escribe claimsVersion en usuarios/{docId}.
+  // El cliente NO debe poder incrementarla por su cuenta (podría auto-
+  // dispararse un refresh o marcar como "actualizado" un token que no lo
+  // está). Verificamos que la regla de update lo deniega.
+  {
+    const lourdes = U.auditor;   // ya tiene claims válidos
+    const dg = U.director_general;
+    // Auditor NO puede update su propio doc (rule: update solo admin_sistema)
+    await caso("claims_version", lourdes,
+      "auditor NO puede escribir claimsVersion en su propio doc",
+      "fail",
+      (v) => fsWrite(v, `usuarios/lgomez_fosmon_com_mx`, { claimsVersion: 999 }));
+    // Ni siquiera puede tocar cualquier campo (regla actual)
+    await caso("claims_version", lourdes,
+      "auditor NO puede escribir ningún campo en su propio doc",
+      "fail",
+      (v) => fsWrite(v, `usuarios/lgomez_fosmon_com_mx`, { nombre: "hackeado" }));
+    // Director general (admin_sistema efectivo) SÍ puede — la CF corre con
+    // admin SDK y bypasa reglas, pero el path admin.callable también funciona.
+    await caso("claims_version", dg,
+      "director general SÍ puede update usuarios (via admin.callable)",
+      "pass",
+      (v) => fsWrite(v, `usuarios/lgomez_fosmon_com_mx`, {
+        email: "lgomez@fosmon.com.mx",
+        nombre: "Lourdes Gómez Fernández",
+        rol: "auditor", orgId: ORG_FOSMON, activo: true,
+        obras_asignadas: ["0126"],
+        claimsVersion: 5,   // el DG puede setearlo manualmente (mismo path admin)
+      }));
+  }
+
   // ─── STORAGE ───────────────────────────────────────────────────────
   const res = U.residente, aud = U.auditor, cli = U.cliente, dg = U.director_general;
   await caso("storage_res", res, "read foto asignada", "pass", (v) => stRead(v, `obras/${OBRA_A}/fotos/foto1.jpg`));
