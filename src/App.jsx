@@ -3997,6 +3997,20 @@ function Login({onLogin}){
       const cred = await signInWithEmailAndPassword(fbAuth, correo.trim(), pass);
       const email = cred.user.email.toLowerCase();
       const emailId = email.replace(/@/g,'_').replace(/\./g,'_');
+      // Refresh incondicional del token (fix/refresh-token, 2026-09-16):
+      // Garantiza que el JWT arranque con los claims más recientes de Auth.
+      // Cubre el caso "cambiaron mis permisos mientras la app estaba cerrada":
+      // aunque signInWithEmailAndPassword ya devuelve un JWT nuevo, hacemos el
+      // refresh explícito por robustez ante futuros cambios de persistencia.
+      // Costo: ~200-500 ms extra en el login. Silencioso si falla.
+      try {
+        await getIdToken(cred.user, true);
+      } catch (e) {
+        // Sin red o Auth temporalmente inalcanzable: seguimos con el token que
+        // signInWithEmailAndPassword ya entregó (que en ese caso también viene
+        // fresco de la misma llamada). No es un blocker del login.
+        console.warn('refresh inicial de token falló, continuando con token de signIn:', e?.code || e?.message);
+      }
       // Buscar perfil en Firestore (para roles dinámicos)
       let perfil = await fsGet(`usuarios/${emailId}`);
       if (!perfil) {

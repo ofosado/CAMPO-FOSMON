@@ -99,6 +99,17 @@ dispara su propio trigger `onDocumentWritten`. La CF detecta que los
 únicos campos que cambiaron son esos marcadores internos y retorna sin
 hacer nada. Guardarraíl obligatorio para no bucear.
 
+**Refresh al arranque de sesión**: adicionalmente a lo anterior, en el
+`handleLogin` se llama `getIdToken(true)` incondicionalmente justo después
+de `signInWithEmailAndPassword`. Esto cubre el caso "el usuario abre la
+app después de que le cambiaron los permisos" — perfil típico en CAMPO
+(entrar, capturar, cerrar; no dejar la app abierta todo el día). El
+`signInWithEmailAndPassword` ya devuelve un JWT nuevo por sí solo, pero
+el refresh explícito es cinturón de seguridad ante cambios futuros de
+persistencia. Costo: 200-500 ms extra en login. Si falla por falta de
+red, se logea warning y continúa con el token de `signIn` (que también
+viene fresco de la misma llamada al servidor).
+
 **Campos reservados en `usuarios/{docId}`** (escritos solo por la CF, no
 por el cliente):
 - `claimsVersion` (number, ≥1): contador monotónico creciente.
