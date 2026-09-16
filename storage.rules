@@ -2,15 +2,16 @@ rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CAMPO — Reglas de Firebase Storage
-// Alineado con firestore.rules: mismo esquema de claims (rol, todas, obras).
-// Denegar por defecto — cualquier path no declarado cae en `deny`.
+// feature/organizaciones (2026-09):
+//  · Alineadas con firestore.rules (mismo esquema de claims con tipo/orgId).
+//  · Todas las rutas actuales pertenecen a constructora (path /obras/{obraId}/…).
+//  · Cliente ve solo fotos. Soporte NUNCA lee evidencia (deny por diseño).
+//  · Dependencia usará /orgs/{orgId}/obras/{obraId}/… cuando se implemente.
 // ─────────────────────────────────────────────────────────────────────────────
 
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // Helpers (usar .get para no fallar con claims ausentes — Storage rules
-    // no soporta encadenamiento de undefined con !=)
     function tokenGet(k, def) { return request.auth.token.get(k, def); }
     function esAuth() {
       return request.auth != null
@@ -18,66 +19,104 @@ service firebase.storage {
           && tokenGet('rol', null) != null;
     }
     function rol() { return tokenGet('rol', ''); }
+    function orgId() { return tokenGet('orgId', ''); }
+    function tipoOrg() { return tokenGet('tipo', ''); }
     function todasObras() { return tokenGet('todas', false) == true; }
     function obrasAsignadas() { return tokenGet('obras', []); }
-    function esDirectivo() {
-      return esAuth() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
+
+    function esConstructora() { return esAuth() && tipoOrg() == 'constructora'; }
+    function esDependencia() { return esAuth() && tipoOrg() == 'dependencia'; }
+    function esSoporte() { return esAuth() && rol() == 'soporte'; }
+
+    function esDirectivoC() {
+      return esConstructora() && rol() in ['director_general','director_operaciones','gerente_construccion','admin_sistema'];
     }
     function esEquipoObraEditor() {
-      return esAuth() && rol() in ['superintendente','residente','administrador_obra'];
+      return esConstructora() && rol() in ['superintendente','residente','administrador_obra'];
     }
     function esCliente() {
-      return esAuth() && rol() == 'cliente';
+      return esConstructora() && rol() == 'cliente';
     }
-    function puedeVerObra(obraId) {
-      return esDirectivo()
-          || (esAuth()
-              && rol() in ['superintendente','residente','administrador_obra','supervisor','cliente']
-              && (todasObras() || obraId in obrasAsignadas()));
+    // esDirectivoD: lectura amplia (incluye contralor)
+    function esDirectivoD() {
+      return esDependencia() && rol() in ['director_obras','subdirector','jefe_supervision','contralor'];
     }
-    function puedeEditarObra(obraId) {
-      return esDirectivo()
+    // esDirectivoDEditor: escritura amplia (excluye contralor — solo lectura)
+    function esDirectivoDEditor() {
+      return esDependencia() && rol() in ['director_obras','subdirector','jefe_supervision'];
+    }
+    function esSupervisorObra() {
+      return esDependencia() && rol() == 'supervisor_obra';
+    }
+    function esContratista() {
+      return esDependencia() && rol() == 'contratista';
+    }
+
+    function puedeVerObraC(id) {
+      return esDirectivoC()
+          || (esConstructora()
+              && rol() in ['superintendente','residente','administrador_obra','auditor','cliente']
+              && (todasObras() || id in obrasAsignadas()));
+    }
+    function puedeEditarObraC(id) {
+      return esDirectivoC()
           || (esEquipoObraEditor()
-              && (todasObras() || obraId in obrasAsignadas()));
+              && (todasObras() || id in obrasAsignadas()));
+    }
+    function puedeVerObraD(id) {
+      return esDirectivoD()
+          || (esDependencia()
+              && rol() in ['supervisor_obra','administrativo','contratista']
+              && (todasObras() || id in obrasAsignadas()));
+    }
+    function puedeEditarObraD(id) {
+      return esDirectivoDEditor()
+          || ((esSupervisorObra() || rol() == 'administrativo')
+              && (todasObras() || id in obrasAsignadas()));
     }
 
-    // ── Fotos por obra: acceso según permisos de obra.
-    //    Cliente SÍ puede ver fotos (vista Fotos del cliente).
+    // ── CONSTRUCTORA — /obras/{obraId}/… (path legacy) ──
     match /obras/{obraId}/fotos/{allPaths=**} {
-      allow read: if puedeVerObra(obraId);
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId);
+      allow write: if puedeEditarObraC(obraId);
     }
-
-    // ── Documentos por obra (contratos, PDFs, planos). Cliente NO.
     match /obras/{obraId}/docs/{allPaths=**} {
-      allow read: if puedeVerObra(obraId) && !esCliente();
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId) && !esCliente();
+      allow write: if puedeEditarObraC(obraId);
     }
     match /obras/{obraId}/documentos/{allPaths=**} {
-      allow read: if puedeVerObra(obraId) && !esCliente();
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId) && !esCliente();
+      allow write: if puedeEditarObraC(obraId);
     }
-
-    // ── Adjuntos de subcontratos (facturas, contratos escaneados). NO cliente.
     match /obras/{obraId}/subcontratos/{allPaths=**} {
-      allow read: if puedeVerObra(obraId) && !esCliente();
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId) && !esCliente();
+      allow write: if puedeEditarObraC(obraId);
     }
-
-    // ── Nómina — archivos Excel semanales subidos. NO cliente.
     match /obras/{obraId}/nomina/{allPaths=**} {
-      allow read: if puedeVerObra(obraId) && !esCliente();
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId) && !esCliente();
+      allow write: if puedeEditarObraC(obraId);
     }
-
-    // ── Fallback bajo /obras/{obraId}/**: si el frontend crea paths ad-hoc
-    //    dentro de la obra, aplican los permisos de la obra sin cliente.
     match /obras/{obraId}/{allPaths=**} {
-      allow read: if puedeVerObra(obraId) && !esCliente();
-      allow write: if puedeEditarObra(obraId);
+      allow read: if puedeVerObraC(obraId) && !esCliente();
+      allow write: if puedeEditarObraC(obraId);
     }
 
-    // ── DENY por defecto: cualquier ruta fuera de /obras/{obraId}/**
+    // ── DEPENDENCIA — /orgs/{orgId}/obras/{obraId}/… (declarado sin datos) ──
+    match /orgs/{oid}/obras/{obraId}/evidencia/{allPaths=**} {
+      allow read: if oid == orgId() && puedeVerObraD(obraId);
+      allow write: if oid == orgId() && (esSupervisorObra() || esDirectivoD() || rol() == 'administrativo')
+                   && (todasObras() || obraId in obrasAsignadas());
+    }
+    match /orgs/{oid}/obras/{obraId}/convenios/{allPaths=**} {
+      allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+      allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoD());
+    }
+    match /orgs/{oid}/obras/{obraId}/{allPaths=**} {
+      allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+      allow write: if oid == orgId() && puedeEditarObraD(obraId);
+    }
+
+    // ── DENY por defecto ──
     match /{allPaths=**} {
       allow read, write: if false;
     }

@@ -4,16 +4,20 @@
  *
  * Uso (una sola vez, después de desplegar sincronizarClaims):
  *
- *   1) Descarga una service account key del proyecto campo-fosmon:
- *      Firebase Console → Project Settings → Service Accounts → Generate new private key
- *      Guárdala como ~/campo-sa.json (o donde prefieras, NUNCA commitees el archivo)
+ *   1) Autentícate con Application Default Credentials (ADC) — SIN key file:
+ *      gcloud auth application-default login
+ *      gcloud config set project campo-fosmon
  *
  *   2) Ejecuta:
- *      GOOGLE_APPLICATION_CREDENTIALS=~/campo-sa.json \
- *        node scripts/backfill-claims.js
+ *      node scripts/backfill-claims.js
  *
  *   3) Verás por consola cuántos usuarios se actualizaron, cuántos ya estaban
  *      al día y cuántos fallaron (con el motivo).
+ *
+ * ADC lee credenciales automáticamente en este orden:
+ *   - Variable de entorno GOOGLE_APPLICATION_CREDENTIALS (opcional, para CI)
+ *   - Credenciales de `gcloud auth application-default login` (local, recomendado)
+ *   - Metadata server (en Cloud Run / Cloud Functions)
  *
  * Idempotente: si vuelves a correrlo, no re-escribe claims iguales.
  *
@@ -23,30 +27,57 @@
  */
 const admin = require("firebase-admin");
 
+// Debe coincidir con functions/index.js — ROLES_POR_TIPO + ROLES_CROSS
+const ROLES_POR_TIPO = {
+  constructora: [
+    "director_general","director_operaciones","gerente_construccion",
+    "superintendente","residente","administrador_obra",
+    "auditor","admin_sistema","cliente",
+  ],
+  dependencia: [
+    "director_obras","subdirector","jefe_supervision",
+    "supervisor_obra","administrativo","contralor","contratista",
+  ],
+};
+const ROLES_CROSS = ["soporte"];
 const ROLES_VALIDOS = [
-  "director_general",
-  "director_operaciones",
-  "gerente_construccion",
-  "superintendente",
-  "residente",
-  "administrador_obra",
-  "supervisor",
-  "admin_sistema",
-  "cliente",
+  ...ROLES_POR_TIPO.constructora,
+  ...ROLES_POR_TIPO.dependencia,
+  ...ROLES_CROSS,
 ];
 const ROLES_TODAS_OBRAS = new Set([
-  "director_general",
-  "director_operaciones",
-  "gerente_construccion",
-  "admin_sistema",
+  "director_general","director_operaciones","gerente_construccion","admin_sistema",
+  "director_obras","subdirector","jefe_supervision","contralor",
 ]);
+function tipoDeRol(rol) {
+  if (ROLES_POR_TIPO.constructora.includes(rol)) return "constructora";
+  if (ROLES_POR_TIPO.dependencia.includes(rol)) return "dependencia";
+  return null;
+}
 
-if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  console.error("ERROR: define GOOGLE_APPLICATION_CREDENTIALS con la ruta a tu service account JSON.");
+// ADC: sin key file. Corre `gcloud auth application-default login` primero.
+// Falla temprano con mensaje claro si no hay credenciales disponibles.
+try {
+  admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+    projectId: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || "campo-fosmon",
+  });
+} catch (e) {
+  console.error("ERROR inicializando Firebase Admin con ADC:", e.message);
+  console.error("");
+  console.error("Solución: autentícate con Application Default Credentials:");
+  console.error("  gcloud auth application-default login");
+  console.error("  gcloud config set project campo-fosmon");
   process.exit(1);
 }
 
-admin.initializeApp({ credential: admin.credential.applicationDefault() });
+async function leerOrg(orgId) {
+  if (!orgId) return null;
+  const snap = await admin.firestore().doc(`orgs/${orgId}`).get();
+  if (!snap.exists) return null;
+  const d = snap.data() || {};
+  return { tipo: d.tipo || null, activa: d.activa !== false };
+}
 
 async function aplicarClaims(perfil) {
   const email = (perfil.email || "").toLowerCase().trim();
@@ -54,6 +85,21 @@ async function aplicarClaims(perfil) {
   const rol = perfil.rol;
   if (!rol || !ROLES_VALIDOS.includes(rol)) {
     return { ok: false, motivo: `rol_invalido:${rol}` };
+  }
+  const esCross = ROLES_CROSS.includes(rol);
+  let orgId = null, tipo = null;
+  if (!esCross) {
+    orgId = perfil.orgId || null;
+    if (orgId) {
+      const org = await leerOrg(orgId);
+      if (!org) return { ok: false, motivo: `org_no_existe:${orgId}` };
+      if (!org.activa) return { ok: false, motivo: `org_inactiva:${orgId}` };
+      tipo = org.tipo;
+      const rolesDelTipo = ROLES_POR_TIPO[tipo] || [];
+      if (!rolesDelTipo.includes(rol)) {
+        return { ok: false, motivo: `rol_no_pertenece_tipo:${rol}/${tipo}` };
+      }
+    }
   }
   let userRecord;
   try {
@@ -68,11 +114,13 @@ async function aplicarClaims(perfil) {
   const obras = todas ? [] : (Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas.map(String) : []);
   const activo = perfil.activo !== false;
   const claims = activo
-    ? { rol, todas, obras }
-    : { rol: null, todas: false, obras: [], inactivo: true };
+    ? { rol, orgId, tipo, todas, obras }
+    : { rol: null, orgId: null, tipo: null, todas: false, obras: [], inactivo: true };
   const ex = userRecord.customClaims || {};
   const iguales =
     ex.rol === claims.rol &&
+    ex.orgId === claims.orgId &&
+    ex.tipo === claims.tipo &&
     ex.todas === claims.todas &&
     JSON.stringify(ex.obras || []) === JSON.stringify(claims.obras || []) &&
     (ex.inactivo || false) === (claims.inactivo || false);
@@ -102,7 +150,7 @@ async function main() {
     } else {
       aplicados++;
       const claimsStr = res.claims.rol
-        ? `rol=${res.claims.rol} todas=${res.claims.todas} obras=${res.claims.obras.length}`
+        ? `rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${res.claims.obras.length}`
         : "inactivo=true";
       console.log(`  ✓ ${perfil.email}  → ${claimsStr}`);
     }
