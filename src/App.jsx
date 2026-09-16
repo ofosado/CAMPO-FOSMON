@@ -14703,9 +14703,15 @@ export default function App(){
           if (rolNuevo !== rolViejo) {
             detalle = `Tu rol cambió a ${ROL_LABEL[rolNuevo] || rolNuevo}.`;
           } else if (obrasNuevas.length > obrasViejas.length) {
-            detalle = `Se agregó ${obrasNuevas.length - obrasViejas.length} obra(s) a tu lista.`;
+            const n = obrasNuevas.length - obrasViejas.length;
+            detalle = n === 1
+              ? 'Se agregó 1 obra a tu lista.'
+              : `Se agregaron ${n} obras a tu lista.`;
           } else if (obrasNuevas.length < obrasViejas.length) {
-            detalle = `Se te quitó ${obrasViejas.length - obrasNuevas.length} obra(s) de tu lista.`;
+            const n = obrasViejas.length - obrasNuevas.length;
+            detalle = n === 1
+              ? 'Se quitó 1 obra de tu lista.'
+              : `Se quitaron ${n} obras de tu lista.`;
           } else {
             // Mismo número de obras — puede ser cambio lateral (sustituir una por otra),
             // cambio de orgId, activo→inactivo u otro. Neutro.
