@@ -387,3 +387,24 @@ lo permiten (allow create), pero **el frontend debe llamarlo explícitamente**
 al crear una org o usuario desde una futura pantalla de administración
 cross-tenant. Trigger de Cloud Function opcional a implementar si se
 detecta que el frontend puede olvidarse.
+
+### 4. Cuentas de prueba dedicadas por rol
+
+Hoy verificamos el comportamiento de cada rol usando cuentas de personas
+reales (por ejemplo, `lgomez@fosmon.com.mx` era la cuenta de prueba del
+rol `supervisor` antes de la migración a `auditor`). Esto contamina:
+
+- **Trazabilidad de `/auditoria`**: cada acción de prueba queda registrada
+  como si la persona real la hubiera hecho.
+- **Bitácora por obra**: eventos de captura hechos para verificar se
+  atribuyen a la persona, no a "prueba".
+- **Notificaciones cross-usuario**: la persona real recibe notificaciones
+  generadas por pruebas de otro rol.
+
+**Solución propuesta (no implementada):** crear cuentas dedicadas por rol
+con emails del estilo `test-<rol>@fosmon.com.mx`, marcadas con un flag
+`_prueba: true` en el perfil. El frontend puede filtrarlas de listas de
+usuario visibles, y `/auditoria` puede omitirlas o marcarlas visualmente.
+
+**Prioridad:** media. No bloquea nada pero ensucia la bitácora conforme
+crece el uso real de CAMPO.

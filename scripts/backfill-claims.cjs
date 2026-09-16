@@ -11,7 +11,10 @@
  *   2) Ejecuta:
  *      node scripts/backfill-claims.js
  *
- *   3) Verás por consola cuántos usuarios se actualizaron, cuántos ya estaban
+ *   3) Para simular sin escribir claims:
+ *      node scripts/backfill-claims.js --dry-run
+ *
+ *   4) Verás por consola cuántos usuarios se actualizaron, cuántos ya estaban
  *      al día y cuántos fallaron (con el motivo).
  *
  * ADC lee credenciales automáticamente en este orden:
@@ -26,6 +29,8 @@
  * tokens automáticamente cada ~1 hora.
  */
 const admin = require("firebase-admin");
+
+const DRY_RUN = process.argv.includes("--dry-run");
 
 // Debe coincidir con functions/index.js — ROLES_POR_TIPO + ROLES_CROSS
 const ROLES_POR_TIPO = {
@@ -125,12 +130,13 @@ async function aplicarClaims(perfil) {
     JSON.stringify(ex.obras || []) === JSON.stringify(claims.obras || []) &&
     (ex.inactivo || false) === (claims.inactivo || false);
   if (iguales) return { ok: true, sinCambios: true, claims };
+  if (DRY_RUN) return { ok: true, claims, simulado: true };
   await admin.auth().setCustomUserClaims(userRecord.uid, claims);
   return { ok: true, claims };
 }
 
 async function main() {
-  console.log("Leyendo usuarios de Firestore…");
+  console.log(`Leyendo usuarios de Firestore${DRY_RUN ? " (DRY RUN)" : ""}…`);
   const snap = await admin.firestore().collection("usuarios").get();
   console.log(`Total en Firestore: ${snap.size}`);
 
@@ -152,7 +158,8 @@ async function main() {
       const claimsStr = res.claims.rol
         ? `rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${res.claims.obras.length}`
         : "inactivo=true";
-      console.log(`  ✓ ${perfil.email}  → ${claimsStr}`);
+      const marca = res.simulado ? "(dry)" : "     ";
+      console.log(`  ✓ ${marca} ${perfil.email}  → ${claimsStr}`);
     }
   }
 
