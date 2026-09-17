@@ -44,6 +44,18 @@ export function initPWAUpdates() {
   // Check periódico cada 30 min. Solo dispara cuando la app está en foreground
   // (setInterval se pausa cuando la pestaña está en background en algunos
   // navegadores, es aceptable). Complementa el auto-check al focar la ventana.
+  //
+  // LIMITACIÓN CONOCIDA — Safari / iOS: verificado 2026-09-17 en Deploy
+  // Preview: Safari desktop NUNCA detectó nuevas versiones con la ventana
+  // abierta por más de 30 min (Safari throttlea/discarta timers en tabs
+  // en background). En iOS PWA standalone la app se suspende al minimizar.
+  // Chrome y Firefox foreground sí ejecutan este tick.
+  //
+  // Es aceptable en CAMPO porque el patrón de uso real es "abrir, capturar,
+  // cerrar" — cada apertura arranca fresco y trae la versión más reciente.
+  // Si algún día se usa en sesiones largas (tablet fijo en oficina), agregar
+  // un handler visibilitychange que dispare _updateSW(false) al recuperar
+  // foco cubre el hueco. Ver ROLLBACK_PWA.md → "Limitación conocida".
   setInterval(() => {
     console.log('[SW-PWA] chequeando updates (30min tick)');
     _updateSW && _updateSW(false).catch(() => {}); // false = no aplicar, solo check

@@ -200,3 +200,85 @@ v2026-09-16 · 34f4c3f
 Si el usuario no encuentra el footer (por ejemplo la app ni carga),
 la versión también aparece en la pantalla de Login debajo del subtítulo
 "Control de Avance...". Con eso puede reportar aunque no pueda entrar.
+
+---
+
+## Limitación conocida — Safari / iOS y detección con app abierta
+
+**Hallazgo verificado 2026-09-17 en Deploy Preview**: Safari desktop
+(y iOS Safari en PWA standalone) NO detecta nuevas versiones publicadas
+mientras la ventana permanece abierta, aunque hayamos programado un
+chequeo periódico cada 30 minutos en `src/pwa-update.js`. En pruebas
+con la ventana abierta por más de 30 minutos, Safari NUNCA saltó a
+ninguna de las 4 versiones publicadas — se quedó indefinidamente en la
+versión con la que arrancó la sesión.
+
+**Por qué pasa:**
+
+- Safari throttlea agresivamente `setInterval` en pestañas que pierden
+  foco. En segundo plano el timer se pospone o suspende.
+- Safari discarta pestañas por presión de memoria más rápido que Chrome
+  o Firefox. Cuando eso ocurre el JS deja de correr por completo hasta
+  que la pestaña recupera foco.
+- En iOS PWA standalone: al minimizar la app o cambiar a otra, iOS
+  suspende la instancia. Los timers no acumulan tiempo mientras la app
+  está en background; se congelan hasta reabrir.
+- `registration.update()` que dispara el 30-min tick puede además ser
+  ignorado por Safari si el manifest de precache no cambió desde la
+  última verificación reciente (heurística interna de Safari).
+
+Chrome desktop en foreground sí ejecuta el tick como esperado, así que
+la protección funciona ahí. Firefox también.
+
+**Por qué es aceptable en CAMPO:**
+
+El perfil de uso real es: la gente entra a la app, captura durante
+5-20 minutos, cierra. Casi nadie deja la app abierta durante horas. El
+flujo dominante es "cada apertura = arranque fresco":
+
+1. Abre la PWA / recarga la pestaña → Safari re-checa el SW registrado
+   contra el servidor. Si hay versión nueva, la baja e instala en
+   background.
+2. La lógica de decisión (`src/App.jsx`) activa el SW nuevo:
+   - Sin sesión (login) → recarga silenciosa.
+   - Con sesión sin cambios → recarga silenciosa.
+   - Con sesión con cambios → banner con botón (verificado en E3).
+3. En prácticamente todas las sesiones reales, el usuario obtiene la
+   versión más reciente al arrancar. El chequeo periódico solo importa
+   para sesiones muy largas, que no existen en este operativo.
+
+Verificado en iPhone (2026-09-17): al publicar v6 y luego v7 con la
+PWA cerrada entre medias, reabrir desde el ícono trajo v7 sin
+intervención del usuario. Este es el caso real y funciona.
+
+**Qué haría falta si algún día importa:**
+
+Si en algún futuro CAMPO empieza a usarse en sesiones largas (ej. un
+tablet fijo en oficina de obra que corre toda la jornada), agregar un
+handler a `visibilitychange` que dispare `updateSW(false)` cuando la
+pestaña recupera foco. Sería un cambio muy pequeño en
+`src/pwa-update.js`:
+
+```js
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && _updateSW) {
+    _updateSW(false).catch(() => {});
+  }
+});
+```
+
+Con eso, cada vez que el usuario vuelva a la pestaña/PWA (o al app
+switcher en iOS), Safari re-checa el SW independientemente del timer.
+Cubre el 100% de casos con muy poco código. Está pendiente pero no se
+implementa ahora porque:
+
+- No hay reportes de sesiones que duren más de una jornada.
+- Añadir el handler sin haber medido el flujo real puede introducir
+  refreshes indeseables cuando el usuario solo cambia rápido de app y
+  vuelve (patrón común en móvil).
+- Preferimos observar el comportamiento en producción con el fix
+  actual antes de sobreingeniar la detección.
+
+Alternativas más pesadas descartadas: Server-Sent Events / WebSocket
+para push "hay update" desde el server, Web Push API para notificar.
+Ambas son sobreingeniería para el caso operativo actual.
