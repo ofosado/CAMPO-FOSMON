@@ -15381,11 +15381,12 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
-        {/* REVERTIR antes de mezclar a main: opacity 0.9 y size 13 son cambios
-            de prueba (v2 y v3) para verificar detección de update en Deploy
-            Preview. Restaurar a size={11} opacity={0.5} antes del merge. */}
+        {/* REVERTIR antes de mezclar a main: opacity 0.9, size 13 y
+            letterSpacing 0.15em son cambios de prueba (v2, v3 y v4) para
+            verificar detección de update en Deploy Preview. Restaurar a
+            size={11} opacity={0.5} y letterSpacing:"0.02em" antes del merge. */}
         <EmblemaFOSMON size={13} dark={true} opacity={0.9}/>
-        <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
+        <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.15em"}}>
           CAMPO — Control de Avance, Maquinaria, Personal y Obra
         </span>
       </div>
