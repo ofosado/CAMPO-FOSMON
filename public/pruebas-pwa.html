@@ -1,0 +1,371 @@
+<!doctype html>
+<!--
+  ══════════════════════════════════════════════════════════════════════
+  ATENCIÓN — ELIMINAR ESTE ARCHIVO ANTES DE MEZCLAR A `main`.
+
+  Este archivo es una checklist temporal para probar la rama
+  `fix/actualizacion-pwa` en Deploy Preview de Netlify. Sirve para
+  seguir los 4 escenarios de prueba desde el teléfono sin depender del
+  chat con Claude Code.
+
+  Si este HTML llega a producción, queda accesible en
+  https://campo-fosmon.netlify.app/pruebas-pwa.html para cualquiera
+  que sepa la URL — información interna filtrada.
+
+  Checklist previa al merge de fix/actualizacion-pwa:
+    ☐ Correr los 4 escenarios en desktop
+    ☐ Correr los 4 escenarios en iPhone (bloqueante)
+    ☐ `git rm public/pruebas-pwa.html` (borrar este archivo)
+    ☐ Convertir PR draft en PR normal para merge
+    ☐ Merge a main
+  ══════════════════════════════════════════════════════════════════════
+-->
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Pruebas PWA — checklist (interno, no producción)</title>
+<style>
+  :root {
+    --bg:#F0F2F5; --card:#FFFFFF; --border:#E1E4E8; --text:#0D1619;
+    --muted:#6B7681; --blue:#3B82F6; --green:#16A34A; --amber:#CA8A04; --red:#DC2626;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; line-height:1.5; }
+  body { padding:16px 14px 60px; max-width:640px; margin:0 auto; }
+  h1 { font-size:18px; margin-bottom:4px; }
+  h2 { font-size:15px; margin:20px 0 8px; letter-spacing:0.01em; }
+  h3 { font-size:13px; margin:14px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; }
+  p, li { font-size:14px; }
+  .lead { color:var(--muted); font-size:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 15px; margin-bottom:14px; }
+  .card--blue { border-left:3px solid var(--blue); }
+  .card--green { border-left:3px solid var(--green); }
+  .card--amber { border-left:3px solid var(--amber); }
+  .card--red { border-left:3px solid var(--red); }
+  .step { display:flex; gap:10px; margin-bottom:10px; }
+  .step__num {
+    flex:none; width:24px; height:24px; border-radius:50%; background:var(--blue); color:#fff;
+    display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;
+  }
+  .step__body { flex:1; }
+  .step__body strong { display:block; margin-bottom:2px; font-size:14px; }
+  .expected { background:#F9FAFB; border-left:2px solid var(--green); padding:8px 10px; margin-top:6px;
+    border-radius:0 6px 6px 0; font-size:12px; color:#374151; }
+  .expected b { color:var(--green); }
+  .warning { background:#FEF3C7; border-left:2px solid var(--amber); padding:8px 10px; margin-top:6px;
+    border-radius:0 6px 6px 0; font-size:12px; }
+  .fail { background:#FEE2E2; border-left:2px solid var(--red); padding:8px 10px; margin-top:6px;
+    border-radius:0 6px 6px 0; font-size:12px; }
+  code { background:#F3F4F6; padding:1px 6px; border-radius:4px; font-family:ui-monospace,monospace; font-size:12px; }
+  a { color:var(--blue); word-break:break-all; }
+  .btn { display:inline-block; margin-top:6px; padding:6px 12px; background:var(--blue); color:#fff;
+    border-radius:6px; text-decoration:none; font-size:13px; font-weight:500; }
+  ul { padding-left:20px; }
+  ul li { margin-bottom:4px; }
+  .checkbox { display:flex; align-items:flex-start; gap:8px; padding:6px 0; }
+  .checkbox input { margin-top:3px; }
+  .checkbox label { flex:1; font-size:13px; }
+  .divider { height:1px; background:var(--border); margin:20px 0; }
+  .versionbadge { display:inline-block; background:#F3F4F6; padding:2px 8px; border-radius:4px;
+    font-family:ui-monospace,monospace; font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Pruebas PWA — <span id="versionActual" class="versionbadge">cargando...</span></h1>
+<p class="lead">
+  Checklist para verificar el ciclo de actualización de CAMPO. Sigue los
+  escenarios en orden. Empieza en <b>desktop</b>. iPhone al final —
+  bloqueante.
+</p>
+
+<div class="card card--blue">
+  <b>Antes de empezar</b>
+  <ol style="padding-left:20px;margin-top:8px;font-size:13px;">
+    <li>Abre este link en Chrome desktop (no en la PWA todavía).</li>
+    <li>Abre DevTools con <code>F12</code>. Ve a <b>Application → Service Workers</b>.</li>
+    <li>Marca <b>"Update on reload"</b> y <b>"Bypass for network"</b> — mientras probamos, no queremos que Chrome cachee agresivamente.</li>
+    <li>Ten la <b>Console</b> abierta en otra pestaña de DevTools para ver los logs <code>[SW-PWA]</code>.</li>
+  </ol>
+</div>
+
+<h2>Escenario 1 — Login silencioso (sin sesión)</h2>
+<p class="lead">Objetivo: usuario NO logueado ve un update pendiente. Se aplica solo, sin banner ni interacción.</p>
+
+<div class="card">
+  <div class="step">
+    <div class="step__num">1</div>
+    <div class="step__body">
+      <strong>Instala la PWA v1</strong>
+      Abre este mismo link. Click en el ícono de instalación de Chrome (barra de URL, símbolo ⊕).
+      <div class="expected"><b>Esperado:</b> se abre CAMPO como app instalada. Footer muestra la versión actual (badge de arriba).</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">2</div>
+    <div class="step__body">
+      <strong>Verifica el SW registrado</strong>
+      En DevTools → Application → Service Workers.
+      <div class="expected"><b>Esperado:</b> hay un SW en estado <b>activated and is running</b>. Anota el hash del script si aparece.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">3</div>
+    <div class="step__body">
+      <strong>Espera a que se publique v2</strong>
+      Cuando el equipo publique la v2, verás el badge de arriba cambiar de fecha o hash tras recargar. Pero NO recargues todavía.
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">4</div>
+    <div class="step__body">
+      <strong>Trigger update</strong>
+      Con la PWA v1 aún abierta y SIN loguearte, en DevTools click en <b>"Update"</b> del Service Worker.
+      <div class="expected">
+        <b>Esperado en consola:</b>
+        <ul style="margin-top:4px;margin-bottom:0;">
+          <li><code>[SW-PWA] update detected — waiting activation</code></li>
+          <li><code>[SW-PWA] recarga silenciosa (sin sesión)</code></li>
+        </ul>
+        La página se recarga sola en 1-2 seg. NO aparece banner. El footer ahora muestra la versión v2.
+      </div>
+      <div class="fail"><b>Si falla:</b> aparece banner "Nueva versión disponible" o la app no se recarga → hay un bug en la lógica de decisión con <code>usuario===null</code>.</div>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<h2>Escenario 2 — Sesión sin cambios</h2>
+<p class="lead">Objetivo: usuario logueado en Dashboard (sin editar nada) recibe update. Se aplica silenciosamente.</p>
+
+<div class="card">
+  <div class="step">
+    <div class="step__num">1</div>
+    <div class="step__body">
+      <strong>Regresa a v1</strong>
+      Antes de empezar este escenario, en DevTools → Application → Service Workers, click <b>"Unregister"</b>. Cierra el DevTools, cierra la PWA. Recarga esta página. Vuelve a instalar la PWA (paso 1 del escenario anterior). Ahora estás en v1 con SW nuevo.
+      <div class="warning">Este reset manual es solo para hacer las pruebas — el usuario final no lo hace. En producción, <code>?_reset=1</code> logra lo mismo automático.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">2</div>
+    <div class="step__body">
+      <strong>Inicia sesión</strong>
+      Usa una cuenta real. Recomendado: <code>lgomez@fosmon.com.mx</code> (auditor, 3 obras).
+      <div class="expected"><b>Esperado:</b> entras a la lista de obras. NO cambies nada, no entres a captura.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">3</div>
+    <div class="step__body">
+      <strong>Confirma que no hay cambios pendientes</strong>
+      En el header no debe aparecer el indicador amarillo "Cambios sin guardar".
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">4</div>
+    <div class="step__body">
+      <strong>Trigger update</strong>
+      DevTools → click <b>"Update"</b>.
+      <div class="expected">
+        <b>Esperado en consola:</b>
+        <ul style="margin-top:4px;margin-bottom:0;">
+          <li><code>[SW-PWA] update detected</code></li>
+          <li><code>[SW-PWA] recarga silenciosa (sesión sin cambios)</code></li>
+        </ul>
+        La app se recarga sola. Como CAMPO no persiste sesión, vuelves al Login. Footer muestra v2.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<h2>Escenario 3 — Sesión con cambios pendientes</h2>
+<p class="lead">Objetivo: la app NUNCA se recarga sola. Banner con botón. beforeunload guard bloquea F5 accidental.</p>
+
+<div class="card">
+  <div class="step">
+    <div class="step__num">1</div>
+    <div class="step__body">
+      <strong>Regresa a v1 y entra a una obra</strong>
+      Repite el reset del escenario anterior. Login con <code>lgomez</code>. Entra a la obra 0126 (o cualquiera de las suyas).
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">2</div>
+    <div class="step__body">
+      <strong>Genera un cambio pendiente</strong>
+      Ve a <b>Operación → Avance físico</b>. Cambia el % de cualquier partida (ej. sube de 30 a 31).
+      <div class="expected"><b>Esperado:</b> en el header aparece el indicador amarillo <b>"● Cambios sin guardar"</b>.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">3</div>
+    <div class="step__body">
+      <strong>Trigger update</strong>
+      DevTools → click <b>"Update"</b>.
+      <div class="expected">
+        <b>Esperado en consola:</b>
+        <ul style="margin-top:4px;margin-bottom:0;">
+          <li><code>[SW-PWA] update detected</code></li>
+          <li><code>[SW-PWA] banner mostrado (sesión con cambios)</code></li>
+        </ul>
+        La app <b>NO se recarga</b>. Aparece banner discreto flotante encima del footer:
+        <br><br>
+        <span style="background:#fff;border-left:3px solid #3B82F6;border-radius:6px;padding:6px 10px;display:inline-block;font-size:12px;">
+          <b>Nueva versión disponible</b><br>Guarda tus cambios antes de recargar. [Recargar ahora]
+        </span>
+      </div>
+      <div class="fail"><b>Si falla A:</b> la app se recarga sola y se pierde el cambio del avance → BUG CRÍTICO. Reportar.</div>
+      <div class="fail"><b>Si falla B:</b> no aparece banner → la lógica de decisión no detecta correctamente <code>cambiosPendientes</code>.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">4</div>
+    <div class="step__body">
+      <strong>Verifica beforeunload guard</strong>
+      Sin cerrar el banner, intenta cerrar la pestaña o pulsa F5.
+      <div class="expected"><b>Esperado:</b> Chrome muestra warning nativo <i>"¿Salir del sitio? Los cambios que has hecho puede que no se guarden"</i>. Cancela.</div>
+      <div class="warning">Este warning es del navegador, no del código de CAMPO. Es correcto que se vea así.</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">5</div>
+    <div class="step__body">
+      <strong>Click en "Recargar ahora"</strong>
+      Ahora sí, click al botón azul del banner.
+      <div class="expected"><b>Esperado:</b> la app se recarga (perdiendo el cambio del avance, es lo esperado — decisión explícita del usuario). Vuelves a Login. Footer v2.</div>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<h2>Escenario 4 — Reset por URL <code>?_reset=1</code></h2>
+<p class="lead">Objetivo: interruptor de emergencia funciona incluso con SW previo activo. Este es el más importante — es la red de seguridad si el resto falla.</p>
+
+<div class="card">
+  <div class="step">
+    <div class="step__num">1</div>
+    <div class="step__body">
+      <strong>Instala v1 y confirma SW activo</strong>
+      Repite el reset. Instala PWA v1. Confirma en DevTools que hay SW activated.
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">2</div>
+    <div class="step__body">
+      <strong>Abre la URL con parámetro reset</strong>
+      En la misma pestaña de la PWA o en una nueva, abre:
+      <br><br>
+      <a href="?_reset=1" class="btn">Abrir /?_reset=1</a>
+      <br><br>
+      (En el móvil, tocar el botón. En desktop, click.)
+      <div class="expected">
+        <b>Esperado (en orden):</b>
+        <ul style="margin-top:4px;margin-bottom:0;">
+          <li>Pantalla en blanco con texto <b>"Reiniciando CAMPO…"</b>.</li>
+          <li>En 1-3 seg, redirige a <code>/</code>.</li>
+          <li>Aparece la pantalla de Login normal.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">3</div>
+    <div class="step__body">
+      <strong>Verifica que el SW quedó desregistrado</strong>
+      DevTools → Application → Service Workers.
+      <div class="expected"><b>Esperado:</b> NO hay SW registrado (lista vacía o "No Service Workers detected").</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">4</div>
+    <div class="step__body">
+      <strong>Verifica que las caches se borraron</strong>
+      DevTools → Application → Cache Storage.
+      <div class="expected"><b>Esperado:</b> no hay caches <code>workbox-*</code>, <code>cdn-cache</code>, <code>cdnjs-cache</code>, <code>firestore-cache</code>. O si aparecen, están vacías o se re-poblaron con el bundle actual (no del cache previo).</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step__num">5</div>
+    <div class="step__body">
+      <strong>Verifica que la app sigue funcionando</strong>
+      Login normal. Entra a una obra.
+      <div class="expected"><b>Esperado:</b> todo carga bien. En la siguiente recarga completa se registrará un SW nuevo (comportamiento normal de la app).</div>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<h2>📱 iPhone (bloqueante)</h2>
+<div class="card card--amber">
+  <p style="font-size:13px;">
+    <b>iOS es donde el problema del SW ocurre más — es el bloqueante.</b>
+    Si algún escenario falla en iPhone, aunque desktop haya pasado, no se
+    mezcla la rama.
+  </p>
+  <h3 style="margin-top:12px;">Setup iPhone</h3>
+  <ol style="padding-left:20px;font-size:13px;">
+    <li>Abre este link en Safari (no en Chrome iOS — Safari es el que ejecuta el SW en iOS).</li>
+    <li>Toca botón compartir (cuadrado con flecha) → <b>"Agregar a pantalla de inicio"</b>.</li>
+    <li>Abre la PWA desde el ícono del home screen.</li>
+  </ol>
+  <h3 style="margin-top:12px;">Escenarios en iPhone</h3>
+  <p style="font-size:13px;">
+    Repite <b>los 4 escenarios</b> exactamente como en desktop, con estas diferencias:
+  </p>
+  <ul style="font-size:13px;">
+    <li><b>DevTools no existen</b> en iOS Safari sin Mac conectado. Para "trigger update" en su lugar: cierra completamente la PWA (arrástrala hacia arriba en el switcher) y vuélvela a abrir. Safari re-checa el SW en cada apertura.</li>
+    <li><b>Escenario 3 — beforeunload no aplica.</b> iOS Safari en modo standalone IGNORA <code>beforeunload</code>. Confirmar que el banner PWA sí aparece (ese es el que importa). El warning nativo del navegador no saldrá y está bien.</li>
+    <li><b>Escenario 4 — ?_reset=1</b>: pega la URL en Safari (no en el ícono de la PWA). Verificar que la pantalla "Reiniciando CAMPO…" aparece y redirige.</li>
+  </ul>
+  <h3 style="margin-top:12px;">Verificación de la versión desde iPhone</h3>
+  <p style="font-size:13px;">
+    Como no tienes consola, la única forma de saber "estoy en v1" o "estoy en v2" es
+    mirar el badge de versión en:
+  </p>
+  <ul style="font-size:13px;">
+    <li>Footer de la app (esquina inferior derecha).</li>
+    <li>Pantalla de Login, debajo del subtítulo "Control de Avance...".</li>
+  </ul>
+  <p style="font-size:13px;">Formato: <code>v2026-09-16 · 34f4c3f</code>. Fecha + hash corto.</p>
+</div>
+
+<div class="divider"></div>
+
+<h2>Registro de resultados</h2>
+<div class="card">
+  <div class="checkbox"><input type="checkbox" id="s1d"><label for="s1d"><b>E1 desktop</b> — Login silencioso: reload sin banner</label></div>
+  <div class="checkbox"><input type="checkbox" id="s2d"><label for="s2d"><b>E2 desktop</b> — Sesión sin cambios: reload silencioso</label></div>
+  <div class="checkbox"><input type="checkbox" id="s3d"><label for="s3d"><b>E3 desktop</b> — Sesión con cambios: banner, beforeunload, click recarga</label></div>
+  <div class="checkbox"><input type="checkbox" id="s4d"><label for="s4d"><b>E4 desktop</b> — ?_reset=1: SW desregistrado, caches vacías</label></div>
+  <div class="checkbox"><input type="checkbox" id="s1i"><label for="s1i"><b>E1 iPhone</b> — Login silencioso al reabrir PWA</label></div>
+  <div class="checkbox"><input type="checkbox" id="s2i"><label for="s2i"><b>E2 iPhone</b> — Sesión sin cambios: reload silencioso al reabrir</label></div>
+  <div class="checkbox"><input type="checkbox" id="s3i"><label for="s3i"><b>E3 iPhone</b> — Banner PWA sí aparece con cambios pendientes</label></div>
+  <div class="checkbox"><input type="checkbox" id="s4i"><label for="s4i"><b>E4 iPhone</b> — ?_reset=1 funciona desde Safari</label></div>
+  <p class="lead" style="margin-top:12px;">
+    Los checkboxes son solo para tu registro visual — no se guardan al recargar.
+  </p>
+</div>
+
+<script>
+  // Mostrar la versión actual del build en el badge del header.
+  // Se lee del HTML del index (que Vite inyecta con __BUILD_DATE__ y __BUILD_SHA__).
+  fetch('/').then(r => r.text()).then(html => {
+    const m = html.match(/v(20\d{2}-\d{2}-\d{2}\s·\s[a-f0-9]+)/);
+    if (m) document.getElementById('versionActual').textContent = 'v' + m[1];
+  }).catch(() => {
+    document.getElementById('versionActual').textContent = 'v desconocida';
+  });
+</script>
+
+</body>
+</html>
+</parameter>
+</invoke>
