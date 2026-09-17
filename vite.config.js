@@ -1,13 +1,33 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { execSync } from 'node:child_process'
+
+// fix/actualizacion-pwa (2026-09-16): metadata de build inyectada como
+// constantes de compilación. Netlify expone COMMIT_REF automáticamente;
+// en local caemos a `git rev-parse`. Se muestran al usuario en el footer
+// y en la pantalla de Login como "v2026-09-16 · 34f4c3f" para que reporte
+// bugs con evidencia de qué versión ve.
+const BUILD_SHA = (
+  process.env.COMMIT_REF ||
+  (() => { try { return execSync('git rev-parse HEAD').toString().trim(); } catch { return 'dev'; } })()
+).slice(0, 7);
+const BUILD_DATE = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __BUILD_SHA__:  JSON.stringify(BUILD_SHA),
+    __BUILD_DATE__: JSON.stringify(BUILD_DATE),
+  },
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // registerType 'prompt' (antes 'autoUpdate'): el frontend decide cuándo
+      // aplicar la actualización. La lógica vive en src/pwa-update.js y App.jsx:
+      // dispara skipWaiting + reload silencioso al login o sin cambios pendientes,
+      // y muestra banner cuando hay captura sin guardar.
+      registerType: 'prompt',
       includeAssets: ['favicon.svg', 'icons.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'],
       manifest: {
         name: 'CAMPO — FOSMON',

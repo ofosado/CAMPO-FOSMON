@@ -12,6 +12,56 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>CAMPO — FOSMON</title>
+    <!-- Reset por URL — fix/actualizacion-pwa 2026-09-16 -----------------
+      Interruptor de emergencia: si la PWA queda atrapada con un Service
+      Worker roto, abrir la app con `?_reset=1` desregistra TODOS los SW,
+      borra las caches de Workbox y recarga en limpio. Se ejecuta ANTES de
+      cargar main.jsx para no depender de que la app arranque.
+
+      Es crítico que este script:
+        · Sea inline (no depende de un fetch que el SW podría interceptar).
+        · Corra antes que /src/main.jsx (que registra el SW).
+        · No dependa de librerías (React, Firebase, etc. aún no cargan aquí).
+
+      Uso: mandar por WhatsApp `https://campo-fosmon.netlify.app/?_reset=1`
+      al usuario atrapado. Ver ROLLBACK_PWA.md.
+    -->
+    <script>
+      (function () {
+        try {
+          if (new URLSearchParams(location.search).get('_reset') !== '1') return;
+          document.documentElement.style.background = '#F0F2F5';
+          document.write(
+            '<div style="font:14px system-ui;padding:40px 20px;text-align:center;color:#4A5560">' +
+            'Reiniciando CAMPO…<br><br>' +
+            '<span style="font-size:11px;color:#9AA3AC">Limpiando caché y volviendo a cargar.</span>' +
+            '</div>'
+          );
+          var pasos = [];
+          if ('serviceWorker' in navigator) {
+            pasos.push(
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister(); }));
+              }).catch(function () { /* ignore */ })
+            );
+          }
+          if (typeof caches !== 'undefined') {
+            pasos.push(
+              caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+              }).catch(function () { /* ignore */ })
+            );
+          }
+          Promise.all(pasos).then(function () {
+            location.replace('/');
+          });
+          // Cinturón: si algo se cuelga, recarga a los 4s de todas formas.
+          setTimeout(function () { location.replace('/'); }, 4000);
+        } catch (e) {
+          location.replace('/');
+        }
+      })();
+    </script>
     <style>
       /* Safe areas iPhone: cuando la PWA se instala en iOS, evita que el header
          se meta debajo de la barra de estado (hora, señal, batería) y el fondo

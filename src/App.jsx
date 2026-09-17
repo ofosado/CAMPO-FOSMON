@@ -5,6 +5,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addD
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
+import { subscribeToPWAUpdates } from "./pwa-update.js";
+
+// fix/actualizacion-pwa (2026-09-16): versión del build inyectada por Vite
+// (ver vite.config.js `define`). Formato mostrado al usuario: "v2026-09-16 · 34f4c3f".
+// Fecha primero porque es lo que un usuario sabe leer; hash después para nosotros.
+const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
@@ -4099,6 +4105,13 @@ function Login({onLogin}){
       </form>
       <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
         Control de Avance, Maquinaria, Personal y Obra
+      </div>
+      {/* Versión del build visible desde el Login — sirve para que un usuario
+          que no puede entrar todavía pueda reportar qué versión ve.
+          fix/actualizacion-pwa (2026-09-16) */}
+      <div title="Versión del build (compartir al reportar bugs)"
+        style={{textAlign:"center",marginTop:8,fontSize:9,color:C.textMut,fontFamily:"ui-monospace,monospace"}}>
+        {BUILD_VERSION}
       </div>
     </div>
   </div>;
@@ -14664,6 +14677,72 @@ export default function App(){
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
   const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
 
+  // ── fix/actualizacion-pwa (2026-09-16) ──
+  // Manejo de actualizaciones del Service Worker. Lógica de decisión:
+  //   sin sesión                       → recarga silenciosa
+  //   con sesión, sin cambios          → recarga silenciosa
+  //   con sesión, con cambios          → banner con botón, nunca sola
+  const[aplicarUpdatePendiente,setAplicarUpdatePendiente]=useState(null); // función o null
+  // Refs a estado actual accesible desde el callback de subscribe (que se
+  // suscribe una sola vez pero puede dispararse mucho después de que usuario/
+  // cambiosPendientes cambien). Los stale closures se evitan leyendo refs.
+  const usuarioRef = useRef(usuario);
+  const cambiosRef = useRef(cambiosPendientes);
+  useEffect(() => { usuarioRef.current = usuario; }, [usuario]);
+  useEffect(() => { cambiosRef.current = cambiosPendientes; }, [cambiosPendientes]);
+
+  useEffect(() => {
+    const unsub = subscribeToPWAUpdates((aplicar) => {
+      const hayUsuario = !!usuarioRef.current;
+      const hayCambios = cambiosRef.current === true;
+      if (!hayUsuario) {
+        console.log('[SW-PWA] recarga silenciosa (sin sesión)');
+        aplicar(true);
+        return;
+      }
+      if (!hayCambios) {
+        console.log('[SW-PWA] recarga silenciosa (sesión sin cambios)');
+        aplicar(true);
+        return;
+      }
+      // Sesión + captura sin guardar → banner. Nunca recarga sola.
+      console.log('[SW-PWA] banner mostrado (sesión con cambios)');
+      // Guardamos la función `aplicar` en state para que el botón del banner
+      // pueda invocarla. Si llegan múltiples updates seguidos, cada uno
+      // sobrescribe el anterior (usamos siempre el último — está bien porque
+      // los updates son incrementales).
+      setAplicarUpdatePendiente(() => aplicar);
+    });
+    return unsub;
+  }, []);   // subscribe una sola vez al mount
+
+  // beforeunload guard mientras hay cambios pendientes. Bloquea cierre de
+  // pestaña / recarga manual con el warning nativo del navegador. Independiente
+  // del banner PWA; también protege contra F5 y "cerrar pestaña" accidentales.
+  // NOTA: iOS Safari IGNORA beforeunload en PWA standalone. En iOS confiamos
+  // solo en el banner PWA (que ya cubre el caso relevante).
+  //
+  // Ref al handler activo. Necesaria para poder removerlo sincrónicamente
+  // desde el onClick del botón "Recargar ahora" antes de disparar el reload
+  // — si no se remueve antes, beforeunload cancela silenciosamente el
+  // window.location.reload() que dispara vite-plugin-pwa tras skipWaiting.
+  // Diagnóstico confirmado 2026-09-17 en Deploy Preview.
+  const beforeunloadHandlerRef = useRef(null);
+  useEffect(() => {
+    if (!cambiosPendientes) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = '';   // Chrome/Firefox requerido
+      return '';            // Safari desktop requerido
+    };
+    beforeunloadHandlerRef.current = handler;
+    window.addEventListener('beforeunload', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+      beforeunloadHandlerRef.current = null;
+    };
+  }, [cambiosPendientes]);
+
   // ── fix/refresh-token (2026-09-16) ──
   // Listener a usuarios/{emailId}: cuando la CF sincronizarClaims detecta un
   // cambio real de permisos (rol, obras, activo, orgId, tipo), incrementa
@@ -15280,6 +15359,56 @@ export default function App(){
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>
 
+    {/* Banner de actualización disponible — fix/actualizacion-pwa 2026-09-16
+        Solo aparece cuando hay sesión activa Y cambios pendientes en captura.
+        Los otros casos (sin sesión, sin cambios) recargan silenciosamente. */}
+    {aplicarUpdatePendiente && (
+      <div role="status" style={{
+        position:"fixed", left:0, right:0, bottom:28, zIndex:99,
+        display:"flex", justifyContent:"center", pointerEvents:"none",
+      }}>
+        <div style={{
+          background:C.card, border:`1px solid ${C.border}`, borderLeft:`3px solid ${C.blueDk}`,
+          borderRadius:8, padding:"9px 13px", boxShadow:"0 4px 12px rgba(0,0,0,0.15)",
+          display:"flex", alignItems:"center", gap:12, pointerEvents:"auto", maxWidth:420,
+        }}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>Nueva versión disponible</div>
+            <div style={{fontSize:10,color:C.textMut,marginTop:2}}>
+              Guarda tus cambios antes de recargar.
+            </div>
+          </div>
+          <button onClick={() => {
+            // fix bug detección v4 → v5 (2026-09-17): el beforeunload guard
+            // cancela silenciosamente el location.reload() que dispara
+            // vite-plugin-pwa tras skipWaiting cuando cambiosPendientes==true.
+            // Chrome cancela sin mostrar warning porque el reload ocurre en un
+            // callback async lejos del click original (sin user activation).
+            //
+            // Fix en dos capas:
+            //   1) Remover el handler beforeunload sincrónicamente ANTES de
+            //      llamar updateSW, para que el reload de workbox no se cancele.
+            //   2) Fallback: si en 1.5s no ha ocurrido el reload (workbox falló
+            //      por lo que sea), forzar window.location.reload() manual.
+            //      Esto asegura que el botón nunca queda muerto.
+            if (beforeunloadHandlerRef.current) {
+              window.removeEventListener('beforeunload', beforeunloadHandlerRef.current);
+              beforeunloadHandlerRef.current = null;
+              console.log('[SW-PWA] beforeunload removido para permitir reload del banner');
+            }
+            aplicarUpdatePendiente(true);
+            setTimeout(() => {
+              console.log('[SW-PWA] fallback: forzando reload manual (workbox no recargó en 1.5s)');
+              window.location.reload();
+            }, 1500);
+          }} style={{
+            background:C.blueDk, border:"none", borderRadius:6, padding:"6px 12px",
+            fontSize:11, fontWeight:600, color:"#fff", cursor:"pointer", whiteSpace:"nowrap",
+          }}>Recargar ahora</button>
+        </div>
+      </div>
+    )}
+
     {/* FOOTER */}
     <div style={{position:"fixed",bottom:0,left:0,right:0,background:C.surface,
       borderTop:`1px solid ${C.border}`,padding:"5px 16px",
@@ -15291,7 +15420,13 @@ export default function App(){
           CAMPO — Control de Avance, Maquinaria, Personal y Obra
         </span>
       </div>
-      <span style={{fontSize:9,color:C.textMut}}>v1.0 · 2026</span>
+      {/* Versión real del build (fix/actualizacion-pwa). Formato:
+          "v2026-09-16 · 34f4c3f" — fecha primero para el usuario, hash
+          para nosotros al diagnosticar reportes. */}
+      <span title="Versión del build (compartir al reportar bugs)"
+        style={{fontSize:9,color:C.textMut,fontFamily:"ui-monospace,monospace"}}>
+        {BUILD_VERSION}
+      </span>
     </div>
     {/* Toast persistente de "permisos actualizados" — fix/refresh-token */}
     {toastPermisos && (
