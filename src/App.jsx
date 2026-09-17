@@ -14721,6 +14721,13 @@ export default function App(){
   // del banner PWA; también protege contra F5 y "cerrar pestaña" accidentales.
   // NOTA: iOS Safari IGNORA beforeunload en PWA standalone. En iOS confiamos
   // solo en el banner PWA (que ya cubre el caso relevante).
+  //
+  // Ref al handler activo. Necesaria para poder removerlo sincrónicamente
+  // desde el onClick del botón "Recargar ahora" antes de disparar el reload
+  // — si no se remueve antes, beforeunload cancela silenciosamente el
+  // window.location.reload() que dispara vite-plugin-pwa tras skipWaiting.
+  // Diagnóstico confirmado 2026-09-17 en Deploy Preview.
+  const beforeunloadHandlerRef = useRef(null);
   useEffect(() => {
     if (!cambiosPendientes) return;
     const handler = (e) => {
@@ -14728,8 +14735,12 @@ export default function App(){
       e.returnValue = '';   // Chrome/Firefox requerido
       return '';            // Safari desktop requerido
     };
+    beforeunloadHandlerRef.current = handler;
     window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+      beforeunloadHandlerRef.current = null;
+    };
   }, [cambiosPendientes]);
 
   // ── fix/refresh-token (2026-09-16) ──
@@ -15367,7 +15378,30 @@ export default function App(){
               Guarda tus cambios antes de recargar.
             </div>
           </div>
-          <button onClick={() => { aplicarUpdatePendiente(true); }} style={{
+          <button onClick={() => {
+            // fix bug detección v4 → v5 (2026-09-17): el beforeunload guard
+            // cancela silenciosamente el location.reload() que dispara
+            // vite-plugin-pwa tras skipWaiting cuando cambiosPendientes==true.
+            // Chrome cancela sin mostrar warning porque el reload ocurre en un
+            // callback async lejos del click original (sin user activation).
+            //
+            // Fix en dos capas:
+            //   1) Remover el handler beforeunload sincrónicamente ANTES de
+            //      llamar updateSW, para que el reload de workbox no se cancele.
+            //   2) Fallback: si en 1.5s no ha ocurrido el reload (workbox falló
+            //      por lo que sea), forzar window.location.reload() manual.
+            //      Esto asegura que el botón nunca queda muerto.
+            if (beforeunloadHandlerRef.current) {
+              window.removeEventListener('beforeunload', beforeunloadHandlerRef.current);
+              beforeunloadHandlerRef.current = null;
+              console.log('[SW-PWA] beforeunload removido para permitir reload del banner');
+            }
+            aplicarUpdatePendiente(true);
+            setTimeout(() => {
+              console.log('[SW-PWA] fallback: forzando reload manual (workbox no recargó en 1.5s)');
+              window.location.reload();
+            }, 1500);
+          }} style={{
             background:C.blueDk, border:"none", borderRadius:6, padding:"6px 12px",
             fontSize:11, fontWeight:600, color:"#fff", cursor:"pointer", whiteSpace:"nowrap",
           }}>Recargar ahora</button>
