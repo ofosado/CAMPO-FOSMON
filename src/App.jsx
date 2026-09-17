@@ -15414,12 +15414,13 @@ export default function App(){
       borderTop:`1px solid ${C.border}`,padding:"5px 16px",
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
-      <div style={{display:"flex",alignItems:"center",gap:7}}>
+      <div style={{display:"flex",alignItems:"center",gap:14}}>
         {/* REVERTIR antes de mezclar a main: opacity 0.9, size 13,
-            letterSpacing 0.15em y fontSize 11 son cambios de prueba
-            (v2, v3, v4 y v6) para verificar detección de update en Deploy
-            Preview. Restaurar a size={11} opacity={0.5},
-            letterSpacing:"0.02em" y fontSize:9 antes del merge. */}
+            letterSpacing 0.15em, fontSize 11 y gap 14 son cambios de
+            prueba (v2, v3, v4, v6 y v7) para verificar detección de
+            update en Deploy Preview. Restaurar a gap:7, size={11},
+            opacity={0.5}, letterSpacing:"0.02em" y fontSize:9 antes
+            del merge. */}
         <EmblemaFOSMON size={13} dark={true} opacity={0.9}/>
         <span style={{fontSize:11,color:C.textMut,letterSpacing:"0.15em"}}>
           CAMPO — Control de Avance, Maquinaria, Personal y Obra
