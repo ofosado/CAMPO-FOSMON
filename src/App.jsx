@@ -14,7 +14,7 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, historialSubs = {}) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, historialSubs = {}, nominaHistorial = []) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -1140,9 +1140,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=secHead('8  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
 
   // Solo usa datos reales de nómina cargada. Si no hay, muestra placeholder.
-  // (Antes había fallbacks fantasma "||66" y "||53" que dejaban valores de
-  // muestra de una versión de demo.)
-  const nomData = typeof NOMINA_S18 !== 'undefined' ? NOMINA_S18 : [];
+  // fix/kpis-en-cero (2026-09-17): lee del snapshot real vía parámetro
+  // nominaHistorial. Antes leía la constante hardcoded vacía NOMINA_S18 y el
+  // PDF siempre mostraba "Nómina pendiente de cargar" aunque hubiera datos.
+  const _ultNominaPDF = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
+  const nomData = Array.isArray(_ultNominaPDF?.trabajadores) ? _ultNominaPDF.trabajadores : [];
   const hayNomina = nomData.length > 0;
   const dir = nomData.filter(p => p.tipo === 'D').length;
   const ind = nomData.filter(p => p.tipo === 'I').length;
@@ -2596,16 +2598,30 @@ const BIBLIOTECA_RIESGOS = [
     },
   },
   // ── NÓMINA ──
+  // fix/kpis-en-cero (2026-09-17): las 3 reglas leen el último snapshot real
+  // desde ctx.nominaHistorial. Antes leían de NOMINA_S18 (constante hardcoded
+  // vacía) y NUNCA disparaban aunque hubiera datos reales. Además había 2
+  // bugs de nomenclatura: el código pedía `p.importeHE` y `p.salarioSemanal`
+  // pero los datos guardan `p.impHE` y `p.salSem`. Corregidos aquí mismo.
+  //
+  // CANDIDATOS a reglas nuevas para otra rama (herencia de la función Riesgo
+  // eliminada, cuyo contenido solo se migró parcialmente):
+  //   - Concentración de proveedores (>40% del gasto en top 3)
+  //   - Incremento de nómina semana contra semana (>5% amarillo, >15% rojo)
+  // Ambos podrían añadirse aquí siguiendo el mismo patrón. Se decidieron
+  // fuera de scope de este fix — este PR solo repara lo roto, no agrega.
   {
     id: 'nom_001', categoria: 'nomina',
     titulo: 'Trabajadores con horas extra excesivas',
     descripcion: 'Personal con ≥20 horas extra por semana',
     tab: 'operacion', subTab: 'nomina',
-    detect: () => {
-      const altasHE = NOMINA_S18.filter(p => p.horasExtra >= 20);
+    detect: ({nominaHistorial}) => {
+      const ult = nominaHistorial?.[nominaHistorial.length - 1];
+      const trabs = Array.isArray(ult?.trabajadores) ? ult.trabajadores : [];
+      const altasHE = trabs.filter(p => (p.horasExtra||0) >= 20);
       if (altasHE.length === 0) return null;
       const sev = altasHE.length > 10 ? 'alto' : altasHE.length > 5 ? 'medio' : 'bajo';
-      return {severidad: sev, valor: `${altasHE.length}`, detalle: 'Riesgo de fatiga y sobrecosto', extra: altasHE.slice(0,3).map(p=>`${p.nombre.split(' ')[0]}: ${p.horasExtra}h`).join(' · ')};
+      return {severidad: sev, valor: `${altasHE.length}`, detalle: 'Riesgo de fatiga y sobrecosto', extra: altasHE.slice(0,3).map(p=>`${(p.nombre||'').split(' ')[0]}: ${p.horasExtra}h`).join(' · ')};
     },
   },
   {
@@ -2613,9 +2629,13 @@ const BIBLIOTECA_RIESGOS = [
     titulo: 'Costo de horas extra alto',
     descripcion: 'Las horas extra superan el 15% del total de nómina',
     tab: 'operacion', subTab: 'nomina',
-    detect: () => {
-      const totalNom = NOMINA_S18.reduce((t,p)=>t+(p.total||0), 0);
-      const totalHE = NOMINA_S18.reduce((t,p)=>t+(p.importeHE||0), 0);
+    detect: ({nominaHistorial}) => {
+      const ult = nominaHistorial?.[nominaHistorial.length - 1];
+      if (!ult) return null;
+      const trabs = Array.isArray(ult.trabajadores) ? ult.trabajadores : [];
+      const totalNom = ult.totalNomina ?? trabs.reduce((t,p)=>t+(p.total||0), 0);
+      // Nombre correcto: impHE (no importeHE, ese nombre no existe en los datos).
+      const totalHE = ult.totalHEImp ?? ult.totalHE ?? trabs.reduce((t,p)=>t+(p.impHE||0), 0);
       if (totalNom === 0) return null;
       const pct = totalHE/totalNom*100;
       if (pct > 25) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Costo HE muy alto', extra:`${MXN(totalHE)} de ${MXN(totalNom)} nómina`};
@@ -2628,10 +2648,13 @@ const BIBLIOTECA_RIESGOS = [
     titulo: 'Posibles anomalías en cálculo',
     descripcion: 'Trabajadores con total >2.5× su salario base',
     tab: 'operacion', subTab: 'nomina',
-    detect: () => {
-      const anom = NOMINA_S18.filter(p => p.salarioSemanal>0 && p.total > p.salarioSemanal*2.5);
+    detect: ({nominaHistorial}) => {
+      const ult = nominaHistorial?.[nominaHistorial.length - 1];
+      const trabs = Array.isArray(ult?.trabajadores) ? ult.trabajadores : [];
+      // Nombre correcto: salSem (no salarioSemanal, ese nombre no existe en los datos).
+      const anom = trabs.filter(p => (p.salSem||0) > 0 && (p.total||0) > (p.salSem||0)*2.5);
       if (anom.length === 0) return null;
-      return {severidad:'medio', valor: `${anom.length}`, detalle: 'Verificar cálculo o caso especial', extra: anom.slice(0,3).map(p=>p.nombre.split(' ')[0]).join(', ')};
+      return {severidad:'medio', valor: `${anom.length}`, detalle: 'Verificar cálculo o caso especial', extra: anom.slice(0,3).map(p=>(p.nombre||'').split(' ')[0]).join(', ')};
     },
   },
   // ── MATERIALES / ALMACÉN ──
@@ -3954,9 +3977,12 @@ function ConceptoFotos({fotos,onAdd,onDel}){
 // Catálogo de muestra eliminado — cada obra debe cargar su catálogo desde Presupuesto.
 const CATALOGO = {};
 
-// Nómina hardcodeada de muestra eliminada — se carga vacía por defecto.
-// Cada obra debe cargar su propia nómina desde el módulo de captura semanal.
-const NOMINA_S18 = [];
+// (fix/kpis-en-cero 2026-09-17): const NOMINA_S18 eliminada. Todos los KPIs
+// que la leían ahora leen del state real nominaHistorial vía props. Los sitios
+// afectados y arreglados fueron: Dashboard "Personal en campo", MiniDashNomina,
+// PDF ejecutivo (generarPDFObra), y motor detectarRiesgos (reglas nom_001,
+// nom_002, nom_003). También se eliminó la función Riesgo entera (código
+// muerto desde commit 9c9bfa0, 2026-05-21).
 
 // Sin obras hardcodeadas. Todas las obras se crean desde GP Construct vía PantallaObras.
 const _OBRAS_BASE = [];
@@ -7195,7 +7221,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   </Card>;
 }
 
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,onNavTab}){
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,nominaHistorial=[],onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
   const gastoGPLive = resolverGastoGP(obra, gpData);
@@ -7208,11 +7234,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
   const mNiv = nivelMargen(mpct);
   const mc = mNiv.color;
-  // Personal en campo: usa NOMINA_S18 (data de muestra si no hay nómina real
-  // cargada). Cuando el módulo de nómina esté conectado a los datos reales de
-  // la obra, esto vendrá de esos datos. Por ahora lo dejamos como referencia.
-  const dir=NOMINA_S18.filter(p=>p.tipo==="D").length;
-  const ind=NOMINA_S18.filter(p=>p.tipo==="I").length;
+  // Personal en campo: leído del último snapshot real de nómina cargada
+  // (fix/kpis-en-cero 2026-09-17). Antes usaba una constante hardcoded
+  // vacía y siempre devolvía 0/0.
+  // - directivos, equipo obra y auditor: nominaHistorial poblado por App.
+  // - cliente: la prop llega como [] (regla bloquea lectura) → 0/0 esperado,
+  //   pero el KPI no se le renderiza porque cliente no ve el Dashboard.
+  const _ultNom = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
+  const dir = _ultNom?.totalDir || 0;
+  const ind = _ultNom?.totalInd || 0;
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100;return{a,fg,ef:e.monto-a-fg};};
   // Normalizador de estatus (case-insensitive, sin acentos)
   const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -7235,7 +7265,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   // KPIs consolidados que el motor de detección usa
   const kpisCtx = {gt, am, alm, me, af, diff, mpct, pctGasto, brecha};
   const riesgos = detectarRiesgos({
-    obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx
+    obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx,
+    nominaHistorial,
   });
   // Para el banner principal, solo mostramos críticos+altos (los medios y bajos van al panel completo)
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
@@ -8038,22 +8069,40 @@ function MiniDashMaquinaria({obra, maquinaria}){
 }
 
 // ── NÓMINA ──
-function MiniDashNomina(){
-  const totalNom = NOMINA_S18.reduce((t,p)=>t+(p.total||0), 0);
-  const totalHE = NOMINA_S18.reduce((t,p)=>t+(p.importeHE||0), 0);
-  const totalDias = NOMINA_S18.reduce((t,p)=>t+(p.importeDias||0), 0);
-  const directos = NOMINA_S18.filter(p=>p.tipo==='D');
-  const indirectos = NOMINA_S18.filter(p=>p.tipo==='I');
-  const trabajadoresActivos = NOMINA_S18.filter(p=>(p.total||0) > 0).length;
-  const inasistentes = NOMINA_S18.filter(p=>(p.diasTrabajados||0) === 0).length;
-  const altasHE = NOMINA_S18.filter(p=>(p.horasExtra||0) >= 20).length;
-  const pctHE = totalNom > 0 ? totalHE/totalNom*100 : 0;
+// Panel superior del módulo Operación → Nómina. Muestra 4-6 KPIs del último
+// snapshot cargado. fix/kpis-en-cero (2026-09-17): antes leía de la constante
+// hardcoded vacía NOMINA_S18, siempre devolvía $0/0. Ahora recibe el historial
+// via prop desde App → Operacion.
+function MiniDashNomina({ historial = [] }){
+  const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
+  if (!semanaActual) {
+    return <div style={{fontSize:11,color:C.textMut,padding:'8px 4px',fontStyle:'italic'}}>
+      Sin nómina cargada aún. Sube el Excel semanal desde abajo.
+    </div>;
+  }
+  const trabs = Array.isArray(semanaActual.trabajadores) ? semanaActual.trabajadores : [];
+  // Preferir campos precalculados del snapshot; si no existen, recalcular
+  // desde trabajadores. Nombres CORRECTOS (no importeHE — ese nombre no existe
+  // en los datos, ver bug 2026-09-17).
+  const totalNom = semanaActual.totalNomina ?? trabs.reduce((t,p)=>t+(p.total||0), 0);
+  const totalHE  = semanaActual.totalHEImp ?? semanaActual.totalHE ?? trabs.reduce((t,p)=>t+(p.impHE||0), 0);
+  const directos    = semanaActual.totalDir ?? trabs.filter(p=>p.tipo==='D').length;
+  const indirectos  = semanaActual.totalInd ?? trabs.filter(p=>p.tipo==='I').length;
+  const trabajadoresActivos = trabs.filter(p=>(p.total||0) > 0).length;
+  const inasistentes = trabs.filter(p=>(p.dias||0) === 0).length;
+  const altasHE     = trabs.filter(p=>(p.horasExtra||0) >= 20).length;
+  const pctHE       = totalNom > 0 ? totalHE/totalNom*100 : 0;
+  // Sueldos base: no hay total precalculado en el snapshot. Se suma p.impDias
+  // en runtime. Snapshots viejos podrían no tener el campo — en ese caso
+  // mostramos guion en vez de $0 (que sería engañoso).
+  const hayImpDias = trabs.some(p => (p.impDias || 0) > 0);
+  const totalSueldosBase = hayImpDias ? trabs.reduce((t,p)=>t+(p.impDias||0), 0) : null;
   return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
-      <Kpi label="Total nómina S18" value={MXN(totalNom)} sub="semana actual" color={C.caliza} size={12}/>
-      <Kpi label="Activos" value={String(trabajadoresActivos)} sub={`${directos.length}D · ${indirectos.length}I`} color={C.green}/>
+      <Kpi label="Total nómina" value={MXN(totalNom)} sub={semanaActual.semana || 'semana actual'} color={C.caliza} size={12}/>
+      <Kpi label="Activos" value={String(trabajadoresActivos)} sub={`${directos}D · ${indirectos}I`} color={C.green}/>
       <Kpi label="Horas extra" value={MXN(totalHE)} sub={`${NUM(pctHE,1)}% del total`} color={pctHE > 15 ? C.yellowDk : C.blueDk} size={12}/>
-      <Kpi label="Sueldos base" value={MXN(totalDias)} sub="jornadas" color={C.purpleDk} size={12}/>
+      <Kpi label="Sueldos base" value={hayImpDias ? MXN(totalSueldosBase) : '—'} sub="días trabajados" color={C.purpleDk} size={12}/>
       {altasHE > 0 && <Kpi label="Riesgo HE" value={String(altasHE)} sub={`≥20h ext.`} color={C.yellow}/>}
       {inasistentes > 0 && <Kpi label="Sin asistencia" value={String(inasistentes)} sub="esta semana" color={C.red}/>}
     </div>
@@ -8119,7 +8168,8 @@ function MiniDashSubcontratos({obra, subcontratos}){
 function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
-                   historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab}){
+                   historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,
+                   nominaHistorial=[], setNominaHistorial}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
@@ -8177,12 +8227,13 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
     )}
     {subTab==="nomina" && (
       <>
-        <MiniDashNomina/>
+        <MiniDashNomina historial={nominaHistorial}/>
         <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="nomina"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
-          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}
+          onNominaHistorialCambio={setNominaHistorial}/>
       </>
     )}
     {subTab==="estimaciones" && (
@@ -8225,7 +8276,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,onNominaHistorialCambio}){
   // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
@@ -8625,7 +8676,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     </Card>}
 
 
-    {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol}/>}
+    {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol} onHistorialCambio={onNominaHistorialCambio}/>}
 
     {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
       onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
@@ -9671,140 +9722,6 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
 }
 
 // ── RIESGO ─────────────────────────────────────────────────────────────────
-function Riesgo({obra,subs,maquinaria,materiales,estimaciones}){
-  const gt=obra.gastoGP+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
-  const me=am+materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const af=subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
-  const pctGasto=gt/obra.presupuesto*100;
-  const brecha=pctGasto-af;
-  const pctPlazo=19.6;
-  const burnRate=pctGasto/pctPlazo;
-  const totalEst=estimaciones.reduce((t,e)=>t+e.monto,0);
-  const sinCobrar=estimaciones.filter(e=>e.estatus==="Facturada"||e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
-  const pctSinCob=totalEst>0?sinCobrar/totalEst*100:0;
-  const sinIniciar=subs.filter(s=>s.a===0);
-  const PROVS=[{p:"FOSMON CONSTRUCCIONES S.A.",gt:4280794},{p:"JUAN ANTONIO BENITEZ F.",gt:2412104},
-    {p:"CEMEX S A B DE C V",gt:1817638},{p:"IMSS",gt:1636496},{p:"JOSE E. ALEGRIA CUETO",gt:1426787},
-    {p:"RAUL CUEVAS TORRES",gt:1407121},{p:"MATERIALES RABAN DE OAXACA",gt:1038214},{p:"CONSTRUCCIONES KAYT",gt:998185}];
-  const totProv=PROVS.reduce((t,p)=>t+p.gt,0);
-  const top3pct=PROVS.slice(0,3).reduce((t,p)=>t+p.gt,0)/totProv*100;
-
-  // ── NÓMINA RISK ─────────────────────────────────────────────────────────
-  // Total nómina S18
-  const totalNom=NOMINA_S18.reduce((t,p)=>t+p.total,0);
-  const totalHE=NOMINA_S18.reduce((t,p)=>t+p.importeHE,0);
-  const pctHE=totalNom>0?totalHE/totalNom*100:0;
-  // Personas con HE > 20 hrs (riesgo fatiga/costo)
-  const altasHE=NOMINA_S18.filter(p=>p.horasExtra>=20);
-  // Personas con salario total > 2x su salario base (posible error o caso especial)
-  const anomalias=NOMINA_S18.filter(p=>p.total>p.salarioSemanal*2.5&&p.salarioSemanal>0);
-  // Semana simulada anterior (S17) — reducción del 15% para comparar
-  const nomS17_total=totalNom*0.87;
-  const deltaNom=totalNom-nomS17_total;
-  const pctDeltaNom=nomS17_total>0?deltaNom/nomS17_total*100:0;
-
-  const indicadores=[
-    {num:1,titulo:"Brecha avance vs gasto",color:brecha<5?C.green:brecha<15?C.yellow:C.red,
-     valor:`${brecha>=0?"+":""}${NUM(brecha,1)}pp`,
-     detalle:brecha<5?"Avance y gasto alineados":brecha<15?"Gasto ligeramente adelantado al avance":"Gasto supera avance — riesgo de sobrecosto",
-     extra:`Avance físico: ${NUM(af,1)}% | Gasto consumido: ${NUM(pctGasto,1)}% del presupuesto`},
-    {num:2,titulo:"Velocidad de quema de presupuesto",color:burnRate<0.9?C.green:burnRate<1.2?C.yellow:C.red,
-     valor:`${NUM(burnRate,2)}x`,
-     detalle:burnRate<0.9?"Ritmo de gasto dentro del programa":burnRate<1.2?"Ritmo ligeramente acelerado":"Ritmo de gasto excede el programa",
-     extra:`${NUM(pctPlazo,0)}% del plazo transcurrido | ${NUM(pctGasto,1)}% del presupuesto gastado`},
-    {num:3,titulo:"Estimaciones pendientes de cobro",color:pctSinCob<30?C.green:pctSinCob<60?C.yellow:C.red,
-     valor:`${NUM(pctSinCob,0)}%`,
-     detalle:pctSinCob<30?"Flujo de cobro saludable":pctSinCob<60?"Monto significativo pendiente":"Más del 60% sin cobrar — riesgo de flujo",
-     extra:`${MXN(sinCobrar)} sin cobrar de ${MXN(totalEst)} estimados`},
-    {num:4,titulo:"Frentes sin iniciar",color:sinIniciar.length===0?C.green:sinIniciar.length<=2?C.yellow:C.red,
-     valor:String(sinIniciar.length),
-     detalle:sinIniciar.length===0?"Todos los frentes han iniciado":`${sinIniciar.length} subsección(es) con avance = 0%`,
-     extra:sinIniciar.length>0?`Sin iniciar: ${sinIniciar.map(s=>s.sec).join(", ")}`:"Todos los frentes activos"},
-    {num:5,titulo:"Concentración de proveedores",color:top3pct<40?C.green:top3pct<55?C.yellow:C.red,
-     valor:`${NUM(top3pct,0)}%`,
-     detalle:top3pct<40?"Bien diversificado":top3pct<55?"Concentración moderada — monitorear":"Concentración alta — diversificar",
-     extra:`Top 3 proveedores = ${NUM(top3pct,1)}% del gasto registrado`},
-    {num:6,titulo:"Incremento de nómina semana sobre semana",color:pctDeltaNom<5?C.green:pctDeltaNom<15?C.yellow:C.red,
-     valor:`+${NUM(pctDeltaNom,1)}%`,
-     detalle:pctDeltaNom<5?"Nómina estable entre semanas":pctDeltaNom<15?"Incremento moderado — revisar horas extra":"Incremento alto — verificar altas y horas extraordinarias",
-     extra:`S17: ${MXN(nomS17_total)} → S18: ${MXN(totalNom)} | Incremento: ${MXN(deltaNom)}`},
-    {num:7,titulo:"Trabajadores con horas extra excesivas (≥20hrs)",color:altasHE.length===0?C.green:altasHE.length<=5?C.yellow:C.red,
-     valor:String(altasHE.length),
-     detalle:altasHE.length===0?"Sin casos de horas extra excesivas":altasHE.length<=5?"Casos moderados — monitorear fatiga y costo":"Múltiples trabajadores con HE excesivas — revisar organización de turnos",
-     extra:altasHE.slice(0,3).map(p=>`${p.nombre.split(" ")[0]}: ${p.horasExtra}hrs`).join(" · ")+(altasHE.length>3?` · y ${altasHE.length-3} más`:"")},
-  ];
-
-  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {indicadores.map(ind=>
-      <Card key={ind.num} accent={ind.color}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,gap:10}}>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
-              <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>RIESGO {ind.num}</span>
-              <span style={{fontSize:11,fontWeight:600,color:C.textPri}}>{ind.titulo}</span>
-            </div>
-            <div style={{fontSize:10,color:C.textSec,marginBottom:5}}>{ind.detalle}</div>
-            <div style={{fontSize:9,color:C.textMut,lineHeight:1.5}}>{ind.extra}</div>
-          </div>
-          <div style={{flexShrink:0,textAlign:"right"}}>
-            <div style={{fontSize:22,fontWeight:700,color:ind.color,lineHeight:1}}>{ind.valor}</div>
-            <div style={{fontSize:8,color:ind.color,marginTop:3,fontWeight:600,textTransform:"uppercase"}}>
-              {ind.color===C.green?"Normal":ind.color===C.yellow?"Vigilancia":"Crítico"}
-            </div>
-          </div>
-        </div>
-        <div style={{height:4,borderRadius:99,background:"rgba(255,254,249,0.08)",overflow:"hidden"}}>
-          <div style={{height:"100%",borderRadius:99,background:ind.color,
-            width:ind.color===C.green?"33%":ind.color===C.yellow?"66%":"100%",transition:"width .4s"}}/>
-        </div>
-      </Card>)}
-
-    {/* Detalle nómina */}
-    <Card>
-      <Tit>Detalle de nómina — Top 10 por costo total S18</Tit>
-      <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:6,marginBottom:6,
-        padding:"0 4px 6px",borderBottom:`0.5px solid ${C.border}`}}>
-        {["Trabajador","HE hrs","Tipo","Total"].map(h=>
-          <div key={h} style={{fontSize:9,color:C.textMut,fontWeight:600}}>{h}</div>)}
-      </div>
-      {NOMINA_S18.slice().sort((a,b)=>b.total-a.total).slice(0,10).map((p,i)=>
-        <div key={i} style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:6,
-          marginBottom:5,alignItems:"center"}}>
-          <div>
-            <div style={{fontSize:11,color:C.textPri}}>{p.nombre}</div>
-            <div style={{fontSize:9,color:C.textMut}}>{p.categoria}</div>
-          </div>
-          <div style={{fontSize:11,fontWeight:600,color:p.horasExtra>=20?C.red:p.horasExtra>0?C.orange:C.textMut,textAlign:"center"}}>
-            {p.horasExtra>0?`${p.horasExtra}hrs`:"—"}
-          </div>
-          <Bdg color={p.tipo==="D"?C.blue:C.purple} small>{p.tipo==="D"?"D":"I"}</Bdg>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{MXN(p.total)}</div>
-            {p.importeHE>0&&<div style={{fontSize:8,color:C.orange}}>+{MXN(p.importeHE)}</div>}
-          </div>
-        </div>)}
-    </Card>
-
-    <Card>
-      <Tit>Top proveedores — concentración</Tit>
-      {PROVS.map((pv,i)=><div key={pv.p} style={{marginBottom:8}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3,fontSize:11,gap:6}}>
-          <span style={{display:"flex",alignItems:"center",gap:5,minWidth:0,overflow:"hidden"}}>
-            <span style={{color:C.textMut,flexShrink:0}}>{i+1}</span>
-            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:C.textSec}}>{pv.p}</span>
-          </span>
-          <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-            <span style={{fontSize:9,color:C.textMut}}>{NUM(pv.gt/totProv*100,1)}%</span>
-            <span style={{fontWeight:600,fontSize:11,color:C.textPri}}>{MXN(pv.gt)}</span>
-          </div>
-        </div>
-        <Bar pct={pv.gt/PROVS[0].gt*100} color={i<3?C.red:`${C.red}55`}/>
-      </div>)}
-    </Card>
-  </div>;
-}
-
 // ── APP PRINCIPAL ──────────────────────────────────────────────────────────
 
 // ── CARGA DE PRESUPUESTO / CATÁLOGO ────────────────────────────────────────
@@ -10868,6 +10785,15 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 
 
 // ── GESTIÓN DE NÓMINA SEMANAL ──────────────────────────────────────────────
+// PENDIENTE (rama aparte, no tocar aquí): al conteo real de HE en obras
+// tipo TAMSA (turno 55h/semana) reporta ~1.7 horas extra por persona, lo
+// cual no cuadra. Comparación 2026-09-17 en obra 0125:
+//   · totalHEHrs snapshot = 71.5h entre 41 trab con HE (~1.7h/persona)
+//   · para 55h/semana el excedente sobre 48h "estándar" debería dar mucho más.
+// Probablemente el parser absorbe el excedente en el conteo de días (dias→
+// horasEfectivas) antes de calcular horasExtra. Investigar con nomina Excel
+// original de TAMSA y ajustar la detección de columna colHE / la conversión
+// capturaEnHoras. Ese costo real de HE está quedando escondido en dias.
 function parsearNomina(data) {
   // Parser inteligente — detecta columnas por patrón
   const filas = data.filter(row => row.some(c => c !== null && c !== undefined && String(c).trim() !== ''));
@@ -11232,15 +11158,23 @@ function validarNomina(trabajadores, semanaAnterior) {
   return { errores, advertencias };
 }
 
-function Nomina({obra, rol}) {
+function Nomina({obra, rol, onHistorialCambio}) {
   // Pre-cargar SheetJS al montar (procesarArchivo vuelve a llamar
   // ensureXLSX() para garantizar disponibilidad antes de usarlo)
   useEffect(() => { ensureXLSX().catch(() => {}); }, []);
   const [historial, setHistorial] = useState([]);
+  // fix/kpis-en-cero (2026-09-17): Nomina mantiene su state local (para su
+  // propia UI), pero notifica los cambios al App via onHistorialCambio para
+  // que Dashboard, MiniDashNomina y detectarRiesgos vean el snapshot fresco.
+  const notificarCambio = (nuevo) => {
+    setHistorial(nuevo);
+    onHistorialCambio && onHistorialCambio(nuevo);
+  };
   useEffect(()=>{
     fsGet(`obras/${obra.id}/nomina/historial`).then(d=>{
       if(d&&Array.isArray(d.semanas)) {
         setHistorial(d.semanas);
+        onHistorialCambio && onHistorialCambio(d.semanas);
         // Al cargar, apuntar SIEMPRE a la última semana (más reciente)
         setSemanaVer(Math.max(0, d.semanas.length - 1));
       }
@@ -11268,7 +11202,7 @@ function Nomina({obra, rol}) {
     fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
       { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
         meta:{ totalNomina: nueva.totalNomina } });
-    setHistorial(nuevo_hist);
+    notificarCambio(nuevo_hist);
     setVistaTab('actual');
     setSemanaVer(nuevo_hist.length - 1);
     setPendienteRevisar(null);
@@ -11378,7 +11312,7 @@ function Nomina({obra, rol}) {
     const nuevo = historial.filter((_,i) => i !== idx);
     fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
       { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-    setHistorial(nuevo);
+    notificarCambio(nuevo);
     setSemanaVer(Math.max(0, idx-1));
   }
 
@@ -14848,6 +14782,7 @@ export default function App(){
     setHistorialCargado(false);
     setOtrosGastos([]);
     setFechasModulos({});
+    setNominaHistorial([]);
 
     // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
@@ -14906,20 +14841,34 @@ export default function App(){
     fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
     });
-    // Cargar fecha de la última semana de nómina para detectar pendientes
-    fsGet(`obras/${obraId}/nomina/historial`).then(d=>{
-      const semanas = d?.semanas;
-      if (Array.isArray(semanas) && semanas.length > 0) {
-        const ultima = semanas[semanas.length - 1];
-        // La semana tiene "fecha" como string es-MX, convertir a ISO aproximada
-        // o si trae fechaISO usarla. Como fallback, usar fecha actual menos algunos días
-        const fechaIso = ultima.fechaISO || (ultima.fecha
-          ? new Date(ultima.fecha.split('/').reverse().join('-')).toISOString()
-          : null);
-        if (fechaIso) setFechasModulos(f => ({...f, nomina: fechaIso}));
-      }
-    });
-  },[obraId]);
+    // Cargar historial de nómina — solo para roles con acceso.
+    // El rol `cliente` no puede leer /nomina/historial según firestore.rules
+    // (allow read: if puedeVerObraC(obraId) && !esCliente()). Skipeamos el
+    // fetch para no generar console.error de Firestore.
+    // El resto de roles (directivos, equipo obra, auditor) sí lo pueden leer.
+    // fix/kpis-en-cero (2026-09-17): además de setFechasModulos (comportamiento
+    // previo), ahora POBLA setNominaHistorial para alimentar KPIs de Dashboard,
+    // MiniDashNomina, motor detectarRiesgos y PDF.
+    if (usuario?.rol !== 'cliente') {
+      fsGet(`obras/${obraId}/nomina/historial`).then(d=>{
+        const semanas = Array.isArray(d?.semanas) ? d.semanas : [];
+        setNominaHistorial(semanas);
+        if (semanas.length > 0) {
+          const ultima = semanas[semanas.length - 1];
+          const fechaIso = ultima.fechaISO || (ultima.fecha
+            ? new Date(ultima.fecha.split('/').reverse().join('-')).toISOString()
+            : null);
+          if (fechaIso) setFechasModulos(f => ({...f, nomina: fechaIso}));
+        }
+      }).catch(err => {
+        // Fallo defensivo: si por alguna razón el fetch falla, dejar historial
+        // vacío. Los consumers toleran array vacío y muestran valores neutros.
+        // NO rompe la carga de la obra.
+        console.warn('nomina/historial no accesible:', err?.code || err?.message);
+        setNominaHistorial([]);
+      });
+    }
+  },[obraId, usuario?.rol]);
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
   // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
   const[subs,setSubs]=useState([]);
@@ -14928,6 +14877,12 @@ export default function App(){
   const[estimaciones,setEstimaciones]=useState([]);
   const[estCargadas,setEstCargadas]=useState(false);
   const[subcontratos,setSubcontratos]=useState([]);
+  // fix/kpis-en-cero (2026-09-17): historial de nómina levantado al App para
+  // alimentar KPIs de Dashboard, MiniDashNomina, motor de riesgos y PDF ejecutivo.
+  // Antes esos sitios leían de la constante hardcoded vacía NOMINA_S18 y
+  // siempre daban 0. La fuente de verdad ahora es este state, llenado por el
+  // fetch condicional al rol en el useEffect(obraId) de abajo.
+  const[nominaHistorial,setNominaHistorial]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
   const[historialCargado,setHistorialCargado]=useState(false);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
@@ -15280,7 +15235,7 @@ export default function App(){
               historialSubs[s.id] = Array.isArray(h?.semanas) ? h.semanas : [];
             }));
           } catch(e) { console.warn('historialSubs no disponible', e); }
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, historialSubs);
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, historialSubs, nominaHistorial);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
@@ -15324,7 +15279,7 @@ export default function App(){
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} onNavTab={navTab}/>}
+      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
@@ -15337,6 +15292,7 @@ export default function App(){
           estimaciones={estimaciones} setEstimaciones={setEstimaciones}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
       )}
