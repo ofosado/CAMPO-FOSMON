@@ -5214,7 +5214,12 @@ function ModalPassword({usuario, onCancel, onConfirm, busy}){
 
 // ── PANEL EJECUTIVO MULTI-OBRA ─────────────────────────────────────────────
 // Vista consolidada para Director General / Director Operaciones / Gerente.
-// Muestra: KPIs portafolio, cobranza agrupada por cliente (acordeón) y top obras de atención.
+// DEPRECADO por feature/dashboard-principal (2026-09-18). Reemplazado por
+// DashboardPrincipal. Se conserva la definición como referencia por si el
+// nuevo dashboard falla en producción y hay que rollback rápido; en cualquier
+// rama siguiente puede eliminarse. Ninguna vista lo renderiza hoy.
+// Contenido original: KPIs portafolio + Cobranza por cliente (acordeón) +
+// OBRAS QUE REQUIEREN ATENCIÓN.
 function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
   const[expandido,setExpandido]=useState(true);
   const[clienteAbierto,setClienteAbierto]=useState(null);
@@ -5487,6 +5492,515 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
   </Card>;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// feature/dashboard-principal (2026-09-18)
+// Pantalla principal rediseñada. Reemplaza la Cobranza por cliente y las
+// "obras que requieren atención" del PanelEjecutivo por 3 bloques:
+//   1. Consolidado: 5 KPIs con variación semanal (Contratado, Ejecutado,
+//      Gastado, Margen, Personal).
+//   2. Excepciones: frases cortas, una por renglón, de obras con problema.
+//   3. Tabla: 6 columnas ordenadas por margen ascendente.
+//
+// Se calcula sobre lo que YA existe en Firestore:
+//   · avance/historial       (por obra) — snapshot semanal con montoEjecutado
+//                                          y avancePonderado
+//   · nomina/historial       (por obra) — snapshot semanal con totalDir,
+//                                          totalInd, totalNomina, totalHEImp
+//   · global/gp_construct    — mapa de gasto por semana ISO (S1..S52) por obra
+//   · config/otros_gastos    — array {fecha, importe, ...} por obra
+//   · avance/maquinaria      — array {imp} SIN fecha por movimiento
+//                              (pendiente: agregar fecha al formulario)
+//
+// Maquinaria y almacén se EXCLUYEN de la serie semanal reconstruida —
+// solo suman al valor absoluto del presente. Meter maquinaria sin fecha en
+// la serie inyectaría gasto retroactivo y deformaría la variación semanal.
+// ────────────────────────────────────────────────────────────────────────────
+
+// Helper local: semana ISO {sem, año} + key string ordenable "Y2026-S37"
+const _semISOKey = (fecha) => {
+  const d = new Date(fecha);
+  if (isNaN(d)) return null;
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const inicioAño = new Date(d.getFullYear(), 0, 1);
+  const sem = Math.ceil(((d - inicioAño) / 86400000 + 1) / 7);
+  return { sem, año: d.getFullYear(), key: `Y${d.getFullYear()}-S${String(sem).padStart(2,'0')}` };
+};
+
+// Reconstruye el gasto ACUMULADO por semana ISO (para una obra) usando:
+//   · GP semanal de gp_construct (por ISO week del año en curso)
+//   · otros_gastos agrupados por su fecha individual (previo + año en curso)
+// EXCLUYE maquinaria (no tiene fecha por movimiento hoy).
+// Devuelve un mapa {key: gastoAcumulado} y también valorEnKey(k) helper.
+const _serieGastoAcumulado = (obra, gpData, otrosGastos = []) => {
+  const gpObra = gpData?.obras && Object.values(gpData.obras).find(o => o.id === obra.id);
+  const añoActual = new Date().getFullYear();
+  // Base = años previos al actual (suma de Y2024, Y2025, ...)
+  let base = 0;
+  if (gpObra?.años) {
+    Object.entries(gpObra.años).forEach(([kAño, v]) => {
+      const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
+      if (!isNaN(y) && y < añoActual) base += (parseFloat(v) || 0);
+    });
+  }
+  // GP semanal del año actual, ordenado y acumulado
+  const gpAcum = {};   // {"Y2026-S37": acumulado}
+  if (gpObra?.semanas) {
+    const semanas = Object.entries(gpObra.semanas)
+      .map(([k, v]) => {
+        const m = String(k).match(/S?(\d{1,2})/);
+        if (!m) return null;
+        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.sem - b.sem);
+    let acum = base;
+    semanas.forEach(({ sem, delta }) => {
+      acum += delta;
+      gpAcum[`Y${añoActual}-S${String(sem).padStart(2,'0')}`] = acum;
+    });
+  }
+  // Otros gastos por semana (incremental) — se acumulan al integrar
+  const otrosIncrem = {};
+  (otrosGastos || []).forEach(og => {
+    const iso = _semISOKey(og.fecha);
+    if (!iso) return;   // sin fecha → no cuenta en la serie
+    const imp = parseFloat(og.importe) || 0;
+    if (!imp) return;
+    otrosIncrem[iso.key] = (otrosIncrem[iso.key] || 0) + imp;
+  });
+  // Total acumulado por semana = GP acumulado (última ≤ key) + otros acumulado ≤ key
+  const allKeys = new Set([...Object.keys(gpAcum), ...Object.keys(otrosIncrem)]);
+  const keysOrdenadas = [...allKeys].sort();
+  const gpKeys = Object.keys(gpAcum).sort();
+  const ultimoGPHasta = (k) => {
+    let ult = base;   // si no hay GP hasta esa semana, la base sigue siendo años previos
+    for (const gk of gpKeys) {
+      if (gk <= k) ult = gpAcum[gk];
+      else break;
+    }
+    return ult;
+  };
+  const gastoAcum = {};
+  let acumOtros = 0;
+  const otrosKeysOrd = Object.keys(otrosIncrem).sort();
+  let idxOtros = 0;
+  for (const k of keysOrdenadas) {
+    // avanzar acumOtros hasta k inclusive
+    while (idxOtros < otrosKeysOrd.length && otrosKeysOrd[idxOtros] <= k) {
+      acumOtros += otrosIncrem[otrosKeysOrd[idxOtros]];
+      idxOtros++;
+    }
+    gastoAcum[k] = ultimoGPHasta(k) + acumOtros;
+  }
+  return { gastoAcum, keysOrdenadas, base };
+};
+
+// Devuelve la key ISO de la semana N atrás (0 = semana actual)
+const _keySemanaAtras = (n = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n * 7);
+  return _semISOKey(d).key;
+};
+
+// Snapshot consolidado para una lista de obras a una semana ISO dada.
+// Devuelve { contratado, ejecutado, gastado, margenPct, personal, dir, ind, obrasConDato }.
+// gpData y datosPorObra vienen del state del App. Si no hay dato para una obra
+// esa semana, se omite de las sumas pero se registra que "no aporta al delta".
+const _snapshotSemana = (obrasList, datosPorObra, gpData, semanaKey) => {
+  let contratado = 0, ejecutado = 0, gastado = 0;
+  let dir = 0, ind = 0, personal = 0;
+  let obrasConEjec = 0, obrasConNom = 0;
+  for (const o of obrasList) {
+    contratado += (o.presupuesto || 0);
+    const d = datosPorObra[o.id] || {};
+    // Ejecutado desde snapshot semanal de avance/historial
+    const avSemanas = d.historialAvanceSemanas || [];
+    const avEnSem = avSemanas.find(s => s.año && s.semana &&
+      `Y${s.año}-S${String(s.semana).padStart(2,'0')}` <= semanaKey);
+    // buscamos el snapshot MÁS RECIENTE ≤ semanaKey
+    let avUltimo = null;
+    for (const s of avSemanas) {
+      if (!s.año || !s.semana) continue;
+      const k = `Y${s.año}-S${String(s.semana).padStart(2,'0')}`;
+      if (k <= semanaKey && (!avUltimo || k > `Y${avUltimo.año}-S${String(avUltimo.semana).padStart(2,'0')}`)) {
+        avUltimo = s;
+      }
+    }
+    if (avUltimo) {
+      ejecutado += (avUltimo.montoEjecutado || 0);
+      obrasConEjec++;
+    }
+    // Gastado desde serie reconstruida
+    const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
+    // Buscar la key MÁS RECIENTE ≤ semanaKey
+    let ultKey = null;
+    for (const k of keysOrdenadas) {
+      if (k <= semanaKey) ultKey = k;
+      else break;
+    }
+    if (ultKey) gastado += gastoAcum[ultKey];
+    // Personal desde nomina/historial: último snapshot ≤ semanaKey
+    const nomSemanas = d.nominaSemanas || [];
+    let nomUlt = null;
+    for (const s of nomSemanas) {
+      // El snapshot de nómina no siempre trae {año, semana}; usamos fecha
+      const iso = _semISOKey(s.fecha || s.fechaISO || s.fechaCaptura);
+      if (!iso) continue;
+      if (iso.key <= semanaKey && (!nomUlt || iso.key > nomUlt.key)) {
+        nomUlt = { key: iso.key, s };
+      }
+    }
+    if (nomUlt) {
+      const s = nomUlt.s;
+      dir += (s.totalDir || 0);
+      ind += (s.totalInd || 0);
+      personal += (s.totalDir || 0) + (s.totalInd || 0);
+      obrasConNom++;
+    }
+  }
+  const margenAbs = ejecutado - gastado;
+  const margenPct = ejecutado > 0 ? (margenAbs / ejecutado) * 100 : 0;
+  return { contratado, ejecutado, gastado, margenAbs, margenPct, personal, dir, ind, obrasConEjec, obrasConNom };
+};
+
+// Componente pequeño: KPI con delta abajo (flecha + valor).
+// deltaValor puede ser null → muestra "—" en lugar de flecha (sin comparación).
+function _KpiConDelta({ label, valor, deltaValor, deltaSub, color, size = 13 }) {
+  const sinDelta = deltaValor === null || deltaValor === undefined;
+  const positivo = !sinDelta && deltaValor > 0;
+  const negativo = !sinDelta && deltaValor < 0;
+  const flecha = sinDelta ? '—' : (positivo ? '▲' : (negativo ? '▼' : '='));
+  const colorDelta = sinDelta ? C.textMut : (positivo ? C.greenDk : (negativo ? C.red : C.textMut));
+  return (
+    <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${color}`}}>
+      <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>{label}</div>
+      <div style={{fontSize:size,fontWeight:700,color}}>{valor}</div>
+      <div style={{fontSize:9,color:colorDelta,marginTop:3,fontWeight:600}}>
+        <span>{flecha}</span> <span>{deltaSub || (sinDelta ? 'sin semana previa' : '')}</span>
+      </div>
+    </div>
+  );
+}
+
+// Componente principal: reemplaza Cobranza + OBRAS ATENCIÓN del PanelEjecutivo.
+// Alimentado con el mismo `datosPorObra` que ya existe (subs, maquinaria,
+// materiales, estimaciones, otrosGastos, nominaSemanas, historialAvanceSemanas)
+// + gpData. No dispara Firestore reads propios.
+function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
+  const activas = obras.filter(o => o.estado !== 'archivada');
+  if (activas.length === 0) return null;
+
+  // Esperar a que TODO esté cargado antes de pintar (mismo criterio que
+  // PanelEjecutivo — evita mostrar KPIs a la mitad).
+  const gpListo = !!(gpData && gpData.obras);
+  const todosCargados = activas.every(o => datosPorObra[o.id]);
+  if (!gpListo || !todosCargados) {
+    return (
+      <Card accent={C.caliza} style={{marginBottom:10}}>
+        <Tit>Panel principal — cargando…</Tit>
+        <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
+          {!gpListo ? "Sincronizando con GP Construct…" : `Cargando ${activas.length} obras activas…`}
+        </div>
+      </Card>
+    );
+  }
+
+  const keyActual   = _keySemanaAtras(0);
+  const keyAnterior = _keySemanaAtras(1);
+  const snapAct = _snapshotSemana(activas, datosPorObra, gpData, keyActual);
+  const snapPrev = _snapshotSemana(activas, datosPorObra, gpData, keyAnterior);
+
+  // Deltas — null si no hay obras que aporten a la comparación
+  const delta = (act, prev) => (act - prev);
+  const hayCompEjec = snapPrev.obrasConEjec > 0;
+  const hayCompNom  = snapPrev.obrasConNom > 0;
+
+  // ── BLOQUE 2 — Excepciones ──
+  const HOY = new Date();
+  const excepciones = [];
+  for (const o of activas) {
+    const d = datosPorObra[o.id] || {};
+    const nombre = resolverNombreCortoObra(o, gpData);
+
+    // (a) Sin captura ≥ 7 días
+    const avSemanas = d.historialAvanceSemanas || [];
+    const ultAv = avSemanas[avSemanas.length - 1];
+    if (ultAv?.fechaCaptura) {
+      const dias = Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24));
+      if (dias >= 7) {
+        excepciones.push({
+          obraId: o.id,
+          tipo: 'sin_captura',
+          texto: `${nombre} — ${dias} días sin captura de avance`,
+        });
+      }
+    } else if (avSemanas.length === 0) {
+      // Obra sin ningún snapshot todavía — también cuenta como pendiente
+      excepciones.push({
+        obraId: o.id,
+        tipo: 'sin_captura',
+        texto: `${nombre} — sin captura de avance registrada`,
+      });
+    }
+
+    // (b) Caída de margen ≥ 3pp (obra individual, comparando última vs penúltima
+    //     de su propio snapshot).
+    if (avSemanas.length >= 2) {
+      const _ult = avSemanas[avSemanas.length - 1];
+      const _pre = avSemanas[avSemanas.length - 2];
+      // Recalcular gasto acum en la semana de _ult y en la de _pre para esta obra
+      const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
+      const kUlt = _semISOKey(_ult.fechaCaptura)?.key;
+      const kPre = _semISOKey(_pre.fechaCaptura)?.key;
+      const gUlt = (() => {
+        if (!kUlt) return null;
+        let g = null;
+        for (const k of keysOrdenadas) { if (k <= kUlt) g = gastoAcum[k]; else break; }
+        return g;
+      })();
+      const gPre = (() => {
+        if (!kPre) return null;
+        let g = null;
+        for (const k of keysOrdenadas) { if (k <= kPre) g = gastoAcum[k]; else break; }
+        return g;
+      })();
+      if (gUlt !== null && gPre !== null && _ult.montoEjecutado > 0 && _pre.montoEjecutado > 0) {
+        const mUlt = (_ult.montoEjecutado - gUlt) / _ult.montoEjecutado * 100;
+        const mPre = (_pre.montoEjecutado - gPre) / _pre.montoEjecutado * 100;
+        const caida = mPre - mUlt;
+        if (caida >= 3) {
+          const nivelUlt = nivelMargen(mUlt).nivel;
+          excepciones.push({
+            obraId: o.id,
+            tipo: 'caida_margen',
+            texto: `${nombre} — margen bajó de ${NUM(mPre, 1)}% a ${NUM(mUlt, 1)}% (−${NUM(caida, 1)}pp), en nivel ${nivelUlt}`,
+          });
+        }
+      }
+    }
+
+    // (c) HE > 25% de la nómina de la semana (mismo umbral que nom_002 ALTO)
+    const nomSemanas = d.nominaSemanas || [];
+    const ultNom = nomSemanas[nomSemanas.length - 1];
+    if (ultNom) {
+      const totalNom = ultNom.totalNomina || (ultNom.trabajadores || []).reduce((t,p)=>t+(p.total||0), 0);
+      const totalHE  = ultNom.totalHEImp ?? ultNom.totalHE ?? (ultNom.trabajadores || []).reduce((t,p)=>t+(p.impHE||0), 0);
+      if (totalNom > 0) {
+        const pct = totalHE / totalNom * 100;
+        if (pct > 25) {
+          excepciones.push({
+            obraId: o.id,
+            tipo: 'he_alta',
+            texto: `${nombre} — horas extra al ${NUM(pct, 0)}% de la nómina (${MXN(totalHE)} de ${MXN(totalNom)})`,
+          });
+        }
+      }
+    }
+  }
+
+  // ── BLOQUE 3 — Tabla, ordenada por margen ascendente ──
+  const filas = activas.map(o => {
+    const d = datosPorObra[o.id] || {};
+    const kpis = calcularKPIsObra(o, d.subs || [], d.maquinaria || [], d.materiales || [], d.estimaciones || [], gpData, d.otrosGastos || []);
+    const avSemanas = d.historialAvanceSemanas || [];
+    const ultAv = avSemanas[avSemanas.length - 1];
+    const preAv = avSemanas.length >= 2 ? avSemanas[avSemanas.length - 2] : null;
+    // Delta de avance físico (pp) contra semana anterior
+    let deltaAvance = null;
+    if (ultAv && preAv && typeof ultAv.avancePonderado === 'number' && typeof preAv.avancePonderado === 'number') {
+      deltaAvance = ultAv.avancePonderado - preAv.avancePonderado;
+    }
+    // Personal esta semana vs anterior
+    const nomSemanas = d.nominaSemanas || [];
+    const ultNom = nomSemanas[nomSemanas.length - 1];
+    const preNom = nomSemanas.length >= 2 ? nomSemanas[nomSemanas.length - 2] : null;
+    const personal = ultNom ? ((ultNom.totalDir || 0) + (ultNom.totalInd || 0)) : null;
+    const personalPrev = preNom ? ((preNom.totalDir || 0) + (preNom.totalInd || 0)) : null;
+    const deltaPersonal = (personal !== null && personalPrev !== null) ? personal - personalPrev : null;
+    // Delta de margen (pp) contra semana anterior
+    let deltaMargen = null;
+    if (ultAv && preAv) {
+      const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
+      const kU = _semISOKey(ultAv.fechaCaptura)?.key;
+      const kP = _semISOKey(preAv.fechaCaptura)?.key;
+      const getG = (k) => {
+        if (!k) return null;
+        let g = null;
+        for (const kk of keysOrdenadas) { if (kk <= k) g = gastoAcum[kk]; else break; }
+        return g;
+      };
+      const gU = getG(kU), gP = getG(kP);
+      if (gU !== null && gP !== null && ultAv.montoEjecutado > 0 && preAv.montoEjecutado > 0) {
+        const mU = (ultAv.montoEjecutado - gU) / ultAv.montoEjecutado * 100;
+        const mP = (preAv.montoEjecutado - gP) / preAv.montoEjecutado * 100;
+        deltaMargen = mU - mP;
+      }
+    }
+    // Última captura (días atrás desde hoy)
+    let ultimaCapturaTxt = '—';
+    if (ultAv?.fechaCaptura) {
+      const dias = Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24));
+      ultimaCapturaTxt = dias === 0 ? 'hoy' : (dias === 1 ? 'ayer' : `hace ${dias} días`);
+    }
+    return {
+      obra: o,
+      nombre: resolverNombreCortoObra(o, gpData),
+      af: kpis.af,
+      deltaAvance,
+      margenPct: kpis.mpct,
+      margenAbs: kpis.diff,
+      deltaMargen,
+      porCobrar: kpis.estPorCob,
+      personal,
+      deltaPersonal,
+      ultimaCapturaTxt,
+      diasSinCaptura: ultAv?.fechaCaptura ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24)) : null,
+    };
+  }).sort((a, b) => a.margenPct - b.margenPct);
+
+  // ── RENDER ──
+  return (
+    <Card accent={C.caliza} style={{marginBottom:10}}>
+      <div style={{marginBottom:12}}>
+        <Tit>Panel principal — {activas.length} obras activas</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+          Consolidado, excepciones y ranking por margen
+        </div>
+      </div>
+
+      {/* BLOQUE 1 — Consolidado */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
+        Semana actual vs semana anterior
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:14}}>
+        {/* Contratado — sin variación por decisión (Opción A) */}
+        <_KpiConDelta
+          label="Contratado"
+          valor={MXN(snapAct.contratado)}
+          deltaValor={null}
+          deltaSub={`${activas.length} obras`}
+          color={C.caliza}
+        />
+        <_KpiConDelta
+          label="Ejecutado"
+          valor={MXN(snapAct.ejecutado)}
+          deltaValor={hayCompEjec ? delta(snapAct.ejecutado, snapPrev.ejecutado) : null}
+          deltaSub={hayCompEjec ? `${delta(snapAct.ejecutado, snapPrev.ejecutado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.ejecutado, snapPrev.ejecutado)))}` : null}
+          color={C.blue}
+        />
+        <_KpiConDelta
+          label="Gastado"
+          valor={MXN(snapAct.gastado)}
+          deltaValor={hayCompEjec ? delta(snapAct.gastado, snapPrev.gastado) : null}
+          deltaSub={hayCompEjec ? `${delta(snapAct.gastado, snapPrev.gastado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.gastado, snapPrev.gastado)))}` : null}
+          color={C.textPri}
+        />
+        <_KpiConDelta
+          label="Margen"
+          valor={`${snapAct.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(snapAct.margenAbs))}  ·  ${NUM(snapAct.margenPct, 1)}%`}
+          deltaValor={hayCompEjec ? (snapAct.margenPct - snapPrev.margenPct) : null}
+          deltaSub={hayCompEjec ? `${(snapAct.margenPct - snapPrev.margenPct) >= 0 ? '+' : '−'}${NUM(Math.abs(snapAct.margenPct - snapPrev.margenPct), 1)}pp` : null}
+          color={nivelMargen(snapAct.margenPct).color}
+        />
+        <_KpiConDelta
+          label="Personal"
+          valor={`${snapAct.personal}   (${snapAct.dir}D · ${snapAct.ind}I)`}
+          deltaValor={hayCompNom ? delta(snapAct.personal, snapPrev.personal) : null}
+          deltaSub={hayCompNom ? `${delta(snapAct.personal, snapPrev.personal) >= 0 ? '+' : '−'}${Math.abs(delta(snapAct.personal, snapPrev.personal))} trab.` : null}
+          color={C.purpleDk}
+        />
+      </div>
+
+      {/* BLOQUE 2 — Excepciones */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
+        Excepciones
+      </div>
+      <div style={{marginBottom:14}}>
+        {excepciones.length === 0 ? (
+          <div style={{fontSize:11,color:C.textMut,padding:"6px 4px",fontStyle:"italic"}}>
+            Sin excepciones. Todas las obras al día.
+          </div>
+        ) : (
+          excepciones.map((e, i) => (
+            <div key={i}
+                 onClick={() => onSelectObra && onSelectObra(e.obraId)}
+                 style={{background:C.bg,borderRadius:6,padding:"7px 11px",marginBottom:4,
+                         cursor:"pointer",display:"flex",alignItems:"center",gap:8,
+                         borderLeft:`3px solid ${
+                           e.tipo === 'sin_captura' ? C.yellow :
+                           e.tipo === 'caida_margen' ? C.red :
+                           C.orange
+                         }`}}>
+              <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
+              <span style={{fontSize:11,color:C.textMut}}>›</span>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* BLOQUE 3 — Tabla */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
+        Obras — ordenadas por margen (menor primero)
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+              <th style={{textAlign:"left",padding:"6px 4px"}}>Obra</th>
+              <th style={{textAlign:"right",padding:"6px 4px"}}>Avance físico</th>
+              <th style={{textAlign:"right",padding:"6px 4px"}}>Margen</th>
+              <th style={{textAlign:"right",padding:"6px 4px"}}>Por cobrar</th>
+              <th style={{textAlign:"right",padding:"6px 4px"}}>Personal</th>
+              <th style={{textAlign:"right",padding:"6px 4px"}}>Última captura</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map(f => {
+              const margenColor = nivelMargen(f.margenPct).color;
+              const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
+              const _flecha = (v, positivo_es_bueno = true) => {
+                if (v === null || v === undefined) return <span style={{color:C.textMut}}>—</span>;
+                if (Math.abs(v) < 0.05) return <span style={{color:C.textMut,fontSize:9}}>= 0</span>;
+                const pos = v > 0;
+                const col = pos === positivo_es_bueno ? C.greenDk : C.red;
+                return <span style={{color:col,fontSize:9,marginLeft:4,fontWeight:600}}>{pos ? '▲' : '▼'} {NUM(Math.abs(v), 1)}{typeof v === 'number' && Math.abs(v) < 100 && positivo_es_bueno ? 'pp' : ''}</span>;
+              };
+              return (
+                <tr key={f.obra.id}
+                    onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                    style={{borderBottom:`0.5px solid ${C.border}`,cursor:"pointer"}}>
+                  <td style={{padding:"7px 4px",color:C.textPri,fontWeight:600}}>{f.nombre}</td>
+                  <td style={{padding:"7px 4px",textAlign:"right"}}>
+                    {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true)}
+                  </td>
+                  <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600}}>
+                    {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true)}
+                  </td>
+                  <td style={{padding:"7px 4px",textAlign:"right"}}>
+                    {MXN(f.porCobrar)}
+                  </td>
+                  <td style={{padding:"7px 4px",textAlign:"right"}}>
+                    {f.personal !== null ? f.personal : '—'}
+                    {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && (
+                      <span style={{color: f.deltaPersonal > 0 ? C.greenDk : C.red, fontSize:9, marginLeft:4, fontWeight:600}}>
+                        {f.deltaPersonal > 0 ? '▲' : '▼'} {Math.abs(f.deltaPersonal)}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{padding:"7px 4px",textAlign:"right",color: capAlerta ? C.red : C.textSec,fontWeight: capAlerta ? 600 : 400}}>
+                    {f.ultimaCapturaTxt}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
@@ -5739,9 +6253,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
       </button>}
     </div>
 
-    {/* Panel ejecutivo multi-obra — solo roles directivos y si hay ≥2 obras activas */}
-    {!verHistorial && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol) && (
-      <PanelEjecutivo obras={todasObras} datosPorObra={datosPorObra} gpData={gpData} onSelectObra={onSelect}/>
+    {/* Panel principal — feature/dashboard-principal 2026-09-18.
+        Reemplaza el PanelEjecutivo. Se muestra a directivos y a auditor
+        (auditor con sus obras asignadas, filtradas ya por todasObras arriba).
+        Cliente sigue sin panel (mantiene solo su lista simplificada). */}
+    {!verHistorial && ["director_general","director_operaciones","gerente_construccion","admin_sistema","auditor"].includes(usuario.rol) && (
+      <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData} onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}
@@ -15096,6 +15613,14 @@ export default function App(){
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
         patch(o.id, { nominaSemanas: semanas });
       }, err => console.warn('bulk nomina', o.id, err)));
+      // Historial de avance semanal — para el bloque 1 y bloque 2 del
+      // DashboardPrincipal (delta ejecutado / margen / detección de "sin
+      // captura ≥ 7 días"). feature/dashboard-principal 2026-09-18.
+      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'historial'), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
+        patch(o.id, { historialAvanceSemanas: semanas });
+      }, err => console.warn('bulk avance histo', o.id, err)));
     });
 
     return () => unsubs.forEach(u => u());
