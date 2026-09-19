@@ -7,16 +7,16 @@ Cada entrada dice: qué es el problema, por qué importa, dónde vive el
 hueco, propuesta de fix y prioridad. Antes de tomar cualquiera de estos,
 releer el contexto — puede haber cambiado.
 
-**Los primeros 5 pendientes bloquean la primera demo a un cliente.** El
+**Los primeros 6 pendientes bloquean la primera demo a un cliente.** El
 resto va después. Dentro de cada bloque, orden por impacto descendente.
 
 ---
 
 # BLOQUEAN LA PRIMERA DEMO
 
-Cinco puntos que hay que resolver ANTES de mostrar el sistema por
+Seis puntos que hay que resolver ANTES de mostrar el sistema por
 primera vez a un cliente externo. El pendiente #1 (iCloud) es
-condición previa para que los otros cuatro se puedan trabajar con
+condición previa para que los otros cinco se puedan trabajar con
 confianza — sin eso, cada cambio puede desaparecer.
 
 ---
@@ -39,6 +39,35 @@ momento de leerse otra vez. Se detectó por comparar mtime y grep post-edit.
 - Es la explicación más probable de "ediciones que no persisten".
 - Bloquea de facto el trabajo previo a la demo — no se puede iterar
   con confianza en las horas anteriores al deadline.
+
+**Riesgo de integridad, no solo de productividad**: el repositorio
+del producto CAMPO se está sincronizando en la cuenta personal de
+iCloud de un desarrollador mientras se edita. Eso significa:
+
+- El código fuente autoritativo del producto vive en una nube
+  personal, no en un almacén controlado. Si la cuenta iCloud se
+  compromete, se pierde el acceso o iCloud sufre incidente, el
+  desarrollador queda sin árbol de trabajo local íntegro (aunque
+  `origin` en GitHub sigue como respaldo).
+- Los mecanismos de sync bidireccional pueden reordenar, duplicar
+  o retrasar archivos sin aviso. En un archivo grande como
+  `src/App.jsx`, el orden de operaciones importa: escritura desde
+  editor, sync a iCloud, sync de vuelta, lectura desde otro
+  proceso — cualquier permutación produce estados intermedios que
+  no son los que quería el desarrollador.
+- Los commits git firman el snapshot local; si el snapshot local
+  es un estado intermedio de sync (algunos archivos actualizados,
+  otros no), el commit lleva una mezcla inconsistente que puede
+  compilar y pasar tests por casualidad, y romperse en producción
+  con síntomas que no se pueden reproducir.
+- Auditar la cadena de custodia del código (quién editó qué, cuándo
+  se subió a origin) se vuelve inconfiable porque un timestamp de
+  archivo local puede ser el timestamp de un sync, no de una
+  edición.
+
+En resumen: hoy el producto no vive donde debería. Salir de iCloud
+antes de escalar a más colaboradores o antes de que un cliente
+audite el proceso de desarrollo.
 
 **Workaround actual**: escribir con Python + `os.replace(tmp, path)` para
 forzar escritura atómica. Funciona pero es inaceptable como práctica
@@ -145,7 +174,55 @@ frente al cliente es un signo de fragilidad.
 
 ---
 
-## 4. Cuentas de prueba dedicadas por rol
+## 4. Parser TAMSA absorbe horas extra en el conteo de días
+
+**Descubierto**: durante análisis de nómina, 2026-09-18. Elevado a
+bloqueante de demo el 2026-09-20 (instrucción explícita del usuario):
+si demostramos con las 5 obras activas de FOSMON, una tiene nómina
+TAMSA y un director que sepa de obra nota el error al primer vistazo.
+
+**Qué pasa**: el parser de nómina TAMSA reporta ~1.7 horas extra por
+persona en semanas donde los turnos son de 55 horas semanales
+(11h/día × 5 días). Un turno de 55h contiene por definición 15h extra
+(vs 40h estándar), así que 1.7 h/persona es sospechosamente bajo —
+sugiere que el parser está clasificando 8-9 horas por día como
+"trabajo regular" en vez de "horas extra".
+
+**Hipótesis de causa**: el parser detecta la convención "horas vs días"
+en `catch`-block que ya fue tocado en varios commits (`443d9c7`,
+`b3668f1`, `4014622`, `053ea45`), pero la conversión de días × horas
+tope diario está usando 11h como tope en vez de 8h para TAMSA. La
+diferencia diaria (3h) se contabiliza en `impDias` (sueldo base) en vez
+de `impHE` (horas extra).
+
+**Consecuencia operativa**:
+- **Costo escondido**: el reporte muestra al cliente $X de sueldos base
+  cuando en realidad son $X + $Y de HE mal clasificada.
+- El margen operativo de TAMSA aparece mejor de lo que es.
+- Si la obra se factura con base en el detalle de nómina, hay riesgo
+  legal de reclamo por HE no pagadas correctamente.
+- **Demo**: un director de construcción con experiencia sabe cuántas
+  HE genera un turno de 55h/semana. Ver 1.7 h/persona en pantalla lo
+  interpreta como fallo del sistema en el primer minuto de la demo.
+
+**Propuesta**:
+1. Auditar el archivo Excel de TAMSA vs lo que llega a Firestore para
+   una semana específica. Cuadrar renglón por renglón.
+2. Corregir el parser para separar HE explícitamente cuando la
+   convención horaria excede 40h semanales, independientemente del
+   número de días.
+3. Añadir validación al cargar: si `pctHE < 2%` en obras con turnos
+   > 48h/semana, mostrar advertencia amarilla al usuario que cargó.
+4. Snapshot histórico: NO reprocesar los ya guardados (riesgo de
+   romper cuadres); solo aplicar a nuevas cargas.
+
+**Bloquea demo**: sí. Elevado 2026-09-20.
+
+**Prioridad**: crítica.
+
+---
+
+## 5. Cuentas de prueba dedicadas por rol
 
 **Descubierto**: registrado en SECURITY_RULES.md #4 (pendiente de
 seguridad). Se replica aquí porque también es demo-bloqueante.
@@ -180,7 +257,7 @@ externo sin exponer datos internos.
 
 ---
 
-## 5. Probar una restauración del respaldo
+## 6. Probar una restauración del respaldo
 
 **Descubierto**: reportado por el usuario en `feature/dashboard-principal`
 (2026-09-20).
@@ -219,12 +296,12 @@ cliente externo sin este verificado.
 
 # ALTA PRIORIDAD — post-demo
 
-Seis puntos que no bloquean la primera demo, pero que se convierten en
+Cinco puntos que no bloquean la primera demo, pero que se convierten en
 riesgos operativos o de venta si no se cierran en las semanas siguientes.
 
 ---
 
-## 6. Falta `onAuthStateChanged`: sesión zombie tras revocación
+## 7. Falta `onAuthStateChanged`: sesión zombie tras revocación
 
 **Descubierto**: registrado en SECURITY_RULES.md como pendiente de
 seguridad #5. Se referencia aquí porque también es UX/operativo.
@@ -249,46 +326,6 @@ funcionar, pero cualquier escritura falla por reglas.
    emergencia (`?_reset=1`) para no crear loops.
 
 **Prioridad**: alta.
-
----
-
-## 7. Parser TAMSA absorbe horas extra en el conteo de días
-
-**Descubierto**: durante análisis de nómina, 2026-09-18.
-
-**Qué pasa**: el parser de nómina TAMSA reporta ~1.7 horas extra por
-persona en semanas donde los turnos son de 55 horas semanales
-(11h/día × 5 días). Un turno de 55h contiene por definición 15h extra
-(vs 40h estándar), así que 1.7 h/persona es sospechosamente bajo —
-sugiere que el parser está clasificando 8-9 horas por día como
-"trabajo regular" en vez de "horas extra".
-
-**Hipótesis de causa**: el parser detecta la convención "horas vs días"
-en `catch`-block que ya fue tocado en varios commits (`443d9c7`,
-`b3668f1`, `4014622`, `053ea45`), pero la conversión de días × horas
-tope diario está usando 11h como tope en vez de 8h para TAMSA. La
-diferencia diaria (3h) se contabiliza en `impDias` (sueldo base) en vez
-de `impHE` (horas extra).
-
-**Consecuencia operativa**:
-- **Costo escondido**: el reporte muestra al cliente $X de sueldos base
-  cuando en realidad son $X + $Y de HE mal clasificada.
-- El margen operativo de TAMSA aparece mejor de lo que es.
-- Si la obra se factura con base en el detalle de nómina, hay riesgo
-  legal de reclamo por HE no pagadas correctamente.
-
-**Propuesta**:
-1. Auditar el archivo Excel de TAMSA vs lo que llega a Firestore para
-   una semana específica. Cuadrar renglón por renglón.
-2. Corregir el parser para separar HE explícitamente cuando la
-   convención horaria excede 40h semanales, independientemente del
-   número de días.
-3. Añadir validación al cargar: si `pctHE < 2%` en obras con turnos
-   > 48h/semana, mostrar advertencia amarilla al usuario que cargó.
-4. Snapshot histórico: NO reprocesar los ya guardados (riesgo de
-   romper cuadres); solo aplicar a nuevas cargas.
-
-**Prioridad**: alta. Toca datos financieros y hay riesgo legal.
 
 ---
 
@@ -783,14 +820,14 @@ espera de una app moderna.
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
 | 2 | Primer ingreso GP en "cargando" | sí | crítica |
 | 3 | KPIs arrancan en cero | sí | crítica |
-| 4 | Cuentas de prueba dedicadas | sí | crítica |
-| 5 | Probar restauración del respaldo | sí | crítica |
-| 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
-| 7 | Parser TAMSA HE en días | | alta |
+| 4 | Parser TAMSA HE en días | sí | crítica |
+| 5 | Cuentas de prueba dedicadas | sí | crítica |
+| 6 | Probar restauración del respaldo | sí | crítica |
+| 7 | Sesión zombie (`onAuthStateChanged`) | | alta |
 | 8 | Obra 0112 discrepancia $2.5M | | alta |
 | 9 | Maquinaria sin fecha por movimiento | | alta |
 | 10 | Consolidar KPIs Nómina + Estimaciones | | alta |
-| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato) |
+| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
 | 12 | Rehacer PDFs | | media |
 | 13 | Manual + correo alta automatizado | | media |
 | 14 | Distinguir avance vs captura al día | | media |
