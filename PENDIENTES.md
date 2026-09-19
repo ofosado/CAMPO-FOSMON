@@ -154,3 +154,114 @@ suficiente para que se note. La primera vez que un directivo pregunte
 `feature/dashboard-principal` (2026-09-19).**
 
 ---
+
+## 4. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
+
+**Descubierto**: 2026-09-19, revisando el módulo por obra durante el
+review de `feature/dashboard-principal`.
+
+**Qué pasa**: al entrar a una obra y hacer clic en la subtab de Nómina
+(y análogamente Estimaciones), la pantalla renderiza DOS bloques de KPIs
+uno encima del otro:
+
+- **Nómina**: `MiniDashNomina` arriba + grid de KPIs dentro de `Nomina()`
+  abajo. Se muestran juntos, no en pantallas distintas.
+- **Estimaciones**: `MiniDashEstimaciones` arriba + "Resumen económico
+  — 8 indicadores" dentro de `Estimaciones()` abajo.
+
+En Nómina los dos bloques dan **cifras contradictorias**: el de arriba
+dice "141 activos" y el de abajo "143 en total personal". Un usuario que
+mira la pantalla lee números distintos para la misma pregunta y pierde
+confianza en el sistema.
+
+**Por qué 141 ≠ 143** (para que no vuelva a confundirse):
+
+- **141 (arriba, `MiniDashNomina`)**:
+  `trabs.filter(p => (p.total||0) > 0).length` → personas que
+  **cobraron** esta semana.
+- **143 (abajo, `Nomina()`)**:
+  `semanaActual.totalDir + semanaActual.totalInd` → conteo de personas
+  por tipo grabado al **cerrar la semana**, sin filtro de asistencia.
+
+Los 2 de diferencia son personas en el listado que no cobraron nada:
+típicamente altas capturadas el mismo día del cierre sin días
+trabajados, o algún renglón con 0 días por error de captura.
+
+**No es un bug de datos** — son dos preguntas distintas ("cuánta gente
+trabajó" vs "cuánta gente está en el listado de la semana"). Pero
+ambos bloques rotulan la cifra como "personal/activos" y el usuario no
+las distingue.
+
+**Además — divergencia sutil de HE**: arriba usa
+`semanaActual.totalHEImp ?? semanaActual.totalHE ?? ∑ p.impHE`
+(prefiere el campo nuevo). Abajo usa `semanaActual.totalHE` directo.
+En snapshots viejos donde solo existe `totalHE` los dos bloques
+cuadran; en los nuevos con ambos campos pueden diverger si vinieron
+de migraciones incompletas. **Se resuelve en la misma rama que
+consolide los KPIs**: normalizar a `totalHEImp` (con fallback a
+`totalHE`), en un solo cálculo compartido.
+
+**Propuesta de consolidación** (validada con el usuario, 2026-09-19):
+
+### Nómina — se queda el bloque B (abajo, dentro de `Nomina()`)
+
+Razones:
+- B usa los campos precalculados del snapshot, que son la fuente
+  autoritativa (el snapshot es una foto cerrada, no cambia). A recalcula
+  en cada render y puede diverger.
+- B ya trae delta vs semana anterior — el ejecutivo mira más eso que
+  "cuántos activos".
+
+Qué rescatar de A al pasarlo a B:
+- **Los DOS números se quedan, con nombres distintos**: el KPI muestra
+  `143 en listado · 141 con pago`. Ninguno se pierde. Se elimina la
+  ambigüedad rotulando cada cifra por lo que realmente cuenta.
+- **Horas extra** con color según `pctHE > 15%` (hoy A lo tiene, B no).
+- **Sueldos base** como sub-línea del Total nómina (guion cuando el
+  snapshot no traiga `p.impDias`).
+- **"Riesgo HE" e "Inasistentes"** NO se meten en el grid — se mueven a
+  la sección de excepciones (mismo patrón que ya usamos con `nom_002`
+  en el motor de riesgos).
+
+Fix adicional: unificar el cálculo de HE a `totalHEImp ?? totalHE`
+en el ÚNICO lugar donde vive el KPI. Documentar en el comentario.
+
+### Estimaciones — se queda el bloque D (abajo, "Resumen económico")
+
+Razones:
+- D es el bloque completo que refleja la realidad contable del contrato
+  (separa Facturado de Pagado, muestra retenciones FG y estratégica,
+  amortización de anticipo).
+- D usa el helper `cE(e)` que aplica correctamente `pctFondoGar`,
+  `pctRetencion`, `pctAnticipo` del contrato. C ignora esos porcentajes
+  y muestra montos brutos.
+
+Qué rescatar de C al pasarlo a D:
+- **"Por cobrar (efectivo neto)"** calculado con `cE().ef` sobre
+  Facturadas + Aprobadas + En proceso.
+- **"Atrasado"** con la lógica de días vs `diasPago` del contrato.
+- Ambos calculados con el mismo helper `cE`, para que no vuelvan a
+  diverger.
+
+### Alcance de la rama futura
+
+- Eliminar `MiniDashNomina` y `MiniDashEstimaciones` de los renders.
+  Conservar la función un ciclo por si hay que rollback rápido, marcada
+  DEPRECATED (mismo patrón que `PanelEjecutivo` en `feature/dashboard-principal`).
+- Verificar contra prod que las cifras del bloque consolidado cuadren
+  1:1 con las 5 obras activas antes de mezclar.
+- Suite completa 388/388.
+
+**Alcance que NO entra**: revisar mini-dashes de otros módulos
+(`MiniDashAlmacen`, `MiniDashMaquinaria`, `MiniDashSubcontratos`) — es
+un pendiente aparte, con su propio análisis. Puede que estén bien.
+
+**Prioridad**: media-alta. El "141 vs 143" es lo primero que un usuario
+crítico pregunta al mirar la pantalla y hoy no tenemos respuesta que
+sostener sin explicar un bug conceptual.
+
+**Registrado por instrucción explícita del usuario en el review de
+`feature/dashboard-principal` (2026-09-19). Ir en rama propia
+DESPUÉS de mezclar `feature/dashboard-principal`.**
+
+---
