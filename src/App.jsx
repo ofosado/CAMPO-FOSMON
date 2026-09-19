@@ -3828,6 +3828,26 @@ const css = `
   .lb img{max-width:90vw;max-height:85vh;border-radius:10px;object-fit:contain}
   input[type=range]{accent-color:${C.blueDk};width:100%}
   .noscroll::-webkit-scrollbar{display:none}
+
+  /* Dashboard principal (feature/dashboard-principal 2026-09-18)
+     Escritorio: 5 KPIs en fila, valor 18pt, padding 14/16.
+     Móvil: 2 columnas, valor 15pt, padding 11/12. Tabla → cards.
+     Los tamaños/paddings viven aquí para que respondan a @media sin
+     depender de JS (que ya cubre el cambio de tabla → cards con matchMedia). */
+  .dp-kpi-grid{display:grid;gap:8px;grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:14px}
+  @media (max-width:820px){.dp-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media (max-width:520px){.dp-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .dp-kpi-card{background:${C.bg};border-radius:8px;padding:14px 16px;border-left:3px solid ${C.caliza};min-width:0}
+  @media (max-width:520px){.dp-kpi-card{padding:11px 12px}}
+  .dp-kpi-label{font-size:9px;color:${C.textMut};text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dp-kpi-value{font-size:18px;font-weight:700;line-height:1.15;
+    word-break:break-word;overflow-wrap:anywhere}
+  @media (max-width:520px){.dp-kpi-value{font-size:15px}}
+  .dp-kpi-value-sub{font-size:12px;font-weight:600;margin-top:2px}
+  @media (max-width:520px){.dp-kpi-value-sub{font-size:11px}}
+  .dp-kpi-delta{font-size:10px;margin-top:4px;font-weight:600}
+  @media (max-width:520px){.dp-kpi-delta{font-size:9px}}
 `;
 
 // ── HELPERS ────────────────────────────────────────────────────────────────
@@ -5664,20 +5684,48 @@ const _snapshotSemana = (obrasList, datosPorObra, gpData, semanaKey) => {
   return { contratado, ejecutado, gastado, margenAbs, margenPct, personal, dir, ind, obrasConEjec, obrasConNom };
 };
 
-// Componente pequeño: KPI con delta abajo (flecha + valor).
-// deltaValor puede ser null → muestra "—" en lugar de flecha (sin comparación).
-function _KpiConDelta({ label, valor, deltaValor, deltaSub, color, size = 13 }) {
+// Hook local: detecta ancho < 520px para colapsar tabla → tarjetas.
+// El resto de responsividad (grid de KPIs, font sizes) vive en CSS media
+// queries del bloque `css` global — no requiere re-render.
+function _useEsMovil() {
+  const [esMovil, setEsMovil] = React.useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 520px)').matches
+  );
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 520px)');
+    const onChange = (e) => setEsMovil(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener(onChange);   // Safari <14
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
+  return esMovil;
+}
+
+// Tarjeta KPI con valor grande, valor secundario opcional (para Margen que
+// necesita "$abs" arriba y "%pct" abajo — mantiene alineación en ambas líneas
+// sin desbordar en móvil) y línea de delta con flecha ▲▼.
+// deltaValor === null → línea de delta muestra "sin semana previa" (guion largo
+// como flecha para no confundirse con un cero). deltaValor === 0 (o casi cero)
+// → no muestra flecha ni texto, solo un guion tenue.
+function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
   const sinDelta = deltaValor === null || deltaValor === undefined;
-  const positivo = !sinDelta && deltaValor > 0;
-  const negativo = !sinDelta && deltaValor < 0;
-  const flecha = sinDelta ? '—' : (positivo ? '▲' : (negativo ? '▼' : '='));
-  const colorDelta = sinDelta ? C.textMut : (positivo ? C.greenDk : (negativo ? C.red : C.textMut));
+  const casiCero = !sinDelta && Math.abs(deltaValor) < 0.05;
+  const positivo = !sinDelta && !casiCero && deltaValor > 0;
+  const negativo = !sinDelta && !casiCero && deltaValor < 0;
+  const flecha = sinDelta ? '—' : casiCero ? '·' : (positivo ? '▲' : (negativo ? '▼' : '·'));
+  const colorDelta = sinDelta || casiCero ? C.textMut : (positivo ? C.greenDk : C.red);
+  const textoDelta = sinDelta ? 'sin semana previa' : (casiCero ? 'sin cambio' : (deltaSub || ''));
   return (
-    <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${color}`}}>
-      <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:3}}>{label}</div>
-      <div style={{fontSize:size,fontWeight:700,color}}>{valor}</div>
-      <div style={{fontSize:9,color:colorDelta,marginTop:3,fontWeight:600}}>
-        <span>{flecha}</span> <span>{deltaSub || (sinDelta ? 'sin semana previa' : '')}</span>
+    <div className="dp-kpi-card" style={{borderLeftColor:color}}>
+      <div className="dp-kpi-label">{label}</div>
+      <div className="dp-kpi-value" style={{color}}>{valor}</div>
+      {valorSub && <div className="dp-kpi-value-sub" style={{color}}>{valorSub}</div>}
+      <div className="dp-kpi-delta" style={{color:colorDelta}}>
+        <span>{flecha}</span> <span>{textoDelta}</span>
       </div>
     </div>
   );
@@ -5689,7 +5737,25 @@ function _KpiConDelta({ label, valor, deltaValor, deltaSub, color, size = 13 }) 
 // + gpData. No dispara Firestore reads propios.
 function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   const activas = obras.filter(o => o.estado !== 'archivada');
-  if (activas.length === 0) return null;
+  const esMovil = _useEsMovil();
+
+  // Estado vacío digno — la desaparición completa se lee como bug.
+  // Aparece para: rol con 0 obras asignadas, cliente sin obras activas, etc.
+  if (activas.length === 0) {
+    return (
+      <Card accent={C.caliza} style={{marginBottom:10}}>
+        <Tit>Panel principal</Tit>
+        <div style={{fontSize:12,color:C.textSec,padding:"20px 8px",textAlign:"center",lineHeight:1.5}}>
+          No hay obras activas.<br/>
+          <span style={{fontSize:10,color:C.textMut}}>
+            {obras.length > 0
+              ? `Solo obras archivadas (${obras.length}). Reactiva una desde el listado para verla aquí.`
+              : `Cuando se registre la primera obra aparecerá aquí el consolidado, las excepciones y el ranking por margen.`}
+          </span>
+        </div>
+      </Card>
+    );
+  }
 
   // Esperar a que TODO esté cargado antes de pintar (mismo criterio que
   // PanelEjecutivo — evita mostrar KPIs a la mitad).
@@ -5873,7 +5939,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
         Semana actual vs semana anterior
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:14}}>
+      <div className="dp-kpi-grid">
         {/* Contratado — sin variación por decisión (Opción A) */}
         <_KpiConDelta
           label="Contratado"
@@ -5886,28 +5952,32 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
           label="Ejecutado"
           valor={MXN(snapAct.ejecutado)}
           deltaValor={hayCompEjec ? delta(snapAct.ejecutado, snapPrev.ejecutado) : null}
-          deltaSub={hayCompEjec ? `${delta(snapAct.ejecutado, snapPrev.ejecutado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.ejecutado, snapPrev.ejecutado)))}` : null}
+          deltaSub={hayCompEjec ? `${delta(snapAct.ejecutado, snapPrev.ejecutado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.ejecutado, snapPrev.ejecutado)))} vs semana previa` : null}
           color={C.blue}
         />
         <_KpiConDelta
           label="Gastado"
           valor={MXN(snapAct.gastado)}
           deltaValor={hayCompEjec ? delta(snapAct.gastado, snapPrev.gastado) : null}
-          deltaSub={hayCompEjec ? `${delta(snapAct.gastado, snapPrev.gastado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.gastado, snapPrev.gastado)))}` : null}
+          deltaSub={hayCompEjec ? `${delta(snapAct.gastado, snapPrev.gastado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.gastado, snapPrev.gastado)))} vs semana previa` : null}
           color={C.textPri}
         />
+        {/* Margen: valor en dos líneas ($abs arriba, % abajo) para que quepa
+            en la card en móvil sin desbordar. */}
         <_KpiConDelta
           label="Margen"
-          valor={`${snapAct.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(snapAct.margenAbs))}  ·  ${NUM(snapAct.margenPct, 1)}%`}
+          valor={`${snapAct.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(snapAct.margenAbs))}`}
+          valorSub={`${NUM(snapAct.margenPct, 1)}%`}
           deltaValor={hayCompEjec ? (snapAct.margenPct - snapPrev.margenPct) : null}
-          deltaSub={hayCompEjec ? `${(snapAct.margenPct - snapPrev.margenPct) >= 0 ? '+' : '−'}${NUM(Math.abs(snapAct.margenPct - snapPrev.margenPct), 1)}pp` : null}
+          deltaSub={hayCompEjec ? `${(snapAct.margenPct - snapPrev.margenPct) >= 0 ? '+' : '−'}${NUM(Math.abs(snapAct.margenPct - snapPrev.margenPct), 1)}pp vs semana previa` : null}
           color={nivelMargen(snapAct.margenPct).color}
         />
         <_KpiConDelta
           label="Personal"
-          valor={`${snapAct.personal}   (${snapAct.dir}D · ${snapAct.ind}I)`}
+          valor={`${snapAct.personal}`}
+          valorSub={`${snapAct.dir} directos · ${snapAct.ind} indirectos`}
           deltaValor={hayCompNom ? delta(snapAct.personal, snapPrev.personal) : null}
-          deltaSub={hayCompNom ? `${delta(snapAct.personal, snapPrev.personal) >= 0 ? '+' : '−'}${Math.abs(delta(snapAct.personal, snapPrev.personal))} trab.` : null}
+          deltaSub={hayCompNom ? `${delta(snapAct.personal, snapPrev.personal) >= 0 ? '+' : '−'}${Math.abs(delta(snapAct.personal, snapPrev.personal))} trab. vs semana previa` : null}
           color={C.purpleDk}
         />
       </div>
@@ -5939,64 +6009,113 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
         )}
       </div>
 
-      {/* BLOQUE 3 — Tabla */}
+      {/* BLOQUE 3 — Ranking por margen.
+          Escritorio: tabla de 6 columnas.
+          Móvil (<520px): tarjeta por obra (mismo patrón que la lista de obras
+          principal — consistencia visual y ergonomía táctil).
+          Compartimos helper de flecha entre ambos modos. */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
         Obras — ordenadas por margen (menor primero)
       </div>
-      <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
-          <thead>
-            <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase",letterSpacing:"0.04em"}}>
-              <th style={{textAlign:"left",padding:"6px 4px"}}>Obra</th>
-              <th style={{textAlign:"right",padding:"6px 4px"}}>Avance físico</th>
-              <th style={{textAlign:"right",padding:"6px 4px"}}>Margen</th>
-              <th style={{textAlign:"right",padding:"6px 4px"}}>Por cobrar</th>
-              <th style={{textAlign:"right",padding:"6px 4px"}}>Personal</th>
-              <th style={{textAlign:"right",padding:"6px 4px"}}>Última captura</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filas.map(f => {
-              const margenColor = nivelMargen(f.margenPct).color;
-              const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
-              const _flecha = (v, positivo_es_bueno = true) => {
-                if (v === null || v === undefined) return <span style={{color:C.textMut}}>—</span>;
-                if (Math.abs(v) < 0.05) return <span style={{color:C.textMut,fontSize:9}}>= 0</span>;
-                const pos = v > 0;
-                const col = pos === positivo_es_bueno ? C.greenDk : C.red;
-                return <span style={{color:col,fontSize:9,marginLeft:4,fontWeight:600}}>{pos ? '▲' : '▼'} {NUM(Math.abs(v), 1)}{typeof v === 'number' && Math.abs(v) < 100 && positivo_es_bueno ? 'pp' : ''}</span>;
-              };
-              return (
-                <tr key={f.obra.id}
-                    onClick={() => onSelectObra && onSelectObra(f.obra.id)}
-                    style={{borderBottom:`0.5px solid ${C.border}`,cursor:"pointer"}}>
-                  <td style={{padding:"7px 4px",color:C.textPri,fontWeight:600}}>{f.nombre}</td>
-                  <td style={{padding:"7px 4px",textAlign:"right"}}>
-                    {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true)}
-                  </td>
-                  <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600}}>
-                    {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true)}
-                  </td>
-                  <td style={{padding:"7px 4px",textAlign:"right"}}>
-                    {MXN(f.porCobrar)}
-                  </td>
-                  <td style={{padding:"7px 4px",textAlign:"right"}}>
-                    {f.personal !== null ? f.personal : '—'}
-                    {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && (
-                      <span style={{color: f.deltaPersonal > 0 ? C.greenDk : C.red, fontSize:9, marginLeft:4, fontWeight:600}}>
-                        {f.deltaPersonal > 0 ? '▲' : '▼'} {Math.abs(f.deltaPersonal)}
+
+      {(() => {
+        const _flecha = (v, positivo_es_bueno = true, unidad = 'pp') => {
+          // v==null → no hay comparación; guion tenue. Cero casi exacto → guion
+          // también, para no confundir un delta nulo con un cero literal.
+          if (v === null || v === undefined) return <span style={{color:C.textMut,fontSize:9,marginLeft:4}}>—</span>;
+          if (Math.abs(v) < 0.05) return <span style={{color:C.textMut,fontSize:9,marginLeft:4}}>—</span>;
+          const pos = v > 0;
+          const col = pos === positivo_es_bueno ? C.greenDk : C.red;
+          return <span style={{color:col,fontSize:9,marginLeft:4,fontWeight:600,whiteSpace:"nowrap"}}>
+            {pos ? '▲' : '▼'} {NUM(Math.abs(v), 1)}{unidad}
+          </span>;
+        };
+
+        if (esMovil) {
+          // Tarjeta compacta por obra — mismo lenguaje visual que la lista principal.
+          return (
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {filas.map(f => {
+                const margenColor = nivelMargen(f.margenPct).color;
+                const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
+                return (
+                  <div key={f.obra.id}
+                       onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                       style={{background:C.bg,borderRadius:8,padding:"10px 12px",cursor:"pointer",
+                               borderLeft:`3px solid ${margenColor}`}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:4}}>
+                      <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
+                                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
+                      <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0}}>
+                        {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
                       </span>
-                    )}
-                  </td>
-                  <td style={{padding:"7px 4px",textAlign:"right",color: capAlerta ? C.red : C.textSec,fontWeight: capAlerta ? 600 : 400}}>
-                    {f.ultimaCapturaTxt}
-                  </td>
+                    </div>
+                    <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
+                      Avance {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
+                      {' · '}Por cobrar {MXN(f.porCobrar)}
+                    </div>
+                    <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
+                      {f.personal !== null ? `${f.personal} personas` : 'Sin nómina'}
+                      {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && _flecha(f.deltaPersonal, true, '')}
+                      {' · '}
+                      <span style={{color: capAlerta ? C.red : C.textSec,fontWeight: capAlerta ? 600 : 400}}>
+                        {f.ultimaCapturaTxt}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
+
+        // Escritorio: tabla 6 columnas.
+        return (
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
+              <thead>
+                <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                  <th style={{textAlign:"left",padding:"6px 4px"}}>Obra</th>
+                  <th style={{textAlign:"right",padding:"6px 4px"}}>Avance físico</th>
+                  <th style={{textAlign:"right",padding:"6px 4px"}}>Margen</th>
+                  <th style={{textAlign:"right",padding:"6px 4px"}}>Por cobrar</th>
+                  <th style={{textAlign:"right",padding:"6px 4px"}}>Personal</th>
+                  <th style={{textAlign:"right",padding:"6px 4px"}}>Última captura</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {filas.map(f => {
+                  const margenColor = nivelMargen(f.margenPct).color;
+                  const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
+                  return (
+                    <tr key={f.obra.id}
+                        onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                        style={{borderBottom:`0.5px solid ${C.border}`,cursor:"pointer"}}>
+                      <td style={{padding:"7px 4px",color:C.textPri,fontWeight:600}}>{f.nombre}</td>
+                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
+                        {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
+                      </td>
+                      <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}>
+                        {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
+                      </td>
+                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
+                        {MXN(f.porCobrar)}
+                      </td>
+                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
+                        {f.personal !== null ? f.personal : '—'}
+                        {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && _flecha(f.deltaPersonal, true, '')}
+                      </td>
+                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap",color: capAlerta ? C.red : C.textSec,fontWeight: capAlerta ? 600 : 400}}>
+                        {f.ultimaCapturaTxt}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
     </Card>
   );
 }
