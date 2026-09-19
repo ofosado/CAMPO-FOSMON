@@ -31,3 +31,7 @@ firebase-debug.log
 firestore-debug.log
 storage-debug.log
 *.log
+
+# PDFs sueltos en la raíz (el manual del equipo sí se versiona)
+/*.pdf
+!/CAMPO_Manual_Equipo_Obra.pdf
