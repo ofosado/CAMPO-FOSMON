@@ -9612,14 +9612,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           const fotosObj = s.fotos || {};
           const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
           const nF = fotosArr.length;
-          // En modo volumen calculamos el % derivado para la barra y el semáforo
+          // En modo volumen calculamos el % derivado para la barra y el semáforo.
+          // Solo es derivable si hay volumen de catálogo Y volumen ejecutado; si
+          // no, se cae a `a`, igual que hace el dinero en importeEjecutadoPartida.
+          // Sin esta caída una obra recién pasada a volumen mostraba 0% en
+          // partidas que sí tenían avance capturado en % (PENDIENTES #21).
           const cantCat = parseFloat(s.cant) || 0;
           const cantEjec = parseFloat(s.cantEjec) || 0;
-          const pctDerivado = cantCat > 0 ? (cantEjec / cantCat * 100) : 0;
+          const pctDerivable = modoVol && cantCat > 0 && cantEjec > 0;
+          const pctDerivado = pctDerivable
+            ? (cantEjec / cantCat * 100)
+            : (parseFloat(s.a) || 0);
           // La BARRA sí se topa (es avance físico); el DINERO no.
           const pctParaBarra = modoVol ? Math.min(100, pctDerivado) : (s.a || 0);
           const pctDisplay = modoVol ? pctDerivado : (s.a || 0);
-          const excedePresup = modoVol && pctDerivado > 100;
+          const excedePresup = pctDerivable && pctDerivado > 100;
           const impEjecutado = importeEjecutadoPartida(s, modoVol);
           // Lo capturado por encima del catálogo. Se muestra explícito: antes
           // desaparecía sin dejar rastro en ninguna pantalla.
@@ -9658,8 +9665,13 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                         // `a` pasa a ser DERIVADO y ya no se persiste recortado.
                         // Antes: Math.min(100, …) tiraba a la basura el volumen
                         // capturado por encima del catálogo ($3.8M de portafolio).
-                        const pctNuevo = cCat > 0 ? (v/cCat)*100 : 0;
-                        setSubs(ss=>ss.map(x=>x.id===subId?{...x,cantEjec:v,a:pctNuevo}:x));
+                        // Sin `cant` NO se puede derivar: antes se escribía 0 y
+                        // eso borraba el avance capturado en modo porcentaje, de
+                        // forma definitiva y silenciosa (PENDIENTES #21). Ahora
+                        // se conserva el `a` existente y solo se guarda cantEjec.
+                        setSubs(ss=>ss.map(x=>x.id===subId
+                          ? (cCat > 0 ? {...x, cantEjec:v, a:(v/cCat)*100} : {...x, cantEjec:v})
+                          : x));
                       }}
                       title="Cantidad ejecutada acumulada"
                       style={{background:C.surface,border:`0.5px solid ${excedePresup?C.yellow:C.borderM}`,borderRadius:6,
@@ -9675,7 +9687,9 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                   )
                 ) : (
                   <span style={{fontSize:13,fontWeight:700,color:excedePresup?C.yellowDk:semA(pctParaBarra)}}>
-                    {modoVol ? `${fmtCant(cantEjec, s.pu)} ${s.unidad||''}` : `${pctDisplay}%`}
+                    {modoVol && pctDerivable
+                      ? `${fmtCant(cantEjec, s.pu)} ${s.unidad||''}`
+                      : `${NUM(pctDisplay, 0)}%`}
                   </span>
                 )}
               </div>
@@ -14226,9 +14240,12 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         const cantEjec = parseFloat(c.cantEjec)||0;
         const modoVolC = modoAvance === "volumen";
         // Porcentaje real SIN topar (para el badge) y topado (para la barra).
-        const pctSinTopar = cant > 0 ? (cantEjec/cant)*100 : (c.avance||0);
+        // Solo derivable con volumen de catálogo Y volumen ejecutado; si no,
+        // se cae a `avance`, igual que el dinero (PENDIENTES #21).
+        const pctDerivableC = modoVolC && cant > 0 && cantEjec > 0;
+        const pctSinTopar = pctDerivableC ? (cantEjec/cant)*100 : (c.avance||0);
         const pctReal = Math.min(100, pctSinTopar);
-        const excedePresup = modoVolC && cant > 0 && cantEjec > cant;
+        const excedePresup = pctDerivableC && cantEjec > cant;
         const pctDisplay = modoVolC ? pctSinTopar : (c.avance||0);
         const impEjec = importeEjecutadoPartida(c, modoVolC);
         const impExcedente = Math.max(impEjec - (parseFloat(c.importe)||0), 0);
@@ -14264,8 +14281,11 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                     <input type="number" min="0" step="any" placeholder="0" value={c.cantEjec||""}
                       onChange={e=>{
                         const v = Math.max(0, parseFloat(e.target.value)||0);
-                        const pctNuevo = cant > 0 ? (v/cant)*100 : 0;
-                        actualizarConcepto(i, {cantEjec: v, avance: pctNuevo});
+                        // Sin `cantidad` de catálogo no se puede derivar el %:
+                        // escribir 0 borraba el avance capturado (PENDIENTES #21).
+                        actualizarConcepto(i, cant > 0
+                          ? {cantEjec: v, avance: (v/cant)*100}
+                          : {cantEjec: v});
                       }}
                       title="Cantidad ejecutada acumulada"
                       style={{width:74,padding:"5px 6px",fontSize:11,fontWeight:600,textAlign:"right",
