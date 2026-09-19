@@ -315,7 +315,56 @@ dashboard.
 
 ---
 
-## 8. Formulario de maquinaria no pide fecha por movimiento
+## 8. Tres fórmulas distintas de "ejecutado" conviviendo en el código
+
+**Descubierto**: 2026-09-19, al diagnosticar la discrepancia de 0112
+(pendiente #7). Es la causa raíz de ese caso, pero lo rebasa: afecta a
+toda obra en modo volumen.
+
+**Qué pasa**: el importe ejecutado se calcula de tres maneras distintas
+según la pantalla, y dos de ellas no coinciden con la tercera.
+
+| Dónde | Fórmula | ¿Topada a 100%? |
+|---|---|---|
+| KPI "Ejecutado" del dashboard (`src/App.jsx:3133`) | `Σ (s.a/100) × s.imp` | **sí** |
+| Línea "Ejec" por concepto en Avance (`src/App.jsx:9345`) | `cantEjec × pu` | no |
+| Motor de alertas (`src/App.jsx:14957`) | `Σ cantEjec × pu` | no |
+
+El tope viene de `src/App.jsx:9374`: al capturar cantidad ejecutada en
+modo volumen se guarda `cantEjec` íntegro pero el porcentaje se recorta,
+`a = Math.min(100, v/cCat*100)`. Como el KPI del dashboard se arma desde
+`a` y no desde `cantEjec`, **todo volumen por encima del catálogo se
+descarta en silencio de la cifra principal**, mientras la pantalla de
+Avance del mismo concepto lo muestra completo.
+
+**Consecuencia operativa**:
+- La misma obra muestra ejecutado distinto según dónde se mire. No hay
+  una cifra autoritativa.
+- La pérdida es invisible: no hay aviso de que se está descartando
+  importe. El único rastro es el badge amarillo del concepto, que dice
+  el porcentaje pero no los pesos.
+- En 0112 esto equivale a **$2,777,996.64 descartados** — ver #7.
+- En demo es el peor escenario posible: el cliente abre el detalle del
+  concepto, ve un número, regresa al dashboard y ve otro.
+
+**Propuesta**:
+1. Decidir cuál es la cifra autoritativa. El recorte a 100% no es
+   absurdo (proteger el KPI de sobre-captura), pero si se conserva
+   tiene que ser explícito y visible, no silencioso.
+2. Extraer una sola función `importeEjecutado(sub, modo)` y usarla en
+   los tres sitios. Hoy la lógica está duplicada e incoherente.
+3. Si se conserva el tope: exponer en el dashboard el importe
+   descartado como cifra propia ("ejecutado sobre catálogo: $X"), no
+   solo como badge de porcentaje.
+4. No dar por bueno ningún cuadre de obra en modo volumen hasta que
+   esto se resuelva.
+
+**Prioridad**: alta. Es un defecto de corrección de cifras, no de UI, y
+afecta a la cifra estrella del producto.
+
+---
+
+## 9. Formulario de maquinaria no pide fecha por movimiento
 
 **Descubierto**: 2026-09-18, mientras se rediseñaba el dashboard principal.
 
@@ -367,7 +416,7 @@ en producción.
 
 ---
 
-## 9. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
+## 10. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
 
 **Descubierto**: 2026-09-19, revisando el módulo por obra durante el
 review de `feature/dashboard-principal`.
@@ -478,7 +527,7 @@ DESPUÉS de mezclar `feature/dashboard-principal`.**
 
 ---
 
-## 10. Exportación del expediente completo del cliente
+## 11. Exportación del expediente completo del cliente
 
 **Descubierto**: análisis de compliance con la Ley de Obras Públicas
 del estado (referencia: artículo 74).
@@ -522,7 +571,7 @@ tercera iteración sin afectar la demo o los primeros clientes.
 
 ---
 
-## 11. Rehacer el PDF
+## 12. Rehacer el PDF
 
 **Descubierto**: 2026-09-20 durante review post-`feature/dashboard-principal`.
 
@@ -539,7 +588,7 @@ primero QUÉ documentos hacen falta, luego rehacer.
 2. **Ejecutivo para juntas** — 1-2 páginas, gráficas y KPIs
    principales. Sirve para director general en juntas internas o para
    presentación al cliente.
-3. **Expediente exportable** — vinculado a pendiente #10. Formato
+3. **Expediente exportable** — vinculado a pendiente #11. Formato
    auditable completo, no necesariamente PDF (puede ser el ZIP).
 
 **Consecuencia operativa hoy**: el PDF actual no es reutilizable en
@@ -561,7 +610,7 @@ verde y sepamos qué le importa al cliente típico.
 
 ---
 
-## 12. Manual de usuario con capturas + correo de alta automatizado
+## 13. Manual de usuario con capturas + correo de alta automatizado
 
 **Descubierto**: recurrente en conversaciones sobre onboarding.
 
@@ -604,7 +653,7 @@ el usuario presente), pero es imprescindible para clientes con más de
 
 ---
 
-## 13. Distinguir "obra que avanzó" de "residente que se puso al corriente"
+## 14. Distinguir "obra que avanzó" de "residente que se puso al corriente"
 
 **Descubierto**: 2026-09-19, revisando el nuevo `DashboardPrincipal`.
 
@@ -639,11 +688,11 @@ malinterpretar la varianza y tomar decisiones sobre ruido de captura.
 
 **Interacción con otros pendientes**:
 
-- Pendiente #8 (fecha por movimiento en maquinaria) también contribuye
+- Pendiente #9 (fecha por movimiento en maquinaria) también contribuye
   al problema — sin fecha, la maquinaria "aparece de golpe" en el
-  presente. Resolver #8 disminuye el ruido pero no elimina el fenómeno
+  presente. Resolver #9 disminuye el ruido pero no elimina el fenómeno
   para el snapshot de avance.
-- Pendiente #15 (auditar otros formularios) puede descubrir más lugares
+- Pendiente #16 (auditar otros formularios) puede descubrir más lugares
   con la misma dinámica.
 
 **Prioridad**: media. Hoy no hay incidente porque no hay historial
@@ -655,7 +704,7 @@ suficiente para que se note. La primera vez que un directivo pregunte
 
 ---
 
-## 14. Sesión persistente: decidir política
+## 15. Sesión persistente: decidir política
 
 **Descubierto**: pendiente arrastrado desde `feature/organizaciones`.
 
@@ -695,9 +744,9 @@ conviene tomar antes de escalar a más usuarios.
 
 ---
 
-## 15. Auditar otros módulos por el mismo hueco de "fecha faltante"
+## 16. Auditar otros módulos por el mismo hueco de "fecha faltante"
 
-**Contexto**: el hueco de maquinaria (punto #8) es de un patrón: el
+**Contexto**: el hueco de maquinaria (punto #9) es de un patrón: el
 código de agrupación temporal espera un campo del formulario que no
 existe. Puede haber más lugares donde pase lo mismo.
 
@@ -738,7 +787,7 @@ tampoco de la ausencia.
 
 ---
 
-## 16. Nómina: drag-and-drop + pegar desde portapapeles
+## 17. Nómina: drag-and-drop + pegar desde portapapeles
 
 **Descubierto**: petición de UX de usuario operativo.
 
@@ -776,15 +825,16 @@ espera de una app moderna.
 | 5 | Probar restauración del respaldo | sí | crítica |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
 | 7 | Obra 0112 discrepancia $2.5M | | alta |
-| 8 | Maquinaria sin fecha por movimiento | | alta |
-| 9 | Consolidar KPIs Nómina + Estimaciones | | alta |
-| 10 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
-| 11 | Rehacer PDFs | | media |
-| 12 | Manual + correo alta automatizado | | media |
-| 13 | Distinguir avance vs captura al día | | media |
-| 14 | Sesión persistente — decidir | | media |
-| 15 | Auditar otros módulos sin fecha | | baja |
-| 16 | Nómina: drag/pegar | | baja |
+| 8 | Tres fórmulas de "ejecutado" | | alta |
+| 9 | Maquinaria sin fecha por movimiento | | alta |
+| 10 | Consolidar KPIs Nómina + Estimaciones | | alta |
+| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
+| 12 | Rehacer PDFs | | media |
+| 13 | Manual + correo alta automatizado | | media |
+| 14 | Distinguir avance vs captura al día | | media |
+| 15 | Sesión persistente — decidir | | media |
+| 16 | Auditar otros módulos sin fecha | | baja |
+| 17 | Nómina: drag/pegar | | baja |
 
 ---
 
