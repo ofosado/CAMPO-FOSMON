@@ -6217,19 +6217,25 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                        onClick={() => onSelectObra && onSelectObra(f.obra.id)}
                        style={{background:C.bg,borderRadius:8,padding:"10px 12px",cursor:"pointer",
                                borderLeft:`3px solid ${margenColor}`}}>
+                    {/* Móvil: mismo patrón "% · $abs" en una línea. En 375px
+                        cabe cómodamente: nombre a la izquierda con ellipsis,
+                        margen a la derecha con flexShrink:0. Nombres largos
+                        ("TAMSA VER SERVICIOS ESPECIALIZADOS") se truncarán
+                        con "…" — es el mismo compromiso que en la lista
+                        principal de obras. */}
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:4}}>
                       <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
                                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
-                      {f.margenIndefinido ? (
-                        <span style={{fontSize:13,fontWeight:700,color:margenColor,flexShrink:0,whiteSpace:"nowrap"}}
-                              title="Sin ejecución: no hay base para calcular el porcentaje. El margen absoluto es el gasto perdido.">
-                          −{MXN(Math.abs(f.margenAbs))} · —
+                      <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0,whiteSpace:"nowrap"}}
+                            title={f.margenIndefinido
+                              ? "Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno."
+                              : undefined}>
+                        {f.margenIndefinido ? '—' : `${NUM(f.margenPct, 1)}%`}
+                        {!f.margenIndefinido && _flecha(f.deltaMargen, true, 'pp')}
+                        <span style={{color:C.textMut,fontWeight:400,fontSize:10,marginLeft:5}}>
+                          · {f.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(f.margenAbs))}
                         </span>
-                      ) : (
-                        <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0}}>
-                          {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
-                        </span>
-                      )}
+                      </span>
                     </div>
                     <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
                       Avance {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
@@ -6251,9 +6257,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                           border:`1px solid ${C.borderM}`,marginTop:2}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:4}}>
                   <span style={{fontSize:9,fontWeight:700,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em"}}>TOTAL</span>
-                  <span style={{fontSize:14,fontWeight:700,color:totMargenColor,flexShrink:0}}
+                  <span style={{fontSize:14,fontWeight:700,color:totMargenColor,flexShrink:0,whiteSpace:"nowrap"}}
                         title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100">
                     {NUM(totMargenPct, 1)}%
+                    <span style={{color:C.textMut,fontWeight:400,fontSize:10,marginLeft:5}}>
+                      · {consolidado.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(consolidado.margenAbs))}
+                    </span>
                   </span>
                 </div>
                 <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}
@@ -6324,17 +6333,21 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
                         {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
                       </td>
-                      {f.margenIndefinido ? (
-                        <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}
-                            title="Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.">
-                          <div>—</div>
-                          <div style={{fontSize:9,fontWeight:600,color:margenColor,marginTop:1}}>−{MXN(Math.abs(f.margenAbs))}</div>
-                        </td>
-                      ) : (
-                        <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}>
-                          {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
-                        </td>
-                      )}
+                      {/* Margen: "% · $abs" en UNA sola línea. El % pesa,
+                          el importe entra en pequeño y gris para dar contexto
+                          sin competir. Para margen indefinido (me=0 & gt>0)
+                          el % es "—" (no miente) y el importe absoluto ES
+                          real (−$X gastados sin retorno). */}
+                      <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}
+                          title={f.margenIndefinido
+                            ? "Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno."
+                            : undefined}>
+                        {f.margenIndefinido ? '—' : `${NUM(f.margenPct, 1)}%`}
+                        {!f.margenIndefinido && _flecha(f.deltaMargen, true, 'pp')}
+                        <span style={{color:C.textMut,fontWeight:400,marginLeft:6}}>
+                          · {f.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(f.margenAbs))}
+                        </span>
+                      </td>
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
                         {MXN(f.porCobrar)}
                       </td>
@@ -6362,6 +6375,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                   <td style={{padding:"8px 4px",textAlign:"right",color:totMargenColor,whiteSpace:"nowrap"}}
                       title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100. Cuadra con el KPI de Margen arriba.">
                     {NUM(totMargenPct, 1)}%
+                    <span style={{color:C.textMut,fontWeight:400,marginLeft:6}}>
+                      · {consolidado.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(consolidado.margenAbs))}
+                    </span>
                   </td>
                   <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}>{MXN(totPorCobrar)}</td>
                   <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}>{totPersonal}</td>
