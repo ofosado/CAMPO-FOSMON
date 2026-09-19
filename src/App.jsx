@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
@@ -124,9 +124,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Gasto total = GP + maquinaria propia + otros gastos
   // (mismo criterio que Dashboard y Panel Ejecutivo — evita discrepancias)
   const totGast = totGP + totMaq + totOtros;
-  const am      = subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  // Mismas funciones que el dashboard: el PDF es el documento que se entrega,
+  // no puede discrepar de la pantalla. Dinero sin topar, físico topado a 100%.
+  const modoVolPDF = (obra?.modoAvance === "volumen");
+  const { excedente: amExcedente, total: am } = desgloseEjecutado(subs, modoVolPDF);
   const me      = am + totAlm;
-  const af      = subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
+  const af      = avanceFisicoPonderado(subs, obra.presupuesto, modoVolPDF);
   const mg      = me - totGast;
   const mpct    = me>0 ? mg/me*100 : 0;
   const PPTO    = obra.presupuesto||1;
@@ -328,7 +331,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=secHead('1  RESUMEN FINANCIERO', y);
   y=kpiRow([
     ['Avance fisico',   PCT(af),         PCT(af)+' del presupuesto',   K.vk],
-    ['Monto ejecutado', MXN(me),         PCT(me/PPTO*100)+' contrato', K.ak],
+    ['Monto ejecutado', MXN(me),
+      amExcedente > 0 ? `${MXN(amExcedente)} sobre catálogo` : PCT(me/PPTO*100)+' contrato',
+      amExcedente > 0 ? K.ak2 : K.ak],
     ['Gasto total GP',  MXN(totGast),    PCT(totGast/PPTO*100)+' presup.',K.rk],
     ['Margen bruto',    PCT(mpct),       MXN(mg),                       mpct<10?K.rk:mpct<15?K.ak2:K.vk],
     ['Total estimado',  MXN(te),         PCT(te/PPTO*100)+' contrato', K.mk],
@@ -586,7 +591,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Variables compartidas que usan secciones siguientes (totales, ejecución)
   const subsActivos=subs.filter(s=>s.imp>0);
   const totImp=subsActivos.reduce((t,s)=>t+s.imp,0);
-  const totEjec=subsActivos.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  const totEjec=desgloseEjecutado(subsActivos, modoVolPDF).total;
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 3 — DESGLOSE DE GASTO POR RUBRO (con pie chart + top proveedores)
@@ -1469,11 +1474,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       return ests + legacy;
     };
     const totContratado = subcontratos.reduce((t,s)=>t+pf(s.monto), 0);
-    const totEjecutado  = subcontratos.reduce((t,s)=>{
-      const totCat = (s.conceptos||[]).reduce((tt,c)=>tt+pf(c.importe), 0);
-      const ejec = (s.conceptos||[]).reduce((tt,c)=>tt+((pf(c.avance)/100)*pf(c.importe)), 0);
-      return t + ejec;
-    }, 0);
+    const totEjecutado  = subcontratos.reduce((t,s)=>t + desgloseEjecutado(
+      s.conceptos||[], (s.modoAvance||"porcentaje")==="volumen").total, 0);
     const totPagado = subcontratos.reduce((t,s)=>t + pagadoDeSub(s), 0);
     const activos = subcontratos.filter(s=>(s.estado||'activa')==='activa').length;
 
@@ -1486,9 +1488,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
     // Tabla resumen de subcontratos
     const subRows = subcontratos.map(s => {
+      const modoVolS = (s.modoAvance||"porcentaje")==="volumen";
       const totCat = (s.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
-      const ejec   = (s.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
-      const avPct  = totCat > 0 ? (ejec/totCat)*100 : 0;
+      const ejec   = desgloseEjecutado(s.conceptos||[], modoVolS).total;
+      const avPct  = avanceFisicoPonderado(s.conceptos||[], totCat, modoVolS);
       const pag    = pagadoDeSub(s);
       const finPct = pf(s.monto) > 0 ? (pag/pf(s.monto))*100 : 0;
       const pendiente = pf(s.monto) - pag;
@@ -1572,9 +1575,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       // KPIs del subcontrato
       // Pagado = estimaciones Pagadas + pagos legacy sin origenEstimacionId
       // (mismo criterio que la app tras el refactor de subs).
+      const modoVolSubPDF = (sub.modoAvance||"porcentaje")==="volumen";
       const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
-      const ejecSub = (sub.conceptos||[]).reduce((t,c)=>t+((pf(c.avance)/100)*pf(c.importe)), 0);
-      const avSub = totalCat > 0 ? (ejecSub/totalCat)*100 : 0;
+      const ejecSub = desgloseEjecutado(sub.conceptos||[], modoVolSubPDF).total;
+      const avSub = avanceFisicoPonderado(sub.conceptos||[], totalCat, modoVolSubPDF);
       const _neEstPDF = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
       const pagSubEsts = (sub.estimaciones||[])
         .filter(e => _neEstPDF(e.estatus) === 'pagada')
@@ -1630,8 +1634,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         ySub += bloqueH + 3;
       }
 
-      // Tendencia semanal del subcontrato (si hay historial)
-      const histSub = historialSubs[sub.id] || [];
+      // Tendencia semanal del subcontrato (si hay historial).
+      // Recalculado bajo el esquema nuevo: la serie de subs sí es recuperable
+      // porque guardó `cantEjec` desde el principio.
+      const histSub = recalcularHistorialSub(
+        historialSubs[sub.id] || [], sub.conceptos || [],
+        (sub.modoAvance || "porcentaje") === "volumen");
       if (histSub.length >= 2 && (CYmax - ySub) > 45) {
         ySub = secHead('Tendencia semanal · Ejecutado vs Pagado', ySub, K.gtx);
         // Construir series
@@ -1752,7 +1760,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
             c.clave||'—',
             (c.desc||'').substring(0,60),
             c.unidad||'',
-            (pf(c.cantidad)||0).toLocaleString('es-MX',{maximumFractionDigits:2}),
+            fmtCant(pf(c.cantidad), c.pu),
             MXN(pf(c.pu)),
             MXN(pf(c.importe)),
             PCT(pf(c.avance),0),
@@ -2228,11 +2236,116 @@ const fsDelA = async (path, ctx) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// IMPORTE EJECUTADO — FUENTE ÚNICA DE VERDAD
+// ════════════════════════════════════════════════════════════════════════════
+// fix/ejecutado-sin-recorte (2026-09-19): antes convivían CUATRO fórmulas de
+// "ejecutado" y la misma obra mostraba cifras distintas según la pantalla:
+//   · KPI del dashboard      Σ (a/100)×imp   con `a` recortado a 100  → topado
+//   · línea por concepto     cantEjec × pu                            → sin topar
+//   · motor de alertas       Σ cantEjec × pu                          → sin topar
+//   · conceptos de subcontrato (copia del capturador)                 → topado
+// La causa de fondo es que el campo `a` hacía TRES trabajos a la vez:
+// porcentaje de avance físico, base del importe, y señal de excepción.
+// Aquí se separan, con una regla simple:
+//
+//     el DINERO nunca se topa · el AVANCE FÍSICO sí se topa al 100%
+//
+// El volumen capturado por encima del catálogo deja de descartarse en
+// silencio: se expone como `excedente`, pendiente de clasificar (obra
+// adicional legítima vs. sobreejecución por autorizar). Esa clasificación
+// necesita `tipoContrato`, que va en su propia rama.
+
+// Importe ejecutado de UNA partida/concepto, sin tope.
+// En modo volumen manda `cantEjec × pu`; si falta el dato cae a `(a/100)×imp`,
+// que es lo correcto para partidas capturadas antes de cambiar de modo.
+const importeEjecutadoPartida = (s, modoVol = false) => {
+  if (modoVol) {
+    const cantEjec = parseFloat(s?.cantEjec) || 0;
+    const pu = parseFloat(s?.pu) || 0;
+    if (cantEjec > 0 && pu > 0) return cantEjec * pu;
+  }
+  const a = parseFloat(s?.a ?? s?.avance) || 0;
+  return (a / 100) * (parseFloat(s?.imp ?? s?.importe) || 0);
+};
+
+// Importe de catálogo de UNA partida = su tope.
+const importeCatalogoPartida = s => parseFloat(s?.imp ?? s?.importe) || 0;
+
+// Desglose del ejecutado de un catálogo completo.
+//   catalogo  = lo ejecutado hasta el 100% de cada partida
+//   excedente = lo capturado por encima del catálogo (PENDIENTE DE CLASIFICAR)
+//   total     = la cifra titular; es lo que realmente se ejecutó en campo
+const desgloseEjecutado = (subs = [], modoVol = false) => {
+  let catalogo = 0, excedente = 0;
+  for (const s of (subs || [])) {
+    const total = importeEjecutadoPartida(s, modoVol);
+    const tope = importeCatalogoPartida(s);
+    if (total > tope) { catalogo += tope; excedente += total - tope; }
+    else catalogo += total;
+  }
+  return { catalogo, excedente, total: catalogo + excedente };
+};
+
+// Avance físico ponderado % — ESTE SÍ SE TOPA por partida.
+// Una partida ejecutada al 630% no avanzó 630% de la obra: avanzó el 100%
+// de su alcance. Destoparlo aquí inventaría avance que no existe.
+const avanceFisicoPonderado = (subs = [], presupuesto = 0, modoVol = false) => {
+  if (!(presupuesto > 0)) return 0;
+  return (subs || []).reduce((t, s) => {
+    const ejec = Math.min(importeEjecutadoPartida(s, modoVol), importeCatalogoPartida(s));
+    return t + (ejec / presupuesto) * 100;
+  }, 0);
+};
+
+// Porcentaje de una partida respecto de su catálogo, SIN topar (para mostrar
+// "630%" en el badge). Devuelve 0 si no hay cantidad de catálogo.
+const pctPartidaSinTopar = (s, modoVol = false) => {
+  const tope = importeCatalogoPartida(s);
+  if (!(tope > 0)) return parseFloat(s?.a ?? s?.avance) || 0;
+  return (importeEjecutadoPartida(s, modoVol) / tope) * 100;
+};
+
+// ── Precisión decimal en función del PRECIO UNITARIO ──────────────────
+// No depende de la unidad, depende de cuánto vale el dígito. La propiedad
+// que garantiza esta regla: el último decimal NUNCA vale más de un peso.
+//   pu $100 → 2 dec ($1.00)   ·   pu $10,000 → 4 dec ($1.00)
+//   pu $1,000 → 3 dec ($1.00) ·   pu $1,265,249 → 6 dec ($1.27)
+// Piso 2 para no empeorar lo que ya existe (hay `cant` guardadas con 4
+// decimales). Techo 6 porque más allá el double de JS mete ruido al
+// multiplicar por precios de siete cifras, y ninguna medición de campo
+// tiene esa resolución.
+const decimalesPorPU = pu => {
+  const p = parseFloat(pu) || 0;
+  if (!(p > 0)) return 2;
+  return Math.min(6, Math.max(2, Math.ceil(Math.log10(p))));
+};
+
+// Formatea una cantidad con los decimales que exige su precio unitario.
+// Sustituye al `maximumFractionDigits: 2` que truncaba lo capturado.
+const fmtCant = (cant, pu) => Number(cant || 0).toLocaleString('es-MX',
+  { maximumFractionDigits: decimalesPorPU(pu) });
+
+// ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
 // ════════════════════════════════════════════════════════════════════════════
 // Estructura Firestore: obras/{obraId}/avance/historial = { semanas: [...] }
 // Cada snapshot: { id, semana, año, fechaCaptura, fechaCierre, tipo (intermedio/oficial),
-//                  capturadoPor, subs: [{sec, a, imp}], avancePonderado, montoEjecutado }
+//                  capturadoPor, subs: [{sec, a, imp, cant, pu, cantEjec}],
+//                  avancePonderado, montoEjecutado, montoCatalogo, montoExcedente,
+//                  esquema }
+//
+// ESQUEMA_SNAPSHOT: marca de versión del cálculo.
+//   (ausente) = esquema 1 — `a` recortado a 100, montoEjecutado TOPADO.
+//               No es recuperable: nunca se guardó `cantEjec`.
+//   2         = esquema 2 — montoEjecutado sin topar + desglose + cantEjec.
+// Los esquemas NO son comparables entre sí: restar un snapshot de cada uno
+// produce un salto artificial (0112 saltaría $2.78M en una sola semana) que
+// dispararía alertas de riesgo falsas. Ver `sonComparables`.
+const ESQUEMA_SNAPSHOT = 2;
+
+// Dos snapshots solo son comparables si vienen del mismo esquema de cálculo.
+const sonComparables = (a, b) =>
+  ((a?.esquema || 1) === (b?.esquema || 1));
 
 // Calcula el número ISO de semana ISO 8601 (semana que contiene el primer jueves del año)
 const semanaISO = (fecha) => {
@@ -2252,24 +2365,38 @@ const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}
 
 // Crear snapshot del avance actual y guardarlo en el historial
 // tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
-const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio") => {
+const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false) => {
   if (!obraId || !Array.isArray(subs) || subs.length === 0) return null;
   try {
     const ahora = new Date();
     const { semana, año } = semanaISO(ahora);
     const id = snapshotId(semana, año);
     const totalImporte = subs.reduce((t, s) => t + (s.imp || 0), 0);
-    const avancePonderado = totalImporte > 0
-      ? subs.reduce((t, s) => t + ((s.a || 0) / 100) * ((s.imp || 0) / totalImporte) * 100, 0)
-      : 0;
-    const montoEjecutado = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (s.imp || 0), 0);
+    // Avance ponderado = avance FÍSICO, topado por partida (no puede pasar de 100).
+    const avancePonderado = avanceFisicoPonderado(subs, totalImporte, modoVol);
+    // Monto ejecutado = DINERO, sin topar. Se guarda también el desglose para
+    // que la gráfica y el PDF puedan separar catálogo de excedente sin
+    // recalcular contra el catálogo vivo (que cambia).
+    const { catalogo, excedente, total } = desgloseEjecutado(subs, modoVol);
     const snap = {
       id, semana, año,
       fechaCaptura: ahora.toISOString(),
       fechaCierre: tipo === "oficial" ? ahora.toISOString() : null,
       tipo, capturadoPor: capturadoPor || 'sistema',
-      subs: subs.map(s => ({sec: s.sec, sub: s.sub, a: s.a || 0, imp: s.imp || 0})),
-      avancePonderado, montoEjecutado,
+      // `cant`, `pu` y `cantEjec` se guardan para que esta serie SÍ sea
+      // recalculable en el futuro. La anterior no lo es: nunca los guardó.
+      subs: subs.map(s => ({
+        sec: s.sec, sub: s.sub, a: s.a || 0, imp: s.imp || 0,
+        cant: parseFloat(s.cant) || 0,
+        pu: parseFloat(s.pu) || 0,
+        cantEjec: parseFloat(s.cantEjec) || 0,
+      })),
+      avancePonderado,
+      montoEjecutado: total,
+      montoCatalogo: catalogo,
+      montoExcedente: excedente,
+      modoAvance: modoVol ? "volumen" : "porcentaje",
+      esquema: ESQUEMA_SNAPSHOT,
     };
     // Leer historial actual, hacer upsert por id (semana actual sobrescribe el snapshot intermedio)
     const hist = await fsGet(`obras/${obraId}/avance/historial`) || { semanas: [] };
@@ -2301,17 +2428,15 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
 //                  conceptos: [{clave, desc, avance, importe, cantEjec}],
 //                  avancePonderado, montoEjecutado }
 // Se dispara automáticamente al guardar cambios de avance del sub.
-const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, tipo = "intermedio") => {
+const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, tipo = "intermedio", modoVol = false) => {
   if (!obraId || !subId || !Array.isArray(conceptos) || conceptos.length === 0) return null;
   try {
     const ahora = new Date();
     const { semana, año } = semanaISO(ahora);
     const id = snapshotId(semana, año);
     const totalImporte = conceptos.reduce((t, c) => t + (parseFloat(c.importe) || 0), 0);
-    const avancePonderado = totalImporte > 0
-      ? conceptos.reduce((t, c) => t + ((c.avance || 0) / 100) * ((parseFloat(c.importe) || 0) / totalImporte) * 100, 0)
-      : 0;
-    const montoEjecutado = conceptos.reduce((t, c) => t + ((c.avance || 0) / 100) * (parseFloat(c.importe) || 0), 0);
+    const avancePonderado = avanceFisicoPonderado(conceptos, totalImporte, modoVol);
+    const { catalogo, excedente, total } = desgloseEjecutado(conceptos, modoVol);
     const snap = {
       id, semana, año,
       fechaCaptura: ahora.toISOString(),
@@ -2321,8 +2446,15 @@ const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, ti
         clave: c.clave || '', desc: c.desc || '',
         avance: c.avance || 0, importe: parseFloat(c.importe) || 0,
         cantEjec: parseFloat(c.cantEjec) || 0,
+        cantidad: parseFloat(c.cantidad) || 0,
+        pu: parseFloat(c.pu) || 0,
       })),
-      avancePonderado, montoEjecutado,
+      avancePonderado,
+      montoEjecutado: total,
+      montoCatalogo: catalogo,
+      montoExcedente: excedente,
+      modoAvance: modoVol ? "volumen" : "porcentaje",
+      esquema: ESQUEMA_SNAPSHOT,
     };
     const path = `obras/${obraId}/subcontratos/historial_${subId}`;
     const hist = await fsGet(path) || { semanas: [] };
@@ -2342,6 +2474,64 @@ const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, ti
     console.error('crearSnapshotAvanceSub', e);
     return null;
   }
+};
+
+// ── Recálculo de la serie histórica de SUBCONTRATOS ───────────────────
+// A diferencia de la serie de obra, esta SÍ es recuperable: el snapshot de
+// subcontrato guardó `cantEjec` desde el primer día (solo el `montoEjecutado`
+// se calculaba del `avance` recortado). Lo único que le falta al esquema 1 es
+// el precio unitario, que se toma del catálogo vivo empatando por `clave`.
+//
+// Es un recálculo EN LECTURA: devuelve objetos nuevos y no reescribe Firestore.
+// Deja dos banderas por snapshot:
+//   recalculado — se reconstruyó con cantEjec × pu
+//   comparable  — todos los conceptos con avance tenían precio unitario.
+//                 Si un concepto se borró o le cambiaron la clave, no hay de
+//                 dónde sacar el pu y ese punto queda marcado como no comparable.
+const recalcularHistorialSub = (semanas = [], conceptosVivos = [], modoVol = false) => {
+  const lista = Array.isArray(semanas) ? semanas : [];
+  if (!modoVol) return lista.map(s => ({ ...s, recalculado: false, comparable: true }));
+
+  const refPorClave = new Map();
+  for (const c of (conceptosVivos || [])) {
+    const k = (c?.clave || '').trim();
+    if (!k) continue;
+    const cantidad = parseFloat(c.cantidad) || 0;
+    const importe = parseFloat(c.importe) || 0;
+    const pu = parseFloat(c.pu) || (cantidad > 0 ? importe / cantidad : 0);
+    refPorClave.set(k, { pu, cantidad });
+  }
+
+  return lista.map(s => {
+    if ((s?.esquema || 1) >= ESQUEMA_SNAPSHOT) {
+      return { ...s, recalculado: false, comparable: true };
+    }
+    let sinPrecio = 0;
+    const conceptos = (s?.conceptos || []).map(c => {
+      const ref = refPorClave.get((c?.clave || '').trim());
+      const importe = parseFloat(c?.importe) || 0;
+      const cantidad = parseFloat(c?.cantidad) || ref?.cantidad || 0;
+      const pu = parseFloat(c?.pu) || ref?.pu
+        || (cantidad > 0 ? importe / cantidad : 0);
+      if ((parseFloat(c?.cantEjec) || 0) > 0 && !(pu > 0)) sinPrecio++;
+      return { ...c, pu, cantidad, importe: importe || cantidad * pu };
+    });
+    const totalImporte = conceptos.reduce((t, c) => t + (parseFloat(c.importe) || 0), 0);
+    const { catalogo, excedente, total } = desgloseEjecutado(conceptos, true);
+    return {
+      ...s,
+      conceptos,
+      avancePonderado: avanceFisicoPonderado(conceptos, totalImporte, true),
+      montoEjecutado: total,
+      montoCatalogo: catalogo,
+      montoExcedente: excedente,
+      // El esquema sube porque el punto ya es comparable con los nuevos.
+      esquema: ESQUEMA_SNAPSHOT,
+      recalculado: true,
+      comparable: sinPrecio === 0,
+      conceptosSinPrecio: sinPrecio,
+    };
+  });
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2707,8 +2897,10 @@ const BIBLIOTECA_RIESGOS = [
       if (!subcontratos?.length) return null;
       const desfasados = subcontratos.filter(s => {
         const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
-        const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
-        const pctF = totalCat > 0 ? ejec/totalCat*100 : 0;
+        // Avance FÍSICO: topa a 100% por concepto. Comparar un físico sin topar
+        // contra un financiero sí topado inventaría desfases que no existen.
+        const pctF = avanceFisicoPonderado(s.conceptos || [], totalCat,
+          (s.modoAvance || "porcentaje") === "volumen");
         const pagado = s.pagos?.filter(p=>p.estatus==='pagado').reduce((t,p)=>t+(p.monto||0), 0) || 0;
         const pctFin = s.monto > 0 ? pagado/s.monto*100 : 0;
         return pctF > 0 && (pctF - pctFin) > 20;
@@ -3129,16 +3321,20 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   const gtMaq = maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
   const gtOtros = (otrosGastos||[]).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
   const gt = gastoGP + gtMaq + gtOtros;
-  // Avance monetario ejecutado (∑ avance × importe subsección)
-  const am = subs.reduce((t,s)=>t+((s.a||0)/100)*(s.imp||0), 0);
+  // ── Avance monetario ejecutado ──
+  // fix/ejecutado-sin-recorte: ya NO se topa el dinero. `am` es todo lo
+  // ejecutado en campo; `amCatalogo` es la parte que cabe en el catálogo y
+  // `amExcedente` el volumen capturado por encima, pendiente de clasificar.
+  const modoVol = (obra?.modoAvance === "volumen");
+  const { catalogo: amCatalogo, excedente: amExcedente, total: am } =
+    desgloseEjecutado(subs, modoVol);
   // Almacén (materiales en sitio/tránsito)
   const alm = materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0), 0);
   // Monto ejecutado = avance + almacén
   const me = am + alm;
-  // Avance físico ponderado %
-  const af = presupuesto > 0
-    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/presupuesto)*100, 0)
-    : 0;
+  // Avance FÍSICO ponderado % — este sí se topa por partida: ejecutar el 630%
+  // de una partida no avanza 630% la obra, avanza el 100% de su alcance.
+  const af = avanceFisicoPonderado(subs, presupuesto, modoVol);
   // Margen
   const diff = me - gt;
   const mpct = me > 0 ? (diff/me)*100 : 0;
@@ -3173,6 +3369,8 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   const maxAtraso = atrasos.reduce((m,a)=>Math.max(m, a.diasAtraso), 0);
   return {
     presupuesto, gastoGP, gt, am, alm, me, af, diff, mpct,
+    // Desglose del ejecutado: ningún dato capturado se descarta en silencio.
+    amCatalogo, amExcedente, modoVol,
     estPag, estPorCob, estProc, estFact, estTotal, porEstimar,
     pctGasto, brecha,
     diasPago, atrasos, montoAtrasado, maxAtraso,
@@ -5814,14 +6012,21 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   // Ejecutado: suma de montoEjecutado del último snapshot de avance con
   //   año/semana ≤ semana previa, por obra. Si alguna obra no tiene
   //   snapshot comparable, guion + etiqueta "N obras sin snapshot previo".
+  //   fix/ejecutado-sin-recorte: `consolidado.ejecutado` ya viene SIN topar.
+  //   Restarle un snapshot del esquema 1 (topado) inventaría un delta de
+  //   +$3.8M en una sola semana. Si alguna obra aporta un snapshot viejo,
+  //   el delta no se muestra.
   let ejecutadoPrev = 0;
   let obrasSinPrevEjec = 0;
+  let obrasEsquemaViejo = 0;
   for (const { d } of kpisPorObra) {
     const snap = _snapshotAvanceEnSemana(d.historialAvanceSemanas, keyAnterior);
-    if (snap) ejecutadoPrev += (snap.montoEjecutado || 0);
-    else obrasSinPrevEjec++;
+    if (!snap) { obrasSinPrevEjec++; continue; }
+    if ((snap.esquema || 1) < ESQUEMA_SNAPSHOT) obrasEsquemaViejo++;
+    ejecutadoPrev += (snap.montoEjecutado || 0);
   }
-  const deltaEjecutado = obrasSinPrevEjec === 0 ? consolidado.ejecutado - ejecutadoPrev : null;
+  const deltaEjecutado = (obrasSinPrevEjec === 0 && obrasEsquemaViejo === 0)
+    ? consolidado.ejecutado - ejecutadoPrev : null;
 
   // Personal: penúltimo snapshot de nómina de cada obra.
   // Si CUALQUIER obra con nómina no tiene penúltimo snapshot, guion —
@@ -5942,7 +6147,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
     const preAv = avSemanas.length >= 2 ? avSemanas[avSemanas.length - 2] : null;
     // Delta de avance físico (pp) contra semana anterior
     let deltaAvance = null;
-    if (ultAv && preAv && typeof ultAv.avancePonderado === 'number' && typeof preAv.avancePonderado === 'number') {
+    // Solo entre snapshots del mismo esquema de cálculo — ver ESQUEMA_SNAPSHOT.
+    if (ultAv && preAv && sonComparables(ultAv, preAv)
+        && typeof ultAv.avancePonderado === 'number' && typeof preAv.avancePonderado === 'number') {
       deltaAvance = ultAv.avancePonderado - preAv.avancePonderado;
     }
     // Personal esta semana vs anterior
@@ -5954,7 +6161,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
     const deltaPersonal = (personal !== null && personalPrev !== null) ? personal - personalPrev : null;
     // Delta de margen (pp) contra semana anterior
     let deltaMargen = null;
-    if (ultAv && preAv) {
+    if (ultAv && preAv && sonComparables(ultAv, preAv)) {
       const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
       const kU = _semISOKey(ultAv.fechaCaptura)?.key;
       const kP = _semISOKey(preAv.fechaCaptura)?.key;
@@ -6672,13 +6879,16 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
       const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
       // Avance físico ponderado
       const subsO = d.subs || [];
+      const modoVolO = (o?.modoAvance === "volumen");
       const avanceFisico = (o.presupuesto > 0 && subsO.length > 0)
-        ? subsO.reduce((t,s) => t + ((s.a||0)/100) * ((s.imp||0) / o.presupuesto) * 100, 0)
+        ? avanceFisicoPonderado(subsO, o.presupuesto, modoVolO)
         : 0;
       // Estimado total (todas las estimaciones sin importar estatus)
       const estTotalO = (d.estimaciones || []).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-      // Monto ejecutado = avance monetario + almacén
-      const amO  = subsO.reduce((t,s) => t + ((s.a||0)/100) * (s.imp||0), 0);
+      // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
+      // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
+      // autorizado como convenio.
+      const amO  = desgloseEjecutado(subsO, modoVolO).total;
       const meO  = amO + matTotal;
       // Margen bruto (mismo criterio Dashboard/PDF)
       const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
@@ -7138,8 +7348,7 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     if (!subs || subs.length === 0) return 0;
     const totImp = subs.reduce((t, s) => t + (parseFloat(s.imp) || 0), 0);
     if (totImp <= 0) return 0;
-    const ejec = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
-    return (ejec / totImp) * 100;
+    return avanceFisicoPonderado(subs, totImp, obra?.modoAvance === "volumen");
   })();
   const hayAlgunAvanceSnap = Object.keys(avancePorSem).length > 0;
   const avanceSeries = [];
@@ -7756,8 +7965,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     if (!subs || subs.length === 0) return 0;
     const totImp = subs.reduce((t, s) => t + (parseFloat(s.imp) || 0), 0);
     if (totImp <= 0) return 0;
-    const ejec = subs.reduce((t, s) => t + ((s.a || 0) / 100) * (parseFloat(s.imp) || 0), 0);
-    return (ejec / totImp) * 100;
+    return avanceFisicoPonderado(subs, totImp, obra?.modoAvance === "volumen");
   })();
   let avAcarreo = 0;
   const ejecAcum = semanasHist.map(s => {
@@ -8135,9 +8343,13 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const gastoGPLive = resolverGastoGP(obra, gpData);
   const totOtros = (otrosGastos||[]).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
   const gt=gastoGPLive+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0)+totOtros;
-  const am=subs.reduce((t,s)=>t+(s.a/100)*s.imp,0);
+  // Misma fuente única de verdad que calcularKPIsObra — esta pantalla tenía
+  // su propia copia de la fórmula y era una de las que se contradecían.
+  const modoVolObra = (obra?.modoAvance === "volumen");
+  const {excedente: amExcedente, total: am} = desgloseEjecutado(subs, modoVolObra);
   const alm=materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const me=am+alm; const af=subs.reduce((t,s)=>t+(s.a/100)*(s.imp/obra.presupuesto)*100,0);
+  const me=am+alm;
+  const af=avanceFisicoPonderado(subs, obra.presupuesto, modoVolObra);
   const diff=me-gt; const mpct=me>0?(diff/me)*100:0;
   // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
   const mNiv = nivelMargen(mpct);
@@ -8213,6 +8425,14 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
           <Kpi label="Ejecutado" value={MXN(me)}
             sub={obra.presupuesto>0 ? `${NUM(pctEjec,1)}% del contrato · ver avance ›` : "avance + almacén"}
             color={C.blueDk} size={12}/>
+          {/* Ningún dato capturado se descarta en silencio: si hay volumen
+              por encima del catálogo, se expone como cifra propia. */}
+          {amExcedente > 0 && (
+            <div style={{fontSize:9,color:C.yellowDk,fontWeight:700,marginTop:3}}
+              title="Volumen capturado por encima del catálogo. Antes se descartaba sin dejar rastro. Requiere clasificación: obra adicional a convenir o sobreejecución por autorizar.">
+              +{MXN(amExcedente)} sobre catálogo · pendiente de clasificar
+            </div>
+          )}
         </div>
         <div>
           <Kpi label="Margen bruto" value={`${margenAbs>=0?'':'-'}${MXN(Math.abs(margenAbs))}`}
@@ -8311,9 +8531,10 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
           <div style={{textAlign:"right"}}>Av. físico</div><div style={{textAlign:"right"}}>Av. financiero</div>
         </div>
         {subcontratos.slice(0,5).map(s => {
+          const modoVolFila = (s.modoAvance || "porcentaje") === "volumen";
           const totalCat = s.conceptos?.reduce((t,c)=>t+(c.importe||0),0) || 0;
-          const ejec = s.conceptos?.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0),0) || 0;
-          const pctFis = totalCat>0 ? ejec/totalCat*100 : 0;
+          const ejec = desgloseEjecutado(s.conceptos || [], modoVolFila).total;
+          const pctFis = avanceFisicoPonderado(s.conceptos || [], totalCat, modoVolFila);
           const pagado = s.pagos?.filter(p=>p.estatus==="pagado").reduce((t,p)=>t+(p.monto||0),0) || 0;
           const pctFin = s.monto>0 ? pagado/s.monto*100 : 0;
           const desfase = Math.abs(pctFis - pctFin);
@@ -8408,7 +8629,13 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         const ritmoSem=am>0&&plazoTrans>0?am/(plazoTrans/7):0;
         const semRest=plazoRest/7;
         const proyFin=am+ritmoSem*semRest;
-        const pctProy=Math.min(proyFin/obra.presupuesto*100,100);
+        // fix/ejecutado-sin-recorte: antes iba Math.min(…,100). Con el
+        // ejecutado ya sin topar, saturar aquí volvía a producir dos cifras
+        // que se contradicen: el KPI decía $24.5M sobre un catálogo de $25.8M
+        // y la proyección decía "100%, dentro de presupuesto". Rebasar el
+        // catálogo es justo lo que hay que ver.
+        const pctProy=obra.presupuesto>0?proyFin/obra.presupuesto*100:0;
+        const rebasa=pctProy>105;
         const faltaEst=Math.max(obra.presupuesto-totalEst,0);
         const semsParaEst=ritmoSem>0?Math.ceil(faltaEst/ritmoSem):null;
         return <div style={{borderTop:`0.5px solid ${C.border}`,paddingTop:10}}>
@@ -8418,7 +8645,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             {[
               ["Plazo transcurrido", `${NUM(pctPlazo,0)}%`, `${Math.round(plazoTrans)} de ${plazoTotal} días`, C.caliza],
               ["Ritmo semanal", MXN(ritmoSem), "avance / semana", C.blue],
-              ["Proyección al fin", `${NUM(pctProy,1)}%`, MXN(proyFin)+" proyectado", pctProy>=95?C.green:pctProy>=75?C.yellow:C.red],
+              ["Proyección al fin", `${NUM(pctProy,1)}%`, MXN(proyFin)+" proyectado",
+                rebasa?C.yellow:pctProy>=95?C.green:pctProy>=75?C.yellow:C.red],
               ["Semanas p/ estimar", semsParaEst?`~${semsParaEst} sem`:"—", MXN(faltaEst)+" por estimar", semsParaEst&&semsParaEst<=semRest?C.green:C.yellow],
             ].map(([l,v,s,c])=><div key={l} style={{background:C.bg,borderRadius:7,padding:"8px 10px"}}>
               <div style={{fontSize:8,color:C.textMut,marginBottom:3}}>{l}</div>
@@ -8426,7 +8654,12 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
               <div style={{fontSize:8,color:C.textMut,marginTop:2}}>{s}</div>
             </div>)}
           </div>
-          {pctProy<95?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
+          {rebasa?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
+            borderRadius:7,padding:"7px 10px",fontSize:10,color:C.yellow}}>
+             Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del catálogo contratado,
+            es decir <b>{MXN(proyFin-obra.presupuesto)}</b> por encima. Ese excedente requiere
+            clasificación: obra adicional a convenir, o sobreejecución por autorizar.
+          </div>:pctProy<95?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
             borderRadius:7,padding:"7px 10px",fontSize:10,color:C.yellow}}>
              Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del presupuesto.
             Se requiere acelerar <b>{MXN((obra.presupuesto-proyFin)/Math.max(semRest,1))}/sem</b> adicionales.
@@ -8569,7 +8802,8 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
         { data: materiales, fecha: new Date().toISOString() },
         { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
       // Crear snapshot del avance para histórico semanal
-      const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot);
+      const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
+        obra?.modoAvance === "volumen");
       if (snap && onHistorialNuevo) onHistorialNuevo(snap);
       // Si es oficial, también notif
       if (tipoSnapshot === "oficial" && snap) {
@@ -8630,11 +8864,10 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
 // retroceso, a ritmo crítico.
 // Gráfica: línea acumulada vs ideal lineal.
 function MiniDashAvance({obra, subs, historialAvance=[]}){
-  // Avance actual ponderado
+  // Avance actual ponderado — FÍSICO, topado por partida.
+  const modoVol = (obra?.modoAvance === "volumen");
   const totalImp = subs.reduce((t,s)=>t+(s.imp||0), 0);
-  const avanceActual = totalImp > 0
-    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/totalImp)*100, 0)
-    : 0;
+  const avanceActual = avanceFisicoPonderado(subs, totalImp, modoVol);
 
   // Snapshots oficiales ordenados (los intermedios solo para auditoría)
   const oficiales = (historialAvance||[])
@@ -8643,16 +8876,26 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
 
   const ultimoOf = oficiales[oficiales.length-1] || null;
   const penultimoOf = oficiales[oficiales.length-2] || null;
-  const deltaSemana = ultimoOf && penultimoOf ? ultimoOf.avancePonderado - penultimoOf.avancePonderado : 0;
+  // fix/ejecutado-sin-recorte: los snapshots del esquema 1 traen el avance
+  // calculado con `a` recortado. Restar uno de cada esquema produce un salto
+  // artificial que dispararía alertas falsas, así que el delta simplemente no
+  // se calcula cuando los puntos no son comparables.
+  const deltaComparable = ultimoOf && penultimoOf && sonComparables(ultimoOf, penultimoOf);
+  const deltaSemana = deltaComparable ? ultimoOf.avancePonderado - penultimoOf.avancePonderado : null;
 
-  // Velocidad promedio últimas 4 semanas oficiales (pp/semana)
-  const ult4 = oficiales.slice(-4);
+  // Velocidad promedio últimas 4 semanas oficiales (pp/semana).
+  // Solo se promedian snapshots del MISMO esquema que el último.
+  const esquemaAct = ultimoOf?.esquema || 1;
+  const ult4 = oficiales.filter(s => (s.esquema||1) === esquemaAct).slice(-4);
   let velocidadProm = 0;
   if (ult4.length >= 2) {
     const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
     const totalSems = ult4.length - 1;
     velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
   }
+  // ¿La serie cruza la frontera de esquema? Se avisa en pantalla para que
+  // nadie lea la gráfica como si fuera continua.
+  const serieMixta = oficiales.some(s => (s.esquema||1) !== esquemaAct);
 
   // Proyección de fin a ritmo actual (semanas hasta 100%)
   const pendientes = Math.max(100 - avanceActual, 0);
@@ -8666,16 +8909,22 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   }
 
   // ── DETECTORES ──
-  // Mapear snapshots oficiales por sección para ver evolución de cada partida
-  const ultimoMap = ultimoOf ? Object.fromEntries((ultimoOf.subs||[]).map(s=>[s.sec, s.a])) : {};
-  const penMap = penultimoOf ? Object.fromEntries((penultimoOf.subs||[]).map(s=>[s.sec, s.a])) : {};
+  // Todos comparan AVANCE FÍSICO, así que ambos lados se topan al 100%:
+  // el snapshot viejo ya venía recortado y `s.a` en vivo ya no lo está.
+  // Sin el tope, una partida al 630% aparecería como "caliente" cada semana.
+  const aFis = s => Math.min(100, pctPartidaSinTopar(s, modoVol));
+  const mapTopado = snap => snap
+    ? Object.fromEntries((snap.subs||[]).map(s=>[s.sec, Math.min(100, s.a||0)]))
+    : {};
+  const ultimoMap = mapTopado(ultimoOf);
+  const penMap = mapTopado(penultimoOf);
   const hace3Of = oficiales[oficiales.length-3] || null;
-  const hace3Map = hace3Of ? Object.fromEntries((hace3Of.subs||[]).map(s=>[s.sec, s.a])) : {};
+  const hace3Map = mapTopado(hace3Of);
 
   // Top 5 partidas con mayor delta esta semana
   const calientes = subs.map(s => ({
     ...s,
-    delta: ultimoOf ? (s.a||0) - (penMap[s.sec] ?? s.a ?? 0) : 0,
+    delta: ultimoOf ? aFis(s) - (penMap[s.sec] ?? aFis(s)) : 0,
   }))
   .filter(s => s.delta > 0)
   .sort((a,b)=>b.delta-a.delta).slice(0,5);
@@ -8685,18 +8934,19 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     ? subs.filter(s => {
         const ant = penMap[s.sec];
         if (ant === undefined) return false;
-        return (s.a||0) > 0 && (s.a||0) < 100 && (s.a||0) === ant;
+        const a = aFis(s);
+        return a > 0 && a < 100 && a === ant;
       }).slice(0,5)
     : [];
 
   // Retroceso: bajó de avance vs semana anterior
   const retroceso = subs.map(s => ({
     ...s,
-    delta: ultimoOf ? (s.a||0) - (penMap[s.sec] ?? s.a ?? 0) : 0,
+    delta: ultimoOf ? aFis(s) - (penMap[s.sec] ?? aFis(s)) : 0,
   })).filter(s => s.delta < -1).sort((a,b)=>a.delta-b.delta).slice(0,5);
 
   // Sin iniciar después de plazos
-  const sinIniciar = subs.filter(s => (s.a||0) === 0).slice(0,5);
+  const sinIniciar = subs.filter(s => aFis(s) === 0).slice(0,5);
 
   // ── GRÁFICA: Curva S — avance acumulado real vs programado ──
   // Por cada snapshot oficial calculamos qué % deberíamos tener en esa fecha (lineal del 0 al 100% sobre el plazo)
@@ -8714,6 +8964,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
         real: s.avancePonderado,
         programado: programadoEnFecha(s.fechaCierre || s.fechaCaptura),
         sem: s.semana, año: s.año,
+        // Los puntos anteriores al arreglo se calcularon con `a` recortado.
+        esquema: s.esquema || 1,
       }))
     : [];
   // % ideal a fecha actual
@@ -8732,9 +8984,10 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
         sub={oficiales.length>0?`Última semana cerrada: S${ultimoOf.semana}`:"Sin cierres oficiales"}
         color={semA(avanceActual)} size={14}/>
-      <Kpi label="Esta semana" value={oficiales.length>=2?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
-        sub={oficiales.length>=2?`vs S${penultimoOf.semana}`:"requiere 2 cierres"}
-        color={deltaSemana>=0?C.greenDk:C.red} size={12}/>
+      <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
+        sub={deltaSemana!==null?`vs S${penultimoOf.semana}`
+          : oficiales.length>=2?"semanas no comparables":"requiere 2 cierres"}
+        color={deltaSemana===null?C.textMut:deltaSemana>=0?C.greenDk:C.red} size={12}/>
       <Kpi label="Velocidad prom." value={ult4.length>=2?`${NUM(velocidadProm,2)} pp/sem`:"—"}
         sub={`últimas ${ult4.length} sem.`} color={C.blueDk} size={12}/>
       <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"2-digit"}):"—"}
@@ -8746,6 +8999,16 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           color={desvIdeal===null?C.textMut:desvIdeal<-5?C.red:desvIdeal<0?C.yellow:C.greenDk} size={12}/>
       )}
     </div>
+
+    {/* Serie que cruza la frontera del arreglo del recorte */}
+    {serieMixta && (
+      <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
+        padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
+        <b>Serie no comparable.</b> Las semanas anteriores al arreglo del recorte
+        se calcularon topando el avance al 100% por partida. Los deltas y la
+        velocidad solo se calculan entre semanas del mismo cálculo.
+      </div>
+    )}
 
     {/* Sin histórico aún */}
     {oficiales.length === 0 && (
@@ -9047,21 +9310,30 @@ function MiniDashEstimaciones({obra, estimaciones}){
 function MiniDashSubcontratos({obra, subcontratos}){
   if (!subcontratos?.length) return null;
   const totalContratado = subcontratos.reduce((t,s)=>t+(s.monto||0), 0);
-  const totalEjec = subcontratos.reduce((t,s) => {
-    const ejec = s.conceptos?.reduce((tt,c)=>tt+((c.avance||0)/100)*(c.importe||0), 0) || 0;
-    return t + ejec;
-  }, 0);
+  // Dinero sin topar (lo ejecutado se ejecutó) vs avance físico topado a 100%
+  // por concepto. Son dos preguntas distintas y ya no comparten fórmula.
+  const modoVolDe = s => (s?.modoAvance || "porcentaje") === "volumen";
+  const totalEjec = subcontratos.reduce(
+    (t,s) => t + desgloseEjecutado(s.conceptos || [], modoVolDe(s)).total, 0);
+  const totalExced = subcontratos.reduce(
+    (t,s) => t + desgloseEjecutado(s.conceptos || [], modoVolDe(s)).excedente, 0);
   const totalPagado = subcontratos.reduce((t,s) => {
     return t + (s.pagos?.filter(p=>p.estatus==='pagado').reduce((tt,p)=>tt+(p.monto||0), 0) || 0);
   }, 0);
   const totalCat = subcontratos.reduce((t,s) => t + (s.conceptos?.reduce((tt,c)=>tt+(c.importe||0), 0) || 0), 0);
-  const pctAvanceProm = totalCat > 0 ? totalEjec/totalCat*100 : 0;
+  // Ponderar contra el catálogo global: sumar los parciales de cada sub con el
+  // mismo denominador da el promedio ponderado por importe.
+  const pctAvanceProm = subcontratos.reduce(
+    (t,s) => t + avanceFisicoPonderado(s.conceptos || [], totalCat, modoVolDe(s)), 0);
   const pctPagado = totalContratado > 0 ? totalPagado/totalContratado*100 : 0;
   const activos = subcontratos.filter(s => s.estado === 'activa').length;
   const completados = subcontratos.filter(s => s.estado === 'completada').length;
   return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:10}}>
     <Kpi label="Total contratado" value={MXN(totalContratado)} sub={`${subcontratos.length} sub${subcontratos.length===1?'':'s'} · ${activos} activos`} color={C.caliza} size={12}/>
-    <Kpi label="Avance físico" value={`${NUM(pctAvanceProm,1)}%`} sub={`${MXN(totalEjec)} ejecutado`} color={pctAvanceProm>=100?C.green:C.blue} size={12}/>
+    <Kpi label="Avance físico" value={`${NUM(pctAvanceProm,1)}%`}
+      sub={totalExced > 0 ? `${MXN(totalEjec)} ejec · ${MXN(totalExced)} sobre catálogo`
+                          : `${MXN(totalEjec)} ejecutado`}
+      color={pctAvanceProm>=100?C.green:C.blue} size={12}/>
     <Kpi label="Avance financiero" value={`${NUM(pctPagado,1)}%`} sub={`${MXN(totalPagado)} pagado`} color={pctPagado>=100?C.green:C.purpleDk} size={12}/>
     <Kpi label="Por pagar" value={MXN(Math.max(totalContratado - totalPagado, 0))} sub="saldo a proveedores" color={C.blueDk} size={12}/>
     {completados > 0 && <Kpi label="Completados" value={String(completados)} sub="cerrados" color={C.green}/>}
@@ -9306,10 +9578,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           padre.hijos.push({ tipo: 'concepto', sub: s });
         });
 
+        // Modo de captura de avance: "porcentaje" (default) o "volumen".
+        // En modo volumen se captura la cantidad ejecutada acumulada y se
+        // calcula el % derivado vs el volumen del catálogo. Si excede, badge
+        // amarillo. Debe declararse ANTES de calcAgreg, que ya lo usa.
+        const modoVol = (obra?.modoAvance === "volumen");
+
         // Calcular agregados (totalImporte, avancePonderado, count) por nodo recursivamente
         const calcAgreg = (nodo) => {
           if (nodo.tipo === 'concepto') {
-            return { imp: nodo.sub.imp || 0, avPond: (nodo.sub.a || 0) * (nodo.sub.imp || 0), count: 1 };
+            // El rollup por categoría es AVANCE FÍSICO: se topa al 100% por
+            // partida. Con `a` ya sin recortar, sin este tope una categoría
+            // con una partida al 630% reportaría un avance imposible.
+            const imp = nodo.sub.imp || 0;
+            const pctTopado = Math.min(100, pctPartidaSinTopar(nodo.sub, modoVol));
+            return { imp, avPond: pctTopado * imp, count: 1 };
           }
           let imp = 0, avPond = 0, count = 0;
           nodo.hijos.forEach(h => {
@@ -9320,12 +9603,6 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           return { imp, avPond, count };
         };
         raiz.hijos.forEach(calcAgreg);
-
-        // Modo de captura de avance: "porcentaje" (default) o "volumen"
-        // En modo volumen se captura la cantidad ejecutada acumulada y se
-        // calcula el % derivado vs el volumen del catálogo. Si excede, badge
-        // amarillo.
-        const modoVol = (obra?.modoAvance === "volumen");
 
         // Renderiza un concepto individual (sub).
         // Es la hoja del árbol — todo está siempre visible inline:
@@ -9339,12 +9616,14 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           const cantCat = parseFloat(s.cant) || 0;
           const cantEjec = parseFloat(s.cantEjec) || 0;
           const pctDerivado = cantCat > 0 ? (cantEjec / cantCat * 100) : 0;
+          // La BARRA sí se topa (es avance físico); el DINERO no.
           const pctParaBarra = modoVol ? Math.min(100, pctDerivado) : (s.a || 0);
           const pctDisplay = modoVol ? pctDerivado : (s.a || 0);
           const excedePresup = modoVol && pctDerivado > 100;
-          const impEjecutado = modoVol
-            ? cantEjec * (parseFloat(s.pu) || 0)
-            : ((s.a || 0) / 100) * (s.imp || 0);
+          const impEjecutado = importeEjecutadoPartida(s, modoVol);
+          // Lo capturado por encima del catálogo. Se muestra explícito: antes
+          // desaparecía sin dejar rastro en ninguna pantalla.
+          const impExcedente = Math.max(impEjecutado - (s.imp || 0), 0);
           return <div key={subId} style={{background:C.bg,borderRadius:8,padding:"8px 10px",marginBottom:5,
             marginLeft: indentLevel * 16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:5,gap:8}}>
@@ -9357,7 +9636,9 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                 </div>
                 <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                   {modoVol
-                    ? <>Cat: {cantCat>0?cantCat.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'} {s.unidad||''} · PU {MXN(s.pu||0)} · Ejec {MXN(impEjecutado)}</>
+                    ? <>Cat: {cantCat>0?fmtCant(cantCat, s.pu):'—'} {s.unidad||''} · PU {MXN(s.pu||0)} · Ejec {MXN(impEjecutado)}
+                        {impExcedente > 0 && <span style={{color:C.yellowDk,fontWeight:700}}>
+                          {` · sobre catálogo ${MXN(impExcedente)}`}</span>}</>
                     : <>{MXN(s.imp)}</>
                   }
                 </div>
@@ -9366,12 +9647,18 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                 {editar ? (
                   modoVol ? (
                     // Modo volumen: input de cantidad ejecutada acumulada
-                    <><input type="number" min="0" step="0.01" placeholder="0" value={s.cantEjec||""}
+                    // step="any": la precisión la gobierna el display
+                    // (decimalesPorPU), no el navegador. Con step="0.01" el
+                    // input rechazaba teclazos, y en partidas de PU alto un
+                    // centésimo valía más de $12,000.
+                    <><input type="number" min="0" step="any" placeholder="0" value={s.cantEjec||""}
                       onChange={e=>{
                         const v = Math.max(0, parseFloat(e.target.value)||0);
-                        const pu = parseFloat(s.pu)||0;
                         const cCat = parseFloat(s.cant)||0;
-                        const pctNuevo = cCat > 0 ? Math.min(100, v/cCat*100) : 0;
+                        // `a` pasa a ser DERIVADO y ya no se persiste recortado.
+                        // Antes: Math.min(100, …) tiraba a la basura el volumen
+                        // capturado por encima del catálogo ($3.8M de portafolio).
+                        const pctNuevo = cCat > 0 ? (v/cCat)*100 : 0;
                         setSubs(ss=>ss.map(x=>x.id===subId?{...x,cantEjec:v,a:pctNuevo}:x));
                       }}
                       title="Cantidad ejecutada acumulada"
@@ -9388,7 +9675,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                   )
                 ) : (
                   <span style={{fontSize:13,fontWeight:700,color:excedePresup?C.yellowDk:semA(pctParaBarra)}}>
-                    {modoVol ? `${cantEjec.toLocaleString('es-MX',{maximumFractionDigits:2})} ${s.unidad||''}` : `${pctDisplay}%`}
+                    {modoVol ? `${fmtCant(cantEjec, s.pu)} ${s.unidad||''}` : `${pctDisplay}%`}
                   </span>
                 )}
               </div>
@@ -12712,9 +12999,8 @@ function Nomina({obra, rol, onHistorialCambio}) {
 // ── AVANCE (CLIENTE): listado de subsecciones con % de avance y barra ──────
 function AvanceCliente({obra, subs}){
   // Avance físico total ponderado
-  const af = (obra?.presupuesto||0) > 0
-    ? subs.reduce((t,s)=>t+((s.a||0)/100)*((s.imp||0)/obra.presupuesto)*100, 0)
-    : 0;
+  const af = avanceFisicoPonderado(subs, obra?.presupuesto || 0,
+    obra?.modoAvance === "volumen");
   const completadas = subs.filter(s=>(s.a||0)>=100).length;
   const enProceso   = subs.filter(s=>(s.a||0)>0 && (s.a||0)<100).length;
   const sinIniciar  = subs.filter(s=>(s.a||0)===0).length;
@@ -13061,9 +13347,11 @@ function Subcontratos({obra, rol, items, setItems, usuario}){
 
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
         {items.map(s => {
+          const modoVolItem = (s.modoAvance || "porcentaje") === "volumen";
           const totalConceptos = s.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
-          const ejecutado = s.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
-          const pctAvance = totalConceptos > 0 ? (ejecutado/totalConceptos)*100 : 0;
+          const { excedente: excItem, total: ejecutado } =
+            desgloseEjecutado(s.conceptos, modoVolItem);
+          const pctAvance = avanceFisicoPonderado(s.conceptos, totalConceptos, modoVolItem);
           const stCol = s.estado === "completada" ? C.green : s.estado === "pausada" ? C.yellow : C.blue;
           return <div key={s.id} onClick={()=>setSeleccionado(s.id)}
             style={{background:C.bg,borderRadius:10,padding:"13px 15px",cursor:"pointer",
@@ -13080,7 +13368,7 @@ function Subcontratos({obra, rol, items, setItems, usuario}){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
               {[["Monto contratado",MXN(s.monto||0),C.textPri],
                 ["Conceptos",String(s.conceptos.length),C.textSec],
-                ["Ejecutado",MXN(ejecutado),C.greenDk],
+                ["Ejecutado",MXN(ejecutado),excItem>0?C.yellowDk:C.greenDk],
                 ["Avance",`${NUM(pctAvance,1)}%`,pctAvance>=100?C.green:C.blue]].map(([l,v,c])=>
                 <div key={l}>
                   <div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
@@ -13338,9 +13626,26 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     });
   }, [obra.id, sub.id]);
 
+  // ── Modo de captura de avance del subcontrato ──
+  // Igual que en la obra madre: "porcentaje" (default) o "volumen".
+  // Se declara aquí arriba porque el cálculo del ejecutado y el recálculo
+  // del historial ya lo necesitan.
+  const modoAvance = sub.modoAvance || "porcentaje";
+  const modoVolSub = modoAvance === "volumen";
+
+  // La serie histórica de subcontratos SÍ es recuperable: sus snapshots
+  // guardaron `cantEjec` desde el primer día. Se recalcula en lectura contra
+  // el catálogo vivo, así que la gráfica es comparable de punta a punta sin
+  // reescribir nada en Firestore.
+  const historialSubCalc = useMemo(
+    () => recalcularHistorialSub(historialSub, sub.conceptos, modoVolSub),
+    [historialSub, sub.conceptos, modoVolSub]);
+
   const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
-  const ejecutado = sub.conceptos.reduce((t,c)=>t+((c.avance||0)/100)*(c.importe||0), 0);
-  const pctAvance = totalCat > 0 ? (ejecutado/totalCat)*100 : 0;
+  const { excedente: ejecExcedenteSub, total: ejecutado } =
+    desgloseEjecutado(sub.conceptos, modoVolSub);
+  // % de avance FÍSICO — topado por concepto.
+  const pctAvance = avanceFisicoPonderado(sub.conceptos, totalCat, modoVolSub);
   // VALIDACIÓN DE MONTO: comparar lo escrito (sub.monto) vs suma del catálogo (totalCat)
   const montoContrato = sub.monto || 0;
   const difMonto = totalCat - montoContrato;
@@ -13365,9 +13670,6 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     ["estimaciones","Estimaciones"],
   ];
 
-  // ── Modo de captura de avance del subcontrato ──
-  // Igual que en la obra madre: "porcentaje" (default) o "volumen".
-  const modoAvance = sub.modoAvance || "porcentaje";
 
   // ── ESTIMACIONES del subcontrato ──
   // Estructura: { id, no, fecha, periodo, monto, estatus, referencia }
@@ -13552,7 +13854,8 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   const agendarSnapshot = (conceptosNuevos) => {
     if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current);
     snapshotDebounceRef.current = setTimeout(() => {
-      crearSnapshotAvanceSub(obra.id, sub.id, conceptosNuevos, usuario?.correo);
+      crearSnapshotAvanceSub(obra.id, sub.id, conceptosNuevos, usuario?.correo,
+        "intermedio", (sub.modoAvance || "porcentaje") === "volumen");
     }, 3000);
   };
   const actualizarConcepto = (idx, cambios) => {
@@ -13621,7 +13924,11 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:7}}>
         <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="contratado con el sub" color={C.caliza} size={12}/>
         <Kpi label="Catálogo"       value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "suma de conceptos"} color={validacion?.color || C.blue} size={12}/>
-        <Kpi label="Ejecutado"      value={MXN(ejecutado)}   sub={`${NUM(pctAvance,1)}% del cat\u00e1logo`} color={C.blueDk} size={12}/>
+        <Kpi label="Ejecutado"      value={MXN(ejecutado)}
+          sub={ejecExcedenteSub > 0
+            ? `${MXN(ejecExcedenteSub)} sobre cat\u00e1logo`
+            : `${NUM(pctAvance,1)}% del cat\u00e1logo`}
+          color={ejecExcedenteSub > 0 ? C.yellowDk : C.blueDk} size={12}/>
         <Kpi label="Estimado"       value={MXN(estSubTotal)} sub={`por pagar ${MXN(estSubPorPagar)}`} color={C.purpleDk} size={12}/>
         <Kpi label="Pagado"         value={MXN(totalPagado)} sub={`${NUM(pctFinanciero,1)}% del contrato`} color={C.greenDk} size={12}/>
       </div>
@@ -13689,8 +13996,8 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         al monto contratado). El área entre ambas es el "balance físico-
         financiero". Solo aparece si hay al menos 2 snapshots en el
         historial (una semana sola no forma tendencia). */}
-    {historialLoaded && historialSub.length >= 2 && (
-      <GraficaSemanalSub sub={sub} historial={historialSub} pagos={pagos} estimaciones={estimacionesSub}/>
+    {historialLoaded && historialSubCalc.length >= 2 && (
+      <GraficaSemanalSub sub={sub} historial={historialSubCalc} pagos={pagos} estimaciones={estimacionesSub}/>
     )}
 
     {/* Sub-tabs */}
@@ -13917,12 +14224,14 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       {sub.conceptos.map((c,i)=>{
         const cant = parseFloat(c.cantidad)||0;
         const cantEjec = parseFloat(c.cantEjec)||0;
-        const pctReal = cant > 0 ? Math.min(100, (cantEjec/cant)*100) : (c.avance||0);
-        const excedePresup = modoAvance === "volumen" && cant > 0 && cantEjec > cant;
-        const pctDisplay = modoAvance === "volumen" ? pctReal : (c.avance||0);
-        const impEjec = modoAvance === "volumen"
-          ? cantEjec * (parseFloat(c.pu)||0)
-          : ((c.avance||0)/100) * (c.importe||0);
+        const modoVolC = modoAvance === "volumen";
+        // Porcentaje real SIN topar (para el badge) y topado (para la barra).
+        const pctSinTopar = cant > 0 ? (cantEjec/cant)*100 : (c.avance||0);
+        const pctReal = Math.min(100, pctSinTopar);
+        const excedePresup = modoVolC && cant > 0 && cantEjec > cant;
+        const pctDisplay = modoVolC ? pctSinTopar : (c.avance||0);
+        const impEjec = importeEjecutadoPartida(c, modoVolC);
+        const impExcedente = Math.max(impEjec - (parseFloat(c.importe)||0), 0);
         const nFotos = (c.fotos||[]).length;
         const colorBadge = pctDisplay >= 100 ? C.green : pctDisplay > 0 ? C.blue : C.textMut;
 
@@ -13935,11 +14244,13 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                 <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{c.clave||`#${i+1}`}</span>
                 <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{c.desc||"(sin descripción)"}</span>
                 {nFotos > 0 && <Bdg color={C.purple} small>{nFotos}</Bdg>}
-                {excedePresup && <Bdg color={C.yellow} small>{`${pctReal.toFixed(0)}%`}</Bdg>}
+                {excedePresup && <Bdg color={C.yellow} small>{`${pctSinTopar.toFixed(0)}%`}</Bdg>}
               </div>
               <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                 {modoAvance === "volumen"
-                  ? <>Cat: {cant>0?cant.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'} {c.unidad||''} · PU {MXN(c.pu||0)} · Imp {MXN(c.importe||0)} · Ejec {MXN(impEjec)}</>
+                  ? <>Cat: {cant>0?fmtCant(cant, c.pu):'—'} {c.unidad||''} · PU {MXN(c.pu||0)} · Imp {MXN(c.importe||0)} · Ejec {MXN(impEjec)}
+                      {impExcedente > 0 && <span style={{color:C.yellowDk,fontWeight:700}}>
+                        {` · sobre catálogo ${MXN(impExcedente)}`}</span>}</>
                   : <>{MXN(c.importe||0)} · {c.unidad||"—"} · {NUM(cant,2)} × {MXN(c.pu||0)}</>
                 }
               </div>
@@ -13948,10 +14259,12 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               {editar ? (
                 modoAvance === "volumen" ? (
                   <>
-                    <input type="number" min="0" step="0.01" placeholder="0" value={c.cantEjec||""}
+                    {/* Mismo arreglo que el capturador de la obra madre:
+                        step="any" y `avance` derivado SIN recortar. */}
+                    <input type="number" min="0" step="any" placeholder="0" value={c.cantEjec||""}
                       onChange={e=>{
                         const v = Math.max(0, parseFloat(e.target.value)||0);
-                        const pctNuevo = cant > 0 ? Math.min(100, v/cant*100) : 0;
+                        const pctNuevo = cant > 0 ? (v/cant)*100 : 0;
                         actualizarConcepto(i, {cantEjec: v, avance: pctNuevo});
                       }}
                       title="Cantidad ejecutada acumulada"
@@ -14952,13 +15265,15 @@ function PanelAlertas({obras, gpData, onCountChange}){
         // KPIs derivados
         const presupuesto = info.presupuesto || obra.presupuesto || 0;
         const modoVol = info.modoAvance === "volumen";
-        let avancePct = 0;
-        if (modoVol && presupuesto > 0) {
-          const ejec = subsArr.reduce((t, s) => t + (Number(s.cantEjec) || 0) * (Number(s.pu) || 0), 0);
-          avancePct = (ejec / presupuesto) * 100;
-        } else if (presupuesto > 0) {
-          avancePct = subsArr.reduce((t, s) => t + ((Number(s.a) || 0) / 100) * ((Number(s.imp) || 0) / presupuesto) * 100, 0);
-        }
+        // fix/ejecutado-sin-recorte: este motor tenía su PROPIA fórmula de
+        // ejecutado (Σ cantEjec×pu, sin topar) y por eso contradecía al KPI
+        // del dashboard. Ahora ambos salen de las mismas dos funciones:
+        //   · avancePct = avance FÍSICO, topado  → es lo que se compara contra
+        //     el % de gasto en las reglas de brecha.
+        //   · ejecutado = DINERO, sin topar, con su desglose.
+        const avancePct = avanceFisicoPonderado(subsArr, presupuesto, modoVol);
+        const { catalogo: ejecCatalogo, excedente: ejecExcedente, total: ejecutado } =
+          desgloseEjecutado(subsArr, modoVol);
         // Gasto total
         const gpId = info.gpId || obra.gpId;
         let totGP = 0;
@@ -14976,7 +15291,8 @@ function PanelAlertas({obras, gpData, onCountChange}){
         const tieneOficialEstaSemana = semanas.some(s =>
           s.semana === semHoy && s.año === añoHoy && s.tipo === "oficial");
 
-        const datosObra = { fechaUltCaptura, totGasto, avancePct, tieneOficialEstaSemana };
+        const datosObra = { fechaUltCaptura, totGasto, avancePct, tieneOficialEstaSemana,
+          ejecutado, ejecCatalogo, ejecExcedente };
 
         for (const regla of ALERTA_REGLAS) {
           const r = regla.evaluar(obra, datosObra, hoy);

@@ -402,6 +402,68 @@ unitarios, contrato abierto) y no uno solo.
 **Prioridad**: alta. Es un defecto de corrección de cifras, no de UI, y
 afecta a la cifra estrella del producto.
 
+### Atendido en `fix/ejecutado-sin-recorte` (2026-09-19) — puntos 1, 3 y 4
+
+Regla que gobierna el arreglo: **el dinero nunca se topa; el avance
+físico siempre se topa a 100% por partida.** Son dos preguntas distintas
+y dejaron de compartir fórmula.
+
+Tres funciones compartidas (`src/App.jsx`, antes del bloque de histórico)
+sustituyen a **todas** las copias en línea:
+
+- `importeEjecutadoPartida(s, modoVol)` — `cantEjec × pu` en volumen, con
+  caída a `(a/100) × imp`.
+- `desgloseEjecutado(subs, modoVol)` → `{catalogo, excedente, total}`.
+- `avanceFisicoPonderado(subs, denominador, modoVol)` — topa a 100%.
+
+No eran tres copias: **eran 16**. Además del KPI, la línea por concepto y
+el motor de alertas ya documentados, estaban duplicadas en el dashboard de
+obra, el detalle de subcontrato, el editor de conceptos de subcontrato, el
+listado de subcontratos, `MiniDashSubcontratos`, `AvanceCliente`,
+`PantallaObras`, `TendenciasMensuales`, `ProyeccionAvanceGasto`, la regla
+de alerta `sub_001` y cinco puntos del generador de PDF. El PDF es el
+documento que se entrega: no podía seguir discrepando de la pantalla.
+
+También se destopó `pctProy` en la proyección al término. Dejarla saturada
+en 100 mientras el ejecutado se destopa reproducía la misma contradicción
+que la rama existe para eliminar.
+
+El recorte de captura (`a = Math.min(100, …)`) desapareció en los dos
+capturadores; `cantEjec` es la fuente de verdad y `a` pasa a ser derivado.
+
+**Medición del efecto, contra producción** (`scripts/comparativo-ejecutado.py`,
+solo lectura, 2026-09-19). El avance físico no se movió en ninguna obra —
+que es exactamente lo que debía pasar:
+
+| obra | ejecutado antes | ejecutado después | margen | avance físico |
+|---|---|---|---|---|
+| 0112 Malecón | $21,692,801.20 | $24,470,797.85 | 11.06% → 21.15% | 83.92% = |
+| 0125 TAMSA | $16,318,435.74 | $17,364,929.90 | −77.67% → −66.96% | 12.90% = |
+| 0114 Oaxaca | $145,469,620.28 | igual | 35.40% = | 88.86% = |
+| 0126 Pemex | $26,946,162.65 | igual | 37.57% = | 35.63% = |
+| 0127 Centro Conv. | $0.00 | igual | — | — |
+| **portafolio** | **$210,427,019.87** | **$214,251,510.68** | **+$3,824,490.81** | |
+
+El excedente ya no se descarta: aparece como cifra propia
+("+$X sobre catálogo · pendiente de clasificar") en el dashboard de obra,
+en el KPI de subcontratos y en el PDF.
+
+**Histórico.** Los snapshots de obra siguen sin ser recuperables — nunca
+guardaron `cantEjec`. En vez de inventar el pasado se marcó la frontera:
+`ESQUEMA_SNAPSHOT = 2`, y todo delta que cruce esquemas devuelve `null` y
+se dibuja como "semanas no comparables". Sin eso, la primera captura tras
+el arreglo habría producido un salto falso de +$3.8M en una semana y
+disparado alertas de riesgo inventadas. Los snapshots de **subcontrato**
+sí guardaron `cantEjec` desde el primer día: `recalcularHistorialSub` los
+reconstruye en lectura uniendo el `pu` vivo por `clave`, y marca como no
+comparables los conceptos cuyo precio ya no se puede resolver.
+
+**Queda pendiente el punto 2**: modelar `tipoContrato` (precio alzado /
+precios unitarios / contrato abierto) y la autorización de excedentes por
+convenio. Va en su propia rama. Mientras tanto el excedente se muestra
+como "pendiente de clasificar", que es honesto: el sistema sabe que se
+ejecutó y no pretende saber si está autorizado.
+
 ---
 
 ## 9. Dos decimales no alcanzan para capturar volumen
@@ -461,6 +523,32 @@ obra tiene más de 2 decimales.
 
 **Prioridad**: alta. Es pérdida de dato en captura, y en unidades SRV
 el error por partida es de cinco cifras.
+
+### Atendido en `fix/ejecutado-sin-recorte` (2026-09-19)
+
+**La tabla de decimales por unidad de arriba queda derogada.** La unidad
+no es el criterio correcto: dos partidas en `SRV` pueden necesitar
+precisión distinta si sus precios difieren en dos órdenes de magnitud, y
+la tabla obliga a mantener una lista de unidades que crece sola con cada
+catálogo nuevo. El criterio es el dinero:
+
+```js
+decimalesPorPU(pu) = min(6, max(2, ceil(log10(pu))))
+```
+
+Garantiza que **el último decimal nunca vale más de $1**, para cualquier
+precio, sin tabla que mantener. Para `SRV` a $1,265,249.15 da 7 → topado
+a 6 decimales; para `PZA` a $85 da 2.
+
+La precisión gobierna **solo el display** (`fmtCant(cant, pu)` sustituye
+a los `maximumFractionDigits: 2`). El `step="0.01"` se sustituyó por
+`step="any"` en los dos capturadores de volumen: no tiene sentido que la
+interfaz marque como inválido un valor que el almacenamiento sí acepta.
+Se dejó fuera el punto 1 (derivar `step` de la unidad) porque `step="any"`
+lo hace innecesario.
+
+Queda el punto 4: recapturar con el administrador de 0125 el volumen real
+de las tres partidas SRV. Es trabajo de campo, no de código.
 
 ---
 
