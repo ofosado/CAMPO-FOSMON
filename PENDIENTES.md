@@ -7,16 +7,16 @@ Cada entrada dice: qué es el problema, por qué importa, dónde vive el
 hueco, propuesta de fix y prioridad. Antes de tomar cualquiera de estos,
 releer el contexto — puede haber cambiado.
 
-**Los primeros 6 pendientes bloquean la primera demo a un cliente.** El
+**Los primeros 5 pendientes bloquean la primera demo a un cliente.** El
 resto va después. Dentro de cada bloque, orden por impacto descendente.
 
 ---
 
 # BLOQUEAN LA PRIMERA DEMO
 
-Seis puntos que hay que resolver ANTES de mostrar el sistema por
+Cinco puntos que hay que resolver ANTES de mostrar el sistema por
 primera vez a un cliente externo. El pendiente #1 (iCloud) es
-condición previa para que los otros cinco se puedan trabajar con
+condición previa para que los otros cuatro se puedan trabajar con
 confianza — sin eso, cada cambio puede desaparecer.
 
 ---
@@ -174,55 +174,7 @@ frente al cliente es un signo de fragilidad.
 
 ---
 
-## 4. Parser TAMSA absorbe horas extra en el conteo de días
-
-**Descubierto**: durante análisis de nómina, 2026-09-18. Elevado a
-bloqueante de demo el 2026-09-20 (instrucción explícita del usuario):
-si demostramos con las 5 obras activas de FOSMON, una tiene nómina
-TAMSA y un director que sepa de obra nota el error al primer vistazo.
-
-**Qué pasa**: el parser de nómina TAMSA reporta ~1.7 horas extra por
-persona en semanas donde los turnos son de 55 horas semanales
-(11h/día × 5 días). Un turno de 55h contiene por definición 15h extra
-(vs 40h estándar), así que 1.7 h/persona es sospechosamente bajo —
-sugiere que el parser está clasificando 8-9 horas por día como
-"trabajo regular" en vez de "horas extra".
-
-**Hipótesis de causa**: el parser detecta la convención "horas vs días"
-en `catch`-block que ya fue tocado en varios commits (`443d9c7`,
-`b3668f1`, `4014622`, `053ea45`), pero la conversión de días × horas
-tope diario está usando 11h como tope en vez de 8h para TAMSA. La
-diferencia diaria (3h) se contabiliza en `impDias` (sueldo base) en vez
-de `impHE` (horas extra).
-
-**Consecuencia operativa**:
-- **Costo escondido**: el reporte muestra al cliente $X de sueldos base
-  cuando en realidad son $X + $Y de HE mal clasificada.
-- El margen operativo de TAMSA aparece mejor de lo que es.
-- Si la obra se factura con base en el detalle de nómina, hay riesgo
-  legal de reclamo por HE no pagadas correctamente.
-- **Demo**: un director de construcción con experiencia sabe cuántas
-  HE genera un turno de 55h/semana. Ver 1.7 h/persona en pantalla lo
-  interpreta como fallo del sistema en el primer minuto de la demo.
-
-**Propuesta**:
-1. Auditar el archivo Excel de TAMSA vs lo que llega a Firestore para
-   una semana específica. Cuadrar renglón por renglón.
-2. Corregir el parser para separar HE explícitamente cuando la
-   convención horaria excede 40h semanales, independientemente del
-   número de días.
-3. Añadir validación al cargar: si `pctHE < 2%` en obras con turnos
-   > 48h/semana, mostrar advertencia amarilla al usuario que cargó.
-4. Snapshot histórico: NO reprocesar los ya guardados (riesgo de
-   romper cuadres); solo aplicar a nuevas cargas.
-
-**Bloquea demo**: sí. Elevado 2026-09-20.
-
-**Prioridad**: crítica.
-
----
-
-## 5. Cuentas de prueba dedicadas por rol
+## 4. Cuentas de prueba dedicadas por rol
 
 **Descubierto**: registrado en SECURITY_RULES.md #4 (pendiente de
 seguridad). Se replica aquí porque también es demo-bloqueante.
@@ -257,7 +209,7 @@ externo sin exponer datos internos.
 
 ---
 
-## 6. Probar una restauración del respaldo
+## 5. Probar una restauración del respaldo
 
 **Descubierto**: reportado por el usuario en `feature/dashboard-principal`
 (2026-09-20).
@@ -301,7 +253,7 @@ riesgos operativos o de venta si no se cierran en las semanas siguientes.
 
 ---
 
-## 7. Falta `onAuthStateChanged`: sesión zombie tras revocación
+## 6. Falta `onAuthStateChanged`: sesión zombie tras revocación
 
 **Descubierto**: registrado en SECURITY_RULES.md como pendiente de
 seguridad #5. Se referencia aquí porque también es UX/operativo.
@@ -329,7 +281,7 @@ funcionar, pero cualquier escritura falla por reglas.
 
 ---
 
-## 8. Obra 0112 Malecón: ejecutado no cuadra con estimaciones del residente
+## 7. Obra 0112 Malecón: ejecutado no cuadra con estimaciones del residente
 
 **Descubierto**: revisión operativa con residente, ~2026-09.
 
@@ -363,7 +315,7 @@ dashboard.
 
 ---
 
-## 9. Formulario de maquinaria no pide fecha por movimiento
+## 8. Formulario de maquinaria no pide fecha por movimiento
 
 **Descubierto**: 2026-09-18, mientras se rediseñaba el dashboard principal.
 
@@ -415,7 +367,7 @@ en producción.
 
 ---
 
-## 10. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
+## 9. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
 
 **Descubierto**: 2026-09-19, revisando el módulo por obra durante el
 review de `feature/dashboard-principal`.
@@ -526,7 +478,7 @@ DESPUÉS de mezclar `feature/dashboard-principal`.**
 
 ---
 
-## 11. Exportación del expediente completo del cliente
+## 10. Exportación del expediente completo del cliente
 
 **Descubierto**: análisis de compliance con la Ley de Obras Públicas
 del estado (referencia: artículo 74).
@@ -570,7 +522,7 @@ tercera iteración sin afectar la demo o los primeros clientes.
 
 ---
 
-## 12. Rehacer el PDF
+## 11. Rehacer el PDF
 
 **Descubierto**: 2026-09-20 durante review post-`feature/dashboard-principal`.
 
@@ -587,7 +539,7 @@ primero QUÉ documentos hacen falta, luego rehacer.
 2. **Ejecutivo para juntas** — 1-2 páginas, gráficas y KPIs
    principales. Sirve para director general en juntas internas o para
    presentación al cliente.
-3. **Expediente exportable** — vinculado a pendiente #11. Formato
+3. **Expediente exportable** — vinculado a pendiente #10. Formato
    auditable completo, no necesariamente PDF (puede ser el ZIP).
 
 **Consecuencia operativa hoy**: el PDF actual no es reutilizable en
@@ -609,7 +561,7 @@ verde y sepamos qué le importa al cliente típico.
 
 ---
 
-## 13. Manual de usuario con capturas + correo de alta automatizado
+## 12. Manual de usuario con capturas + correo de alta automatizado
 
 **Descubierto**: recurrente en conversaciones sobre onboarding.
 
@@ -652,7 +604,7 @@ el usuario presente), pero es imprescindible para clientes con más de
 
 ---
 
-## 14. Distinguir "obra que avanzó" de "residente que se puso al corriente"
+## 13. Distinguir "obra que avanzó" de "residente que se puso al corriente"
 
 **Descubierto**: 2026-09-19, revisando el nuevo `DashboardPrincipal`.
 
@@ -687,11 +639,11 @@ malinterpretar la varianza y tomar decisiones sobre ruido de captura.
 
 **Interacción con otros pendientes**:
 
-- Pendiente #9 (fecha por movimiento en maquinaria) también contribuye
+- Pendiente #8 (fecha por movimiento en maquinaria) también contribuye
   al problema — sin fecha, la maquinaria "aparece de golpe" en el
-  presente. Resolver #9 disminuye el ruido pero no elimina el fenómeno
+  presente. Resolver #8 disminuye el ruido pero no elimina el fenómeno
   para el snapshot de avance.
-- Pendiente #16 (auditar otros formularios) puede descubrir más lugares
+- Pendiente #15 (auditar otros formularios) puede descubrir más lugares
   con la misma dinámica.
 
 **Prioridad**: media. Hoy no hay incidente porque no hay historial
@@ -703,7 +655,7 @@ suficiente para que se note. La primera vez que un directivo pregunte
 
 ---
 
-## 15. Sesión persistente: decidir política
+## 14. Sesión persistente: decidir política
 
 **Descubierto**: pendiente arrastrado desde `feature/organizaciones`.
 
@@ -743,9 +695,9 @@ conviene tomar antes de escalar a más usuarios.
 
 ---
 
-## 16. Auditar otros módulos por el mismo hueco de "fecha faltante"
+## 15. Auditar otros módulos por el mismo hueco de "fecha faltante"
 
-**Contexto**: el hueco de maquinaria (punto #9) es de un patrón: el
+**Contexto**: el hueco de maquinaria (punto #8) es de un patrón: el
 código de agrupación temporal espera un campo del formulario que no
 existe. Puede haber más lugares donde pase lo mismo.
 
@@ -786,7 +738,7 @@ tampoco de la ausencia.
 
 ---
 
-## 17. Nómina: drag-and-drop + pegar desde portapapeles
+## 16. Nómina: drag-and-drop + pegar desde portapapeles
 
 **Descubierto**: petición de UX de usuario operativo.
 
@@ -820,17 +772,64 @@ espera de una app moderna.
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
 | 2 | Primer ingreso GP en "cargando" | sí | crítica |
 | 3 | KPIs arrancan en cero | sí | crítica |
-| 4 | Parser TAMSA HE en días | sí | crítica |
-| 5 | Cuentas de prueba dedicadas | sí | crítica |
-| 6 | Probar restauración del respaldo | sí | crítica |
-| 7 | Sesión zombie (`onAuthStateChanged`) | | alta |
-| 8 | Obra 0112 discrepancia $2.5M | | alta |
-| 9 | Maquinaria sin fecha por movimiento | | alta |
-| 10 | Consolidar KPIs Nómina + Estimaciones | | alta |
-| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
-| 12 | Rehacer PDFs | | media |
-| 13 | Manual + correo alta automatizado | | media |
-| 14 | Distinguir avance vs captura al día | | media |
-| 15 | Sesión persistente — decidir | | media |
-| 16 | Auditar otros módulos sin fecha | | baja |
-| 17 | Nómina: drag/pegar | | baja |
+| 4 | Cuentas de prueba dedicadas | sí | crítica |
+| 5 | Probar restauración del respaldo | sí | crítica |
+| 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
+| 7 | Obra 0112 discrepancia $2.5M | | alta |
+| 8 | Maquinaria sin fecha por movimiento | | alta |
+| 9 | Consolidar KPIs Nómina + Estimaciones | | alta |
+| 10 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
+| 11 | Rehacer PDFs | | media |
+| 12 | Manual + correo alta automatizado | | media |
+| 13 | Distinguir avance vs captura al día | | media |
+| 14 | Sesión persistente — decidir | | media |
+| 15 | Auditar otros módulos sin fecha | | baja |
+| 16 | Nómina: drag/pegar | | baja |
+
+---
+
+# CERRADOS
+
+Pendientes que se dieron de baja con verificación. Se conservan aquí
+para no volver a levantarlos sin dato nuevo.
+
+## Parser TAMSA absorbe horas extra en el conteo de días — CERRADO 2026-09-19
+
+Fue el pendiente #4 (bloqueante de demo, prioridad crítica) entre el
+2026-09-18 y el 2026-09-19.
+
+**Qué se sospechaba**: que el parser de nómina TAMSA clasificaba como
+sueldo base horas que en realidad eran extra, porque reportaba ~1.7 HE
+por persona en semanas de turnos de 55 h. El razonamiento era que una
+semana de 55 h contiene por definición 15 h extra sobre las 40 h
+estándar, así que 1.7 h/persona parecía imposiblemente bajo. De ahí se
+derivó la hipótesis de un tope diario mal puesto (11 h en vez de 8 h) y
+un supuesto "costo escondido" en el margen de la obra.
+
+**Cómo se verificó**: se cuadró el archivo de nómina real de TAMSA
+contra lo que muestra CAMPO para la semana 38.
+
+**Hallazgo**:
+- CAMPO lee el archivo correctamente. Las **242 horas extra de la
+  semana 38** que reporta el sistema son exactamente las que trae el
+  archivo de nómina.
+- La jornada de 55 h **no es una semana estándar con 15 h extra
+  ocultas**: es semana comprimida pactada. Las horas de la jornada
+  pactada son horas ordinarias por acuerdo, no horas extra sin pagar.
+- Por lo tanto **no hay costo escondido**, el margen de TAMSA no está
+  inflado y no hay clasificación incorrecta que corregir.
+
+**Por qué se cierra**: la premisa del pendiente era una inferencia
+("55 h ⇒ 15 h extra") que no correspondía al arreglo laboral real de la
+obra. Con el archivo a la vista, el número del sistema y el número del
+archivo coinciden. No había defecto de parser: había un supuesto
+equivocado de quien lo levantó.
+
+**Si vuelve a aparecer**: antes de reabrirlo, comparar contra el
+archivo fuente de la semana en cuestión y confirmar el esquema de
+jornada pactada de la obra. El porcentaje de HE por sí solo no es
+evidencia de error.
+
+**Nota sobre la propuesta #3 del pendiente original** (advertir cuando
+`pctHE < 2%` en obras con turnos > 48 h/semana): esa alerta habría
+marcado en rojo un dato correcto. No implementarla tal cual.
