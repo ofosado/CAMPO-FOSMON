@@ -5677,20 +5677,36 @@ function _useEsMovil() {
   return esMovil;
 }
 
-// Tarjeta KPI con valor grande, valor secundario opcional (para Margen que
-// necesita "$abs" arriba y "%pct" abajo — mantiene alineación en ambas líneas
-// sin desbordar en móvil) y línea de delta con flecha ▲▼.
-// deltaValor === null → línea de delta muestra "sin semana previa" (guion largo
-// como flecha para no confundirse con un cero). deltaValor === 0 (o casi cero)
-// → no muestra flecha ni texto, solo un guion tenue.
+// Tarjeta KPI con valor grande, valor secundario opcional y línea de nota abajo.
+//
+// Modos de la línea inferior:
+//   deltaValor: número → flecha ▲/▼ + deltaSub (delta cuantificado)
+//   deltaValor: null AND deltaSub presente → nota explicativa gris (contexto,
+//              no comparación). Ej: "5 obras", "sin snapshot histórico",
+//              "1 obra sin snapshot previo".
+//   deltaValor: null AND deltaSub null → línea omitida por completo.
+//   deltaValor: ~0 (Math.abs < 0.05) → guion tenue + deltaSub o "sin cambio".
 function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
   const sinDelta = deltaValor === null || deltaValor === undefined;
   const casiCero = !sinDelta && Math.abs(deltaValor) < 0.05;
+
+  // Sin comparación numérica y sin nota → no dibujar la línea inferior.
+  if (sinDelta && !deltaSub) {
+    return (
+      <div className="dp-kpi-card" style={{borderLeftColor:color}}>
+        <div className="dp-kpi-label">{label}</div>
+        <div className="dp-kpi-value" style={{color}}>{valor}</div>
+        {valorSub && <div className="dp-kpi-value-sub" style={{color}}>{valorSub}</div>}
+      </div>
+    );
+  }
+
   const positivo = !sinDelta && !casiCero && deltaValor > 0;
   const negativo = !sinDelta && !casiCero && deltaValor < 0;
-  const flecha = sinDelta ? '—' : casiCero ? '·' : (positivo ? '▲' : (negativo ? '▼' : '·'));
+  const flecha   = sinDelta ? '·' : casiCero ? '·' : (positivo ? '▲' : (negativo ? '▼' : '·'));
   const colorDelta = sinDelta || casiCero ? C.textMut : (positivo ? C.greenDk : C.red);
-  const textoDelta = sinDelta ? 'sin semana previa' : (casiCero ? 'sin cambio' : (deltaSub || ''));
+  const textoDelta = sinDelta ? deltaSub : (casiCero ? (deltaSub || 'sin cambio') : deltaSub);
+
   return (
     <div className="dp-kpi-card" style={{borderLeftColor:color}}>
       <div className="dp-kpi-label">{label}</div>
@@ -5827,9 +5843,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   // ── BLOQUE 2 — Excepciones ──
   const HOY = new Date();
   const excepciones = [];
+  // Índice de kpis por obra — evita recalcular calcularKPIsObra en el detector.
+  const kpisById = Object.fromEntries(kpisPorObra.map(x => [x.obra.id, x.kpis]));
   for (const o of activas) {
     const d = datosPorObra[o.id] || {};
     const nombre = resolverNombreCortoObra(o, gpData);
+    const kpisObra = kpisById[o.id];
 
     // (a) Sin captura ≥ 7 días
     const avSemanas = d.historialAvanceSemanas || [];
@@ -5852,39 +5871,27 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       });
     }
 
-    // (b) Caída de margen ≥ 3pp (obra individual, comparando última vs penúltima
-    //     de su propio snapshot).
-    if (avSemanas.length >= 2) {
-      const _ult = avSemanas[avSemanas.length - 1];
-      const _pre = avSemanas[avSemanas.length - 2];
-      // Recalcular gasto acum en la semana de _ult y en la de _pre para esta obra
-      const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
-      const kUlt = _semISOKey(_ult.fechaCaptura)?.key;
-      const kPre = _semISOKey(_pre.fechaCaptura)?.key;
-      const gUlt = (() => {
-        if (!kUlt) return null;
-        let g = null;
-        for (const k of keysOrdenadas) { if (k <= kUlt) g = gastoAcum[k]; else break; }
-        return g;
-      })();
-      const gPre = (() => {
-        if (!kPre) return null;
-        let g = null;
-        for (const k of keysOrdenadas) { if (k <= kPre) g = gastoAcum[k]; else break; }
-        return g;
-      })();
-      if (gUlt !== null && gPre !== null && _ult.montoEjecutado > 0 && _pre.montoEjecutado > 0) {
-        const mUlt = (_ult.montoEjecutado - gUlt) / _ult.montoEjecutado * 100;
-        const mPre = (_pre.montoEjecutado - gPre) / _pre.montoEjecutado * 100;
-        const caida = mPre - mUlt;
-        if (caida >= 3) {
-          const nivelUlt = nivelMargen(mUlt).nivel;
-          excepciones.push({
-            obraId: o.id,
-            tipo: 'caida_margen',
-            texto: `${nombre} — margen bajó de ${NUM(mPre, 1)}% a ${NUM(mUlt, 1)}% (−${NUM(caida, 1)}pp), en nivel ${nivelUlt}`,
-          });
-        }
+    // (b) Margen bajo — nivel Atención o Crítico según nivelMargen.
+    //     Antes: caida_margen comparaba dos snapshots reconstruidos con
+    //     _serieGastoAcumulado (GP semanal + otros_gastos por fecha) que
+    //     NO incluye maquinaria — daba un margen distinto al de la tabla
+    //     (con TAMSA: excepción −75.1% vs tabla −77.7%). Ahora la fuente
+    //     es calcularKPIsObra en vivo, MISMA cifra que la tabla del
+    //     bloque 3 y que el consolidado del bloque 1.
+    //
+    //     El detector de CAÍDA temporal se recupera cuando podamos
+    //     snapshotear gt por semana (pendiente ligado a PENDIENTES #1 y
+    //     al pendiente de "capturas retrasadas" registrado en esta rama).
+    if (kpisObra && kpisObra.me > 0) {
+      const niv = nivelMargen(kpisObra.mpct);
+      if (niv.nivel === 'Crítico' || niv.nivel === 'Atención') {
+        const signo = kpisObra.mpct < 0 ? '−' : '';
+        excepciones.push({
+          obraId: o.id,
+          tipo: 'margen_bajo',
+          nivel: niv.nivel,
+          texto: `${nombre} — margen bruto ${signo}${NUM(Math.abs(kpisObra.mpct), 1)}%, nivel ${niv.nivel}`,
+        });
       }
     }
 
@@ -5955,6 +5962,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       obra: o,
       nombre: resolverNombreCortoObra(o, gpData),
       af: kpis.af,
+      contratado: kpis.presupuesto,          // usado en el promedio ponderado de la fila TOTAL
       deltaAvance,
       margenPct: kpis.mpct,
       margenAbs: kpis.diff,
@@ -5966,6 +5974,28 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       diasSinCaptura: ultAv?.fechaCaptura ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24)) : null,
     };
   }).sort((a, b) => a.margenPct - b.margenPct);
+
+  // ── TOTALES de la tabla (bloque 3) ──
+  // Convención (fija en este dashboard):
+  //   Avance físico total = ∑(af × contratado) / ∑contratado   → ponderado por contratado
+  //   Margen %      total = (∑ejecutado − ∑gastado) / ∑ejecutado × 100
+  //                          → MISMA fórmula que el consolidado del bloque 1
+  //                          → cuadra por construcción con el KPI de Margen de arriba
+  //   Por cobrar    total = ∑ por cobrar
+  //   Personal      total = ∑ personal (última semana capturada por obra)
+  //
+  // El promedio ponderado se elige distinto por indicador según lo que
+  // mida cada uno — se hace explícito en tooltip y en el propio comentario
+  // para que no parezca inconsistencia.
+  const totContratado = filas.reduce((t, f) => t + f.contratado, 0);
+  const totAfPond = totContratado > 0
+    ? filas.reduce((t, f) => t + f.af * f.contratado, 0) / totContratado
+    : 0;
+  // Margen del ranking = misma fórmula del consolidado del bloque 1, por
+  // construcción cuadra numéricamente.
+  const totMargenPct = consolidado.margenPct;
+  const totPorCobrar = filas.reduce((t, f) => t + (f.porCobrar || 0), 0);
+  const totPersonal  = filas.reduce((t, f) => t + (f.personal || 0), 0);
 
   // ── RENDER ──
   return (
@@ -5979,15 +6009,16 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
 
       {/* BLOQUE 1 — Consolidado */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
-        Semana actual vs semana anterior
+        Consolidado en vivo · variación semanal donde exista snapshot
       </div>
       <div className="dp-kpi-grid">
-        {/* Contratado — sin variación por decisión (Opción A) */}
+        {/* Contratado — magnitud fija: sin delta ni línea inferior.
+            La cifra no varía semana a semana en la práctica; poner "sin
+            comparación" a diario sería ruido. */}
         <_KpiConDelta
           label="Contratado"
           valor={MXN(consolidado.contratado)}
-          deltaValor={null}
-          deltaSub={`${activas.length} obra${activas.length !== 1 ? 's' : ''}`}
+          valorSub={`${activas.length} obra${activas.length !== 1 ? 's' : ''}`}
           color={C.caliza}
         />
         <_KpiConDelta
@@ -5997,26 +6028,24 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
           deltaSub={deltaEjecutado !== null
             ? `${deltaEjecutado >= 0 ? '+' : '−'}${MXN(Math.abs(deltaEjecutado))} vs semana previa`
             : (obrasSinPrevEjec > 0
-                ? `${obrasSinPrevEjec} obra${obrasSinPrevEjec > 1 ? 's' : ''} sin snapshot previo`
-                : null)}
+                ? `${obrasSinPrevEjec} obra${obrasSinPrevEjec > 1 ? 's' : ''} sin captura en la semana previa`
+                : 'sin comparación disponible')}
           color={C.blue}
         />
-        {/* Gastado: sin delta comparable — no hay snapshot histórico de gt. */}
+        {/* Gastado y Margen: no hay snapshot histórico semanal de gt
+            (gt incluye maquinaria y otros_gastos, que hoy no tienen fecha
+            por movimiento — ver PENDIENTES #1). La variación semanal es
+            estructuralmente imposible hasta que se resuelva ese pendiente. */}
         <_KpiConDelta
           label="Gastado"
           valor={MXN(consolidado.gastado)}
-          deltaValor={null}
-          deltaSub="sin snapshot histórico"
+          valorSub="GP + maquinaria + otros"
           color={C.textPri}
         />
-        {/* Margen: valor en dos líneas ($abs arriba, % abajo). Delta = guion:
-            depende del Gastado histórico que no tenemos. */}
         <_KpiConDelta
           label="Margen"
           valor={`${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`}
           valorSub={`${NUM(consolidado.margenPct, 1)}%`}
-          deltaValor={null}
-          deltaSub="sin snapshot histórico"
           color={nivelMargen(consolidado.margenPct).color}
         />
         <_KpiConDelta
@@ -6028,7 +6057,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
             ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`
             : (obrasSinPrevNom > 0
                 ? `${obrasSinPrevNom} obra${obrasSinPrevNom > 1 ? 's' : ''} sin snapshot previo`
-                : null)}
+                : 'primera semana con nómina')}
           color={C.purpleDk}
         />
       </div>
@@ -6084,6 +6113,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
 
         if (esMovil) {
           // Tarjeta compacta por obra — mismo lenguaje visual que la lista principal.
+          const totMargenColor = nivelMargen(totMargenPct).color;
           return (
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {filas.map(f => {
@@ -6116,11 +6146,31 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                   </div>
                 );
               })}
+              {/* Card TOTAL — cierra el ranking. Cifras cuadran con el bloque 1. */}
+              <div style={{background:C.surface,borderRadius:8,padding:"10px 12px",
+                          border:`1px solid ${C.borderM}`,marginTop:2}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:4}}>
+                  <span style={{fontSize:9,fontWeight:700,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em"}}>TOTAL</span>
+                  <span style={{fontSize:14,fontWeight:700,color:totMargenColor,flexShrink:0}}
+                        title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100">
+                    {NUM(totMargenPct, 1)}%
+                  </span>
+                </div>
+                <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}
+                     title="Avance físico ponderado por monto contratado">
+                  Avance {NUM(totAfPond, 1)}% (ponderado)
+                  {' · '}Por cobrar {MXN(totPorCobrar)}
+                </div>
+                <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
+                  {totPersonal} personas · {activas.length} obra{activas.length !== 1 ? 's' : ''}
+                </div>
+              </div>
             </div>
           );
         }
 
-        // Escritorio: tabla 6 columnas.
+        // Escritorio: tabla 6 columnas + fila TOTAL en tfoot.
+        const totMargenColor = nivelMargen(totMargenPct).color;
         return (
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
@@ -6163,6 +6213,25 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                   );
                 })}
               </tbody>
+              {/* Fila TOTAL — Por cobrar y Personal SUMAN; Avance y Margen usan
+                  promedios ponderados (ver comentario junto al cálculo). Cuadra
+                  con el bloque 1 por construcción. */}
+              <tfoot>
+                <tr style={{borderTop:`1px solid ${C.borderM}`,background:C.bg,fontWeight:700}}>
+                  <td style={{padding:"8px 4px",color:C.textPri,fontSize:9,textTransform:"uppercase",letterSpacing:"0.06em"}}>Total</td>
+                  <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}
+                      title="Avance físico ponderado por monto contratado">
+                    {NUM(totAfPond, 1)}%
+                  </td>
+                  <td style={{padding:"8px 4px",textAlign:"right",color:totMargenColor,whiteSpace:"nowrap"}}
+                      title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100. Cuadra con el KPI de Margen arriba.">
+                    {NUM(totMargenPct, 1)}%
+                  </td>
+                  <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}>{MXN(totPorCobrar)}</td>
+                  <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}>{totPersonal}</td>
+                  <td style={{padding:"8px 4px",textAlign:"right",color:C.textMut,fontWeight:400}}>—</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         );

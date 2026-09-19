@@ -103,3 +103,54 @@ su plan.
 tampoco de la ausencia.
 
 ---
+
+## 3. Distinguir "obra que avanzó" de "residente que se puso al corriente"
+
+**Descubierto**: 2026-09-19, revisando el nuevo `DashboardPrincipal`.
+
+**Qué pasa**: los deltas semanales del bloque 1 (Ejecutado, Personal) y de
+la tabla del bloque 3 (Δ avance, Δ margen, Δ personal) se calculan
+comparando el último snapshot con el previo. Si la obra estuvo 8 semanas
+sin captura y de pronto captura, el "delta vs semana previa" NO representa
+lo que ocurrió en la última semana — representa 8 semanas de acumulado
+que salen a superficie de un jalón.
+
+Ejemplo real (2026-09-19): obra 0114 tuvo su última captura en S30/2026.
+Si el residente captura hoy S38, el delta reportado será +$10M+ en
+Ejecutado que **parece** progreso semanal pero es 2 meses de trabajo.
+
+**Consecuencia operativa**: el dashboard, que se presenta como
+herramienta de venta y de gestión ejecutiva, va a mostrar saltos que
+parecen cambios reales del negocio y no lo son. Un directivo puede
+malinterpretar la varianza y tomar decisiones sobre ruido de captura.
+
+**Ideas de diseño** (por explorar, no elegir aún):
+
+1. Etiquetar el delta con el gap de semanas: en vez de "+$10M vs semana
+   previa" decir "+$10M vs S30 (hace 8 semanas)".
+2. Suprimir la flecha cuando el gap > N semanas y sustituir por nota:
+   "captura retrasada — variación no comparable".
+3. Guardar en cada snapshot no solo la fecha de captura sino la
+   "semana lógica" que representa (para separar semanas contiguas de
+   saltos), y calcular deltas solo entre semanas contiguas.
+4. Bandera visual en la excepción `sin_captura`: al normalizar la
+   captura, marcar el próximo snapshot como "recuperación" para que
+   consumidores del delta sepan tratarlo distinto.
+
+**Interacción con otros pendientes**:
+
+- Pendiente #1 (fecha por movimiento en maquinaria) también contribuye
+  al problema — sin fecha, la maquinaria "aparece de golpe" en el
+  presente. Resolver #1 disminuye el ruido pero no elimina el fenómeno
+  para el snapshot de avance.
+- Pendiente #2 (auditar otros formularios) puede descubrir más lugares
+  con la misma dinámica.
+
+**Prioridad**: media. Hoy no hay incidente porque no hay historial
+suficiente para que se note. La primera vez que un directivo pregunte
+"¿por qué esta obra creció tanto en una semana?" hay que resolver esto.
+
+**Registrado por instrucción explícita del usuario en el review de
+`feature/dashboard-principal` (2026-09-19).**
+
+---
