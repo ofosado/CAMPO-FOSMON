@@ -5840,6 +5840,18 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   // explícita. Ver PENDIENTES #3 propuesto: registrar snapshot de gt/margen
   // al cerrar cada semana de avance para que estos deltas también se puedan.
 
+  // Nota informativa cuando hay obras con gasto sin ejecución que arrastran
+  // el margen consolidado. El total sigue siendo aritméticamente correcto
+  // (el dinero SÍ se gastó) pero conviene que el lector sepa que la cifra
+  // integra costos que aún no encontraron su contraparte en avance —
+  // típico en obras recién iniciadas con costos de movilización.
+  const obrasSinEjec = kpisPorObra.filter(x => x.kpis.me <= 0 && x.kpis.gt > 0);
+  const gastoSinEjec = obrasSinEjec.reduce((t, x) => t + x.kpis.gt, 0);
+  const margenPctSinEsasObras = (consolidado.ejecutado > 0)
+    ? ((consolidado.ejecutado - (consolidado.gastado - gastoSinEjec)) / consolidado.ejecutado) * 100
+    : consolidado.margenPct;
+  const arrastreMargenPP = margenPctSinEsasObras - consolidado.margenPct;   // siempre >= 0
+
   // ── BLOQUE 2 — Excepciones ──
   const HOY = new Date();
   const excepciones = [];
@@ -5958,6 +5970,13 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       const dias = Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24));
       ultimaCapturaTxt = dias === 0 ? 'hoy' : (dias === 1 ? 'ayer' : `hace ${dias} días`);
     }
+    // Margen indefinido: gasto sin ejecución (ej. obra en arranque con
+    // costos de movilización antes de facturar avance). calcularKPIsObra
+    // fuerza mpct=0 por la guarda contra división entre cero, pero mostrar
+    // 0.0% en pantalla miente: aparenta neutralidad cuando la obra tiene
+    // gasto perdido sin retorno. Marcamos la fila y en la presentación se
+    // pinta guion + margen absoluto (que sí es una cifra real).
+    const margenIndefinido = kpis.me <= 0 && kpis.gt > 0;
     return {
       obra: o,
       nombre: resolverNombreCortoObra(o, gpData),
@@ -5966,6 +5985,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       deltaAvance,
       margenPct: kpis.mpct,
       margenAbs: kpis.diff,
+      margenIndefinido,
       deltaMargen,
       porCobrar: kpis.estPorCob,
       personal,
@@ -5973,7 +5993,15 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       ultimaCapturaTxt,
       diasSinCaptura: ultAv?.fechaCaptura ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24)) : null,
     };
-  }).sort((a, b) => a.margenPct - b.margenPct);
+  }).sort((a, b) => {
+    // Ordenación: obras con margen indefinido primero (son las peores —
+    // gasto sin ejecución) y dentro de ese grupo, mayor gasto perdido
+    // primero. Luego el resto por margen % ascendente.
+    if (a.margenIndefinido && !b.margenIndefinido) return -1;
+    if (!a.margenIndefinido && b.margenIndefinido) return 1;
+    if (a.margenIndefinido && b.margenIndefinido) return a.margenAbs - b.margenAbs;   // más negativo primero
+    return a.margenPct - b.margenPct;
+  });
 
   // ── TOTALES de la tabla (bloque 3) ──
   // Convención (fija en este dashboard):
@@ -6046,6 +6074,10 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
           label="Margen"
           valor={`${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`}
           valorSub={`${NUM(consolidado.margenPct, 1)}%`}
+          deltaValor={null}
+          deltaSub={obrasSinEjec.length > 0
+            ? `incluye ${obrasSinEjec.length} obra${obrasSinEjec.length !== 1 ? 's' : ''} sin ejecución (−${NUM(arrastreMargenPP, 1)}pp)`
+            : null}
           color={nivelMargen(consolidado.margenPct).color}
         />
         <_KpiConDelta
@@ -6117,7 +6149,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
           return (
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {filas.map(f => {
-                const margenColor = nivelMargen(f.margenPct).color;
+                // Margen indefinido (me=0, gt>0) → color rojo (Crítico) y
+                // rótulo "—" en vez de "0.0%". Se muestra el $ absoluto.
+                const margenColor = f.margenIndefinido ? C.redDk : nivelMargen(f.margenPct).color;
                 const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
                 return (
                   <div key={f.obra.id}
@@ -6127,9 +6161,16 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:4}}>
                       <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
                                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
-                      <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0}}>
-                        {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
-                      </span>
+                      {f.margenIndefinido ? (
+                        <span style={{fontSize:13,fontWeight:700,color:margenColor,flexShrink:0,whiteSpace:"nowrap"}}
+                              title="Sin ejecución: no hay base para calcular el porcentaje. El margen absoluto es el gasto perdido.">
+                          −{MXN(Math.abs(f.margenAbs))} · —
+                        </span>
+                      ) : (
+                        <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0}}>
+                          {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
+                        </span>
+                      )}
                     </div>
                     <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
                       Avance {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
@@ -6186,7 +6227,10 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
               </thead>
               <tbody>
                 {filas.map(f => {
-                  const margenColor = nivelMargen(f.margenPct).color;
+                  // Ver comentario en el sort: margenIndefinido = gasto sin
+                  // ejecución. Se rotula como "—" (no "0.0%") y se muestra
+                  // el $ absoluto abajo. Color: rojo (Crítico) siempre.
+                  const margenColor = f.margenIndefinido ? C.redDk : nivelMargen(f.margenPct).color;
                   const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
                   return (
                     <tr key={f.obra.id}
@@ -6196,9 +6240,17 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
                         {NUM(f.af, 1)}%{_flecha(f.deltaAvance, true, 'pp')}
                       </td>
-                      <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}>
-                        {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
-                      </td>
+                      {f.margenIndefinido ? (
+                        <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}
+                            title="Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.">
+                          <div>—</div>
+                          <div style={{fontSize:9,fontWeight:600,color:margenColor,marginTop:1}}>−{MXN(Math.abs(f.margenAbs))}</div>
+                        </td>
+                      ) : (
+                        <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}>
+                          {NUM(f.margenPct, 1)}%{_flecha(f.deltaMargen, true, 'pp')}
+                        </td>
+                      )}
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
                         {MXN(f.porCobrar)}
                       </td>
