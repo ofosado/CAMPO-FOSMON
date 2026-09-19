@@ -337,26 +337,66 @@ modo volumen se guarda `cantEjec` íntegro pero el porcentaje se recorta,
 descarta en silencio de la cifra principal**, mientras la pantalla de
 Avance del mismo concepto lo muestra completo.
 
+**Medido contra producción el 2026-09-19** (lectura completa del
+portafolio, `scripts/leer-portafolio-recorte.py`):
+
+| obra | modo | partidas >100% | ejecutado hoy | descartado | margen hoy → real |
+|---|---|---|---|---|---|
+| 0112 SIOP Malecón | volumen | 3 | $21,692,801.20 | $2,777,996.64 | 11.1% → 21.2% |
+| 0125 TAMSA | volumen | 32 | $16,318,435.74 | $1,046,494.16 | −77.7% → −67.0% |
+| 0114 Oaxaca | porcentaje | 0 | $145,469,620.28 | — | sin exposición |
+| 0126 Pemex | porcentaje | 0 | $26,946,162.65 | — | sin exposición |
+| 0127 Centro Conv. | volumen | 0 | $0.00 | $0.00 | aún sin captura |
+
+**Total del portafolio descartado: $3,824,490.81.** Ejecutado reportado
+$210,427,019.87 contra $214,251,510.68 real. No hay obras archivadas: la
+colección tiene 5 documentos, los 5 activos.
+
 **Consecuencia operativa**:
 - La misma obra muestra ejecutado distinto según dónde se mire. No hay
   una cifra autoritativa.
 - La pérdida es invisible: no hay aviso de que se está descartando
   importe. El único rastro es el badge amarillo del concepto, que dice
   el porcentaje pero no los pesos.
-- En 0112 esto equivale a **$2,777,996.64 descartados** — ver #7.
+- El margen de las dos obras en volumen está subestimado ~10 pp.
 - En demo es el peor escenario posible: el cliente abre el detalle del
   concepto, ve un número, regresa al dashboard y ve otro.
 
+**La serie histórica es irrecuperable**. `crearSnapshotAvance`
+(`src/App.jsx:2271`) guarda por partida solo `{sec, sub, a, imp}` y
+calcula `montoEjecutado` desde ese `a` ya recortado. **`cantEjec` nunca
+se guardó en el snapshot.** Verificado en producción: en las 4 obras con
+historial, `max(a) = 100.00` exacto y ningún snapshot trae `cantEjec`.
+La forma del snapshot nace en `a0527ea` (2026-05-22) y no ha cambiado;
+el modo volumen nace en `fb53647` (2026-06-01), así que todo snapshot de
+obra en volumen nació recortado. Aunque se corrija el recorte hoy, las
+semanas ya cerradas **no se pueden reconstruir** — solo se puede
+recalcular el punto actual. Eso contamina la gráfica de avance y la
+proyección de fin de obra de 0112 y 0125.
+
+**No es solo un defecto, es un modelo equivocado para contratos
+abiertos.** 0125 (TAMSA) es contrato abierto: se contrataron partidas
+sin tener claras las actividades y el cliente asigna mes a mes lo que
+requiere según las necesidades de su planta. El catálogo y los precios
+son referencia para poder cobrar, no un alcance cerrado. Partidas al
+6,333% o al 0% son el comportamiento **normal** de ese contrato, no un
+error de carga. Para una obra así, topar al 100% del catálogo garantiza
+que el sistema nunca mida bien: ni el ejecutado, ni el margen, ni el
+avance. Cualquier arreglo tiene que partir de que existen al menos tres
+tipos de contrato con reglas distintas (precio alzado, precios
+unitarios, contrato abierto) y no uno solo.
+
 **Propuesta**:
-1. Decidir cuál es la cifra autoritativa. El recorte a 100% no es
-   absurdo (proteger el KPI de sobre-captura), pero si se conserva
-   tiene que ser explícito y visible, no silencioso.
-2. Extraer una sola función `importeEjecutado(sub, modo)` y usarla en
-   los tres sitios. Hoy la lógica está duplicada e incoherente.
-3. Si se conserva el tope: exponer en el dashboard el importe
-   descartado como cifra propia ("ejecutado sobre catálogo: $X"), no
-   solo como badge de porcentaje.
-4. No dar por bueno ningún cuadre de obra en modo volumen hasta que
+1. Decidir cuál es la cifra autoritativa, y que sea una sola. Extraer
+   `importeEjecutado(sub, contrato)` y usarla en los tres sitios.
+2. Modelar el tipo de contrato como campo de la obra. El tope deja de
+   ser una constante del código y pasa a ser política por contrato.
+3. Nunca descartar dato capturado en silencio. Si se avisa, que se
+   avise; si se topa la presentación, que el importe completo siga
+   guardado y visible como cifra propia.
+4. Empezar a guardar `cantEjec` en los snapshots, aunque el histórico
+   viejo ya no se pueda reconstruir.
+5. No dar por bueno ningún cuadre de obra en modo volumen hasta que
    esto se resuelva.
 
 **Prioridad**: alta. Es un defecto de corrección de cifras, no de UI, y
@@ -364,7 +404,67 @@ afecta a la cifra estrella del producto.
 
 ---
 
-## 9. Formulario de maquinaria no pide fecha por movimiento
+## 9. Dos decimales no alcanzan para capturar volumen
+
+**Descubierto**: reporte del administrador de obra de 0125 (TAMSA),
+2026-09-19: "no me deja poner más de dos décimas en el volumen", y eso
+le impide capturar la cantidad real en tres partidas.
+
+**Qué pasa**: el input de cantidad ejecutada en modo volumen tiene
+`step="0.01"` (`src/App.jsx:9369`) y la presentación del valor usa
+`maximumFractionDigits: 2` (`src/App.jsx:9360` y `9391`).
+
+Importante: **el límite NO es de almacenamiento**. El `onChange` hace
+`parseFloat` sin redondear (`9371`) y el guardado persiste `cantEjec`
+tal cual (`src/App.jsx:8558`). Prueba: la partida 129 de 0125 tiene
+`cant = 994.4961` — cuatro decimales guardados en ese mismo documento.
+Lo que trunca es la interfaz: el `step` marca el campo inválido y fija
+el salto de las flechas, y el display redondea al leer. Falta confirmar
+en el equipo del usuario cuál de los dos es el que le bloquea.
+
+**Por qué importa**: en 0125 hay partidas con unidad `SRV` y precio
+unitario de siete cifras, donde dos decimales son insuficientes:
+
+| sec | unidad | precio unitario | vale 0.01 | error máx. (0.005) |
+|---|---|---|---|---|
+| 130 | SRV | $1,265,249.15 | **$12,652.49** | $6,326.25 |
+| 132 | SRV | $588,652.75 | $5,886.53 | $2,943.26 |
+| 131 | SRV | $444,247.28 | $4,442.47 | $2,221.24 |
+
+Cota máxima de error por redondeo en las 461 partidas de 0125:
+**$19,590.63**, de los cuales $11,490.75 están en esas tres. El importe
+realmente perdido no se puede calcular: nadie guardó el volumen que el
+usuario quiso capturar. En producción, ningún `cantEjec` de ninguna
+obra tiene más de 2 decimales.
+
+**Propuesta — precisión por unidad**, en vez de un `step` global:
+
+| unidad | decimales | razón |
+|---|---|---|
+| PZA | 0 | no existe media pieza |
+| SRV | 4 | precio unitario de 6-7 cifras; una fracción de servicio es dinero real |
+| TON, KG | 3 | se pesa al kilo sobre tonelada |
+| M3 | 3 | volumen de concreto se mide al litro |
+| M2, ML, M, CM | 2 | suficiente al centímetro |
+| HORA, H | 2 | centésimas de hora ≈ 36 s |
+
+1. Derivar `step` y `maximumFractionDigits` de la unidad de la partida,
+   con una tabla como la de arriba y 2 decimales como default.
+2. Regla de respaldo por dinero, independiente de la unidad: si
+   `0.005 × pu` supera un umbral (p.ej. $100), subir decimales hasta
+   que el error quepa bajo el umbral.
+3. Nunca redondear al mostrar un valor que sí se guardó completo: si
+   hay más decimales de los que se pintan, el usuario cree que se
+   perdieron.
+4. Revisar con el administrador de 0125 las tres partidas SRV y
+   recapturar el volumen real una vez ampliada la precisión.
+
+**Prioridad**: alta. Es pérdida de dato en captura, y en unidades SRV
+el error por partida es de cinco cifras.
+
+---
+
+## 10. Formulario de maquinaria no pide fecha por movimiento
 
 **Descubierto**: 2026-09-18, mientras se rediseñaba el dashboard principal.
 
@@ -416,7 +516,7 @@ en producción.
 
 ---
 
-## 10. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
+## 11. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
 
 **Descubierto**: 2026-09-19, revisando el módulo por obra durante el
 review de `feature/dashboard-principal`.
@@ -527,7 +627,7 @@ DESPUÉS de mezclar `feature/dashboard-principal`.**
 
 ---
 
-## 11. Exportación del expediente completo del cliente
+## 12. Exportación del expediente completo del cliente
 
 **Descubierto**: análisis de compliance con la Ley de Obras Públicas
 del estado (referencia: artículo 74).
@@ -571,7 +671,7 @@ tercera iteración sin afectar la demo o los primeros clientes.
 
 ---
 
-## 12. Rehacer el PDF
+## 13. Rehacer el PDF
 
 **Descubierto**: 2026-09-20 durante review post-`feature/dashboard-principal`.
 
@@ -588,7 +688,7 @@ primero QUÉ documentos hacen falta, luego rehacer.
 2. **Ejecutivo para juntas** — 1-2 páginas, gráficas y KPIs
    principales. Sirve para director general en juntas internas o para
    presentación al cliente.
-3. **Expediente exportable** — vinculado a pendiente #11. Formato
+3. **Expediente exportable** — vinculado a pendiente #12. Formato
    auditable completo, no necesariamente PDF (puede ser el ZIP).
 
 **Consecuencia operativa hoy**: el PDF actual no es reutilizable en
@@ -610,7 +710,7 @@ verde y sepamos qué le importa al cliente típico.
 
 ---
 
-## 13. Manual de usuario con capturas + correo de alta automatizado
+## 14. Manual de usuario con capturas + correo de alta automatizado
 
 **Descubierto**: recurrente en conversaciones sobre onboarding.
 
@@ -653,7 +753,7 @@ el usuario presente), pero es imprescindible para clientes con más de
 
 ---
 
-## 14. Distinguir "obra que avanzó" de "residente que se puso al corriente"
+## 15. Distinguir "obra que avanzó" de "residente que se puso al corriente"
 
 **Descubierto**: 2026-09-19, revisando el nuevo `DashboardPrincipal`.
 
@@ -688,11 +788,11 @@ malinterpretar la varianza y tomar decisiones sobre ruido de captura.
 
 **Interacción con otros pendientes**:
 
-- Pendiente #9 (fecha por movimiento en maquinaria) también contribuye
+- Pendiente #10 (fecha por movimiento en maquinaria) también contribuye
   al problema — sin fecha, la maquinaria "aparece de golpe" en el
-  presente. Resolver #9 disminuye el ruido pero no elimina el fenómeno
+  presente. Resolver #10 disminuye el ruido pero no elimina el fenómeno
   para el snapshot de avance.
-- Pendiente #16 (auditar otros formularios) puede descubrir más lugares
+- Pendiente #17 (auditar otros formularios) puede descubrir más lugares
   con la misma dinámica.
 
 **Prioridad**: media. Hoy no hay incidente porque no hay historial
@@ -704,7 +804,7 @@ suficiente para que se note. La primera vez que un directivo pregunte
 
 ---
 
-## 15. Sesión persistente: decidir política
+## 16. Sesión persistente: decidir política
 
 **Descubierto**: pendiente arrastrado desde `feature/organizaciones`.
 
@@ -744,9 +844,9 @@ conviene tomar antes de escalar a más usuarios.
 
 ---
 
-## 16. Auditar otros módulos por el mismo hueco de "fecha faltante"
+## 17. Auditar otros módulos por el mismo hueco de "fecha faltante"
 
-**Contexto**: el hueco de maquinaria (punto #9) es de un patrón: el
+**Contexto**: el hueco de maquinaria (punto #10) es de un patrón: el
 código de agrupación temporal espera un campo del formulario que no
 existe. Puede haber más lugares donde pase lo mismo.
 
@@ -787,7 +887,7 @@ tampoco de la ausencia.
 
 ---
 
-## 17. Nómina: drag-and-drop + pegar desde portapapeles
+## 18. Nómina: drag-and-drop + pegar desde portapapeles
 
 **Descubierto**: petición de UX de usuario operativo.
 
@@ -825,16 +925,17 @@ espera de una app moderna.
 | 5 | Probar restauración del respaldo | sí | crítica |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
 | 7 | Obra 0112 discrepancia $2.5M | | alta |
-| 8 | Tres fórmulas de "ejecutado" | | alta |
-| 9 | Maquinaria sin fecha por movimiento | | alta |
-| 10 | Consolidar KPIs Nómina + Estimaciones | | alta |
-| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
-| 12 | Rehacer PDFs | | media |
-| 13 | Manual + correo alta automatizado | | media |
-| 14 | Distinguir avance vs captura al día | | media |
-| 15 | Sesión persistente — decidir | | media |
-| 16 | Auditar otros módulos sin fecha | | baja |
-| 17 | Nómina: drag/pegar | | baja |
+| 8 | Tres fórmulas de "ejecutado" ($3.8M) | | alta |
+| 9 | Dos decimales no alcanzan en volumen | | alta |
+| 10 | Maquinaria sin fecha por movimiento | | alta |
+| 11 | Consolidar KPIs Nómina + Estimaciones | | alta |
+| 12 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
+| 13 | Rehacer PDFs | | media |
+| 14 | Manual + correo alta automatizado | | media |
+| 15 | Distinguir avance vs captura al día | | media |
+| 16 | Sesión persistente — decidir | | media |
+| 17 | Auditar otros módulos sin fecha | | baja |
+| 18 | Nómina: drag/pegar | | baja |
 
 ---
 
