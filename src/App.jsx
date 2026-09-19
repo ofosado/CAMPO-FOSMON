@@ -5623,65 +5623,37 @@ const _keySemanaAtras = (n = 0) => {
   return _semISOKey(d).key;
 };
 
-// Snapshot consolidado para una lista de obras a una semana ISO dada.
-// Devuelve { contratado, ejecutado, gastado, margenPct, personal, dir, ind, obrasConDato }.
-// gpData y datosPorObra vienen del state del App. Si no hay dato para una obra
-// esa semana, se omite de las sumas pero se registra que "no aporta al delta".
-const _snapshotSemana = (obrasList, datosPorObra, gpData, semanaKey) => {
-  let contratado = 0, ejecutado = 0, gastado = 0;
-  let dir = 0, ind = 0, personal = 0;
-  let obrasConEjec = 0, obrasConNom = 0;
-  for (const o of obrasList) {
-    contratado += (o.presupuesto || 0);
-    const d = datosPorObra[o.id] || {};
-    // Ejecutado desde snapshot semanal de avance/historial
-    const avSemanas = d.historialAvanceSemanas || [];
-    const avEnSem = avSemanas.find(s => s.año && s.semana &&
-      `Y${s.año}-S${String(s.semana).padStart(2,'0')}` <= semanaKey);
-    // buscamos el snapshot MÁS RECIENTE ≤ semanaKey
-    let avUltimo = null;
-    for (const s of avSemanas) {
-      if (!s.año || !s.semana) continue;
-      const k = `Y${s.año}-S${String(s.semana).padStart(2,'0')}`;
-      if (k <= semanaKey && (!avUltimo || k > `Y${avUltimo.año}-S${String(avUltimo.semana).padStart(2,'0')}`)) {
-        avUltimo = s;
-      }
-    }
-    if (avUltimo) {
-      ejecutado += (avUltimo.montoEjecutado || 0);
-      obrasConEjec++;
-    }
-    // Gastado desde serie reconstruida
-    const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
-    // Buscar la key MÁS RECIENTE ≤ semanaKey
-    let ultKey = null;
-    for (const k of keysOrdenadas) {
-      if (k <= semanaKey) ultKey = k;
-      else break;
-    }
-    if (ultKey) gastado += gastoAcum[ultKey];
-    // Personal desde nomina/historial: último snapshot ≤ semanaKey
-    const nomSemanas = d.nominaSemanas || [];
-    let nomUlt = null;
-    for (const s of nomSemanas) {
-      // El snapshot de nómina no siempre trae {año, semana}; usamos fecha
-      const iso = _semISOKey(s.fecha || s.fechaISO || s.fechaCaptura);
-      if (!iso) continue;
-      if (iso.key <= semanaKey && (!nomUlt || iso.key > nomUlt.key)) {
-        nomUlt = { key: iso.key, s };
-      }
-    }
-    if (nomUlt) {
-      const s = nomUlt.s;
-      dir += (s.totalDir || 0);
-      ind += (s.totalInd || 0);
-      personal += (s.totalDir || 0) + (s.totalInd || 0);
-      obrasConNom++;
-    }
+// Helpers de snapshot histórico (usados por el bloque 1 para calcular
+// deltas contra la semana ISO previa). El VALOR mostrado siempre viene de
+// calcularKPIsObra en vivo (misma función que la tabla del bloque 3 — la
+// regla es que el consolidado de arriba SIEMPRE debe ser la suma de las
+// filas de abajo). El snapshot histórico sirve SOLO para el delta.
+//
+// _snapshotAvanceEnSemana(historial, keyMaxIncl) → último snapshot con
+//   `Y{año}-S{semana} <= keyMaxIncl`. null si no hay ninguno.
+const _snapshotAvanceEnSemana = (historialSemanas, keyMaxIncl) => {
+  let best = null;
+  let bestKey = '';
+  for (const s of (historialSemanas || [])) {
+    if (!s.año || !s.semana) continue;
+    const k = `Y${s.año}-S${String(s.semana).padStart(2,'0')}`;
+    if (k <= keyMaxIncl && k > bestKey) { best = s; bestKey = k; }
   }
-  const margenAbs = ejecutado - gastado;
-  const margenPct = ejecutado > 0 ? (margenAbs / ejecutado) * 100 : 0;
-  return { contratado, ejecutado, gastado, margenAbs, margenPct, personal, dir, ind, obrasConEjec, obrasConNom };
+  return best;
+};
+
+// _snapshotNominaEnSemana(historial, keyMaxIncl) → último snapshot de nómina
+//   con fecha que caiga en ISO <= keyMaxIncl. null si ninguno.
+//   Los snapshots de nómina no siempre traen {año,semana}, usamos fecha.
+const _snapshotNominaEnSemana = (nomSemanas, keyMaxIncl) => {
+  let best = null;
+  let bestKey = '';
+  for (const s of (nomSemanas || [])) {
+    const iso = _semISOKey(s.fecha || s.fechaISO || s.fechaCaptura);
+    if (!iso) continue;
+    if (iso.key <= keyMaxIncl && iso.key > bestKey) { best = s; bestKey = iso.key; }
+  }
+  return best;
 };
 
 // Hook local: detecta ancho < 520px para colapsar tabla → tarjetas.
@@ -5772,15 +5744,85 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
     );
   }
 
-  const keyActual   = _keySemanaAtras(0);
   const keyAnterior = _keySemanaAtras(1);
-  const snapAct = _snapshotSemana(activas, datosPorObra, gpData, keyActual);
-  const snapPrev = _snapshotSemana(activas, datosPorObra, gpData, keyAnterior);
 
-  // Deltas — null si no hay obras que aporten a la comparación
-  const delta = (act, prev) => (act - prev);
-  const hayCompEjec = snapPrev.obrasConEjec > 0;
-  const hayCompNom  = snapPrev.obrasConNom > 0;
+  // ── BLOQUE 1 — CONSOLIDADO EN VIVO ──
+  // Regla firme (fix riesgo #5, 2026-09-19): los valores mostrados son la
+  // suma exacta de calcularKPIsObra por obra — misma función que la tabla
+  // del bloque 3. El consolidado de arriba SIEMPRE cuadra con la suma de
+  // las filas de abajo. La variación semanal se calcula contra snapshots
+  // históricos donde existan; donde no haya snapshot comparable, guion.
+  //
+  // Esto reemplaza la reconstrucción `_snapshotSemana` anterior, que daba
+  // valores distintos a la tabla (con 5 obras reales: 11.1pp de diferencia
+  // en el margen consolidado — inaceptable frente a un cliente en demo).
+  const kpisPorObra = activas.map(o => {
+    const d = datosPorObra[o.id] || {};
+    return {
+      obra: o, d,
+      kpis: calcularKPIsObra(o, d.subs || [], d.maquinaria || [], d.materiales || [],
+                             d.estimaciones || [], gpData, d.otrosGastos || []),
+    };
+  });
+
+  const consolidado = kpisPorObra.reduce((t, { kpis }) => ({
+    contratado: t.contratado + (kpis.presupuesto || 0),
+    ejecutado:  t.ejecutado  + (kpis.me || 0),
+    gastado:    t.gastado    + (kpis.gt || 0),
+  }), { contratado: 0, ejecutado: 0, gastado: 0 });
+  consolidado.margenAbs = consolidado.ejecutado - consolidado.gastado;
+  consolidado.margenPct = consolidado.ejecutado > 0
+    ? (consolidado.margenAbs / consolidado.ejecutado) * 100 : 0;
+
+  // Personal consolidado — suma del ÚLTIMO snapshot de nómina de cada obra.
+  // Misma fuente que la columna Personal de la tabla (bloque 3).
+  const personalAgg = kpisPorObra.reduce((t, { d }) => {
+    const ult = (d.nominaSemanas || []).slice(-1)[0];
+    if (!ult) return t;
+    return {
+      total: t.total + (ult.totalDir || 0) + (ult.totalInd || 0),
+      dir:   t.dir   + (ult.totalDir || 0),
+      ind:   t.ind   + (ult.totalInd || 0),
+      obrasConNom: t.obrasConNom + 1,
+    };
+  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0 });
+
+  // ── DELTAS vs semana previa (snapshots históricos) ──
+  // Ejecutado: suma de montoEjecutado del último snapshot de avance con
+  //   año/semana ≤ semana previa, por obra. Si alguna obra no tiene
+  //   snapshot comparable, guion + etiqueta "N obras sin snapshot previo".
+  let ejecutadoPrev = 0;
+  let obrasSinPrevEjec = 0;
+  for (const { d } of kpisPorObra) {
+    const snap = _snapshotAvanceEnSemana(d.historialAvanceSemanas, keyAnterior);
+    if (snap) ejecutadoPrev += (snap.montoEjecutado || 0);
+    else obrasSinPrevEjec++;
+  }
+  const deltaEjecutado = obrasSinPrevEjec === 0 ? consolidado.ejecutado - ejecutadoPrev : null;
+
+  // Personal: penúltimo snapshot de nómina de cada obra.
+  // Si CUALQUIER obra con nómina no tiene penúltimo snapshot, guion —
+  // sumar solo las que tienen crearía un delta engañoso.
+  let personalPrev = 0;
+  let obrasSinPrevNom = 0;
+  for (const { d } of kpisPorObra) {
+    const nom = d.nominaSemanas || [];
+    if (nom.length === 0) continue;   // no tiene nómina: no aporta a personalAgg tampoco
+    if (nom.length >= 2) {
+      const pre = nom[nom.length - 2];
+      personalPrev += (pre.totalDir || 0) + (pre.totalInd || 0);
+    } else {
+      obrasSinPrevNom++;   // tiene nómina pero solo 1 snapshot → no comparable
+    }
+  }
+  const deltaPersonal = (personalAgg.obrasConNom > 0 && obrasSinPrevNom === 0)
+    ? personalAgg.total - personalPrev : null;
+
+  // Gastado y Margen: NO tenemos snapshot histórico de `gt` por obra
+  // (`gt` incluye maquinaria y otros_gastos, que no tienen fecha por
+  // movimiento consistente — ver PENDIENTES #1). Delta = guion, con nota
+  // explícita. Ver PENDIENTES #3 propuesto: registrar snapshot de gt/margen
+  // al cerrar cada semana de avance para que estos deltas también se puedan.
 
   // ── BLOQUE 2 — Excepciones ──
   const HOY = new Date();
@@ -5943,41 +5985,50 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
         {/* Contratado — sin variación por decisión (Opción A) */}
         <_KpiConDelta
           label="Contratado"
-          valor={MXN(snapAct.contratado)}
+          valor={MXN(consolidado.contratado)}
           deltaValor={null}
-          deltaSub={`${activas.length} obras`}
+          deltaSub={`${activas.length} obra${activas.length !== 1 ? 's' : ''}`}
           color={C.caliza}
         />
         <_KpiConDelta
           label="Ejecutado"
-          valor={MXN(snapAct.ejecutado)}
-          deltaValor={hayCompEjec ? delta(snapAct.ejecutado, snapPrev.ejecutado) : null}
-          deltaSub={hayCompEjec ? `${delta(snapAct.ejecutado, snapPrev.ejecutado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.ejecutado, snapPrev.ejecutado)))} vs semana previa` : null}
+          valor={MXN(consolidado.ejecutado)}
+          deltaValor={deltaEjecutado}
+          deltaSub={deltaEjecutado !== null
+            ? `${deltaEjecutado >= 0 ? '+' : '−'}${MXN(Math.abs(deltaEjecutado))} vs semana previa`
+            : (obrasSinPrevEjec > 0
+                ? `${obrasSinPrevEjec} obra${obrasSinPrevEjec > 1 ? 's' : ''} sin snapshot previo`
+                : null)}
           color={C.blue}
         />
+        {/* Gastado: sin delta comparable — no hay snapshot histórico de gt. */}
         <_KpiConDelta
           label="Gastado"
-          valor={MXN(snapAct.gastado)}
-          deltaValor={hayCompEjec ? delta(snapAct.gastado, snapPrev.gastado) : null}
-          deltaSub={hayCompEjec ? `${delta(snapAct.gastado, snapPrev.gastado) >= 0 ? '+' : '−'}${MXN(Math.abs(delta(snapAct.gastado, snapPrev.gastado)))} vs semana previa` : null}
+          valor={MXN(consolidado.gastado)}
+          deltaValor={null}
+          deltaSub="sin snapshot histórico"
           color={C.textPri}
         />
-        {/* Margen: valor en dos líneas ($abs arriba, % abajo) para que quepa
-            en la card en móvil sin desbordar. */}
+        {/* Margen: valor en dos líneas ($abs arriba, % abajo). Delta = guion:
+            depende del Gastado histórico que no tenemos. */}
         <_KpiConDelta
           label="Margen"
-          valor={`${snapAct.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(snapAct.margenAbs))}`}
-          valorSub={`${NUM(snapAct.margenPct, 1)}%`}
-          deltaValor={hayCompEjec ? (snapAct.margenPct - snapPrev.margenPct) : null}
-          deltaSub={hayCompEjec ? `${(snapAct.margenPct - snapPrev.margenPct) >= 0 ? '+' : '−'}${NUM(Math.abs(snapAct.margenPct - snapPrev.margenPct), 1)}pp vs semana previa` : null}
-          color={nivelMargen(snapAct.margenPct).color}
+          valor={`${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`}
+          valorSub={`${NUM(consolidado.margenPct, 1)}%`}
+          deltaValor={null}
+          deltaSub="sin snapshot histórico"
+          color={nivelMargen(consolidado.margenPct).color}
         />
         <_KpiConDelta
           label="Personal"
-          valor={`${snapAct.personal}`}
-          valorSub={`${snapAct.dir} directos · ${snapAct.ind} indirectos`}
-          deltaValor={hayCompNom ? delta(snapAct.personal, snapPrev.personal) : null}
-          deltaSub={hayCompNom ? `${delta(snapAct.personal, snapPrev.personal) >= 0 ? '+' : '−'}${Math.abs(delta(snapAct.personal, snapPrev.personal))} trab. vs semana previa` : null}
+          valor={`${personalAgg.total}`}
+          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
+          deltaValor={deltaPersonal}
+          deltaSub={deltaPersonal !== null
+            ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`
+            : (obrasSinPrevNom > 0
+                ? `${obrasSinPrevNom} obra${obrasSinPrevNom > 1 ? 's' : ''} sin snapshot previo`
+                : null)}
           color={C.purpleDk}
         />
       </div>
