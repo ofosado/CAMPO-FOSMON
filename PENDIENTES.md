@@ -7,16 +7,16 @@ Cada entrada dice: qué es el problema, por qué importa, dónde vive el
 hueco, propuesta de fix y prioridad. Antes de tomar cualquiera de estos,
 releer el contexto — puede haber cambiado.
 
-**Los primeros 6 pendientes bloquean la primera demo a un cliente.** El
+**Los primeros 5 pendientes bloquean la primera demo a un cliente.** El
 resto va después. Dentro de cada bloque, orden por impacto descendente.
 
 ---
 
 # BLOQUEAN LA PRIMERA DEMO
 
-Seis puntos que hay que resolver ANTES de mostrar el sistema por
+Cinco puntos que hay que resolver ANTES de mostrar el sistema por
 primera vez a un cliente externo. El pendiente #1 (iCloud) es
-condición previa para que los otros cinco se puedan trabajar con
+condición previa para que los otros cuatro se puedan trabajar con
 confianza — sin eso, cada cambio puede desaparecer.
 
 ---
@@ -174,55 +174,7 @@ frente al cliente es un signo de fragilidad.
 
 ---
 
-## 4. Parser TAMSA absorbe horas extra en el conteo de días
-
-**Descubierto**: durante análisis de nómina, 2026-09-18. Elevado a
-bloqueante de demo el 2026-09-20 (instrucción explícita del usuario):
-si demostramos con las 5 obras activas de FOSMON, una tiene nómina
-TAMSA y un director que sepa de obra nota el error al primer vistazo.
-
-**Qué pasa**: el parser de nómina TAMSA reporta ~1.7 horas extra por
-persona en semanas donde los turnos son de 55 horas semanales
-(11h/día × 5 días). Un turno de 55h contiene por definición 15h extra
-(vs 40h estándar), así que 1.7 h/persona es sospechosamente bajo —
-sugiere que el parser está clasificando 8-9 horas por día como
-"trabajo regular" en vez de "horas extra".
-
-**Hipótesis de causa**: el parser detecta la convención "horas vs días"
-en `catch`-block que ya fue tocado en varios commits (`443d9c7`,
-`b3668f1`, `4014622`, `053ea45`), pero la conversión de días × horas
-tope diario está usando 11h como tope en vez de 8h para TAMSA. La
-diferencia diaria (3h) se contabiliza en `impDias` (sueldo base) en vez
-de `impHE` (horas extra).
-
-**Consecuencia operativa**:
-- **Costo escondido**: el reporte muestra al cliente $X de sueldos base
-  cuando en realidad son $X + $Y de HE mal clasificada.
-- El margen operativo de TAMSA aparece mejor de lo que es.
-- Si la obra se factura con base en el detalle de nómina, hay riesgo
-  legal de reclamo por HE no pagadas correctamente.
-- **Demo**: un director de construcción con experiencia sabe cuántas
-  HE genera un turno de 55h/semana. Ver 1.7 h/persona en pantalla lo
-  interpreta como fallo del sistema en el primer minuto de la demo.
-
-**Propuesta**:
-1. Auditar el archivo Excel de TAMSA vs lo que llega a Firestore para
-   una semana específica. Cuadrar renglón por renglón.
-2. Corregir el parser para separar HE explícitamente cuando la
-   convención horaria excede 40h semanales, independientemente del
-   número de días.
-3. Añadir validación al cargar: si `pctHE < 2%` en obras con turnos
-   > 48h/semana, mostrar advertencia amarilla al usuario que cargó.
-4. Snapshot histórico: NO reprocesar los ya guardados (riesgo de
-   romper cuadres); solo aplicar a nuevas cargas.
-
-**Bloquea demo**: sí. Elevado 2026-09-20.
-
-**Prioridad**: crítica.
-
----
-
-## 5. Cuentas de prueba dedicadas por rol
+## 4. Cuentas de prueba dedicadas por rol
 
 **Descubierto**: registrado en SECURITY_RULES.md #4 (pendiente de
 seguridad). Se replica aquí porque también es demo-bloqueante.
@@ -257,7 +209,7 @@ externo sin exponer datos internos.
 
 ---
 
-## 6. Probar una restauración del respaldo
+## 5. Probar una restauración del respaldo
 
 **Descubierto**: reportado por el usuario en `feature/dashboard-principal`
 (2026-09-20).
@@ -301,7 +253,7 @@ riesgos operativos o de venta si no se cierran en las semanas siguientes.
 
 ---
 
-## 7. Falta `onAuthStateChanged`: sesión zombie tras revocación
+## 6. Falta `onAuthStateChanged`: sesión zombie tras revocación
 
 **Descubierto**: registrado en SECURITY_RULES.md como pendiente de
 seguridad #5. Se referencia aquí porque también es UX/operativo.
@@ -329,7 +281,7 @@ funcionar, pero cualquier escritura falla por reglas.
 
 ---
 
-## 8. Obra 0112 Malecón: ejecutado no cuadra con estimaciones del residente
+## 7. Obra 0112 Malecón: ejecutado no cuadra con estimaciones del residente
 
 **Descubierto**: revisión operativa con residente, ~2026-09.
 
@@ -363,7 +315,244 @@ dashboard.
 
 ---
 
-## 9. Formulario de maquinaria no pide fecha por movimiento
+## 8. Tres fórmulas distintas de "ejecutado" conviviendo en el código
+
+**Descubierto**: 2026-09-19, al diagnosticar la discrepancia de 0112
+(pendiente #7). Es la causa raíz de ese caso, pero lo rebasa: afecta a
+toda obra en modo volumen.
+
+**Qué pasa**: el importe ejecutado se calcula de tres maneras distintas
+según la pantalla, y dos de ellas no coinciden con la tercera.
+
+| Dónde | Fórmula | ¿Topada a 100%? |
+|---|---|---|
+| KPI "Ejecutado" del dashboard (`src/App.jsx:3133`) | `Σ (s.a/100) × s.imp` | **sí** |
+| Línea "Ejec" por concepto en Avance (`src/App.jsx:9345`) | `cantEjec × pu` | no |
+| Motor de alertas (`src/App.jsx:14957`) | `Σ cantEjec × pu` | no |
+
+El tope viene de `src/App.jsx:9374`: al capturar cantidad ejecutada en
+modo volumen se guarda `cantEjec` íntegro pero el porcentaje se recorta,
+`a = Math.min(100, v/cCat*100)`. Como el KPI del dashboard se arma desde
+`a` y no desde `cantEjec`, **todo volumen por encima del catálogo se
+descarta en silencio de la cifra principal**, mientras la pantalla de
+Avance del mismo concepto lo muestra completo.
+
+**Medido contra producción el 2026-09-19** (lectura completa del
+portafolio, `scripts/leer-portafolio-recorte.py`):
+
+| obra | modo | partidas >100% | ejecutado hoy | descartado | margen hoy → real |
+|---|---|---|---|---|---|
+| 0112 SIOP Malecón | volumen | 3 | $21,692,801.20 | $2,777,996.64 | 11.1% → 21.2% |
+| 0125 TAMSA | volumen | 32 | $16,318,435.74 | $1,046,494.16 | −77.7% → −67.0% |
+| 0114 Oaxaca | porcentaje | 0 | $145,469,620.28 | — | sin exposición |
+| 0126 Pemex | porcentaje | 0 | $26,946,162.65 | — | sin exposición |
+| 0127 Centro Conv. | volumen | 0 | $0.00 | $0.00 | aún sin captura |
+
+**Total del portafolio descartado: $3,824,490.81.** Ejecutado reportado
+$210,427,019.87 contra $214,251,510.68 real. No hay obras archivadas: la
+colección tiene 5 documentos, los 5 activos.
+
+**Consecuencia operativa**:
+- La misma obra muestra ejecutado distinto según dónde se mire. No hay
+  una cifra autoritativa.
+- La pérdida es invisible: no hay aviso de que se está descartando
+  importe. El único rastro es el badge amarillo del concepto, que dice
+  el porcentaje pero no los pesos.
+- El margen de las dos obras en volumen está subestimado ~10 pp.
+- En demo es el peor escenario posible: el cliente abre el detalle del
+  concepto, ve un número, regresa al dashboard y ve otro.
+
+**La serie histórica es irrecuperable**. `crearSnapshotAvance`
+(`src/App.jsx:2271`) guarda por partida solo `{sec, sub, a, imp}` y
+calcula `montoEjecutado` desde ese `a` ya recortado. **`cantEjec` nunca
+se guardó en el snapshot.** Verificado en producción: en las 4 obras con
+historial, `max(a) = 100.00` exacto y ningún snapshot trae `cantEjec`.
+La forma del snapshot nace en `a0527ea` (2026-05-22) y no ha cambiado;
+el modo volumen nace en `fb53647` (2026-06-01), así que todo snapshot de
+obra en volumen nació recortado. Aunque se corrija el recorte hoy, las
+semanas ya cerradas **no se pueden reconstruir** — solo se puede
+recalcular el punto actual. Eso contamina la gráfica de avance y la
+proyección de fin de obra de 0112 y 0125.
+
+**No es solo un defecto, es un modelo equivocado para contratos
+abiertos.** 0125 (TAMSA) es contrato abierto: se contrataron partidas
+sin tener claras las actividades y el cliente asigna mes a mes lo que
+requiere según las necesidades de su planta. El catálogo y los precios
+son referencia para poder cobrar, no un alcance cerrado. Partidas al
+6,333% o al 0% son el comportamiento **normal** de ese contrato, no un
+error de carga. Para una obra así, topar al 100% del catálogo garantiza
+que el sistema nunca mida bien: ni el ejecutado, ni el margen, ni el
+avance. Cualquier arreglo tiene que partir de que existen al menos tres
+tipos de contrato con reglas distintas (precio alzado, precios
+unitarios, contrato abierto) y no uno solo.
+
+**Propuesta**:
+1. Decidir cuál es la cifra autoritativa, y que sea una sola. Extraer
+   `importeEjecutado(sub, contrato)` y usarla en los tres sitios.
+2. Modelar el tipo de contrato como campo de la obra. El tope deja de
+   ser una constante del código y pasa a ser política por contrato.
+3. Nunca descartar dato capturado en silencio. Si se avisa, que se
+   avise; si se topa la presentación, que el importe completo siga
+   guardado y visible como cifra propia.
+4. Empezar a guardar `cantEjec` en los snapshots, aunque el histórico
+   viejo ya no se pueda reconstruir.
+5. No dar por bueno ningún cuadre de obra en modo volumen hasta que
+   esto se resuelva.
+
+**Prioridad**: alta. Es un defecto de corrección de cifras, no de UI, y
+afecta a la cifra estrella del producto.
+
+### Atendido en `fix/ejecutado-sin-recorte` (2026-09-19) — puntos 1, 3 y 4
+
+Regla que gobierna el arreglo: **el dinero nunca se topa; el avance
+físico siempre se topa a 100% por partida.** Son dos preguntas distintas
+y dejaron de compartir fórmula.
+
+Tres funciones compartidas (`src/App.jsx`, antes del bloque de histórico)
+sustituyen a **todas** las copias en línea:
+
+- `importeEjecutadoPartida(s, modoVol)` — `cantEjec × pu` en volumen, con
+  caída a `(a/100) × imp`.
+- `desgloseEjecutado(subs, modoVol)` → `{catalogo, excedente, total}`.
+- `avanceFisicoPonderado(subs, denominador, modoVol)` — topa a 100%.
+
+No eran tres copias: **eran 16**. Además del KPI, la línea por concepto y
+el motor de alertas ya documentados, estaban duplicadas en el dashboard de
+obra, el detalle de subcontrato, el editor de conceptos de subcontrato, el
+listado de subcontratos, `MiniDashSubcontratos`, `AvanceCliente`,
+`PantallaObras`, `TendenciasMensuales`, `ProyeccionAvanceGasto`, la regla
+de alerta `sub_001` y cinco puntos del generador de PDF. El PDF es el
+documento que se entrega: no podía seguir discrepando de la pantalla.
+
+También se destopó `pctProy` en la proyección al término. Dejarla saturada
+en 100 mientras el ejecutado se destopa reproducía la misma contradicción
+que la rama existe para eliminar.
+
+El recorte de captura (`a = Math.min(100, …)`) desapareció en los dos
+capturadores; `cantEjec` es la fuente de verdad y `a` pasa a ser derivado.
+
+**Medición del efecto, contra producción** (`scripts/comparativo-ejecutado.py`,
+solo lectura, 2026-09-19). El avance físico no se movió en ninguna obra —
+que es exactamente lo que debía pasar:
+
+| obra | ejecutado antes | ejecutado después | margen | avance físico |
+|---|---|---|---|---|
+| 0112 Malecón | $21,692,801.20 | $24,470,797.85 | 11.06% → 21.15% | 83.92% = |
+| 0125 TAMSA | $16,318,435.74 | $17,364,929.90 | −77.67% → −66.96% | 12.90% = |
+| 0114 Oaxaca | $145,469,620.28 | igual | 35.40% = | 88.86% = |
+| 0126 Pemex | $26,946,162.65 | igual | 37.57% = | 35.63% = |
+| 0127 Centro Conv. | $0.00 | igual | — | — |
+| **portafolio** | **$210,427,019.87** | **$214,251,510.68** | **+$3,824,490.81** | |
+
+El excedente ya no se descarta: aparece como cifra propia
+("+$X sobre catálogo · pendiente de clasificar") en el dashboard de obra,
+en el KPI de subcontratos y en el PDF.
+
+**Histórico.** Los snapshots de obra siguen sin ser recuperables — nunca
+guardaron `cantEjec`. En vez de inventar el pasado se marcó la frontera:
+`ESQUEMA_SNAPSHOT = 2`, y todo delta que cruce esquemas devuelve `null` y
+se dibuja como "semanas no comparables". Sin eso, la primera captura tras
+el arreglo habría producido un salto falso de +$3.8M en una semana y
+disparado alertas de riesgo inventadas. Los snapshots de **subcontrato**
+sí guardaron `cantEjec` desde el primer día: `recalcularHistorialSub` los
+reconstruye en lectura uniendo el `pu` vivo por `clave`, y marca como no
+comparables los conceptos cuyo precio ya no se puede resolver.
+
+**Queda pendiente el punto 2**: modelar `tipoContrato` (precio alzado /
+precios unitarios / contrato abierto) y la autorización de excedentes por
+convenio. Va en su propia rama. Mientras tanto el excedente se muestra
+como "pendiente de clasificar", que es honesto: el sistema sabe que se
+ejecutó y no pretende saber si está autorizado.
+
+---
+
+## 9. Dos decimales no alcanzan para capturar volumen
+
+**Descubierto**: reporte del administrador de obra de 0125 (TAMSA),
+2026-09-19: "no me deja poner más de dos décimas en el volumen", y eso
+le impide capturar la cantidad real en tres partidas.
+
+**Qué pasa**: el input de cantidad ejecutada en modo volumen tiene
+`step="0.01"` (`src/App.jsx:9369`) y la presentación del valor usa
+`maximumFractionDigits: 2` (`src/App.jsx:9360` y `9391`).
+
+Importante: **el límite NO es de almacenamiento**. El `onChange` hace
+`parseFloat` sin redondear (`9371`) y el guardado persiste `cantEjec`
+tal cual (`src/App.jsx:8558`). Prueba: la partida 129 de 0125 tiene
+`cant = 994.4961` — cuatro decimales guardados en ese mismo documento.
+Lo que trunca es la interfaz: el `step` marca el campo inválido y fija
+el salto de las flechas, y el display redondea al leer. Falta confirmar
+en el equipo del usuario cuál de los dos es el que le bloquea.
+
+**Por qué importa**: en 0125 hay partidas con unidad `SRV` y precio
+unitario de siete cifras, donde dos decimales son insuficientes:
+
+| sec | unidad | precio unitario | vale 0.01 | error máx. (0.005) |
+|---|---|---|---|---|
+| 130 | SRV | $1,265,249.15 | **$12,652.49** | $6,326.25 |
+| 132 | SRV | $588,652.75 | $5,886.53 | $2,943.26 |
+| 131 | SRV | $444,247.28 | $4,442.47 | $2,221.24 |
+
+Cota máxima de error por redondeo en las 461 partidas de 0125:
+**$19,590.63**, de los cuales $11,490.75 están en esas tres. El importe
+realmente perdido no se puede calcular: nadie guardó el volumen que el
+usuario quiso capturar. En producción, ningún `cantEjec` de ninguna
+obra tiene más de 2 decimales.
+
+**Propuesta — precisión por unidad**, en vez de un `step` global:
+
+| unidad | decimales | razón |
+|---|---|---|
+| PZA | 0 | no existe media pieza |
+| SRV | 4 | precio unitario de 6-7 cifras; una fracción de servicio es dinero real |
+| TON, KG | 3 | se pesa al kilo sobre tonelada |
+| M3 | 3 | volumen de concreto se mide al litro |
+| M2, ML, M, CM | 2 | suficiente al centímetro |
+| HORA, H | 2 | centésimas de hora ≈ 36 s |
+
+1. Derivar `step` y `maximumFractionDigits` de la unidad de la partida,
+   con una tabla como la de arriba y 2 decimales como default.
+2. Regla de respaldo por dinero, independiente de la unidad: si
+   `0.005 × pu` supera un umbral (p.ej. $100), subir decimales hasta
+   que el error quepa bajo el umbral.
+3. Nunca redondear al mostrar un valor que sí se guardó completo: si
+   hay más decimales de los que se pintan, el usuario cree que se
+   perdieron.
+4. Revisar con el administrador de 0125 las tres partidas SRV y
+   recapturar el volumen real una vez ampliada la precisión.
+
+**Prioridad**: alta. Es pérdida de dato en captura, y en unidades SRV
+el error por partida es de cinco cifras.
+
+### Atendido en `fix/ejecutado-sin-recorte` (2026-09-19)
+
+**La tabla de decimales por unidad de arriba queda derogada.** La unidad
+no es el criterio correcto: dos partidas en `SRV` pueden necesitar
+precisión distinta si sus precios difieren en dos órdenes de magnitud, y
+la tabla obliga a mantener una lista de unidades que crece sola con cada
+catálogo nuevo. El criterio es el dinero:
+
+```js
+decimalesPorPU(pu) = min(6, max(2, ceil(log10(pu))))
+```
+
+Garantiza que **el último decimal nunca vale más de $1**, para cualquier
+precio, sin tabla que mantener. Para `SRV` a $1,265,249.15 da 7 → topado
+a 6 decimales; para `PZA` a $85 da 2.
+
+La precisión gobierna **solo el display** (`fmtCant(cant, pu)` sustituye
+a los `maximumFractionDigits: 2`). El `step="0.01"` se sustituyó por
+`step="any"` en los dos capturadores de volumen: no tiene sentido que la
+interfaz marque como inválido un valor que el almacenamiento sí acepta.
+Se dejó fuera el punto 1 (derivar `step` de la unidad) porque `step="any"`
+lo hace innecesario.
+
+Queda el punto 4: recapturar con el administrador de 0125 el volumen real
+de las tres partidas SRV. Es trabajo de campo, no de código.
+
+---
+
+## 10. Formulario de maquinaria no pide fecha por movimiento
 
 **Descubierto**: 2026-09-18, mientras se rediseñaba el dashboard principal.
 
@@ -415,7 +604,7 @@ en producción.
 
 ---
 
-## 10. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
+## 11. Consolidar bloques duplicados de KPIs en Nómina y Estimaciones
 
 **Descubierto**: 2026-09-19, revisando el módulo por obra durante el
 review de `feature/dashboard-principal`.
@@ -526,7 +715,7 @@ DESPUÉS de mezclar `feature/dashboard-principal`.**
 
 ---
 
-## 11. Exportación del expediente completo del cliente
+## 12. Exportación del expediente completo del cliente
 
 **Descubierto**: análisis de compliance con la Ley de Obras Públicas
 del estado (referencia: artículo 74).
@@ -570,7 +759,7 @@ tercera iteración sin afectar la demo o los primeros clientes.
 
 ---
 
-## 12. Rehacer el PDF
+## 13. Rehacer el PDF
 
 **Descubierto**: 2026-09-20 durante review post-`feature/dashboard-principal`.
 
@@ -587,7 +776,7 @@ primero QUÉ documentos hacen falta, luego rehacer.
 2. **Ejecutivo para juntas** — 1-2 páginas, gráficas y KPIs
    principales. Sirve para director general en juntas internas o para
    presentación al cliente.
-3. **Expediente exportable** — vinculado a pendiente #11. Formato
+3. **Expediente exportable** — vinculado a pendiente #12. Formato
    auditable completo, no necesariamente PDF (puede ser el ZIP).
 
 **Consecuencia operativa hoy**: el PDF actual no es reutilizable en
@@ -609,7 +798,7 @@ verde y sepamos qué le importa al cliente típico.
 
 ---
 
-## 13. Manual de usuario con capturas + correo de alta automatizado
+## 14. Manual de usuario con capturas + correo de alta automatizado
 
 **Descubierto**: recurrente en conversaciones sobre onboarding.
 
@@ -652,7 +841,7 @@ el usuario presente), pero es imprescindible para clientes con más de
 
 ---
 
-## 14. Distinguir "obra que avanzó" de "residente que se puso al corriente"
+## 15. Distinguir "obra que avanzó" de "residente que se puso al corriente"
 
 **Descubierto**: 2026-09-19, revisando el nuevo `DashboardPrincipal`.
 
@@ -687,11 +876,11 @@ malinterpretar la varianza y tomar decisiones sobre ruido de captura.
 
 **Interacción con otros pendientes**:
 
-- Pendiente #9 (fecha por movimiento en maquinaria) también contribuye
+- Pendiente #10 (fecha por movimiento en maquinaria) también contribuye
   al problema — sin fecha, la maquinaria "aparece de golpe" en el
-  presente. Resolver #9 disminuye el ruido pero no elimina el fenómeno
+  presente. Resolver #10 disminuye el ruido pero no elimina el fenómeno
   para el snapshot de avance.
-- Pendiente #16 (auditar otros formularios) puede descubrir más lugares
+- Pendiente #17 (auditar otros formularios) puede descubrir más lugares
   con la misma dinámica.
 
 **Prioridad**: media. Hoy no hay incidente porque no hay historial
@@ -703,7 +892,7 @@ suficiente para que se note. La primera vez que un directivo pregunte
 
 ---
 
-## 15. Sesión persistente: decidir política
+## 16. Sesión persistente: decidir política
 
 **Descubierto**: pendiente arrastrado desde `feature/organizaciones`.
 
@@ -743,9 +932,9 @@ conviene tomar antes de escalar a más usuarios.
 
 ---
 
-## 16. Auditar otros módulos por el mismo hueco de "fecha faltante"
+## 17. Auditar otros módulos por el mismo hueco de "fecha faltante"
 
-**Contexto**: el hueco de maquinaria (punto #9) es de un patrón: el
+**Contexto**: el hueco de maquinaria (punto #10) es de un patrón: el
 código de agrupación temporal espera un campo del formulario que no
 existe. Puede haber más lugares donde pase lo mismo.
 
@@ -786,7 +975,7 @@ tampoco de la ausencia.
 
 ---
 
-## 17. Nómina: drag-and-drop + pegar desde portapapeles
+## 18. Nómina: drag-and-drop + pegar desde portapapeles
 
 **Descubierto**: petición de UX de usuario operativo.
 
@@ -813,6 +1002,201 @@ espera de una app moderna.
 
 ---
 
+## 19. `setObra` sin declarar en GastosGP — crash de runtime latente
+
+**Descubierto**: 2026-09-19, por la verificación de ámbito con
+`@babel/parser` (pendiente #20) durante el trabajo de
+`fix/ejecutado-sin-recorte`. Es **preexistente**, no lo introdujo esa
+rama.
+
+**Qué pasa**: en `src/App.jsx:10192`, dentro del selector manual de obra
+de GP Construct, el `onChange` hace:
+
+```js
+const upd = {...obra, gpId: nuevoId};
+setObra(upd);                                        // ← no existe
+await fsSet(`obras/${obra.id}/config/info`, {gpId: nuevoId});
+await fsSet(`obras/${obra.id}`, {gpId: nuevoId});
+```
+
+`setObra` no está declarado en ningún ámbito léxico del componente
+`GastosGP` ni es una global. No es un `useState` del componente ni una
+prop que se le pase.
+
+**Consecuencia operativa**: en el momento en que un usuario usa el
+selector manual para vincular una obra de CAMPO con su obra en GP
+Construct, el handler lanza `ReferenceError: setObra is not defined`
+**antes** de los dos `fsSet`. Resultado: la vinculación no se guarda en
+Firestore y la pantalla se rompe. Justo el flujo de rescate que existe
+para cuando el match automático por nombre/ID falla — o sea, revienta
+precisamente cuando más se le necesita.
+
+**Por qué nadie lo vio**: el build de Vite/esbuild no resuelve
+identificadores libres; compila sin una sola advertencia. Y no hay
+linter instalado (ver #20). El error solo aparece cuando alguien toca
+ese `<Sel>` en producción.
+
+**Propuesta**:
+1. Decidir cuál es la intención real. Dos caminos:
+   - Si `GastosGP` debe refrescar la obra en memoria, recibir el setter
+     del padre como prop (`onObraChange` / `setObra`) y pasarlo desde
+     donde se renderiza el componente.
+   - Si basta con persistir, eliminar la línea y dejar que la
+     suscripción a `obras/{id}` propague el cambio.
+2. Verificar en la pantalla real, con una obra sin `gpId`, que después
+   del cambio el gasto GP se resuelve por el nuevo id.
+3. Correr `node scripts/verificar-ambito.cjs` y confirmar que queda en
+   cero.
+
+**Prioridad**: alta. No bloquea la demo si nadie abre el selector, pero
+es un crash garantizado en un flujo de rescate del módulo de gastos.
+
+---
+
+## 20. Integrar la verificación de ámbito de forma permanente
+
+**Descubierto**: 2026-09-19. Durante `fix/ejecutado-sin-recorte` se
+tocaron 16 sitios de `src/App.jsx`; dos de esos cambios dejaron
+identificadores huérfanos (`ejecutado`, `ejec`) y **el build pasó
+limpio** las dos veces. Los encontró un verificador de ámbito armado
+sobre la marcha con `@babel/parser`, que de paso destapó el #19.
+
+**Qué pasa**: el proyecto no tiene linter. Ni ESLint ni Biome. Y el
+grueso de la aplicación vive en un solo archivo de ~18,000 líneas. Esa
+combinación significa que un identificador mal escrito, una variable
+borrada en un refactor o una prop que se dejó de pasar **no producen
+ningún error en `npm run build`**: esbuild no hace análisis de ámbito.
+El defecto llega a producción y se manifiesta como pantalla en blanco
+cuando un usuario entra a la vista afectada.
+
+**Consecuencia operativa**: cada refactor de App.jsx es una apuesta. El
+riesgo no es teórico: en una sola sesión se produjeron dos regresiones
+de esta clase, y existe una tercera preexistente (#19) que lleva quién
+sabe cuánto tiempo ahí.
+
+**Dónde vive el hueco**: `scripts/verificar-ambito.cjs` ya está en el
+repo y hace el trabajo — recorre el AST y reporta todo
+`ReferencedIdentifier` sin binding léxico ni global conocida. Usa
+`@babel/parser` y `@babel/traverse`, que ya están en `node_modules`
+como dependencias transitivas. Lo que falta es que su ejecución no
+dependa de que alguien se acuerde.
+
+**Propuesta**:
+1. Cablear el script para que corra solo:
+   - `npm run verificar` en `package.json`, y encadenarlo antes de
+     `build`.
+   - Hook de `pre-commit` que lo corra sobre los archivos tocados.
+   - Paso en CI que falle el Deploy Preview si sale distinto de cero.
+2. Cerrar #19 primero, si no el check arranca en rojo y se normaliza
+   ignorarlo.
+3. A mediano plazo, sustituirlo por un linter de verdad (ESLint con
+   `no-undef` + `react-hooks`), que cubre esto y mucho más. El script
+   es el piso, no el techo: lo valioso es que hoy no hay **nada**.
+4. En paralelo, seguir partiendo `App.jsx`. Un archivo de 18k líneas
+   es la causa raíz de que estos defectos se escondan.
+
+**Prioridad**: alta. Es infraestructura, no una función nueva, pero
+protege todo lo demás que se construya encima.
+
+---
+
+## 21. Cambiar a modo volumen borra el avance capturado, en silencio
+
+**Descubierto**: 2026-09-19, al verificar contra producción (solo
+lectura) si 0114 (Oaxaca) y 0126 (Cangrejera) podían pasar de modo
+porcentaje a modo volumen, porque es más fácil de capturar para los
+administradores. La verificación dijo que no, y destapó tres huecos.
+
+**El dato que lo detona**: las obras que operan en volumen tienen
+`cant`, `pu` y `unidad` en el **100%** de sus partidas. Las dos
+candidatas los tienen en **cero por ciento**:
+
+| obra | partidas | `cant`>0 | `pu`>0 | `unidad` | `cantEjec`>0 | `a`>0 |
+|---|---|---|---|---|---|---|
+| 0114 Oaxaca | 335 | 0 | 0 | 0 | 0 | 305 |
+| 0126 Cangrejera | 51 | 0 | 0 | 0 | 0 | 36 |
+| 0112 Malecón *(volumen)* | 14 | 14 | 14 | 14 | 12 | 12 |
+| 0125 TAMSA *(volumen)* | 461 | 461 | 461 | 461 | 99 | 99 |
+| 0127 Convenciones *(volumen)* | 112 | 112 | 112 | 112 | 0 | 0 |
+
+Sus catálogos se cargaron solo con clave, descripción e importe. Sin
+volúmenes, el modo volumen no tiene contra qué medir.
+
+**Qué pasa hoy si alguien hace el cambio** — tres defectos encadenados:
+
+**(a) Nada lo impide.** El modo son dos radio buttons en la pantalla de
+contrato (`src/App.jsx:14644`) que se guardan con el mismo botón que
+nombre, cliente y fechas (`guardarDatos`, `src/App.jsx:14490` → escribe
+en `obras/{id}/config/info` y en `obras/{id}`). No se valida si las
+partidas tienen `cant` y `pu`.
+
+**(b) Nada advierte.** No hay confirmación ni aviso de consecuencias. El
+usuario no tiene forma de saber que 305 partidas van a dejar de
+mostrarse.
+
+**(c) El avance se borra al primer teclazo.** Éste es el grave. El
+capturador deriva el porcentaje solo de `cantEjec/cant`, sin caer de
+vuelta a `a` (`src/App.jsx:9621`), así que las partidas con avance
+aparecen en **0% y con el input vacío** — el dato sigue en Firestore
+pero es invisible. Y entonces el input escribe:
+
+```js
+const pctNuevo = cCat > 0 ? (v/cCat)*100 : 0;
+setSubs(ss=>ss.map(x=>x.id===subId?{...x,cantEjec:v,a:pctNuevo}:x));
+```
+
+Con `cant = 0`, `pctNuevo` es **siempre 0**. El administrador ve una
+partida en 0%, teclea un número, y `a` se sobrescribe con cero. El
+avance real de esa partida se pierde de forma definitiva: no hay
+respaldo ni deshacer. Y como en pantalla ya decía 0%, nada parece
+haber cambiado.
+
+**Consecuencia operativa**: en producción hoy (main) el dinero sale
+únicamente de `cantEjec × pu`, sin alternativa, así que el cambio de
+modo manda **$172.4M a cero de inmediato** ($145.5M de Oaxaca + $26.9M
+de Cangrejera). En `fix/ejecutado-sin-recorte` el dinero se conserva
+porque `importeEjecutadoPartida` cae a `(a/100) × imp`, pero el
+capturador sigue mostrando 0% — o sea, el KPI dice $145M y la pantalla
+de captura dice 0%, y la destrucción por teclazo sigue viva.
+
+**Lo que NO es la solución**: derivar `cantEjec = (a/100) × cant` al
+migrar. Con `cant = 0` la fórmula devuelve 0 en las 386 partidas. Se
+comprobó contra los datos reales. No hay de dónde derivar.
+
+**Propuesta** — tres guardas:
+
+1. **Bloquear** el cambio a modo volumen si las partidas de la obra no
+   tienen `cant` y `pu`. Es una precondición dura, no una preferencia.
+2. **Confirmación explícita** al cambiar de modo en cualquier dirección,
+   diciendo cuántas partidas se verían afectadas y qué pasa con su
+   avance. Hoy se cambia y ya.
+3. **Que el capturador caiga a `a`** cuando `cantEjec` está vacío, en
+   vez de mostrar 0%; y que el `onChange` **nunca escriba `a: 0`** por
+   no poder derivarlo — si `cant` es 0, conservar el `a` existente.
+   Ésta es la que evita la pérdida de datos y debe ir primero.
+
+**Procedimiento seguro para migrar una obra** (el orden importa, y es
+el inverso del intuitivo):
+
+1. Re-importar el catálogo con `cant`, `pu` y `unidad`. El importador ya
+   los soporta y preserva `a`/`cantEjec` por coincidencia de clave
+   (`src/App.jsx:11225`), así que el avance sobrevive a la recarga.
+2. Validar `cant × pu ≈ imp` partida por partida. Si no cuadra, derivar
+   volúmenes falsearía el dinero.
+3. Recién entonces derivar `cantEjec = (a/100) × cant`, con respaldo
+   previo de `avance/subs`.
+4. Cambiar el modo y verificar que el ejecutado coincida al peso antes
+   y después.
+
+`scripts/diagnostico-cambio-modo.py` (solo lectura) mide los pasos 1 y 2
+y compara el ejecutado bajo las dos fórmulas. Re-correrlo después de
+recargar catálogos.
+
+**Prioridad**: alta. La guarda 3 es la urgente: hoy un cambio de modo
+mal hecho borra avance de forma definitiva y silenciosa.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 | # | Pendiente | Bloquea demo | Prioridad |
@@ -820,17 +1204,69 @@ espera de una app moderna.
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
 | 2 | Primer ingreso GP en "cargando" | sí | crítica |
 | 3 | KPIs arrancan en cero | sí | crítica |
-| 4 | Parser TAMSA HE en días | sí | crítica |
-| 5 | Cuentas de prueba dedicadas | sí | crítica |
-| 6 | Probar restauración del respaldo | sí | crítica |
-| 7 | Sesión zombie (`onAuthStateChanged`) | | alta |
-| 8 | Obra 0112 discrepancia $2.5M | | alta |
-| 9 | Maquinaria sin fecha por movimiento | | alta |
-| 10 | Consolidar KPIs Nómina + Estimaciones | | alta |
-| 11 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
-| 12 | Rehacer PDFs | | media |
-| 13 | Manual + correo alta automatizado | | media |
-| 14 | Distinguir avance vs captura al día | | media |
-| 15 | Sesión persistente — decidir | | media |
-| 16 | Auditar otros módulos sin fecha | | baja |
-| 17 | Nómina: drag/pegar | | baja |
+| 4 | Cuentas de prueba dedicadas | sí | crítica |
+| 5 | Probar restauración del respaldo | sí | crítica |
+| 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
+| 7 | Obra 0112 discrepancia $2.5M | | alta |
+| 8 | Tres fórmulas de "ejecutado" ($3.8M) | | alta |
+| 9 | Dos decimales no alcanzan en volumen | | alta |
+| 10 | Maquinaria sin fecha por movimiento | | alta |
+| 11 | Consolidar KPIs Nómina + Estimaciones | | alta |
+| 12 | Exportación expediente (art. 74) | | alta (bloquea contrato, no demo) |
+| 13 | Rehacer PDFs | | media |
+| 14 | Manual + correo alta automatizado | | media |
+| 15 | Distinguir avance vs captura al día | | media |
+| 16 | Sesión persistente — decidir | | media |
+| 17 | Auditar otros módulos sin fecha | | baja |
+| 18 | Nómina: drag/pegar | | baja |
+| 19 | `setObra` sin declarar en GastosGP | | alta |
+| 20 | Verificación de ámbito permanente | | alta |
+| 21 | Cambio de modo borra avance en silencio | | alta |
+
+---
+
+# CERRADOS
+
+Pendientes que se dieron de baja con verificación. Se conservan aquí
+para no volver a levantarlos sin dato nuevo.
+
+## Parser TAMSA absorbe horas extra en el conteo de días — CERRADO 2026-09-19
+
+Fue el pendiente #4 (bloqueante de demo, prioridad crítica) entre el
+2026-09-18 y el 2026-09-19.
+
+**Qué se sospechaba**: que el parser de nómina TAMSA clasificaba como
+sueldo base horas que en realidad eran extra, porque reportaba ~1.7 HE
+por persona en semanas de turnos de 55 h. El razonamiento era que una
+semana de 55 h contiene por definición 15 h extra sobre las 40 h
+estándar, así que 1.7 h/persona parecía imposiblemente bajo. De ahí se
+derivó la hipótesis de un tope diario mal puesto (11 h en vez de 8 h) y
+un supuesto "costo escondido" en el margen de la obra.
+
+**Cómo se verificó**: se cuadró el archivo de nómina real de TAMSA
+contra lo que muestra CAMPO para la semana 38.
+
+**Hallazgo**:
+- CAMPO lee el archivo correctamente. Las **242 horas extra de la
+  semana 38** que reporta el sistema son exactamente las que trae el
+  archivo de nómina.
+- La jornada de 55 h **no es una semana estándar con 15 h extra
+  ocultas**: es semana comprimida pactada. Las horas de la jornada
+  pactada son horas ordinarias por acuerdo, no horas extra sin pagar.
+- Por lo tanto **no hay costo escondido**, el margen de TAMSA no está
+  inflado y no hay clasificación incorrecta que corregir.
+
+**Por qué se cierra**: la premisa del pendiente era una inferencia
+("55 h ⇒ 15 h extra") que no correspondía al arreglo laboral real de la
+obra. Con el archivo a la vista, el número del sistema y el número del
+archivo coinciden. No había defecto de parser: había un supuesto
+equivocado de quien lo levantó.
+
+**Si vuelve a aparecer**: antes de reabrirlo, comparar contra el
+archivo fuente de la semana en cuestión y confirmar el esquema de
+jornada pactada de la obra. El porcentaje de HE por sí solo no es
+evidencia de error.
+
+**Nota sobre la propuesta #3 del pendiente original** (advertir cuando
+`pctHE < 2%` en obras con turnos > 48 h/semana): esa alerta habría
+marcado en rojo un dato correcto. No implementarla tal cual.
