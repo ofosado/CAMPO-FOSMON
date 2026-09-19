@@ -1002,6 +1002,104 @@ espera de una app moderna.
 
 ---
 
+## 19. `setObra` sin declarar en GastosGP — crash de runtime latente
+
+**Descubierto**: 2026-09-19, por la verificación de ámbito con
+`@babel/parser` (pendiente #20) durante el trabajo de
+`fix/ejecutado-sin-recorte`. Es **preexistente**, no lo introdujo esa
+rama.
+
+**Qué pasa**: en `src/App.jsx:10192`, dentro del selector manual de obra
+de GP Construct, el `onChange` hace:
+
+```js
+const upd = {...obra, gpId: nuevoId};
+setObra(upd);                                        // ← no existe
+await fsSet(`obras/${obra.id}/config/info`, {gpId: nuevoId});
+await fsSet(`obras/${obra.id}`, {gpId: nuevoId});
+```
+
+`setObra` no está declarado en ningún ámbito léxico del componente
+`GastosGP` ni es una global. No es un `useState` del componente ni una
+prop que se le pase.
+
+**Consecuencia operativa**: en el momento en que un usuario usa el
+selector manual para vincular una obra de CAMPO con su obra en GP
+Construct, el handler lanza `ReferenceError: setObra is not defined`
+**antes** de los dos `fsSet`. Resultado: la vinculación no se guarda en
+Firestore y la pantalla se rompe. Justo el flujo de rescate que existe
+para cuando el match automático por nombre/ID falla — o sea, revienta
+precisamente cuando más se le necesita.
+
+**Por qué nadie lo vio**: el build de Vite/esbuild no resuelve
+identificadores libres; compila sin una sola advertencia. Y no hay
+linter instalado (ver #20). El error solo aparece cuando alguien toca
+ese `<Sel>` en producción.
+
+**Propuesta**:
+1. Decidir cuál es la intención real. Dos caminos:
+   - Si `GastosGP` debe refrescar la obra en memoria, recibir el setter
+     del padre como prop (`onObraChange` / `setObra`) y pasarlo desde
+     donde se renderiza el componente.
+   - Si basta con persistir, eliminar la línea y dejar que la
+     suscripción a `obras/{id}` propague el cambio.
+2. Verificar en la pantalla real, con una obra sin `gpId`, que después
+   del cambio el gasto GP se resuelve por el nuevo id.
+3. Correr `node scripts/verificar-ambito.cjs` y confirmar que queda en
+   cero.
+
+**Prioridad**: alta. No bloquea la demo si nadie abre el selector, pero
+es un crash garantizado en un flujo de rescate del módulo de gastos.
+
+---
+
+## 20. Integrar la verificación de ámbito de forma permanente
+
+**Descubierto**: 2026-09-19. Durante `fix/ejecutado-sin-recorte` se
+tocaron 16 sitios de `src/App.jsx`; dos de esos cambios dejaron
+identificadores huérfanos (`ejecutado`, `ejec`) y **el build pasó
+limpio** las dos veces. Los encontró un verificador de ámbito armado
+sobre la marcha con `@babel/parser`, que de paso destapó el #19.
+
+**Qué pasa**: el proyecto no tiene linter. Ni ESLint ni Biome. Y el
+grueso de la aplicación vive en un solo archivo de ~18,000 líneas. Esa
+combinación significa que un identificador mal escrito, una variable
+borrada en un refactor o una prop que se dejó de pasar **no producen
+ningún error en `npm run build`**: esbuild no hace análisis de ámbito.
+El defecto llega a producción y se manifiesta como pantalla en blanco
+cuando un usuario entra a la vista afectada.
+
+**Consecuencia operativa**: cada refactor de App.jsx es una apuesta. El
+riesgo no es teórico: en una sola sesión se produjeron dos regresiones
+de esta clase, y existe una tercera preexistente (#19) que lleva quién
+sabe cuánto tiempo ahí.
+
+**Dónde vive el hueco**: `scripts/verificar-ambito.cjs` ya está en el
+repo y hace el trabajo — recorre el AST y reporta todo
+`ReferencedIdentifier` sin binding léxico ni global conocida. Usa
+`@babel/parser` y `@babel/traverse`, que ya están en `node_modules`
+como dependencias transitivas. Lo que falta es que su ejecución no
+dependa de que alguien se acuerde.
+
+**Propuesta**:
+1. Cablear el script para que corra solo:
+   - `npm run verificar` en `package.json`, y encadenarlo antes de
+     `build`.
+   - Hook de `pre-commit` que lo corra sobre los archivos tocados.
+   - Paso en CI que falle el Deploy Preview si sale distinto de cero.
+2. Cerrar #19 primero, si no el check arranca en rojo y se normaliza
+   ignorarlo.
+3. A mediano plazo, sustituirlo por un linter de verdad (ESLint con
+   `no-undef` + `react-hooks`), que cubre esto y mucho más. El script
+   es el piso, no el techo: lo valioso es que hoy no hay **nada**.
+4. En paralelo, seguir partiendo `App.jsx`. Un archivo de 18k líneas
+   es la causa raíz de que estos defectos se escondan.
+
+**Prioridad**: alta. Es infraestructura, no una función nueva, pero
+protege todo lo demás que se construya encima.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 | # | Pendiente | Bloquea demo | Prioridad |
@@ -1024,6 +1122,8 @@ espera de una app moderna.
 | 16 | Sesión persistente — decidir | | media |
 | 17 | Auditar otros módulos sin fecha | | baja |
 | 18 | Nómina: drag/pegar | | baja |
+| 19 | `setObra` sin declarar en GastosGP | | alta |
+| 20 | Verificación de ámbito permanente | | alta |
 
 ---
 
