@@ -1100,6 +1100,103 @@ protege todo lo demás que se construya encima.
 
 ---
 
+## 21. Cambiar a modo volumen borra el avance capturado, en silencio
+
+**Descubierto**: 2026-09-19, al verificar contra producción (solo
+lectura) si 0114 (Oaxaca) y 0126 (Cangrejera) podían pasar de modo
+porcentaje a modo volumen, porque es más fácil de capturar para los
+administradores. La verificación dijo que no, y destapó tres huecos.
+
+**El dato que lo detona**: las obras que operan en volumen tienen
+`cant`, `pu` y `unidad` en el **100%** de sus partidas. Las dos
+candidatas los tienen en **cero por ciento**:
+
+| obra | partidas | `cant`>0 | `pu`>0 | `unidad` | `cantEjec`>0 | `a`>0 |
+|---|---|---|---|---|---|---|
+| 0114 Oaxaca | 335 | 0 | 0 | 0 | 0 | 305 |
+| 0126 Cangrejera | 51 | 0 | 0 | 0 | 0 | 36 |
+| 0112 Malecón *(volumen)* | 14 | 14 | 14 | 14 | 12 | 12 |
+| 0125 TAMSA *(volumen)* | 461 | 461 | 461 | 461 | 99 | 99 |
+| 0127 Convenciones *(volumen)* | 112 | 112 | 112 | 112 | 0 | 0 |
+
+Sus catálogos se cargaron solo con clave, descripción e importe. Sin
+volúmenes, el modo volumen no tiene contra qué medir.
+
+**Qué pasa hoy si alguien hace el cambio** — tres defectos encadenados:
+
+**(a) Nada lo impide.** El modo son dos radio buttons en la pantalla de
+contrato (`src/App.jsx:14644`) que se guardan con el mismo botón que
+nombre, cliente y fechas (`guardarDatos`, `src/App.jsx:14490` → escribe
+en `obras/{id}/config/info` y en `obras/{id}`). No se valida si las
+partidas tienen `cant` y `pu`.
+
+**(b) Nada advierte.** No hay confirmación ni aviso de consecuencias. El
+usuario no tiene forma de saber que 305 partidas van a dejar de
+mostrarse.
+
+**(c) El avance se borra al primer teclazo.** Éste es el grave. El
+capturador deriva el porcentaje solo de `cantEjec/cant`, sin caer de
+vuelta a `a` (`src/App.jsx:9621`), así que las partidas con avance
+aparecen en **0% y con el input vacío** — el dato sigue en Firestore
+pero es invisible. Y entonces el input escribe:
+
+```js
+const pctNuevo = cCat > 0 ? (v/cCat)*100 : 0;
+setSubs(ss=>ss.map(x=>x.id===subId?{...x,cantEjec:v,a:pctNuevo}:x));
+```
+
+Con `cant = 0`, `pctNuevo` es **siempre 0**. El administrador ve una
+partida en 0%, teclea un número, y `a` se sobrescribe con cero. El
+avance real de esa partida se pierde de forma definitiva: no hay
+respaldo ni deshacer. Y como en pantalla ya decía 0%, nada parece
+haber cambiado.
+
+**Consecuencia operativa**: en producción hoy (main) el dinero sale
+únicamente de `cantEjec × pu`, sin alternativa, así que el cambio de
+modo manda **$172.4M a cero de inmediato** ($145.5M de Oaxaca + $26.9M
+de Cangrejera). En `fix/ejecutado-sin-recorte` el dinero se conserva
+porque `importeEjecutadoPartida` cae a `(a/100) × imp`, pero el
+capturador sigue mostrando 0% — o sea, el KPI dice $145M y la pantalla
+de captura dice 0%, y la destrucción por teclazo sigue viva.
+
+**Lo que NO es la solución**: derivar `cantEjec = (a/100) × cant` al
+migrar. Con `cant = 0` la fórmula devuelve 0 en las 386 partidas. Se
+comprobó contra los datos reales. No hay de dónde derivar.
+
+**Propuesta** — tres guardas:
+
+1. **Bloquear** el cambio a modo volumen si las partidas de la obra no
+   tienen `cant` y `pu`. Es una precondición dura, no una preferencia.
+2. **Confirmación explícita** al cambiar de modo en cualquier dirección,
+   diciendo cuántas partidas se verían afectadas y qué pasa con su
+   avance. Hoy se cambia y ya.
+3. **Que el capturador caiga a `a`** cuando `cantEjec` está vacío, en
+   vez de mostrar 0%; y que el `onChange` **nunca escriba `a: 0`** por
+   no poder derivarlo — si `cant` es 0, conservar el `a` existente.
+   Ésta es la que evita la pérdida de datos y debe ir primero.
+
+**Procedimiento seguro para migrar una obra** (el orden importa, y es
+el inverso del intuitivo):
+
+1. Re-importar el catálogo con `cant`, `pu` y `unidad`. El importador ya
+   los soporta y preserva `a`/`cantEjec` por coincidencia de clave
+   (`src/App.jsx:11225`), así que el avance sobrevive a la recarga.
+2. Validar `cant × pu ≈ imp` partida por partida. Si no cuadra, derivar
+   volúmenes falsearía el dinero.
+3. Recién entonces derivar `cantEjec = (a/100) × cant`, con respaldo
+   previo de `avance/subs`.
+4. Cambiar el modo y verificar que el ejecutado coincida al peso antes
+   y después.
+
+`scripts/diagnostico-cambio-modo.py` (solo lectura) mide los pasos 1 y 2
+y compara el ejecutado bajo las dos fórmulas. Re-correrlo después de
+recargar catálogos.
+
+**Prioridad**: alta. La guarda 3 es la urgente: hoy un cambio de modo
+mal hecho borra avance de forma definitiva y silenciosa.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 | # | Pendiente | Bloquea demo | Prioridad |
@@ -1124,6 +1221,7 @@ protege todo lo demás que se construya encima.
 | 18 | Nómina: drag/pegar | | baja |
 | 19 | `setObra` sin declarar en GastosGP | | alta |
 | 20 | Verificación de ámbito permanente | | alta |
+| 21 | Cambio de modo borra avance en silencio | | alta |
 
 ---
 
