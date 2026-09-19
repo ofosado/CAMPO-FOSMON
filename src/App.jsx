@@ -3837,15 +3837,15 @@ const css = `
   .dp-kpi-grid{display:grid;gap:8px;grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:14px}
   @media (max-width:820px){.dp-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
   @media (max-width:520px){.dp-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  .dp-kpi-card{background:${C.bg};border-radius:8px;padding:14px 16px;border-left:3px solid ${C.caliza};min-width:0}
-  @media (max-width:520px){.dp-kpi-card{padding:11px 12px}}
+  .dp-kpi-card{background:${C.bg};border-radius:8px;padding:11px 13px;border-left:3px solid ${C.caliza};min-width:0}
+  @media (max-width:520px){.dp-kpi-card{padding:9px 11px}}
   .dp-kpi-label{font-size:9px;color:${C.textMut};text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .dp-kpi-value{font-size:18px;font-weight:700;line-height:1.15;
+  .dp-kpi-value{font-size:16px;font-weight:700;line-height:1.15;
     word-break:break-word;overflow-wrap:anywhere}
-  @media (max-width:520px){.dp-kpi-value{font-size:15px}}
-  .dp-kpi-value-sub{font-size:12px;font-weight:600;margin-top:2px}
-  @media (max-width:520px){.dp-kpi-value-sub{font-size:11px}}
+  @media (max-width:520px){.dp-kpi-value{font-size:14px}}
+  .dp-kpi-value-sub{font-size:11px;font-weight:600;margin-top:2px}
+  @media (max-width:520px){.dp-kpi-value-sub{font-size:10px}}
   .dp-kpi-delta{font-size:10px;margin-top:4px;font-weight:600}
   @media (max-width:520px){.dp-kpi-delta{font-size:9px}}
 `;
@@ -5726,6 +5726,13 @@ function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
 function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   const activas = obras.filter(o => o.estado !== 'archivada');
   const esMovil = _useEsMovil();
+  // Ordenamiento de la tabla del bloque 3. Mismo patrón que la tabla de
+  // nómina semanal (ver useState ordenTabla en HistorialNomina ~línea 12000):
+  //   click en encabezado → ordena por esa columna en dirección default;
+  //   segundo click → invierte.
+  // Default: margen ascendente (obras con menor margen primero, útil para
+  // detectar problemas rápido).
+  const [ordenTabla, setOrdenTabla] = useState({ col: 'margen', dir: 'asc' });
 
   // Estado vacío digno — la desaparición completa se lee como bug.
   // Aparece para: rol con 0 obras asignadas, cliente sin obras activas, etc.
@@ -5993,15 +6000,43 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
       ultimaCapturaTxt,
       diasSinCaptura: ultAv?.fechaCaptura ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24)) : null,
     };
-  }).sort((a, b) => {
-    // Ordenación: obras con margen indefinido primero (son las peores —
-    // gasto sin ejecución) y dentro de ese grupo, mayor gasto perdido
-    // primero. Luego el resto por margen % ascendente.
-    if (a.margenIndefinido && !b.margenIndefinido) return -1;
-    if (!a.margenIndefinido && b.margenIndefinido) return 1;
-    if (a.margenIndefinido && b.margenIndefinido) return a.margenAbs - b.margenAbs;   // más negativo primero
-    return a.margenPct - b.margenPct;
   });
+
+  // Comparador según ordenTabla. Reglas:
+  //   - Cuando se ordena POR MARGEN, obras con margen indefinido (me=0,
+  //     gt>0) van primero SIEMPRE (asc o desc), agrupadas. Dentro del
+  //     grupo por margenAbs ascendente (más pérdida primero).
+  //   - Otras columnas: obras con dato faltante (personal null, avance
+  //     0 sin captura) al final independientemente de dir.
+  //   - Nombre alfabético (localeCompare).
+  //   - Números: asc = menor primero.
+  const cmpFilas = (a, b) => {
+    const { col, dir } = ordenTabla;
+    const signo = dir === 'asc' ? 1 : -1;
+    if (col === 'margen') {
+      if (a.margenIndefinido && !b.margenIndefinido) return -1;
+      if (!a.margenIndefinido && b.margenIndefinido) return 1;
+      if (a.margenIndefinido && b.margenIndefinido) return a.margenAbs - b.margenAbs;
+      return signo * (a.margenPct - b.margenPct);
+    }
+    if (col === 'nombre') {
+      return signo * (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' });
+    }
+    let va, vb;
+    if (col === 'avance')       { va = a.af;                vb = b.af; }
+    else if (col === 'porCobrar'){ va = a.porCobrar || 0;   vb = b.porCobrar || 0; }
+    else if (col === 'personal') { va = a.personal;          vb = b.personal; }
+    else if (col === 'captura')  { va = a.diasSinCaptura;    vb = b.diasSinCaptura; }
+    else                         { va = 0; vb = 0; }
+    // Datos faltantes al final siempre
+    const aNull = (va === null || va === undefined);
+    const bNull = (vb === null || vb === undefined);
+    if (aNull && !bNull) return 1;
+    if (!aNull && bNull) return -1;
+    if (aNull && bNull) return 0;
+    return signo * ((Number(va) || 0) - (Number(vb) || 0));
+  };
+  filas.sort(cmpFilas);
 
   // ── TOTALES de la tabla (bloque 3) ──
   // Convención (fija en este dashboard):
@@ -6094,14 +6129,14 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
         />
       </div>
 
-      {/* BLOQUE 2 — Excepciones */}
+      {/* BLOQUE 2 — Requiere atención */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
-        Excepciones
+        Requiere atención
       </div>
       <div style={{marginBottom:14}}>
         {excepciones.length === 0 ? (
           <div style={{fontSize:11,color:C.textMut,padding:"6px 4px",fontStyle:"italic"}}>
-            Sin excepciones. Todas las obras al día.
+            Ninguna obra requiere atención esta semana.
           </div>
         ) : (
           excepciones.map((e, i) => (
@@ -6145,9 +6180,33 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
 
         if (esMovil) {
           // Tarjeta compacta por obra — mismo lenguaje visual que la lista principal.
+          // Sin encabezados que picar, el ordenamiento vive en un <select> arriba
+          // del listado: opciones = misma matriz que las columnas del escritorio,
+          // con dirección incluida en cada opción para que sea autodescriptivo.
           const totMargenColor = nivelMargen(totMargenPct).color;
+          const opcionesOrden = [
+            { val: 'margen|asc',    lbl: 'Margen: menor primero' },
+            { val: 'margen|desc',   lbl: 'Margen: mayor primero' },
+            { val: 'nombre|asc',    lbl: 'Nombre: A → Z' },
+            { val: 'avance|desc',   lbl: 'Avance: mayor primero' },
+            { val: 'avance|asc',    lbl: 'Avance: menor primero' },
+            { val: 'porCobrar|desc',lbl: 'Por cobrar: mayor primero' },
+            { val: 'personal|desc', lbl: 'Personal: más personas' },
+            { val: 'captura|desc',  lbl: 'Última captura: más antigua' },
+          ];
           return (
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                <span style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>Ordenar</span>
+                <Sel value={`${ordenTabla.col}|${ordenTabla.dir}`}
+                     onChange={e => {
+                       const [col, dir] = e.target.value.split('|');
+                       setOrdenTabla({ col, dir });
+                     }}
+                     style={{fontSize:10,padding:'4px 8px',flex:1}}>
+                  {opcionesOrden.map(o => <option key={o.val} value={o.val}>{o.lbl}</option>)}
+                </Sel>
+              </div>
               {filas.map(f => {
                 // Margen indefinido (me=0, gt>0) → color rojo (Crítico) y
                 // rótulo "—" en vez de "0.0%". Se muestra el $ absoluto.
@@ -6216,13 +6275,38 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
           <div style={{overflowX:"auto"}}>
             <table style={{width:"100%",fontSize:11,borderCollapse:"collapse"}}>
               <thead>
-                <tr style={{borderBottom:`1px solid ${C.border}`,color:C.textMut,fontSize:9,textTransform:"uppercase",letterSpacing:"0.04em"}}>
-                  <th style={{textAlign:"left",padding:"6px 4px"}}>Obra</th>
-                  <th style={{textAlign:"right",padding:"6px 4px"}}>Avance físico</th>
-                  <th style={{textAlign:"right",padding:"6px 4px"}}>Margen</th>
-                  <th style={{textAlign:"right",padding:"6px 4px"}}>Por cobrar</th>
-                  <th style={{textAlign:"right",padding:"6px 4px"}}>Personal</th>
-                  <th style={{textAlign:"right",padding:"6px 4px"}}>Última captura</th>
+                <tr>
+                  {[
+                    { lbl: 'Obra',           col: 'nombre',    align: 'left',  dirDefault: 'asc'  },
+                    { lbl: 'Avance físico',  col: 'avance',    align: 'right', dirDefault: 'desc' },
+                    { lbl: 'Margen',         col: 'margen',    align: 'right', dirDefault: 'asc'  },
+                    { lbl: 'Por cobrar',     col: 'porCobrar', align: 'right', dirDefault: 'desc' },
+                    { lbl: 'Personal',       col: 'personal',  align: 'right', dirDefault: 'desc' },
+                    { lbl: 'Última captura', col: 'captura',   align: 'right', dirDefault: 'desc' },
+                  ].map(h => {
+                    const activo = ordenTabla.col === h.col;
+                    const flecha = activo ? (ordenTabla.dir === 'desc' ? ' ↓' : ' ↑') : '';
+                    return (
+                      <th key={h.col} onClick={() => {
+                          setOrdenTabla(prev => ({
+                            col: h.col,
+                            // Segundo click en la misma columna invierte; primer
+                            // click en columna nueva usa el default de cada tipo
+                            // (nombre asc, monetarios desc, margen asc, etc).
+                            dir: prev.col === h.col
+                              ? (prev.dir === 'desc' ? 'asc' : 'desc')
+                              : h.dirDefault,
+                          }));
+                        }}
+                        style={{ padding: '6px 4px', textAlign: h.align, fontSize: 9,
+                          color: activo ? C.caliza : C.textMut, fontWeight: activo ? 700 : 600,
+                          textTransform: 'uppercase', letterSpacing: '0.04em',
+                          borderBottom: `1px solid ${activo ? C.caliza : C.border}`,
+                          cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                        {h.lbl}{flecha}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
