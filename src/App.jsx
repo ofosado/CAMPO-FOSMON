@@ -4797,7 +4797,11 @@ function useGPConstruct() {
     return cargarGP(forzar);
   }, [cargarGP]);
 
-  return { gpData, gpEstado, gpDisponible: gpEstado === 'listo',
+  // `gpDisponible` pregunta si HAY dato utilizable, no si la última lectura
+  // salió bien. No es lo mismo: si un Refrescar manual falla pero ya
+  // teníamos el resumen cargado, las cifras siguen siendo buenas y sería
+  // absurdo borrarlas de la pantalla. `gpEstado` explica el porqué aparte.
+  return { gpData, gpEstado, gpDisponible: !!(gpData && gpData.obras),
            gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP,
            cargarDetalleObra, gpDetalles };
 }
@@ -6022,24 +6026,24 @@ function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
   );
 }
 
-// Texto que explica POR QUÉ el gasto no está — no basta con decir que falta.
-// Cada estado tiene una acción distinta: dos se arreglan con Refrescar, uno
-// se arregla solo (reintento en curso) y uno necesita mirar la red.
+// Motivo técnico del fallo de GP. Va SOLO en el tooltip del chip, para
+// quien necesite diagnosticar. En pantalla el chip dice "no disponible" y
+// nada más: el usuario no puede hacer nada distinto según el motivo —la
+// acción es la misma, Refrescar— y frases como "nunca se sincronizó"
+// alarman sin ayudar.
 const _GP_NOTA = {
-  cargando:        'gasto de GP en camino…',
-  sin_sincronizar: 'el Sheet de GP nunca se sincronizó',
-  version_vieja:   'caché de GP de una versión vieja',
-  error:           'GP no respondió; reintentos agotados',
-  error_transitorio: 'GP falló; reintentando…',
+  cargando:          'GP: lectura en curso',
+  sin_sincronizar:   'GP: no se encontró la caché (global/gp_construct)',
+  version_vieja:     'GP: la caché es de otra versión del parser',
+  error:             'GP: la lectura falló y se agotaron los reintentos',
+  error_transitorio: 'GP: la lectura falló, reintentando',
 };
 
 // Componente principal: reemplaza Cobranza + OBRAS ATENCIÓN del PanelEjecutivo.
 // Alimentado con el mismo `datosPorObra` que ya existe (subs, maquinaria,
 // materiales, estimaciones, otrosGastos, nominaSemanas, historialAvanceSemanas)
 // + gpData. No dispara Firestore reads propios.
-function DashboardPrincipal({ obras, datosPorObra, gpData, gpEstado = 'listo',
-                              gpDisponible = true, onRefreshGP, gpLoading,
-                              onSelectObra }) {
+function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, onSelectObra }) {
   const activas = obras.filter(o => o.estado !== 'archivada');
   const esMovil = _useEsMovil();
   // Ordenamiento de la tabla del bloque 3. Mismo patrón que la tabla de
@@ -6421,23 +6425,6 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpEstado = 'listo',
           {obrasIncompletas.map(o => o.id).join(' · ')}. Recarga la página para reintentar.
         </div>
       )}
-      {!gpDisponible && (
-        <div style={{background:C.yellowBg,border:`1px solid ${C.yellow}`,
-                     borderRadius:6,padding:"6px 9px",marginBottom:8,fontSize:10,color:C.textSec,
-                     display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-          <span>
-            <b>Gasto y margen no disponibles.</b> {_GP_NOTA[gpEstado] || 'GP no disponible'}.
-            {' '}Las cifras de gasto NO se muestran en cero para no hacerlas pasar por buenas.
-          </span>
-          {onRefreshGP && gpEstado !== 'cargando' && gpEstado !== 'error_transitorio' && (
-            <button onClick={() => onRefreshGP(true)} disabled={gpLoading}
-              style={{fontSize:10,padding:"3px 9px",borderRadius:5,cursor:gpLoading?"default":"pointer",
-                      border:`1px solid ${C.yellow}`,background:"transparent",color:C.textPri}}>
-              {gpLoading ? 'Refrescando…' : 'Refrescar GP'}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* BLOQUE 1 — Consolidado */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
@@ -6470,11 +6457,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpEstado = 'listo',
             estructuralmente imposible hasta que se resuelva ese pendiente. */}
         {/* Sin GP no hay gasto, y sin gasto no hay margen. Se marcan "no
             disponible": un $0 o un 100% de margen se leen como dato bueno y
-            son mentira. Principio del producto, ver PENDIENTES. */}
+            son mentira. Principio P2, ver PENDIENTES. El motivo del fallo
+            no se repite aquí — vive en el tooltip del chip de la portada. */}
         <_KpiConDelta
           label="Gastado"
           valor={gpDisponible ? MXN(consolidado.gastado) : 'no disponible'}
-          valorSub={gpDisponible ? "GP + maquinaria + otros" : _GP_NOTA[gpEstado] || 'GP no disponible'}
+          valorSub={gpDisponible ? "GP + maquinaria + otros" : 'sin dato de GP'}
           color={gpDisponible ? C.textPri : C.textMut}
         />
         <_KpiConDelta
@@ -6966,25 +6954,43 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         <div style={{fontSize:11,color:C.textMut}}>
           {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
         </div>
-        {/* Chip de frescura del Sheet GP — visible siempre, cambia color según antigüedad */}
-        {gpUltActualiz && (() => {
-          const ms = Date.now() - new Date(gpUltActualiz.replace(',',' ')).getTime();
-          const horas = Math.floor(ms / 3600000);
-          const dias = Math.floor(horas / 24);
-          const hace = dias >= 1
-            ? `hace ${dias} día${dias!==1?'s':''}`
-            : horas >= 1 ? `hace ${horas} h` : 'hace un momento';
-          // Color: verde <30h, amarillo 30-72h, rojo >72h
-          const color = horas > 72 ? C.red : horas > 30 ? C.yellow : C.green;
-          const bg    = horas > 72 ? C.redBg : horas > 30 ? C.yellowBg : C.greenBg;
-          const txt   = horas > 72 ? C.redDk : horas > 30 ? C.yellowDk : C.greenDk;
-          return <div style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:4,
+        {/* Chip de estado del Sheet GP. UNA sola píldora con dos variantes:
+            frescura cuando hay dato (verde/amarillo/rojo por antigüedad) y
+            ámbar "no disponible" cuando no lo hay. El motivo técnico va en
+            el tooltip, no en pantalla: en el chip sólo cabe el hecho, y
+            "el Sheet nunca se sincronizó" asusta sin ayudar a nadie. */}
+        {(() => {
+          // Sólo los estados TERMINALES de fallo pintan ámbar. Mientras
+          // carga o reintenta no se muestra nada: un chip de alarma en cada
+          // arranque normal sería ruido, no información.
+          const fallo = !gpDisponible && gpEstado !== 'cargando' && gpEstado !== 'error_transitorio';
+          if (!fallo && !gpUltActualiz) return null;
+
+          let color, bg, txt, texto, tip;
+          if (fallo) {
+            color = C.yellow; bg = C.yellowBg; txt = C.yellowDk;
+            texto = 'no disponible';
+            tip   = _GP_NOTA[gpEstado] || 'GP no disponible';
+          } else {
+            const ms = Date.now() - new Date(gpUltActualiz.replace(',',' ')).getTime();
+            const horas = Math.floor(ms / 3600000);
+            const dias = Math.floor(horas / 24);
+            texto = dias >= 1
+              ? `hace ${dias} día${dias!==1?'s':''}`
+              : horas >= 1 ? `hace ${horas} h` : 'hace un momento';
+            // Color: verde <30h, amarillo 30-72h, rojo >72h
+            color = horas > 72 ? C.red : horas > 30 ? C.yellow : C.green;
+            bg    = horas > 72 ? C.redBg : horas > 30 ? C.yellowBg : C.greenBg;
+            txt   = horas > 72 ? C.redDk : horas > 30 ? C.yellowDk : C.greenDk;
+            tip   = `Última sincronización: ${gpUltActualiz}`;
+          }
+          return <div title={tip} style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:4,
             padding:"3px 8px",borderRadius:12,background:bg,border:`0.5px solid ${color}`}}>
             <span style={{width:6,height:6,borderRadius:"50%",background:color}}/>
             <span style={{fontSize:9,color:txt,fontWeight:600}}>
-              GP Sheet · {hace}
+              GP Sheet · {texto}
             </span>
-            {onRefreshGP && <button onClick={onRefreshGP} disabled={gpLoading}
+            {onRefreshGP && <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
               style={{background:"none",border:"none",padding:0,marginLeft:2,
                 color:txt,fontSize:9,fontWeight:700,cursor:gpLoading?"wait":"pointer",
                 textDecoration:"underline",opacity:gpLoading?0.5:1}}>
@@ -7024,8 +7030,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         Cliente sigue sin panel (mantiene solo su lista simplificada). */}
     {!verHistorial && vePanelEjecutivo(usuario.rol) && (
       <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
-        gpEstado={gpEstado} gpDisponible={gpDisponible} onRefreshGP={onRefreshGP} gpLoading={gpLoading}
-        onSelectObra={onSelect}/>
+        gpDisponible={gpDisponible} onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}

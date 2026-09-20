@@ -180,6 +180,36 @@ for (const label of ['Gastado', 'Margen']) {
 check(!!kpis['Contratado'] && !/gpDisponible/.test(kpis['Contratado']),
   'el KPI "Contratado" no depende de GP y se sigue mostrando');
 
+// El motivo técnico no se pinta: va en el tooltip. En pantalla, "no
+// disponible" y nada más. `_GP_NOTA` sólo puede consumirse dentro de un
+// `title=`, nunca como texto de un KPI ni de un chip.
+const notaSrc = initModulo('_GP_NOTA');
+check(!!notaSrc, 'existe _GP_NOTA');
+const NOTA = notaSrc ? new Function(`return ${notaSrc};`)() : {};
+check(Object.keys(NOTA).length > 0 &&
+      !Object.values(NOTA).some(v => /nunca|jamás|no se ha sincronizado/i.test(v)),
+  'ningún motivo de _GP_NOTA usa frases alarmantes ("nunca", "jamás")');
+for (const label of ['Gastado', 'Margen']) {
+  check(!!kpis[label] && !/_GP_NOTA/.test(kpis[label]),
+    `el KPI "${label}" no pinta el motivo técnico, sólo "no disponible"`);
+}
+// El chip: misma píldora que la de frescura (borderRadius 12 + punto de
+// color), texto "no disponible", motivo en `title`.
+let chip = null;
+traverse(ast, {
+  JSXElement(p) {
+    if (chip) return;
+    const src = fuente(p.node);
+    if (/GP Sheet ·/.test(src) && /borderRadius:12/.test(src)) chip = src;
+  },
+});
+check(!!chip, 'el estado de GP se muestra en la píldora "GP Sheet ·", no en una caja aparte');
+check(!!chip && /no disponible/.test(chip), 'el chip dice "no disponible"');
+check(!!chip && /title=\{tip\}/.test(chip) && /_GP_NOTA/.test(chip),
+  'el motivo técnico del chip va en title (tooltip), no en el texto visible');
+check(!!chip && /Refrescar/.test(chip),
+  'el chip ofrece "Refrescar" como enlace al lado');
+
 // ── 4. Completud: llegada, no existencia ───────────────────────────────
 console.log('\n4. Guard de carga — ¿distingue "vacío" de "no ha llegado"?');
 
