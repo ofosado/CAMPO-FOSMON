@@ -79,6 +79,60 @@ Esto aplica de aquí en adelante a todo KPI, gráfica, PDF y exportación.
 
 ---
 
+## P3. Una prueba verifica que el comportamiento ocurre, no que el mecanismo existe
+
+**Adoptado**: 2026-09-20, rama `fix/arranque`.
+
+Probar que una constante está declarada, que un estado está escrito o
+que existe una transición **no prueba que ese camino sea alcanzable**.
+Una prueba que sólo confirma la presencia del mecanismo pasa igual de
+verde cuando el mecanismo está muerto.
+
+**Por qué**: el caso concreto de esta rama. Se construyó el reintento
+automático de GP con su tabla de esperas (`GP_REINTENTOS_MS`), su
+estado `error_transitorio` y su watchdog. Se escribieron **41
+aserciones** sobre GP y **todas pasaron**. Ninguna detectó que el
+camino era inalcanzable: `cargarGP` leía con `fsGet`, que hace
+`catch { return null; }` (`src/App.jsx:2154`), así que *cualquier*
+fallo —red caída, timeout del service worker, permiso denegado—
+llegaba como `null` indistinguible de "el documento no existe" y se
+clasificaba como `sin_sincronizar`, el único estado que **no** se
+reintenta. El `catch` externo era código muerto, `error_transitorio`
+nunca se alcanzaba y el reintento nunca corría.
+
+Lo detectó el usuario **por el comportamiento**, no por el código: el
+mensaje decía "nunca se sincronizó" pero al picar Refrescar cargó de
+inmediato. Un fallo transitorio no puede terminar en el estado que
+significa "nunca existió".
+
+**Cómo se aplica**, en este orden:
+
+1. **Pregunta primero qué entra.** Antes de afirmar que un estado se
+   alcanza, identifica *quién* produce el valor que lo dispara. Si el
+   valor pasa por un helper, el helper es parte del camino.
+2. **Sigue el camino completo hasta la entrada.** Un `catch` sólo se
+   ejecuta si algo llega a lanzar. Si en medio hay un `try/catch` que
+   devuelve un valor neutral, todo lo que está después es código
+   muerto y la prueba debe decirlo.
+3. **Ejecuta el comportamiento, no leas el código.** Donde se pueda,
+   evalúa la expresión real contra casos —como hace
+   `scripts/prueba-guarda-modo-volumen.cjs`, que extrae por AST el
+   updater y lo corre. Una aserción de texto sobre el fuente es el
+   último recurso, no el primero.
+4. **Cuando no se pueda ejecutar, prueba la alcanzabilidad por
+   estructura.** `scripts/prueba-guarda-arranque.cjs` tiene un
+   detector genérico de helpers que hacen catch-and-return sin
+   relanzar, y afirma que `cargarGP` no lee a través de ninguno. Eso
+   sí habría fallado.
+5. **Verifica que la prueba falle contra el estado anterior.** Una
+   prueba que pasa antes y después del arreglo no prueba nada. En esta
+   rama: `node scripts/prueba-guarda-arranque.cjs /tmp/antes.jsx` con
+   `git show main:src/App.jsx` — 40 fallas contra `main`, 0 en la
+   rama. Si el número contra el estado anterior es cero, la prueba
+   está mal escrita.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
@@ -1290,10 +1344,123 @@ mal hecho borra avance de forma definitiva y silenciosa.
 
 ---
 
+## 22. `fsGet` y compañía se tragan cualquier fallo — causa raíz de toda una familia
+
+**Prioridad**: alta. Detectado 2026-09-20 durante `fix/arranque`.
+
+Los cuatro helpers de Firestore devuelven un valor neutral ante
+cualquier excepción (`src/App.jsx:2154-2157`):
+
+```js
+const fsGet  = async (path) => { try { ... return d.exists() ? d.data() : null; } catch { return null; } };
+const fsSet  = async (path, data) => { try { ... return true; } catch(e) { console.error('fsSet',e); return false; } };
+const fsDel  = async (path) => { try { ... return true; } catch { return false; } };
+const fsColl = async (path) => { try { ... return s.docs.map(...); } catch { return []; } };
+```
+
+**Por qué importa**: el `catch` sin `throw` hace que **"falló" sea
+indistinguible de "está vacío"**. Es exactamente el defecto que ya se
+arregló tres veces esta semana por separado:
+
+- el ejecutado topado al catálogo (`fix/ejecutado-sin-recorte`),
+- los KPIs que arrancaban en cero (pendiente #3 → principio P2),
+- el guard que confundía "sin partidas" con "no ha llegado"
+  (`fix/arranque`, `datosObraCompletos`).
+
+Aquí está la causa raíz de esa familia. Además hace **inalcanzable**
+todo manejo de error corriente abajo: el `try/catch` que envuelve una
+llamada a `fsGet` es código muerto, porque `fsGet` ya no lanza. Ver
+principio P3.
+
+**Dimensión de la rama** (medido 2026-09-20, todo confinado a
+`src/App.jsx`):
+
+| helper | llamadas | nota |
+|---|---|---|
+| `fsGet` | 34 | el grueso del trabajo |
+| `fsSet` | 16 | ya loguea, pero el llamador no distingue |
+| `fsDel` | 14 | |
+| `fsColl` | **0** | **código muerto** — sólo existe la definición; se borra |
+
+**El sitio más peligroso — `src/App.jsx:11669`**:
+
+```js
+if (catalogoGuardado) {
+  try {
+    const subsPrev = await fsGet(`obras/${obra.id}/avance/subs`);
+    const arr = (subsPrev && Array.isArray(subsPrev.data)) ? subsPrev.data : [];
+    arr.forEach(s => { if (s.sec) subsPreviosMap.set(...) });
+  } catch (e) { console.warn('No se pudo leer avance previo:', e); }
+}
+```
+
+Lee el avance previo para **preservarlo** (`a`, `cantEjec`, fotos) al
+recargar el catálogo. Un fallo transitorio devuelve `null` → mapa
+vacío → **pérdida silenciosa de avance**, el mismo daño del pendiente
+#21. Y su `catch` nunca corre. Este sitio se arregla primero.
+
+**Mismo patrón fuera de los cuatro**: `crearSnapshotAvance`
+(`src/App.jsx:2368`) y `crearSnapshotAvanceSub` (`src/App.jsx:2431`)
+también hacen catch-and-return sin relanzar. Los detecta el bloque de
+alcanzabilidad de `scripts/prueba-guarda-arranque.cjs`.
+
+**Qué hacer**:
+
+1. Que los helpers **relancen** —o devuelvan un resultado explícito
+   tipo `{ok, dato, error}`— en vez de un valor neutral. La ausencia
+   del documento (`!exists()`) sigue siendo un caso legítimo y debe
+   quedar distinguible del fallo.
+2. Recorrer los 64 sitios de llamada decidiendo, en cada uno, qué
+   significa el fallo: reintentar, marcar "no disponible" (P2), o
+   abortar la operación. Los de escritura y borrado no pueden
+   continuar como si hubieran tenido éxito.
+3. Borrar `fsColl`.
+4. Extender el detector de la prueba a que **falle** si aparece un
+   helper nuevo con el mismo patrón.
+
+**Precedente ya resuelto**: `cargarGP` en `fix/arranque` dejó de usar
+`fsGet` y lee con `getDoc` directo, precisamente para que la excepción
+llegue y se pueda clasificar transitorio vs. terminal. Ese es el
+modelo a replicar.
+
+---
+
+## 23. `networkTimeoutSeconds: 5` del service worker afecta toda lectura de Firestore
+
+**Prioridad**: media-alta. Detectado 2026-09-20 durante `fix/arranque`.
+Va en **rama aparte** porque toca `vite.config.js` y el cambio afecta
+todas las lecturas, no sólo GP.
+
+`vite.config.js:74-81`:
+
+```js
+{ urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
+  handler: 'NetworkFirst',
+  options: { cacheName: 'firestore-cache', networkTimeoutSeconds: 5,
+             expiration: { maxEntries: 50, maxAgeSeconds: 60*60*24 } } }
+```
+
+Es el disparador concreto más probable del fallo transitorio de GP que
+se observó: con red lenta, Workbox corta a los 5 s y responde desde
+caché —o falla— antes de que Firestore conteste. Cinco segundos es
+poco para la primera lectura en frío desde obra.
+
+**Qué revisar**:
+
+1. Si interceptar Firestore con `NetworkFirst` tiene sentido: el SDK
+   ya trae su propia persistencia y reintentos, y el canal `Listen` es
+   de larga duración. Puede que lo correcto sea **excluir** el dominio
+   del service worker.
+2. Si se conserva, subir el timeout y medir con red degradada.
+3. `maxAgeSeconds: 86400` significa que una respuesta de hasta 24 h
+   puede servirse como si fuera fresca.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
-Los principios P1 y P2 (arriba) no están en esta tabla: no se cierran,
-gobiernan.
+Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
+cierran, gobiernan.
 
 | # | Pendiente | Bloquea demo | Prioridad |
 |---|---|---|---|
@@ -1318,6 +1485,8 @@ gobiernan.
 | 19 | `setObra` sin declarar en GastosGP | | alta |
 | 20 | Verificación de ámbito permanente | | alta |
 | 21 | Cambio de modo borra avance en silencio | | alta |
+| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — causa raíz de #3, #8 y #21 |
+| 23 | `networkTimeoutSeconds: 5` del service worker | | media-alta (rama aparte) |
 
 ---
 

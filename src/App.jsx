@@ -4719,25 +4719,45 @@ function useGPConstruct() {
           console.error('refrescarGP falló:', e);
         }
       }
-      // Leer SOLO el resumen (ligero) del Firestore
-      const cached = await fsGet('global/gp_construct');
-      const resumen = extraerResumen(cached);
-      if (resumen && resumen.parserVersion === PARSER_VERSION) {
-        setGpData(resumen);
-        setGpUltActualiz(new Date(resumen.ultimaActualizacion).toLocaleString('es-MX'));
-        setGpEstado('listo');
-        if (mensajeError) setGpError(mensajeError);
-      } else if (resumen) {
-        setGpEstado('version_vieja');
-        setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar.');
-      } else {
+      // Leer SOLO el resumen (ligero) del Firestore.
+      //
+      // OJO: aquí NO se usa `fsGet`. `fsGet` hace `catch { return null; }`
+      // (línea ~2154), o sea que se traga toda excepción y devuelve el mismo
+      // `null` para "el documento no existe", "se cayó la red", "no hay
+      // permiso" y "se agotó el tiempo". Con `fsGet` este bloque clasificaba
+      // CUALQUIER fallo como `sin_sincronizar` —el único estado que NO se
+      // reintenta—, y el `catch` de abajo era código muerto porque nunca
+      // llegaba una excepción: el reintento automático jamás se disparaba y
+      // había que picar Refrescar a mano. Con `getDoc` directo el error sí
+      // llega y se puede distinguir lo transitorio de lo terminal.
+      // Ver PENDIENTES #22 para el arreglo de fondo de `fsGet`.
+      const snap = await getDoc(doc(fbDb, 'global', 'gp_construct'));
+      if (!snap.exists()) {
+        // Terminal de verdad: el documento no está. Reintentar no lo crea;
+        // sólo lo crea la Cloud Function que dispara Refrescar.
         setGpEstado('sin_sincronizar');
         setGpError(mensajeError || 'El Sheet no se ha sincronizado nunca. Click Refrescar (la primera tarda ~30s).');
+      } else {
+        const resumen = extraerResumen(snap.data());
+        if (resumen && resumen.parserVersion === PARSER_VERSION) {
+          setGpData(resumen);
+          setGpUltActualiz(new Date(resumen.ultimaActualizacion).toLocaleString('es-MX'));
+          setGpEstado('listo');
+          if (mensajeError) setGpError(mensajeError);
+        } else {
+          // El documento está pero no sirve: otro parser, o formato que
+          // `extraerResumen` no reconoce. Tampoco lo arregla reintentar.
+          setGpEstado('version_vieja');
+          setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar.');
+        }
       }
     } catch (e) {
-      // Transitorio: lo decide el vigilante de reintentos, no este bloque.
-      setGpEstado('error_transitorio');
-      setGpError(`Error al leer caché de GP: ${e.message}`);
+      // Permisos y sesión son terminales: reintentar da exactamente el mismo
+      // error y sólo gasta cuota. Todo lo demás —unavailable, timeout, red
+      // caída, arranque en frío— es transitorio y lo toma el vigilante.
+      const terminal = e?.code === 'permission-denied' || e?.code === 'unauthenticated';
+      setGpEstado(terminal ? 'error' : 'error_transitorio');
+      setGpError(`Error al leer caché de GP (${e?.code || 'desconocido'}): ${e?.message || e}`);
     }
     setGpLoading(false);
   }, []);

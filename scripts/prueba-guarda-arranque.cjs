@@ -158,6 +158,97 @@ check(/setGpEstado\(\s*['"]error['"]\s*\)/.test(codigo),
 check(/GP_TOPE_INTENTO_MS/.test(codigo),
   'existe tope duro por intento — la promesa que nunca resuelve igual sale de "cargando"');
 
+// ── ALCANZABILIDAD ─────────────────────────────────────────────────────
+// Lo anterior sólo prueba que el mecanismo EXISTE. El defecto real fue
+// otro: existía y era inalcanzable. `cargarGP` leía con `fsGet`, que hace
+// `catch { return null; }`, así que la excepción nunca llegaba, el catch
+// era código muerto, `error_transitorio` no se ponía nunca y el reintento
+// automático jamás corría. Principio P3: probar el comportamiento, no la
+// existencia del mecanismo.
+//
+// Primero, catálogo de helpers que se tragan excepciones: capturan y
+// devuelven un valor en vez de propagar.
+const tragones = [];
+traverse(ast, {
+  VariableDeclarator(p) {
+    if (p.getFunctionParent()) return;                 // solo módulo
+    const init = p.node.init;
+    if (!init || !/Function/.test(init.type)) return;
+    const src = fuente(init);
+    if (/catch\s*(\([^)]*\))?\s*\{[^{}]*return/.test(src) && !/throw/.test(src)) {
+      tragones.push(p.node.id.name);
+    }
+  },
+});
+check(tragones.includes('fsGet'),
+  `el detector reconoce helpers que se tragan excepciones (${tragones.join(', ') || 'ninguno'})`);
+
+// Segundo: el camino de lectura de GP no puede pasar por ninguno de ellos.
+let cargarGPpath = null;
+traverse(ast, {
+  VariableDeclarator(p) {
+    if (cargarGPpath || p.node.id?.name !== 'cargarGP') return;
+    cargarGPpath = p;
+  },
+});
+check(!!cargarGPpath, 'se encontró cargarGP');
+const cargarGPsrc = cargarGPpath ? fuente(cargarGPpath.node.init) : '';
+
+const usados = tragones.filter(t => new RegExp(`\\b${t}\\s*\\(`).test(cargarGPsrc || ''));
+check(usados.length === 0,
+  `cargarGP no lee a través de un helper que se traga el error${usados.length ? ' — usa: ' + usados.join(', ') : ''}`);
+check(!!cargarGPsrc && /getDoc\s*\(/.test(cargarGPsrc),
+  'cargarGP lee con getDoc directo, así que la excepción sí llega');
+// El catch de MÁS AFUERA de cargarGP es el que recibe el fallo de lectura.
+// Se mira ese, no el archivo entero: el `forzar` tiene su propio try/catch
+// para la Cloud Function y no debe confundirse con éste.
+let catchLectura = null;
+if (cargarGPpath) {
+  cargarGPpath.traverse({
+    TryStatement(p) {
+      if (catchLectura) return;
+      if (!/getDoc\s*\(/.test(fuente(p.node.block))) return;   // el que lee
+      catchLectura = fuente(p.node.handler);
+    },
+  });
+}
+check(!!catchLectura && /error_transitorio/.test(catchLectura),
+  "el catch de la lectura clasifica como 'error_transitorio' — el estado que SÍ reintenta");
+
+// Tercero: `sin_sincronizar` sólo puede salir de una ausencia comprobada
+// del documento, no de un `null` de origen desconocido. Ése fue el
+// diagnóstico erróneo que obligó a picar Refrescar a mano.
+let ramaNoExiste = null;
+if (cargarGPpath) {
+  cargarGPpath.traverse({
+    IfStatement(p) {
+      if (ramaNoExiste) return;
+      if (/^!\s*\w+\.exists\(\)$/.test(fuente(p.node.test).trim())) {
+        ramaNoExiste = fuente(p.node.consequent);
+      }
+    },
+  });
+}
+check(!!ramaNoExiste && /sin_sincronizar/.test(ramaNoExiste),
+  "'sin_sincronizar' se pone sólo cuando el documento comprobadamente no existe");
+// Y al revés: no puede ponerse en ningún otro sitio. Se cuentan llamadas
+// reales por AST, no coincidencias de texto — los comentarios nombran el
+// estado y falsearían el conteo.
+let vecesSinSinc = 0;
+if (cargarGPpath) {
+  cargarGPpath.traverse({
+    CallExpression(p) {
+      if (p.node.callee?.name !== 'setGpEstado') return;
+      const a = p.node.arguments[0];
+      if (a?.type === 'StringLiteral' && a.value === 'sin_sincronizar') vecesSinSinc++;
+    },
+  });
+}
+check(vecesSinSinc === 1,
+  `'sin_sincronizar' se pone en un solo lugar de cargarGP (${vecesSinSinc})`);
+check(!!cargarGPsrc && /permission-denied/.test(cargarGPsrc),
+  'los fallos terminales (permisos, sesión) se distinguen de los transitorios y no se reintentan');
+
 // Los dos KPIs que dependen de GP no pueden pintar una cifra sin GP.
 const kpis = {};
 traverse(ast, {
