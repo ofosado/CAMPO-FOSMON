@@ -12,6 +12,127 @@ resto va después. Dentro de cada bloque, orden por impacto descendente.
 
 ---
 
+# PRINCIPIOS DEL PRODUCTO
+
+No son pendientes: son reglas ya decididas que gobiernan cualquier
+cambio futuro. Si un pendiente de abajo contradice a uno de éstos, gana
+el principio. Cada uno nació de un defecto real, y ahí está la razón de
+por qué se escribió.
+
+---
+
+## P1. El dinero nunca se topa; el avance físico siempre se topa al 100% por partida
+
+**Adoptado**: 2026-09-19, rama `fix/ejecutado-sin-recorte` (main `be09152`).
+
+El importe ejecutado de una partida se calcula sin recorte: si se
+ejecutó más volumen del que el catálogo previó, el dinero lo refleja.
+El porcentaje de avance físico de una partida sí se topa al 100%,
+porque un avance físico de 630% no significa nada para quien lo lee.
+
+**Por qué**: el recorte silencioso escondía $3,824,490.81 de ejecutado
+real en el portafolio ($210,427,019.87 → $214,251,510.68). El dinero
+recortado no es conservador, es incorrecto: el contrato se cierra por
+compensación de volúmenes, no partida por partida.
+
+**Cómo se aplica**: cualquier `Math.min` sobre un importe es sospechoso
+y hay que justificarlo. Sobre un porcentaje de avance físico, es
+obligatorio. Detalle largo en el pendiente #8.
+
+---
+
+## P2. Una cifra que no se pudo calcular se marca "no disponible", jamás se sustituye por cero
+
+**Adoptado**: 2026-09-19, rama `fix/arranque`.
+
+Si el insumo de una cifra no llegó —falló la red, el Sheet no se
+sincronizó, un listener no resolvió— la cifra se muestra como **"no
+disponible"** con la razón al lado. Nunca `$0`, nunca `0%`, nunca una
+barra vacía, nunca un margen del 100%.
+
+**Por qué**: un cero es indistinguible de un dato bueno. El caso
+concreto: cuando `gpData` no llegaba, `resolverGastoGP` caía a
+`obra.gastoGP || 0` (`src/App.jsx:3270`), el gasto salía en cero y el
+margen consolidado en ~100%. Ese número se enseñó en pantalla como si
+fuera real. Un "no disponible" se lee como lo que es —falta un dato— y
+provoca la pregunta correcta; un cero provoca una decisión equivocada.
+Es la misma familia que los pendientes #2 y #3.
+
+**Cómo se aplica**, en este orden:
+
+1. **Prohibido el fallback a cero** en el cálculo. Si el insumo falta,
+   la función devuelve `null`, no `0`.
+2. **La pantalla distingue tres estados**, no dos: *cargando*,
+   *disponible*, *no disponible con razón*. `null` y `0` no pueden
+   compartir representación.
+3. **Nada se queda en "cargando" para siempre.** Todo camino de carga
+   necesita tope de espera y salida a un estado terminal. En
+   `fix/arranque`: `ESPERA_MAX_MS` para los datos por obra,
+   `GP_TOPE_INTENTO_MS` + `GP_REINTENTOS_MS` para GP.
+4. **La razón se dice y, si hay acción, se ofrece.** "no disponible" a
+   secas es casi tan malo como el cero. Ver `_GP_NOTA` y el botón
+   Refrescar del Panel principal.
+5. **Lo que no cargó se lista, no se oculta.** Un consolidado al que le
+   falta una obra debe decir cuál.
+
+Esto aplica de aquí en adelante a todo KPI, gráfica, PDF y exportación.
+
+---
+
+## P3. Una prueba verifica que el comportamiento ocurre, no que el mecanismo existe
+
+**Adoptado**: 2026-09-20, rama `fix/arranque`.
+
+Probar que una constante está declarada, que un estado está escrito o
+que existe una transición **no prueba que ese camino sea alcanzable**.
+Una prueba que sólo confirma la presencia del mecanismo pasa igual de
+verde cuando el mecanismo está muerto.
+
+**Por qué**: el caso concreto de esta rama. Se construyó el reintento
+automático de GP con su tabla de esperas (`GP_REINTENTOS_MS`), su
+estado `error_transitorio` y su watchdog. Se escribieron **41
+aserciones** sobre GP y **todas pasaron**. Ninguna detectó que el
+camino era inalcanzable: `cargarGP` leía con `fsGet`, que hace
+`catch { return null; }` (`src/App.jsx:2154`), así que *cualquier*
+fallo —red caída, timeout del service worker, permiso denegado—
+llegaba como `null` indistinguible de "el documento no existe" y se
+clasificaba como `sin_sincronizar`, el único estado que **no** se
+reintenta. El `catch` externo era código muerto, `error_transitorio`
+nunca se alcanzaba y el reintento nunca corría.
+
+Lo detectó el usuario **por el comportamiento**, no por el código: el
+mensaje decía "nunca se sincronizó" pero al picar Refrescar cargó de
+inmediato. Un fallo transitorio no puede terminar en el estado que
+significa "nunca existió".
+
+**Cómo se aplica**, en este orden:
+
+1. **Pregunta primero qué entra.** Antes de afirmar que un estado se
+   alcanza, identifica *quién* produce el valor que lo dispara. Si el
+   valor pasa por un helper, el helper es parte del camino.
+2. **Sigue el camino completo hasta la entrada.** Un `catch` sólo se
+   ejecuta si algo llega a lanzar. Si en medio hay un `try/catch` que
+   devuelve un valor neutral, todo lo que está después es código
+   muerto y la prueba debe decirlo.
+3. **Ejecuta el comportamiento, no leas el código.** Donde se pueda,
+   evalúa la expresión real contra casos —como hace
+   `scripts/prueba-guarda-modo-volumen.cjs`, que extrae por AST el
+   updater y lo corre. Una aserción de texto sobre el fuente es el
+   último recurso, no el primero.
+4. **Cuando no se pueda ejecutar, prueba la alcanzabilidad por
+   estructura.** `scripts/prueba-guarda-arranque.cjs` tiene un
+   detector genérico de helpers que hacen catch-and-return sin
+   relanzar, y afirma que `cargarGP` no lee a través de ninguno. Eso
+   sí habría fallado.
+5. **Verifica que la prueba falle contra el estado anterior.** Una
+   prueba que pasa antes y después del arreglo no prueba nada. En esta
+   rama: `node scripts/prueba-guarda-arranque.cjs /tmp/antes.jsx` con
+   `git show main:src/App.jsx` — 40 fallas contra `main`, 0 en la
+   rama. Si el número contra el estado anterior es cero, la prueba
+   está mal escrita.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
@@ -130,6 +251,17 @@ que le enseñamos el sistema por primera vez**. Un dashboard atorado en
 4. Estado vacío digno si tras N reintentos no llega: botón "Reintentar
    sincronización" en vez de spinner eterno.
 
+**Estado (2026-09-19, rama `fix/arranque`)**: atacado por el lado de la
+consecuencia, no de la causa. `useGPConstruct` ya no puede quedarse en
+"cargando": tiene máquina de estados explícita (`gpEstado`), tres
+reintentos con espera creciente para la falla transitoria, tope duro por
+intento y botón Refrescar en el panel. Mientras GP no esté, gasto y
+margen se marcan "no disponible" (principio P2).
+
+**Sigue abierto**: la causa raíz. No se reprodujo el primer ingreso ni
+se validó la hipótesis del race con `onAuthStateChanged`. Los puntos 1 y
+2 de la propuesta siguen pendientes; los puntos 3 y 4 ya están.
+
 **Bloquea demo**: sí. Y es la primera impresión.
 
 **Prioridad**: crítica. Reproducir primero, arreglar después.
@@ -166,6 +298,21 @@ de datos, no por asunción optimista.
    se espera, en vez de `$0` que miente.
 3. Timeout: si tras N segundos no llega el dato, mostrar "Sin conexión
    a Firestore" con botón de reintentar.
+
+**Estado (2026-09-19, rama `fix/arranque`)**: resuelto **sólo en el
+Panel principal**. El guard `todosCargados` preguntaba si
+`datosPorObra[id]` existía, y la entrada se crea en cuanto llega el
+PRIMERO de los 8 listeners —con los otros 7 vacíos—, así que el guard
+dejaba pasar precisamente el caso que debía bloquear. Ahora cada llegada
+se registra en `_listos` y `datosObraCompletos` exige las 8 claves; los
+callbacks de error también marcan resuelto, si no un listener sin
+permiso dejaría el panel esperando para siempre. Tope `ESPERA_MAX_MS`
+(12 s) y las obras que no llegaron se listan por id, no se ocultan.
+
+**Sigue abierto**: los otros dos sitios del apartado "Dónde ocurre" —
+las tarjetas de la lista de obras y los módulos internos por obra
+(nómina, estimaciones). El punto 2 de la propuesta (esqueleto gris en
+vez de `$0`) tampoco está hecho: hoy es texto "cargando N de M".
 
 **Bloquea demo**: sí. Cualquier cifra en 0 que salta a 21M en pantalla
 frente al cliente es un signo de fragilidad.
@@ -1197,13 +1344,129 @@ mal hecho borra avance de forma definitiva y silenciosa.
 
 ---
 
+## 22. `fsGet` y compañía se tragan cualquier fallo — causa raíz de toda una familia
+
+**Prioridad**: alta. Detectado 2026-09-20 durante `fix/arranque`.
+
+Los cuatro helpers de Firestore devuelven un valor neutral ante
+cualquier excepción (`src/App.jsx:2154-2157`):
+
+```js
+const fsGet  = async (path) => { try { ... return d.exists() ? d.data() : null; } catch { return null; } };
+const fsSet  = async (path, data) => { try { ... return true; } catch(e) { console.error('fsSet',e); return false; } };
+const fsDel  = async (path) => { try { ... return true; } catch { return false; } };
+const fsColl = async (path) => { try { ... return s.docs.map(...); } catch { return []; } };
+```
+
+**Por qué importa**: el `catch` sin `throw` hace que **"falló" sea
+indistinguible de "está vacío"**. Es exactamente el defecto que ya se
+arregló tres veces esta semana por separado:
+
+- el ejecutado topado al catálogo (`fix/ejecutado-sin-recorte`),
+- los KPIs que arrancaban en cero (pendiente #3 → principio P2),
+- el guard que confundía "sin partidas" con "no ha llegado"
+  (`fix/arranque`, `datosObraCompletos`).
+
+Aquí está la causa raíz de esa familia. Además hace **inalcanzable**
+todo manejo de error corriente abajo: el `try/catch` que envuelve una
+llamada a `fsGet` es código muerto, porque `fsGet` ya no lanza. Ver
+principio P3.
+
+**Dimensión de la rama** (medido 2026-09-20, todo confinado a
+`src/App.jsx`):
+
+| helper | llamadas | nota |
+|---|---|---|
+| `fsGet` | 34 | el grueso del trabajo |
+| `fsSet` | 16 | ya loguea, pero el llamador no distingue |
+| `fsDel` | 14 | |
+| `fsColl` | **0** | **código muerto** — sólo existe la definición; se borra |
+
+**El sitio más peligroso — `src/App.jsx:11669`**:
+
+```js
+if (catalogoGuardado) {
+  try {
+    const subsPrev = await fsGet(`obras/${obra.id}/avance/subs`);
+    const arr = (subsPrev && Array.isArray(subsPrev.data)) ? subsPrev.data : [];
+    arr.forEach(s => { if (s.sec) subsPreviosMap.set(...) });
+  } catch (e) { console.warn('No se pudo leer avance previo:', e); }
+}
+```
+
+Lee el avance previo para **preservarlo** (`a`, `cantEjec`, fotos) al
+recargar el catálogo. Un fallo transitorio devuelve `null` → mapa
+vacío → **pérdida silenciosa de avance**, el mismo daño del pendiente
+#21. Y su `catch` nunca corre. Este sitio se arregla primero.
+
+**Mismo patrón fuera de los cuatro**: `crearSnapshotAvance`
+(`src/App.jsx:2368`) y `crearSnapshotAvanceSub` (`src/App.jsx:2431`)
+también hacen catch-and-return sin relanzar. Los detecta el bloque de
+alcanzabilidad de `scripts/prueba-guarda-arranque.cjs`.
+
+**Qué hacer**:
+
+1. Que los helpers **relancen** —o devuelvan un resultado explícito
+   tipo `{ok, dato, error}`— en vez de un valor neutral. La ausencia
+   del documento (`!exists()`) sigue siendo un caso legítimo y debe
+   quedar distinguible del fallo.
+2. Recorrer los 64 sitios de llamada decidiendo, en cada uno, qué
+   significa el fallo: reintentar, marcar "no disponible" (P2), o
+   abortar la operación. Los de escritura y borrado no pueden
+   continuar como si hubieran tenido éxito.
+3. Borrar `fsColl`.
+4. Extender el detector de la prueba a que **falle** si aparece un
+   helper nuevo con el mismo patrón.
+
+**Precedente ya resuelto**: `cargarGP` en `fix/arranque` dejó de usar
+`fsGet` y lee con `getDoc` directo, precisamente para que la excepción
+llegue y se pueda clasificar transitorio vs. terminal. Ese es el
+modelo a replicar.
+
+---
+
+## 23. `networkTimeoutSeconds: 5` del service worker afecta toda lectura de Firestore
+
+**Prioridad**: media-alta. Detectado 2026-09-20 durante `fix/arranque`.
+Va en **rama aparte** porque toca `vite.config.js` y el cambio afecta
+todas las lecturas, no sólo GP.
+
+`vite.config.js:74-81`:
+
+```js
+{ urlPattern: /^https:\/\/firestore\.googleapis\.com\/.*/i,
+  handler: 'NetworkFirst',
+  options: { cacheName: 'firestore-cache', networkTimeoutSeconds: 5,
+             expiration: { maxEntries: 50, maxAgeSeconds: 60*60*24 } } }
+```
+
+Es el disparador concreto más probable del fallo transitorio de GP que
+se observó: con red lenta, Workbox corta a los 5 s y responde desde
+caché —o falla— antes de que Firestore conteste. Cinco segundos es
+poco para la primera lectura en frío desde obra.
+
+**Qué revisar**:
+
+1. Si interceptar Firestore con `NetworkFirst` tiene sentido: el SDK
+   ya trae su propia persistencia y reintentos, y el canal `Listen` es
+   de larga duración. Puede que lo correcto sea **excluir** el dominio
+   del service worker.
+2. Si se conserva, subir el timeout y medir con red degradada.
+3. `maxAgeSeconds: 86400` significa que una respuesta de hasta 24 h
+   puede servirse como si fuera fresca.
+
+---
+
 # Referencia rápida — resumen de prioridad
+
+Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
+cierran, gobiernan.
 
 | # | Pendiente | Bloquea demo | Prioridad |
 |---|---|---|---|
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
-| 2 | Primer ingreso GP en "cargando" | sí | crítica |
-| 3 | KPIs arrancan en cero | sí | crítica |
+| 2 | Primer ingreso GP en "cargando" | sí | crítica — consecuencia mitigada en `fix/arranque`, causa raíz abierta |
+| 3 | KPIs arrancan en cero | sí | crítica — resuelto en Panel principal (`fix/arranque`), abierto en lista de obras y módulos |
 | 4 | Cuentas de prueba dedicadas | sí | crítica |
 | 5 | Probar restauración del respaldo | sí | crítica |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
@@ -1222,6 +1485,8 @@ mal hecho borra avance de forma definitiva y silenciosa.
 | 19 | `setObra` sin declarar en GastosGP | | alta |
 | 20 | Verificación de ámbito permanente | | alta |
 | 21 | Cambio de modo borra avance en silencio | | alta |
+| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — causa raíz de #3, #8 y #21 |
+| 23 | `networkTimeoutSeconds: 5` del service worker | | media-alta (rama aparte) |
 
 ---
 
