@@ -12,6 +12,73 @@ resto va después. Dentro de cada bloque, orden por impacto descendente.
 
 ---
 
+# PRINCIPIOS DEL PRODUCTO
+
+No son pendientes: son reglas ya decididas que gobiernan cualquier
+cambio futuro. Si un pendiente de abajo contradice a uno de éstos, gana
+el principio. Cada uno nació de un defecto real, y ahí está la razón de
+por qué se escribió.
+
+---
+
+## P1. El dinero nunca se topa; el avance físico siempre se topa al 100% por partida
+
+**Adoptado**: 2026-09-19, rama `fix/ejecutado-sin-recorte` (main `be09152`).
+
+El importe ejecutado de una partida se calcula sin recorte: si se
+ejecutó más volumen del que el catálogo previó, el dinero lo refleja.
+El porcentaje de avance físico de una partida sí se topa al 100%,
+porque un avance físico de 630% no significa nada para quien lo lee.
+
+**Por qué**: el recorte silencioso escondía $3,824,490.81 de ejecutado
+real en el portafolio ($210,427,019.87 → $214,251,510.68). El dinero
+recortado no es conservador, es incorrecto: el contrato se cierra por
+compensación de volúmenes, no partida por partida.
+
+**Cómo se aplica**: cualquier `Math.min` sobre un importe es sospechoso
+y hay que justificarlo. Sobre un porcentaje de avance físico, es
+obligatorio. Detalle largo en el pendiente #8.
+
+---
+
+## P2. Una cifra que no se pudo calcular se marca "no disponible", jamás se sustituye por cero
+
+**Adoptado**: 2026-09-19, rama `fix/arranque`.
+
+Si el insumo de una cifra no llegó —falló la red, el Sheet no se
+sincronizó, un listener no resolvió— la cifra se muestra como **"no
+disponible"** con la razón al lado. Nunca `$0`, nunca `0%`, nunca una
+barra vacía, nunca un margen del 100%.
+
+**Por qué**: un cero es indistinguible de un dato bueno. El caso
+concreto: cuando `gpData` no llegaba, `resolverGastoGP` caía a
+`obra.gastoGP || 0` (`src/App.jsx:3270`), el gasto salía en cero y el
+margen consolidado en ~100%. Ese número se enseñó en pantalla como si
+fuera real. Un "no disponible" se lee como lo que es —falta un dato— y
+provoca la pregunta correcta; un cero provoca una decisión equivocada.
+Es la misma familia que los pendientes #2 y #3.
+
+**Cómo se aplica**, en este orden:
+
+1. **Prohibido el fallback a cero** en el cálculo. Si el insumo falta,
+   la función devuelve `null`, no `0`.
+2. **La pantalla distingue tres estados**, no dos: *cargando*,
+   *disponible*, *no disponible con razón*. `null` y `0` no pueden
+   compartir representación.
+3. **Nada se queda en "cargando" para siempre.** Todo camino de carga
+   necesita tope de espera y salida a un estado terminal. En
+   `fix/arranque`: `ESPERA_MAX_MS` para los datos por obra,
+   `GP_TOPE_INTENTO_MS` + `GP_REINTENTOS_MS` para GP.
+4. **La razón se dice y, si hay acción, se ofrece.** "no disponible" a
+   secas es casi tan malo como el cero. Ver `_GP_NOTA` y el botón
+   Refrescar del Panel principal.
+5. **Lo que no cargó se lista, no se oculta.** Un consolidado al que le
+   falta una obra debe decir cuál.
+
+Esto aplica de aquí en adelante a todo KPI, gráfica, PDF y exportación.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
@@ -130,6 +197,17 @@ que le enseñamos el sistema por primera vez**. Un dashboard atorado en
 4. Estado vacío digno si tras N reintentos no llega: botón "Reintentar
    sincronización" en vez de spinner eterno.
 
+**Estado (2026-09-19, rama `fix/arranque`)**: atacado por el lado de la
+consecuencia, no de la causa. `useGPConstruct` ya no puede quedarse en
+"cargando": tiene máquina de estados explícita (`gpEstado`), tres
+reintentos con espera creciente para la falla transitoria, tope duro por
+intento y botón Refrescar en el panel. Mientras GP no esté, gasto y
+margen se marcan "no disponible" (principio P2).
+
+**Sigue abierto**: la causa raíz. No se reprodujo el primer ingreso ni
+se validó la hipótesis del race con `onAuthStateChanged`. Los puntos 1 y
+2 de la propuesta siguen pendientes; los puntos 3 y 4 ya están.
+
 **Bloquea demo**: sí. Y es la primera impresión.
 
 **Prioridad**: crítica. Reproducir primero, arreglar después.
@@ -166,6 +244,21 @@ de datos, no por asunción optimista.
    se espera, en vez de `$0` que miente.
 3. Timeout: si tras N segundos no llega el dato, mostrar "Sin conexión
    a Firestore" con botón de reintentar.
+
+**Estado (2026-09-19, rama `fix/arranque`)**: resuelto **sólo en el
+Panel principal**. El guard `todosCargados` preguntaba si
+`datosPorObra[id]` existía, y la entrada se crea en cuanto llega el
+PRIMERO de los 8 listeners —con los otros 7 vacíos—, así que el guard
+dejaba pasar precisamente el caso que debía bloquear. Ahora cada llegada
+se registra en `_listos` y `datosObraCompletos` exige las 8 claves; los
+callbacks de error también marcan resuelto, si no un listener sin
+permiso dejaría el panel esperando para siempre. Tope `ESPERA_MAX_MS`
+(12 s) y las obras que no llegaron se listan por id, no se ocultan.
+
+**Sigue abierto**: los otros dos sitios del apartado "Dónde ocurre" —
+las tarjetas de la lista de obras y los módulos internos por obra
+(nómina, estimaciones). El punto 2 de la propuesta (esqueleto gris en
+vez de `$0`) tampoco está hecho: hoy es texto "cargando N de M".
 
 **Bloquea demo**: sí. Cualquier cifra en 0 que salta a 21M en pantalla
 frente al cliente es un signo de fragilidad.
@@ -1199,11 +1292,14 @@ mal hecho borra avance de forma definitiva y silenciosa.
 
 # Referencia rápida — resumen de prioridad
 
+Los principios P1 y P2 (arriba) no están en esta tabla: no se cierran,
+gobiernan.
+
 | # | Pendiente | Bloquea demo | Prioridad |
 |---|---|---|---|
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
-| 2 | Primer ingreso GP en "cargando" | sí | crítica |
-| 3 | KPIs arrancan en cero | sí | crítica |
+| 2 | Primer ingreso GP en "cargando" | sí | crítica — consecuencia mitigada en `fix/arranque`, causa raíz abierta |
+| 3 | KPIs arrancan en cero | sí | crítica — resuelto en Panel principal (`fix/arranque`), abierto en lista de obras y módulos |
 | 4 | Cuentas de prueba dedicadas | sí | crítica |
 | 5 | Probar restauración del respaldo | sí | crítica |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |

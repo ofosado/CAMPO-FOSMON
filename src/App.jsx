@@ -3975,6 +3975,47 @@ const PERMISOS = {
   soporte:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
 };
 
+// ── ¿Quién ve el Panel Ejecutivo (consolidado de portafolio)? ──────────
+// FUENTE ÚNICA. Antes esto vivía como lista literal en DOS lugares —el
+// render del panel y el efecto que carga sus datos— y se desincronizaron:
+// `auditor` y `admin_sistema` pintaban el panel pero nadie cargaba sus
+// datos, así que se quedaban en "cargando…" para siempre. No es un bug
+// intermitente: con esos roles fallaba el 100% de las veces.
+//
+// No se puede derivar de `todas_obras`: el auditor ve el consolidado de
+// las obras que tiene asignadas, no de todas. Por eso es lista explícita.
+const ROLES_PANEL_EJECUTIVO = new Set([
+  // Constructora
+  "director_general", "director_operaciones", "gerente_construccion",
+  "admin_sistema",
+  "auditor",            // solo sus obras asignadas (ya filtradas antes de pintar)
+  // Dependencia: son mandos que necesitan el consolidado; sin él el
+  // producto no cumple lo que se les ofrece.
+  "director_obras", "subdirector", "jefe_supervision",
+]);
+const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
+
+// ── Completud de los datos de una obra en el Panel Ejecutivo ───────────
+// El panel se alimenta de 8 listeners por obra. Antes el guard preguntaba
+// si `datosPorObra[id]` existía, y la entrada se crea en cuanto llega el
+// PRIMERO de los 8 —con todos los demás arreglos vacíos—, así que el panel
+// se pintaba con KPIs en cero y se iba corrigiendo solo.
+//
+// Ahora cada llegada se registra en `_listos`. Eso distingue "esta obra no
+// tiene partidas" (subs:[] y subs listo) de "las partidas no han llegado"
+// (subs:[] y subs ausente). Los callbacks de error TAMBIÉN marcan la clave
+// como resuelta: si no lo hicieran, un listener sin permiso dejaría el
+// panel esperando para siempre — cambiaríamos un bug intermitente por uno
+// permanente.
+const CLAVES_BULK = ['info','subs','maquinaria','materiales','estimaciones',
+                     'otrosGastos','nominaSemanas','historialAvanceSemanas'];
+const datosObraCompletos = d => !!d && CLAVES_BULK.every(k => d._listos?.[k]);
+
+// Tope de espera antes de pintar con datos incompletos. Ni el guard de datos
+// ni el de GP pueden bloquear la pantalla indefinidamente: si a los 12 s no
+// llegó algo, se pinta lo que hay y se dice qué falta.
+const ESPERA_MAX_MS = 12000;
+
 // Override de permisos por obra: { [rol]: { [modulo]: "ver"|"editar"|null } }
 // Se setea al entrar a una obra desde Firestore (obras/{id}/config/permisos).
 let _permisosObraOverride = null;
@@ -4621,7 +4662,28 @@ function useGPConstruct() {
   // Cache de detalles ya cargados: { '0114': {grandTotal, rubros, proveedores, ...} }
   const [gpDetalles, setGpDetalles] = useState({});
 
+  // Estado explícito de la carga de GP. Antes sólo existía `gpData === null`,
+  // que confundía tres situaciones muy distintas —falla de red, Sheet nunca
+  // sincronizado, y caché de versión vieja— y las tres dejaban el dato en
+  // null para siempre, sin reintento. Ahora:
+  //   cargando         → en vuelo (o esperando reintento)
+  //   listo            → gpData es utilizable
+  //   sin_sincronizar  → el Sheet nunca se sincronizó; sólo lo arregla Refrescar
+  //   version_vieja    → hay caché pero de otro parser; sólo lo arregla Refrescar
+  //   error            → falla transitoria agotados los reintentos
+  // Los dos primeros terminales NO se reintentan: reintentar una lectura que
+  // devuelve lo mismo sólo gasta cuota. Sólo se reintenta la falla transitoria.
+  const [gpEstado, setGpEstado] = useState('cargando');
+  const [gpIntentos, setGpIntentos] = useState(0);
+
   const PARSER_VERSION = 3;
+  // Reintentos con espera creciente. Tres intentos cubren el corte de red
+  // corto y el arranque en frío; más allá de eso el problema no es transitorio
+  // y seguir reintentando sólo esconde el fallo.
+  const GP_REINTENTOS_MS = [2000, 5000, 15000];
+  // Tope duro por intento: si `fsGet` nunca resuelve, el estado igual sale de
+  // "cargando". Ninguna pantalla puede quedarse cargando indefinidamente.
+  const GP_TOPE_INTENTO_MS = 20000;
 
   // Compatibilidad: el documento global/gp_construct ahora tiene formato nuevo (sin data wrapper)
   // pero leemos también el formato viejo (con data wrapper) por si hay cache previo.
@@ -4663,17 +4725,49 @@ function useGPConstruct() {
       if (resumen && resumen.parserVersion === PARSER_VERSION) {
         setGpData(resumen);
         setGpUltActualiz(new Date(resumen.ultimaActualizacion).toLocaleString('es-MX'));
+        setGpEstado('listo');
         if (mensajeError) setGpError(mensajeError);
       } else if (resumen) {
+        setGpEstado('version_vieja');
         setGpError(mensajeError || 'Caché del Sheet es de una versión vieja. Click Refrescar.');
       } else {
+        setGpEstado('sin_sincronizar');
         setGpError(mensajeError || 'El Sheet no se ha sincronizado nunca. Click Refrescar (la primera tarda ~30s).');
       }
     } catch (e) {
+      // Transitorio: lo decide el vigilante de reintentos, no este bloque.
+      setGpEstado('error_transitorio');
       setGpError(`Error al leer caché de GP: ${e.message}`);
     }
     setGpLoading(false);
   }, []);
+
+  // Vigilante de reintentos: sólo actúa sobre la falla transitoria y sólo
+  // GP_REINTENTOS_MS.length veces. Agotados, el estado queda en 'error' —
+  // nunca vuelve a 'cargando', así que el consumidor siempre puede decidir
+  // qué pintar.
+  useEffect(() => {
+    if (gpEstado !== 'error_transitorio') return;
+    if (gpIntentos >= GP_REINTENTOS_MS.length) { setGpEstado('error'); return; }
+    const t = setTimeout(() => {
+      setGpIntentos(n => n + 1);
+      setGpEstado('cargando');
+      cargarGP();
+    }, GP_REINTENTOS_MS[gpIntentos]);
+    return () => clearTimeout(t);
+  }, [gpEstado, gpIntentos, cargarGP]);
+
+  // Tope duro por intento en vuelo: cubre el caso en que la promesa nunca
+  // resuelve (sin catch que disparar). Se rearma en cada intento porque
+  // cada reintento vuelve a poner 'cargando'.
+  useEffect(() => {
+    if (gpEstado !== 'cargando') return;
+    const t = setTimeout(() => {
+      setGpEstado(e => (e === 'cargando' ? 'error' : e));
+      setGpError(p => p || 'GP no respondió a tiempo. Usa Refrescar.');
+    }, GP_TOPE_INTENTO_MS);
+    return () => clearTimeout(t);
+  }, [gpEstado]);
 
   // Carga el detalle completo (rubros + proveedores) de UNA obra específica
   // Se invoca solo cuando se necesita (ej: al entrar al tab Gastos)
@@ -4694,7 +4788,18 @@ function useGPConstruct() {
 
   useEffect(() => { cargarGP(); }, []);
 
-  return { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles };
+  // Reintento manual: devuelve el presupuesto de reintentos automáticos, que
+  // si no quedaría gastado para siempre tras la primera racha de fallos.
+  const reintentarGP = useCallback((forzar = false) => {
+    setGpIntentos(0);
+    setGpEstado('cargando');
+    setGpError('');
+    return cargarGP(forzar);
+  }, [cargarGP]);
+
+  return { gpData, gpEstado, gpDisponible: gpEstado === 'listo',
+           gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP,
+           cargarDetalleObra, gpDetalles };
 }
 
 // Catálogo de obras de GP Construct disponibles para activar en CAMPO
@@ -5917,11 +6022,24 @@ function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
   );
 }
 
+// Texto que explica POR QUÉ el gasto no está — no basta con decir que falta.
+// Cada estado tiene una acción distinta: dos se arreglan con Refrescar, uno
+// se arregla solo (reintento en curso) y uno necesita mirar la red.
+const _GP_NOTA = {
+  cargando:        'gasto de GP en camino…',
+  sin_sincronizar: 'el Sheet de GP nunca se sincronizó',
+  version_vieja:   'caché de GP de una versión vieja',
+  error:           'GP no respondió; reintentos agotados',
+  error_transitorio: 'GP falló; reintentando…',
+};
+
 // Componente principal: reemplaza Cobranza + OBRAS ATENCIÓN del PanelEjecutivo.
 // Alimentado con el mismo `datosPorObra` que ya existe (subs, maquinaria,
 // materiales, estimaciones, otrosGastos, nominaSemanas, historialAvanceSemanas)
 // + gpData. No dispara Firestore reads propios.
-function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
+function DashboardPrincipal({ obras, datosPorObra, gpData, gpEstado = 'listo',
+                              gpDisponible = true, onRefreshGP, gpLoading,
+                              onSelectObra }) {
   const activas = obras.filter(o => o.estado !== 'archivada');
   const esMovil = _useEsMovil();
   // Ordenamiento de la tabla del bloque 3. Mismo patrón que la tabla de
@@ -5931,6 +6049,15 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   // Default: margen ascendente (obras con menor margen primero, útil para
   // detectar problemas rápido).
   const [ordenTabla, setOrdenTabla] = useState({ col: 'margen', dir: 'asc' });
+
+  // Vigilante de carga: pasados ESPERA_MAX_MS se pinta con lo que haya.
+  // Sin esto, una sola obra cuyo listener nunca resuelve deja el panel en
+  // "cargando…" para siempre — que es justo el bug de arranque que se reporta.
+  const [esperaAgotada, setEsperaAgotada] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setEsperaAgotada(true), ESPERA_MAX_MS);
+    return () => clearTimeout(t);
+  }, []);
 
   // Estado vacío digno — la desaparición completa se lee como bug.
   // Aparece para: rol con 0 obras asignadas, cliente sin obras activas, etc.
@@ -5950,20 +6077,25 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
     );
   }
 
-  // Esperar a que TODO esté cargado antes de pintar (mismo criterio que
-  // PanelEjecutivo — evita mostrar KPIs a la mitad).
-  const gpListo = !!(gpData && gpData.obras);
-  const todosCargados = activas.every(o => datosPorObra[o.id]);
-  if (!gpListo || !todosCargados) {
+  // Esperar a que TODO esté cargado antes de pintar — pero NUNCA para
+  // siempre. `todosCargados` ahora exige que las 8 claves hayan llegado
+  // (o fallado), no solo que la entrada exista: así no se pintan KPIs en
+  // cero que luego se corrigen solos.
+  const todosCargados = activas.every(o => datosObraCompletos(datosPorObra[o.id]));
+  if (!todosCargados && !esperaAgotada) {
+    const faltan = activas.filter(o => !datosObraCompletos(datosPorObra[o.id])).length;
     return (
       <Card accent={C.caliza} style={{marginBottom:10}}>
         <Tit>Panel principal — cargando…</Tit>
         <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
-          {!gpListo ? "Sincronizando con GP Construct…" : `Cargando ${activas.length} obras activas…`}
+          {`Cargando ${faltan} de ${activas.length} obra${activas.length !== 1 ? 's' : ''} activa${activas.length !== 1 ? 's' : ''}…`}
         </div>
       </Card>
     );
   }
+  // Se agotó la espera con datos incompletos: se pinta con lo que hay. Las
+  // obras que no llegaron se listan, no se ocultan.
+  const obrasIncompletas = activas.filter(o => !datosObraCompletos(datosPorObra[o.id]));
 
   const keyAnterior = _keySemanaAtras(1);
 
@@ -6277,6 +6409,36 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
         </div>
       </div>
 
+      {/* Avisos de datos incompletos. Se muestran ARRIBA de las cifras
+          porque cambian cómo deben leerse: sin esto el usuario cree que ve
+          el consolidado completo cuando no lo es. */}
+      {obrasIncompletas.length > 0 && (
+        <div style={{background:C.yellowBg,border:`1px solid ${C.yellow}`,
+                     borderRadius:6,padding:"6px 9px",marginBottom:8,fontSize:10,color:C.textSec}}>
+          <b>Consolidado parcial.</b> {obrasIncompletas.length} obra
+          {obrasIncompletas.length !== 1 ? 's' : ''} no terminó de cargar y no está
+          incluida en las cifras de arriba:{' '}
+          {obrasIncompletas.map(o => o.id).join(' · ')}. Recarga la página para reintentar.
+        </div>
+      )}
+      {!gpDisponible && (
+        <div style={{background:C.yellowBg,border:`1px solid ${C.yellow}`,
+                     borderRadius:6,padding:"6px 9px",marginBottom:8,fontSize:10,color:C.textSec,
+                     display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span>
+            <b>Gasto y margen no disponibles.</b> {_GP_NOTA[gpEstado] || 'GP no disponible'}.
+            {' '}Las cifras de gasto NO se muestran en cero para no hacerlas pasar por buenas.
+          </span>
+          {onRefreshGP && gpEstado !== 'cargando' && gpEstado !== 'error_transitorio' && (
+            <button onClick={() => onRefreshGP(true)} disabled={gpLoading}
+              style={{fontSize:10,padding:"3px 9px",borderRadius:5,cursor:gpLoading?"default":"pointer",
+                      border:`1px solid ${C.yellow}`,background:"transparent",color:C.textPri}}>
+              {gpLoading ? 'Refrescando…' : 'Refrescar GP'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* BLOQUE 1 — Consolidado */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
         Consolidado en vivo · variación semanal donde exista snapshot
@@ -6306,21 +6468,26 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
             (gt incluye maquinaria y otros_gastos, que hoy no tienen fecha
             por movimiento — ver PENDIENTES #1). La variación semanal es
             estructuralmente imposible hasta que se resuelva ese pendiente. */}
+        {/* Sin GP no hay gasto, y sin gasto no hay margen. Se marcan "no
+            disponible": un $0 o un 100% de margen se leen como dato bueno y
+            son mentira. Principio del producto, ver PENDIENTES. */}
         <_KpiConDelta
           label="Gastado"
-          valor={MXN(consolidado.gastado)}
-          valorSub="GP + maquinaria + otros"
-          color={C.textPri}
+          valor={gpDisponible ? MXN(consolidado.gastado) : 'no disponible'}
+          valorSub={gpDisponible ? "GP + maquinaria + otros" : _GP_NOTA[gpEstado] || 'GP no disponible'}
+          color={gpDisponible ? C.textPri : C.textMut}
         />
         <_KpiConDelta
           label="Margen"
-          valor={`${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`}
-          valorSub={`${NUM(consolidado.margenPct, 1)}%`}
+          valor={gpDisponible
+            ? `${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`
+            : 'no disponible'}
+          valorSub={gpDisponible ? `${NUM(consolidado.margenPct, 1)}%` : 'requiere el gasto de GP'}
           deltaValor={null}
-          deltaSub={obrasSinEjec.length > 0
+          deltaSub={!gpDisponible ? null : (obrasSinEjec.length > 0
             ? `incluye ${obrasSinEjec.length} obra${obrasSinEjec.length !== 1 ? 's' : ''} sin ejecución (−${NUM(arrastreMargenPP, 1)}pp)`
-            : null}
-          color={nivelMargen(consolidado.margenPct).color}
+            : null)}
+          color={gpDisponible ? nivelMargen(consolidado.margenPct).color : C.textMut}
         />
         <_KpiConDelta
           label="Personal"
@@ -6599,7 +6766,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, onSelectObra }) {
   );
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
@@ -6855,8 +7022,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpLoading,gpUltAc
         Reemplaza el PanelEjecutivo. Se muestra a directivos y a auditor
         (auditor con sus obras asignadas, filtradas ya por todasObras arriba).
         Cliente sigue sin panel (mantiene solo su lista simplificada). */}
-    {!verHistorial && ["director_general","director_operaciones","gerente_construccion","admin_sistema","auditor"].includes(usuario.rol) && (
-      <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData} onSelectObra={onSelect}/>
+    {!verHistorial && vePanelEjecutivo(usuario.rol) && (
+      <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
+        gpEstado={gpEstado} gpDisponible={gpDisponible} onRefreshGP={onRefreshGP} gpLoading={gpLoading}
+        onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}
@@ -15853,7 +16022,7 @@ export default function App(){
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
-  const { gpData, gpLoading, gpError, gpUltActualiz, cargarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
+  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -16237,11 +16406,25 @@ export default function App(){
             }
           }
         }
-        // Para cada obra, si hay un /config/info más completo, mergear (info de Contrato editado)
+        // Para cada obra, si hay un /config/info más completo, mergear (info de
+        // Contrato editado). TOLERANTE POR OBRA: antes un solo rechazo (permiso
+        // denegado en una obra) tumbaba el Promise.all entero, el catch de abajo
+        // se tragaba todo y `setObras` no llegaba a correr NUNCA. Resultado: la
+        // lista de obras quedaba vacía y, como `obrasActivasKey` no cambiaba,
+        // nada volvía a disparar la carga. Ahora la obra que falla se queda con
+        // los datos que ya traía y las demás cargan igual.
+        const infoFallida = [];
         await Promise.all(obrasFromDB.map(async (o, idx) => {
-          const info = await fsGet(`obras/${o.id}/config/info`);
-          if (info) obrasFromDB[idx] = {...o, ...info, id: o.id};
+          try {
+            const info = await fsGet(`obras/${o.id}/config/info`);
+            if (info) obrasFromDB[idx] = {...o, ...info, id: o.id};
+          } catch (e) {
+            infoFallida.push(`${o.id} (${e?.code || e?.message || 'error'})`);
+          }
         }));
+        if (infoFallida.length) {
+          console.warn(`[obras] ${infoFallida.length} obra(s) sin config/info; se usan los datos base: ${infoFallida.join(' · ')}`);
+        }
         // Merge: agregar las de Firestore que no estén ya en state, y mergear datos de las que sí
         setObras(actual => {
           const idsActuales = new Set(actual.map(o => o.id));
@@ -16285,19 +16468,35 @@ export default function App(){
   // cualquier residente aparezcan en tiempo real sin reiniciar la app.
   const[datosPorObra,setDatosPorObra]=useState({});
   const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
-  const verPanelEjecutivo = usuario && ["director_general","director_operaciones","gerente_construccion"].includes(usuario.rol);
+  const verPanelEjecutivo = !!usuario && vePanelEjecutivo(usuario.rol);
   useEffect(()=>{
     if(!usuario) return;
     if(screen !== "obras") return;   // solo cargar cuando estoy en la lista de obras
     if(!verPanelEjecutivo) return;   // solo si va a ver el Panel Ejecutivo
     const activas = obras.filter(o=>o.estado!=="archivada");
-    if(activas.length<2) return;     // el Panel Ejecutivo solo se muestra con ≥2 obras
+    // El umbral era `<2` con el comentario "el Panel solo se muestra con ≥2
+    // obras", pero DashboardPrincipal se pinta desde 1. Con exactamente una
+    // obra activa nadie cargaba sus datos y el panel esperaba en vano — el
+    // mismo desajuste de criterio que tenían las listas de roles.
+    if(activas.length===0) return;
 
-    // Helper para actualizar una parte del mapa datosPorObra sin pisar otras
-    const patch = (id, parcial) => setDatosPorObra(prev => ({
-      ...prev,
-      [id]: { ...(prev[id] || {info:{},subs:[],maquinaria:[],materiales:[],estimaciones:[],otrosGastos:[]}), ...parcial },
-    }));
+    // Helper para actualizar una parte del mapa datosPorObra sin pisar otras.
+    // Registra en `_listos` qué claves ya llegaron, para que el panel pueda
+    // distinguir "vacío" de "todavía no llega" (ver datosObraCompletos).
+    const patch = (id, parcial) => setDatosPorObra(prev => {
+      const base = prev[id] || {info:{},subs:[],maquinaria:[],materiales:[],estimaciones:[],otrosGastos:[]};
+      const listos = { ...(base._listos || {}) };
+      Object.keys(parcial).forEach(k => { listos[k] = true; });
+      return { ...prev, [id]: { ...base, ...parcial, _listos: listos } };
+    });
+
+    // Un listener que falla (permisos, red) debe marcar su clave como
+    // RESUELTA con valor vacío. Antes solo hacía console.warn, así que con
+    // el guard de completud el panel esperaría indefinidamente.
+    const alFallar = (id, clave, vacio, etiqueta) => err => {
+      console.warn(`bulk ${etiqueta}`, id, err);
+      patch(id, { [clave]: vacio });
+    };
 
     // Un listener por documento por obra. Se limpian todos al cambiar obras
     // activas o al salir de la pantalla.
@@ -16308,38 +16507,38 @@ export default function App(){
         const info = snap.exists() ? snap.data() : {};
         patch(o.id, { info });
         setObras(oo => oo.map(ob => ob.id === o.id ? { ...ob, ...info } : ob));
-      }, err => console.warn('bulk info', o.id, err)));
+      }, alFallar(o.id, 'info', {}, 'info')));
       // subs (avance)
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'subs'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { subs: (d && Array.isArray(d.data)) ? d.data : [] });
-      }, err => console.warn('bulk subs', o.id, err)));
+      }, alFallar(o.id, 'subs', [], 'subs')));
       // maquinaria
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'maquinaria'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { maquinaria: (d && Array.isArray(d.data)) ? d.data : [] });
-      }, err => console.warn('bulk maq', o.id, err)));
+      }, alFallar(o.id, 'maquinaria', [], 'maq')));
       // materiales
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'materiales'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { materiales: (d && Array.isArray(d.data)) ? d.data : [] });
-      }, err => console.warn('bulk mat', o.id, err)));
+      }, alFallar(o.id, 'materiales', [], 'mat')));
       // estimaciones — LO QUE FALTABA para el dashboard portafolio
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'estimaciones'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { estimaciones: (d && Array.isArray(d.data)) ? d.data : [] });
-      }, err => console.warn('bulk est', o.id, err)));
+      }, alFallar(o.id, 'estimaciones', [], 'est')));
       // otros gastos
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'otros_gastos'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
-      }, err => console.warn('bulk otros', o.id, err)));
+      }, alFallar(o.id, 'otrosGastos', [], 'otros')));
       // Historial de nómina semanal — se usa el ÚLTIMO snapshot para KPIs de mano de obra
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
         patch(o.id, { nominaSemanas: semanas });
-      }, err => console.warn('bulk nomina', o.id, err)));
+      }, alFallar(o.id, 'nominaSemanas', [], 'nomina')));
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
       // captura ≥ 7 días"). feature/dashboard-principal 2026-09-18.
@@ -16347,7 +16546,7 @@ export default function App(){
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
         patch(o.id, { historialAvanceSemanas: semanas });
-      }, err => console.warn('bulk avance histo', o.id, err)));
+      }, alFallar(o.id, 'historialAvanceSemanas', [], 'avance histo')));
     });
 
     return () => unsubs.forEach(u => u());
@@ -16528,7 +16727,7 @@ export default function App(){
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} datosPorObra={datosPorObra}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
 
       {/* DASHBOARD ejecutivo */}
       {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>}
