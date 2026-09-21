@@ -1399,6 +1399,28 @@ recargar el catálogo. Un fallo transitorio devuelve `null` → mapa
 vacío → **pérdida silenciosa de avance**, el mismo daño del pendiente
 #21. Y su `catch` nunca corre. Este sitio se arregla primero.
 
+### Atendido en `fix/catalogo-no-borra-avance` (2026-09-20) — solo este sitio
+
+`confirmarCatalogo` lee con `getDoc` directo y **aborta sin escribir
+nada** si la lectura falla; el documento ausente sigue siendo un caso
+legítimo (obra con catálogo pero sin avance capturado todavía).
+
+Se encontró de paso un segundo defecto en la misma función: `fsSetA`
+devuelve `false` cuando la escritura falla —no lanza— y ese valor se
+ignoraba dentro de un `try/catch` que por eso nunca podía dispararse.
+Un guardado fallido terminaba igual en `setFase('confirmado')`: la
+pantalla decía "listo" sin haber guardado. Ahora se comprueba cada
+escritura por separado.
+
+Reproducción del daño contra el estado anterior, ejecutando la función
+real con la lectura fallando: escribía `avance/subs` con `a=0`,
+`cantEjec=0` y `fotos={}` en todas las partidas, encima de un avance
+real de 80% y 45%. Congelado en `scripts/prueba-guarda-catalogo.cjs`
+— 24 aserciones, 9 fallas contra `main`.
+
+**Sigue abierto** el resto del pendiente: 33 llamadas de `fsGet`, 16
+de `fsSet`, 14 de `fsDel` y el borrado de `fsColl`.
+
 **Mismo patrón fuera de los cuatro**: `crearSnapshotAvance`
 (`src/App.jsx:2368`) y `crearSnapshotAvanceSub` (`src/App.jsx:2431`)
 también hacen catch-and-return sin relanzar. Los detecta el bloque de
@@ -1485,7 +1507,7 @@ cierran, gobiernan.
 | 19 | `setObra` sin declarar en GastosGP | | alta |
 | 20 | Verificación de ámbito permanente | | alta |
 | 21 | Cambio de modo borra avance en silencio | | alta |
-| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — causa raíz de #3, #8 y #21 |
+| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — caso urgente (recarga de catálogo) cerrado en `fix/catalogo-no-borra-avance`; resto abierto |
 | 23 | `networkTimeoutSeconds: 5` del service worker | | media-alta (rama aparte) |
 
 ---
