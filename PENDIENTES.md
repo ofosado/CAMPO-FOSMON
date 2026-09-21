@@ -21,23 +21,45 @@ por qué se escribió.
 
 ---
 
-## P1. El dinero nunca se topa; el avance físico siempre se topa al 100% por partida
+## P1. El dinero nunca se topa; el avance físico se topa al 100% de la obra
 
 **Adoptado**: 2026-09-19, rama `fix/ejecutado-sin-recorte` (main `be09152`).
+**Precisado**: 2026-09-21, rama `fix/compensacion-volumenes` — el tope pasó de
+ser por partida a ser al total de la obra.
 
-El importe ejecutado de una partida se calcula sin recorte: si se
-ejecutó más volumen del que el catálogo previó, el dinero lo refleja.
-El porcentaje de avance físico de una partida sí se topa al 100%,
-porque un avance físico de 630% no significa nada para quien lo lee.
+El importe ejecutado se calcula sin recorte: si se ejecutó más volumen
+del que el catálogo previó, el dinero lo refleja. El avance físico de
+la OBRA sí se topa: una obra no puede avanzar más del 100% de su
+contrato. Pero el tope va **al total, no partida por partida**: dentro
+de ese 100% las partidas se compensan entre sí.
 
-**Por qué**: el recorte silencioso escondía $3,824,490.81 de ejecutado
-real en el portafolio ($210,427,019.87 → $214,251,510.68). El dinero
-recortado no es conservador, es incorrecto: el contrato se cierra por
-compensación de volúmenes, no partida por partida.
+**Por qué**: el recorte silencioso del dinero escondía $3,824,490.81 de
+ejecutado real en el portafolio ($210,427,019.87 → $214,251,510.68). El
+dinero recortado no es conservador, es incorrecto.
 
-**Cómo se aplica**: cualquier `Math.min` sobre un importe es sospechoso
-y hay que justificarlo. Sobre un porcentaje de avance físico, es
-obligatorio. Detalle largo en el pendiente #8.
+Y la misma razón —**el contrato se cierra por compensación de volúmenes, no
+partida por partida**— es la que obligó a mover el tope dos días después.
+Topando cada partida a su importe de catálogo, la 0112 marcaba 83.92% de
+avance con el contrato ejercido al 94.67%: 3 partidas se habían pasado
+$2,777,997 y 9 habían quedado cortas $4,157,000, y el tope por partida
+contaba lo corto pero borraba lo excedido. Once puntos de obra ejecutada que
+no aparecían en ninguna pantalla.
+
+**Cómo se aplica**:
+
+- Cualquier `Math.min` sobre un **importe** es sospechoso y hay que
+  justificarlo.
+- Sobre el **avance de la obra** el tope es obligatorio, y va sobre el total:
+  `Math.min(100, ejecutado / contrato × 100)`. Nunca dentro del acumulado.
+- El **denominador es el contrato**, no Σ catálogo. Hoy coinciden al peso en
+  las 5 obras, pero es una propiedad del dato, no del modelo:
+  `scripts/catalogo-vs-contrato.py` lo verifica.
+- A **nivel de partida** el porcentaje sí se muestra sin topar (el badge de
+  630%), porque ahí es un indicador de volumen excedido y es la información
+  útil. A nivel de obra ese exceso no es avance: es riesgo, y se muestra
+  aparte.
+- A nivel de obra se muestran siempre juntas **Contratado · Ejecutado · Por
+  ejecutar**. Detalle largo en el pendiente #8.
 
 ---
 
@@ -784,9 +806,11 @@ afecta a la cifra estrella del producto.
 
 ### Atendido en `fix/ejecutado-sin-recorte` (2026-09-19) — puntos 1, 3 y 4
 
-Regla que gobierna el arreglo: **el dinero nunca se topa; el avance
+Regla que gobernó el arreglo: **el dinero nunca se topa; el avance
 físico siempre se topa a 100% por partida.** Son dos preguntas distintas
-y dejaron de compartir fórmula.
+y dejaron de compartir fórmula. *(La segunda mitad de esa regla se corrigió
+el 2026-09-21: el tope va al total de la obra, no por partida. Ver P1 y la
+sección de `fix/compensacion-volumenes`.)*
 
 Tres funciones compartidas (`src/App.jsx`, antes del bloque de histórico)
 sustituyen a **todas** las copias en línea:
@@ -826,7 +850,9 @@ que es exactamente lo que debía pasar:
 
 El excedente ya no se descarta: aparece como cifra propia
 ("+$X sobre catálogo · pendiente de clasificar") en el dashboard de obra,
-en el KPI de subcontratos y en el PDF.
+en el KPI de subcontratos y en el PDF. *(Esa presentación duró dos días: ver
+`fix/compensacion-volumenes` más abajo — a nivel de obra el excedente no es
+un pendiente, es una compensación, y el indicador quedó sólo en la partida.)*
 
 **Histórico.** Los snapshots de obra siguen sin ser recuperables — nunca
 guardaron `cantEjec`. En vez de inventar el pasado se marcó la frontera:
@@ -840,9 +866,110 @@ comparables los conceptos cuyo precio ya no se puede resolver.
 
 **Queda pendiente el punto 2**: modelar `tipoContrato` (precio alzado /
 precios unitarios / contrato abierto) y la autorización de excedentes por
-convenio. Va en su propia rama. Mientras tanto el excedente se muestra
-como "pendiente de clasificar", que es honesto: el sistema sabe que se
-ejecutó y no pretende saber si está autorizado.
+convenio. Va en su propia rama.
+
+### Atendido en `fix/compensacion-volumenes` (2026-09-21) — el tope y el denominador
+
+La rama anterior arregló el **dinero** y dejó el **avance** como estaba:
+topado partida por partida. Eso resultó ser el mismo error una capa más
+arriba. La tabla de arriba lo muestra sin querer: "avance físico 83.92% =",
+sin cambio, sobre un ejecutado que acababa de subir a $24,470,797.85 de un
+contrato de $25,849,801. El contrato estaba ejercido al 94.67% y la pantalla
+decía 83.92%.
+
+La causa es la misma frase que ya estaba escrita en este pendiente —*el
+contrato se cierra por compensación de volúmenes, no partida por partida*—
+aplicada al porcentaje: en la 0112, 3 partidas se pasaron $2,777,997 y 9
+quedaron cortas $4,157,000. Topando cada una a su catálogo, lo corto contaba
+y lo excedido se borraba. **Topar por partida deja como pendiente un alcance
+que ya se compensó.**
+
+**El arreglo.** `avanceFisicoPonderado(subs, contrato, modoVol)` ahora es:
+
+```js
+Math.min(100, (desgloseEjecutado(subs, modoVol).total / contrato) * 100)
+```
+
+El tope va al total. El avance y el KPI de dinero salen de la **misma**
+función: no pueden volver a separarse sin que alguien lo note.
+
+**El denominador estaba sin decidir.** De los 19 puntos que pedían el
+avance, 7 pasaban el contrato y 12 pasaban Σ catálogo. Nadie lo había
+notado porque con el tope por partida daba exactamente igual cuál se
+usara, y porque en las 5 obras Σ catálogo === contrato al peso
+(`scripts/catalogo-vs-contrato.py`, Δ $0). Sin el tope ya no da igual, y
+la coincidencia es una propiedad del dato de hoy, no del modelo. Ahora
+cada llamada pasa su denominador explícito: el contrato de la obra, o
+`contratoDeSub(s)` para un subcontrato.
+
+**El correo y la pantalla daban números distintos.** `calcularKpisObra`
+(`functions/index.js`) tenía su propia fórmula —`Σ cantEjec×pu / presupuesto`,
+sin tope y sin caída a `a`— y reportaba la 0112 al 94.67% mientras la pantalla
+mostraba 83.92%. Los dos números estaban mal, por razones distintas, y daban
+lo mismo sólo por casualidad en esa obra. Las cuatro funciones de cálculo
+están ahora **copiadas literalmente** en `functions/index.js`, con un
+comentario que lo dice: no hay build compartido entre `functions/` y `src/`,
+son dos despliegues distintos, y si se toca una copia hay que tocar la otra.
+
+**Efecto medido en producción** (`scripts/comparativo-avance-contrato.py`,
+solo lectura, 2026-09-21):
+
+| obra | modo | avance antes | avance después | Δ | contratado | ejecutado | por ejecutar |
+|---|---|---|---|---|---|---|---|
+| 0112 Malecón | volumen | 83.92% | **94.67%** | +10.75 pp | $25,849,801 | $24,470,798 | $1,379,003 |
+| 0114 Oaxaca | porcentaje | 88.86% | 88.86% | — | $163,703,079 | $145,469,620 | $18,233,459 |
+| 0125 TAMSA | volumen | 12.90% | **13.72%** | +0.83 pp | $126,536,301 | $17,364,930 | $109,171,372 |
+| 0126 Pemex | porcentaje | 35.63% | 35.63% | — | $75,635,416 | $26,946,163 | $48,689,254 |
+| 0127 Centro Conv. | volumen | 0.00% | 0.00% | — | $144,596,003 | $0 | $144,596,003 |
+| **portafolio** | | | **39.95%** | | **$536,320,602** | **$214,251,511** | **$322,069,091** |
+
+Sólo se mueven las obras en volumen con partidas excedidas, que es lo
+esperado: en modo porcentaje no se puede sobreejecutar una partida.
+
+**Ninguna alerta cambia de severidad** (`scripts/impacto-alertas.py`). FIN_002
+y PLA_002 miden ahora contra el avance nuevo —el gasto y el avance tienen que
+estar en la misma definición—, y en la 0112 las dos brechas pasan de positivas
+a negativas (+1.94 → −8.81 pp y +6.00 → −4.75 pp) sin cruzar ningún umbral:
+ninguna de las dos era alerta antes ni lo es ahora. Esa obra tiene 21% de
+margen.
+
+**La UI del excedente cambió de nivel.** "+$X sobre catálogo · pendiente de
+clasificar" desapareció de todos los niveles de obra: a nivel de obra el
+exceso de una partida no es avance ni pendiente, es una compensación con otra
+partida. En su lugar van siempre juntas **Contratado · Ejecutado · Por
+ejecutar**, más una vista de compensación de volúmenes dentro de Avance físico
+(cuántas se pasaron, cuántas quedaron cortas, el neto). El indicador de
+volumen excedido se conserva **sólo en el detalle de partida**, que es donde
+significa algo.
+
+**Histórico: dos fronteras, una por métrica.** `ESQUEMA_SNAPSHOT = 3`, y la
+comparabilidad dejó de ser un solo umbral:
+
+- `ESQUEMA_DINERO = 2` — el dinero cambió al dejar de toparse.
+- `ESQUEMA_AVANCE = 3` — el avance cambió al pasar a ejecutado/contrato.
+
+Con un umbral único, un snapshot esquema 2 habría dibujado la serie de dinero
+punteada sin necesidad. Cada ritmo se acota a la frontera de **su** métrica.
+Los 23 snapshots de producción son esquema 1, así que hoy las dos fronteras
+caen en el mismo punto; se separan en cuanto se escriba el primer snapshot
+esquema 2. Los snapshots nuevos guardan `contratoRef`, el denominador con el
+que se calcularon.
+
+Tratamiento de la frontera, igual que en la rama anterior: **tramo viejo
+punteado con leyenda, nunca cortar** (la 0112 se quedaría con un solo punto),
+y ningún delta cruza.
+
+**Guarda**: `scripts/prueba-avance-sobre-contrato.cjs`. Ejecuta las funciones
+reales de `src/App.jsx` **y** `calcularKpisObra` de `functions/index.js` sobre
+los mismos catálogos, con un `admin` de mentira. Contra `main` falla en 9
+aserciones y reproduce la contradicción de producción: pantalla 40% contra
+correo 93% en el caso compensado, correo al 130% sin topar, y correo en 0%
+cuando hay avance capturado en % sin `cantEjec`.
+
+**Sigue pendiente el punto 2** (`tipoContrato` y autorización de excedentes
+por convenio). Mientras tanto el ejecutado por encima del contrato se muestra
+aparte como sobre contrato, que es honesto: el sistema sabe que se ejecutó y
+no pretende saber si está autorizado.
 
 ---
 
