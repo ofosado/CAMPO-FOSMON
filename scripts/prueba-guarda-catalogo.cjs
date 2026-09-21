@@ -61,8 +61,17 @@ if (!srcConfirmar) {
 
 // Todas las variables libres de la función se inyectan como parámetros, así
 // que la podemos correr fuera de React.
-const LIBRES = ['resultado','obra','importeContrato','catalogoGuardado','getDoc','doc','fbDb',
-                'setError','fsSetA','fsGet','setObra','setSubsGlobal','setCatalogoGuardado','setFase'];
+const LIBRES = ['resultado','obra','importeContrato','catalogoGuardado','getDoc','getDocFromServer',
+                'doc','fbDb','setError','fsSetA','fsGet','setObra','setSubsGlobal','setCatalogoGuardado',
+                'setFase','setDoc','addDoc','updateDoc','deleteDoc','writeBatch','fsSet','fsDel',
+                'fsAudit','crearSnapshotAvance'];
+
+// Toda API capaz de escribir en Firestore. La prueba de la garantía de
+// seguridad (sección 1) exige que NINGUNA se invoque si la lectura falla:
+// sin persistencia, una escritura offline igual se encola en memoria y se
+// manda al reconectar, así que "no llegó" no equivale a "no se emitió".
+const APIS_ESCRITURA = ['fsSetA','setDoc','addDoc','updateDoc','deleteDoc',
+                        'writeBatch','fsSet','fsDel','fsAudit','crearSnapshotAvance'];
 
 // Un catálogo nuevo con dos partidas que EXISTEN en el avance previo.
 const resultadoFalso = () => ({
@@ -88,6 +97,7 @@ function correr({ lectura, escrituraOk = true, catalogoGuardado = { viejo: true 
   const escrituras = [];
   const errores = [];
   const fases = [];
+  const apisLlamadas = [];   // cualquier API de escritura que se haya invocado
 
   const getDocFalso = async (ref) => {
     const r = lectura(ref);
@@ -100,6 +110,7 @@ function correr({ lectura, escrituraOk = true, catalogoGuardado = { viejo: true 
     try { const r = lectura(p); return r?.exists?.() ? r.data() : null; } catch { return null; }
   };
   const fsSetAFalso = async (p, data) => {
+    apisLlamadas.push('fsSetA');
     if (!escrituraOk) return false;
     escrituras.push({ path: p, data });
     return true;
@@ -111,6 +122,7 @@ function correr({ lectura, escrituraOk = true, catalogoGuardado = { viejo: true 
     importeContrato: 1000,
     catalogoGuardado,
     getDoc: getDocFalso,
+    getDocFromServer: getDocFalso,
     doc: docFalso,
     fbDb: {},
     setError: m => errores.push(m),
@@ -121,10 +133,15 @@ function correr({ lectura, escrituraOk = true, catalogoGuardado = { viejo: true 
     setCatalogoGuardado: () => {},
     setFase: f => fases.push(f),
   };
+  // Cualquier otra API de escritura queda cableada a una trampa que sólo
+  // registra haber sido llamada.
+  APIS_ESCRITURA.filter(n => !args[n]).forEach(n => {
+    args[n] = async () => { apisLlamadas.push(n); return true; };
+  });
 
   const fabrica = new Function(...LIBRES, `${srcConfirmar}; return confirmarCatalogo;`);
   const fn = fabrica(...LIBRES.map(k => args[k]));
-  return fn().then(() => ({ escrituras, errores, fases }));
+  return fn().then(() => ({ escrituras, errores, fases, apisLlamadas }));
 }
 
 // Dobles de lectura.
@@ -144,11 +161,16 @@ const subsDe = (escrituras) => {
 
 console.log('\n1. Falla la lectura del avance previo — ¿se borra el avance?');
 {
-  const { escrituras, errores, fases } = await correr({ lectura: leerFalla });
+  const { escrituras, errores, fases, apisLlamadas } = await correr({ lectura: leerFalla });
   check(subsDe(escrituras) === null,
     'no se escribe `avance/subs` cuando no se pudo leer el avance previo');
   check(escrituras.length === 0,
     `no se escribe NADA, tampoco el catálogo (escrituras: ${escrituras.length})`);
+  // LA GARANTÍA DE SEGURIDAD. No basta con que la escritura "no llegue":
+  // Firestore encola las mutaciones offline y las manda al reconectar, así
+  // que hay que no EMITIRLAS. Se aborta antes de invocar ninguna API.
+  check(apisLlamadas.length === 0,
+    `no se invoca NINGUNA API de escritura, así que nada se encola para mandarse al reconectar (invocadas: ${apisLlamadas.join(', ') || 'ninguna'})`);
   check(errores.length === 1,
     'se le dice al usuario por qué no se reemplazó');
   check(!fases.includes('confirmado'),
@@ -203,7 +225,7 @@ console.log('\n5. Falla la ESCRITURA — ¿la pantalla miente?');
 
 console.log('\n6. El camino de lectura no pasa por un helper que se trague el error');
 {
-  let usaFsGet = false, usaGetDoc = false;
+  let usaFsGet = false, usaGetDoc = false, usaDesdeServidor = false;
   traverse(ast, {
     FunctionDeclaration(p) {
       if (p.node.id?.name !== 'confirmarCatalogo') return;
@@ -212,12 +234,17 @@ console.log('\n6. El camino de lectura no pasa por un helper que se trague el er
           const n = c.node.callee;
           if (n?.name === 'fsGet') usaFsGet = true;
           if (n?.name === 'getDoc') usaGetDoc = true;
+          if (n?.name === 'getDocFromServer') usaDesdeServidor = true;
         },
       });
     },
   });
   check(!usaFsGet, 'confirmarCatalogo no usa `fsGet` (que hace catch{return null})');
-  check(usaGetDoc, 'lee con `getDoc` directo, así que la excepción sí llega');
+  // `getDoc` cae a la caché cuando no hay servidor, y este documento siempre
+  // está en caché por el listener de avance/subs. Con `getDoc` el aborto no
+  // se dispararía offline: resolvería con datos locales y seguiría a escribir.
+  check(usaDesdeServidor && !usaGetDoc,
+    'lee con `getDocFromServer`, no `getDoc`: sin servidor falla en vez de caer a la caché');
 }
 
 console.log('\n7. Encabezado de la tabla del dashboard');

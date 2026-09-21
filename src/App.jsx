@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
@@ -11694,22 +11694,32 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     // borraba en silencio y sin forma de recuperarlo. El `catch` de este
     // bloque era además código muerto, porque `fsGet` nunca lanza.
     //
-    // Con `getDoc` directo la excepción sí llega y se puede distinguir:
+    // Con la lectura directa la excepción sí llega y se puede distinguir:
     // documento ausente → no había avance, seguimos; fallo de lectura →
     // ABORTAMOS sin escribir nada. Ver PENDIENTES #22.
+    //
+    // Y es `getDocFromServer`, no `getDoc`, a propósito. `getDoc` cae a la
+    // caché cuando el servidor no responde, y este documento SIEMPRE está en
+    // caché porque el listener de la línea ~16572 lo trae al abrir la obra.
+    // O sea que sin red `getDoc` resolvería con datos de caché en vez de
+    // fallar, el aborto de abajo nunca correría y las escrituras se
+    // encolarían para mandarse al reconectar. Reemplazar el catálogo es
+    // destructivo e irreversible: exige confirmar contra el servidor cuál es
+    // el avance vigente, no creerle a una copia local que puede ser vieja
+    // (otro dispositivo pudo capturar más avance). Sin red, no se reemplaza.
     let subsPreviosMap = new Map();
     if (catalogoGuardado) {
       let snapPrev;
       try {
-        snapPrev = await getDoc(doc(fbDb, 'obras', obra.id, 'avance', 'subs'));
+        snapPrev = await getDocFromServer(doc(fbDb, 'obras', obra.id, 'avance', 'subs'));
       } catch (e) {
         // No sabemos si hay avance que preservar. Escribir aquí es destructivo
         // e irreversible, así que no se escribe.
         setError(
-          'No se pudo leer el avance capturado previamente ' +
+          'No se pudo confirmar con el servidor el avance capturado previamente ' +
           `(${e?.code || 'error de lectura'}), así que el catálogo NO se reemplazó. ` +
           'Esto protege el avance ya capturado: si se reemplazara sin leerlo, se perdería. ' +
-          'Revisa la conexión y vuelve a intentar.'
+          'Necesitas conexión para reemplazar un catálogo. Revísala y vuelve a intentar.'
         );
         return;
       }
