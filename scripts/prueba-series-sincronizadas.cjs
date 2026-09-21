@@ -69,7 +69,8 @@ const MXN = v => (typeof v === 'number')
 // Helpers de módulo que el prólogo necesita. Se copian tal cual del archivo
 // bajo prueba: si `desgloseEjecutado` cambia, esta prueba usa la versión nueva.
 const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseEjecutado',
-                 'avanceFisicoPonderado', 'ESQUEMA_SNAPSHOT', 'sonComparables',
+                 'avanceFisicoPonderado', 'contratoDeSub', 'compensacionVolumenes',
+                 'ESQUEMA_SNAPSHOT', 'ESQUEMA_DINERO', 'ESQUEMA_AVANCE', 'sonComparables',
                  'montoEjecutadoSnap', 'esquemaDe'];
 const fuentesHelper = [];
 const funcs = {};
@@ -237,11 +238,16 @@ const vacios = (extra) => {
   return { ...o, ...extra };
 };
 
+// `fronteraDinero` / `fronteraAvance` sustituyen al par `idxFrontera` /
+// `hayTramoViejo`, que sigue existiendo pero ya sólo resuelve la frontera de la
+// métrica que el usuario tenga seleccionada en la pestaña.
 const QUIERO_TEND = ['ejecutadoSeries','margenSeries','avanceSeries','esquemaPorSemana',
-                     'idxFrontera','hayTramoViejo','semanas','idxPrimerAvance','ejecutadoPorSem'];
+                     'fronteraDinero','fronteraAvance','idxFrontera','hayTramoViejo',
+                     'semanas','idxPrimerAvance','ejecutadoPorSem'];
 const QUIERO_PROY = ['ejecAcum','avancePctAcum','gastoAcum','ejecProy','gastoProy','avanceProy',
                      'semanasProy','semanasHist','ritmoEjec','ritmoAvance','ritmoGasto',
-                     'idxFrontera','hayTramoViejo','margenFinProy','excedenteSobreContrato',
+                     'idxFrontDinero','hayTramoViejoDinero','idxFrontAvance','hayTramoViejoAvance',
+                     'margenFinProy','excedenteSobreContrato',
                      'ejecFinProy','gastoFinProy','presupuesto'];
 
 // ── Las pruebas ────────────────────────────────────────────────────────
@@ -292,10 +298,16 @@ console.log('\n2. Frontera de esquema en tendencias — tramo viejo señalado, n
   const t = correr('TendenciasMensuales', props, QUIERO_TEND);
 
   check(t.semanas?.length === 10, `la ventana tiene las 10 semanas del contrato (${t.semanas?.length})`);
-  check(t.idxFrontera === idxDe(2),
-    `la frontera cae en la semana del primer snapshot esquema 2 (idx ${t.idxFrontera}, esperado ${idxDe(2)})`);
-  check(t.hayTramoViejo === true,
-    'se marca que hay tramo viejo: la serie mezcla dos definiciones');
+  check(t.fronteraDinero?.idx === idxDe(2),
+    `la frontera del DINERO cae en la semana del primer snapshot esquema 2 (idx ${t.fronteraDinero?.idx}, esperado ${idxDe(2)})`);
+  check(t.fronteraDinero?.hay === true,
+    'se marca que hay tramo viejo de dinero: la serie mezcla dos definiciones');
+  // La frontera es POR MÉTRICA. El avance no cambió de definición entre el
+  // esquema 1 y el 2 —cambió en el 3—, así que su serie NO se puntea aquí.
+  // Con un solo umbral para todo, este escenario habría dibujado el avance
+  // roto por un cambio que no le tocó.
+  check(t.fronteraAvance?.hay === false && t.fronteraAvance?.idx === -1,
+    `el AVANCE no ve frontera: su definición no cambió en el esquema 2 (idx ${t.fronteraAvance?.idx})`);
   // Ningún punto se pierde: 0112 tiene un solo snapshot nuevo y con un corte
   // se quedaría con un punto suelto.
   check(t.ejecutadoSeries?.filter(v => typeof v === 'number').length === 7,
@@ -315,9 +327,10 @@ console.log('\n3. Obra con puro esquema viejo — no se inventa una frontera');
     snap(2, { av: 45, me: 4_500_000, esquema: 1 }),
   ];
   const t = correr('TendenciasMensuales', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_TEND);
-  check(t.hayTramoViejo === false,
-    'sin snapshots del esquema nuevo no hay nada que separar, así que no se punteaba nada');
-  check(t.idxFrontera === -1, `y no hay índice de frontera (${t.idxFrontera})`);
+  check(t.fronteraDinero?.hay === false && t.fronteraAvance?.hay === false,
+    'sin snapshots del esquema nuevo no hay nada que separar, así que no se puntea nada');
+  check(t.fronteraDinero?.idx === -1 && t.fronteraAvance?.idx === -1,
+    `y ninguna de las dos métricas tiene índice de frontera (${t.fronteraDinero?.idx} / ${t.fronteraAvance?.idx})`);
 }
 
 console.log('\n4. Snapshot sin `montoEjecutado` — no disponible, no cero (P2)');
@@ -340,12 +353,18 @@ console.log('\n4. Snapshot sin `montoEjecutado` — no disponible, no cero (P2)'
     `y aun así el margen queda en null: restar $2,000,000 de gasto contra un cero inventado dibujaría una pérdida que nadie midió (valor: ${t.margenSeries?.[idxDe(6)]})`);
 }
 
-console.log('\n5. Proyección: el ritmo no cruza la frontera de esquema');
+console.log('\n5. Proyección: cada ritmo se acota a la frontera de SU métrica');
 {
-  // Esquema 1 (topado) hasta la semana −4; esquema 2 desde la −3.
+  // Esquema 1 (dinero topado) hasta la semana −4; esquema 2 desde la −3.
+  // Para el DINERO eso es un cambio de definición:
   //   ventana completa (mal):  (9.0M − 2.0M) / 8 = 875,000 por semana
   //   ventana acotada (bien):  (9.0M − 8.0M) / 3 = 333,333 por semana
   // La diferencia no es ritmo de obra: es el escalón del cambio de definición.
+  //
+  // Para el AVANCE no lo es: su definición cambió en el esquema 3, no en el 2.
+  // Su ventana se queda completa: (60 − 20) / 8 = 5 pp por semana. Acortarla
+  // aquí mediría el ritmo de las últimas 3 semanas y lo llamaría "el ritmo de
+  // la obra" por un cambio que ni siquiera le tocó a esta métrica.
   const hist = [
     snap(8, { av: 20, me: 2_000_000, esquema: 1 }),
     snap(3, { av: 50, me: 8_000_000, esquema: 2 }),
@@ -353,14 +372,43 @@ console.log('\n5. Proyección: el ritmo no cruza la frontera de esquema');
   ];
   const p = correr('ProyeccionAvanceGasto', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_PROY);
 
-  check(p.hayTramoViejo === true && p.idxFrontera === idxDe(3),
-    `la proyección ve la misma frontera que las tendencias (idx ${p.idxFrontera}, esperado ${idxDe(3)})`);
+  check(p.hayTramoViejoDinero === true && p.idxFrontDinero === idxDe(3),
+    `la proyección ve la misma frontera de dinero que las tendencias (idx ${p.idxFrontDinero}, esperado ${idxDe(3)})`);
+  check(p.hayTramoViejoAvance === false && p.idxFrontAvance === -1,
+    `y NINGUNA frontera de avance, porque no hay snapshot del esquema 3 (idx ${p.idxFrontAvance})`);
   check(casi(p.ritmoEjec, 1_000_000 / 3, 1),
     `ritmo del ejecutado ${MXN(p.ritmoEjec)}/sem — medido sólo dentro del esquema vigente`);
   check(!casi(p.ritmoEjec, 875_000, 1),
     'y NO los $875,000/sem que salen de restar un punto topado de uno sin topar');
-  check(casi(p.ritmoAvance, 10 / 3, 0.01),
-    `ritmo del avance físico ${p.ritmoAvance?.toFixed(2)} pp/sem, con la misma ventana acotada`);
+  check(casi(p.ritmoAvance, 5, 0.01),
+    `ritmo del avance físico ${p.ritmoAvance?.toFixed(2)} pp/sem, con la ventana COMPLETA`);
+  check(!casi(p.ritmoAvance, 10 / 3, 0.01),
+    'y no los 3.33 pp/sem de acortarle la ventana por una frontera que es del dinero');
+}
+
+console.log('\n5b. Proyección: con un snapshot esquema 3 el avance SÍ ve su frontera');
+{
+  // El mismo historial, pero el último punto ya trae el avance compensado.
+  // Ahora el escalón de 50→60 mezcla dos definiciones de avance y la ventana
+  // del avance se acota a la frontera; la del dinero no se mueve.
+  const hist = [
+    snap(8, { av: 20, me: 2_000_000, esquema: 1 }),
+    snap(3, { av: 50, me: 8_000_000, esquema: 2 }),
+    snap(0, { av: 60, me: 9_000_000, esquema: 3 }),
+  ];
+  const p = correr('ProyeccionAvanceGasto', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_PROY);
+
+  check(p.hayTramoViejoAvance === true && p.idxFrontAvance === idxDe(0),
+    `la frontera del avance cae en el primer snapshot esquema 3 (idx ${p.idxFrontAvance}, esperado ${idxDe(0)})`);
+  check(p.idxFrontDinero === idxDe(3),
+    `la del dinero sigue donde estaba, tres semanas antes (idx ${p.idxFrontDinero}, esperado ${idxDe(3)})`);
+  check(p.idxFrontAvance !== p.idxFrontDinero,
+    'las dos fronteras se separan: por eso son dos y no una');
+  // Ventana del avance acotada al último punto → no queda tramo que medir.
+  check(p.ritmoAvance === 0,
+    `sin semanas dentro del esquema 3 no se inventa un ritmo de avance (${p.ritmoAvance})`);
+  check(casi(p.ritmoEjec, 1_000_000 / 3, 1),
+    `y el ritmo del dinero no se movió: ${MXN(p.ritmoEjec)}/sem`);
 }
 
 console.log('\n6. Proyección: termina al 100% de avance FÍSICO, y el dinero no se topa');

@@ -811,6 +811,51 @@ const semaforoColor = (pct, modo = "avance") => {
   return pct <= 70 ? "#3B6D11" : pct <= 90 ? "#854F0B" : "#A32D2D";
 };
 
+// ── Fórmulas de ejecutado y avance ────────────────────────────────────────
+// Copia literal de `importeEjecutadoPartida` / `desgloseEjecutado` /
+// `avanceFisicoPonderado` de src/App.jsx. El correo del lunes y la pantalla
+// tienen que dar el mismo número POR CONSTRUCCIÓN, no por coincidencia: hasta
+// 2026-09-21 este archivo tenía su propia fórmula (Σ cantEjec×pu, sin tope y
+// sin caída a `a`) y reportaba la 0112 al 94.67% mientras la app mostraba
+// 83.92%. Además una partida en modo volumen con avance capturado en % pero
+// sin `cantEjec` valía 0 aquí y (a/100)×imp allá.
+//
+// Si se toca una copia hay que tocar la otra: no hay build compartido entre
+// functions/ y src/, son dos despliegues distintos.
+const importeEjecutadoPartida = (s, modoVol = false) => {
+  if (modoVol) {
+    const cantEjec = Number(s?.cantEjec) || 0;
+    const pu = Number(s?.pu) || 0;
+    if (cantEjec > 0 && pu > 0) return cantEjec * pu;
+  }
+  const a = Number(s?.a ?? s?.avance) || 0;
+  return (a / 100) * (Number(s?.imp ?? s?.importe) || 0);
+};
+
+const importeCatalogoPartida = (s) => Number(s?.imp ?? s?.importe) || 0;
+
+const desgloseEjecutado = (subs = [], modoVol = false) => {
+  let catalogo = 0; let excedente = 0;
+  for (const s of (subs || [])) {
+    const total = importeEjecutadoPartida(s, modoVol);
+    const tope = importeCatalogoPartida(s);
+    if (total > tope) {
+      catalogo += tope;
+      excedente += total - tope;
+    } else {
+      catalogo += total;
+    }
+  }
+  return { catalogo, excedente, total: catalogo + excedente };
+};
+
+// Avance físico = ejecutado / contrato, topado al 100% EN EL TOTAL. El dinero
+// no se topa; el porcentaje sí. Las partidas se compensan entre sí.
+const avanceFisicoPonderado = (subs = [], contrato = 0, modoVol = false) => {
+  if (!(contrato > 0)) return 0;
+  return Math.min(100, (desgloseEjecutado(subs, modoVol).total / contrato) * 100);
+};
+
 // Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore
 async function calcularKpisObra(obraId, gpData) {
   const db = admin.firestore();
@@ -832,14 +877,8 @@ async function calcularKpisObra(obraId, gpData) {
   const presupuesto = Number(info.presupuesto) || 0;
   const modoVol = info.modoAvance === "volumen";
 
-  // Avance físico
-  let avancePct = 0;
-  if (modoVol && presupuesto > 0) {
-    const ejecutado = subs.reduce((t, s) => t + (Number(s.cantEjec) || 0) * (Number(s.pu) || 0), 0);
-    avancePct = (ejecutado / presupuesto) * 100;
-  } else if (presupuesto > 0) {
-    avancePct = subs.reduce((t, s) => t + ((Number(s.a) || 0) / 100) * ((Number(s.imp) || 0) / presupuesto) * 100, 0);
-  }
+  // Avance físico — la misma función que la app.
+  const avancePct = avanceFisicoPonderado(subs, presupuesto, modoVol);
 
   // Gasto: GP del Sheet (si existe match) + maquinaria propia + otros
   // Matching robusto (igual que resolverGastoGP del frontend):
