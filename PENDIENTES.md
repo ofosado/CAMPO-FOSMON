@@ -321,10 +321,74 @@ frente al cliente es un signo de fragilidad.
 
 ---
 
-## 4. Cuentas de prueba dedicadas por rol
+## 4. Proyecto Firebase de pruebas con copia de datos
+
+**Subido de prioridad y reencuadrado**: 2026-09-20. Antes este
+pendiente era solo "cuentas de prueba dedicadas por rol"; eso es una
+parte, pero el problema de fondo es más grande y bloquea más cosas.
+Las cuentas de prueba quedan en el **#4b**, abajo.
+
+**Qué pasa**: existe **un solo proyecto Firebase, `campo-fosmon`, y es
+producción**. No hay equivalente de desarrollo. En consecuencia:
+
+- **Todo Deploy Preview de Netlify escribe en la base de producción.**
+  El preview de un PR sin revisar tiene exactamente los mismos
+  permisos que la app real. Un defecto en una rama puede corromper
+  datos de obras reales.
+- **No hay forma segura de probar nada destructivo.** El 2026-09-20 no
+  se pudo validar a mano el arreglo de la recarga de catálogo (#22):
+  el único escenario realista era hacerlo sobre una obra con avance
+  real, y el riesgo era perderlo. Se resolvió confiando en la prueba
+  automatizada —que sí reprodujo el daño—, pero el punto es que **no
+  había alternativa**.
+- **Los emuladores no alcanzan.** No traen los datos reales, ni el
+  service worker, ni el comportamiento offline del SDK, ni los
+  permisos efectivos. Sirven para lógica, no para verificar que un
+  cambio no destruye datos que ya existen.
+
+**Por qué sube de prioridad ahora**: es el **requisito para migrar a
+`orgs/fosmon/`**. Esa migración (ver `SECURITY_RULES.md`, scripts
+`crear-org-fosmon.cjs` y `migrar-supervisor-a-auditor.cjs`) reetiqueta
+usuarios y cambia el modelo de permisos de toda la aplicación.
+Ejecutarla directo contra producción sin haberla ensayado sobre una
+copia de los datos reales no es aceptable: si sale mal, el modo de
+fallo es que la gente pierda acceso a sus obras, o que alguien vea lo
+que no debe. Hoy **la única forma de probar esa migración es hacerla**.
+
+**Propuesta**:
+
+1. Crear el proyecto `campo-fosmon-dev`.
+2. **Copia de datos de producción**, periódica y desatendida. Aquí
+   está el amarre con el **#5**: el mecanismo para poblar el proyecto
+   de pruebas es el export de Firestore, que hoy **falla con 403** (ver
+   #5). **Arreglar el respaldo habilita las dos cosas a la vez**, y es
+   el primer paso de este pendiente.
+3. Decidir si la copia se **anonimiza**. Los datos incluyen nómina y
+   sueldos; si al proyecto de pruebas va a entrar alguien que no tiene
+   acceso a eso en producción, hay que ofuscar al menos nombres y
+   montos de nómina.
+4. Apuntar los **Deploy Previews de Netlify al proyecto de pruebas**
+   mediante variable de entorno del build; producción sigue apuntando
+   a producción. Esto es lo que hace que revisar un PR deje de ser un
+   riesgo, y lo que habría permitido probar a mano el #22.
+5. Ensayar ahí la migración a `orgs/fosmon/` de principio a fin,
+   incluido el rollback, antes de tocar producción.
+
+**Bloquea demo**: indirectamente. No impide darla, pero impide probar
+con confianza lo que se le va a enseñar al cliente, y bloquea la
+migración de seguridad que hará falta para vender a dependencias.
+
+**Prioridad**: **alta**. Es infraestructura que habilita el resto:
+pruebas seguras, la migración a orgs, y el #4b.
+
+---
+
+## 4b. Cuentas de prueba dedicadas por rol
 
 **Descubierto**: registrado en SECURITY_RULES.md #4 (pendiente de
 seguridad). Se replica aquí porque también es demo-bloqueante.
+Depende del **#4**: las cuentas de prueba viven en el proyecto de
+pruebas, no en producción.
 
 **Qué pasa**: hoy las pruebas de rol usan cuentas de personas reales
 (director, gerente, superintendente). En demo, iniciar sesión como
@@ -356,15 +420,63 @@ externo sin exponer datos internos.
 
 ---
 
-## 5. Probar una restauración del respaldo
+## 5. NO HAY RESPALDOS — el export lleva meses fallando con 403
 
 **Descubierto**: reportado por el usuario en `feature/dashboard-principal`
-(2026-09-20).
+(2026-09-20) como "probar una restauración". **Reencuadrado el mismo
+día al leer `global/health`: no hay nada que restaurar.**
 
-**Qué pasa**: existe un job `probarBackup` en Cloud Functions y hay
-snapshots automáticos programados, pero **nunca se ha ejecutado una
-restauración completa end-to-end**. "El respaldo existe" ≠ "el respaldo
-funciona".
+### El hallazgo (2026-09-20, lectura de `global/health`)
+
+`backup_historial` guarda las últimas 10 ejecuciones. **Las 10 tienen
+`ok: false`**, todas con el mismo error, desde el 2026-07-05 hasta el
+2026-09-20:
+
+```
+Export error 403: {"error":{"code":403,"message":"The caller does not
+have permission","status":"PERMISSION_DENIED"}}
+```
+
+El historial solo guarda 10 entradas, así que **el fallo probablemente
+es anterior**: no se sabe cuándo fue el último respaldo bueno, ni si
+alguna vez lo hubo.
+
+La función corre puntual cada domingo y falla en ~0.5 s. Nadie se
+enteró porque **el fallo se registra en `global/health` y nada lo
+mira**: no hay alerta, y `global/health` no se muestra en la app.
+
+**Causa probable**: la cuenta de servicio que ejecuta la Function no
+tiene permiso para exportar Firestore. Se necesita
+`datastore.databases.export` (rol *Cloud Datastore Import Export
+Admin*) sobre el proyecto, y permiso de escritura en el bucket
+destino. Es configuración de IAM, no código — por eso el error es
+idéntico todas las semanas.
+
+**Consecuencia**: hoy, si alguien borra una colección, cambia mal unas
+rules o un script se ejecuta contra el proyecto equivocado, **no hay
+vuelta atrás**. Esto convive con una app donde ya se encontraron tres
+defectos distintos de pérdida silenciosa de datos (#21, #22 y el del
+catálogo): el respaldo era justo la red que debía atrapar esos casos, y
+no existe.
+
+**Qué hacer, en orden**:
+
+1. **Arreglar el 403.** Es lo primero de todo el documento: dar el rol
+   a la cuenta de servicio y confirmar que el domingo siguiente
+   `global/health` diga `ok: true`.
+2. **Alertar cuando falle.** Un respaldo que falla en silencio equivale
+   a no tener respaldo. Mínimo: correo al fallar (encaja en el #24,
+   que es exactamente "algo que no se sabría sin abrir la app", y
+   justifica saltarse el tope diario). Mostrar `global/health` en la
+   app para admin es el complemento.
+3. **Verificar que el contenido sirva**, recién entonces: la
+   restauración end-to-end que decía la versión anterior de este
+   pendiente.
+
+### Y además: nunca se ha probado una restauración
+
+Aunque el export funcionara, **nunca se ha ejecutado una restauración
+completa end-to-end**. "El respaldo existe" ≠ "el respaldo funciona".
 
 **Consecuencia operativa**: si Firestore se corrompe o se borra data
 por error (rules cambio, script mal ejecutado, incidente de Google), no
@@ -374,9 +486,10 @@ demasiado tarde.
 **Instrucción explícita del usuario**: "Antes de dar de alta a
 cualquier cliente externo, ejecutar restauración completa."
 
-**Propuesta**:
-1. Crear proyecto de staging (`campo-fosmon-restore-test`) separado de
-   producción.
+**Propuesta** (aplicable una vez arreglado el 403):
+1. Restaurar a un proyecto separado de producción — el mismo
+   `campo-fosmon-dev` del **#4**, que se puebla con este export. Los
+   dos pendientes se resuelven con la misma pieza.
 2. Restaurar el último snapshot semanal a ese proyecto.
 3. Verificar que las 5 obras, sus subs, historial de avance, nómina,
    estimaciones, otros_gastos y `gp_construct` estén completas y
@@ -389,7 +502,10 @@ cualquier cliente externo, ejecutar restauración completa."
 **Bloquea demo**: sí, por instrucción operativa. No se da de alta
 cliente externo sin este verificado.
 
-**Prioridad**: crítica.
+**Prioridad**: **crítica, y es lo más urgente del documento.** Los
+demás pendientes son defectos que se pueden corregir; este es la
+ausencia de la red que atrapa los errores que no se previeron. Cada
+semana que pasa sin arreglarlo es una semana de datos sin respaldo.
 
 ---
 
@@ -1513,10 +1629,25 @@ Existe infraestructura de correo y no está claro que funcione:
 | `probarResumenSemanal` (callable) | `functions/index.js:1095` | existe, para dirección/admin |
 | `registrarSalud("email_semanal", …)` | `functions/index.js:717` | escribe en `global/health` |
 
-**Antes de tocar nada**: leer `global/health` y ver
-`email_semanal_historial` (últimas 10 ejecuciones). Eso dice si el
-envío de los lunes funciona **sin mandar un correo de prueba**. Si hace
-falta dispararlo, `probarResumenSemanal` ya existe.
+**Verificado el 2026-09-20 leyendo `global/health`** (solo lectura, sin
+mandar ningún correo de prueba): el resumen semanal **sí funciona**.
+Las 10 ejecuciones del historial salieron `ok: true`; la última el
+2026-09-14 a las 09:07 CDMX, a 4 destinatarios —`aoliva`, `lmayo`,
+`ofosado`, `ofosadog` @fosmon.com.mx—, que son exactamente los
+usuarios activos con los roles de `ROLES_RESUMEN_SEMANAL`
+(`functions/index.js:801`). O sea que **no hay que revivirlo sino
+cambiarle el contenido**: hoy manda un resumen propio, no el dashboard
+principal.
+
+**Pero hay un hueco de 3 semanas sin explicar**: faltan los lunes
+**2026-08-24 y 2026-08-31**. No figuran como fallo, figuran como nada,
+así que la función no llegó a ejecutarse. El **mismo hueco exacto**
+aparece en `backup_historial` y en `recordatorio_lunes_historial`, lo
+que apunta a una causa común de todo el proyecto en ese periodo
+—facturación, cuota o un redespliegue— y no a un defecto de esta
+función. **Hay que averiguar qué pasó**: si se repite, el correo no
+sale y nadie se entera. Los logs de Cloud Functions de esas fechas
+deberían decirlo.
 
 ### 1. Correos de cuenta — obligatorios
 
@@ -1589,8 +1720,9 @@ cierran, gobiernan.
 | 1 | Sacar repo de iCloud Drive | sí (indirecto) | crítica |
 | 2 | Primer ingreso GP en "cargando" | sí | crítica — consecuencia mitigada en `fix/arranque`, causa raíz abierta |
 | 3 | KPIs arrancan en cero | sí | crítica — resuelto en Panel principal (`fix/arranque`), abierto en lista de obras y módulos |
-| 4 | Cuentas de prueba dedicadas | sí | crítica |
-| 5 | Probar restauración del respaldo | sí | crítica |
+| 4 | Proyecto Firebase de pruebas con copia de datos | sí (indirecto) | alta — habilita la migración a orgs y el #4b |
+| 4b | Cuentas de prueba dedicadas | sí | crítica — depende del #4 |
+| 5 | **NO HAY RESPALDOS** — export 403 desde julio | sí | **crítica, lo más urgente** |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
 | 7 | Obra 0112 discrepancia $2.5M | | alta |
 | 8 | Tres fórmulas de "ejecutado" ($3.8M) | | alta |
