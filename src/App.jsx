@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
@@ -5846,7 +5846,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
 //   1. Consolidado: 5 KPIs con variación semanal (Contratado, Ejecutado,
 //      Gastado, Margen, Personal).
 //   2. Excepciones: frases cortas, una por renglón, de obras con problema.
-//   3. Tabla: 6 columnas ordenadas por margen ascendente.
+//   3. Tabla: 6 columnas, ordenables por columna (arranca por margen ascendente).
 //
 // Se calcula sobre lo que YA existe en Firestore:
 //   · avance/historial       (por obra) — snapshot semanal con montoEjecutado
@@ -6544,7 +6544,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
           principal — consistencia visual y ergonomía táctil).
           Compartimos helper de flecha entre ambos modos. */}
       <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
-        Obras — ordenadas por margen (menor primero)
+        {/* Sin "ordenadas por margen": el orden lo elige el usuario por columna,
+            así que el encabezado mentía en cuanto ordenaba por otra cosa. */}
+        Obras
       </div>
 
       {(() => {
@@ -11683,17 +11685,49 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     // PRESERVAR AVANCE al reemplazar catálogo: si ya hay un catálogo
     // guardado, leer los subs actuales y mantener a/cantEjec/fotos de
     // partidas cuya CLAVE coincida con las del nuevo catálogo.
+    //
+    // OJO: aquí NO se usa `fsGet`. `fsGet` hace `catch { return null; }`
+    // (línea ~2154), así que devolvía el mismo `null` para "esta obra aún no
+    // tiene avance capturado" que para "se cayó la red". El segundo caso
+    // producía un mapa vacío, y unas líneas abajo se escribía `avance/subs`
+    // con todas las partidas en a=0 y cantEjec=0: el avance del residente se
+    // borraba en silencio y sin forma de recuperarlo. El `catch` de este
+    // bloque era además código muerto, porque `fsGet` nunca lanza.
+    //
+    // Con la lectura directa la excepción sí llega y se puede distinguir:
+    // documento ausente → no había avance, seguimos; fallo de lectura →
+    // ABORTAMOS sin escribir nada. Ver PENDIENTES #22.
+    //
+    // Y es `getDocFromServer`, no `getDoc`, a propósito. `getDoc` cae a la
+    // caché cuando el servidor no responde, y este documento SIEMPRE está en
+    // caché porque el listener de la línea ~16572 lo trae al abrir la obra.
+    // O sea que sin red `getDoc` resolvería con datos de caché en vez de
+    // fallar, el aborto de abajo nunca correría y las escrituras se
+    // encolarían para mandarse al reconectar. Reemplazar el catálogo es
+    // destructivo e irreversible: exige confirmar contra el servidor cuál es
+    // el avance vigente, no creerle a una copia local que puede ser vieja
+    // (otro dispositivo pudo capturar más avance). Sin red, no se reemplaza.
     let subsPreviosMap = new Map();
     if (catalogoGuardado) {
+      let snapPrev;
       try {
-        const subsPrev = await fsGet(`obras/${obra.id}/avance/subs`);
-        const arr = (subsPrev && Array.isArray(subsPrev.data)) ? subsPrev.data : [];
-        arr.forEach(s => {
-          if (s.sec) subsPreviosMap.set(String(s.sec).trim().toLowerCase(), s);
-        });
+        snapPrev = await getDocFromServer(doc(fbDb, 'obras', obra.id, 'avance', 'subs'));
       } catch (e) {
-        console.warn('No se pudo leer avance previo:', e);
+        // No sabemos si hay avance que preservar. Escribir aquí es destructivo
+        // e irreversible, así que no se escribe.
+        setError(
+          'No se pudo confirmar con el servidor el avance capturado previamente ' +
+          `(${e?.code || 'error de lectura'}), así que el catálogo NO se reemplazó. ` +
+          'Esto protege el avance ya capturado: si se reemplazara sin leerlo, se perdería. ' +
+          'Necesitas conexión para reemplazar un catálogo. Revísala y vuelve a intentar.'
+        );
+        return;
       }
+      // Documento ausente es legítimo: catálogo cargado, avance aún sin capturar.
+      const arr = snapPrev.exists() && Array.isArray(snapPrev.data()?.data) ? snapPrev.data().data : [];
+      arr.forEach(s => {
+        if (s.sec) subsPreviosMap.set(String(s.sec).trim().toLowerCase(), s);
+      });
     }
     const subsParaAvance = resultado.conceptos.map((c, idx) => {
       const pertenece = cat2concepto.get(c._ri);
@@ -11731,17 +11765,28 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     }));
     // Marcar cada sub con la versión del parser (para debug)
     subsParaAvance.forEach(s => { s._parserVersion = resultado.parserVersion || 'unknown'; });
-    try {
-      await fsSetA(`obras/${obra.id}/config/catalogo`, cat,
-        { modulo:"presupuesto", entidad:`catálogo ${cat.conceptos?.length||0} conceptos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
-          meta:{ importeTotal: cat.totalLeido, importeContrato } });
-      // También guardar como subs para que aparezcan en Operación → Avance físico
-      await fsSetA(`obras/${obra.id}/avance/subs`, { data: subsParaAvance },
-        { modulo:"avance_fisico", entidad:"sincronización desde catálogo", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-      setObra({...obra, presupuesto: importeContrato});
-      // Actualizar el state global de subs si el padre lo permite (para no requerir reload)
-      if (setSubsGlobal) setSubsGlobal(subsParaAvance);
-    } catch(e) { setError('Error al guardar: ' + e.message); return; }
+    // `fsSetA` devuelve false cuando la escritura falla; no lanza. Antes se
+    // ignoraba ese valor y se envolvía todo en un try/catch que nunca podía
+    // dispararse, así que un guardado fallido terminaba igual en
+    // `setFase('confirmado')`: la pantalla decía "listo" sin haber guardado.
+    const okCat = await fsSetA(`obras/${obra.id}/config/catalogo`, cat,
+      { modulo:"presupuesto", entidad:`catálogo ${cat.conceptos?.length||0} conceptos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+        meta:{ importeTotal: cat.totalLeido, importeContrato } });
+    if (!okCat) {
+      setError('No se pudo guardar el catálogo. No se cambió nada; revisa la conexión y vuelve a intentar.');
+      return;
+    }
+    // También guardar como subs para que aparezcan en Operación → Avance físico
+    const okSubs = await fsSetA(`obras/${obra.id}/avance/subs`, { data: subsParaAvance },
+      { modulo:"avance_fisico", entidad:"sincronización desde catálogo", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    if (!okSubs) {
+      setError('El catálogo se guardó, pero no se pudieron guardar las partidas de avance. ' +
+               'El avance capturado NO se tocó. Vuelve a confirmar el catálogo para sincronizarlas.');
+      return;
+    }
+    setObra({...obra, presupuesto: importeContrato});
+    // Actualizar el state global de subs si el padre lo permite (para no requerir reload)
+    if (setSubsGlobal) setSubsGlobal(subsParaAvance);
     setCatalogoGuardado(cat);
     setFase('confirmado');
   }

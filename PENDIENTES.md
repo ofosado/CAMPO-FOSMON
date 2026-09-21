@@ -986,6 +986,12 @@ llamando por teléfono.
 el usuario presente), pero es imprescindible para clientes con más de
 5 usuarios que quieran onboarding sin nuestra intervención.
 
+**Nota (2026-09-20)**: la política de correo de este pendiente quedó
+absorbida por el **#24 (plan de correos)**, que además fija que si el
+envío falla la creación del usuario NO se revierte, y agrega la
+recuperación de contraseña, que hoy no existe. Aquí se queda el
+**manual**.
+
 ---
 
 ## 15. Distinguir "obra que avanzó" de "residente que se puso al corriente"
@@ -1399,6 +1405,28 @@ recargar el catálogo. Un fallo transitorio devuelve `null` → mapa
 vacío → **pérdida silenciosa de avance**, el mismo daño del pendiente
 #21. Y su `catch` nunca corre. Este sitio se arregla primero.
 
+### Atendido en `fix/catalogo-no-borra-avance` (2026-09-20) — solo este sitio
+
+`confirmarCatalogo` lee con `getDoc` directo y **aborta sin escribir
+nada** si la lectura falla; el documento ausente sigue siendo un caso
+legítimo (obra con catálogo pero sin avance capturado todavía).
+
+Se encontró de paso un segundo defecto en la misma función: `fsSetA`
+devuelve `false` cuando la escritura falla —no lanza— y ese valor se
+ignoraba dentro de un `try/catch` que por eso nunca podía dispararse.
+Un guardado fallido terminaba igual en `setFase('confirmado')`: la
+pantalla decía "listo" sin haber guardado. Ahora se comprueba cada
+escritura por separado.
+
+Reproducción del daño contra el estado anterior, ejecutando la función
+real con la lectura fallando: escribía `avance/subs` con `a=0`,
+`cantEjec=0` y `fotos={}` en todas las partidas, encima de un avance
+real de 80% y 45%. Congelado en `scripts/prueba-guarda-catalogo.cjs`
+— 24 aserciones, 9 fallas contra `main`.
+
+**Sigue abierto** el resto del pendiente: 33 llamadas de `fsGet`, 16
+de `fsSet`, 14 de `fsDel` y el borrado de `fsColl`.
+
 **Mismo patrón fuera de los cuatro**: `crearSnapshotAvance`
 (`src/App.jsx:2368`) y `crearSnapshotAvanceSub` (`src/App.jsx:2431`)
 también hacen catch-and-return sin relanzar. Los detecta el bloque de
@@ -1457,6 +1485,100 @@ poco para la primera lectura en frío desde obra.
 
 ---
 
+## 24. Plan de correos — qué manda CAMPO y qué no
+
+**Acordado**: 2026-09-20. Sustituye las decisiones sueltas de correo
+que estaban repartidas; el correo de alta del pendiente #14 queda
+absorbido aquí en cuanto a política (el manual sigue en #14).
+
+**La regla que gobierna todo lo demás**:
+
+> Se manda un correo **solo si pide una acción o dice algo que no se
+> sabría sin abrir la app.** Tope de **uno por persona al día**, salvo
+> los correos de cuenta.
+
+**Explícitamente NO se manda**: nada por cada captura, y nada que
+duplique lo que ya dice la campanita dentro de la app. Un sistema que
+manda de más se filtra a spam y deja de leerse, y entonces tampoco
+sirve para lo que sí importa.
+
+### Lo que hay hoy
+
+Existe infraestructura de correo y no está claro que funcione:
+
+| pieza | dónde | estado |
+|---|---|---|
+| Resend + `enviarEmailResend` | `functions/index.js:996` | existe |
+| `resumenSemanalEmail` (lunes 9:07 CDMX) | `functions/index.js:1069` | existe, **sin verificar** |
+| `probarResumenSemanal` (callable) | `functions/index.js:1095` | existe, para dirección/admin |
+| `registrarSalud("email_semanal", …)` | `functions/index.js:717` | escribe en `global/health` |
+
+**Antes de tocar nada**: leer `global/health` y ver
+`email_semanal_historial` (últimas 10 ejecuciones). Eso dice si el
+envío de los lunes funciona **sin mandar un correo de prueba**. Si hace
+falta dispararlo, `probarResumenSemanal` ya existe.
+
+### 1. Correos de cuenta — obligatorios
+
+Los únicos exentos del tope diario.
+
+- **Alta de usuario con credenciales.** Hoy `crearUsuario`
+  (`functions/index.js:128`) crea la cuenta con contraseña pero **no
+  manda nada**: las credenciales se pasan a mano, a veces por
+  WhatsApp. Requisito explícito: **si el envío del correo falla, la
+  creación del usuario NO se revierte.** La cuenta queda creada y el
+  correo se reintenta o se reporta; borrar al usuario porque falló un
+  correo sería peor que el problema.
+- **Recuperación de contraseña. Hoy no existe**, ni en la app ni en
+  las Functions. Quien olvida su contraseña depende de que alguien se
+  la resetee a mano. Es lo más barato de agregar
+  (`sendPasswordResetEmail` del SDK de Auth) y lo que más soporte
+  ahorra.
+
+### 2. Resumen semanal para directivos — uno solo
+
+Lunes temprano, **el dashboard principal en un correo**: el mismo
+consolidado que ya se ve en pantalla. Un correo por semana, no uno por
+obra. Se revive `resumenSemanalEmail` **después** de verificar si
+funciona.
+
+Aplica P2: una cifra que no se pudo calcular va como "no disponible",
+nunca como cero. Un correo con margen del 100% porque no llegó GP es
+peor que no mandarlo.
+
+### 3. Excepciones que piden acción
+
+**Obra que no cerró semana** → al residente y a su gerente. Es el caso
+que cumple la regla de cabo a rabo: pide una acción concreta y no se
+sabe sin abrir la app.
+
+Ojo con el pendiente #15: hay que distinguir "la obra no avanzó" de
+"el residente no capturó". El correo es por lo segundo.
+
+### 4. Para cotea (cumplimiento)
+
+El **informe semanal del artículo 73 enviado por correo al superior
+jerárquico**, como forma de cumplir la obligación —el correo es el
+acto de cumplimiento, no un aviso. Implica acuse y registro de envío.
+
+**Depende del pendiente #13** (rehacer el PDF): sin el informe bien
+hecho no hay nada que mandar.
+
+### Pregunta abierta
+
+**¿Los residentes leen correo?** Si la respuesta es que no, los avisos
+del punto 3 deben ir por **WhatsApp** y no por correo. Esto cambia el
+diseño de esa parte, así que hay que responderlo antes de construirla.
+Los puntos 1, 2 y 4 no dependen de esta respuesta: dirección sí lee
+correo, y el de cotea es cumplimiento formal.
+
+**Prioridad**: la recuperación de contraseña es **alta** (hoy no
+existe y genera soporte manual). El resto, media: el resumen semanal y
+las excepciones después de verificar la infraestructura; el de cotea
+va detrás del #13.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -1485,8 +1607,9 @@ cierran, gobiernan.
 | 19 | `setObra` sin declarar en GastosGP | | alta |
 | 20 | Verificación de ámbito permanente | | alta |
 | 21 | Cambio de modo borra avance en silencio | | alta |
-| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — causa raíz de #3, #8 y #21 |
+| 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — caso urgente (recarga de catálogo) cerrado en `fix/catalogo-no-borra-avance`; resto abierto |
 | 23 | `networkTimeoutSeconds: 5` del service worker | | media-alta (rama aparte) |
+| 24 | Plan de correos (regla, resumen semanal, cuenta, cotea) | | alta la recuperación de contraseña; media el resto |
 
 ---
 
