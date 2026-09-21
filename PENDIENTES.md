@@ -437,20 +437,58 @@ Export error 403: {"error":{"code":403,"message":"The caller does not
 have permission","status":"PERMISSION_DENIED"}}
 ```
 
-El historial solo guarda 10 entradas, así que **el fallo probablemente
-es anterior**: no se sabe cuándo fue el último respaldo bueno, ni si
-alguna vez lo hubo.
+El historial solo guarda 10 entradas, pero los **logs de auditoría de
+actividad** (que se retienen 400 días, no 30) tienen la serie completa
+de llamadas a `FirestoreAdmin.ExportDocuments`: **todos los domingos
+desde el 2026-06-07 —la primera— hasta hoy, y todos con
+`status.code: 7` (PERMISSION_DENIED)**. No es que se haya roto: **nunca
+funcionó el respaldo automático**. Los únicos respaldos que existen son
+los dos manuales de septiembre.
 
 La función corre puntual cada domingo y falla en ~0.5 s. Nadie se
 enteró porque **el fallo se registra en `global/health` y nada lo
 mira**: no hay alerta, y `global/health` no se muestra en la app.
 
-**Causa probable**: la cuenta de servicio que ejecuta la Function no
-tiene permiso para exportar Firestore. Se necesita
-`datastore.databases.export` (rol *Cloud Datastore Import Export
-Admin*) sobre el proyecto, y permiso de escritura en el bucket
-destino. Es configuración de IAM, no código — por eso el error es
-idéntico todas las semanas.
+### Causa raíz confirmada (2026-09-21): el rol está en la cuenta equivocada
+
+El comentario de instalación en `functions/index.js:1127-1130` manda
+darle `roles/datastore.importExportAdmin` a
+`campo-fosmon@appspot.gserviceaccount.com`. Ese es el service account
+por omisión de **App Engine**, que era el runtime de Cloud Functions
+**Gen 1**.
+
+El proyecto está en **Gen 2** (`firebase-functions ^7`, node 20), y
+Gen 2 corre sobre Cloud Run, cuyo service account por omisión es el de
+**Compute Engine**:
+
+```
+737456981212-compute@developer.gserviceaccount.com
+```
+
+Confirmado con `gcloud functions describe backupSemanalFirestore
+--region=us-central1` → `GEN_2`, `serviceAccountEmail:
+737456981212-compute@...`.
+
+La política de IAM del proyecto tiene el binding de
+`importExportAdmin` **solo** sobre el appspot. La cuenta que de verdad
+ejecuta la función trae `roles/editor`, `roles/eventarc.eventReceiver`
+y `roles/run.invoker` — y **`roles/editor` NO incluye
+`datastore.databases.export`** (verificado listando sus
+`includedPermissions`). De ahí el 403, idéntico cada domingo.
+
+O sea: el permiso se otorgó bien **para Gen 1**, y la migración a
+Gen 2 lo dejó huérfano sin que nadie lo notara, porque el único lugar
+donde eso se manifiesta es `global/health`, que nadie lee.
+
+**No hace falta permiso extra sobre el bucket.** El export no lo
+escribe la Function: la Function solo llama a la API, y quien escribe
+es el *service agent* de Firestore
+(`service-737456981212@gcp-sa-firestore.iam.gserviceaccount.com`), que
+ya tiene `roles/firestore.serviceAgent`. Prueba empírica: los
+respaldos **manuales** del 11 y 14 de septiembre
+(`firestore/2026-09-11-preseguridad/`, 14.66 MiB, 28 archivos, con
+`overall_export_metadata` válido) están en el bucket y los escribió esa
+misma ruta. El bucket funciona; el permiso de llamada, no.
 
 **Consecuencia**: hoy, si alguien borra una colección, cambia mal unas
 rules o un script se ejecuta contra el proyecto equivocado, **no hay
@@ -459,19 +497,98 @@ defectos distintos de pérdida silenciosa de datos (#21, #22 y el del
 catálogo): el respaldo era justo la red que debía atrapar esos casos, y
 no existe.
 
+### ARREGLADO el 2026-09-21 — ya existe el primer respaldo automático
+
+Autorizado por el usuario, se creó un rol a medida con **un solo
+permiso** en vez de darle `importExportAdmin` (que incluye
+`datastore.databases.import`, o sea la capacidad de sobrescribir
+producción) a la cuenta que ejecuta todas las funciones:
+
+```bash
+gcloud iam roles create firestoreExportador --project=campo-fosmon \
+  --title="Firestore — solo exportar" \
+  --permissions=datastore.databases.export --stage=GA
+
+gcloud projects add-iam-policy-binding campo-fosmon \
+  --member="serviceAccount:737456981212-compute@developer.gserviceaccount.com" \
+  --role="projects/campo-fosmon/roles/firestoreExportador"
+```
+
+El rol a medida tardó ~3 min en propagar: el primer disparo siguió
+dando 403 y el reintento automático del scheduler, 3 minutos después,
+pasó.
+
+**Verificado en el bucket, no en el registro**:
+
+| | Automático 2026-09-21 | Manual 2026-09-11 |
+|---|---|---|
+| Operación | `SUCCESSFUL`, `done: true` | `SUCCESSFUL` |
+| Duración | 9 s (03:28:55 → 03:29:04) | 16 s |
+| Documentos | **3 102** | 2 720 |
+| Bytes | 19 087 423 | 15 345 173 |
+| Archivos en GCS | **27** | 26 |
+| Tamaño en GCS | 18.23 MiB | 14.66 MiB |
+| `overall_export_metadata` | 98 B, válido | 98 B, válido |
+
+Más grande que el manual de hace 10 días, que es lo que debe ser.
+
+**Falta todavía**: quitar el binding huérfano de
+`campo-fosmon@appspot.gserviceaccount.com` (pendiente a propósito, para
+no mezclar causas), corregir el comentario de instalación de
+`functions/index.js:1127-1130` que nombra la cuenta equivocada, y
+confirmar que el domingo 2026-09-27 corra solo.
+
 **Qué hacer, en orden**:
 
-1. **Arreglar el 403.** Es lo primero de todo el documento: dar el rol
-   a la cuenta de servicio y confirmar que el domingo siguiente
-   `global/health` diga `ok: true`.
+1. ~~**Arreglar el 403.**~~ Hecho el 2026-09-21, ver arriba.
 2. **Alertar cuando falle.** Un respaldo que falla en silencio equivale
-   a no tener respaldo. Mínimo: correo al fallar (encaja en el #24,
-   que es exactamente "algo que no se sabría sin abrir la app", y
-   justifica saltarse el tope diario). Mostrar `global/health` en la
+   a no tener respaldo. Es el **#24 punto 3.1**, prioridad alta: pide
+   una acción y dice algo que no se sabría sin abrir la app, y
+   justifica saltarse el tope diario. Mostrar `global/health` en la
    app para admin es el complemento.
 3. **Verificar que el contenido sirva**, recién entonces: la
    restauración end-to-end que decía la versión anterior de este
    pendiente.
+
+### Y además: el proyecto estuvo caído ~16 días por cobro (agosto 2026)
+
+Confirmado en logs de auditoría el 2026-09-21, investigando por qué no
+hubo ni respaldo ni correo semanal el 23/24 ni el 30/31 de agosto.
+
+La cuenta de facturación a la que estaba ligado el proyecto desde el
+2026-05-19, `01B52B-8A6A70-A8E51C` ("My Billing Account", MXN), **está
+cerrada** (`open: false`). Al cerrarse, el proyecto cayó a **Spark** y
+Cloud Run empezó a rechazar todo. El mensaje es textual, no
+interpretación:
+
+```
+2026-08-24T16:09:53Z  ERROR  run.googleapis.com/requests
+The request failed because billing is disabled for this project.
+```
+
+Se repite el 24, el 27 y el 2 de septiembre. El 2026-09-02 a las
+18:41 UTC (12:41 hora de México) `ofosado@gmail.com` movió el proyecto
+a `017A21-5D033F-F47CFE` ("Firebase Payment", abierta), y 17 minutos
+después las peticiones de Cloud Run vuelven a `INFO`.
+
+**Ventana de caída**: entre el 2026-08-16 (último export intentado) y
+el 2026-09-02 18:58 UTC. Unos 16 días. Durante ese lapso **no corrió
+ninguna Cloud Function**: ni respaldo, ni resumen semanal, ni
+`crearUsuario`, ni ninguna `onCall`. La app de lectura/escritura
+directa a Firestore desde el navegador sí siguió viva —Firestore y Auth
+siguen en Spark—, así que **nadie en campo notó nada**.
+
+**Lo que esto implica para el aviso del #24 3.1**: un correo emitido
+por una Cloud Function **no puede avisar de esto**, porque en este
+escenario las funciones son justamente lo que está muerto. El aviso de
+facturación lo manda Google al administrador de la cuenta de cobro; lo
+que hace falta del lado nuestro es que **alguien lea esos correos** y
+que el `global/health` visible en la app muestre "última ejecución hace
+N días", que sí detecta el silencio.
+
+**Pendiente asociado**: verificar por qué se cerró la cuenta anterior
+(¿tarjeta vencida?, ¿cierre voluntario?) y que la actual no vaya al
+mismo lugar. Es un riesgo de continuidad del negocio, no un bug.
 
 ### Y además: nunca se ha probado una restauración
 
@@ -1679,9 +1796,43 @@ peor que no mandarlo.
 
 ### 3. Excepciones que piden acción
 
-**Obra que no cerró semana** → al residente y a su gerente. Es el caso
-que cumple la regla de cabo a rabo: pide una acción concreta y no se
-sabe sin abrir la app.
+**3.1 Respaldo que falló → al administrador. Prioridad alta.**
+
+Es el primero de la lista, y el que justifica la categoría entera. El
+export semanal de Firestore lleva meses devolviendo 403 (ver #5) y
+nadie se enteró: la función **sí** escribe el fallo en `global/health`,
+pero **nada ni nadie lee ese documento**. Un registro que nadie lee no
+es una alarma.
+
+Cumple la regla de cabo a rabo, y con margen: pide una acción concreta
+(arreglar el permiso, o el bucket, o el cobro) y dice algo que nadie
+sabría sin ir a buscarlo a mano en Firestore.
+
+Qué debe decir: qué corrió, cuándo, y **el mensaje de error textual**.
+El 403 traía el nombre del permiso faltante
+(`datastore.databases.export`); ese dato solo apareció al leer los
+logs. En el correo habría resuelto el problema el primer domingo.
+
+Detalles de diseño:
+
+- **Se salta el tope de uno por persona al día.** El tope existe para
+  no volver ruido lo rutinario; esto no es rutinario.
+- **Que no se repita idéntico cada semana sin cambio.** Si falla ocho
+  domingos seguidos por lo mismo, el octavo correo ya no informa nada.
+  Un correo al primer fallo y luego recordatorio espaciado, o uno que
+  diga "van N semanas".
+- **El éxito no manda correo.** Un correo semanal de "respaldo ok" se
+  vuelve ruido y se deja de leer, que es justo cómo se pierde el aviso
+  del que sí importa.
+- **A quién**: al administrador del sistema, no a dirección. Es una
+  acción técnica.
+
+No depende de #5: el correo hay que construirlo aunque el 403 ya esté
+arreglado, porque el siguiente fallo será por otra causa —cuota,
+cobro, bucket borrado— y volvería a pasar callado.
+
+**3.2 Obra que no cerró semana** → al residente y a su gerente. Pide
+una acción concreta y no se sabe sin abrir la app.
 
 Ojo con el pendiente #15: hay que distinguir "la obra no avanzó" de
 "el residente no capturó". El correo es por lo segundo.
@@ -1703,10 +1854,103 @@ diseño de esa parte, así que hay que responderlo antes de construirla.
 Los puntos 1, 2 y 4 no dependen de esta respuesta: dirección sí lee
 correo, y el de cotea es cumplimiento formal.
 
-**Prioridad**: la recuperación de contraseña es **alta** (hoy no
-existe y genera soporte manual). El resto, media: el resumen semanal y
-las excepciones después de verificar la infraestructura; el de cotea
-va detrás del #13.
+**Prioridad**: **alta** el aviso de respaldo fallido (3.1) y la
+recuperación de contraseña (hoy no existe y genera soporte manual). El
+resto, media: el resumen semanal y las demás excepciones después de
+verificar la infraestructura; el de cotea va detrás del #13.
+
+---
+
+## 25. `global/health` registra la intención, no el hecho
+
+**Descubierto**: 2026-09-21, al arreglar el 403 del #5. Prioridad
+**alta** — es lo que hace que el #24 3.1 pueda mentir.
+
+`ejecutarBackupFirestore()` ([functions/index.js:1139](functions/index.js:1139))
+hace un `POST` a `:exportDocuments` y **no consulta la operación
+después**. El export de Firestore es una operación de larga duración:
+la API responde en milisegundos con un `operationName` y el trabajo
+sigue corriendo en segundo plano varios minutos.
+
+`registrarSalud("backup", true, ...)` se escribe **en cuanto la
+petición es aceptada**. O sea que `ok: true` significa *"se pidió un
+respaldo"*, no *"hay un respaldo"*. Si el export revienta a los dos
+minutos —cuota, bucket borrado, permiso del service agent— el registro
+se queda diciendo que todo bien, para siempre.
+
+**Se comprobó en los dos sentidos el 2026-09-21**:
+
+| | Bucket | `global/health` |
+|---|---|---|
+| Ejecución 03:28:55 | respaldo completo, 27 archivos, 18.23 MiB | `ok: true` (por suerte) |
+| Ejecución 03:32:34 | no escribió nada (400, la carpeta ya existía) | `ok: false` |
+
+Quedó `ok: false` **teniendo un respaldo bueno del mismo día**. Ese es
+el registro que vería el administrador, y el correo del #24 3.1
+avisaría de un fallo que no existe. La falla al revés —`ok: true` sin
+respaldo— es la peligrosa, y es la que estuvo activa desde siempre.
+
+**Qué hacer**:
+
+1. Guardar el `operationName` y **consultar la operación** hasta que
+   `done: true`, y recién entonces registrar el resultado real
+   (`operationState: SUCCESSFUL` / `FAILED`) con documentos y bytes
+   exportados. La API es `firestore.googleapis.com/v1/{name}`.
+   Requiere añadir `datastore.operations.get` al rol
+   `firestoreExportador`, que hoy tiene solo `export`.
+2. Alternativa más barata si no se quiere sondear: verificar que
+   exista el archivo `{fecha}.overall_export_metadata` en el destino.
+   Firestore lo escribe **al final**, cuando el export terminó — es el
+   marcador de completitud. Se confirmó: su `updated` coincide al
+   segundo con el `endTime` de la operación.
+3. Distinguir los estados en el registro: `pedido` / `confirmado` /
+   `fallido`. Hoy solo hay un booleano que no alcanza para tres cosas.
+4. **El error 400 "Path already exists" no es un fallo real.** Dos
+   corridas el mismo día chocan porque el destino lleva solo la fecha.
+   O se trata como caso benigno, o el destino lleva la hora.
+
+**Y un efecto lateral**: el documento quedó con `ok: false` junto al
+`operationName` de la corrida **exitosa**, porque `registrarSalud`
+escribe con *merge* y el fallo no pisó ese campo. Un registro mezclado
+de dos ejecuciones distintas es peor que uno vacío. Al escribir el
+resultado hay que limpiar los campos que ya no aplican.
+
+---
+
+## 26. Pantalla de salud del sistema en administración
+
+**Descubierto**: 2026-09-21, razonando el #24 3.1. Prioridad **alta**.
+
+El correo de fallo tiene un punto ciego estructural: **si lo que está
+muerto son las Cloud Functions, no hay quien mande el correo**. No es
+hipotético, ya pasó: los ~16 días de agosto con la facturación caída
+(#5) no generaron ni un aviso, porque el emisor era justo lo caído.
+
+Contra eso no sirve un emisor. Sirve un **lector**: el navegador, que
+sigue vivo porque habla con Firestore directo.
+
+**Qué**: una pantalla en administración que lea `global/health` y
+muestre, **por cada función programada** —hoy son seis jobs:
+`backupSemanalFirestore`, `resumenSemanalEmail`, `recordatorioLunes`,
+`recordatorioCapturaSubs`, `recordatorioCapturaObra`,
+`actualizarGPSheet`—:
+
+- qué es y cada cuándo debería correr,
+- **"última ejecución hace N días"**,
+- en **rojo** si N supera lo esperado para su frecuencia (una semanal
+  en rojo a los ~9 días, una diaria a las ~36 horas),
+- el resultado y el **mensaje de error textual** de la última corrida.
+
+**Lo importante es que detecta el silencio, no el fallo.** Un fallo se
+registra; el silencio no deja rastro en ningún lado, y el silencio fue
+exactamente lo que pasó desapercibido en agosto. Es la única señal que
+funciona cuando el backend entero está caído.
+
+Aplica **P2**: una función que nunca registró nada va como "sin datos",
+no como "hace 0 días".
+
+Depende de que las funciones escriban un registro honesto: sin el #25,
+esta pantalla muestra en verde cosas que fallaron.
 
 ---
 
@@ -1722,7 +1966,7 @@ cierran, gobiernan.
 | 3 | KPIs arrancan en cero | sí | crítica — resuelto en Panel principal (`fix/arranque`), abierto en lista de obras y módulos |
 | 4 | Proyecto Firebase de pruebas con copia de datos | sí (indirecto) | alta — habilita la migración a orgs y el #4b |
 | 4b | Cuentas de prueba dedicadas | sí | crítica — depende del #4 |
-| 5 | **NO HAY RESPALDOS** — export 403 desde julio | sí | **crítica, lo más urgente** |
+| 5 | Respaldos — el 403 nunca dejó correr uno | sí | **crítica** — permiso arreglado 2026-09-21, primer respaldo bueno; falta restauración probada |
 | 6 | Sesión zombie (`onAuthStateChanged`) | | alta |
 | 7 | Obra 0112 discrepancia $2.5M | | alta |
 | 8 | Tres fórmulas de "ejecutado" ($3.8M) | | alta |
@@ -1741,7 +1985,9 @@ cierran, gobiernan.
 | 21 | Cambio de modo borra avance en silencio | | alta |
 | 22 | `fsGet`/`fsSet`/`fsDel` se tragan el fallo (64 llamadas) | | alta — caso urgente (recarga de catálogo) cerrado en `fix/catalogo-no-borra-avance`; resto abierto |
 | 23 | `networkTimeoutSeconds: 5` del service worker | | media-alta (rama aparte) |
-| 24 | Plan de correos (regla, resumen semanal, cuenta, cotea) | | alta la recuperación de contraseña; media el resto |
+| 24 | Plan de correos (regla, resumen semanal, cuenta, cotea) | | alta el aviso de respaldo fallido y la recuperación de contraseña; media el resto |
+| 25 | `global/health` registra la intención, no el hecho | | alta — hace que el aviso del #24 3.1 pueda mentir |
+| 26 | Pantalla de salud en admin ("última ejecución hace N días") | | alta — única señal que sirve si el backend está caído |
 
 ---
 
