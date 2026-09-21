@@ -2347,6 +2347,26 @@ const ESQUEMA_SNAPSHOT = 2;
 const sonComparables = (a, b) =>
   ((a?.esquema || 1) === (b?.esquema || 1));
 
+// Dinero ejecutado que trae un snapshot. SIEMPRE se lee del snapshot; nunca
+// se reconstruye desde `avancePonderado × presupuesto`.
+//
+// Por qué importa: en el esquema 1 las dos cosas daban el mismo número, porque
+// `montoEjecutado` también iba topado y `avanceFisicoPonderado` divide entre
+// Σimp, que coincidía con el presupuesto. Es una identidad algebraica, y por eso
+// reconstruir "funcionaba". En el esquema 2 deja de funcionar: `montoEjecutado`
+// ya no se topa, así que la reconstrucción se queda con el dinero recortado
+// mientras el KPI lee el real. Medido en producción el 2026-09-21: la obra 0112
+// tiene $2,777,997 de excedente y la 0125 $1,046,494. Esa es la diferencia que
+// aparecería entre la gráfica y el KPI en la misma pantalla.
+//
+// Aplica P1: el dinero nunca se topa. Y P2: si el snapshot no trae el dato,
+// devuelve null —"no disponible"—, no cero.
+const montoEjecutadoSnap = (snap) =>
+  (typeof snap?.montoEjecutado === 'number') ? snap.montoEjecutado : null;
+
+// Esquema de cálculo de un snapshot (1 = antes del arreglo del recorte).
+const esquemaDe = (snap) => (snap?.esquema || 1);
+
 // Calcula el número ISO de semana ISO 8601 (semana que contiene el primer jueves del año)
 const semanaISO = (fecha) => {
   const d = new Date(fecha);
@@ -7579,29 +7599,30 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // Si la semana no tiene snapshot, se hereda el ejecutado anterior
   // (mismo tratamiento que el avance).
 
-  // Ejecutado por semana — FÓRMULA SIMPLE (usuario, agosto 2026 iter 4):
-  //   ejecutado_semana = avance_ponderado%_snapshot × presupuesto_obra
+  // Ejecutado por semana — SE LEE DEL SNAPSHOT, no se reconstruye.
   //
-  // Antes usábamos ∑(a × imp_actual) + almacén_acum, que se inflaba porque
-  // el catálogo actual puede tener precios/composición diferentes a cuando
-  // se hizo el snapshot, y el almacén acumulado sumaba fuerte. Resultado:
-  // márgenes históricos de 120M-141M vs 37M actual del Dashboard.
+  // Antes iba `avance_ponderado% × presupuesto`. Eso reconstruía el dinero a
+  // partir del avance físico, que está topado al 100% por partida (P1: el
+  // avance físico sí se topa, el dinero no). Mientras todos los snapshots
+  // fueron del esquema 1 el número salía idéntico al guardado —verificado
+  // contra las 4 obras con historial— porque el `montoEjecutado` del esquema 1
+  // también iba topado. Con el esquema 2 la identidad se rompe y la gráfica
+  // se quedaría mostrando el dinero recortado mientras el KPI muestra el real.
   //
-  // Con avance% × presupuesto:
-  //  - Es la misma definición que usa el usuario mentalmente ("obra 100M
-  //    al 80% = 80M de avance").
-  //  - Los números crecen suavemente (el avance no salta 20 puntos).
-  //  - Coincide bien con el KPI del Dashboard cuando el catálogo cubre
-  //    el 100% del presupuesto.
+  // Ver `montoEjecutadoSnap`. Si un snapshot no trae el dato, la semana queda
+  // en null: "no disponible", no cero (P2).
   const presObra = parseFloat(obra?.presupuesto) || 0;
   const ejecutadoPorSem = {};
   Object.entries(avancePorSem).forEach(([k, snap]) => {
-    if (typeof snap?.avancePonderado !== 'number') return;
-    ejecutadoPorSem[k] = (snap.avancePonderado / 100) * presObra;
+    const me = montoEjecutadoSnap(snap);
+    if (me === null) return;
+    ejecutadoPorSem[k] = me;
   });
 
-  // Buscar último ejecutado anterior a la ventana visible para arranque
-  let ultimoEjecutadoConocido = 0;
+  // Buscar último ejecutado anterior a la ventana visible para arranque.
+  // Arranca en null, no en 0: con 0 el `??` de más abajo nunca disparaba
+  // —0 no es nullish— y el fallback del avance actual era código muerto.
+  let ultimoEjecutadoConocido = null;
   if (primerSemanaVisible) {
     const anteriores = Object.entries(ejecutadoPorSem)
       .filter(([k]) => k < primerSemanaVisible)
@@ -7612,22 +7633,26 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   }
 
   // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
-  // Con la nueva fórmula (avance% × presupuesto), NO se suma almacén —
-  // el "ejecutado" ahora es puramente el avance físico convertido a
-  // pesos usando el presupuesto contratado. Consistente con la
-  // definición mental del usuario.
   // Reglas:
-  //   1) Si esta semana tiene snapshot, se usa ese valor.
+  //   1) Si esta semana tiene snapshot, se usa su `montoEjecutado`.
   //   2) Si no, se HEREDA el último valor conocido (semanas anteriores).
-  //   3) Si no hay ningún snapshot, arranca en 0 (o al fallback del
-  //      avance actual si tampoco hay ninguno histórico).
-  const ejecutadoActualParaFallback = avanceActualParaFallback > 0
-    ? (avanceActualParaFallback / 100) * presObra
-    : 0;
-  const hayAlgunSnapshot = Object.keys(ejecutadoPorSem).length > 0;
+  //   3) Si todavía no hay ningún valor conocido, la semana queda en null
+  //      —no disponible— en vez de 0. Un cero dibuja una caída a piso que
+  //      nadie capturó (P2).
+  // El fallback al ejecutado vivo solo entra cuando NO hay ningún snapshot
+  // en toda la obra: es el caso "el historial aún no llega de Firestore".
+  // Si no hay subs tampoco hay fallback: null, no 0 (P2).
+  const ejecutadoActualParaFallback = (subs && subs.length > 0)
+    ? desgloseEjecutado(subs, obra?.modoAvance === "volumen").total
+    : null;
+  // OJO: se mide sobre `avancePorSem`, no sobre `ejecutadoPorSem`. Un snapshot
+  // viejo sin `montoEjecutado` no aparece en `ejecutadoPorSem`, y contra esa
+  // colección la obra parecía "sin historial" → se caía al fallback y la serie
+  // arrancaba en 0. Ese 0 no es "no ejecutó nada", es "no se guardó el dato".
+  const hayAlgunSnapshot = Object.keys(avancePorSem).length > 0;
   const ejecutadoSeries = [];
   let ejecAcarreo = ultimoEjecutadoConocido
-    ?? (hayAlgunSnapshot ? 0 : ejecutadoActualParaFallback);
+    ?? (hayAlgunSnapshot ? null : ejecutadoActualParaFallback);
   semanas.forEach(s => {
     if (typeof ejecutadoPorSem[s.key] === 'number') {
       ejecAcarreo = ejecutadoPorSem[s.key];
@@ -7640,7 +7665,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
   const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
   const gtActual  = _gastoGPLive + _totMaq + _totOtros;
-  // Ejecutado actual con la MISMA fórmula: avance% actual × presupuesto
+  // Ejecutado actual con la MISMA función que alimenta el KPI del Dashboard
+  // (`desgloseEjecutado`). Antes era avance% × presupuesto, que es el dinero
+  // topado: el último punto de la gráfica no cuadraba con el KPI de arriba.
   const meActual  = ejecutadoActualParaFallback;
   const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
 
@@ -7715,6 +7742,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   const margenSeries = semanas.map((s, i) => {
     // Antes de la primera semana con avance capturado: no hay margen
     if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
+    // Si el ejecutado de esa semana no está disponible, el margen tampoco.
+    // Restar contra un cero inventado dibujaría una pérdida que no existe (P2).
+    if (typeof ejecutadoSeries[i] !== 'number') return null;
     const esUltimo = i === semanas.length - 1;
     // Gasto acumulado con arrastre del último GP conocido
     let gastoAcumSem = 0;
@@ -7729,6 +7759,43 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     // Ejecutado ya viene con arrastre desde ejecutadoSeries
     return ejecutadoSeries[i] - gastoAcumSem;
   });
+
+  // ── FRONTERA DE ESQUEMA ───────────────────────────────────────────────
+  // Las semanas anteriores al arreglo del recorte se calcularon con el avance
+  // topado por partida, y su `montoEjecutado` venía recortado. Las nuevas no.
+  // La serie es continua en el eje del tiempo pero NO en su definición: el
+  // escalón que aparece al cruzar no es avance, es cambio de criterio.
+  //
+  // Decisión de producto (usuario, 2026-09-21): no se corta la serie —dejaría
+  // obras como 0112 con un solo punto—. Se dibuja el tramo viejo PUNTEADO y se
+  // explica en leyenda, igual que ya se hace en la curva S de avance. Y ningún
+  // delta cruza la frontera.
+  //
+  // El esquema de una semana es el del último snapshot conocido hasta ella,
+  // porque el valor se arrastra: una semana sin captura hereda el dato y, con
+  // él, la definición con que se calculó.
+  const esquemaPorSemana = (() => {
+    let actual = null;
+    // Arrastre desde antes de la ventana visible
+    if (primerSemanaVisible) {
+      const previos = Object.entries(avancePorSem)
+        .filter(([k]) => k < primerSemanaVisible)
+        .sort(([a], [b]) => a.localeCompare(b));
+      if (previos.length > 0) actual = esquemaDe(previos[previos.length - 1][1]);
+    }
+    return semanas.map(s => {
+      const snap = avancePorSem[s.key];
+      if (snap) actual = esquemaDe(snap);
+      return actual;
+    });
+  })();
+  // Índice de la primera semana ya calculada con el esquema vigente. Todo lo
+  // anterior a él pertenece a la definición vieja.
+  const idxFrontera = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_SNAPSHOT);
+  // Solo hay frontera que dibujar si de verdad se mezclan dos definiciones
+  // DENTRO de la ventana visible.
+  const hayTramoViejo = idxFrontera > 0
+    && esquemaPorSemana.slice(0, idxFrontera).some(e => e !== null && e < ESQUEMA_SNAPSHOT);
 
   const datosMetricas = {
     avance: {
@@ -7850,17 +7917,30 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       // Puntos base de la serie — omitir semanas con null (p.ej. margen
       // antes del primer avance capturado). El path arranca en el primer
       // valor válido y termina en el último.
-      const pts = meses
-        .map((m, i) => (valores[i] === null || valores[i] === undefined)
-          ? null
-          : [xPos(i), yPos(valores[i])])
-        .filter(Boolean);
-      // Path de la línea principal
-      const dLinea = smoothPath(pts);
-      // Path del área: mismo camino + bajada al 0 (o al minValor si <0)
+      const puntoDe = (i) => (valores[i] === null || valores[i] === undefined)
+        ? null
+        : [xPos(i), yPos(valores[i])];
+      const pts = meses.map((m, i) => puntoDe(i)).filter(Boolean);
+      // El gasto sale del GP, no de los snapshots: no cruza ninguna frontera
+      // de esquema y se dibuja entero, sólido.
+      const tramoPunteado = hayTramoViejo && metricaActiva !== 'gasto';
+      // El punto de la frontera pertenece a los DOS tramos, para que la línea
+      // no quede partida: es donde cambia la definición, no donde falta dato.
+      const ptsViejo = tramoPunteado
+        ? meses.map((m, i) => i <= idxFrontera ? puntoDe(i) : null).filter(Boolean)
+        : [];
+      const ptsNuevo = tramoPunteado
+        ? meses.map((m, i) => i >= idxFrontera ? puntoDe(i) : null).filter(Boolean)
+        : pts;
+      // Path de la línea principal (tramo vigente) y del tramo viejo
+      const dLinea = smoothPath(ptsNuevo);
+      const dLineaVieja = ptsViejo.length >= 2 ? smoothPath(ptsViejo) : '';
+      // Path del área: mismo camino + bajada al 0 (o al minValor si <0).
+      // Solo bajo el tramo vigente — un área sólida bajo una línea punteada
+      // diría que ese tramo es tan firme como el otro.
       const yZero = yPos(0);
-      const dArea = pts.length >= 2
-        ? `${dLinea} L ${pts[pts.length-1][0].toFixed(2)},${yZero.toFixed(2)} L ${pts[0][0].toFixed(2)},${yZero.toFixed(2)} Z`
+      const dArea = ptsNuevo.length >= 2
+        ? `${dLinea} L ${ptsNuevo[ptsNuevo.length-1][0].toFixed(2)},${yZero.toFixed(2)} L ${ptsNuevo[0][0].toFixed(2)},${yZero.toFixed(2)} Z`
         : '';
       // Para margen con valores negativos, dibujar 2 áreas (positiva y negativa)
       // usando el signo del valor punto por punto.
@@ -7923,6 +8003,14 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
             </>
           )}
 
+          {/* TRAMO VIEJO (definición anterior al arreglo del recorte) */}
+          {dLineaVieja && (
+            <path d={dLineaVieja} fill="none"
+              stroke={metricaSel.color} strokeWidth={2}
+              strokeDasharray="5,3" opacity={0.5}
+              strokeLinecap="round" strokeLinejoin="round"/>
+          )}
+
           {/* LÍNEA suavizada */}
           <path d={dLinea} fill="none"
             stroke={metricaSel.color} strokeWidth={2.2}
@@ -7942,7 +8030,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
             if (rotar) anchor = "start";
             if (i === meses.length - 1 && !rotar) anchor = "end";
             if (i === 0 && !rotar) anchor = "start";
-            return <g key={m.key || m.ym}>
+            // Los puntos del tramo viejo se atenúan igual que su línea.
+            const esViejo = tramoPunteado && i < idxFrontera;
+            return <g key={m.key || m.ym} opacity={esViejo ? 0.5 : 1}>
               <circle cx={x} cy={y} r={2.5} fill={metricaSel.color}
                 stroke="white" strokeWidth={1}/>
               {v !== 0 && <text
@@ -7972,15 +8062,41 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       </div>;
     })()}
 
+    {/* Serie que cruza la frontera del arreglo del recorte */}
+    {hayTramoViejo && metricaActiva !== 'gasto' && (
+      <div style={{marginTop:8,background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,
+        borderRadius:6,padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
+        <b>El tramo punteado usa otra definición.</b> Esas semanas se calcularon
+        topando el avance al 100% por partida, así que el dinero ejecutado quedó
+        recortado al importe de catálogo. Desde el tramo sólido ya no se topa.
+        El escalón entre los dos tramos es el cambio de criterio, no avance de
+        obra — por eso no se compara un tramo contra el otro.
+      </div>
+    )}
+
     {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
-        separador de miles) porque no tiene el problema de amontonarse. */}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-      marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
-      <span>Inicio: <b style={{color:C.textSec}}>{metricaSel.formato(valoresValidos[0] ?? 0)}</b></span>
-      <span style={{fontWeight:600,color:metricaSel.color}}>
-        Actual: {metricaSel.formato(valoresValidos[valoresValidos.length-1] ?? 0)}
-      </span>
-    </div>
+        separador de miles) porque no tiene el problema de amontonarse.
+        Con serie mixta, el "Inicio" se toma del tramo vigente: comparar el
+        primer punto de la definición vieja contra el último de la nueva es
+        justamente el delta que no debe cruzar la frontera. */}
+    {(() => {
+      const desdeIdx = (hayTramoViejo && metricaActiva !== 'gasto') ? idxFrontera : 0;
+      const delTramo = valores.slice(desdeIdx).filter(v => v !== null && v !== undefined);
+      const vIni = delTramo[0];
+      const vFin = delTramo[delTramo.length - 1];
+      return <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+        marginTop:8,paddingTop:8,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
+        <span>
+          {desdeIdx > 0 ? 'Inicio del tramo comparable' : 'Inicio'}:{' '}
+          <b style={{color:C.textSec}}>
+            {vIni === undefined ? 'no disponible' : metricaSel.formato(vIni)}
+          </b>
+        </span>
+        <span style={{fontWeight:600,color:metricaSel.color}}>
+          Actual: {vFin === undefined ? 'no disponible' : metricaSel.formato(vFin)}
+        </span>
+      </div>;
+    })()}
   </Card>;
 }
 
@@ -8149,7 +8265,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     gastoAcum[gastoAcum.length - 1] = gtActual;
   }
 
-  // ── EJECUTADO ACUMULADO por semana (avance% × presupuesto) ────────────
+  // ── EJECUTADO ACUMULADO por semana (leído del snapshot) ───────────────
   const avancePorSem = {};
   (historialAvance || []).forEach(snap => {
     const key = skey(snap.semana, snap.año);
@@ -8157,21 +8273,52 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       avancePorSem[key] = snap;
     }
   });
+  const modoVolObra = (obra?.modoAvance === "volumen");
+  // Avance FÍSICO actual (topado, P1) — es el que marca cuándo termina la obra.
   const avanceActual = (() => {
     if (!subs || subs.length === 0) return 0;
     const totImp = subs.reduce((t, s) => t + (parseFloat(s.imp) || 0), 0);
     if (totImp <= 0) return 0;
-    return avanceFisicoPonderado(subs, totImp, obra?.modoAvance === "volumen");
+    return avanceFisicoPonderado(subs, totImp, modoVolObra);
   })();
-  let avAcarreo = 0;
+  // DINERO ejecutado actual, sin topar — la misma función que el KPI.
+  const ejecActual = (subs && subs.length > 0)
+    ? desgloseEjecutado(subs, modoVolObra).total
+    : 0;
+  // Serie de dinero: se LEE del snapshot, no se reconstruye desde el avance
+  // topado. Ver `montoEjecutadoSnap`.
+  let ejecAcarreo = 0;
   const ejecAcum = semanasHist.map(s => {
+    const me = montoEjecutadoSnap(avancePorSem[s.key]);
+    if (me !== null) ejecAcarreo = me;
+    return ejecAcarreo;
+  });
+  if (semanasHist.length > 0 && ejecActual > 0) {
+    ejecAcum[ejecAcum.length - 1] = ejecActual;
+  }
+  // Serie de AVANCE FÍSICO en paralelo: la proyección termina cuando la obra
+  // llega al 100% de avance, no cuando el dinero alcanza el presupuesto.
+  let avAcarreoPct = 0;
+  const avancePctAcum = semanasHist.map(s => {
     const snap = avancePorSem[s.key];
-    if (snap && typeof snap.avancePonderado === 'number') avAcarreo = snap.avancePonderado;
-    return (avAcarreo / 100) * presupuesto;
+    if (snap && typeof snap.avancePonderado === 'number') avAcarreoPct = snap.avancePonderado;
+    return avAcarreoPct;
   });
   if (semanasHist.length > 0 && avanceActual > 0) {
-    ejecAcum[ejecAcum.length - 1] = (avanceActual / 100) * presupuesto;
+    avancePctAcum[avancePctAcum.length - 1] = avanceActual;
   }
+  // Frontera de esquema, misma decisión que en TendenciasMensuales: el tramo
+  // anterior al arreglo del recorte se dibuja punteado y no se compara contra
+  // el nuevo. El esquema se arrastra igual que el valor.
+  let esqAcarreo = null;
+  const esquemaHist = semanasHist.map(s => {
+    const snap = avancePorSem[s.key];
+    if (snap) esqAcarreo = esquemaDe(snap);
+    return esqAcarreo;
+  });
+  const idxFrontera = esquemaHist.findIndex(e => e !== null && e >= ESQUEMA_SNAPSHOT);
+  const hayTramoViejo = idxFrontera > 0
+    && esquemaHist.slice(0, idxFrontera).some(e => e !== null && e < ESQUEMA_SNAPSHOT);
 
   // ── RITMO SEMANAL ─────────────────────────────────────────────────────
   // Se calcula como: (valor_final − valor_inicio_ventana) / semanas_ventana
@@ -8179,41 +8326,69 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   // tienen captura (delta = 0), el filtro dejaba pocos puntos y cambiar
   // 4/8/12 daba casi el mismo resultado. Ahora divide el cambio TOTAL
   // entre TODAS las semanas del rango — sí varía al cambiar la ventana.
-  const calcularRitmo = (serie) => {
+  // `desde` acota la ventana para que NINGÚN delta cruce la frontera de
+  // esquema: restar un punto topado de uno sin topar mide el cambio de
+  // definición, no el ritmo de la obra.
+  const calcularRitmo = (serie, desde = 0) => {
     if (serie.length < 2) return 0;
-    const nVentana = Math.min(ritmoBase, serie.length - 1);
-    if (nVentana < 1) return 0;
+    const maxVentana = serie.length - 1 - desde;
+    if (maxVentana < 1) return 0;
+    const nVentana = Math.min(ritmoBase, maxVentana);
     const idxIni = serie.length - 1 - nVentana;
     const cambio = serie[serie.length - 1] - serie[idxIni];
     return cambio > 0 ? cambio / nVentana : 0;
   };
+  // El gasto viene del GP: no depende del esquema de los snapshots.
   const ritmoGasto = calcularRitmo(gastoAcum);
-  const ritmoEjec = calcularRitmo(ejecAcum);
+  const desdeEsquema = hayTramoViejo ? idxFrontera : 0;
+  const ritmoEjec = calcularRitmo(ejecAcum, desdeEsquema);
+  // Ritmo del AVANCE FÍSICO en puntos porcentuales por semana — es el que
+  // decide cuándo termina la obra.
+  const ritmoAvance = calcularRitmo(avancePctAcum, desdeEsquema);
 
-  // ── PROYECCIÓN: continuar hasta que ejecutado alcance el presupuesto ──
+  // ── PROYECCIÓN: continuar hasta que la OBRA llegue al 100% ────────────
+  // Antes el criterio de término era "el dinero ejecutado alcanza el
+  // presupuesto", y además se topaba con Math.min(presupuesto, …). Las dos
+  // cosas violan P1: el dinero no se topa. Una obra puede ejecutar volumen por
+  // encima del catálogo y seguir sin terminar, y puede terminar habiendo
+  // ejecutado más dinero que el contratado. Lo que se topa al 100% es el
+  // avance FÍSICO, y ese es el que marca el fin.
+  //
+  // OJO (PENDIENTES #27): esto asume contrato cerrado, con un alcance que llega
+  // al 100%. En un contrato ABIERTO tipo TAMSA —servicios por demanda— no hay
+  // un 100% que alcanzar y este criterio no aplica: la proyección debería
+  // cortarse por la fecha de término del contrato. Se resuelve cuando exista
+  // `tipoContrato`; hoy el modelo no distingue.
   const gastoUlt = gastoAcum[gastoAcum.length - 1] || 0;
   const ejecUlt = ejecAcum[ejecAcum.length - 1] || 0;
+  const avanceUlt = avancePctAcum[avancePctAcum.length - 1] || 0;
   const semanasProy = [];
   const gastoProy = [];
   const ejecProy = [];
-  if (ritmoEjec > 0) {
-    const pendiente = presupuesto - ejecUlt;
-    const semanasNecesarias = Math.ceil(pendiente / ritmoEjec);
+  const avanceProy = [];
+  if (ritmoAvance > 0) {
+    const pendientePct = Math.max(0, 100 - avanceUlt);
+    const semanasNecesarias = Math.ceil(pendientePct / ritmoAvance);
     // Cap a 200 semanas para no volarse
     const nProy = Math.min(semanasNecesarias, 200);
     let dCursor = new Date(semanasHist[semanasHist.length - 1].fecha);
     let gAcum = gastoUlt;
     let eAcum = ejecUlt;
+    let aAcum = avanceUlt;
     for (let i = 1; i <= nProy; i++) {
       dCursor = new Date(dCursor);
       dCursor.setDate(dCursor.getDate() + 7);
       const iso = semanaISOLocal(dCursor);
       gAcum += ritmoGasto;
-      eAcum = Math.min(presupuesto, eAcum + ritmoEjec);
+      // Sin Math.min: el dinero proyectado puede rebasar el contrato, y si lo
+      // hace hay que verlo, no esconderlo bajo un tope.
+      eAcum += ritmoEjec;
+      aAcum = Math.min(100, aAcum + ritmoAvance);
       semanasProy.push({ key: skey(iso.sem, iso.año), sem: iso.sem, año: iso.año, fecha: new Date(dCursor) });
       gastoProy.push(gAcum);
       ejecProy.push(eAcum);
-      if (eAcum >= presupuesto) break;
+      avanceProy.push(aAcum);
+      if (aAcum >= 100) break;
     }
   }
 
@@ -8221,6 +8396,10 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const todasSemanas = [...semanasHist, ...semanasProy];
   const todosGasto = [...gastoAcum, ...gastoProy];
   const todosEjec = [...ejecAcum, ...ejecProy];
+  // Avance FÍSICO por semana (hist + proy). El tooltip lo lee de aquí en vez
+  // de derivarlo del dinero: ahora que el dinero no se topa, ejecutado/contrato
+  // puede pasar del 100% sin que la obra esté terminada.
+  const todosAvance = [...avancePctAcum, ...avanceProy];
   // Base para escalar: incluir presupuesto solo si aplica (modo completo)
   const maxValor = Math.max(...todosGasto, ...todosEjec, presupuesto || 0, 1);
 
@@ -8229,7 +8408,19 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     ? semanasProy[semanasProy.length - 1].fecha
     : null;
   const gastoFinProy = gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt;
+  // MARGEN PROYECTADO AL CIERRE — contra el CONTRATO, no contra el ejecutado.
+  //
+  // Regla del usuario (2026-09-21): en obra se hace compensación de volúmenes
+  // y la obra se cierra en el importe del contrato. El ingreso final es el
+  // contrato, más convenios cuando existan. Por eso el ingreso proyectado NO
+  // es el ejecutado proyectado aunque este sea mayor.
   const margenFinProy = presupuesto - gastoFinProy;
+  // El volumen ejecutado por encima del contrato no es ingreso: es trabajo
+  // hecho que no se cobra si no hay convenio. Va aparte, y como riesgo.
+  const ejecFinProy = ejecProy.length > 0 ? ejecProy[ejecProy.length - 1] : ejecUlt;
+  const excedenteSobreContrato = (presupuesto > 0 && ejecFinProy > presupuesto)
+    ? ejecFinProy - presupuesto
+    : 0;
 
   // ── SVG ──────────────────────────────────────────────────────────────
   const W = 720, H = 200, PL = 62, PR = 18, PT = 22, PB = 42;
@@ -8268,6 +8459,10 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
   const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);
   const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
+  // Ejecutado partido en la frontera de esquema. El punto de la frontera va en
+  // los dos tramos para que la línea no quede cortada.
+  const ptsEjecViejo   = hayTramoViejo ? ptsEjecHist.slice(0, idxFrontera + 1) : [];
+  const ptsEjecVigente = hayTramoViejo ? ptsEjecHist.slice(idxFrontera) : ptsEjecHist;
   const ptsGastoProy = ptsGastoHist.length > 0
     ? [ptsGastoHist[ptsGastoHist.length - 1], ...gastoProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
     : [];
@@ -8361,16 +8556,24 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           <path d={`${smoothPath(ptsGastoHist)} L ${ptsGastoHist[ptsGastoHist.length-1][0]},${yPos(0)} L ${ptsGastoHist[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-gasto)"/>
         )}
-        {!soloGasto && ptsEjecHist.length >= 2 && (
-          <path d={`${smoothPath(ptsEjecHist)} L ${ptsEjecHist[ptsEjecHist.length-1][0]},${yPos(0)} L ${ptsEjecHist[0][0]},${yPos(0)} Z`}
+        {/* Área solo bajo el tramo vigente: un área sólida bajo una línea
+            punteada diría que ese tramo es igual de firme. */}
+        {!soloGasto && ptsEjecVigente.length >= 2 && (
+          <path d={`${smoothPath(ptsEjecVigente)} L ${ptsEjecVigente[ptsEjecVigente.length-1][0]},${yPos(0)} L ${ptsEjecVigente[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-ejec)"/>
         )}
 
         {/* Líneas HISTÓRICAS (sólidas) */}
         <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
           strokeLinecap="round" strokeLinejoin="round"/>
-        {!soloGasto && (
-          <path d={smoothPath(ptsEjecHist)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
+        {/* Tramo del ejecutado con la definición vieja (dinero topado) */}
+        {!soloGasto && ptsEjecViejo.length >= 2 && (
+          <path d={smoothPath(ptsEjecViejo)} fill="none" stroke={C.blueDk} strokeWidth={2}
+            strokeDasharray="5,3" opacity={0.5}
+            strokeLinecap="round" strokeLinejoin="round"/>
+        )}
+        {!soloGasto && ptsEjecVigente.length >= 2 && (
+          <path d={smoothPath(ptsEjecVigente)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
             strokeLinecap="round" strokeLinejoin="round"/>
         )}
 
@@ -8442,8 +8645,13 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         const esProy = hover > idxHoy;
         const g = todosGasto[hover] || 0;
         const e = todosEjec[hover] || 0;
-        const pctAv = presupuesto > 0 ? (e / presupuesto) * 100 : 0;
-        const margen = e - g;
+        const pctAv = todosAvance[hover];
+        // Margen de la semana: ingreso reconocido − gasto. El ingreso se topa
+        // al contrato porque la obra se cierra en el importe contratado; el
+        // volumen por encima no se cobra sin convenio.
+        const ingresoSem = presupuesto > 0 ? Math.min(e, presupuesto) : e;
+        const margen = ingresoSem - g;
+        const excedenteSem = presupuesto > 0 ? Math.max(0, e - presupuesto) : 0;
         const dd = String(s.fecha.getDate()).padStart(2,'0');
         const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
         const yy = String(s.fecha.getFullYear()).slice(2);
@@ -8473,9 +8681,17 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
             <span style={{color:C.textSec}}><span style={{display:"inline-block",width:8,height:8,background:C.redDk,borderRadius:2,marginRight:5,verticalAlign:"middle"}}/>Gasto acum.</span>
             <span style={{fontWeight:700,color:C.redDk}}>{fmtCompacto(g)}</span>
           </div>
+          {excedenteSem > 0 && (
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
+              <span style={{color:C.yellowDk}}>· sobre contrato</span>
+              <span style={{fontWeight:700,color:C.yellowDk}}>{fmtCompacto(excedenteSem)}</span>
+            </div>
+          )}
           <div style={{display:"flex",justifyContent:"space-between",gap:8,paddingTop:4,marginTop:4,borderTop:`0.5px solid ${C.border}`}}>
             <span style={{color:C.textSec}}>Avance</span>
-            <span style={{fontWeight:700,color:C.textPri}}>{pctAv.toFixed(1)}%</span>
+            <span style={{fontWeight:700,color:C.textPri}}>
+              {typeof pctAv === 'number' ? `${pctAv.toFixed(1)}%` : 'no disp.'}
+            </span>
           </div>
           <div style={{display:"flex",justifyContent:"space-between",gap:8,marginTop:2}}>
             <span style={{color:C.textSec}}>Margen</span>
@@ -8526,10 +8742,34 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
             <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
               {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
             </div>
+            <div style={{fontSize:8,color:C.textMut}}>contra importe de contrato</div>
           </div>
         </>
       )}
     </div>
+
+    {/* Ejecutado proyectado por encima del contrato — riesgo, no margen */}
+    {!soloGasto && excedenteSobreContrato > 0 && (
+      <div style={{marginTop:8,padding:"8px 12px",background:`${C.yellow}15`,
+        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
+        <b>Ejecutado proyectado sobre contrato: {fmtCompacto(excedenteSobreContrato)}</b> —
+        no cobrable sin convenio. A este ritmo la obra terminaría habiendo
+        ejecutado {fmtCompacto(ejecFinProy)} contra un contrato de {fmtCompacto(presupuesto)}.
+        No está sumado al margen proyectado: la obra se cierra en el importe del
+        contrato, así que ese volumen es riesgo, no utilidad.
+      </div>
+    )}
+
+    {/* Serie que cruza la frontera del arreglo del recorte */}
+    {!soloGasto && hayTramoViejo && (
+      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
+        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
+        <b>El tramo punteado del ejecutado usa otra definición.</b> Esas semanas
+        traen el dinero recortado al importe de catálogo. El escalón al cruzar
+        es el cambio de criterio, no avance de obra, y por eso el ritmo se
+        calcula solo dentro del tramo vigente.
+      </div>
+    )}
   </Card>;
 }
 
