@@ -1954,6 +1954,47 @@ esta pantalla muestra en verde cosas que fallaron.
 
 ---
 
+## 27. La proyección asume contrato cerrado — en TAMSA no aplica
+
+**Descubierto**: 2026-09-21, cerrando `fix/series-desincronizadas`.
+Prioridad **media-alta**. Depende de `tipoContrato`, que no existe.
+
+`ProyeccionAvanceGasto` proyecta hasta que el **avance físico llega al
+100%**. Ese criterio es el correcto y sustituye al anterior —"hasta que
+el dinero alcanza el presupuesto"—, que violaba P1 topando el dinero.
+
+Pero sólo vale para un **contrato cerrado**: uno con un catálogo de
+alcance finito que se puede terminar. **TAMSA es un contrato abierto**:
+servicios por demanda, sin un 100% que alcanzar. Ahí no hay "fin de
+obra" que proyectar; lo que hay es una **fecha de término de contrato**,
+y la proyección debería cortarse en esa fecha, no en un porcentaje.
+
+Hoy el modelo no distingue los dos casos. Consecuencia concreta: en una
+obra abierta la gráfica dibuja un "fin proyectado" que no significa
+nada, y el KPI de margen al cierre se calcula contra un cierre inventado.
+
+**Lo mismo aplica al margen.** El margen proyectado se calcula hoy
+contra el **importe de contrato**, porque en obra se compensan volúmenes
+y la obra cierra en el contratado (regla del usuario, 2026-09-21). En un
+contrato abierto no hay un importe de cierre: el ingreso es lo ejecutado
+autorizado, y la regla se invierte.
+
+**Qué hace falta**:
+
+1. `tipoContrato` en el modelo de obra: `cerrado` | `abierto`.
+2. En `abierto`: cortar la proyección por la fecha de término, no por el
+   100%; no mostrar "fin proyectado"; calcular el margen contra lo
+   ejecutado autorizado, no contra el contrato.
+3. Y no mostrar "excedente sobre contrato" como riesgo: en un contrato
+   abierto ejecutar por encima del estimado inicial es lo normal, no una
+   sobreejecución por autorizar.
+
+Queda anclado en el código: el comentario del criterio de término en
+`ProyeccionAvanceGasto` apunta a este pendiente. Los convenios del
+modelo de contrato entran por la misma rama.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -1988,6 +2029,7 @@ cierran, gobiernan.
 | 24 | Plan de correos (regla, resumen semanal, cuenta, cotea) | | alta el aviso de respaldo fallido y la recuperación de contraseña; media el resto |
 | 25 | `global/health` registra la intención, no el hecho | | alta — hace que el aviso del #24 3.1 pueda mentir |
 | 26 | Pantalla de salud en admin ("última ejecución hace N días") | | alta — única señal que sirve si el backend está caído |
+| 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
 
 ---
 
