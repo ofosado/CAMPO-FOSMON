@@ -8292,26 +8292,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       </div>;
     })()}
 
-    {/* Serie que cruza la frontera del arreglo del recorte */}
-    {hayTramoViejo && (
-      <div style={{marginTop:8,background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,
-        borderRadius:6,padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        {metricaActiva === 'avance' ? (
-          <><b>El tramo punteado usa otra definición de avance.</b> Esas semanas
-          se calcularon topando cada partida al 100%, así que el volumen
-          ejecutado de más no contaba como avance. Desde el tramo sólido el
-          avance es ejecutado ÷ contrato y las partidas se compensan entre sí.
-          El escalón entre los dos tramos es el cambio de criterio, no avance de
-          obra — por eso no se compara un tramo contra el otro.</>
-        ) : (
-          <><b>El tramo punteado usa otra definición.</b> Esas semanas traen el
-          dinero ejecutado recortado al importe de catálogo. Desde el tramo
-          sólido ya no se topa. El escalón entre los dos tramos es el cambio de
-          criterio, no avance de obra — por eso no se compara un tramo contra el
-          otro.</>
-        )}
-      </div>
-    )}
+    {/* El tramo viejo se sigue dibujando punteado (`hayTramoViejo`), que es lo
+        que hace falta para no leer los dos tramos como una sola serie. El
+        párrafo que explicaba el cambio de definición se quitó: el problema ya
+        está resuelto y el texto solo confundía a quien no siguió el proyecto.
+        El comportamiento NO cambia — el delta de abajo sigue arrancando en
+        `idxFrontera` y por tanto sigue sin cruzar la frontera. */}
 
     {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
         separador de miles) porque no tiene el problema de amontonarse.
@@ -9051,24 +9037,12 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       </div>
     )}
 
-    {/* Series que cruzan una frontera de definición */}
-    {!soloGasto && hayTramoViejoDinero && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado del ejecutado usa otra definición.</b> Esas semanas
-        traen el dinero recortado al importe de catálogo. El escalón al cruzar
-        es el cambio de criterio, no avance de obra, y por eso el ritmo se
-        calcula solo dentro del tramo vigente.
-      </div>
-    )}
-    {!soloGasto && hayTramoViejoAvance && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El avance de las semanas anteriores usa otra definición.</b> Se
-        calculó topando cada partida al 100%, sin compensar volúmenes. La
-        proyección de fin de obra solo usa el ritmo del tramo vigente.
-      </div>
-    )}
+    {/* Aquí iban los dos párrafos de frontera de definición —el del ejecutado
+        y el de la proyección—. Se quitaron: el punteado ya distingue los dos
+        tramos y el texto confundía a quien no siguió el proyecto.
+        `hayTramoViejoDinero` y `hayTramoViejoAvance` siguen vivos y siguen
+        mandando: el ritmo y la proyección se calculan solo dentro del tramo
+        vigente. Se quitó el texto, no la regla. */}
     {/* Aquí iba el párrafo de las semanas sin captura. Se quitó por el mismo
         criterio que los de frontera de esquema: el punteado y los círculos
         huecos ya declaran el hueco, y el texto solo lo repite con palabras.
@@ -9673,11 +9647,6 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     const totalSems = ult4.length - 1;
     velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
   }
-  // ¿La serie cruza la frontera de definición del AVANCE? Se avisa en pantalla
-  // para que nadie lea la gráfica como si fuera continua.
-  const serieMixta = ultimoOf
-    ? oficiales.some(s => !sonComparables(s, ultimoOf, 'avance')) : false;
-
   // Proyección de fin a ritmo actual (semanas hasta 100%)
   const pendientes = Math.max(100 - avanceActual, 0);
   const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
@@ -9788,15 +9757,11 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     </div>
 
     {/* Serie que cruza la frontera del arreglo del recorte */}
-    {serieMixta && (
-      <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
-        padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado usa otra definición de avance.</b> Esas semanas se
-        calcularon topando cada partida al 100%, sin compensar volúmenes entre
-        partidas. Desde el tramo sólido el avance es ejecutado ÷ contrato. Los
-        deltas y la velocidad solo se calculan dentro del tramo vigente.
-      </div>
-    )}
+    {/* Se quitó el párrafo de frontera de definición. El comportamiento no
+        cambia: quien impide que los deltas crucen la frontera es
+        `sonComparables`, en `deltaComparable` y en el filtro de `ult4` que
+        alimenta la velocidad. Ese aviso tenía su propia bandera `serieMixta`,
+        que no gobernaba nada más y se fue con él. */}
 
     {/* Compensación de volúmenes — por qué el avance de la obra no es el
         promedio de las partidas. Quien trabaja el catálogo necesita ver
