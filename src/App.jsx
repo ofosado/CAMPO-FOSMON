@@ -9973,6 +9973,10 @@ function MiniDashNomina({ historial = [] }){
 }
 
 // ── ESTIMACIONES ──
+// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Sus cifras estaban en
+// BRUTO y contradecían al "Resumen económico" de la misma pantalla, que las
+// da netas de retenciones. Se conserva un ciclo por si hay que volver atrás
+// rápido; si al siguiente pase nadie la echó de menos, se borra.
 function MiniDashEstimaciones({obra, estimaciones}){
   const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
   const pagado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto||0), 0);
@@ -10110,10 +10114,11 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </>
     )}
     {subTab==="estimaciones" && (
-      <>
-        <MiniDashEstimaciones obra={obra} estimaciones={estimaciones}/>
-        <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
-      </>
+      // #11: se quitó <MiniDashEstimaciones/>. Mostraba un segundo "Pagado"
+      // en BRUTO, encima del "Pagado" neto del Resumen económico. Sus dos
+      // cifras propias —"Por cobrar" y "Atrasado"— se rescataron ahí abajo,
+      // recalculadas con el mismo `cE` que el resto.
+      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
     )}
     {subTab==="subcontratos" && (
       <>
@@ -11475,13 +11480,35 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   const ESTATUS=["En proceso","Aprobada","Facturada","Pagada"];
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100,re=e.monto*(obra.pctRetencion||0)/100;return{a,fg,re,ef:e.monto-a-fg-re,pC:e.monto/obra.presupuesto*100};};
   const totalEst  =estimaciones.reduce((t,e)=>t+e.monto,0);
-  const pagado    =estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+cE(e).ef,0);
+  // Dos cifras que hasta hoy se llamaban las DOS "Pagado", en dos bloques de
+  // la misma pantalla, y no son lo mismo. En la 0114 una dice $109.2M y la
+  // otra $54.6M: con la misma etiqueta encima, eso se lee como un error del
+  // sistema, no como dos preguntas distintas. Van separadas y con nombre:
+  //   · pagadoBruto     — lo que se autorizó y se dio por pagado.
+  //   · cobradoEfectivo — lo que de verdad entró, ya descontados fondo de
+  //                       garantía, retención estratégica y la amortización
+  //                       del anticipo. Es el que manda para flujo.
+  const pagadas         =estimaciones.filter(e=>e.estatus==="Pagada");
+  const pagadoBruto     =pagadas.reduce((t,e)=>t+e.monto,0);
+  const cobradoEfectivo =pagadas.reduce((t,e)=>t+cE(e).ef,0);
   const facturado =estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+e.monto,0);
   const enProceso =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
   const retenido  =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
   const retenEstra=estimaciones.reduce((t,e)=>t+cE(e).re,0);
   const porAmort  =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
   const porEstimar=obra.presupuesto-totalEst;
+  // Rescatados del bloque de arriba, que desaparece (#11). Allá se calculaban
+  // en BRUTO, ignorando los porcentajes del contrato; aquí pasan por el mismo
+  // `cE` que todo lo demás, que es la razón de traerlos: dos cifras vecinas
+  // calculadas con criterios distintos vuelven a divergir tarde o temprano.
+  const porCobrar =estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus))
+                               .reduce((t,e)=>t+cE(e).ef,0);
+  const diasPago  =obra.diasPago||30;
+  const atrasadas =estimaciones.filter(e=>{
+    if(e.estatus!=="Facturada"||!e.fechaFact) return false;
+    return Math.floor((Date.now()-new Date(e.fechaFact))/86400000) > diasPago;
+  });
+  const montoAtrasado=atrasadas.reduce((t,e)=>t+cE(e).ef,0);
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
@@ -11506,11 +11533,15 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
       </div>
     </Card>
     <Card>
-      <Tit>Resumen económico — 8 indicadores</Tit>
+      <Tit>Resumen económico</Tit>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(100px,1fr))",gap:7}}>
         <Kpi label="Total estimado"    value={MXN(totalEst)}    sub={`${NUM(totalEst/obra.presupuesto*100,1)}% contrato`} color={C.caliza} size={12}/>
-        <Kpi label="Pagado"            value={MXN(pagado)}      sub="cobrado"            color={C.green}  size={12}/>
-        <Kpi label="Facturado"         value={MXN(facturado)}   sub="pendiente de cobro" color={C.purple} size={12}/>
+        <Kpi label="Pagado bruto"      value={MXN(pagadoBruto)} sub="estimaciones ya pagadas" color={C.greenDk} size={12}/>
+        <Kpi label="Cobrado efectivo"  value={MXN(cobradoEfectivo)} sub="lo que entró, sin retenciones" color={C.green} size={12}/>
+        <Kpi label="Facturado"         value={MXN(facturado)}   sub="bruto, pendiente de cobro" color={C.purple} size={12}/>
+        <Kpi label="Por cobrar"        value={MXN(porCobrar)}   sub="neto de facturado + aprobado" color={C.purpleDk} size={12}/>
+        {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)}
+          sub={`${atrasadas.length} fuera del plazo de ${diasPago}d`} color={C.red} size={12}/>}
         <Kpi label="En proceso"        value={MXN(enProceso)}   sub="en elaboración"     color={C.yellow} size={12}/>
         <Kpi label="Retenido FG"       value={MXN(retenido)}    sub={`fondo ${obra.pctFondoGar}%`}          color={C.red}    size={12}/>
         <Kpi label="Ret. estratégica"  value={MXN(retenEstra)}  sub={`retención ${obra.pctRetencion||0}%`}  color={C.pink}   size={12}/>
