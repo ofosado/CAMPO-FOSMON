@@ -2503,11 +2503,20 @@ const tamañoFirestore = v => {
 // secas manda al residente a recapturar lo que ya está guardado.
 const mensajeFalloSnapshot = (err, semanas, obraId) => {
   const bytes = tamañoFirestore({ semanas });
-  const lleno = bytes >= LIMITE_DOC_FIRESTORE * 0.9 ||
-    /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
-  if (lleno) {
+  // La medición local solo cuenta el arreglo `semanas`. Firestore puede
+  // rechazar por tamaño sin que esa cuenta lo refleje —el documento tiene más
+  // campos, y el recorte a 52 semanas deja fuera parte de lo que pesaba—, así
+  // que las dos señales se guardan por separado.
+  const midePasado = bytes >= LIMITE_DOC_FIRESTORE * 0.9;
+  const loDiceFirestore = /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
+  if (midePasado || loDiceFirestore) {
+    // La cifra solo se enseña si la medición propia la respalda. Si no,
+    // saldría "llegó al límite (0 KB de 1024 KB)", que se contradice en la
+    // misma frase y hace que no se crea ninguno de los dos números.
+    const cuanto = midePasado
+      ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
     return `El historial semanal de esta obra llegó al límite de tamaño que ` +
-      `permite Firestore (${Math.round(bytes / 1024)} KB de 1024 KB máximo), ` +
+      `permite Firestore${cuanto}, ` +
       `así que el reporte de esta semana NO se pudo agregar.\n\n` +
       `Tu captura de avance SÍ quedó guardada: lo que falta es el punto del ` +
       `histórico. Avisa a sistemas para que compacte el historial de la obra ` +
