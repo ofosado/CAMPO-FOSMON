@@ -2229,18 +2229,26 @@ async function fsAudit(tipo, opciones = {}) {
 }
 
 // Wrappers con auditoría. Si no se pasa ctx, no se audita.
-const fsSetA = async (path, data, ctx) => {
+// Escribe y, si falla, lanza. `fsSet` se traga el error y devuelve `false`: eso
+// sirve para guardados de fondo, pero no para uno que el usuario acaba de pedir
+// —ahí hay que poder decirle QUÉ pasó, no solo que algo pasó—. Esta versión
+// conserva el error original para que el llamador arme el mensaje.
+const fsSetAEstricto = async (path, data, ctx) => {
   let antes = null;
   if (ctx) { try { antes = await fsGet(path); } catch {} }
-  const ok = await fsSet(path, data);
-  if (ok && ctx) {
+  await setDoc(doc(fbDb, ...path.split('/')), data, { merge: true });
+  if (ctx) {
     fsAudit(antes ? "editar" : "crear", {
       path, modulo: ctx.modulo, entidad: ctx.entidad,
       obraId: ctx.obraId, obraNombre: ctx.obraNombre,
       antes, despues: data, meta: ctx.meta,
     });
   }
-  return ok;
+  return true;
+};
+const fsSetA = async (path, data, ctx) => {
+  try { return await fsSetAEstricto(path, data, ctx); }
+  catch (e) { console.error('fsSetA', path, e); return false; }
 };
 const fsDelA = async (path, ctx) => {
   let antes = null;
@@ -2478,6 +2486,11 @@ const fmtCant = (cant, pu) => {
 // Los esquemas NO son comparables entre sí: restar un snapshot de cada uno
 // produce un salto artificial (0112 saltaría $2.78M en una sola semana) que
 // dispararía alertas de riesgo falsas. Ver `sonComparables`.
+//
+// Dejar de guardar la descripción (`sub`/`desc`) NO sube el esquema: no
+// cambia ninguna cifra ni cómo se calcula. Subirlo partiría las series en una
+// frontera falsa y dejaría de graficarse un año de historia por un cambio que
+// solo quitó texto duplicado.
 const ESQUEMA_SNAPSHOT = 3;
 
 // La frontera de comparabilidad es POR MÉTRICA, no una sola para todo. Un
@@ -2539,6 +2552,91 @@ const semanaISO = (fecha) => {
 // ID de snapshot: S{semana}-{año} ej. "S22-2026"
 const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}`;
 
+// Fallo al escribir el snapshot semanal. Tiene tipo propio para que el
+// llamador lo distinga de "no había nada que guardar", que también devolvía
+// `null` y por eso el cierre semanal no podía diferenciar éxito de fracaso.
+class ErrorSnapshot extends Error {
+  constructor(mensaje, causa) {
+    super(mensaje);
+    this.name = 'ErrorSnapshot';
+    this.causa = causa;
+  }
+}
+
+// Tamaño de un documento según las reglas de Firestore, que NO son las del
+// JSON: cada string cuesta sus bytes UTF-8 + 1, los números 8, y cada clave de
+// mapa su propio nombre + 1. Se necesita para avisar ANTES de que el documento
+// reviente, no después.
+// https://firebase.google.com/docs/firestore/storage-size
+const LIMITE_DOC_FIRESTORE = 1048576;
+const tamañoFirestore = v => {
+  if (v === null || v === undefined) return 1;
+  if (typeof v === 'string') return new TextEncoder().encode(v).length + 1;
+  if (typeof v === 'number' || typeof v === 'boolean') return typeof v === 'boolean' ? 1 : 8;
+  if (v instanceof Date) return 8;
+  if (Array.isArray(v)) return v.reduce((t, x) => t + tamañoFirestore(x), 0);
+  if (typeof v === 'object') {
+    return Object.keys(v).reduce((t, k) =>
+      t + new TextEncoder().encode(k).length + 1 + tamañoFirestore(v[k]), 0);
+  }
+  return 0;
+};
+
+// El mensaje que verá quien acaba de cerrar la semana. Tiene que decir qué
+// pasó, que su captura NO se perdió, y qué hacer. Un "Error al guardar" a
+// secas manda al residente a recapturar lo que ya está guardado.
+const mensajeFalloSnapshot = (err, semanas, obraId) => {
+  const bytes = tamañoFirestore({ semanas });
+  // La medición local solo cuenta el arreglo `semanas`. Firestore puede
+  // rechazar por tamaño sin que esa cuenta lo refleje —el documento tiene más
+  // campos, y el recorte a 52 semanas deja fuera parte de lo que pesaba—, así
+  // que las dos señales se guardan por separado.
+  const midePasado = bytes >= LIMITE_DOC_FIRESTORE * 0.9;
+  const loDiceFirestore = /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
+  if (midePasado || loDiceFirestore) {
+    // La cifra solo se enseña si la medición propia la respalda. Si no,
+    // saldría "llegó al límite (0 KB de 1024 KB)", que se contradice en la
+    // misma frase y hace que no se crea ninguno de los dos números.
+    const cuanto = midePasado
+      ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
+    return `El historial semanal de esta obra llegó al límite de tamaño que ` +
+      `permite Firestore${cuanto}, ` +
+      `así que el reporte de esta semana NO se pudo agregar.\n\n` +
+      `Tu captura de avance SÍ quedó guardada: lo que falta es el punto del ` +
+      `histórico. Avisa a sistemas para que compacte el historial de la obra ` +
+      `${obraId}; es un arreglo de minutos y no pierdes nada.`;
+  }
+  return `No se pudo guardar el reporte semanal en el histórico.\n\n` +
+    `Tu captura de avance SÍ quedó guardada. Lo que falló es el punto del ` +
+    `histórico: ${err?.message || 'error desconocido'}.\n\n` +
+    `Vuelve a intentar el cierre. Si sigue fallando, avisa a sistemas.`;
+};
+
+// El equivalente para nómina, con una diferencia que cambia el consejo: aquí el
+// historial NO es una copia de algo capturado en otro lado, es el único lugar
+// donde vive la semana. Si la escritura falla, la semana no existe. Por eso el
+// mensaje no dice "tu captura sí quedó guardada" —sería mentira— sino que no
+// cierres sin reintentar.
+const mensajeFalloNomina = (err, semanas, obraId) => {
+  const bytes = tamañoFirestore({ semanas });
+  const midePasado = bytes >= LIMITE_DOC_FIRESTORE * 0.9;
+  const loDiceFirestore = /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
+  if (midePasado || loDiceFirestore) {
+    const cuanto = midePasado
+      ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
+    return `El historial de nómina de esta obra llegó al límite de tamaño que ` +
+      `permite Firestore${cuanto}, así que esta semana NO se guardó.\n\n` +
+      `No se perdió nada de lo que ya estaba, pero esta carga tampoco quedó: ` +
+      `guarda el archivo y avisa a sistemas para que compacte el historial de ` +
+      `la obra ${obraId}. En cuanto esté, vuelve a cargarlo.`;
+  }
+  return `No se pudo guardar la semana de nómina: ` +
+    `${err?.message || 'error desconocido'}.\n\n` +
+    `La semana NO quedó registrada. Revisa la conexión y vuelve a intentar ` +
+    `antes de cerrar esta pantalla; si la cierras, hay que volver a cargar ` +
+    `el archivo.`;
+};
+
 // Crear snapshot del avance actual y guardarlo en el historial
 // tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
 const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0) => {
@@ -2565,8 +2663,15 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
       tipo, capturadoPor: capturadoPor || 'sistema',
       // `cant`, `pu` y `cantEjec` se guardan para que esta serie SÍ sea
       // recalculable en el futuro. La anterior no lo es: nunca los guardó.
+      //
+      // NO se guarda `sub` (la descripción). Es el mismo texto repetido en
+      // cada snapshot semanal: en la 0114 pesaba 222 B de los 265 B de cada
+      // partida — 84% del documento era la misma descripción copiada 8 veces.
+      // Quien lee el historial toma la descripción del catálogo vigente
+      // cruzando por `sec`, que es la llave. Además así la descripción que se
+      // muestra es la actual y no una congelada de hace meses.
       subs: subs.map(s => ({
-        sec: s.sec, sub: s.sub, a: s.a || 0, imp: s.imp || 0,
+        sec: s.sec, a: s.a || 0, imp: s.imp || 0,
         cant: parseFloat(s.cant) || 0,
         pu: parseFloat(s.pu) || 0,
         cantEjec: parseFloat(s.cantEjec) || 0,
@@ -2597,10 +2702,30 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // Mantener máximo 52 semanas (1 año)
     semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
     const recortadas = semanas.slice(-52);
-    await fsSet(`obras/${obraId}/avance/historial`, { semanas: recortadas });
+    // NO se usa `fsSet`: devuelve `false` en silencio y este `await` ignoraba
+    // el resultado, así que la función seguía y devolvía `snap` — el llamador
+    // creía que había guardado. La 0114 acumuló SIETE cierres semanales
+    // perdidos así (semanas 32 a 38 de 2026): el residente cerraba, la
+    // bitácora registraba "captura oficial", la pantalla decía "Guardado" y
+    // el historial llevaba parado desde el 2026-07-21 porque el documento
+    // rozaba el límite de 1 MiB de Firestore.
+    //
+    // Aquí se escribe directo para que el error llegue vivo y el llamador
+    // pueda enseñárselo a quien acaba de cerrar la semana.
+    try {
+      await setDoc(doc(fbDb, 'obras', obraId, 'avance', 'historial'),
+        { semanas: recortadas }, { merge: true });
+    } catch (err) {
+      throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
+    }
     return snap;
   } catch (e) {
     console.error('crearSnapshotAvance', e);
+    // Un fallo de escritura se propaga: el cierre semanal NO puede decir
+    // "listo" sin haber guardado. El resto de fallos (datos inesperados) se
+    // siguen tragando aquí para no tumbar el guardado de avance completo,
+    // que ya se persistió antes de llegar a esta línea.
+    if (e instanceof ErrorSnapshot) throw e;
     return null;
   }
 };
@@ -2608,7 +2733,7 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
 // ── Snapshot de avance del SUBCONTRATO (histórico semanal por sub) ──
 // Estructura Firestore: obras/{obraId}/subcontratos/historial_{subId} = { semanas: [...] }
 // Cada snapshot: { id, semana, año, fechaCaptura, tipo, capturadoPor,
-//                  conceptos: [{clave, desc, avance, importe, cantEjec}],
+//                  conceptos: [{clave, avance, importe, cantEjec}],
 //                  avancePonderado, montoEjecutado }
 // Se dispara automáticamente al guardar cambios de avance del sub.
 const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0) => {
@@ -2627,8 +2752,11 @@ const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, ti
       fechaCaptura: ahora.toISOString(),
       fechaCierre: tipo === "oficial" ? ahora.toISOString() : null,
       tipo, capturadoPor: capturadoPor || 'sistema',
+      // Sin `desc`, por lo mismo que en `crearSnapshotAvance`: la descripción
+      // se repite idéntica en cada semana y se puede sacar del catálogo del
+      // sub cruzando por `clave`.
       conceptos: conceptos.map(c => ({
-        clave: c.clave || '', desc: c.desc || '',
+        clave: c.clave || '',
         avance: c.avance || 0, importe: parseFloat(c.importe) || 0,
         cantEjec: parseFloat(c.cantEjec) || 0,
         cantidad: parseFloat(c.cantidad) || 0,
@@ -8465,6 +8593,16 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   if (semanasHist.length > 0 && ejecActual > 0) {
     ejecAcum[ejecAcum.length - 1] = ejecActual;
   }
+  // ¿Cada semana trae medición propia, o es el valor de la anterior arrastrado?
+  // Hace falta para no dibujar sólido lo que nadie midió. La 0114 tiene seis
+  // semanas seguidas sin dato —los cierres 32 a 36 se perdieron al llenarse el
+  // documento— y una recta sólida sobre ellas afirma "el ejecutado no se movió",
+  // que es distinto de "no se sabe". P2: lo que no se midió no se pinta como
+  // medido. El último punto sí está medido: se sobrescribe con el valor vivo.
+  const ejecMedido = semanasHist.map(s => montoEjecutadoSnap(avancePorSem[s.key]) !== null);
+  if (semanasHist.length > 0 && ejecActual > 0) {
+    ejecMedido[ejecMedido.length - 1] = true;
+  }
   // Serie de AVANCE FÍSICO en paralelo: la proyección termina cuando la obra
   // llega al 100% de avance, no cuando el dinero alcanza el presupuesto.
   let avAcarreoPct = 0;
@@ -8645,10 +8783,33 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
   const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);
   const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
-  // Ejecutado partido en la frontera de esquema. El punto de la frontera va en
-  // los dos tramos para que la línea no quede cortada.
-  const ptsEjecViejo   = hayTramoViejoDinero ? ptsEjecHist.slice(0, idxFrontDinero + 1) : [];
-  const ptsEjecVigente = hayTramoViejoDinero ? ptsEjecHist.slice(idxFrontDinero) : ptsEjecHist;
+  // ── TRAMOS DE LA LÍNEA HISTÓRICA ──────────────────────────────────────
+  // La línea no se traza sobre los valores arrastrados: se traza de medición a
+  // medición. Cuando dos mediciones no son semanas consecutivas, el trecho
+  // entre ellas va punteado, porque el camino que siguió la obra ahí dentro no
+  // se conoce. Dibujarlo plano y luego saltar concentraría en la última semana
+  // un avance que tardó seis en ocurrir.
+  const idxMedidos = ejecMedido.reduce((a, m, i) => (m ? [...a, i] : a), []);
+  const tramosEjec = [];
+  for (let k = 1; k < idxMedidos.length; k++) {
+    const a = idxMedidos[k - 1], b = idxMedidos[k];
+    tramosEjec.push({
+      pts: [ptsEjecHist[a], ptsEjecHist[b]],
+      // Sólido solo entre semanas consecutivas. Una semana sin cierre es una
+      // semana sin dato, dé igual que sea una o seis: no hay un número de
+      // ausencias a partir del cual empiece a importar. Puntear desde la
+      // primera evita además tener que justificar dónde estaría el umbral.
+      medido: (b - a) === 1,
+      // Un tramo pertenece al esquema viejo si arranca antes de la frontera.
+      vigente: !hayTramoViejoDinero || a >= idxFrontDinero,
+    });
+  }
+  // El área sombreada tiene que seguir los mismos puntos que la línea —de
+  // medición a medición—, no los arrastrados. Si no, queda un relleno plano
+  // bajo una línea en diagonal y las dos cosas se contradicen en pantalla.
+  const ptsEjecArea = idxMedidos
+    .filter(i => !hayTramoViejoDinero || i >= idxFrontDinero)
+    .map(i => ptsEjecHist[i]);
   const ptsGastoProy = ptsGastoHist.length > 0
     ? [ptsGastoHist[ptsGastoHist.length - 1], ...gastoProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
     : [];
@@ -8744,24 +8905,36 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         )}
         {/* Área solo bajo el tramo vigente: un área sólida bajo una línea
             punteada diría que ese tramo es igual de firme. */}
-        {!soloGasto && ptsEjecVigente.length >= 2 && (
-          <path d={`${smoothPath(ptsEjecVigente)} L ${ptsEjecVigente[ptsEjecVigente.length-1][0]},${yPos(0)} L ${ptsEjecVigente[0][0]},${yPos(0)} Z`}
+        {!soloGasto && ptsEjecArea.length >= 2 && (
+          <path d={`${smoothPath(ptsEjecArea)} L ${ptsEjecArea[ptsEjecArea.length-1][0]},${yPos(0)} L ${ptsEjecArea[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-ejec)"/>
         )}
 
         {/* Líneas HISTÓRICAS (sólidas) */}
         <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
           strokeLinecap="round" strokeLinejoin="round"/>
-        {/* Tramo del ejecutado con la definición vieja (dinero topado) */}
-        {!soloGasto && ptsEjecViejo.length >= 2 && (
-          <path d={smoothPath(ptsEjecViejo)} fill="none" stroke={C.blueDk} strokeWidth={2}
-            strokeDasharray="5,3" opacity={0.5}
+        {/* Ejecutado histórico, tramo por tramo. Dos motivos distintos para no
+            dibujar sólido: el esquema viejo (la cifra significa otra cosa) y la
+            falta de captura (no hay cifra). Los dos van punteados, pero el
+            segundo conserva el grosor: no es una serie de menor confianza, es
+            un trecho que no se midió. */}
+        {!soloGasto && tramosEjec.map((t, i) => (
+          <path key={i} d={smoothPath(t.pts)} fill="none" stroke={C.blueDk}
+            strokeWidth={t.vigente ? 2.2 : 2}
+            strokeDasharray={t.vigente && t.medido ? undefined : '5,3'}
+            opacity={t.vigente ? (t.medido ? 1 : 0.55) : 0.5}
             strokeLinecap="round" strokeLinejoin="round"/>
-        )}
-        {!soloGasto && ptsEjecVigente.length >= 2 && (
-          <path d={smoothPath(ptsEjecVigente)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
-            strokeLinecap="round" strokeLinejoin="round"/>
-        )}
+        ))}
+        {/* Los extremos de cada trecho sin medir se marcan: el ojo tiene que
+            ver dónde vuelve a haber dato. */}
+        {!soloGasto && tramosEjec.filter(t => !t.medido).map((t, i) => (
+          <g key={`h${i}`}>
+            <circle cx={t.pts[0][0]} cy={t.pts[0][1]} r={2.5} fill="white"
+              stroke={C.blueDk} strokeWidth={1.2}/>
+            <circle cx={t.pts[1][0]} cy={t.pts[1][1]} r={2.5} fill="white"
+              stroke={C.blueDk} strokeWidth={1.2}/>
+          </g>
+        ))}
 
         {/* Líneas PROYECTADAS (punteadas) — solo si hay ejecutado con ritmo */}
         {!soloGasto && ptsGastoProy.length >= 2 && (
@@ -8955,6 +9128,13 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         `hayTramoViejoDinero` y `hayTramoViejoAvance` siguen vivos y siguen
         mandando: el ritmo y la proyección se calculan solo dentro del tramo
         vigente. Se quitó el texto, no la regla. */}
+    {/* Aquí iba el párrafo de las semanas sin captura. Se quitó por el mismo
+        criterio que los de frontera de esquema: el punteado y los círculos
+        huecos ya declaran el hueco, y el texto solo lo repite con palabras.
+        El comportamiento no cambia — quien decide qué tramo va punteado es
+        `medido` en `tramosEjec`, que se lee directo al dibujar. Ese aviso
+        tenía dos banderas propias, `haySinMedir` y `semanasSinMedir`, que no
+        gobernaban nada más y se fueron con él. */}
   </Card>;
 }
 
@@ -9398,8 +9578,13 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
 function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
+  // El fallo del snapshot no puede ser un parpadeo de 3 segundos: es lo que
+  // dejó a la 0114 siete semanas sin histórico sin que nadie se enterara. El
+  // aviso se queda hasta que el usuario lo cierra.
+  const[falloSnapshot,setFalloSnapshot]=useState(null);
   async function guardar(tipoSnapshot = "intermedio") {
     setEstado("saving");
+    setFalloSnapshot(null);
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
@@ -9447,7 +9632,14 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
     } catch(e) {
       console.error(e);
       setEstado("error");
-      setTimeout(()=>setEstado("idle"), 3000);
+      // Un fallo del histórico se explica y se queda en pantalla. El resto
+      // (avance, maquinaria, almacén) sigue con el aviso efímero de siempre:
+      // ahí el usuario ve de inmediato que no se guardó y reintenta.
+      if (e instanceof ErrorSnapshot) {
+        setFalloSnapshot({ mensaje: e.message, tipo: tipoSnapshot });
+      } else {
+        setTimeout(()=>setEstado("idle"), 3000);
+      }
     }
   }
   const labels_map = {idle:"Guardar registro", saving:"Guardando...", saved:"Guardado", error:"Error al guardar"};
@@ -9477,6 +9669,28 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           cursor:estado==="saving"?"not-allowed":"pointer"}}>
         Cerrar semana
       </button>
+
+      {/* El histórico no se guardó. No se va solo: hay que leerlo y cerrarlo. */}
+      {falloSnapshot && (
+        <div style={{background:C.card,border:`1.5px solid ${C.redDk}`,borderRadius:8,
+          padding:"12px 14px",marginTop:4}}>
+          <div style={{fontSize:12,fontWeight:700,color:C.redDk,marginBottom:6}}>
+            {falloSnapshot.tipo === "oficial"
+              ? "El cierre semanal no quedó registrado en el histórico"
+              : "El punto del histórico no se guardó"}
+          </div>
+          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,whiteSpace:"pre-line",
+            marginBottom:10}}>
+            {falloSnapshot.mensaje}
+          </div>
+          <button onClick={()=>{setFalloSnapshot(null);setEstado("idle");}}
+            style={{background:"transparent",border:`0.5px solid ${C.borderM}`,
+              borderRadius:6,padding:"6px 14px",fontSize:11,color:C.textSec,
+              cursor:"pointer"}}>
+            Entendido
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -13183,15 +13397,30 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const semanaAnterior = historial.length > 1 ? historial[historial.length - 2] : null;
 
   // Guardar semana en Firestore (extraído para reusar entre carga directa y confirmación de warnings)
-  function guardarSemana(nueva) {
+  // El guardado espera y revisa el resultado. Antes no hacía ninguna de las
+  // dos cosas: la pantalla pasaba a la semana nueva y cerraba el diálogo aunque
+  // la escritura hubiera fallado. Es el mismo patrón que le costó siete cierres
+  // a la 0114 en avance, y aquí duele más porque el historial de nómina es el
+  // único sitio donde vive la semana: si no se escribe, no está en ningún lado.
+  async function guardarSemana(nueva) {
     const nuevo_hist = [...historial, nueva];
-    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
-      { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
-        meta:{ totalNomina: nueva.totalNomina } });
+    setError('');
+    try {
+      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
+        { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+          meta:{ totalNomina: nueva.totalNomina } });
+    } catch (e) {
+      setError(mensajeFalloNomina(e, nuevo_hist, obra.id));
+      // El diálogo se queda abierto a propósito: `nueva` sigue en la mano y el
+      // botón de guardar reintenta con los mismos datos. Cerrarlo obligaría a
+      // volver a cargar el archivo por un fallo que puede ser de un segundo.
+      return false;
+    }
     notificarCambio(nuevo_hist);
     setVistaTab('actual');
     setSemanaVer(nuevo_hist.length - 1);
     setPendienteRevisar(null);
+    return true;
   }
 
   function procesarArchivo(file) {
@@ -13267,7 +13496,10 @@ function Nomina({obra, rol, onHistorialCambio}) {
         if (errores.length > 0 || advertencias.length > 0) {
           setPendienteRevisar({ nueva, errores, advertencias });
         } else {
-          guardarSemana(nueva);
+          // Con `await` para que el spinner siga puesto hasta que la escritura
+          // termine, y para que un fallo se vea antes de que la pantalla se dé
+          // por guardada.
+          await guardarSemana(nueva);
         }
       } catch(err) {
         setError('Error al leer el archivo: ' + err.message);
@@ -13293,11 +13525,21 @@ function Nomina({obra, rol, onHistorialCambio}) {
     return p.dias || 0;
   };
 
-  function eliminarSemana(idx) {
+  // Igual que el guardado: si el borrado no llegó a Firestore, la semana sigue
+  // ahí. Quitarla de la pantalla de todos modos deja a quien la borró creyendo
+  // que ya no está, y reaparece al recargar.
+  async function eliminarSemana(idx) {
     const semPrev = historial[idx];
     const nuevo = historial.filter((_,i) => i !== idx);
-    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
-      { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    setError('');
+    try {
+      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
+        { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    } catch (e) {
+      setError(`No se pudo eliminar la semana ${semPrev?.semana||idx}: ` +
+        `${e?.message || 'error desconocido'}. Sigue guardada; vuelve a intentar.`);
+      return;
+    }
     notificarCambio(nuevo);
     setSemanaVer(Math.max(0, idx-1));
   }
@@ -13385,7 +13627,8 @@ function Nomina({obra, rol, onHistorialCambio}) {
         </div>
         {error && (
           <div style={{background:'rgba(220,38,38,0.12)',border:`0.5px solid rgba(220,38,38,0.3)`,
-            borderRadius:7,padding:'8px 12px',fontSize:11,color:C.red,marginTop:8}}>{error}</div>
+            borderRadius:7,padding:'8px 12px',fontSize:11,color:C.red,marginTop:8,
+            whiteSpace:'pre-line'}}>{error}</div>
         )}
       </Card>
 
@@ -13448,6 +13691,14 @@ function Nomina({obra, rol, onHistorialCambio}) {
                 </>
               )}
             </div>
+            {/* Si el guardado falla, el diálogo NO se cierra: el error sale
+                aquí dentro, donde se ve, y "Guardar" reintenta con los mismos
+                datos. El panel de error de la tarjeta queda tapado por el modal. */}
+            {error && (
+              <div style={{margin:'0 18px',background:'rgba(220,38,38,0.12)',
+                border:'0.5px solid rgba(220,38,38,0.3)',borderRadius:7,
+                padding:'8px 12px',fontSize:11,color:C.red,whiteSpace:'pre-line'}}>{error}</div>
+            )}
             <div style={{padding:'12px 18px',borderTop:`0.5px solid ${C.border}`,
               display:'flex',justifyContent:'flex-end',gap:8}}>
               <button onClick={()=>setPendienteRevisar(null)}

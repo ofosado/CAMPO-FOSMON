@@ -2122,6 +2122,264 @@ modelo de contrato entran por la misma rama.
 
 ---
 
+## 28. Los historiales semanales viven en UN documento y se llenan
+
+**Descubierto**: 2026-09-21, diagnosticando por qué la obra 0114 llevaba
+siete semanas sin histórico. Prioridad **crítica — BLOQUEANTE DE DEMO**.
+
+> **Por qué subió a bloqueante (2026-09-22).** Dejó de ser deuda técnica en
+> cuanto la medición puso fechas: la 0125 llena su `avance/historial` en
+> **marzo de 2027** y su `nomina/historial` en **febrero**, y ese segundo no
+> tiene tope ninguno ni se arregla quitando texto. Una obra municipal de un
+> año con 300 partidas revienta el documento antes de terminar la obra. No se
+> puede dar de alta a un municipio sin esto: se le estaría vendiendo un
+> histórico que se corta solo a mitad del contrato, en silencio y sin que el
+> residente pueda hacer nada. Lo de la 0114 no fue un caso raro, fue el
+> primero.
+
+`avance/historial`, `nomina/historial` y `subcontratos/historial_{subId}`
+son **un solo documento con un arreglo `semanas`**. Firestore topa cada
+documento en **1 MiB**. Cuando el arreglo llega ahí, la escritura falla y
+no hay forma de seguir guardando: no es que se ponga lento, es que se
+acaba.
+
+Ya pasó. La 0114 llegó al 93.8% del límite y perdió los cierres de las
+semanas 32 a 38 de 2026 (ver el pendiente #22 para el silencio que lo
+ocultó siete semanas).
+
+### Medición contra producción — 2026-09-21
+
+Tamaños con las reglas de Firestore, no bytes de JSON. "Último cierre" es
+lo que pesó el cierre más reciente, que es el ritmo real al que crece.
+
+| documento | hoy | último cierre | tope del código | quedan | se llena |
+|---|---:|---:|---:|---:|---:|
+| `0114/avance/historial` | **93.8%** | 140,392 B | 52 sem = 696% | **0** | ya pasó |
+| `0125/avance/historial` | 7.0% | 36,502 B | 52 sem = 181% | 26 | 2027-03 |
+| `0126/avance/historial` | 11.1% | 13,551 B | 52 sem = 67% | 68 | nunca |
+| `0112/avance/historial` | 3.7% | 8,359 B | 52 sem = 41% | 120 | nunca |
+| `0127/avance/historial` | — | — | — | — | **no existe: nunca ha capturado** |
+| `0125/nomina/historial` | 20.6% | 42,085 B | **ninguno** | 19 | 2027-02 |
+| `0114/nomina/historial` | 20.6% | 25,195 B | **ninguno** | 33 | 2027-05 |
+| `0127/nomina/historial` | 2.1% | 12,369 B | **ninguno** | 82 | 2028-04 |
+| `0126/nomina/historial` | 10.7% | 10,010 B | **ninguno** | 93 | 2028-07 |
+| `0112/nomina/historial` | 2.2% | 11,360 B | **ninguno** | 90 | 2028-06 |
+| `0112/subcontratos/historial_SC-1784934468827` | 0.2% | 800 B | 52 sem = 4% | 1307 | nunca |
+
+**Tres cosas que salen de aquí:**
+
+**1. El tope de 52 semanas no protege.** `crearSnapshotAvance` recorta a
+52 semanas para no crecer sin fin, pero nunca se comprobó que 52 cupieran.
+En la 0114 (335 partidas) 52 semanas son el 696% del límite; quitar la
+descripción lo baja al 143%, que sigue sin caber: revienta hacia la semana
+36. En la 0125 (461 partidas) son el 181%, y ahí quitar la descripción casi
+no ayuda porque sus partidas ya traen poco texto. **La 0125 es la siguiente
+en tronar, en marzo de 2027, y el arreglo de la descripción no la salva.**
+
+**2. `nomina/historial` no tiene tope ninguno.** Crece para siempre. La
+0125 mete 143 trabajadores por semana a 42 KB el cierre y le quedan 19
+semanas. Sólo el 20-24% de cada semana es texto repetido (nombre, puesto),
+así que aquí no hay un truco de compactación: el dato sí es nuevo cada
+semana. **El tope sigue sin existir; lo que se arregló el 2026-09-22 es que
+el día que reviente se vea** (ver abajo).
+
+**2b. Lo que marca el calendario no es la 0125, es el alta.** De la
+medición sale un número que sirve para cualquier obra: **294 B por
+trabajador por semana**. Con eso se calcula cuánto dura un documento de
+nómina *desde cero*, que es el caso de un municipio recién dado de alta:
+
+| plantilla | pesa el cierre | semanas hasta llenarse | |
+|---:|---:|---:|---|
+| 143 (la 0125 hoy) | 42,085 B | 24 | 5.5 meses |
+| 200 | 58,860 B | 17 | 3.9 meses |
+| 250 | 73,575 B | 14 | **3.2 meses** |
+| 300 | 88,290 B | 11 | **2.5 meses** |
+| 400 | 117,720 B | 8 | **1.8 meses** |
+
+A escala municipal —de 250 trabajadores para arriba— el documento se llena
+en **poco más de tres meses**, no al año. Un municipio que se dé de alta en
+enero pierde su nómina en abril, dentro del mismo ejercicio en que se
+firmó. Eso es lo que fija el calendario de este pendiente: **la fecha
+límite no es febrero de 2027 (cuando truena la 0125), es la fecha de la
+primera alta.**
+
+> Cuidado con confundir dos cifras que se parecen: los **19 semanas /
+> febrero 2027** son lo que le queda al documento *que ya existe* de la
+> 0125, que va al 20.6%. Los **tres meses** son lo que dura un documento
+> *nuevo* a escala municipal. La segunda es la que bloquea la demo; la
+> primera solo dice cuándo nos alcanza el problema en casa.
+
+**3. Un municipio no cabe.** Un catálogo municipal de obra pública es de
+varios cientos de partidas, como la 0114 y la 0125. Dar de alta un
+municipio con este esquema es programar el mismo incidente a unos meses
+vista. **Por eso esto bloquea el alta, no es deuda técnica a futuro.**
+
+### Propuesta de fix
+
+Un **documento por semana en subcolección**, no un arreglo:
+
+```
+obras/{obraId}/avance_historial/{S30-2026}
+obras/{obraId}/nomina_historial/{S30-2026}
+obras/{obraId}/subcontratos_historial/{subId}__{S30-2026}
+```
+
+Cada cierre escribe su propio documento y nunca compite por espacio con
+los demás. La gráfica lee con una consulta ordenada y limitada, que además
+es más barata que traer un megabyte para pintar doce puntos.
+
+Hace falta migrar lo que ya existe y dejar lectura de los dos formatos
+mientras dure la migración. **Esa convivencia es la parte delicada**: si la
+lectura nueva no encuentra la subcolección y cae al documento viejo sin
+avisar, se repite el patrón del #22 — una pantalla que muestra menos de lo
+que hay y parece normal.
+
+Mientras tanto, lo que ya está hecho en `fix/historial-lleno`: el fallo de
+escritura ya no es silencioso —ni en avance ni en nómina—, y el snapshot
+dejó de copiar la descripción de la partida en cada semana (140 KB → 29 KB
+en la 0114). Eso compra tiempo. No resuelve el fondo.
+
+**Nómina, 2026-09-22.** `guardarSemana` y `eliminarSemana` ya esperan la
+escritura y miran el resultado. Antes no hacían ninguna de las dos cosas:
+la pantalla saltaba a la semana nueva y cerraba el diálogo aunque Firestore
+la hubiera rechazado. Si ahora falla, el diálogo se queda abierto con el
+archivo ya procesado en la mano y el botón reintenta — cerrarlo obligaría a
+volver a cargar el Excel por un fallo que puede durar un segundo. El
+mensaje es distinto al de avance a propósito: en avance la captura vive
+también en `avance/subs` y se puede decir "tu captura sí quedó guardada";
+en nómina el historial es el único sitio donde vive la semana, así que
+decir eso sería mentira. Cubierto por
+`scripts/prueba-nomina-no-guarda-callado.cjs`, que contra el árbol anterior
+sale con 12 comprobaciones en rojo, entre ellas "notificó 2 semanas igual"
+y "la quitó igual".
+
+El ayudante `fsSetA` se partió en dos: `fsSetAEstricto` lanza con el error
+original y `fsSetA` lo sigue envolviendo devolviendo `false`. Ningún
+llamador existente cambia de conducta; el que necesita explicar el fallo
+ahora tiene con qué.
+
+### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
+
+Los siete cierres oficiales que no llegaron al historial, con lo que hay
+para reconstruirlos. **Nada de esto está escrito todavía.**
+
+| semana | cierre oficial | fuente del estado por partida | reconstruible |
+|---|---|---|---|
+| 32 | 2026-08-07 22:57 | — | **no** |
+| 33 | 2026-08-15 17:07 | — | **no** |
+| 34 | 2026-08-21 23:36 | — | **no** |
+| 35 | 2026-08-28 23:04 | — | **no** |
+| 36 | 2026-09-04 23:31 | — | **no** |
+| 37 | 2026-09-11 23:13 | respaldo `2026-09-11-preseguridad` | **sí, completa** |
+| 38 | 2026-09-19 05:59 | respaldo `2026-09-21` y `avance/subs` en vivo | **sí, completa** |
+
+**Cómo se verificó.** Los respaldos son ficheros log de LevelDB con
+`EntityProto` dentro; se leyeron sin restaurar nada. El contraste no es
+"parece la fecha correcta": de cada fuente se recalculó el promedio simple
+de `a` de las 335 partidas y se comparó con el que la bitácora guardó en el
+cierre. Semana 37: 82.13134 contra 82.13134. Semana 38: 83.75821 contra
+83.75821. Coinciden al quinto decimal, así que la fuente es exactamente el
+estado del cierre y no uno cercano.
+
+Reconstruidas darían:
+
+| | semana 37 | semana 38 |
+|---|---:|---:|
+| `avancePonderado` | 87.59354% | 88.86187% |
+| `montoEjecutado` | $143,393,327.00 | $145,469,620.28 |
+| `contratoRef` | $163,703,079.43 | $163,703,079.43 |
+
+**Por qué las otras cinco no.** La bitácora sí registró los siete cierres,
+pero su `meta` solo guarda `avancePromedio`, que es el **promedio simple de
+`a` entre las 335 partidas** — no el `avancePonderado` que el snapshot
+necesita, que es ejecutado/contrato. No son la misma cifra ni se puede pasar
+de una a la otra: en la semana 37 difieren 5.46 puntos y en la 38, 5.10.
+
+Los registros de auditoría sí traen `antes`/`despues` con el estado por
+partida, pero **recortado a las primeras 50 de 335**, siempre las mismas.
+Esas 50 son el 28.0% del catálogo; las 285 que faltan son el 72.0% del
+dinero. Con eso no sale ninguna cifra de obra.
+
+**Las semanas 32 a 36 quedan como hueco declarado.** La gráfica tiene que
+mostrar que ahí no hay dato y por qué, no interpolar entre la semana 30 y
+la 37. Una línea recta entre esos dos puntos inventaría un avance que nadie
+midió, y es exactamente lo que el P2 prohíbe.
+
+### Hecho — 2026-09-22
+
+Compactado y rescatado, en ese orden y verificando cada paso:
+
+| | antes | después |
+|---|---:|---:|
+| tamaño de `obras/0114/avance/historial` | 983,579 B (93.8%) | 161,017 B (15.4%) |
+| snapshots | 8 | 10 |
+| días sin captura que mostraba el tablero | 62 | 3 |
+
+Las semanas 37 y 38 se escribieron con `esquema: 3`, porque se calcularon
+con la definición vigente de avance. Sin esa marca el salto de 69.7% a 87.6%
+se leería como avance de obra cuando es, en parte, cambio de criterio; con
+ella, `sonComparables` corta ahí sola.
+
+Las 32 a 36 **no** se escribieron. La gráfica ya las declara: la línea va de
+medición a medición y el trecho entre dos semanas no consecutivas queda
+punteado, con los extremos marcados y una leyenda que dice que ahí no hubo
+cierre. Sin umbral de tolerancia — una semana sin cierre es una semana sin
+dato, sean una o seis.
+
+### Los respaldos caducan a los 112 días
+
+El bucket `gs://campo-fosmon-backups` borra por regla de ciclo de vida a los
+**112 días**. Para las semanas 37 y 38 ya da igual —se rescataron el
+2026-09-22, y las fuentes quedaron copiadas en `~/campo-backups/`—, pero la
+regla vale para **cualquier rescate futuro** y conviene tenerla a mano:
+
+| respaldo | se borra hacia | qué se pierde con él |
+|---|---|---|
+| `2026-09-11-preseguridad` | **2027-01-01** | única fuente de la semana 37 |
+| `2026-09-21` | **2027-01-11** | fuente de la semana 38 |
+
+La consecuencia general: **un cierre perdido es reconstruible durante 112
+días y ni uno más.** Pasado ese plazo no hay de dónde sacar el estado por
+partida y la semana queda como hueco para siempre — la bitácora sola no
+basta, porque guarda `avancePromedio` y recorta el detalle a 50 partidas.
+Por eso el #22 (fallos silenciosos) es urgente y no cosmético: cada semana
+que un fallo pase inadvertido consume plazo de rescate.
+
+---
+
+## 29. Falta el índice de `auditoria` por `obraId` — la bitácora filtrada sale vacía
+
+**Descubierto**: 2026-09-21, consultando la bitácora de la 0114 para el
+diagnóstico del #28. Prioridad **alta**.
+
+Una consulta a `auditoria` con `where('obraId','==',…)` más
+`orderBy('ts')` necesita un **índice compuesto**. No existe. Firestore
+responde con un error de índice faltante, y el código de lectura lo
+convierte en lista vacía.
+
+El resultado es el peor de los posibles: **la pantalla no dice "no se pudo
+consultar", dice que no hubo actividad.** Una obra con siete cierres
+semanales registrados se ve idéntica a una obra abandonada. Es la misma
+familia del #22 y del P2: un fallo disfrazado de dato.
+
+En el diagnóstico se esquivó consultando por rango de fechas y filtrando
+en memoria, que no escala.
+
+**Qué hace falta**:
+
+1. Declarar el índice compuesto `auditoria(obraId ASC, ts DESC)` en
+   `firestore.indexes.json` y desplegarlo.
+2. Revisar qué más filtra `auditoria` — si hay consultas por `modulo` o
+   por `usuario` con orden, necesitan su propio índice.
+3. Y que el fallo de consulta **no se traduzca en lista vacía**: un error
+   de índice tiene que llegar a la pantalla como "no se pudo consultar la
+   bitácora", nunca como "sin actividad".
+
+Ver [AUDITORIA_CONSULTAS.md](AUDITORIA_CONSULTAS.md) para las consultas
+que ya se usan.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -2157,6 +2415,8 @@ cierran, gobiernan.
 | 25 | `global/health` registra la intención, no el hecho | | alta — hace que el aviso del #24 3.1 pueda mentir |
 | 26 | Pantalla de salud en admin ("última ejecución hace N días") | | alta — única señal que sirve si el backend está caído |
 | 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
+| 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; a escala municipal la nómina se llena en ~3 meses desde el alta, y la 0125 va en marzo 2027 con su nómina en febrero |
+| 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
 
 ---
 

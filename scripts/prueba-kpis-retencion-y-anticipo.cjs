@@ -243,9 +243,43 @@ let textoRenderizado = '';
 traverse(ast, { JSXText(p) { textoRenderizado += ' ' + p.node.value.replace(/\s+/g, ' '); } });
 for (const f of FRASES)
   check(!textoRenderizado.includes(f.replace(/\s+/g, ' ')), `ya no se renderiza: "${f.slice(0, 46)}…"`);
-// Pero el punteado se queda: es lo que distingue los dos tramos.
-check(/strokeDasharray/.test(src) && /ptsEjecViejo/.test(src),
-  'el tramo viejo se sigue dibujando punteado');
+// Pero el punteado se queda: es lo que distingue los dos tramos, y sin él
+// quitar las leyendas dejaría la gráfica sin ninguna señal del cambio de
+// definición.
+//
+// Esto se comprobaba antes exigiendo que existiera `ptsEjecViejo`. Era una
+// afirmación sobre un nombre, no sobre la conducta: cuando el dibujo pasó a
+// resolverse por tramos con banderas, la prueba se puso roja por un renombre
+// aunque el punteado seguía ahí. Ahora se extrae la expresión real del
+// atributo `strokeDasharray` y se evalúa: lo que se afirma es qué sale por
+// ese atributo según el tramo, que es lo que el usuario ve.
+let exprDash = null;
+traverse(ast, {
+  JSXAttribute(p) {
+    if (exprDash || p.node.name.name !== 'strokeDasharray') return;
+    const e = p.node.value?.expression;
+    // El que interesa es el del tramo histórico: depende del tramo `t`, no
+    // una constante como la de las guías del eje.
+    if (e && /\bt\s*\./.test(src.slice(e.start, e.end)))
+      exprDash = src.slice(e.start, e.end);
+  },
+});
+check(!!exprDash, 'el trazo de cada tramo decide su punteado en tiempo de dibujo',
+  exprDash || 'no se encontró un strokeDasharray que dependa del tramo');
+
+if (exprDash) {
+  const dash = (vigente, medido) =>
+    new Function('t', `"use strict"; return (${exprDash});`)({ vigente, medido });
+  const puntea = (v, m) => dash(v, m) !== undefined && dash(v, m) !== '0';
+  check(puntea(false, true),
+    'un tramo de la definición anterior sale punteado', `-> ${dash(false, true)}`);
+  check(puntea(false, false),
+    'y también si además le faltan mediciones', `-> ${dash(false, false)}`);
+  check(!puntea(true, true),
+    'un tramo vigente y medido sale sólido', `-> ${String(dash(true, true))}`);
+  check(puntea(true, false),
+    'un tramo vigente con semanas sin captura sale punteado', `-> ${dash(true, false)}`);
+}
 
 console.log(fallas === 0
   ? '\nTodas las comprobaciones en verde.'
