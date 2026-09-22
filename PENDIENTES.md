@@ -2205,6 +2205,59 @@ escritura ya no es silencioso, y el snapshot dejó de copiar la descripción
 de la partida en cada semana (140 KB → 29 KB en la 0114). Eso compra
 tiempo. No resuelve el fondo.
 
+### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
+
+Los siete cierres oficiales que no llegaron al historial, con lo que hay
+para reconstruirlos. **Nada de esto está escrito todavía.**
+
+| semana | cierre oficial | fuente del estado por partida | reconstruible |
+|---|---|---|---|
+| 32 | 2026-08-07 22:57 | — | **no** |
+| 33 | 2026-08-15 17:07 | — | **no** |
+| 34 | 2026-08-21 23:36 | — | **no** |
+| 35 | 2026-08-28 23:04 | — | **no** |
+| 36 | 2026-09-04 23:31 | — | **no** |
+| 37 | 2026-09-11 23:13 | respaldo `2026-09-11-preseguridad` | **sí, completa** |
+| 38 | 2026-09-19 05:59 | respaldo `2026-09-21` y `avance/subs` en vivo | **sí, completa** |
+
+**Cómo se verificó.** Los respaldos son ficheros log de LevelDB con
+`EntityProto` dentro; se leyeron sin restaurar nada. El contraste no es
+"parece la fecha correcta": de cada fuente se recalculó el promedio simple
+de `a` de las 335 partidas y se comparó con el que la bitácora guardó en el
+cierre. Semana 37: 82.13134 contra 82.13134. Semana 38: 83.75821 contra
+83.75821. Coinciden al quinto decimal, así que la fuente es exactamente el
+estado del cierre y no uno cercano.
+
+Reconstruidas darían:
+
+| | semana 37 | semana 38 |
+|---|---:|---:|
+| `avancePonderado` | 87.59354% | 88.86187% |
+| `montoEjecutado` | $143,393,327.00 | $145,469,620.28 |
+| `contratoRef` | $163,703,079.43 | $163,703,079.43 |
+
+**Por qué las otras cinco no.** La bitácora sí registró los siete cierres,
+pero su `meta` solo guarda `avancePromedio`, que es el **promedio simple de
+`a` entre las 335 partidas** — no el `avancePonderado` que el snapshot
+necesita, que es ejecutado/contrato. No son la misma cifra ni se puede pasar
+de una a la otra: en la semana 37 difieren 5.46 puntos y en la 38, 5.10.
+
+Los registros de auditoría sí traen `antes`/`despues` con el estado por
+partida, pero **recortado a las primeras 50 de 335**, siempre las mismas.
+Esas 50 son el 28.0% del catálogo; las 285 que faltan son el 72.0% del
+dinero. Con eso no sale ninguna cifra de obra.
+
+**Las semanas 32 a 36 quedan como hueco declarado.** La gráfica tiene que
+mostrar que ahí no hay dato y por qué, no interpolar entre la semana 30 y
+la 37. Una línea recta entre esos dos puntos inventaría un avance que nadie
+midió, y es exactamente lo que el P2 prohíbe.
+
+**Esto tiene fecha de caducidad.** El bucket de respaldos borra a los 112
+días. El respaldo del 2026-09-11, que es la única fuente de la semana 37,
+se borra alrededor del **2027-01-01**. El del 2026-09-21, hacia el
+**2027-01-11**. Después de esas fechas las semanas 37 y 38 pasan también a
+hueco declarado. Si se van a rescatar, es antes.
+
 ---
 
 ## 29. Falta el índice de `auditoria` por `obraId` — la bitácora filtrada sale vacía
