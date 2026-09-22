@@ -2183,6 +2183,32 @@ así que aquí no hay un truco de compactación: el dato sí es nuevo cada
 semana. **El tope sigue sin existir; lo que se arregló el 2026-09-22 es que
 el día que reviente se vea** (ver abajo).
 
+**2b. Lo que marca el calendario no es la 0125, es el alta.** De la
+medición sale un número que sirve para cualquier obra: **294 B por
+trabajador por semana**. Con eso se calcula cuánto dura un documento de
+nómina *desde cero*, que es el caso de un municipio recién dado de alta:
+
+| plantilla | pesa el cierre | semanas hasta llenarse | |
+|---:|---:|---:|---|
+| 143 (la 0125 hoy) | 42,085 B | 24 | 5.5 meses |
+| 200 | 58,860 B | 17 | 3.9 meses |
+| 250 | 73,575 B | 14 | **3.2 meses** |
+| 300 | 88,290 B | 11 | **2.5 meses** |
+| 400 | 117,720 B | 8 | **1.8 meses** |
+
+A escala municipal —de 250 trabajadores para arriba— el documento se llena
+en **poco más de tres meses**, no al año. Un municipio que se dé de alta en
+enero pierde su nómina en abril, dentro del mismo ejercicio en que se
+firmó. Eso es lo que fija el calendario de este pendiente: **la fecha
+límite no es febrero de 2027 (cuando truena la 0125), es la fecha de la
+primera alta.**
+
+> Cuidado con confundir dos cifras que se parecen: los **19 semanas /
+> febrero 2027** son lo que le queda al documento *que ya existe* de la
+> 0125, que va al 20.6%. Los **tres meses** son lo que dura un documento
+> *nuevo* a escala municipal. La segunda es la que bloquea la demo; la
+> primera solo dice cuándo nos alcanza el problema en casa.
+
 **3. Un municipio no cabe.** Un catálogo municipal de obra pública es de
 varios cientos de partidas, como la 0114 y la 0125. Dar de alta un
 municipio con este esquema es programar el mismo incidente a unos meses
@@ -2389,7 +2415,7 @@ cierran, gobiernan.
 | 25 | `global/health` registra la intención, no el hecho | | alta — hace que el aviso del #24 3.1 pueda mentir |
 | 26 | Pantalla de salud en admin ("última ejecución hace N días") | | alta — única señal que sirve si el backend está caído |
 | 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
-| 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; la 0125 va en marzo 2027 y su nómina en febrero |
+| 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; a escala municipal la nómina se llena en ~3 meses desde el alta, y la 0125 va en marzo 2027 con su nómina en febrero |
 | 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
 
 ---

@@ -147,10 +147,12 @@ const correrGuardar = async (modo, historial = [semana(5)]) => {
   check(!/undefined|NaN|\[object/.test(m), 'el mensaje no trae basura', m.slice(0, 50) + '…');
   check(!/\b0 KB\b/.test(m), 'no afirma un tamaño que su propia medición no respalda');
 
-  // Con un historial que sí pesa, la cifra aparece. No es un caso de
-  // laboratorio: son catorce semanas de una obra de 300 trabajadores —la 0125
-  // desde febrero—, y ya van en 95% del límite. El documento revienta en tres
-  // meses y medio, no al año.
+  // Con un historial que sí pesa, la cifra aparece. Catorce semanas de 300
+  // trabajadores bastan para el 95% del límite. El trabajador de este fixture
+  // pesa ~236 B; el real medido en la 0125 pesa 294 B, así que en producción
+  // esas mismas 300 personas llenan el documento en 11 semanas, no en 14
+  // (ver la tabla del pendiente #28). El fixture se queda corto a propósito:
+  // si la prueba pasa con el caso benigno, pasa con el de verdad.
   const gordo = Array.from({ length: 14 }, (_, i) => semana(i + 1, 300));
   const pesado = await correrGuardar('lleno', gordo);
   check(/\d{3,} KB de 1024 KB/.test(pesado.error || ''),
