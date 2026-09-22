@@ -8736,8 +8736,6 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       vigente: !hayTramoViejoDinero || a >= idxFrontDinero,
     });
   }
-  const haySinMedir = tramosEjec.some(t => !t.medido);
-  const semanasSinMedir = tramosEjec.filter(t => !t.medido).length;
   // El área sombreada tiene que seguir los mismos puntos que la línea —de
   // medición a medición—, no los arrastrados. Si no, queda un relleno plano
   // bajo una línea en diagonal y las dos cosas se contradicen en pantalla.
@@ -9071,18 +9069,13 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         proyección de fin de obra solo usa el ritmo del tramo vigente.
       </div>
     )}
-    {/* Semanas sin captura. Se declara el hueco en vez de rellenarlo: la línea
-        va de una medición a la siguiente y el trecho de en medio queda
-        punteado, porque ahí no se sabe qué pasó. */}
-    {!soloGasto && haySinMedir && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.textMut}12`,
-        border:`0.5px solid ${C.textMut}44`,borderRadius:6,fontSize:10,color:C.textMut}}>
-        <b>Hay {semanasSinMedir === 1 ? 'un tramo' : `${semanasSinMedir} tramos`} sin
-        captura.</b> Entre los círculos huecos no hubo cierre semanal, así que
-        no se sabe cómo avanzó la obra ahí dentro: la línea punteada solo une
-        los dos datos que sí existen, no es una medición.
-      </div>
-    )}
+    {/* Aquí iba el párrafo de las semanas sin captura. Se quitó por el mismo
+        criterio que los de frontera de esquema: el punteado y los círculos
+        huecos ya declaran el hueco, y el texto solo lo repite con palabras.
+        El comportamiento no cambia — quien decide qué tramo va punteado es
+        `medido` en `tramosEjec`, que se lee directo al dibujar. Ese aviso
+        tenía dos banderas propias, `haySinMedir` y `semanasSinMedir`, que no
+        gobernaban nada más y se fueron con él. */}
   </Card>;
 }
 

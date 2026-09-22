@@ -27,8 +27,13 @@ const check = (ok, titulo, detalle = '') => {
 };
 
 // ── Extracción del bloque que arma los tramos ───────────────────────────────
+// El bloque va de la construcción de `idxMedidos` al cierre del bucle que
+// llena `tramosEjec`. El corte se busca por `const ptsEjecArea`, que es la
+// primera declaración después del bucle: si alguien mete algo en medio, el
+// bloque lo arrastra y se ejecuta igual; si desaparece, la prueba avisa en vez
+// de medir un trozo equivocado.
 const ini = src.indexOf('const idxMedidos =');
-const fin = src.indexOf('const haySinMedir =');
+const fin = src.indexOf('const ptsEjecArea =');
 if (ini < 0 || fin < 0 || fin <= ini) {
   console.log('FALLA  no se encontró el armado de tramos en ' + archivo);
   console.log('\nLa gráfica no separa las semanas medidas de las arrastradas.');
