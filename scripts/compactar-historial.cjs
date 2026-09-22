@@ -104,6 +104,17 @@ const sinElCampo = v => JSON.parse(JSON.stringify(v), function (k, val) {
   return k === CAMPO_A_QUITAR ? undefined : val;
 });
 
+// Ordena las claves de todo mapa antes de serializar. Hace falta porque
+// Firestore NO conserva el orden en que se mandaron: al releer un documento
+// devuelve los campos en otro orden. Comparar con `JSON.stringify` directo
+// marca como distinto lo que solo está reordenado — pasó en la primera
+// compactación de la 0114 y disparó una alarma falsa con la escritura ya
+// hecha y correcta.
+const canonico = v => JSON.stringify(v, (k, val) =>
+  (val && typeof val === 'object' && !Array.isArray(val))
+    ? Object.fromEntries(Object.keys(val).sort().map(c => [c, val[c]]))
+    : val);
+
 (async () => {
   // 1) Leer el documento tal como está en producción.
   const antes = await pedir(`${BASE}/${RUTA}`);
@@ -155,7 +166,7 @@ const sinElCampo = v => JSON.parse(JSON.stringify(v), function (k, val) {
   }
 
   // 4) Verificación previa: nada más puede haber cambiado.
-  const igual = JSON.stringify(sinElCampo(antes.fields)) === JSON.stringify(sinElCampo(despues.fields));
+  const igual = canonico(sinElCampo(antes.fields)) === canonico(sinElCampo(despues.fields));
   if (!igual) {
     console.error('\nABORTA · el documento compactado difiere en algo más que la descripción.');
     console.error('No se escribió nada. El original está en la copia local.');
@@ -189,7 +200,7 @@ const sinElCampo = v => JSON.parse(JSON.stringify(v), function (k, val) {
   const problemas = [];
   if (semRel.length !== semanas.length)
     problemas.push(`quedaron ${semRel.length} snapshots de ${semanas.length}`);
-  if (JSON.stringify(semRel) !== JSON.stringify(nuevas))
+  if (canonico(semRel) !== canonico(nuevas))
     problemas.push('lo guardado no coincide con lo que se envió');
   const idsAntes = semanas.map(s => s.mapValue.fields.id?.stringValue).join(',');
   const idsRel = semRel.map(s => s.mapValue.fields.id?.stringValue).join(',');
