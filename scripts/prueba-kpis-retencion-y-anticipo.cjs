@@ -73,7 +73,8 @@ traverse(ast, {
 });
 if (!decl) { console.log('No se pudo extraer `Estimaciones`.'); process.exit(1); }
 
-const NECESARIAS = ['cE', 'totalEst', 'anticipoPactado', 'anticipoAmort', 'porRecuperarAnt'];
+const NECESARIAS = ['cE', 'totalEst', 'retenido', 'retenEstra',
+  'anticipoPactado', 'anticipoAmort', 'porRecuperarAnt'];
 for (const n of NECESARIAS)
   if (!decl[n]) check(false, `se pudo extraer \`${n}\``);
 if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
@@ -81,7 +82,7 @@ if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
 const montar = (obra, estimaciones) => new Function('obra', 'estimaciones', `
   "use strict";
   ${NECESARIAS.map(n => `const ${n} = ${decl[n]};`).join('\n  ')}
-  return { anticipoPactado, anticipoAmort, porRecuperarAnt };
+  return { retenido, retenEstra, anticipoPactado, anticipoAmort, porRecuperarAnt };
 `)(obra, estimaciones);
 
 // ¿Se pinta este KPI para esta obra? Se evalúa la condición real.
@@ -196,7 +197,40 @@ const mismos = ['En proceso', 'Aprobada', 'Facturada', 'Pagada'].every(s =>
   casi(montar(o, est.map(e => ({ ...e, estatus: s }))).porRecuperarAnt, base));
 check(mismos, 'mover TODAS las estimaciones de estatus no mueve la cifra', MXN(base));
 
-console.log('\nC. Ninguna de las leyendas de frontera de esquema sigue en pantalla');
+// ── Las tres retenciones miden igual ──────────────────────────────────────
+// Fondo de garantía, retención estratégica y amortización de anticipo son el
+// mismo tipo de cifra: lo que el contrato descuenta de cada estimación al
+// formularla. Si una contara solo las pagadas y las otras todas, la pantalla
+// mostraría tres números que parecen comparables y no lo son — que es
+// exactamente cómo empezó lo de los dos "Pagado". No se comprueba leyendo el
+// código: se mueven los estatus y se verifica que ninguna se inmuta.
+console.log('\nC. Las tres retenciones miden sobre las mismas estimaciones');
+const ESTATUS = ['En proceso', 'Aprobada', 'Facturada', 'Pagada'];
+const oMixta = { presupuesto: 100e6, pctAnticipo: 30, pctFondoGar: 5, pctRetencion: 10 };
+const eMixta = [{ no:1, estatus:'Pagada', monto: 20e6 }, { no:2, estatus:'Facturada', monto: 10e6 },
+                { no:3, estatus:'En proceso', monto: 5e6 }];
+const ref = montar(oMixta, eMixta);
+for (const campo of ['retenido', 'retenEstra', 'anticipoAmort']) {
+  const inmutable = ESTATUS.every(s =>
+    casi(montar(oMixta, eMixta.map(e => ({ ...e, estatus: s })))[campo], ref[campo]));
+  check(inmutable, `\`${campo}\` no cambia al mover los estatus`, MXN(ref[campo]));
+}
+// Y el valor es el del total generado, no el de una porción.
+const TOTAL = eMixta.reduce((t, e) => t + e.monto, 0);   // $35M generados
+check(casi(ref.retenido,      TOTAL * 0.05), `FG = 5% de los ${MXN(TOTAL)} generados`, MXN(ref.retenido));
+check(casi(ref.retenEstra,    TOTAL * 0.10), `ret. estratégica = 10% de lo generado`, MXN(ref.retenEstra));
+check(casi(ref.anticipoAmort, TOTAL * 0.30), `amortización = 30% de lo generado`,     MXN(ref.anticipoAmort));
+// El contraste que delata a una que contara solo pagadas: serían $20M, no $35M.
+const soloPagadas = eMixta.filter(e => e.estatus === 'Pagada').reduce((t, e) => t + e.monto, 0);
+check(!casi(ref.retenido, soloPagadas * 0.05) && !casi(ref.retenEstra, soloPagadas * 0.10)
+   && !casi(ref.anticipoAmort, soloPagadas * 0.30),
+  `ninguna quedó contando solo las pagadas`, `serían sobre ${MXN(soloPagadas)}, no ${MXN(TOTAL)}`);
+// Un solo indicador por concepto: nada de "comprometido" junto a "efectivo".
+for (const par of [['Retenido FG', 'FG comprometido'], ['Ret. estratégica', 'Ret. comprometida'],
+                   ['Por recuperar ant.', 'Anticipo comprometido']])
+  check(!(par[1] in guardas), `no hay un segundo KPI "${par[1]}" al lado de "${par[0]}"`);
+
+console.log('\nD. Ninguna de las leyendas de frontera de esquema sigue en pantalla');
 const FRASES = [
   'El tramo punteado usa otra definición de avance',
   'El tramo punteado usa otra definición.',
