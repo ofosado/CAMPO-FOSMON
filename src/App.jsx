@@ -8490,6 +8490,16 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   if (semanasHist.length > 0 && ejecActual > 0) {
     ejecAcum[ejecAcum.length - 1] = ejecActual;
   }
+  // ¿Cada semana trae medición propia, o es el valor de la anterior arrastrado?
+  // Hace falta para no dibujar sólido lo que nadie midió. La 0114 tiene seis
+  // semanas seguidas sin dato —los cierres 32 a 36 se perdieron al llenarse el
+  // documento— y una recta sólida sobre ellas afirma "el ejecutado no se movió",
+  // que es distinto de "no se sabe". P2: lo que no se midió no se pinta como
+  // medido. El último punto sí está medido: se sobrescribe con el valor vivo.
+  const ejecMedido = semanasHist.map(s => montoEjecutadoSnap(avancePorSem[s.key]) !== null);
+  if (semanasHist.length > 0 && ejecActual > 0) {
+    ejecMedido[ejecMedido.length - 1] = true;
+  }
   // Serie de AVANCE FÍSICO en paralelo: la proyección termina cuando la obra
   // llega al 100% de avance, no cuando el dinero alcanza el presupuesto.
   let avAcarreoPct = 0;
@@ -8663,10 +8673,35 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
   const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);
   const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
-  // Ejecutado partido en la frontera de esquema. El punto de la frontera va en
-  // los dos tramos para que la línea no quede cortada.
-  const ptsEjecViejo   = hayTramoViejoDinero ? ptsEjecHist.slice(0, idxFrontDinero + 1) : [];
-  const ptsEjecVigente = hayTramoViejoDinero ? ptsEjecHist.slice(idxFrontDinero) : ptsEjecHist;
+  // ── TRAMOS DE LA LÍNEA HISTÓRICA ──────────────────────────────────────
+  // La línea no se traza sobre los valores arrastrados: se traza de medición a
+  // medición. Cuando dos mediciones no son semanas consecutivas, el trecho
+  // entre ellas va punteado, porque el camino que siguió la obra ahí dentro no
+  // se conoce. Dibujarlo plano y luego saltar concentraría en la última semana
+  // un avance que tardó seis en ocurrir.
+  const idxMedidos = ejecMedido.reduce((a, m, i) => (m ? [...a, i] : a), []);
+  const tramosEjec = [];
+  for (let k = 1; k < idxMedidos.length; k++) {
+    const a = idxMedidos[k - 1], b = idxMedidos[k];
+    tramosEjec.push({
+      pts: [ptsEjecHist[a], ptsEjecHist[b]],
+      // Sólido solo entre semanas consecutivas. Una semana sin cierre es una
+      // semana sin dato, dé igual que sea una o seis: no hay un número de
+      // ausencias a partir del cual empiece a importar. Puntear desde la
+      // primera evita además tener que justificar dónde estaría el umbral.
+      medido: (b - a) === 1,
+      // Un tramo pertenece al esquema viejo si arranca antes de la frontera.
+      vigente: !hayTramoViejoDinero || a >= idxFrontDinero,
+    });
+  }
+  const haySinMedir = tramosEjec.some(t => !t.medido);
+  const semanasSinMedir = tramosEjec.filter(t => !t.medido).length;
+  // El área sombreada tiene que seguir los mismos puntos que la línea —de
+  // medición a medición—, no los arrastrados. Si no, queda un relleno plano
+  // bajo una línea en diagonal y las dos cosas se contradicen en pantalla.
+  const ptsEjecArea = idxMedidos
+    .filter(i => !hayTramoViejoDinero || i >= idxFrontDinero)
+    .map(i => ptsEjecHist[i]);
   const ptsGastoProy = ptsGastoHist.length > 0
     ? [ptsGastoHist[ptsGastoHist.length - 1], ...gastoProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
     : [];
@@ -8762,24 +8797,36 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         )}
         {/* Área solo bajo el tramo vigente: un área sólida bajo una línea
             punteada diría que ese tramo es igual de firme. */}
-        {!soloGasto && ptsEjecVigente.length >= 2 && (
-          <path d={`${smoothPath(ptsEjecVigente)} L ${ptsEjecVigente[ptsEjecVigente.length-1][0]},${yPos(0)} L ${ptsEjecVigente[0][0]},${yPos(0)} Z`}
+        {!soloGasto && ptsEjecArea.length >= 2 && (
+          <path d={`${smoothPath(ptsEjecArea)} L ${ptsEjecArea[ptsEjecArea.length-1][0]},${yPos(0)} L ${ptsEjecArea[0][0]},${yPos(0)} Z`}
             fill="url(#pgrad-ejec)"/>
         )}
 
         {/* Líneas HISTÓRICAS (sólidas) */}
         <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
           strokeLinecap="round" strokeLinejoin="round"/>
-        {/* Tramo del ejecutado con la definición vieja (dinero topado) */}
-        {!soloGasto && ptsEjecViejo.length >= 2 && (
-          <path d={smoothPath(ptsEjecViejo)} fill="none" stroke={C.blueDk} strokeWidth={2}
-            strokeDasharray="5,3" opacity={0.5}
+        {/* Ejecutado histórico, tramo por tramo. Dos motivos distintos para no
+            dibujar sólido: el esquema viejo (la cifra significa otra cosa) y la
+            falta de captura (no hay cifra). Los dos van punteados, pero el
+            segundo conserva el grosor: no es una serie de menor confianza, es
+            un trecho que no se midió. */}
+        {!soloGasto && tramosEjec.map((t, i) => (
+          <path key={i} d={smoothPath(t.pts)} fill="none" stroke={C.blueDk}
+            strokeWidth={t.vigente ? 2.2 : 2}
+            strokeDasharray={t.vigente && t.medido ? undefined : '5,3'}
+            opacity={t.vigente ? (t.medido ? 1 : 0.55) : 0.5}
             strokeLinecap="round" strokeLinejoin="round"/>
-        )}
-        {!soloGasto && ptsEjecVigente.length >= 2 && (
-          <path d={smoothPath(ptsEjecVigente)} fill="none" stroke={C.blueDk} strokeWidth={2.2}
-            strokeLinecap="round" strokeLinejoin="round"/>
-        )}
+        ))}
+        {/* Los extremos de cada trecho sin medir se marcan: el ojo tiene que
+            ver dónde vuelve a haber dato. */}
+        {!soloGasto && tramosEjec.filter(t => !t.medido).map((t, i) => (
+          <g key={`h${i}`}>
+            <circle cx={t.pts[0][0]} cy={t.pts[0][1]} r={2.5} fill="white"
+              stroke={C.blueDk} strokeWidth={1.2}/>
+            <circle cx={t.pts[1][0]} cy={t.pts[1][1]} r={2.5} fill="white"
+              stroke={C.blueDk} strokeWidth={1.2}/>
+          </g>
+        ))}
 
         {/* Líneas PROYECTADAS (punteadas) — solo si hay ejecutado con ritmo */}
         {!soloGasto && ptsGastoProy.length >= 2 && (
@@ -8980,6 +9027,18 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         <b>El avance de las semanas anteriores usa otra definición.</b> Se
         calculó topando cada partida al 100%, sin compensar volúmenes. La
         proyección de fin de obra solo usa el ritmo del tramo vigente.
+      </div>
+    )}
+    {/* Semanas sin captura. Se declara el hueco en vez de rellenarlo: la línea
+        va de una medición a la siguiente y el trecho de en medio queda
+        punteado, porque ahí no se sabe qué pasó. */}
+    {!soloGasto && haySinMedir && (
+      <div style={{marginTop:8,padding:"7px 10px",background:`${C.textMut}12`,
+        border:`0.5px solid ${C.textMut}44`,borderRadius:6,fontSize:10,color:C.textMut}}>
+        <b>Hay {semanasSinMedir === 1 ? 'un tramo' : `${semanasSinMedir} tramos`} sin
+        captura.</b> Entre los círculos huecos no hubo cierre semanal, así que
+        no se sabe cómo avanzó la obra ahí dentro: la línea punteada solo une
+        los dos datos que sí existen, no es una medición.
       </div>
     )}
   </Card>;
