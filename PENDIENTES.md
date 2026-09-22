@@ -2125,8 +2125,17 @@ modelo de contrato entran por la misma rama.
 ## 28. Los historiales semanales viven en UN documento y se llenan
 
 **Descubierto**: 2026-09-21, diagnosticando por qué la obra 0114 llevaba
-siete semanas sin histórico. Prioridad **alta — bloquea el alta de un
-municipio**.
+siete semanas sin histórico. Prioridad **crítica — BLOQUEANTE DE DEMO**.
+
+> **Por qué subió a bloqueante (2026-09-22).** Dejó de ser deuda técnica en
+> cuanto la medición puso fechas: la 0125 llena su `avance/historial` en
+> **marzo de 2027** y su `nomina/historial` en **febrero**, y ese segundo no
+> tiene tope ninguno ni se arregla quitando texto. Una obra municipal de un
+> año con 300 partidas revienta el documento antes de terminar la obra. No se
+> puede dar de alta a un municipio sin esto: se le estaría vendiendo un
+> histórico que se corta solo a mitad del contrato, en silencio y sin que el
+> residente pueda hacer nada. Lo de la 0114 no fue un caso raro, fue el
+> primero.
 
 `avance/historial`, `nomina/historial` y `subcontratos/historial_{subId}`
 son **un solo documento con un arreglo `semanas`**. Firestore topa cada
@@ -2252,11 +2261,45 @@ mostrar que ahí no hay dato y por qué, no interpolar entre la semana 30 y
 la 37. Una línea recta entre esos dos puntos inventaría un avance que nadie
 midió, y es exactamente lo que el P2 prohíbe.
 
-**Esto tiene fecha de caducidad.** El bucket de respaldos borra a los 112
-días. El respaldo del 2026-09-11, que es la única fuente de la semana 37,
-se borra alrededor del **2027-01-01**. El del 2026-09-21, hacia el
-**2027-01-11**. Después de esas fechas las semanas 37 y 38 pasan también a
-hueco declarado. Si se van a rescatar, es antes.
+### Hecho — 2026-09-22
+
+Compactado y rescatado, en ese orden y verificando cada paso:
+
+| | antes | después |
+|---|---:|---:|
+| tamaño de `obras/0114/avance/historial` | 983,579 B (93.8%) | 161,017 B (15.4%) |
+| snapshots | 8 | 10 |
+| días sin captura que mostraba el tablero | 62 | 3 |
+
+Las semanas 37 y 38 se escribieron con `esquema: 3`, porque se calcularon
+con la definición vigente de avance. Sin esa marca el salto de 69.7% a 87.6%
+se leería como avance de obra cuando es, en parte, cambio de criterio; con
+ella, `sonComparables` corta ahí sola.
+
+Las 32 a 36 **no** se escribieron. La gráfica ya las declara: la línea va de
+medición a medición y el trecho entre dos semanas no consecutivas queda
+punteado, con los extremos marcados y una leyenda que dice que ahí no hubo
+cierre. Sin umbral de tolerancia — una semana sin cierre es una semana sin
+dato, sean una o seis.
+
+### Los respaldos caducan a los 112 días
+
+El bucket `gs://campo-fosmon-backups` borra por regla de ciclo de vida a los
+**112 días**. Para las semanas 37 y 38 ya da igual —se rescataron el
+2026-09-22, y las fuentes quedaron copiadas en `~/campo-backups/`—, pero la
+regla vale para **cualquier rescate futuro** y conviene tenerla a mano:
+
+| respaldo | se borra hacia | qué se pierde con él |
+|---|---|---|
+| `2026-09-11-preseguridad` | **2027-01-01** | única fuente de la semana 37 |
+| `2026-09-21` | **2027-01-11** | fuente de la semana 38 |
+
+La consecuencia general: **un cierre perdido es reconstruible durante 112
+días y ni uno más.** Pasado ese plazo no hay de dónde sacar el estado por
+partida y la semana queda como hueco para siempre — la bitácora sola no
+basta, porque guarda `avancePromedio` y recorta el detalle a 50 partidas.
+Por eso el #22 (fallos silenciosos) es urgente y no cosmético: cada semana
+que un fallo pase inadvertido consume plazo de rescate.
 
 ---
 
@@ -2328,7 +2371,7 @@ cierran, gobiernan.
 | 25 | `global/health` registra la intención, no el hecho | | alta — hace que el aviso del #24 3.1 pueda mentir |
 | 26 | Pantalla de salud en admin ("última ejecución hace N días") | | alta — única señal que sirve si el backend está caído |
 | 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
-| 28 | Historiales semanales en un solo documento — se llenan | **bloquea el alta de un municipio** | alta — la 0114 ya reventó; la 0125 va en marzo 2027 |
+| 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; la 0125 va en marzo 2027 y su nómina en febrero |
 | 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
 
 ---
