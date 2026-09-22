@@ -2178,11 +2178,10 @@ en tronar, en marzo de 2027, y el arreglo de la descripción no la salva.**
 
 **2. `nomina/historial` no tiene tope ninguno.** Crece para siempre. La
 0125 mete 143 trabajadores por semana a 42 KB el cierre y le quedan 19
-semanas. Además se guarda con `fsSetA` sin `await` y sin mirar el
-resultado (`src/App.jsx:13195` y `13306`): cuando falle, va a fallar
-exactamente igual de callado que la 0114. Sólo el 20-24% de cada semana es
-texto repetido (nombre, puesto), así que aquí no hay un truco de
-compactación: el dato sí es nuevo cada semana.
+semanas. Sólo el 20-24% de cada semana es texto repetido (nombre, puesto),
+así que aquí no hay un truco de compactación: el dato sí es nuevo cada
+semana. **El tope sigue sin existir; lo que se arregló el 2026-09-22 es que
+el día que reviente se vea** (ver abajo).
 
 **3. Un municipio no cabe.** Un catálogo municipal de obra pública es de
 varios cientos de partidas, como la 0114 y la 0125. Dar de alta un
@@ -2210,9 +2209,28 @@ avisar, se repite el patrón del #22 — una pantalla que muestra menos de lo
 que hay y parece normal.
 
 Mientras tanto, lo que ya está hecho en `fix/historial-lleno`: el fallo de
-escritura ya no es silencioso, y el snapshot dejó de copiar la descripción
-de la partida en cada semana (140 KB → 29 KB en la 0114). Eso compra
-tiempo. No resuelve el fondo.
+escritura ya no es silencioso —ni en avance ni en nómina—, y el snapshot
+dejó de copiar la descripción de la partida en cada semana (140 KB → 29 KB
+en la 0114). Eso compra tiempo. No resuelve el fondo.
+
+**Nómina, 2026-09-22.** `guardarSemana` y `eliminarSemana` ya esperan la
+escritura y miran el resultado. Antes no hacían ninguna de las dos cosas:
+la pantalla saltaba a la semana nueva y cerraba el diálogo aunque Firestore
+la hubiera rechazado. Si ahora falla, el diálogo se queda abierto con el
+archivo ya procesado en la mano y el botón reintenta — cerrarlo obligaría a
+volver a cargar el Excel por un fallo que puede durar un segundo. El
+mensaje es distinto al de avance a propósito: en avance la captura vive
+también en `avance/subs` y se puede decir "tu captura sí quedó guardada";
+en nómina el historial es el único sitio donde vive la semana, así que
+decir eso sería mentira. Cubierto por
+`scripts/prueba-nomina-no-guarda-callado.cjs`, que contra el árbol anterior
+sale con 12 comprobaciones en rojo, entre ellas "notificó 2 semanas igual"
+y "la quitó igual".
+
+El ayudante `fsSetA` se partió en dos: `fsSetAEstricto` lanza con el error
+original y `fsSetA` lo sigue envolviendo devolviendo `false`. Ningún
+llamador existente cambia de conducta; el que necesita explicar el fallo
+ahora tiene con qué.
 
 ### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
 

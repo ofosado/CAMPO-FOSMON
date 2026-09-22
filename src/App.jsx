@@ -2214,18 +2214,26 @@ async function fsAudit(tipo, opciones = {}) {
 }
 
 // Wrappers con auditoría. Si no se pasa ctx, no se audita.
-const fsSetA = async (path, data, ctx) => {
+// Escribe y, si falla, lanza. `fsSet` se traga el error y devuelve `false`: eso
+// sirve para guardados de fondo, pero no para uno que el usuario acaba de pedir
+// —ahí hay que poder decirle QUÉ pasó, no solo que algo pasó—. Esta versión
+// conserva el error original para que el llamador arme el mensaje.
+const fsSetAEstricto = async (path, data, ctx) => {
   let antes = null;
   if (ctx) { try { antes = await fsGet(path); } catch {} }
-  const ok = await fsSet(path, data);
-  if (ok && ctx) {
+  await setDoc(doc(fbDb, ...path.split('/')), data, { merge: true });
+  if (ctx) {
     fsAudit(antes ? "editar" : "crear", {
       path, modulo: ctx.modulo, entidad: ctx.entidad,
       obraId: ctx.obraId, obraNombre: ctx.obraNombre,
       antes, despues: data, meta: ctx.meta,
     });
   }
-  return ok;
+  return true;
+};
+const fsSetA = async (path, data, ctx) => {
+  try { return await fsSetAEstricto(path, data, ctx); }
+  catch (e) { console.error('fsSetA', path, e); return false; }
 };
 const fsDelA = async (path, ctx) => {
   let antes = null;
@@ -2526,6 +2534,31 @@ const mensajeFalloSnapshot = (err, semanas, obraId) => {
     `Tu captura de avance SÍ quedó guardada. Lo que falló es el punto del ` +
     `histórico: ${err?.message || 'error desconocido'}.\n\n` +
     `Vuelve a intentar el cierre. Si sigue fallando, avisa a sistemas.`;
+};
+
+// El equivalente para nómina, con una diferencia que cambia el consejo: aquí el
+// historial NO es una copia de algo capturado en otro lado, es el único lugar
+// donde vive la semana. Si la escritura falla, la semana no existe. Por eso el
+// mensaje no dice "tu captura sí quedó guardada" —sería mentira— sino que no
+// cierres sin reintentar.
+const mensajeFalloNomina = (err, semanas, obraId) => {
+  const bytes = tamañoFirestore({ semanas });
+  const midePasado = bytes >= LIMITE_DOC_FIRESTORE * 0.9;
+  const loDiceFirestore = /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
+  if (midePasado || loDiceFirestore) {
+    const cuanto = midePasado
+      ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
+    return `El historial de nómina de esta obra llegó al límite de tamaño que ` +
+      `permite Firestore${cuanto}, así que esta semana NO se guardó.\n\n` +
+      `No se perdió nada de lo que ya estaba, pero esta carga tampoco quedó: ` +
+      `guarda el archivo y avisa a sistemas para que compacte el historial de ` +
+      `la obra ${obraId}. En cuanto esté, vuelve a cargarlo.`;
+  }
+  return `No se pudo guardar la semana de nómina: ` +
+    `${err?.message || 'error desconocido'}.\n\n` +
+    `La semana NO quedó registrada. Revisa la conexión y vuelve a intentar ` +
+    `antes de cerrar esta pantalla; si la cierras, hay que volver a cargar ` +
+    `el archivo.`;
 };
 
 // Crear snapshot del avance actual y guardarlo en el historial
@@ -13258,15 +13291,30 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const semanaAnterior = historial.length > 1 ? historial[historial.length - 2] : null;
 
   // Guardar semana en Firestore (extraído para reusar entre carga directa y confirmación de warnings)
-  function guardarSemana(nueva) {
+  // El guardado espera y revisa el resultado. Antes no hacía ninguna de las
+  // dos cosas: la pantalla pasaba a la semana nueva y cerraba el diálogo aunque
+  // la escritura hubiera fallado. Es el mismo patrón que le costó siete cierres
+  // a la 0114 en avance, y aquí duele más porque el historial de nómina es el
+  // único sitio donde vive la semana: si no se escribe, no está en ningún lado.
+  async function guardarSemana(nueva) {
     const nuevo_hist = [...historial, nueva];
-    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
-      { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
-        meta:{ totalNomina: nueva.totalNomina } });
+    setError('');
+    try {
+      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
+        { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+          meta:{ totalNomina: nueva.totalNomina } });
+    } catch (e) {
+      setError(mensajeFalloNomina(e, nuevo_hist, obra.id));
+      // El diálogo se queda abierto a propósito: `nueva` sigue en la mano y el
+      // botón de guardar reintenta con los mismos datos. Cerrarlo obligaría a
+      // volver a cargar el archivo por un fallo que puede ser de un segundo.
+      return false;
+    }
     notificarCambio(nuevo_hist);
     setVistaTab('actual');
     setSemanaVer(nuevo_hist.length - 1);
     setPendienteRevisar(null);
+    return true;
   }
 
   function procesarArchivo(file) {
@@ -13342,7 +13390,10 @@ function Nomina({obra, rol, onHistorialCambio}) {
         if (errores.length > 0 || advertencias.length > 0) {
           setPendienteRevisar({ nueva, errores, advertencias });
         } else {
-          guardarSemana(nueva);
+          // Con `await` para que el spinner siga puesto hasta que la escritura
+          // termine, y para que un fallo se vea antes de que la pantalla se dé
+          // por guardada.
+          await guardarSemana(nueva);
         }
       } catch(err) {
         setError('Error al leer el archivo: ' + err.message);
@@ -13368,11 +13419,21 @@ function Nomina({obra, rol, onHistorialCambio}) {
     return p.dias || 0;
   };
 
-  function eliminarSemana(idx) {
+  // Igual que el guardado: si el borrado no llegó a Firestore, la semana sigue
+  // ahí. Quitarla de la pantalla de todos modos deja a quien la borró creyendo
+  // que ya no está, y reaparece al recargar.
+  async function eliminarSemana(idx) {
     const semPrev = historial[idx];
     const nuevo = historial.filter((_,i) => i !== idx);
-    fsSetA(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
-      { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    setError('');
+    try {
+      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
+        { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+    } catch (e) {
+      setError(`No se pudo eliminar la semana ${semPrev?.semana||idx}: ` +
+        `${e?.message || 'error desconocido'}. Sigue guardada; vuelve a intentar.`);
+      return;
+    }
     notificarCambio(nuevo);
     setSemanaVer(Math.max(0, idx-1));
   }
@@ -13442,7 +13503,8 @@ function Nomina({obra, rol, onHistorialCambio}) {
         </div>
         {error && (
           <div style={{background:'rgba(220,38,38,0.12)',border:`0.5px solid rgba(220,38,38,0.3)`,
-            borderRadius:7,padding:'8px 12px',fontSize:11,color:C.red,marginTop:8}}>{error}</div>
+            borderRadius:7,padding:'8px 12px',fontSize:11,color:C.red,marginTop:8,
+            whiteSpace:'pre-line'}}>{error}</div>
         )}
       </Card>
 
@@ -13505,6 +13567,14 @@ function Nomina({obra, rol, onHistorialCambio}) {
                 </>
               )}
             </div>
+            {/* Si el guardado falla, el diálogo NO se cierra: el error sale
+                aquí dentro, donde se ve, y "Guardar" reintenta con los mismos
+                datos. El panel de error de la tarjeta queda tapado por el modal. */}
+            {error && (
+              <div style={{margin:'0 18px',background:'rgba(220,38,38,0.12)',
+                border:'0.5px solid rgba(220,38,38,0.3)',borderRadius:7,
+                padding:'8px 12px',fontSize:11,color:C.red,whiteSpace:'pre-line'}}>{error}</div>
+            )}
             <div style={{padding:'12px 18px',borderTop:`0.5px solid ${C.border}`,
               display:'flex',justifyContent:'flex-end',gap:8}}>
               <button onClick={()=>setPendienteRevisar(null)}
