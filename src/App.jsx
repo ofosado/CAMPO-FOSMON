@@ -2162,6 +2162,21 @@ const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.spli
 const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
+// ── Horas extra de una semana de nómina ──────────────────────────────────
+// Existe como función, y una sola, porque el snapshot guarda el importe con
+// DOS nombres: `totalHEImp` es el bueno y `totalHE` el alias viejo. Hoy el
+// escritor pone los dos y valen lo mismo —medido contra las cinco obras de
+// producción el 2026-09-22—, así que quien leía `totalHE` pelón no se estaba
+// equivocando todavía. Ese "todavía" es el problema: el día que el escritor
+// deje de poner el alias, cada lector suelto se va a cero sin avisar y sin
+// que nada falle. Por eso se unifica antes de que se manifieste y no después
+// (PENDIENTES #11).
+//
+// OJO: esto es un IMPORTE en pesos. Las HORAS viven en `totalHEHrs` y no se
+// mezclan — confundirlas fue un bug real (ver 2026-09-17).
+const heImporte = sem => sem?.totalHEImp ?? sem?.totalHE
+  ?? (sem?.trabajadores || []).reduce((t,p) => t + (p.impHE || 0), 0);
+
 // ════════════════════════════════════════════════════════════════════════════
 // AUDIT LOG (bitácora) — para resolver controversias y trazabilidad
 // ════════════════════════════════════════════════════════════════════════════
@@ -2997,8 +3012,7 @@ const BIBLIOTECA_RIESGOS = [
       if (!ult) return null;
       const trabs = Array.isArray(ult.trabajadores) ? ult.trabajadores : [];
       const totalNom = ult.totalNomina ?? trabs.reduce((t,p)=>t+(p.total||0), 0);
-      // Nombre correcto: impHE (no importeHE, ese nombre no existe en los datos).
-      const totalHE = ult.totalHEImp ?? ult.totalHE ?? trabs.reduce((t,p)=>t+(p.impHE||0), 0);
+      const totalHE = heImporte(ult);
       if (totalNom === 0) return null;
       const pct = totalHE/totalNom*100;
       if (pct > 25) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Costo HE muy alto', extra:`${MXN(totalHE)} de ${MXN(totalNom)} nómina`};
@@ -5874,7 +5888,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
           } else if (Array.isArray(ult.trabajadores)) {
             heHrs += ult.trabajadores.reduce((t,p)=>t+(p.horasExtra||0),0);
           }
-          heImp += (ult.totalHEImp || ult.totalHE || 0);
+          heImp += heImporte(ult);
           obrasConDato++;
           if (semanas.length >= 2) {
             const prev = semanas[semanas.length - 2];
@@ -6454,7 +6468,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const ultNom = nomSemanas[nomSemanas.length - 1];
     if (ultNom) {
       const totalNom = ultNom.totalNomina || (ultNom.trabajadores || []).reduce((t,p)=>t+(p.total||0), 0);
-      const totalHE  = ultNom.totalHEImp ?? ultNom.totalHE ?? (ultNom.trabajadores || []).reduce((t,p)=>t+(p.impHE||0), 0);
+      const totalHE  = heImporte(ultNom);
       if (totalNom > 0) {
         const pct = totalHE / totalNom * 100;
         if (pct > 25) {
@@ -9936,6 +9950,11 @@ function MiniDashMaquinaria({obra, maquinaria}){
 // snapshot cargado. fix/kpis-en-cero (2026-09-17): antes leía de la constante
 // hardcoded vacía NOMINA_S18, siempre devolvía $0/0. Ahora recibe el historial
 // via prop desde App → Operacion.
+// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Iba encima del bloque de
+// KPIs de Nomina() preguntando lo mismo y contestando distinto: "141 activos"
+// arriba, "143 total personal" abajo. Las dos cifras eran correctas y medían
+// cosas distintas, pero nadie lo decía. Se conserva un ciclo por si hay que
+// volver atrás rápido; si al siguiente pase nadie la echó de menos, se borra.
 function MiniDashNomina({ historial = [] }){
   const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
   if (!semanaActual) {
@@ -10103,8 +10122,12 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </>
     )}
     {subTab==="nomina" && (
+      // #11: se quitó <MiniDashNomina/>. Preguntaba lo mismo que el bloque de
+      // abajo y contestaba distinto —"141 activos" contra "143 total personal"—
+      // sin que nada en la pantalla explicara por qué. Sus dos aportaciones
+      // reales, el segundo conteo y el color por proporción de horas extra,
+      // están ahora en el bloque que quedó.
       <>
-        <MiniDashNomina historial={nominaHistorial}/>
         <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="nomina"
@@ -13298,7 +13321,25 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const deltaNomina = semanaActual && semanaAnterior
     ? semanaActual.totalNomina - semanaAnterior.totalNomina : 0;
   const deltaHE = semanaActual && semanaAnterior
-    ? semanaActual.totalHE - semanaAnterior.totalHE : 0;
+    ? heImporte(semanaActual) - heImporte(semanaAnterior) : 0;
+
+  // #11 — rescatado de MiniDashNomina, que ya no se renderiza.
+  //
+  // Los dos conteos de personal se quedan, pero con nombre. `totalDir+totalInd`
+  // es quién estaba en el listado al cerrar la semana; `con pago` es quién
+  // cobró algo. En la 0125 eso es 143 y 141, y la diferencia son dos personas
+  // dadas de alta el día del cierre sin días trabajados. No es un descuadre —
+  // son dos preguntas— pero los dos bloques las rotulaban igual y el usuario
+  // no tenía cómo distinguirlas.
+  const enListado = semanaActual ? semanaActual.totalDir + semanaActual.totalInd : 0;
+  const conPago   = semanaActual && Array.isArray(semanaActual.trabajadores)
+    ? semanaActual.trabajadores.filter(p => (p.total||0) > 0).length : null;
+  // El otro rescate: el color por proporción, que avisa cuando las horas extra
+  // se comen la nómina. El delta semana contra semana no lo dice — una semana
+  // puede bajar respecto a la anterior y seguir en el 33% (la 0114, hoy).
+  const heActual = semanaActual ? heImporte(semanaActual) : 0;
+  const pctHE    = semanaActual && semanaActual.totalNomina > 0
+    ? heActual / semanaActual.totalNomina * 100 : 0;
 
   // Trabajadores con más horas extra en semana actual
   const topHE = semanaActual
@@ -13452,18 +13493,23 @@ function Nomina({obra, rol, onHistorialCambio}) {
 
       {historial.length > 0 && <>
         {/* KPIs semana actual vs anterior */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(108px,1fr))',gap:8}}>
-          <Kpi label="Total personal" value={semanaActual.totalDir+semanaActual.totalInd}
-            sub={deltaPersonal!==0?`${deltaPersonal>0?'+':''}${deltaPersonal} vs sem. ant.`:'sin cambio'}
-            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza}/>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(122px,1fr))',gap:8}}>
+          {/* El delta de personal vs semana anterior ya no va en el subtítulo:
+              lo dicen mejor los KPIs de Altas y Bajas de esta misma fila, con
+              nombre y propio. Aquí sobrevive solo como color. */}
+          <Kpi label="Personal"
+            value={conPago === null ? String(enListado) : `${enListado} · ${conPago}`}
+            sub={conPago === null ? 'en listado' : 'en listado · con pago'}
+            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={13}/>
           <Kpi label="Directo" value={semanaActual.totalDir} sub="mano de obra" color={C.blue}/>
           <Kpi label="Indirecto" value={semanaActual.totalInd} sub="administración" color={C.purple}/>
           <Kpi label="Total nómina" value={MXN(semanaActual.totalNomina)}
             sub={deltaNomina!==0?`${deltaNomina>0?'+':''}${MXN(deltaNomina)} vs sem. ant.`:'sin cambio'}
             color={deltaNomina>0?C.yellow:C.caliza} size={12}/>
-          <Kpi label="Horas extra" value={MXN(semanaActual.totalHE)}
-            sub={deltaHE!==0?`${deltaHE>0?'+':''}${MXN(deltaHE)} vs sem. ant.`:'sin cambio'}
-            color={deltaHE>0?C.orange:C.caliza} size={12}/>
+          <Kpi label="Horas extra" value={MXN(heActual)}
+            sub={`${NUM(pctHE,1)}% del total` +
+              (deltaHE!==0?` · ${deltaHE>0?'+':''}${MXN(deltaHE)} vs sem. ant.`:'')}
+            color={pctHE > 15 ? C.yellowDk : deltaHE > 0 ? C.orange : C.caliza} size={12}/>
           {altas.length>0&&<Kpi label="Altas" value={altas.length} sub="nuevos esta semana" color={C.green}/>}
           {bajas.length>0&&<Kpi label="Bajas" value={bajas.length} sub="salieron esta semana" color={C.red}/>}
         </div>
@@ -13750,7 +13796,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                       ['Directo',sem.totalDir,'',C.blue],
                       ['Indirecto',sem.totalInd,'',C.purple],
                       ['Total nómina',MXN(sem.totalNomina),deltaTot!==0?`${deltaTot>0?'+':''}${MXN(deltaTot)}`:'',deltaTot>0?C.yellow:C.caliza],
-                      ['Horas extra',MXN(sem.totalHE),'',C.orange],
+                      ['Horas extra',MXN(heImporte(sem)),'',C.orange],
                     ].map(([l,v,sub,col])=>(
                       <div key={l} style={{background:C.card,borderRadius:6,padding:'6px 8px'}}>
                         <div style={{fontSize:8,color:C.textMut,marginBottom:2}}>{l}</div>
