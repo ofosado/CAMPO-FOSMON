@@ -303,6 +303,17 @@ service cloud.firestore {
       allow read: if esDirectivoC();
       allow write: if esDirectivoC();
     }
+    // Registro de salud de las funciones programadas (#26). La escriben las
+    // Cloud Functions con el admin SDK, que se salta estas reglas; aquí solo
+    // hace falta abrir la LECTURA. Sin esto la pantalla de salud no sirve de
+    // nada: su razón de ser es que el navegador pueda ver el estado del
+    // backend cuando el backend está caído y no hay quien mande el correo.
+    // Escritura cerrada a propósito: nadie desde el navegador debe poder
+    // poner en verde una función que falló.
+    match /global/health {
+      allow read: if esDirectivoC() || esAdminSistemaC();
+      allow write: if false;
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // notificaciones/{uid}/items/{notifId} — solo el propio usuario

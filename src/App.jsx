@@ -2162,6 +2162,21 @@ const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.spli
 const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
 const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
+// ── Horas extra de una semana de nómina ──────────────────────────────────
+// Existe como función, y una sola, porque el snapshot guarda el importe con
+// DOS nombres: `totalHEImp` es el bueno y `totalHE` el alias viejo. Hoy el
+// escritor pone los dos y valen lo mismo —medido contra las cinco obras de
+// producción el 2026-09-22—, así que quien leía `totalHE` pelón no se estaba
+// equivocando todavía. Ese "todavía" es el problema: el día que el escritor
+// deje de poner el alias, cada lector suelto se va a cero sin avisar y sin
+// que nada falle. Por eso se unifica antes de que se manifieste y no después
+// (PENDIENTES #11).
+//
+// OJO: esto es un IMPORTE en pesos. Las HORAS viven en `totalHEHrs` y no se
+// mezclan — confundirlas fue un bug real (ver 2026-09-17).
+const heImporte = sem => sem?.totalHEImp ?? sem?.totalHE
+  ?? (sem?.trabajadores || []).reduce((t,p) => t + (p.impHE || 0), 0);
+
 // ════════════════════════════════════════════════════════════════════════════
 // AUDIT LOG (bitácora) — para resolver controversias y trazabilidad
 // ════════════════════════════════════════════════════════════════════════════
@@ -2364,6 +2379,40 @@ const pctPartidaSinTopar = (s, modoVol = false) => {
   return (importeEjecutadoPartida(s, modoVol) / tope) * 100;
 };
 
+// ── Cambio de modo de captura de avance (#21) ─────────────────────────
+// El modo vive en `obra.modoAvance` y decide de dónde sale el dinero: en
+// volumen manda `cantEjec × pu`, en porcentaje manda `(a/100) × imp`. Pasar a
+// volumen una obra cuyo catálogo se cargó sin volúmenes deja la captura en 0%
+// en todas las partidas, y ahí el avance real se pierde al primer teclazo.
+//
+// El ejecutado de antes y el de después salen de `desgloseEjecutado`, la misma
+// función del tablero y del correo. La confirmación no puede decir una cifra
+// distinta de la que el usuario va a ver mañana.
+const diagnosticoCambioModo = (subs, modoActual = "porcentaje", modoDestino = "porcentaje") => {
+  const lista = Array.isArray(subs) ? subs : [];
+  const volAntes = modoActual === "volumen";
+  const volDespues = modoDestino === "volumen";
+  const sinVolumen = lista.filter(s =>
+    !(parseFloat(s?.cant) > 0) || !(parseFloat(s?.pu) > 0)).length;
+  // Partidas cuyo importe ejecutado se mueve con el cambio. Medio centavo de
+  // tolerancia: por debajo de eso es ruido del double, no un cambio real.
+  const cambian = lista.filter(s =>
+    Math.abs(importeEjecutadoPartida(s, volAntes)
+           - importeEjecutadoPartida(s, volDespues)) >= 0.005).length;
+  const ejecutadoAntes = desgloseEjecutado(lista, volAntes).total;
+  const ejecutadoDespues = desgloseEjecutado(lista, volDespues).total;
+  return {
+    partidas: lista.length,
+    sinVolumen, conVolumen: lista.length - sinVolumen, cambian,
+    ejecutadoAntes, ejecutadoDespues, delta: ejecutadoDespues - ejecutadoAntes,
+    // Precondición DURA del modo volumen: todas las partidas con `cant` y `pu`.
+    // Una sola sin volumen es una partida que no se puede capturar ni derivar
+    // —`cantEjec/cant` con `cant` en cero da siempre 0—, así que no es una
+    // preferencia que el usuario pueda saltarse: es un requisito del dato.
+    puedeVolumen: lista.length > 0 && sinVolumen === 0,
+  };
+};
+
 // ── Precisión decimal en función del PRECIO UNITARIO ──────────────────
 // No depende de la unidad, depende de cuánto vale el dígito. La propiedad
 // que garantiza esta regla: el último decimal NUNCA vale más de un peso.
@@ -2379,10 +2428,37 @@ const decimalesPorPU = pu => {
   return Math.min(6, Math.max(2, Math.ceil(Math.log10(p))));
 };
 
+// Cuántos decimales trae REALMENTE el valor guardado. Sirve para no mostrar
+// menos precisión de la que el residente capturó. Un número en notación
+// exponencial (1e-7) no tiene decimales legibles: devuelve 0 y manda el piso.
+const decimalesDe = valor => {
+  const n = Number(valor);
+  if (!Number.isFinite(n)) return 0;
+  const s = String(n);
+  if (s.includes('e') || s.includes('E')) return 0;
+  const punto = s.indexOf('.');
+  return punto < 0 ? 0 : s.length - punto - 1;
+};
+
 // Formatea una cantidad con los decimales que exige su precio unitario.
 // Sustituye al `maximumFractionDigits: 2` que truncaba lo capturado.
-const fmtCant = (cant, pu) => Number(cant || 0).toLocaleString('es-MX',
-  { maximumFractionDigits: decimalesPorPU(pu) });
+//
+// `decimalesPorPU` es un PISO, no un techo (#30). Marcaba el mínimo para que el
+// último dígito no valiera más de un peso, pero se estaba usando como límite:
+// en partidas de PU bajo el piso es 2, y un volumen capturado con 4 decimales
+// se guardaba entero, se cobraba entero y en pantalla salía con 2. El dato se
+// tomó, pero el residente veía que no. Nunca mostramos menos precisión de la
+// que hay guardada.
+//
+// Techo 4: es la resolución de una medición de campo. Además corta el ruido del
+// double — 0.1+0.2 guarda 0.30000000000000004 y saldría con 17 decimales.
+// `maximumFractionDigits` no rellena con ceros, así que una cantidad redonda se
+// sigue viendo igual que antes.
+const fmtCant = (cant, pu) => {
+  const piso = decimalesPorPU(pu);
+  return Number(cant || 0).toLocaleString('es-MX',
+    { maximumFractionDigits: Math.max(piso, Math.min(4, decimalesDe(cant))) });
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
@@ -2936,8 +3012,7 @@ const BIBLIOTECA_RIESGOS = [
       if (!ult) return null;
       const trabs = Array.isArray(ult.trabajadores) ? ult.trabajadores : [];
       const totalNom = ult.totalNomina ?? trabs.reduce((t,p)=>t+(p.total||0), 0);
-      // Nombre correcto: impHE (no importeHE, ese nombre no existe en los datos).
-      const totalHE = ult.totalHEImp ?? ult.totalHE ?? trabs.reduce((t,p)=>t+(p.impHE||0), 0);
+      const totalHE = heImporte(ult);
       if (totalNom === 0) return null;
       const pct = totalHE/totalNom*100;
       if (pct > 25) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Costo HE muy alto', extra:`${MXN(totalHE)} de ${MXN(totalNom)} nómina`};
@@ -5813,7 +5888,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
           } else if (Array.isArray(ult.trabajadores)) {
             heHrs += ult.trabajadores.reduce((t,p)=>t+(p.horasExtra||0),0);
           }
-          heImp += (ult.totalHEImp || ult.totalHE || 0);
+          heImp += heImporte(ult);
           obrasConDato++;
           if (semanas.length >= 2) {
             const prev = semanas[semanas.length - 2];
@@ -6393,7 +6468,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const ultNom = nomSemanas[nomSemanas.length - 1];
     if (ultNom) {
       const totalNom = ultNom.totalNomina || (ultNom.trabajadores || []).reduce((t,p)=>t+(p.total||0), 0);
-      const totalHE  = ultNom.totalHEImp ?? ultNom.totalHE ?? (ultNom.trabajadores || []).reduce((t,p)=>t+(p.impHE||0), 0);
+      const totalHE  = heImporte(ultNom);
       if (totalNom > 0) {
         const pct = totalHE / totalNom * 100;
         if (pct > 25) {
@@ -8164,26 +8239,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       </div>;
     })()}
 
-    {/* Serie que cruza la frontera del arreglo del recorte */}
-    {hayTramoViejo && (
-      <div style={{marginTop:8,background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,
-        borderRadius:6,padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        {metricaActiva === 'avance' ? (
-          <><b>El tramo punteado usa otra definición de avance.</b> Esas semanas
-          se calcularon topando cada partida al 100%, así que el volumen
-          ejecutado de más no contaba como avance. Desde el tramo sólido el
-          avance es ejecutado ÷ contrato y las partidas se compensan entre sí.
-          El escalón entre los dos tramos es el cambio de criterio, no avance de
-          obra — por eso no se compara un tramo contra el otro.</>
-        ) : (
-          <><b>El tramo punteado usa otra definición.</b> Esas semanas traen el
-          dinero ejecutado recortado al importe de catálogo. Desde el tramo
-          sólido ya no se topa. El escalón entre los dos tramos es el cambio de
-          criterio, no avance de obra — por eso no se compara un tramo contra el
-          otro.</>
-        )}
-      </div>
-    )}
+    {/* El tramo viejo se sigue dibujando punteado (`hayTramoViejo`), que es lo
+        que hace falta para no leer los dos tramos como una sola serie. El
+        párrafo que explicaba el cambio de definición se quitó: el problema ya
+        está resuelto y el texto solo confundía a quien no siguió el proyecto.
+        El comportamiento NO cambia — el delta de abajo sigue arrancando en
+        `idxFrontera` y por tanto sigue sin cruzar la frontera. */}
 
     {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
         separador de miles) porque no tiene el problema de amontonarse.
@@ -8526,16 +8587,23 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     ? semanasProy[semanasProy.length - 1].fecha
     : null;
   const gastoFinProy = gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt;
-  // MARGEN PROYECTADO AL CIERRE — contra el CONTRATO, no contra el ejecutado.
-  //
-  // Regla del usuario (2026-09-21): en obra se hace compensación de volúmenes
-  // y la obra se cierra en el importe del contrato. El ingreso final es el
-  // contrato, más convenios cuando existan. Por eso el ingreso proyectado NO
-  // es el ejecutado proyectado aunque este sea mayor.
-  const margenFinProy = presupuesto - gastoFinProy;
-  // El volumen ejecutado por encima del contrato no es ingreso: es trabajo
-  // hecho que no se cobra si no hay convenio. Va aparte, y como riesgo.
   const ejecFinProy = ejecProy.length > 0 ? ejecProy[ejecProy.length - 1] : ejecUlt;
+  // MARGEN PROYECTADO AL CIERRE — contra el EJECUTADO proyectado, sin topar.
+  //
+  // Antes se calculaba `contrato − gasto`, con el criterio de que la obra
+  // cierra en el importe contratado y el volumen de más no se cobra sin
+  // convenio. El usuario corrigió el supuesto (2026-09-22): los volúmenes
+  // adicionales SÍ se estiman por partida, así que ese trabajo se cobra y sí
+  // es ingreso. Topar el ingreso al contrato subestimaba el margen justo en
+  // las obras que más se pasan —TAMSA y el Malecón—, y además contradecía P1
+  // en la única cifra donde el tope seguía vivo.
+  //
+  // Si mañana entra `tipoContrato` y un contrato resulta ser cerrado de
+  // verdad, ahí el tope vuelve a tener sentido; mientras no se sepa, el
+  // sistema no debe inventar un recorte (PENDIENTES #27).
+  const margenFinProy = ejecFinProy - gastoFinProy;
+  // Cuánto del ejecutado proyectado va por encima del contrato. Es un dato,
+  // no una alarma: se enseña junto al contrato para dar la escala.
   const excedenteSobreContrato = (presupuesto > 0 && ejecFinProy > presupuesto)
     ? ejecFinProy - presupuesto
     : 0;
@@ -8764,11 +8832,11 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         const g = todosGasto[hover] || 0;
         const e = todosEjec[hover] || 0;
         const pctAv = todosAvance[hover];
-        // Margen de la semana: ingreso reconocido − gasto. El ingreso se topa
-        // al contrato porque la obra se cierra en el importe contratado; el
-        // volumen por encima no se cobra sin convenio.
-        const ingresoSem = presupuesto > 0 ? Math.min(e, presupuesto) : e;
-        const margen = ingresoSem - g;
+        // Margen de la semana: ejecutado − gasto, sin topar. Tiene que salir
+        // del mismo criterio que el margen proyectado del pie; si uno topa al
+        // contrato y el otro no, la misma gráfica da dos márgenes distintos
+        // según dónde se pose el cursor.
+        const margen = e - g;
         const excedenteSem = presupuesto > 0 ? Math.max(0, e - presupuesto) : 0;
         const dd = String(s.fecha.getDate()).padStart(2,'0');
         const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
@@ -8801,8 +8869,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           </div>
           {excedenteSem > 0 && (
             <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
-              <span style={{color:C.yellowDk}}>· sobre contrato</span>
-              <span style={{fontWeight:700,color:C.yellowDk}}>{fmtCompacto(excedenteSem)}</span>
+              <span style={{color:C.textMut}}>· sobre contrato</span>
+              <span style={{fontWeight:700,color:C.textMut}}>{fmtCompacto(excedenteSem)}</span>
             </div>
           )}
           <div style={{display:"flex",justifyContent:"space-between",gap:8,paddingTop:4,marginTop:4,borderTop:`0.5px solid ${C.border}`}}>
@@ -8860,42 +8928,33 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
             <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
               {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
             </div>
-            <div style={{fontSize:8,color:C.textMut}}>contra importe de contrato</div>
+            <div style={{fontSize:8,color:C.textMut}}>ejecutado proyectado − gasto</div>
           </div>
         </>
       )}
     </div>
 
-    {/* Ejecutado proyectado por encima del contrato — riesgo, no margen */}
+    {/* Ejecutado proyectado contra contrato — dato, no advertencia.
+        Ejecutar por encima del contrato es normal: los volúmenes adicionales
+        se estiman por partida y se cobran. Pintarlo de amarillo con un
+        "no cobrable" afirmaba algo que el sistema no sabe —no conoce el tipo
+        de contrato ni qué está autorizado— y encendía una alarma en las obras
+        que operan así todo el tiempo. Se muestran las dos cifras y ya. */}
     {!soloGasto && excedenteSobreContrato > 0 && (
-      <div style={{marginTop:8,padding:"8px 12px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>Ejecutado proyectado sobre contrato: {fmtCompacto(excedenteSobreContrato)}</b> —
-        no cobrable sin convenio. A este ritmo la obra terminaría habiendo
-        ejecutado {fmtCompacto(ejecFinProy)} contra un contrato de {fmtCompacto(presupuesto)}.
-        No está sumado al margen proyectado: la obra se cierra en el importe del
-        contrato, así que ese volumen es riesgo, no utilidad.
+      <div style={{marginTop:8,padding:"7px 10px",background:`${C.textMut}10`,
+        border:`0.5px solid ${C.border}`,borderRadius:6,fontSize:10,color:C.textSec}}>
+        Ejecutado proyectado <b style={{color:C.blueDk}}>{fmtCompacto(ejecFinProy)}</b>
+        {' · '}contrato <b style={{color:C.textPri}}>{fmtCompacto(presupuesto)}</b>
+        {' · '}sobre contrato <b>{fmtCompacto(excedenteSobreContrato)}</b>
       </div>
     )}
 
-    {/* Series que cruzan una frontera de definición */}
-    {!soloGasto && hayTramoViejoDinero && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado del ejecutado usa otra definición.</b> Esas semanas
-        traen el dinero recortado al importe de catálogo. El escalón al cruzar
-        es el cambio de criterio, no avance de obra, y por eso el ritmo se
-        calcula solo dentro del tramo vigente.
-      </div>
-    )}
-    {!soloGasto && hayTramoViejoAvance && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El avance de las semanas anteriores usa otra definición.</b> Se
-        calculó topando cada partida al 100%, sin compensar volúmenes. La
-        proyección de fin de obra solo usa el ritmo del tramo vigente.
-      </div>
-    )}
+    {/* Aquí iban los dos párrafos de frontera de definición —el del ejecutado
+        y el de la proyección—. Se quitaron: el punteado ya distingue los dos
+        tramos y el texto confundía a quien no siguió el proyecto.
+        `hayTramoViejoDinero` y `hayTramoViejoAvance` siguen vivos y siguen
+        mandando: el ritmo y la proyección se calculan solo dentro del tramo
+        vigente. Se quitó el texto, no la regla. */}
   </Card>;
 }
 
@@ -8972,8 +9031,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       const pctGP    = obra.presupuesto > 0 ? (gt / obra.presupuesto) * 100 : 0;
       const pctEjec  = obra.presupuesto > 0 ? (me / obra.presupuesto) * 100 : 0;
       // Trío que sustituye al excedente: Contratado · Ejecutado · Por ejecutar.
-      // No puede ser negativo — si se ejecutó de más, lo que falta es cero, y
-      // el excedente sobre contrato se trata como riesgo en la proyección.
+      // No puede ser negativo — si se ejecutó de más, lo que falta es cero. El
+      // excedente sobre contrato se enseña en la proyección, junto al contrato
+      // y sin color de alarma.
       const porEjecutar = Math.max((obra.presupuesto || 0) - me, 0);
       const margenAbs = me - gt;   // ejecutado - gastado
       const colGasto  = pctGP > 90 ? C.red : pctGP > 75 ? C.yellowDk : C.textPri;
@@ -9459,11 +9519,6 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     const totalSems = ult4.length - 1;
     velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
   }
-  // ¿La serie cruza la frontera de definición del AVANCE? Se avisa en pantalla
-  // para que nadie lea la gráfica como si fuera continua.
-  const serieMixta = ultimoOf
-    ? oficiales.some(s => !sonComparables(s, ultimoOf, 'avance')) : false;
-
   // Proyección de fin a ritmo actual (semanas hasta 100%)
   const pendientes = Math.max(100 - avanceActual, 0);
   const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
@@ -9573,16 +9628,11 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       )}
     </div>
 
-    {/* Serie que cruza la frontera del arreglo del recorte */}
-    {serieMixta && (
-      <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
-        padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado usa otra definición de avance.</b> Esas semanas se
-        calcularon topando cada partida al 100%, sin compensar volúmenes entre
-        partidas. Desde el tramo sólido el avance es ejecutado ÷ contrato. Los
-        deltas y la velocidad solo se calculan dentro del tramo vigente.
-      </div>
-    )}
+    {/* Se quitó el párrafo de frontera de definición. El comportamiento no
+        cambia: quien impide que los deltas crucen la frontera es
+        `sonComparables`, en `deltaComparable` y en el filtro de `ult4` que
+        alimenta la velocidad. Ese aviso tenía su propia bandera `serieMixta`,
+        que no gobernaba nada más y se fue con él. */}
 
     {/* Compensación de volúmenes — por qué el avance de la obra no es el
         promedio de las partidas. Quien trabaja el catálogo necesita ver
@@ -9864,6 +9914,11 @@ function MiniDashMaquinaria({obra, maquinaria}){
 // snapshot cargado. fix/kpis-en-cero (2026-09-17): antes leía de la constante
 // hardcoded vacía NOMINA_S18, siempre devolvía $0/0. Ahora recibe el historial
 // via prop desde App → Operacion.
+// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Iba encima del bloque de
+// KPIs de Nomina() preguntando lo mismo y contestando distinto: "141 activos"
+// arriba, "143 total personal" abajo. Las dos cifras eran correctas y medían
+// cosas distintas, pero nadie lo decía. Se conserva un ciclo por si hay que
+// volver atrás rápido; si al siguiente pase nadie la echó de menos, se borra.
 function MiniDashNomina({ historial = [] }){
   const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
   if (!semanaActual) {
@@ -9901,6 +9956,10 @@ function MiniDashNomina({ historial = [] }){
 }
 
 // ── ESTIMACIONES ──
+// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Sus cifras estaban en
+// BRUTO y contradecían al "Resumen económico" de la misma pantalla, que las
+// da netas de retenciones. Se conserva un ciclo por si hay que volver atrás
+// rápido; si al siguiente pase nadie la echó de menos, se borra.
 function MiniDashEstimaciones({obra, estimaciones}){
   const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
   const pagado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto||0), 0);
@@ -10027,8 +10086,12 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </>
     )}
     {subTab==="nomina" && (
+      // #11: se quitó <MiniDashNomina/>. Preguntaba lo mismo que el bloque de
+      // abajo y contestaba distinto —"141 activos" contra "143 total personal"—
+      // sin que nada en la pantalla explicara por qué. Sus dos aportaciones
+      // reales, el segundo conteo y el color por proporción de horas extra,
+      // están ahora en el bloque que quedó.
       <>
-        <MiniDashNomina historial={nominaHistorial}/>
         <Captura subs={subs} setSubs={setSubs} maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="nomina"
@@ -10038,10 +10101,11 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
       </>
     )}
     {subTab==="estimaciones" && (
-      <>
-        <MiniDashEstimaciones obra={obra} estimaciones={estimaciones}/>
-        <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
-      </>
+      // #11: se quitó <MiniDashEstimaciones/>. Mostraba un segundo "Pagado"
+      // en BRUTO, encima del "Pagado" neto del Resumen económico. Sus dos
+      // cifras propias —"Por cobrar" y "Atrasado"— se rescataron ahí abajo,
+      // recalculadas con el mismo `cE` que el resto.
+      <Estimaciones obra={obra} setObra={setObra} estimaciones={estimaciones} setEstimaciones={setEstimaciones} rol={rol} usuario={usuario}/>
     )}
     {subTab==="subcontratos" && (
       <>
@@ -10055,7 +10119,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
 // ════════════════════════════════════════════════════════════════════════════
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
-function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
+function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
@@ -10070,7 +10134,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
         </button>
       ))}
     </div>
-    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol}/>}
+    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} subs={subs} subsCargados={subsCargados}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
     {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
   </div>;
@@ -10527,7 +10591,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 // GASTOS — Análisis completo de datos de GP Construct
 // 4 sub-tabs: Resumen · Proveedores · Rubros · Semanas
 // ════════════════════════════════════════════════════════════════════════════
-function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP,cargarDetalleObra,gpDetalles}){
+function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP,cargarDetalleObra,gpDetalles}){
   // Cargar detalle (rubros + proveedores) de esta obra al montar
   useEffect(() => {
     if (!gpData?.obras || !cargarDetalleObra) return;
@@ -11403,13 +11467,50 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   const ESTATUS=["En proceso","Aprobada","Facturada","Pagada"];
   const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100,re=e.monto*(obra.pctRetencion||0)/100;return{a,fg,re,ef:e.monto-a-fg-re,pC:e.monto/obra.presupuesto*100};};
   const totalEst  =estimaciones.reduce((t,e)=>t+e.monto,0);
-  const pagado    =estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+cE(e).ef,0);
+  // Dos cifras que hasta hoy se llamaban las DOS "Pagado", en dos bloques de
+  // la misma pantalla, y no son lo mismo. En la 0114 una dice $109.2M y la
+  // otra $54.6M: con la misma etiqueta encima, eso se lee como un error del
+  // sistema, no como dos preguntas distintas. Van separadas y con nombre:
+  //   · pagadoBruto     — lo que se autorizó y se dio por pagado.
+  //   · cobradoEfectivo — lo que de verdad entró, ya descontados fondo de
+  //                       garantía, retención estratégica y la amortización
+  //                       del anticipo. Es el que manda para flujo.
+  const pagadas         =estimaciones.filter(e=>e.estatus==="Pagada");
+  const pagadoBruto     =pagadas.reduce((t,e)=>t+e.monto,0);
+  const cobradoEfectivo =pagadas.reduce((t,e)=>t+cE(e).ef,0);
   const facturado =estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+e.monto,0);
   const enProceso =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
   const retenido  =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
   const retenEstra=estimaciones.reduce((t,e)=>t+cE(e).re,0);
-  const porAmort  =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
+  // Anticipo por recuperar — lo que el cliente todavía no nos ha descontado
+  // del anticipo que nos entregó. Antes se calculaba como la amortización
+  // embebida en las estimaciones NO pagadas, que contesta otra pregunta: ahí
+  // una obra con todas sus estimaciones cobradas daba $0, y una obra que aún
+  // no genera ninguna daba $0 también. En la 0114 eso escondía $16.3M y en la
+  // 0127 los $41.9M completos del anticipo.
+  //
+  // Ahora es lo pactado menos lo ya amortizado, y no depende de que exista
+  // ninguna estimación. Se amortiza contra TODAS las generadas, no solo las
+  // pagadas, porque el descuento se aplica al formular la estimación — es el
+  // mismo criterio con el que sus dos vecinos, `retenido` y `retenEstra`,
+  // suman sobre `estimaciones` completo. Si los tres no midieran igual,
+  // volverían a divergir.
+  const anticipoPactado=obra.presupuesto*(obra.pctAnticipo||0)/100;
+  const anticipoAmort  =estimaciones.reduce((t,e)=>t+cE(e).a,0);
+  const porRecuperarAnt=anticipoPactado-anticipoAmort;
   const porEstimar=obra.presupuesto-totalEst;
+  // Rescatados del bloque de arriba, que desaparece (#11). Allá se calculaban
+  // en BRUTO, ignorando los porcentajes del contrato; aquí pasan por el mismo
+  // `cE` que todo lo demás, que es la razón de traerlos: dos cifras vecinas
+  // calculadas con criterios distintos vuelven a divergir tarde o temprano.
+  const porCobrar =estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus))
+                               .reduce((t,e)=>t+cE(e).ef,0);
+  const diasPago  =obra.diasPago||30;
+  const atrasadas =estimaciones.filter(e=>{
+    if(e.estatus!=="Facturada"||!e.fechaFact) return false;
+    return Math.floor((Date.now()-new Date(e.fechaFact))/86400000) > diasPago;
+  });
+  const montoAtrasado=atrasadas.reduce((t,e)=>t+cE(e).ef,0);
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
@@ -11434,15 +11535,27 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
       </div>
     </Card>
     <Card>
-      <Tit>Resumen económico — 8 indicadores</Tit>
+      <Tit>Resumen económico</Tit>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(100px,1fr))",gap:7}}>
         <Kpi label="Total estimado"    value={MXN(totalEst)}    sub={`${NUM(totalEst/obra.presupuesto*100,1)}% contrato`} color={C.caliza} size={12}/>
-        <Kpi label="Pagado"            value={MXN(pagado)}      sub="cobrado"            color={C.green}  size={12}/>
-        <Kpi label="Facturado"         value={MXN(facturado)}   sub="pendiente de cobro" color={C.purple} size={12}/>
+        <Kpi label="Pagado bruto"      value={MXN(pagadoBruto)} sub="estimaciones ya pagadas" color={C.greenDk} size={12}/>
+        <Kpi label="Cobrado efectivo"  value={MXN(cobradoEfectivo)} sub="lo que entró, sin retenciones" color={C.green} size={12}/>
+        <Kpi label="Facturado"         value={MXN(facturado)}   sub="bruto, pendiente de cobro" color={C.purple} size={12}/>
+        <Kpi label="Por cobrar"        value={MXN(porCobrar)}   sub="neto de facturado + aprobado" color={C.purpleDk} size={12}/>
+        {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)}
+          sub={`${atrasadas.length} fuera del plazo de ${diasPago}d`} color={C.red} size={12}/>}
         <Kpi label="En proceso"        value={MXN(enProceso)}   sub="en elaboración"     color={C.yellow} size={12}/>
-        <Kpi label="Retenido FG"       value={MXN(retenido)}    sub={`fondo ${obra.pctFondoGar}%`}          color={C.red}    size={12}/>
-        <Kpi label="Ret. estratégica"  value={MXN(retenEstra)}  sub={`retención ${obra.pctRetencion||0}%`}  color={C.pink}   size={12}/>
-        <Kpi label="Por recuperar ant."value={MXN(porAmort)}    sub={`anticipo ${obra.pctAnticipo}%`}       color={C.orange} size={12}/>
+        {/* Una retención pactada en cero no tiene nada que reportar: "0% · $0"
+            ocupa un lugar en la rejilla y no contesta ninguna pregunta. El
+            criterio es el porcentaje del contrato, no el monto acumulado —
+            si está pactada y aún no se retiene nada, el $0 sí informa. */}
+        {(obra.pctFondoGar||0) > 0 &&
+          <Kpi label="Retenido FG"      value={MXN(retenido)}   sub={`fondo ${obra.pctFondoGar}%`}         color={C.red}    size={12}/>}
+        {(obra.pctRetencion||0) > 0 &&
+          <Kpi label="Ret. estratégica" value={MXN(retenEstra)} sub={`retención ${obra.pctRetencion}%`}    color={C.pink}   size={12}/>}
+        {(obra.pctAnticipo||0) > 0 &&
+          <Kpi label="Por recuperar ant." value={MXN(porRecuperarAnt)}
+            sub={`de ${MXN(anticipoPactado)} · anticipo ${obra.pctAnticipo}%`} color={C.orange} size={12}/>}
         <Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="saldo del contrato" color={C.indigo} size={12}/>
       </div>
     </Card>
@@ -13195,7 +13308,25 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const deltaNomina = semanaActual && semanaAnterior
     ? semanaActual.totalNomina - semanaAnterior.totalNomina : 0;
   const deltaHE = semanaActual && semanaAnterior
-    ? semanaActual.totalHE - semanaAnterior.totalHE : 0;
+    ? heImporte(semanaActual) - heImporte(semanaAnterior) : 0;
+
+  // #11 — rescatado de MiniDashNomina, que ya no se renderiza.
+  //
+  // Los dos conteos de personal se quedan, pero con nombre. `totalDir+totalInd`
+  // es quién estaba en el listado al cerrar la semana; `con pago` es quién
+  // cobró algo. En la 0125 eso es 143 y 141, y la diferencia son dos personas
+  // dadas de alta el día del cierre sin días trabajados. No es un descuadre —
+  // son dos preguntas— pero los dos bloques las rotulaban igual y el usuario
+  // no tenía cómo distinguirlas.
+  const enListado = semanaActual ? semanaActual.totalDir + semanaActual.totalInd : 0;
+  const conPago   = semanaActual && Array.isArray(semanaActual.trabajadores)
+    ? semanaActual.trabajadores.filter(p => (p.total||0) > 0).length : null;
+  // El otro rescate: el color por proporción, que avisa cuando las horas extra
+  // se comen la nómina. El delta semana contra semana no lo dice — una semana
+  // puede bajar respecto a la anterior y seguir en el 33% (la 0114, hoy).
+  const heActual = semanaActual ? heImporte(semanaActual) : 0;
+  const pctHE    = semanaActual && semanaActual.totalNomina > 0
+    ? heActual / semanaActual.totalNomina * 100 : 0;
 
   // Trabajadores con más horas extra en semana actual
   const topHE = semanaActual
@@ -13349,18 +13480,23 @@ function Nomina({obra, rol, onHistorialCambio}) {
 
       {historial.length > 0 && <>
         {/* KPIs semana actual vs anterior */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(108px,1fr))',gap:8}}>
-          <Kpi label="Total personal" value={semanaActual.totalDir+semanaActual.totalInd}
-            sub={deltaPersonal!==0?`${deltaPersonal>0?'+':''}${deltaPersonal} vs sem. ant.`:'sin cambio'}
-            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza}/>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(122px,1fr))',gap:8}}>
+          {/* El delta de personal vs semana anterior ya no va en el subtítulo:
+              lo dicen mejor los KPIs de Altas y Bajas de esta misma fila, con
+              nombre y propio. Aquí sobrevive solo como color. */}
+          <Kpi label="Personal"
+            value={conPago === null ? String(enListado) : `${enListado} · ${conPago}`}
+            sub={conPago === null ? 'en listado' : 'en listado · con pago'}
+            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={13}/>
           <Kpi label="Directo" value={semanaActual.totalDir} sub="mano de obra" color={C.blue}/>
           <Kpi label="Indirecto" value={semanaActual.totalInd} sub="administración" color={C.purple}/>
           <Kpi label="Total nómina" value={MXN(semanaActual.totalNomina)}
             sub={deltaNomina!==0?`${deltaNomina>0?'+':''}${MXN(deltaNomina)} vs sem. ant.`:'sin cambio'}
             color={deltaNomina>0?C.yellow:C.caliza} size={12}/>
-          <Kpi label="Horas extra" value={MXN(semanaActual.totalHE)}
-            sub={deltaHE!==0?`${deltaHE>0?'+':''}${MXN(deltaHE)} vs sem. ant.`:'sin cambio'}
-            color={deltaHE>0?C.orange:C.caliza} size={12}/>
+          <Kpi label="Horas extra" value={MXN(heActual)}
+            sub={`${NUM(pctHE,1)}% del total` +
+              (deltaHE!==0?` · ${deltaHE>0?'+':''}${MXN(deltaHE)} vs sem. ant.`:'')}
+            color={pctHE > 15 ? C.yellowDk : deltaHE > 0 ? C.orange : C.caliza} size={12}/>
           {altas.length>0&&<Kpi label="Altas" value={altas.length} sub="nuevos esta semana" color={C.green}/>}
           {bajas.length>0&&<Kpi label="Bajas" value={bajas.length} sub="salieron esta semana" color={C.red}/>}
         </div>
@@ -13647,7 +13783,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                       ['Directo',sem.totalDir,'',C.blue],
                       ['Indirecto',sem.totalInd,'',C.purple],
                       ['Total nómina',MXN(sem.totalNomina),deltaTot!==0?`${deltaTot>0?'+':''}${MXN(deltaTot)}`:'',deltaTot>0?C.yellow:C.caliza],
-                      ['Horas extra',MXN(sem.totalHE),'',C.orange],
+                      ['Horas extra',MXN(heImporte(sem)),'',C.orange],
                     ].map(([l,v,sub,col])=>(
                       <div key={l} style={{background:C.card,borderRadius:6,padding:'6px 8px'}}>
                         <div style={{fontSize:8,color:C.textMut,marginBottom:2}}>{l}</div>
@@ -15130,7 +15266,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
 }
 
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
-function Contrato({obra, setObra, rol}) {
+function Contrato({obra, setObra, rol, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -15140,6 +15276,9 @@ function Contrato({obra, setObra, rol}) {
   const [ampliaciones, setAmpliaciones] = useState([]);
   const [showAddAmp, setShowAddAmp] = useState(false);
   const [nuevaAmp, setNuevaAmp] = useState({fecha:"", justificacion:"", autorizadoPor:""});
+  const [cambioModo, setCambioModo] = useState(null);   // #21 guarda 2
+  const [bloqueoModo, setBloqueoModo] = useState(null); // #21 guarda 1
+  const [guardandoModo, setGuardandoModo] = useState(false);
   const fileRef = useRef();
   const editar = can(rol, "captura", "editar") || can(rol, "estimaciones", "editar");
   const puedeSubir = ["director_operaciones","gerente_construccion","administrador_obra"].includes(rol) ||
@@ -15256,6 +15395,50 @@ function Contrato({obra, setObra, rol}) {
 
   const f = (k,v) => setObra({...obra, [k]: v});
 
+  // ── Cambio de modo de captura de avance (#21) ───────────────────────
+  // Antes esto era `onClick={()=>f("modoAvance", opt.v)}`: un clic, sin
+  // validación y sin aviso. En una obra sin volúmenes en el catálogo ese clic
+  // deja las 335 partidas en 0% y el avance real se borra al primer teclazo.
+  //
+  // Guarda 1 — bloqueo duro: a volumen no se pasa sin `cant` y `pu`.
+  // Guarda 2 — confirmación explícita, con el ejecutado de antes y de después.
+  // Y el cambio se escribe a la bitácora: quién, cuándo, de qué modo a cuál.
+  function pedirCambioModo(destino) {
+    const actual = obra.modoAvance || "porcentaje";
+    if (destino === actual || !subsCargados) return;
+    const d = diagnosticoCambioModo(subs, actual, destino);
+    if (destino === "volumen" && !d.puedeVolumen) { setBloqueoModo(d); return; }
+    setCambioModo({ actual, destino, ...d });
+  }
+
+  async function confirmarCambioModo() {
+    const c = cambioModo;
+    setGuardandoModo(true);
+    // Se persiste aquí y no al botón Guardar: el usuario acaba de confirmar
+    // una pantalla que le dijo en cuánto queda el ejecutado. Auditar la
+    // intención y no el hecho es el defecto que ya tenemos en `global/health`.
+    const okInfo = await fsSet(`obras/${obra.id}/config/info`, { modoAvance: c.destino });
+    const okTop  = await fsSet(`obras/${obra.id}`, { modoAvance: c.destino });
+    setGuardandoModo(false);
+    setCambioModo(null);
+    if (!okInfo || !okTop) {
+      alert("No se pudo guardar el cambio de modo. El modo sigue en \"" +
+            c.actual + "\". Revisa tu conexión e inténtalo de nuevo.");
+      return;
+    }
+    f("modoAvance", c.destino);
+    await fsAudit("cambio-modo-avance", {
+      modulo: "contrato",
+      entidad: `modo de avance ${c.actual} → ${c.destino}`,
+      path: `obras/${obra.id}/config/info`,
+      obraId: obra.id, obraNombre: obra.contrato || obra.nombre,
+      antes:   { modoAvance: c.actual,  ejecutado: c.ejecutadoAntes },
+      despues: { modoAvance: c.destino, ejecutado: c.ejecutadoDespues },
+      meta: { partidas: c.partidas, sinVolumen: c.sinVolumen,
+              partidasQueCambian: c.cambian, delta: c.delta },
+    });
+  }
+
   // Calcular días entre fechas
   const diasPlazo = (ini,fin) => {
     if(!ini||!fin) return null;
@@ -15323,8 +15506,9 @@ function Contrato({obra, setObra, rol}) {
                   {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para obras tipo precio unitario donde el catálogo es referencia y los volúmenes reales pueden variar (TAMSA, servicios especializados)."},
                 ].map(opt => {
                   const sel = (obra.modoAvance||"porcentaje") === opt.v;
-                  return <div key={opt.v} onClick={()=>f("modoAvance", opt.v)}
-                    style={{flex:"1 1 200px",cursor:"pointer",
+                  return <div key={opt.v} onClick={()=>pedirCambioModo(opt.v)}
+                    style={{flex:"1 1 200px",cursor:subsCargados?"pointer":"wait",
+                      opacity:subsCargados?1:0.55,
                       border:`1.5px solid ${sel?C.blueDk:C.border}`,
                       background:sel?C.blueBg:"transparent",
                       borderRadius:8,padding:"10px 12px",transition:"all .15s"}}>
@@ -15343,6 +15527,18 @@ function Contrato({obra, setObra, rol}) {
             ) : (
               <div style={{fontSize:12,color:C.textSec}}>
                 {(obra.modoAvance||"porcentaje") === "volumen" ? "Por volumen ejecutado" : "Por porcentaje"}
+              </div>
+            )}
+            {editar && !subsCargados && (
+              <div style={{fontSize:10,color:C.textMut,marginTop:6}}>
+                Leyendo el catálogo de la obra… el modo no se puede cambiar hasta
+                saber si las partidas tienen volúmenes.
+              </div>
+            )}
+            {editar && subsCargados && (
+              <div style={{fontSize:10,color:C.textMut,marginTop:6}}>
+                Cambiar el modo cambia de dónde sale el dinero ejecutado. Se pide
+                confirmación y el cambio queda en la bitácora.
               </div>
             )}
           </div>
@@ -15574,6 +15770,106 @@ function Contrato({obra, setObra, rol}) {
           </div>
         </div>
       )}
+
+      {/* #21 guarda 1 — bloqueo duro: a volumen no se pasa sin volúmenes */}
+      {bloqueoModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+          border:`0.5px solid ${C.red}44`}}>
+          <div style={{fontSize:14,fontWeight:700,color:C.redDk,marginBottom:10}}>
+            Esta obra no puede pasar a modo volumen
+          </div>
+          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:12}}>
+            {bloqueoModo.partidas === 0 ? (
+              <>No se leyó ninguna partida del catálogo de esta obra. Sin
+              catálogo no hay contra qué medir volumen. Carga el catálogo y
+              vuelve a intentarlo.</>
+            ) : (
+              <><b>{bloqueoModo.sinVolumen} de {bloqueoModo.partidas} partidas</b> no
+              tienen cantidad ni precio unitario. En modo volumen el avance sale
+              de <i>cantidad ejecutada ÷ cantidad de catálogo</i>: con la cantidad
+              en cero esas partidas aparecerían en 0% y el avance que ya está
+              capturado se perdería en cuanto alguien teclee encima.</>
+            )}
+          </div>
+          {bloqueoModo.partidas > 0 && (
+            <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:14}}>
+              <div style={{fontSize:10,color:C.textMut,fontWeight:600,marginBottom:6,
+                textTransform:"uppercase",letterSpacing:"0.04em"}}>Qué hace falta</div>
+              <div style={{fontSize:11,color:C.textSec,lineHeight:1.6}}>
+                Recargar el catálogo de la obra incluyendo <b>cantidad</b>,{" "}
+                <b>precio unitario</b> y <b>unidad</b> en cada partida. El
+                importador los soporta y conserva el avance capturado
+                emparejando por clave, así que la recarga no borra nada. Con los
+                volúmenes cargados, este bloqueo desaparece solo.
+              </div>
+            </div>
+          )}
+          <SecBtn onClick={()=>setBloqueoModo(null)} style={{width:"100%"}}>Entendido</SecBtn>
+        </div>
+      </div>}
+
+      {/* #21 guarda 2 — confirmación explícita, con el ejecutado antes y después */}
+      {cambioModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+          border:`0.5px solid ${C.yellow}44`}}>
+          <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:4}}>
+            ¿Cambiar el modo de captura?
+          </div>
+          <div style={{fontSize:12,color:C.textSec,marginBottom:12}}>
+            De <b>{cambioModo.actual === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>{" "}
+            a <b>{cambioModo.destino === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>
+          </div>
+
+          <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textSec,marginBottom:5}}>
+              <span>Ejecutado hoy</span><b>{MXN(cambioModo.ejecutadoAntes)}</b>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textSec,marginBottom:5}}>
+              <span>Ejecutado después del cambio</span>
+              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textPri
+                          : cambioModo.delta < 0 ? C.redDk : C.textPri}}>
+                {MXN(cambioModo.ejecutadoDespues)}
+              </b>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textMut,paddingTop:5,borderTop:`0.5px solid ${C.border}`}}>
+              <span>Diferencia</span>
+              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textMut : C.redDk}}>
+                {cambioModo.delta >= 0 ? "+" : "−"}{MXN(Math.abs(cambioModo.delta))}
+              </b>
+            </div>
+          </div>
+
+          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
+            {cambioModo.cambian === 0
+              ? <>Ninguna de las {cambioModo.partidas} partidas cambia de importe
+                  con este cambio.</>
+              : <><b>{cambioModo.cambian} de {cambioModo.partidas} partidas</b> cambian
+                  de importe ejecutado.</>}
+            {cambioModo.destino === "porcentaje" && cambioModo.delta < -0.005 && (
+              <> El ejecutado baja porque en porcentaje el dinero sale
+                de <i>% capturado × importe de catálogo</i> y deja de contar el
+                volumen capturado por encima del catálogo.</>
+            )}
+            {" "}El cambio se guarda de inmediato y queda en la bitácora con tu
+            nombre y la hora.
+          </div>
+
+          <div style={{display:"flex",gap:8}}>
+            <SecBtn onClick={()=>setCambioModo(null)} style={{flex:1}}>Cancelar</SecBtn>
+            <button onClick={confirmarCambioModo} disabled={guardandoModo}
+              style={{flex:2,background:C.caliza,border:"none",borderRadius:6,padding:"9px 0",
+                fontSize:12,fontWeight:700,color:C.bg,
+                cursor:guardandoModo?"wait":"pointer",opacity:guardandoModo?0.6:1}}>
+              {guardandoModo ? "Guardando…" : "Sí, cambiar el modo"}
+            </button>
+          </div>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -15773,9 +16069,14 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
     { id: "bitacora", label: "Bitácora",
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
+    // Los mismos roles que `esDirectivoC() || esAdminSistemaC()` en
+    // firestore.rules. Si se abre aquí a un rol que la regla no deja leer, la
+    // pantalla se ve pero sale con el error de permisos.
+    { id: "salud", label: "Salud del sistema",
+      visible: ["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(rol) },
   ].filter(o => o.visible);
 
-  const enConfig = ["usuarios","bitacora","alertas"].includes(screen);
+  const enConfig = ["usuarios","bitacora","alertas","salud"].includes(screen);
 
   return <div ref={ref} style={{position:"relative"}}>
     <button onClick={()=>setAbierto(v=>!v)}
@@ -16106,6 +16407,177 @@ function PanelAlertas({obras, gpData, onCountChange}){
         ))}
       </div>
     )}
+  </div>;
+}
+
+// ── PANTALLA DE SALUD DEL SISTEMA (#26) ─────────────────────────────────
+//
+// Lo que esta pantalla detecta no es el FALLO, es el SILENCIO. Un fallo se
+// registra solo: la función lo atrapa, lo escribe y el correo sale. El
+// silencio no deja rastro en ningún lado, y el silencio fue exactamente lo
+// que pasó desapercibido en agosto — ~16 días con la facturación caída y ni
+// un aviso, porque el emisor de avisos era justo lo caído.
+//
+// Contra eso no sirve otro emisor. Sirve un LECTOR: el navegador, que sigue
+// vivo porque habla con Firestore directo. Por eso esta pantalla lee
+// `global/health` y no llama a ninguna función.
+//
+// Cada job declara cada cuándo DEBERÍA correr y a las cuántas horas de
+// callado se pone en rojo. El margen es deliberado: una semanal aguanta
+// hasta nueve días (la corrida puede atrasarse), una diaria hasta 36 horas.
+// Pasado eso ya no es retraso, es silencio.
+const JOBS_PROGRAMADOS = [
+  { id:"backup",            funcion:"backupSemanalFirestore", nombre:"Respaldo de Firestore",
+    que:"Copia completa de la base a Cloud Storage.",
+    cuando:"domingos 3:00",  limiteHoras: 9*24 },
+  { id:"email_semanal",     funcion:"resumenSemanalEmail",    nombre:"Resumen semanal por correo",
+    que:"Manda el resumen de las obras a los directivos.",
+    cuando:"lunes 9:07",     limiteHoras: 9*24 },
+  { id:"recordatorio_lunes",funcion:"recordatorioLunes",      nombre:"Recordatorio de lunes",
+    que:"Avisa al equipo de obra que arranca la semana.",
+    cuando:"lunes 9:00",     limiteHoras: 9*24 },
+  { id:"recordatorio_obra", funcion:"recordatorioCapturaObra",nombre:"Recordatorio de captura · obra",
+    que:"Notifica a las obras que no han capturado avance.",
+    cuando:"viernes 10:00",  limiteHoras: 9*24 },
+  { id:"recordatorio_subs", funcion:"recordatorioCapturaSubs",nombre:"Recordatorio de captura · subcontratos",
+    que:"Notifica a los subcontratistas sin captura.",
+    cuando:"viernes 12:00",  limiteHoras: 9*24 },
+  { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
+    que:"Baja la hoja de gastos y la deja lista para el dashboard.",
+    cuando:"diario 8:00",    limiteHoras: 36 },
+];
+
+// "hace N días" en el formato que ya se usa en el resto de la app. Devuelve
+// null cuando la fecha no se puede medir — quien llama decide qué decir, que
+// no es "hace 0 días" (P2).
+function haceCuanto(iso, ahora){
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const horas = Math.floor((ahora - t) / 3600000);
+  if (horas < 0) return { horas, texto: "con fecha futura" };
+  const dias = Math.floor(horas / 24);
+  return { horas, texto: dias >= 1 ? `hace ${dias} día${dias !== 1 ? "s" : ""}`
+    : horas >= 1 ? `hace ${horas} h` : "hace un momento" };
+}
+
+// Clasifica un job a partir de lo que dejó escrito. Vive fuera del componente
+// para poder correrla contra casos concretos sin montar React.
+//
+// `registro` null y `registro` presente-pero-sin-fecha caen los dos en "sin
+// datos", no en "al día": no se mide lo que no se registró.
+function estadoDeJob(job, registro, ahora){
+  if (!registro) return { estado:"sin datos", color:C.textMut };
+  const h = haceCuanto(registro.ultimaEjecucion, ahora);
+  if (!h) return { estado:"sin datos", color:C.textMut, e:registro };
+  const tarde = h.horas > job.limiteHoras;
+  return { e:registro, h, tarde,
+    estado: !registro.ok ? "falló" : tarde ? "sin correr" : "al día",
+    color:  !registro.ok ? C.red   : tarde ? C.red       : C.green };
+}
+
+function PantallaSalud(){
+  const [datos, setDatos]       = useState(null);
+  const [error, setError]       = useState("");
+  const [cargando, setCargando] = useState(true);
+  const [ahora, setAhora]       = useState(() => Date.now());
+
+  // Lectura ESTRICTA a propósito: `fsGet` devuelve null tanto si el documento
+  // no existe como si la lectura fue rechazada, y aquí esa diferencia lo es
+  // todo. Seis renglones en "Sin datos" por un permiso mal puesto se leen
+  // igual que seis funciones que nunca corrieron. No pueden verse igual.
+  const recargar = async () => {
+    setCargando(true); setError("");
+    try {
+      const d = await getDoc(doc(fbDb, "global", "health"));
+      setDatos(d.exists() ? d.data() : {});
+    } catch (e) {
+      setDatos(null);
+      setError(`No se pudo leer el registro de salud: ${e?.message || e}. ` +
+        `Mientras no se pueda leer, esta pantalla no sabe nada del backend — ` +
+        `lo de abajo no es "las funciones no corrieron", es "no se pudo preguntar".`);
+    }
+    setAhora(Date.now());
+    setCargando(false);
+  };
+  useEffect(() => { recargar(); }, []);
+
+  const filas = JOBS_PROGRAMADOS.map(job => datos
+    ? { job, ...estadoDeJob(job, datos[job.id], ahora) }
+    : { job, estado:"ilegible", color:C.textMut });
+
+  const enRojo   = filas.filter(f => f.color === C.red).length;
+  const sinDatos = filas.filter(f => f.estado === "sin datos").length;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {error && <div style={{background:C.redBg,border:`1px solid ${C.red}`,borderRadius:8,
+      padding:"9px 11px",fontSize:11,color:C.redDk,whiteSpace:"pre-line"}}>⚠ {error}</div>}
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+        <div>
+          <Tit>Salud del sistema</Tit>
+          <div style={{fontSize:10,color:C.textMut,lineHeight:1.5}}>
+            Las seis funciones programadas dejan rastro al terminar. Esta pantalla
+            lo lee directo de la base, así que sigue funcionando aunque el backend
+            no. Un renglón en rojo puede ser un fallo registrado o un silencio:
+            llevar más tiempo del que debería sin dar señales.
+          </div>
+        </div>
+        <SecBtn onClick={recargar}>Recargar</SecBtn>
+      </div>
+      {!cargando && !error && (
+        <div style={{marginTop:9,fontSize:10,color:C.textSec}}>
+          {enRojo === 0 && sinDatos === 0
+            ? "Las seis corrieron dentro de su plazo."
+            : [enRojo > 0 ? `${enRojo} requiere${enRojo !== 1 ? "n" : ""} atención` : null,
+               sinDatos > 0 ? `${sinDatos} sin datos` : null].filter(Boolean).join(" · ")}
+          {"  ·  consultado "}{new Date(ahora).toLocaleString("es-MX")}
+        </div>
+      )}
+    </Card>
+
+    {cargando ? <Card><div style={{fontSize:11,color:C.textMut}}>Cargando…</div></Card>
+     : filas.map(({job, e, h, estado, color}) => (
+      <Card key={job.id} accent={color}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{job.nombre}</div>
+            <div style={{fontSize:10,color:C.textMut,marginTop:2}}>{job.que}</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:3,fontFamily:"ui-monospace,monospace"}}>
+              {job.funcion} · {job.cuando}
+            </div>
+          </div>
+          <Bdg color={color === C.green ? C.green : color === C.red ? C.red : C.textMut}>
+            {estado}
+          </Bdg>
+        </div>
+        <div style={{marginTop:8,paddingTop:7,borderTop:`0.5px solid ${C.border}`,
+          fontSize:10,color:C.textSec,lineHeight:1.5}}>
+          {estado === "ilegible" ? (
+            <span style={{color:C.textMut}}>No se pudo leer el registro.</span>
+          ) : estado === "sin datos" ? (
+            // P2: nunca registró nada. Eso no es "hace 0 días" — cero días es
+            // una medición, y aquí no hay ninguna. Puede que la función jamás
+            // haya corrido, o que corriera antes de que existiera el registro.
+            <span style={{color:C.textMut}}>
+              Sin datos — no hay ninguna ejecución registrada.
+              {e ? " El registro existe pero no trae fecha utilizable." : ""}
+            </span>
+          ) : (
+            <>
+              <div>
+                <b style={{color}}>{h.texto}</b>
+                {" · "}{new Date(e.ultimaEjecucion).toLocaleString("es-MX")}
+                {Number.isFinite(e.duracionMs) ? ` · ${(e.duracionMs/1000).toFixed(1)} s` : ""}
+              </div>
+              {e.mensaje && <div style={{marginTop:3,color: e.ok ? C.textSec : C.redDk,
+                whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+                {e.ok ? "" : "Error: "}{e.mensaje}
+              </div>}
+            </>
+          )}
+        </div>
+      </Card>
+    ))}
   </div>;
 }
 
@@ -16679,6 +17151,7 @@ export default function App(){
     if(!obraId) return;
     // Reset inmediato para evitar mostrar datos de la obra anterior
     setSubs([]);
+    setSubsCargados(false);
     setMaquinaria([]);
     setMateriales([]);
     setEstimaciones([]);
@@ -16735,6 +17208,7 @@ export default function App(){
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
         }
       }
+      setSubsCargados(true);
     });
     fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
@@ -16778,6 +17252,10 @@ export default function App(){
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
   // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
   const[subs,setSubs]=useState([]);
+  // `subs` vacío es ambiguo: puede ser una obra sin catálogo o una lectura que
+  // todavía no llega. La guarda de cambio de modo (#21) necesita distinguirlos
+  // — bloquear por un hueco sería confundir "no hay dato" con "el dato es 0".
+  const[subsCargados,setSubsCargados]=useState(false);
   const[maquinaria,setMaquinaria]=useState([]);
   const[materiales,setMateriales]=useState([]);
   const[estimaciones,setEstimaciones]=useState([]);
@@ -17219,6 +17697,7 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
+      {screen==="salud"&&<PantallaSalud/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
 
@@ -17242,14 +17721,14 @@ export default function App(){
       )}
 
       {/* GASTOS GP */}
-      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
+      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} setObra={setObra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
 
       {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
       {screen==="obra"&&tab==="planeacion"&&obra&&(
         <Planeacion
           subTab={subTabPlan} setSubTab={setSubTabPlan}
           obra={obra} setObra={setObra} rol={usuario.rol}
-          setSubsGlobal={setSubs}/>
+          setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 
       {/* Vistas para rol cliente */}

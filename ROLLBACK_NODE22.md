@@ -12,8 +12,7 @@ el fix en un rollback — arregla en rama y re-despliega.
 
 ## Prerrequisitos
 
-- Estar en la raíz del repo:
-  `/Users/ofosado/Library/Mobile Documents/com~apple~CloudDocs/Fosmon Cloud/CAMPO-FOSMON`
+- Estar en la raíz del repo: `/Users/ofosado/Desarrollo/CAMPO-FOSMON`
 - Rama `main` con el merge de `mantenimiento/node22` ya aplicado.
 - `gcloud auth application-default login` vigente (para verificar estado
   post-rollback con `gcloud functions list`).
@@ -30,13 +29,13 @@ Usar cuando:
 - No sabes qué función está rota y necesitas volver al estado conocido bueno.
 
 ```bash
-cd "/Users/ofosado/Library/Mobile Documents/com~apple~CloudDocs/Fosmon Cloud/CAMPO-FOSMON"
+cd /Users/ofosado/Desarrollo/CAMPO-FOSMON
 
 # 1) Volver package.json y package-lock.json al estado previo al upgrade.
-#    Nota: 34f4c3f es el merge commit anterior al de mantenimiento/node22.
-#    Si el merge de mantenimiento/node22 a main quedó en otro SHA, usa
-#    `git log --oneline main` y elige el commit ANTES del merge de node22.
-git checkout 34f4c3f -- functions/package.json functions/package-lock.json
+#    El merge de mantenimiento/node22 a main es 9f49df0 (2026-09-21 13:0x) y el
+#    commit ANTERIOR, el estado bueno conocido en Node 20, es f01f83b.
+#    Verificable con `git log --oneline main`.
+git checkout f01f83b -- functions/package.json functions/package-lock.json
 
 # 2) Reinstalar dependencias en Node 20 (regenera árbol de node_modules).
 cd functions
@@ -73,7 +72,7 @@ Ejemplo: bajar solo `sincronizarClaims` a Node 20 (sustituye por la función
 que quieras revertir).
 
 ```bash
-cd "/Users/ofosado/Library/Mobile Documents/com~apple~CloudDocs/Fosmon Cloud/CAMPO-FOSMON"
+cd /Users/ofosado/Desarrollo/CAMPO-FOSMON
 
 # 1) Backup del package.json actual (Node 22).
 cp functions/package.json functions/package.json.node22.bak
