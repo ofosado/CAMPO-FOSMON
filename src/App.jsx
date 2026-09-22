@@ -8587,16 +8587,23 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     ? semanasProy[semanasProy.length - 1].fecha
     : null;
   const gastoFinProy = gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt;
-  // MARGEN PROYECTADO AL CIERRE — contra el CONTRATO, no contra el ejecutado.
-  //
-  // Regla del usuario (2026-09-21): en obra se hace compensación de volúmenes
-  // y la obra se cierra en el importe del contrato. El ingreso final es el
-  // contrato, más convenios cuando existan. Por eso el ingreso proyectado NO
-  // es el ejecutado proyectado aunque este sea mayor.
-  const margenFinProy = presupuesto - gastoFinProy;
-  // El volumen ejecutado por encima del contrato no es ingreso: es trabajo
-  // hecho que no se cobra si no hay convenio. Va aparte, y como riesgo.
   const ejecFinProy = ejecProy.length > 0 ? ejecProy[ejecProy.length - 1] : ejecUlt;
+  // MARGEN PROYECTADO AL CIERRE — contra el EJECUTADO proyectado, sin topar.
+  //
+  // Antes se calculaba `contrato − gasto`, con el criterio de que la obra
+  // cierra en el importe contratado y el volumen de más no se cobra sin
+  // convenio. El usuario corrigió el supuesto (2026-09-22): los volúmenes
+  // adicionales SÍ se estiman por partida, así que ese trabajo se cobra y sí
+  // es ingreso. Topar el ingreso al contrato subestimaba el margen justo en
+  // las obras que más se pasan —TAMSA y el Malecón—, y además contradecía P1
+  // en la única cifra donde el tope seguía vivo.
+  //
+  // Si mañana entra `tipoContrato` y un contrato resulta ser cerrado de
+  // verdad, ahí el tope vuelve a tener sentido; mientras no se sepa, el
+  // sistema no debe inventar un recorte (PENDIENTES #27).
+  const margenFinProy = ejecFinProy - gastoFinProy;
+  // Cuánto del ejecutado proyectado va por encima del contrato. Es un dato,
+  // no una alarma: se enseña junto al contrato para dar la escala.
   const excedenteSobreContrato = (presupuesto > 0 && ejecFinProy > presupuesto)
     ? ejecFinProy - presupuesto
     : 0;
@@ -8825,11 +8832,11 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         const g = todosGasto[hover] || 0;
         const e = todosEjec[hover] || 0;
         const pctAv = todosAvance[hover];
-        // Margen de la semana: ingreso reconocido − gasto. El ingreso se topa
-        // al contrato porque la obra se cierra en el importe contratado; el
-        // volumen por encima no se cobra sin convenio.
-        const ingresoSem = presupuesto > 0 ? Math.min(e, presupuesto) : e;
-        const margen = ingresoSem - g;
+        // Margen de la semana: ejecutado − gasto, sin topar. Tiene que salir
+        // del mismo criterio que el margen proyectado del pie; si uno topa al
+        // contrato y el otro no, la misma gráfica da dos márgenes distintos
+        // según dónde se pose el cursor.
+        const margen = e - g;
         const excedenteSem = presupuesto > 0 ? Math.max(0, e - presupuesto) : 0;
         const dd = String(s.fecha.getDate()).padStart(2,'0');
         const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
@@ -8862,8 +8869,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           </div>
           {excedenteSem > 0 && (
             <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
-              <span style={{color:C.yellowDk}}>· sobre contrato</span>
-              <span style={{fontWeight:700,color:C.yellowDk}}>{fmtCompacto(excedenteSem)}</span>
+              <span style={{color:C.textMut}}>· sobre contrato</span>
+              <span style={{fontWeight:700,color:C.textMut}}>{fmtCompacto(excedenteSem)}</span>
             </div>
           )}
           <div style={{display:"flex",justifyContent:"space-between",gap:8,paddingTop:4,marginTop:4,borderTop:`0.5px solid ${C.border}`}}>
@@ -8921,21 +8928,24 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
             <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
               {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
             </div>
-            <div style={{fontSize:8,color:C.textMut}}>contra importe de contrato</div>
+            <div style={{fontSize:8,color:C.textMut}}>ejecutado proyectado − gasto</div>
           </div>
         </>
       )}
     </div>
 
-    {/* Ejecutado proyectado por encima del contrato — riesgo, no margen */}
+    {/* Ejecutado proyectado contra contrato — dato, no advertencia.
+        Ejecutar por encima del contrato es normal: los volúmenes adicionales
+        se estiman por partida y se cobran. Pintarlo de amarillo con un
+        "no cobrable" afirmaba algo que el sistema no sabe —no conoce el tipo
+        de contrato ni qué está autorizado— y encendía una alarma en las obras
+        que operan así todo el tiempo. Se muestran las dos cifras y ya. */}
     {!soloGasto && excedenteSobreContrato > 0 && (
-      <div style={{marginTop:8,padding:"8px 12px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>Ejecutado proyectado sobre contrato: {fmtCompacto(excedenteSobreContrato)}</b> —
-        no cobrable sin convenio. A este ritmo la obra terminaría habiendo
-        ejecutado {fmtCompacto(ejecFinProy)} contra un contrato de {fmtCompacto(presupuesto)}.
-        No está sumado al margen proyectado: la obra se cierra en el importe del
-        contrato, así que ese volumen es riesgo, no utilidad.
+      <div style={{marginTop:8,padding:"7px 10px",background:`${C.textMut}10`,
+        border:`0.5px solid ${C.border}`,borderRadius:6,fontSize:10,color:C.textSec}}>
+        Ejecutado proyectado <b style={{color:C.blueDk}}>{fmtCompacto(ejecFinProy)}</b>
+        {' · '}contrato <b style={{color:C.textPri}}>{fmtCompacto(presupuesto)}</b>
+        {' · '}sobre contrato <b>{fmtCompacto(excedenteSobreContrato)}</b>
       </div>
     )}
 
@@ -9033,8 +9043,9 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       const pctGP    = obra.presupuesto > 0 ? (gt / obra.presupuesto) * 100 : 0;
       const pctEjec  = obra.presupuesto > 0 ? (me / obra.presupuesto) * 100 : 0;
       // Trío que sustituye al excedente: Contratado · Ejecutado · Por ejecutar.
-      // No puede ser negativo — si se ejecutó de más, lo que falta es cero, y
-      // el excedente sobre contrato se trata como riesgo en la proyección.
+      // No puede ser negativo — si se ejecutó de más, lo que falta es cero. El
+      // excedente sobre contrato se enseña en la proyección, junto al contrato
+      // y sin color de alarma.
       const porEjecutar = Math.max((obra.presupuesto || 0) - me, 0);
       const margenAbs = me - gt;   // ejecutado - gastado
       const colGasto  = pctGP > 90 ? C.red : pctGP > 75 ? C.yellowDk : C.textPri;

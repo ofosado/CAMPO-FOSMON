@@ -443,16 +443,21 @@ console.log('\n6. Proyección: termina al 100% de avance FÍSICO, y el dinero no
   check(ejecFin > PRESUPUESTO,
     `el dinero proyectado rebasa el contrato de ${MXN(PRESUPUESTO)} y no se recorta (P1)`);
   check(casi(p.excedenteSobreContrato, 6_000_000),
-    `el exceso se reporta aparte: ${MXN(p.excedenteSobreContrato)} sobre contrato, que no es ingreso sin convenio`);
+    `cuánto va por encima del contrato se sigue sabiendo: ${MXN(p.excedenteSobreContrato)}`);
 
-  // MARGEN CONTRA EL CONTRATO. En obra se compensan volúmenes y el cierre es
-  // el importe contratado: el ingreso final es el contrato, no lo ejecutado.
+  // MARGEN CONTRA EL EJECUTADO PROYECTADO, SIN TOPAR (2026-09-22).
+  // El supuesto anterior —la obra cierra en el contrato y el volumen de más no
+  // se cobra— resultó falso: los volúmenes adicionales se estiman por partida.
+  // Topar el ingreso al contrato subestimaba el margen en $6,000,000 justo en
+  // las obras que operan así.
   check(casi(p.gastoFinProy, 7_000_000),
     `gasto proyectado al cierre ${MXN(p.gastoFinProy)}`);
-  check(casi(p.margenFinProy, 3_000_000),
-    `margen proyectado ${MXN(p.margenFinProy)} = contrato ${MXN(PRESUPUESTO)} − gasto ${MXN(7_000_000)}`);
-  check(!casi(p.margenFinProy, 9_000_000),
-    'y NO los $9,000,000 que saldrían de contar como ingreso el ejecutado sobre contrato');
+  check(casi(p.margenFinProy, 9_000_000),
+    `margen proyectado ${MXN(p.margenFinProy)} = ejecutado ${MXN(16_000_000)} − gasto ${MXN(7_000_000)}`);
+  check(!casi(p.margenFinProy, 3_000_000),
+    'y NO los $3,000,000 que salían de topar el ingreso al contrato');
+  check(casi(p.margenFinProy - (PRESUPUESTO - p.gastoFinProy), 6_000_000),
+    'la diferencia entre los dos criterios es exactamente el excedente sobre contrato');
 }
 
 console.log('\n7. Obra sin excedente — el arreglo no mueve el caso normal');
