@@ -16005,9 +16005,14 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
     { id: "bitacora", label: "Bitácora",
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
+    // Los mismos roles que `esDirectivoC() || esAdminSistemaC()` en
+    // firestore.rules. Si se abre aquí a un rol que la regla no deja leer, la
+    // pantalla se ve pero sale con el error de permisos.
+    { id: "salud", label: "Salud del sistema",
+      visible: ["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(rol) },
   ].filter(o => o.visible);
 
-  const enConfig = ["usuarios","bitacora","alertas"].includes(screen);
+  const enConfig = ["usuarios","bitacora","alertas","salud"].includes(screen);
 
   return <div ref={ref} style={{position:"relative"}}>
     <button onClick={()=>setAbierto(v=>!v)}
@@ -16338,6 +16343,177 @@ function PanelAlertas({obras, gpData, onCountChange}){
         ))}
       </div>
     )}
+  </div>;
+}
+
+// ── PANTALLA DE SALUD DEL SISTEMA (#26) ─────────────────────────────────
+//
+// Lo que esta pantalla detecta no es el FALLO, es el SILENCIO. Un fallo se
+// registra solo: la función lo atrapa, lo escribe y el correo sale. El
+// silencio no deja rastro en ningún lado, y el silencio fue exactamente lo
+// que pasó desapercibido en agosto — ~16 días con la facturación caída y ni
+// un aviso, porque el emisor de avisos era justo lo caído.
+//
+// Contra eso no sirve otro emisor. Sirve un LECTOR: el navegador, que sigue
+// vivo porque habla con Firestore directo. Por eso esta pantalla lee
+// `global/health` y no llama a ninguna función.
+//
+// Cada job declara cada cuándo DEBERÍA correr y a las cuántas horas de
+// callado se pone en rojo. El margen es deliberado: una semanal aguanta
+// hasta nueve días (la corrida puede atrasarse), una diaria hasta 36 horas.
+// Pasado eso ya no es retraso, es silencio.
+const JOBS_PROGRAMADOS = [
+  { id:"backup",            funcion:"backupSemanalFirestore", nombre:"Respaldo de Firestore",
+    que:"Copia completa de la base a Cloud Storage.",
+    cuando:"domingos 3:00",  limiteHoras: 9*24 },
+  { id:"email_semanal",     funcion:"resumenSemanalEmail",    nombre:"Resumen semanal por correo",
+    que:"Manda el resumen de las obras a los directivos.",
+    cuando:"lunes 9:07",     limiteHoras: 9*24 },
+  { id:"recordatorio_lunes",funcion:"recordatorioLunes",      nombre:"Recordatorio de lunes",
+    que:"Avisa al equipo de obra que arranca la semana.",
+    cuando:"lunes 9:00",     limiteHoras: 9*24 },
+  { id:"recordatorio_obra", funcion:"recordatorioCapturaObra",nombre:"Recordatorio de captura · obra",
+    que:"Notifica a las obras que no han capturado avance.",
+    cuando:"viernes 10:00",  limiteHoras: 9*24 },
+  { id:"recordatorio_subs", funcion:"recordatorioCapturaSubs",nombre:"Recordatorio de captura · subcontratos",
+    que:"Notifica a los subcontratistas sin captura.",
+    cuando:"viernes 12:00",  limiteHoras: 9*24 },
+  { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
+    que:"Baja la hoja de gastos y la deja lista para el dashboard.",
+    cuando:"diario 8:00",    limiteHoras: 36 },
+];
+
+// "hace N días" en el formato que ya se usa en el resto de la app. Devuelve
+// null cuando la fecha no se puede medir — quien llama decide qué decir, que
+// no es "hace 0 días" (P2).
+function haceCuanto(iso, ahora){
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const horas = Math.floor((ahora - t) / 3600000);
+  if (horas < 0) return { horas, texto: "con fecha futura" };
+  const dias = Math.floor(horas / 24);
+  return { horas, texto: dias >= 1 ? `hace ${dias} día${dias !== 1 ? "s" : ""}`
+    : horas >= 1 ? `hace ${horas} h` : "hace un momento" };
+}
+
+// Clasifica un job a partir de lo que dejó escrito. Vive fuera del componente
+// para poder correrla contra casos concretos sin montar React.
+//
+// `registro` null y `registro` presente-pero-sin-fecha caen los dos en "sin
+// datos", no en "al día": no se mide lo que no se registró.
+function estadoDeJob(job, registro, ahora){
+  if (!registro) return { estado:"sin datos", color:C.textMut };
+  const h = haceCuanto(registro.ultimaEjecucion, ahora);
+  if (!h) return { estado:"sin datos", color:C.textMut, e:registro };
+  const tarde = h.horas > job.limiteHoras;
+  return { e:registro, h, tarde,
+    estado: !registro.ok ? "falló" : tarde ? "sin correr" : "al día",
+    color:  !registro.ok ? C.red   : tarde ? C.red       : C.green };
+}
+
+function PantallaSalud(){
+  const [datos, setDatos]       = useState(null);
+  const [error, setError]       = useState("");
+  const [cargando, setCargando] = useState(true);
+  const [ahora, setAhora]       = useState(() => Date.now());
+
+  // Lectura ESTRICTA a propósito: `fsGet` devuelve null tanto si el documento
+  // no existe como si la lectura fue rechazada, y aquí esa diferencia lo es
+  // todo. Seis renglones en "Sin datos" por un permiso mal puesto se leen
+  // igual que seis funciones que nunca corrieron. No pueden verse igual.
+  const recargar = async () => {
+    setCargando(true); setError("");
+    try {
+      const d = await getDoc(doc(fbDb, "global", "health"));
+      setDatos(d.exists() ? d.data() : {});
+    } catch (e) {
+      setDatos(null);
+      setError(`No se pudo leer el registro de salud: ${e?.message || e}. ` +
+        `Mientras no se pueda leer, esta pantalla no sabe nada del backend — ` +
+        `lo de abajo no es "las funciones no corrieron", es "no se pudo preguntar".`);
+    }
+    setAhora(Date.now());
+    setCargando(false);
+  };
+  useEffect(() => { recargar(); }, []);
+
+  const filas = JOBS_PROGRAMADOS.map(job => datos
+    ? { job, ...estadoDeJob(job, datos[job.id], ahora) }
+    : { job, estado:"ilegible", color:C.textMut });
+
+  const enRojo   = filas.filter(f => f.color === C.red).length;
+  const sinDatos = filas.filter(f => f.estado === "sin datos").length;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {error && <div style={{background:C.redBg,border:`1px solid ${C.red}`,borderRadius:8,
+      padding:"9px 11px",fontSize:11,color:C.redDk,whiteSpace:"pre-line"}}>⚠ {error}</div>}
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+        <div>
+          <Tit>Salud del sistema</Tit>
+          <div style={{fontSize:10,color:C.textMut,lineHeight:1.5}}>
+            Las seis funciones programadas dejan rastro al terminar. Esta pantalla
+            lo lee directo de la base, así que sigue funcionando aunque el backend
+            no. Un renglón en rojo puede ser un fallo registrado o un silencio:
+            llevar más tiempo del que debería sin dar señales.
+          </div>
+        </div>
+        <SecBtn onClick={recargar}>Recargar</SecBtn>
+      </div>
+      {!cargando && !error && (
+        <div style={{marginTop:9,fontSize:10,color:C.textSec}}>
+          {enRojo === 0 && sinDatos === 0
+            ? "Las seis corrieron dentro de su plazo."
+            : [enRojo > 0 ? `${enRojo} requiere${enRojo !== 1 ? "n" : ""} atención` : null,
+               sinDatos > 0 ? `${sinDatos} sin datos` : null].filter(Boolean).join(" · ")}
+          {"  ·  consultado "}{new Date(ahora).toLocaleString("es-MX")}
+        </div>
+      )}
+    </Card>
+
+    {cargando ? <Card><div style={{fontSize:11,color:C.textMut}}>Cargando…</div></Card>
+     : filas.map(({job, e, h, estado, color}) => (
+      <Card key={job.id} accent={color}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{job.nombre}</div>
+            <div style={{fontSize:10,color:C.textMut,marginTop:2}}>{job.que}</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:3,fontFamily:"ui-monospace,monospace"}}>
+              {job.funcion} · {job.cuando}
+            </div>
+          </div>
+          <Bdg color={color === C.green ? C.green : color === C.red ? C.red : C.textMut}>
+            {estado}
+          </Bdg>
+        </div>
+        <div style={{marginTop:8,paddingTop:7,borderTop:`0.5px solid ${C.border}`,
+          fontSize:10,color:C.textSec,lineHeight:1.5}}>
+          {estado === "ilegible" ? (
+            <span style={{color:C.textMut}}>No se pudo leer el registro.</span>
+          ) : estado === "sin datos" ? (
+            // P2: nunca registró nada. Eso no es "hace 0 días" — cero días es
+            // una medición, y aquí no hay ninguna. Puede que la función jamás
+            // haya corrido, o que corriera antes de que existiera el registro.
+            <span style={{color:C.textMut}}>
+              Sin datos — no hay ninguna ejecución registrada.
+              {e ? " El registro existe pero no trae fecha utilizable." : ""}
+            </span>
+          ) : (
+            <>
+              <div>
+                <b style={{color}}>{h.texto}</b>
+                {" · "}{new Date(e.ultimaEjecucion).toLocaleString("es-MX")}
+                {Number.isFinite(e.duracionMs) ? ` · ${(e.duracionMs/1000).toFixed(1)} s` : ""}
+              </div>
+              {e.mensaje && <div style={{marginTop:3,color: e.ok ? C.textSec : C.redDk,
+                whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+                {e.ok ? "" : "Error: "}{e.mensaje}
+              </div>}
+            </>
+          )}
+        </div>
+      </Card>
+    ))}
   </div>;
 }
 
@@ -17457,6 +17633,7 @@ export default function App(){
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
+      {screen==="salud"&&<PantallaSalud/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
 
