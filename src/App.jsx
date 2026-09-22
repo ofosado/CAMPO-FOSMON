@@ -2364,6 +2364,40 @@ const pctPartidaSinTopar = (s, modoVol = false) => {
   return (importeEjecutadoPartida(s, modoVol) / tope) * 100;
 };
 
+// ── Cambio de modo de captura de avance (#21) ─────────────────────────
+// El modo vive en `obra.modoAvance` y decide de dónde sale el dinero: en
+// volumen manda `cantEjec × pu`, en porcentaje manda `(a/100) × imp`. Pasar a
+// volumen una obra cuyo catálogo se cargó sin volúmenes deja la captura en 0%
+// en todas las partidas, y ahí el avance real se pierde al primer teclazo.
+//
+// El ejecutado de antes y el de después salen de `desgloseEjecutado`, la misma
+// función del tablero y del correo. La confirmación no puede decir una cifra
+// distinta de la que el usuario va a ver mañana.
+const diagnosticoCambioModo = (subs, modoActual = "porcentaje", modoDestino = "porcentaje") => {
+  const lista = Array.isArray(subs) ? subs : [];
+  const volAntes = modoActual === "volumen";
+  const volDespues = modoDestino === "volumen";
+  const sinVolumen = lista.filter(s =>
+    !(parseFloat(s?.cant) > 0) || !(parseFloat(s?.pu) > 0)).length;
+  // Partidas cuyo importe ejecutado se mueve con el cambio. Medio centavo de
+  // tolerancia: por debajo de eso es ruido del double, no un cambio real.
+  const cambian = lista.filter(s =>
+    Math.abs(importeEjecutadoPartida(s, volAntes)
+           - importeEjecutadoPartida(s, volDespues)) >= 0.005).length;
+  const ejecutadoAntes = desgloseEjecutado(lista, volAntes).total;
+  const ejecutadoDespues = desgloseEjecutado(lista, volDespues).total;
+  return {
+    partidas: lista.length,
+    sinVolumen, conVolumen: lista.length - sinVolumen, cambian,
+    ejecutadoAntes, ejecutadoDespues, delta: ejecutadoDespues - ejecutadoAntes,
+    // Precondición DURA del modo volumen: todas las partidas con `cant` y `pu`.
+    // Una sola sin volumen es una partida que no se puede capturar ni derivar
+    // —`cantEjec/cant` con `cant` en cero da siempre 0—, así que no es una
+    // preferencia que el usuario pueda saltarse: es un requisito del dato.
+    puedeVolumen: lista.length > 0 && sinVolumen === 0,
+  };
+};
+
 // ── Precisión decimal en función del PRECIO UNITARIO ──────────────────
 // No depende de la unidad, depende de cuánto vale el dígito. La propiedad
 // que garantiza esta regla: el último decimal NUNCA vale más de un peso.
@@ -2379,10 +2413,37 @@ const decimalesPorPU = pu => {
   return Math.min(6, Math.max(2, Math.ceil(Math.log10(p))));
 };
 
+// Cuántos decimales trae REALMENTE el valor guardado. Sirve para no mostrar
+// menos precisión de la que el residente capturó. Un número en notación
+// exponencial (1e-7) no tiene decimales legibles: devuelve 0 y manda el piso.
+const decimalesDe = valor => {
+  const n = Number(valor);
+  if (!Number.isFinite(n)) return 0;
+  const s = String(n);
+  if (s.includes('e') || s.includes('E')) return 0;
+  const punto = s.indexOf('.');
+  return punto < 0 ? 0 : s.length - punto - 1;
+};
+
 // Formatea una cantidad con los decimales que exige su precio unitario.
 // Sustituye al `maximumFractionDigits: 2` que truncaba lo capturado.
-const fmtCant = (cant, pu) => Number(cant || 0).toLocaleString('es-MX',
-  { maximumFractionDigits: decimalesPorPU(pu) });
+//
+// `decimalesPorPU` es un PISO, no un techo (#30). Marcaba el mínimo para que el
+// último dígito no valiera más de un peso, pero se estaba usando como límite:
+// en partidas de PU bajo el piso es 2, y un volumen capturado con 4 decimales
+// se guardaba entero, se cobraba entero y en pantalla salía con 2. El dato se
+// tomó, pero el residente veía que no. Nunca mostramos menos precisión de la
+// que hay guardada.
+//
+// Techo 4: es la resolución de una medición de campo. Además corta el ruido del
+// double — 0.1+0.2 guarda 0.30000000000000004 y saldría con 17 decimales.
+// `maximumFractionDigits` no rellena con ceros, así que una cantidad redonda se
+// sigue viendo igual que antes.
+const fmtCant = (cant, pu) => {
+  const piso = decimalesPorPU(pu);
+  return Number(cant || 0).toLocaleString('es-MX',
+    { maximumFractionDigits: Math.max(piso, Math.min(4, decimalesDe(cant))) });
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
@@ -10055,7 +10116,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
 // ════════════════════════════════════════════════════════════════════════════
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
-function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
+function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados}){
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
@@ -10070,7 +10131,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal}){
         </button>
       ))}
     </div>
-    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol}/>}
+    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} subs={subs} subsCargados={subsCargados}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
     {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
   </div>;
@@ -10527,7 +10588,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 // GASTOS — Análisis completo de datos de GP Construct
 // 4 sub-tabs: Resumen · Proveedores · Rubros · Semanas
 // ════════════════════════════════════════════════════════════════════════════
-function GastosGP({obra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP,cargarDetalleObra,gpDetalles}){
+function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltActualiz,onRefreshGP,cargarDetalleObra,gpDetalles}){
   // Cargar detalle (rubros + proveedores) de esta obra al montar
   useEffect(() => {
     if (!gpData?.obras || !cargarDetalleObra) return;
@@ -15130,7 +15191,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
 }
 
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
-function Contrato({obra, setObra, rol}) {
+function Contrato({obra, setObra, rol, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -15140,6 +15201,9 @@ function Contrato({obra, setObra, rol}) {
   const [ampliaciones, setAmpliaciones] = useState([]);
   const [showAddAmp, setShowAddAmp] = useState(false);
   const [nuevaAmp, setNuevaAmp] = useState({fecha:"", justificacion:"", autorizadoPor:""});
+  const [cambioModo, setCambioModo] = useState(null);   // #21 guarda 2
+  const [bloqueoModo, setBloqueoModo] = useState(null); // #21 guarda 1
+  const [guardandoModo, setGuardandoModo] = useState(false);
   const fileRef = useRef();
   const editar = can(rol, "captura", "editar") || can(rol, "estimaciones", "editar");
   const puedeSubir = ["director_operaciones","gerente_construccion","administrador_obra"].includes(rol) ||
@@ -15256,6 +15320,50 @@ function Contrato({obra, setObra, rol}) {
 
   const f = (k,v) => setObra({...obra, [k]: v});
 
+  // ── Cambio de modo de captura de avance (#21) ───────────────────────
+  // Antes esto era `onClick={()=>f("modoAvance", opt.v)}`: un clic, sin
+  // validación y sin aviso. En una obra sin volúmenes en el catálogo ese clic
+  // deja las 335 partidas en 0% y el avance real se borra al primer teclazo.
+  //
+  // Guarda 1 — bloqueo duro: a volumen no se pasa sin `cant` y `pu`.
+  // Guarda 2 — confirmación explícita, con el ejecutado de antes y de después.
+  // Y el cambio se escribe a la bitácora: quién, cuándo, de qué modo a cuál.
+  function pedirCambioModo(destino) {
+    const actual = obra.modoAvance || "porcentaje";
+    if (destino === actual || !subsCargados) return;
+    const d = diagnosticoCambioModo(subs, actual, destino);
+    if (destino === "volumen" && !d.puedeVolumen) { setBloqueoModo(d); return; }
+    setCambioModo({ actual, destino, ...d });
+  }
+
+  async function confirmarCambioModo() {
+    const c = cambioModo;
+    setGuardandoModo(true);
+    // Se persiste aquí y no al botón Guardar: el usuario acaba de confirmar
+    // una pantalla que le dijo en cuánto queda el ejecutado. Auditar la
+    // intención y no el hecho es el defecto que ya tenemos en `global/health`.
+    const okInfo = await fsSet(`obras/${obra.id}/config/info`, { modoAvance: c.destino });
+    const okTop  = await fsSet(`obras/${obra.id}`, { modoAvance: c.destino });
+    setGuardandoModo(false);
+    setCambioModo(null);
+    if (!okInfo || !okTop) {
+      alert("No se pudo guardar el cambio de modo. El modo sigue en \"" +
+            c.actual + "\". Revisa tu conexión e inténtalo de nuevo.");
+      return;
+    }
+    f("modoAvance", c.destino);
+    await fsAudit("cambio-modo-avance", {
+      modulo: "contrato",
+      entidad: `modo de avance ${c.actual} → ${c.destino}`,
+      path: `obras/${obra.id}/config/info`,
+      obraId: obra.id, obraNombre: obra.contrato || obra.nombre,
+      antes:   { modoAvance: c.actual,  ejecutado: c.ejecutadoAntes },
+      despues: { modoAvance: c.destino, ejecutado: c.ejecutadoDespues },
+      meta: { partidas: c.partidas, sinVolumen: c.sinVolumen,
+              partidasQueCambian: c.cambian, delta: c.delta },
+    });
+  }
+
   // Calcular días entre fechas
   const diasPlazo = (ini,fin) => {
     if(!ini||!fin) return null;
@@ -15323,8 +15431,9 @@ function Contrato({obra, setObra, rol}) {
                   {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para obras tipo precio unitario donde el catálogo es referencia y los volúmenes reales pueden variar (TAMSA, servicios especializados)."},
                 ].map(opt => {
                   const sel = (obra.modoAvance||"porcentaje") === opt.v;
-                  return <div key={opt.v} onClick={()=>f("modoAvance", opt.v)}
-                    style={{flex:"1 1 200px",cursor:"pointer",
+                  return <div key={opt.v} onClick={()=>pedirCambioModo(opt.v)}
+                    style={{flex:"1 1 200px",cursor:subsCargados?"pointer":"wait",
+                      opacity:subsCargados?1:0.55,
                       border:`1.5px solid ${sel?C.blueDk:C.border}`,
                       background:sel?C.blueBg:"transparent",
                       borderRadius:8,padding:"10px 12px",transition:"all .15s"}}>
@@ -15343,6 +15452,18 @@ function Contrato({obra, setObra, rol}) {
             ) : (
               <div style={{fontSize:12,color:C.textSec}}>
                 {(obra.modoAvance||"porcentaje") === "volumen" ? "Por volumen ejecutado" : "Por porcentaje"}
+              </div>
+            )}
+            {editar && !subsCargados && (
+              <div style={{fontSize:10,color:C.textMut,marginTop:6}}>
+                Leyendo el catálogo de la obra… el modo no se puede cambiar hasta
+                saber si las partidas tienen volúmenes.
+              </div>
+            )}
+            {editar && subsCargados && (
+              <div style={{fontSize:10,color:C.textMut,marginTop:6}}>
+                Cambiar el modo cambia de dónde sale el dinero ejecutado. Se pide
+                confirmación y el cambio queda en la bitácora.
               </div>
             )}
           </div>
@@ -15574,6 +15695,106 @@ function Contrato({obra, setObra, rol}) {
           </div>
         </div>
       )}
+
+      {/* #21 guarda 1 — bloqueo duro: a volumen no se pasa sin volúmenes */}
+      {bloqueoModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+          border:`0.5px solid ${C.red}44`}}>
+          <div style={{fontSize:14,fontWeight:700,color:C.redDk,marginBottom:10}}>
+            Esta obra no puede pasar a modo volumen
+          </div>
+          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:12}}>
+            {bloqueoModo.partidas === 0 ? (
+              <>No se leyó ninguna partida del catálogo de esta obra. Sin
+              catálogo no hay contra qué medir volumen. Carga el catálogo y
+              vuelve a intentarlo.</>
+            ) : (
+              <><b>{bloqueoModo.sinVolumen} de {bloqueoModo.partidas} partidas</b> no
+              tienen cantidad ni precio unitario. En modo volumen el avance sale
+              de <i>cantidad ejecutada ÷ cantidad de catálogo</i>: con la cantidad
+              en cero esas partidas aparecerían en 0% y el avance que ya está
+              capturado se perdería en cuanto alguien teclee encima.</>
+            )}
+          </div>
+          {bloqueoModo.partidas > 0 && (
+            <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:14}}>
+              <div style={{fontSize:10,color:C.textMut,fontWeight:600,marginBottom:6,
+                textTransform:"uppercase",letterSpacing:"0.04em"}}>Qué hace falta</div>
+              <div style={{fontSize:11,color:C.textSec,lineHeight:1.6}}>
+                Recargar el catálogo de la obra incluyendo <b>cantidad</b>,{" "}
+                <b>precio unitario</b> y <b>unidad</b> en cada partida. El
+                importador los soporta y conserva el avance capturado
+                emparejando por clave, así que la recarga no borra nada. Con los
+                volúmenes cargados, este bloqueo desaparece solo.
+              </div>
+            </div>
+          )}
+          <SecBtn onClick={()=>setBloqueoModo(null)} style={{width:"100%"}}>Entendido</SecBtn>
+        </div>
+      </div>}
+
+      {/* #21 guarda 2 — confirmación explícita, con el ejecutado antes y después */}
+      {cambioModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+          border:`0.5px solid ${C.yellow}44`}}>
+          <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:4}}>
+            ¿Cambiar el modo de captura?
+          </div>
+          <div style={{fontSize:12,color:C.textSec,marginBottom:12}}>
+            De <b>{cambioModo.actual === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>{" "}
+            a <b>{cambioModo.destino === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>
+          </div>
+
+          <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textSec,marginBottom:5}}>
+              <span>Ejecutado hoy</span><b>{MXN(cambioModo.ejecutadoAntes)}</b>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textSec,marginBottom:5}}>
+              <span>Ejecutado después del cambio</span>
+              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textPri
+                          : cambioModo.delta < 0 ? C.redDk : C.textPri}}>
+                {MXN(cambioModo.ejecutadoDespues)}
+              </b>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+              color:C.textMut,paddingTop:5,borderTop:`0.5px solid ${C.border}`}}>
+              <span>Diferencia</span>
+              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textMut : C.redDk}}>
+                {cambioModo.delta >= 0 ? "+" : "−"}{MXN(Math.abs(cambioModo.delta))}
+              </b>
+            </div>
+          </div>
+
+          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
+            {cambioModo.cambian === 0
+              ? <>Ninguna de las {cambioModo.partidas} partidas cambia de importe
+                  con este cambio.</>
+              : <><b>{cambioModo.cambian} de {cambioModo.partidas} partidas</b> cambian
+                  de importe ejecutado.</>}
+            {cambioModo.destino === "porcentaje" && cambioModo.delta < -0.005 && (
+              <> El ejecutado baja porque en porcentaje el dinero sale
+                de <i>% capturado × importe de catálogo</i> y deja de contar el
+                volumen capturado por encima del catálogo.</>
+            )}
+            {" "}El cambio se guarda de inmediato y queda en la bitácora con tu
+            nombre y la hora.
+          </div>
+
+          <div style={{display:"flex",gap:8}}>
+            <SecBtn onClick={()=>setCambioModo(null)} style={{flex:1}}>Cancelar</SecBtn>
+            <button onClick={confirmarCambioModo} disabled={guardandoModo}
+              style={{flex:2,background:C.caliza,border:"none",borderRadius:6,padding:"9px 0",
+                fontSize:12,fontWeight:700,color:C.bg,
+                cursor:guardandoModo?"wait":"pointer",opacity:guardandoModo?0.6:1}}>
+              {guardandoModo ? "Guardando…" : "Sí, cambiar el modo"}
+            </button>
+          </div>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -16679,6 +16900,7 @@ export default function App(){
     if(!obraId) return;
     // Reset inmediato para evitar mostrar datos de la obra anterior
     setSubs([]);
+    setSubsCargados(false);
     setMaquinaria([]);
     setMateriales([]);
     setEstimaciones([]);
@@ -16735,6 +16957,7 @@ export default function App(){
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
         }
       }
+      setSubsCargados(true);
     });
     fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
@@ -16778,6 +17001,10 @@ export default function App(){
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
   // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
   const[subs,setSubs]=useState([]);
+  // `subs` vacío es ambiguo: puede ser una obra sin catálogo o una lectura que
+  // todavía no llega. La guarda de cambio de modo (#21) necesita distinguirlos
+  // — bloquear por un hueco sería confundir "no hay dato" con "el dato es 0".
+  const[subsCargados,setSubsCargados]=useState(false);
   const[maquinaria,setMaquinaria]=useState([]);
   const[materiales,setMateriales]=useState([]);
   const[estimaciones,setEstimaciones]=useState([]);
@@ -17242,14 +17469,14 @@ export default function App(){
       )}
 
       {/* GASTOS GP */}
-      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
+      {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} setObra={setObra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
 
       {/* PLANEACIÓN: wrapper con sub-tabs Contrato + Presupuesto */}
       {screen==="obra"&&tab==="planeacion"&&obra&&(
         <Planeacion
           subTab={subTabPlan} setSubTab={setSubTabPlan}
           obra={obra} setObra={setObra} rol={usuario.rol}
-          setSubsGlobal={setSubs}/>
+          setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 
       {/* Vistas para rol cliente */}

@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "ambito": "node scripts/verificar-ambito.cjs",
+    "prebuild": "node scripts/verificar-ambito.cjs",
     "build": "vite build",
     "preview": "vite preview"
   },
