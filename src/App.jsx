@@ -8239,26 +8239,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       </div>;
     })()}
 
-    {/* Serie que cruza la frontera del arreglo del recorte */}
-    {hayTramoViejo && (
-      <div style={{marginTop:8,background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,
-        borderRadius:6,padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        {metricaActiva === 'avance' ? (
-          <><b>El tramo punteado usa otra definición de avance.</b> Esas semanas
-          se calcularon topando cada partida al 100%, así que el volumen
-          ejecutado de más no contaba como avance. Desde el tramo sólido el
-          avance es ejecutado ÷ contrato y las partidas se compensan entre sí.
-          El escalón entre los dos tramos es el cambio de criterio, no avance de
-          obra — por eso no se compara un tramo contra el otro.</>
-        ) : (
-          <><b>El tramo punteado usa otra definición.</b> Esas semanas traen el
-          dinero ejecutado recortado al importe de catálogo. Desde el tramo
-          sólido ya no se topa. El escalón entre los dos tramos es el cambio de
-          criterio, no avance de obra — por eso no se compara un tramo contra el
-          otro.</>
-        )}
-      </div>
-    )}
+    {/* El tramo viejo se sigue dibujando punteado (`hayTramoViejo`), que es lo
+        que hace falta para no leer los dos tramos como una sola serie. El
+        párrafo que explicaba el cambio de definición se quitó: el problema ya
+        está resuelto y el texto solo confundía a quien no siguió el proyecto.
+        El comportamiento NO cambia — el delta de abajo sigue arrancando en
+        `idxFrontera` y por tanto sigue sin cruzar la frontera. */}
 
     {/* Resumen del período — aquí SÍ usamos formato completo (MXN con
         separador de miles) porque no tiene el problema de amontonarse.
@@ -8963,24 +8949,12 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
       </div>
     )}
 
-    {/* Series que cruzan una frontera de definición */}
-    {!soloGasto && hayTramoViejoDinero && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado del ejecutado usa otra definición.</b> Esas semanas
-        traen el dinero recortado al importe de catálogo. El escalón al cruzar
-        es el cambio de criterio, no avance de obra, y por eso el ritmo se
-        calcula solo dentro del tramo vigente.
-      </div>
-    )}
-    {!soloGasto && hayTramoViejoAvance && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.yellow}15`,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.yellowDk}}>
-        <b>El avance de las semanas anteriores usa otra definición.</b> Se
-        calculó topando cada partida al 100%, sin compensar volúmenes. La
-        proyección de fin de obra solo usa el ritmo del tramo vigente.
-      </div>
-    )}
+    {/* Aquí iban los dos párrafos de frontera de definición —el del ejecutado
+        y el de la proyección—. Se quitaron: el punteado ya distingue los dos
+        tramos y el texto confundía a quien no siguió el proyecto.
+        `hayTramoViejoDinero` y `hayTramoViejoAvance` siguen vivos y siguen
+        mandando: el ritmo y la proyección se calculan solo dentro del tramo
+        vigente. Se quitó el texto, no la regla. */}
   </Card>;
 }
 
@@ -9545,11 +9519,6 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     const totalSems = ult4.length - 1;
     velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
   }
-  // ¿La serie cruza la frontera de definición del AVANCE? Se avisa en pantalla
-  // para que nadie lea la gráfica como si fuera continua.
-  const serieMixta = ultimoOf
-    ? oficiales.some(s => !sonComparables(s, ultimoOf, 'avance')) : false;
-
   // Proyección de fin a ritmo actual (semanas hasta 100%)
   const pendientes = Math.max(100 - avanceActual, 0);
   const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
@@ -9659,16 +9628,11 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       )}
     </div>
 
-    {/* Serie que cruza la frontera del arreglo del recorte */}
-    {serieMixta && (
-      <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
-        padding:"7px 10px",fontSize:10,color:C.yellowDk}}>
-        <b>El tramo punteado usa otra definición de avance.</b> Esas semanas se
-        calcularon topando cada partida al 100%, sin compensar volúmenes entre
-        partidas. Desde el tramo sólido el avance es ejecutado ÷ contrato. Los
-        deltas y la velocidad solo se calculan dentro del tramo vigente.
-      </div>
-    )}
+    {/* Se quitó el párrafo de frontera de definición. El comportamiento no
+        cambia: quien impide que los deltas crucen la frontera es
+        `sonComparables`, en `deltaComparable` y en el filtro de `ult4` que
+        alimenta la velocidad. Ese aviso tenía su propia bandera `serieMixta`,
+        que no gobernaba nada más y se fue con él. */}
 
     {/* Compensación de volúmenes — por qué el avance de la obra no es el
         promedio de las partidas. Quien trabaja el catálogo necesita ver
@@ -11518,7 +11482,22 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   const enProceso =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
   const retenido  =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
   const retenEstra=estimaciones.reduce((t,e)=>t+cE(e).re,0);
-  const porAmort  =estimaciones.filter(e=>e.estatus!=="Pagada").reduce((t,e)=>t+cE(e).a,0);
+  // Anticipo por recuperar — lo que el cliente todavía no nos ha descontado
+  // del anticipo que nos entregó. Antes se calculaba como la amortización
+  // embebida en las estimaciones NO pagadas, que contesta otra pregunta: ahí
+  // una obra con todas sus estimaciones cobradas daba $0, y una obra que aún
+  // no genera ninguna daba $0 también. En la 0114 eso escondía $16.3M y en la
+  // 0127 los $41.9M completos del anticipo.
+  //
+  // Ahora es lo pactado menos lo ya amortizado, y no depende de que exista
+  // ninguna estimación. Se amortiza contra TODAS las generadas, no solo las
+  // pagadas, porque el descuento se aplica al formular la estimación — es el
+  // mismo criterio con el que sus dos vecinos, `retenido` y `retenEstra`,
+  // suman sobre `estimaciones` completo. Si los tres no midieran igual,
+  // volverían a divergir.
+  const anticipoPactado=obra.presupuesto*(obra.pctAnticipo||0)/100;
+  const anticipoAmort  =estimaciones.reduce((t,e)=>t+cE(e).a,0);
+  const porRecuperarAnt=anticipoPactado-anticipoAmort;
   const porEstimar=obra.presupuesto-totalEst;
   // Rescatados del bloque de arriba, que desaparece (#11). Allá se calculaban
   // en BRUTO, ignorando los porcentajes del contrato; aquí pasan por el mismo
@@ -11566,9 +11545,17 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)}
           sub={`${atrasadas.length} fuera del plazo de ${diasPago}d`} color={C.red} size={12}/>}
         <Kpi label="En proceso"        value={MXN(enProceso)}   sub="en elaboración"     color={C.yellow} size={12}/>
-        <Kpi label="Retenido FG"       value={MXN(retenido)}    sub={`fondo ${obra.pctFondoGar}%`}          color={C.red}    size={12}/>
-        <Kpi label="Ret. estratégica"  value={MXN(retenEstra)}  sub={`retención ${obra.pctRetencion||0}%`}  color={C.pink}   size={12}/>
-        <Kpi label="Por recuperar ant."value={MXN(porAmort)}    sub={`anticipo ${obra.pctAnticipo}%`}       color={C.orange} size={12}/>
+        {/* Una retención pactada en cero no tiene nada que reportar: "0% · $0"
+            ocupa un lugar en la rejilla y no contesta ninguna pregunta. El
+            criterio es el porcentaje del contrato, no el monto acumulado —
+            si está pactada y aún no se retiene nada, el $0 sí informa. */}
+        {(obra.pctFondoGar||0) > 0 &&
+          <Kpi label="Retenido FG"      value={MXN(retenido)}   sub={`fondo ${obra.pctFondoGar}%`}         color={C.red}    size={12}/>}
+        {(obra.pctRetencion||0) > 0 &&
+          <Kpi label="Ret. estratégica" value={MXN(retenEstra)} sub={`retención ${obra.pctRetencion}%`}    color={C.pink}   size={12}/>}
+        {(obra.pctAnticipo||0) > 0 &&
+          <Kpi label="Por recuperar ant." value={MXN(porRecuperarAnt)}
+            sub={`de ${MXN(anticipoPactado)} · anticipo ${obra.pctAnticipo}%`} color={C.orange} size={12}/>}
         <Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="saldo del contrato" color={C.indigo} size={12}/>
       </div>
     </Card>
