@@ -38,6 +38,10 @@ const pedir = (metodo, ruta, cuerpo) => new Promise((res, rej) => {
       ...(datos ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(datos) } : {}),
     },
   }, r => {
+    // Ver PENDIENTES, «El transporte que decodificaba a medias»: sin
+    // `setEncoding`, un carácter UTF-8 partido entre dos trozos TCP se
+    // decodifica a la mitad por cada lado.
+    r.setEncoding('utf8');
     let b = ''; r.on('data', d => b += d);
     r.on('end', () => r.statusCode === 200 ? res(JSON.parse(b))
       : r.statusCode === 404 ? res(null)

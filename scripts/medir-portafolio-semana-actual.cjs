@@ -43,6 +43,10 @@ const pedir = (ruta) => new Promise((res, rej) => {
     host: 'firestore.googleapis.com', path: BASE + ruta, method: 'GET',
     headers: { Authorization: `Bearer ${TOKEN}`, 'X-Goog-User-Project': PROYECTO },
   }, r => {
+    // Ver PENDIENTES, «El transporte que decodificaba a medias»: sin
+    // `setEncoding`, un carácter UTF-8 partido entre dos trozos TCP se
+    // decodifica a la mitad por cada lado.
+    r.setEncoding('utf8');
     let b = ''; r.on('data', c => b += c);
     r.on('end', () => {
       if (r.statusCode === 404) return res(null);

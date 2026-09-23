@@ -244,6 +244,11 @@ if (require.main === module) {
   const get = (ruta) => new Promise((res, rej) => {
     https.get({ host: 'firestore.googleapis.com', path: BASE + ruta,
       headers: { Authorization: `Bearer ${TOKEN}`, 'X-Goog-User-Project': P } }, r => {
+      // `setEncoding` antes de juntar: sin él cada trozo se decodifica por su
+      // cuenta y un carácter UTF-8 de varios bytes partido entre dos trozos
+      // TCP sale mutilado. Ver PENDIENTES, «El transporte que decodificaba a
+      // medias».
+      r.setEncoding('utf8');
       let b = ''; r.on('data', d => b += d);
       r.on('end', () => r.statusCode === 200 ? res(JSON.parse(b)) : res(null));
     }).on('error', rej);

@@ -49,6 +49,10 @@ catch { console.error('Falta /tmp/adc.tok — corre `gcloud auth application-def
 const get = (ruta) => new Promise((res, rej) => {
   https.get({ host: 'firestore.googleapis.com', path: BASE + ruta,
     headers: { Authorization: `Bearer ${TOKEN}`, 'X-Goog-User-Project': P } }, r => {
+    // Ver PENDIENTES, «El transporte que decodificaba a medias»: sin
+    // `setEncoding`, un carácter UTF-8 partido entre dos trozos TCP se
+    // decodifica a la mitad por cada lado.
+    r.setEncoding('utf8');
     let b = ''; r.on('data', d => b += d);
     r.on('end', () => {
       if (r.statusCode === 200) return res(JSON.parse(b));

@@ -51,6 +51,10 @@ const pedir = (host, ruta, cuerpo) => new Promise((res, rej) => {
                ...(cuerpo ? { 'Content-Type': 'application/json' } : {}) },
   };
   const r = https.request(opts, resp => {
+    // Ver PENDIENTES, «El transporte que decodificaba a medias»: sin
+    // `setEncoding`, un carácter UTF-8 partido entre dos trozos TCP se
+    // decodifica a la mitad por cada lado.
+    resp.setEncoding('utf8');
     let b = ''; resp.on('data', d => b += d);
     resp.on('end', () => {
       if (resp.statusCode === 200) return res(JSON.parse(b));
