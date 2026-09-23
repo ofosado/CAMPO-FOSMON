@@ -1369,69 +1369,14 @@ exports.recordatorioCapturaObra = onSchedule({
   }
 });
 
-// A2 · Viernes 12pm — Recordatorio de captura de subcontratos
-exports.recordatorioCapturaSubs = onSchedule({
-  schedule: "0 12 * * 5",   // viernes 12:00
-  timeZone: "America/Mexico_City",
-  region: "us-central1",
-}, async () => {
-  const t0 = Date.now();
-  try {
-    const { semana, año } = semanaISOFn(new Date());
-    const idSem = snapIdFn(semana, año);
-    const obrasSnap = await admin.firestore().collection("obras").get();
-    let contadorNotifs = 0;
-    let subsSinCaptura = 0;
-
-    for (const obraDoc of obrasSnap.docs) {
-      const obra = { id: obraDoc.id, ...obraDoc.data() };
-      if (obra.estado === "archivada") continue;
-
-      // Cargar lista de subs de la obra
-      const listaSnap = await admin.firestore()
-        .doc(`obras/${obra.id}/subcontratos/lista`).get();
-      if (!listaSnap.exists) continue;
-      const items = listaSnap.data().items || [];
-      const subsActivos = items.filter(s => (s.estado || "activa") === "activa"
-        && Array.isArray(s.conceptos) && s.conceptos.length > 0);
-      if (subsActivos.length === 0) continue;
-
-      // Para cada sub, revisar si ya tiene snapshot esta semana
-      const subsSinSnap = [];
-      for (const sub of subsActivos) {
-        const path = `obras/${obra.id}/subcontratos/historial_${sub.id}`;
-        const histSnap = await admin.firestore().doc(path).get();
-        const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
-        const yaCapturado = semanas.some(s => s.id === idSem);
-        if (!yaCapturado) subsSinSnap.push(sub);
-      }
-      if (subsSinSnap.length === 0) continue;
-
-      subsSinCaptura += subsSinSnap.length;
-      const usuarios = await usuariosCapturaDeObra(obra.id, true);
-      const nombreCorto = nombreObraNotif(obra);
-      for (const u of usuarios) {
-        if (!u.uid) continue;
-        const nSubs = subsSinSnap.length;
-        await crearNotifCloud(u.uid, {
-          categoria: "recordatorio",
-          tipo: "captura_sub_pendiente",
-          titulo: `Subcontratos sin cierre · ${nombreCorto}`,
-          mensaje: `${nSubs} subcontrato${nSubs > 1 ? "s" : ""} sin capturar avance esta semana (S${semana}).`,
-          link: { tab: "operacion", subTab: "subcontratos", obraId: obra.id },
-        });
-        contadorNotifs++;
-      }
-    }
-    await registrarSalud("recordatorio_subs", true,
-      `${contadorNotifs} notifs, ${subsSinCaptura} subs sin captura`,
-      { duracionMs: Date.now() - t0, subsSinCaptura, notifsEnviadas: contadorNotifs });
-  } catch (e) {
-    console.error("recordatorioCapturaSubs falló:", e);
-    await registrarSalud("recordatorio_subs", false, e.message || String(e),
-      { duracionMs: Date.now() - t0 });
-  }
-});
+// A2 · Aquí vivía `recordatorioCapturaSubs` (viernes 12:00).
+// Retirado el 2026-09-22 junto con el histórico semanal de subcontratos.
+// Preguntaba por `obras/{id}/subcontratos/historial_{subId}`, que ya no lo
+// escribe nadie: pedía un cierre que el sistema no puede registrar. Antes ni
+// siquiera podía acertar —el documento nunca existió, así que `yaCapturado`
+// era falso para siempre— y estaba callado solo porque ningún sub tiene
+// conceptos capturados. Si se revive el histórico, este recordatorio vuelve
+// con él: ver PENDIENTES #31.
 
 // A3+A4 · Lunes 9am — alertas de arranque de semana
 // A3: obras con 3+ pendientes en Operación (avance viejo, almacén/maq/nómina viejo)

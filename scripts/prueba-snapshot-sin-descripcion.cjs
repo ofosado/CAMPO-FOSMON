@@ -6,9 +6,13 @@
 // de cada snapshot era la misma descripción copiada semana tras semana.
 //
 // No comprueba que el campo esté ausente del código: ejecuta el `.map(...)`
-// real de `crearSnapshotAvance` y `crearSnapshotAvanceSub` con una partida de
-// la 0114 y mide, con las reglas de tamaño de Firestore, cuánto pesa el
-// resultado. Contra el estado anterior estas comprobaciones fallan.
+// real de `crearSnapshotAvance` con una partida de la 0114 y mide, con las
+// reglas de tamaño de Firestore, cuánto pesa el resultado. Contra el estado
+// anterior estas comprobaciones fallan.
+//
+// Antes cubría también `crearSnapshotAvanceSub`. Esa función se retiró el
+// 2026-09-22 —escribía en una ruta denegada por reglas y nunca guardó nada—,
+// así que su mitad de la prueba se fue con ella. Ver PENDIENTES #31.
 //
 // Uso:  node scripts/prueba-snapshot-sin-descripcion.cjs [archivo]
 //
@@ -66,8 +70,6 @@ const LIMITE = Number(declaraciones['LIMITE_DOC_FIRESTORE']);
 
 const mapSubs = mapeos['crearSnapshotAvance.subs']
   ? ejecutar('cb', mapeos['crearSnapshotAvance.subs']) : null;
-const mapConceptos = mapeos['crearSnapshotAvanceSub.conceptos']
-  ? ejecutar('cb', mapeos['crearSnapshotAvanceSub.conceptos']) : null;
 
 // ── Datos reales de la 0114 ─────────────────────────────────────────────────
 // Descripción y clave copiadas del snapshot S30-2026 que hay en producción.
@@ -91,11 +93,6 @@ const partida = {
   sec: SEC, sub: DESC, a: 100, imp: 47114.74,
   cant: 994.4961, pu: 1853.42, cantEjec: 616.5876,
 };
-const concepto = {
-  clave: SEC, desc: DESC,
-  avance: 100, importe: 47114.74, cantEjec: 616.5876, cantidad: 994.4961, pu: 1853.42,
-};
-
 // ── Comprobaciones ──────────────────────────────────────────────────────────
 let fallas = 0;
 const check = (ok, titulo, detalle = '') => {
@@ -106,28 +103,22 @@ const check = (ok, titulo, detalle = '') => {
 check(typeof tamañoFirestore === 'function', 'se pudo extraer `tamañoFirestore`');
 check(LIMITE === 1048576, 'el límite declarado es 1 MiB', `${LIMITE} B`);
 check(!!mapSubs, 'se pudo extraer el armado de `subs` de `crearSnapshotAvance`');
-check(!!mapConceptos, 'se pudo extraer el armado de `conceptos` de `crearSnapshotAvanceSub`');
 if (fallas) process.exit(1);
 
 const guardada = mapSubs(partida, 0, [partida]);
-const guardadoConcepto = mapConceptos(concepto, 0, [concepto]);
 
 // 1) La descripción no viaja al snapshot.
-const textos = JSON.stringify(guardada) + JSON.stringify(guardadoConcepto);
-check(!textos.includes('SUMINISTRO'),
+check(!JSON.stringify(guardada).includes('SUMINISTRO'),
   'la descripción no queda en el snapshot',
   Object.keys(guardada).join(', '));
 
 // 2) Pero la llave sí: sin ella el historial no se puede cruzar con el catálogo.
 check(guardada.sec === SEC, 'la partida conserva su llave `sec`');
-check(guardadoConcepto.clave === SEC, 'el concepto conserva su llave `clave`');
 
 // 3) Y los números tampoco se pierden: la serie sigue siendo recalculable.
 check(guardada.a === 100 && guardada.imp === 47114.74, 'conserva avance e importe');
 check(guardada.cant === 994.4961 && guardada.pu === 1853.42 && guardada.cantEjec === 616.5876,
   'conserva cantidad, precio unitario y cantidad ejecutada');
-check(guardadoConcepto.importe === 47114.74 && guardadoConcepto.cantEjec === 616.5876,
-  'el concepto del sub conserva sus números');
 
 // 4) El peso baja. Esta es la comprobación que importa: las anteriores
 //    describen la forma, esta el efecto. Se mide con las reglas de tamaño de

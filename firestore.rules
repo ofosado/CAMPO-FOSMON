@@ -211,6 +211,21 @@ service cloud.firestore {
         allow write: if puedeEditarObraC(obraId);
       }
 
+      // Una semana de nómina por documento (`Y2026-S38`). Es el destino de la
+      // migración del #28; convive con `nomina/historial` mientras la bandera
+      // `formatoHistorial.nomina` de `config/info` siga diciendo 1.
+      //
+      // Esta regla va ANTES de escribir la primera vez, no después. Sin ella
+      // la ruta cae en el `match /{document=**}` final, que deniega todo, y
+      // como las escrituras pasan por helpers que se tragan el fallo, la
+      // migración parecería funcionar mientras no guarda nada. Es exactamente
+      // lo que le pasó al histórico de subcontratos durante tres años
+      // (PENDIENTES #31). Mismos permisos que el documento que reemplaza.
+      match /nomina_historial/{semanaId} {
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
+      }
+
       match /contrato/plazos {
         allow read: if puedeVerObraC(obraId);
         allow write: if puedeEditarObraC(obraId);
