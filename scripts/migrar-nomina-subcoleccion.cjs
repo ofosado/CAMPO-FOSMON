@@ -25,7 +25,11 @@
 //   4. VOLVER A LEERLOS y comparar contra el origen, registro por registro.
 //   4b. Releer el documento viejo y comprobar que no se movió mientras
 //      corríamos — que nadie capturó nómina desde la app.
-//   5. Solo si 4 y 4b salen limpios, levantar la bandera.
+//   4c. Cotejar los NOMBRES de los trabajadores contra esa relectura. El
+//      paso 4 compara contra la lectura de la que se escribió; si esa
+//      lectura llegó corrupta, las dos mitades cuadran corruptas. 4c
+//      compara contra un dato leído en otro momento.
+//   5. Solo si 4, 4b y 4c salen limpios, levantar la bandera.
 //
 // El documento viejo NO se borra. Sigue ahí, intacto, por dos razones: es la
 // red si algo sale mal, y es contra él que compara `avisarSiFaltanSemanas` en
@@ -75,22 +79,40 @@ catch { console.error('Falta /tmp/adc.tok — corre `gcloud auth application-def
 // ── Transporte ──────────────────────────────────────────────────────────────
 // Ningún fallo se traga. Una migración que sigue después de un error de red
 // es una migración que reporta éxito sobre datos a medio mover.
+// El cuerpo se junta en BUFFERS y se decodifica una sola vez al final.
+//
+// Antes era `let b = ''; resp.on('data', d => b += d)`, que decodifica cada
+// trozo por su cuenta. Un carácter UTF-8 de varios bytes —una `Í`, una `Ñ`,
+// que en una nómina mexicana hay en casi cada renglón— partido en la frontera
+// de dos trozos TCP se decodifica a la mitad por cada lado y sale un carácter
+// de reemplazo. Dónde caen las fronteras depende de la red, así que el mismo
+// dato leído dos veces podía dar dos resultados distintos: el 2026-09-23 la
+// migración de la 0112 falló en el paso 4 y pasó al repetirla, con los datos
+// idénticos. Ver PENDIENTES, «El transporte que decodificaba a medias».
+//
+// El rojo falso era lo de menos. Lo grave es el verde falso: si lo que se
+// corrompe es la lectura del ORIGEN, el guion escribe el nombre mutilado y
+// luego compara mutilado contra mutilado. Cuadran, la bandera sube y el
+// apellido queda roto sin nada que lo delate.
+const juntarCuerpo = (resp, listo) => {
+  const trozos = [];
+  resp.on('data', d => trozos.push(Buffer.from(d)));
+  resp.on('end', () => listo(Buffer.concat(trozos).toString('utf8')));
+};
+
 const pedir = (metodo, ruta, cuerpo) => new Promise((res, rej) => {
   const r = https.request({
     host: 'firestore.googleapis.com', path: BASE + ruta, method: metodo,
     headers: { Authorization: `Bearer ${TOKEN}`, 'X-Goog-User-Project': P,
                ...(cuerpo ? { 'Content-Type': 'application/json' } : {}) },
-  }, resp => {
-    let b = ''; resp.on('data', d => b += d);
-    resp.on('end', () => {
-      if (resp.statusCode === 200) return res(JSON.parse(b));
-      if (resp.statusCode === 404 && metodo === 'GET') return res(null);
-      rej(new Error(`${metodo} ${ruta} → ${resp.statusCode}\n${b.slice(0, 400)}` +
-        (resp.statusCode === 401 || resp.statusCode === 403
-          ? '\nSuele ser el token vencido: `gcloud auth application-default print-access-token > /tmp/adc.tok`'
-          : '')));
-    });
-  });
+  }, resp => juntarCuerpo(resp, b => {
+    if (resp.statusCode === 200) return res(JSON.parse(b));
+    if (resp.statusCode === 404 && metodo === 'GET') return res(null);
+    rej(new Error(`${metodo} ${ruta} → ${resp.statusCode}\n${b.slice(0, 400)}` +
+      (resp.statusCode === 401 || resp.statusCode === 403
+        ? '\nSuele ser el token vencido: `gcloud auth application-default print-access-token > /tmp/adc.tok`'
+        : '')));
+  }));
   r.on('error', rej);
   if (cuerpo) r.write(JSON.stringify(cuerpo));
   r.end();
@@ -253,9 +275,50 @@ const compararOrigen = (antesRegs, regs) => {
   return l.join('\n');
 };
 
-const seMovioElOrigen = async (obra, plan) => {
-  const ahora = deCampos(await pedir('GET', `/obras/${obra}/nomina/historial`));
-  return compararOrigen(plan.regs, Array.isArray(ahora?.semanas) ? ahora.semanas : []);
+const leerOrigen = async (obra) => {
+  const d = deCampos(await pedir('GET', `/obras/${obra}/nomina/historial`));
+  return Array.isArray(d?.semanas) ? d.semanas : [];
+};
+
+// ── 4c. Los nombres, contra el origen releído ───────────────────────────────
+// El paso 4 contrasta lo escrito contra `plan`, y `plan` salió de la MISMA
+// lectura que se escribió. Si esa lectura llegó corrupta, las dos mitades
+// comparten el defecto y cuadran: mutilado contra mutilado. Ése es el hueco
+// que dejó abierto el defecto de transporte del 2026-09-23, y no lo cierra
+// arreglar el transporte —lo cierra no volver a confiar en una sola lectura.
+//
+// Aquí se compara contra el origen leído OTRA VEZ, en otro momento y por otra
+// conexión, y se mira el dato que más delata una decodificación a medias: el
+// nombre del trabajador. Un peso mal leído se nota en la suma; un apellido
+// con un carácter de reemplazo no se nota en nada.
+const firmaNombres = (regs) => regs
+  .map(r => [String(r?.archivo ?? ''),
+             ...(r?.trabajadores || []).map(t => String(t?.nombre ?? ''))].join('\u0000'))
+  .sort();
+
+const compararNombres = (origenRegs, subPartes) => {
+  const a = firmaNombres(origenRegs), b = firmaNombres(subPartes);
+  const fallas = [];
+  if (a.length !== b.length) {
+    fallas.push(`el origen tiene ${a.length} carga(s) y la subcolección ${b.length}`);
+    return fallas;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    const [archA, ...na] = a[i].split('\u0000');
+    const [archB, ...nb] = b[i].split('\u0000');
+    if (archA !== archB) {
+      fallas.push(`el nombre del archivo no coincide: el origen dice «${archA}» y la subcolección «${archB}»`);
+      continue;
+    }
+    if (na.length !== nb.length) {
+      fallas.push(`«${archA}»: el origen trae ${na.length} trabajador(es) y la subcolección ${nb.length}`);
+      continue;
+    }
+    for (let j = 0; j < na.length; j++) if (na[j] !== nb[j])
+      fallas.push(`«${archA}», trabajador ${j + 1}: el origen dice «${na[j]}» y la subcolección «${nb[j]}»`);
+  }
+  return fallas;
 };
 
 // ── 4. Releer y comparar contra el origen ───────────────────────────────────
@@ -282,7 +345,9 @@ const verificar = async (obra, plan) => {
   const suma = (a) => a.reduce((t, r) => t + (Number(r.totalNomina) || 0), 0);
   if (Math.round(suma(leidos)) !== Math.round(suma(plan.regs)))
     fallas.push(`el dinero no cuadra: ${MXN(suma(leidos))} en la subcolección contra ${MXN(suma(plan.regs))} en el origen`);
-  return fallas;
+  // `leidos` se devuelve para que el paso 4c compare esos nombres —los que
+  // están de verdad en la subcolección— contra el origen releído.
+  return { fallas, leidos };
 };
 
 // ── Programa ────────────────────────────────────────────────────────────────
@@ -346,7 +411,7 @@ const verificar = async (obra, plan) => {
 
     // 4. Releer y comparar
     console.log('\nVerificando contra el origen…');
-    const fallas = await verificar(obra, plan);
+    const { fallas, leidos } = await verificar(obra, plan);
     if (fallas.length) {
       console.log(`\n${fallas.length} problema(s):`);
       for (const f of fallas) console.log('  ' + f);
@@ -357,9 +422,13 @@ const verificar = async (obra, plan) => {
     }
     console.log('  todo cuadra: mismas semanas, mismas partes, mismo dinero.');
 
+    // 4b y 4c comparten una sola relectura del origen: una lectura distinta de
+    // la que armó el plan, que es justamente lo que les da valor.
+    const ahoraRegs = await leerOrigen(obra);
+
     // 4b. Última mirada al origen antes del punto de no retorno.
     console.log('\nComprobando que nadie cargó nómina mientras tanto…');
-    const movido = await seMovioElOrigen(obra, plan);
+    const movido = compararOrigen(plan.regs, ahoraRegs);
     if (movido) {
       console.log('\nEl documento viejo CAMBIÓ durante la migración:\n');
       console.log(movido.split('\n').map(l => '  ' + l).join('\n'));
@@ -372,6 +441,23 @@ const verificar = async (obra, plan) => {
       continue;
     }
     console.log('  el origen sigue igual que al empezar.');
+
+    // 4c. Los nombres, contra esa relectura.
+    console.log('\nCotejando los nombres contra el origen releído…');
+    const mutilados = compararNombres(ahoraRegs, leidos);
+    if (mutilados.length) {
+      console.log(`\n${mutilados.length} nombre(s) no coinciden con el origen:\n`);
+      for (const f of mutilados.slice(0, 20)) console.log('  ' + f);
+      if (mutilados.length > 20) console.log(`  … y ${mutilados.length - 20} más`);
+      console.log('\nLa bandera NO se levanta. Esto no es un desajuste de cuentas:');
+      console.log('es texto que llegó distinto por dos lecturas del mismo dato, y');
+      console.log('apunta a una decodificación a medias. No lo repitas a ciegas —');
+      console.log('mira primero qué carácter cambió.');
+      problemas++;
+      continue;
+    }
+    const cuantos = leidos.reduce((t, p) => t + (p.trabajadores || []).length, 0);
+    console.log(`  ${cuantos} de ${cuantos} nombres idénticos al origen.`);
 
     // 5. Bandera
     // La máscara es `formatoHistorial.nomina`, ANIDADA, no `formatoHistorial`.

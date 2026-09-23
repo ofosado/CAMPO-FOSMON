@@ -54,11 +54,19 @@ traverse(ast, {
     if (/config\/info/.test(src.slice(ruta.start, ruta.end))) iBandera = p.node.start;
   },
 });
-const iLlamada = src.indexOf('seMovioElOrigen(obra, plan)');
-if (iLlamada < 0) faltan.push('la llamada a seMovioElOrigen en el programa');
+// La comparación tiene que correr contra una RELECTURA del origen, no contra
+// lo que ya se tenía en memoria: de ahí que se exija ver las dos cosas, y en
+// ese orden. (Antes esto vivía en `seMovioElOrigen`, que se partió en
+// `leerOrigen` + `compararOrigen` para que el paso 4c reusara la relectura.)
+const iRelectura = src.indexOf('await leerOrigen(obra)');
+const iLlamada = src.indexOf('compararOrigen(plan.regs, ahoraRegs)');
+if (iRelectura < 0) faltan.push('la relectura del origen (leerOrigen) en el programa');
+if (iLlamada < 0) faltan.push('la llamada a compararOrigen contra esa relectura');
 if (iBandera < 0) faltan.push('el PATCH que sube la bandera en config/info');
 if (iLlamada >= 0 && iBandera >= 0 && iLlamada > iBandera)
   faltan.push('la comprobación corre DESPUÉS de subir la bandera, no antes');
+if (iRelectura >= 0 && iLlamada >= 0 && iRelectura > iLlamada)
+  faltan.push('el origen se relee DESPUÉS de compararlo, así que no se compara con nada');
 if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 const { compararOrigen } = new Function(`"use strict";
