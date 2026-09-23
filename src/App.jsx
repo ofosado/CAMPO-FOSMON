@@ -14,7 +14,7 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, historialSubs = {}, nominaHistorial = []) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = []) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -1653,122 +1653,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         ySub += bloqueH + 3;
       }
 
-      // Tendencia semanal del subcontrato (si hay historial).
-      // Recalculado bajo el esquema nuevo: la serie de subs sí es recuperable
-      // porque guardó `cantEjec` desde el principio.
-      const histSub = recalcularHistorialSub(
-        historialSubs[sub.id] || [], sub.conceptos || [],
-        (sub.modoAvance || "porcentaje") === "volumen", contratoDeSub(sub));
-      if (histSub.length >= 2 && (CYmax - ySub) > 45) {
-        ySub = secHead('Tendencia semanal · Ejecutado vs Pagado', ySub, K.gtx);
-        // Construir series
-        const semanaISOLocalPDF = (fecha) => {
-          const d = new Date(fecha);
-          if (isNaN(d)) return null;
-          d.setHours(0,0,0,0);
-          d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-          const inicioAño = new Date(d.getFullYear(), 0, 1);
-          return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
-        };
-        const ordenados = [...histSub].sort((a,b) => (a.año-b.año) || (a.semana-b.semana));
-        // Fuente de "pagado" acumulado: estimaciones marcadas Pagada +
-        // pagos legacy sin origenEstimacionId (para no doble-contar).
-        const pagosPorSemMap = new Map();
-        const sumarASem = (fecha, monto) => {
-          if (!fecha || !monto) return;
-          const iso = semanaISOLocalPDF(fecha);
-          if (!iso) return;
-          const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
-          pagosPorSemMap.set(k, (pagosPorSemMap.get(k) || 0) + monto);
-        };
-        (sub.estimaciones || []).forEach(e => {
-          if (_neEstPDF(e.estatus) === 'pagada') sumarASem(e.fecha, pf(e.monto));
-        });
-        (sub.pagos || []).filter(p => p.estatus === 'pagado' && !p.origenEstimacionId).forEach(p => {
-          sumarASem(p.fecha, pf(p.monto));
-        });
-        const primKey = `${ordenados[0].año}-W${String(ordenados[0].semana).padStart(2,'0')}`;
-        let acumP = 0;
-        pagosPorSemMap.forEach((v, k) => { if (k < primKey) acumP += v; });
-        const puntos = ordenados.map(s => {
-          const k = `${s.año}-W${String(s.semana).padStart(2,'0')}`;
-          acumP += pagosPorSemMap.get(k) || 0;
-          return {
-            sem: s.semana, año: s.año,
-            pctEjec: pf(sub.monto) > 0 && s.montoEjecutado > 0 ? (s.montoEjecutado / pf(sub.monto)) * 100 : 0,
-            pctPag: pf(sub.monto) > 0 ? Math.min(100, (acumP / pf(sub.monto)) * 100) : 0,
-          };
-        });
-        // Área del gráfico: 30mm alto x CW ancho
-        const gX = ML, gY = ySub, gW = CW, gH = 32;
-        const gPL = 12, gPR = 6, gPT = 4, gPB = 10;
-        const cw2 = gW - gPL - gPR;
-        const ch2 = gH - gPT - gPB;
-        const maxYPDF = Math.min(100, Math.max(...puntos.map(p => Math.max(p.pctEjec, p.pctPag))) + 10);
-        const xP = (i) => gX + gPL + (cw2 / Math.max(puntos.length - 1, 1)) * i;
-        const yP = (v) => gY + gPT + ch2 - (Math.min(v, maxYPDF) / maxYPDF) * ch2;
-        // Fondo
-        sf(K.glt); doc.rect(gX + gPL, gY + gPT, cw2, ch2, 'F');
-        // Grid Y
-        [0, 0.5, 1].forEach(p => {
-          sd(K.gbd); doc.setLineWidth(0.15);
-          doc.line(gX + gPL, gY + gPT + ch2 * p, gX + gPL + cw2, gY + gPT + ch2 * p);
-          const v = maxYPDF - maxYPDF * p;
-          st(K.gmu); fs(6);
-          doc.text(`${v.toFixed(0)}%`, gX + gPL - 1, gY + gPT + ch2 * p + 1.5, { align: 'right' });
-        });
-        // Área sombreada entre las dos series
-        const ultimo = puntos[puntos.length - 1];
-        const areaCol = ultimo.pctEjec >= ultimo.pctPag ? K.vd : K.am;
-        // Triangulación simple: para cada par consecutivo, dibujar polígono
-        for (let i = 0; i < puntos.length - 1; i++) {
-          const p1 = puntos[i], p2 = puntos[i + 1];
-          const x1 = xP(i), x2 = xP(i + 1);
-          const y1e = yP(p1.pctEjec), y2e = yP(p2.pctEjec);
-          const y1p = yP(p1.pctPag),  y2p = yP(p2.pctPag);
-          sf([...areaCol, 0.2]);
-          // Rombo entre 4 puntos
-          doc.setFillColor(...areaCol);
-          const opacityHack = doc.setGState
-            ? doc.setGState(new doc.GState({ opacity: 0.2 }))
-            : null;
-          doc.triangle(x1, y1e, x1, y1p, x2, y2p, 'F');
-          doc.triangle(x1, y1e, x2, y1e, x2, y2p, 'F');
-          if (opacityHack) doc.setGState(new doc.GState({ opacity: 1 }));
-        }
-        // Línea de % ejecutado (azul, sólida)
-        sd(K.ak); doc.setLineWidth(0.6);
-        for (let i = 0; i < puntos.length - 1; i++) {
-          doc.line(xP(i), yP(puntos[i].pctEjec), xP(i+1), yP(puntos[i+1].pctEjec));
-        }
-        // Línea de % pagado (verde, sólida — el dashed no siempre se ve bien)
-        sd(K.vk); doc.setLineWidth(0.6);
-        for (let i = 0; i < puntos.length - 1; i++) {
-          doc.line(xP(i), yP(puntos[i].pctPag), xP(i+1), yP(puntos[i+1].pctPag));
-        }
-        // Puntos + valor último
-        puntos.forEach((p, i) => {
-          sf(K.ak); doc.circle(xP(i), yP(p.pctEjec), 0.7, 'F');
-          sf(K.vk); doc.circle(xP(i), yP(p.pctPag),  0.7, 'F');
-        });
-        st(K.ak); fs(7); fw('bold');
-        doc.text(`${ultimo.pctEjec.toFixed(1)}%`, xP(puntos.length-1) - 1, yP(ultimo.pctEjec) - 1, { align:'right' });
-        st(K.vk); doc.text(`${ultimo.pctPag.toFixed(1)}%`, xP(puntos.length-1) - 1, yP(ultimo.pctPag) + 3.5, { align:'right' });
-        // Labels X (primera y última semana)
-        st(K.gtx); fs(6.5); fw('normal');
-        doc.text(`S${puntos[0].sem}`, xP(0), gY + gH - 1, { align:'center' });
-        doc.text(`S${ultimo.sem}`, xP(puntos.length-1), gY + gH - 1, { align:'center' });
-        // Leyenda
-        ySub = gY + gH + 3;
-        sf(K.ak); doc.rect(ML, ySub, 3, 1.5, 'F');
-        st(K.gtx); fs(6.5); fw('normal');
-        doc.text('% Ejecutado', ML + 4, ySub + 1.4);
-        sf(K.vk); doc.rect(ML + 32, ySub, 3, 1.5, 'F');
-        doc.text('% Pagado', ML + 36, ySub + 1.4);
-        sf(areaCol); doc.rect(ML + 60, ySub - 0.5, 3, 2.5, 'F');
-        doc.text(`Balance ${ultimo.pctEjec >= ultimo.pctPag ? '(rezago)' : '(adelanto)'}`, ML + 64, ySub + 1.4);
-        ySub += 6;
-      }
+    // La gráfica semanal del subcontrato se retiró el 2026-09-22: prometía una
+    // serie que nunca pudo existir. `obras/{id}/subcontratos/historial_*` no
+    // tiene regla en firestore.rules y cae en el `match /{document=**}` que lo
+    // deniega todo, así que la escritura llevaba meses rebotando en silencio
+    // (`fsSet` se traga el fallo) y la lectura devolvía siempre vacío. Ningún
+    // usuario la vio funcionar. Ver PENDIENTES #31.
 
       // Catálogo de conceptos
       if ((sub.conceptos||[]).length > 0) {
@@ -2842,126 +2732,14 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
   }
 };
 
-// ── Snapshot de avance del SUBCONTRATO (histórico semanal por sub) ──
-// Estructura Firestore: obras/{obraId}/subcontratos/historial_{subId} = { semanas: [...] }
-// Cada snapshot: { id, semana, año, fechaCaptura, tipo, capturadoPor,
-//                  conceptos: [{clave, avance, importe, cantEjec}],
-//                  avancePonderado, montoEjecutado }
-// Se dispara automáticamente al guardar cambios de avance del sub.
-const crearSnapshotAvanceSub = async (obraId, subId, conceptos, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0) => {
-  if (!obraId || !subId || !Array.isArray(conceptos) || conceptos.length === 0) return null;
-  try {
-    const ahora = new Date();
-    const { semana, año } = semanaISO(ahora);
-    const id = snapshotId(semana, año);
-    const totalImporte = conceptos.reduce((t, c) => t + (parseFloat(c.importe) || 0), 0);
-    // Igual que en la obra: el denominador es lo contratado con el proveedor.
-    const contratoRef = (parseFloat(contrato) || 0) > 0 ? parseFloat(contrato) : totalImporte;
-    const avancePonderado = avanceFisicoPonderado(conceptos, contratoRef, modoVol);
-    const { catalogo, excedente, total } = desgloseEjecutado(conceptos, modoVol);
-    const snap = {
-      id, semana, año,
-      fechaCaptura: ahora.toISOString(),
-      fechaCierre: tipo === "oficial" ? ahora.toISOString() : null,
-      tipo, capturadoPor: capturadoPor || 'sistema',
-      // Sin `desc`, por lo mismo que en `crearSnapshotAvance`: la descripción
-      // se repite idéntica en cada semana y se puede sacar del catálogo del
-      // sub cruzando por `clave`.
-      conceptos: conceptos.map(c => ({
-        clave: c.clave || '',
-        avance: c.avance || 0, importe: parseFloat(c.importe) || 0,
-        cantEjec: parseFloat(c.cantEjec) || 0,
-        cantidad: parseFloat(c.cantidad) || 0,
-        pu: parseFloat(c.pu) || 0,
-      })),
-      avancePonderado,
-      montoEjecutado: total,
-      montoCatalogo: catalogo,
-      montoExcedente: excedente,
-      contratoRef,
-      modoAvance: modoVol ? "volumen" : "porcentaje",
-      esquema: ESQUEMA_SNAPSHOT,
-    };
-    const path = `obras/${obraId}/subcontratos/historial_${subId}`;
-    const hist = await fsGet(path) || { semanas: [] };
-    const semanas = (hist.semanas || []).slice();
-    const idx = semanas.findIndex(s => s.id === id);
-    if (idx >= 0) {
-      if (semanas[idx].tipo === "oficial" && tipo !== "oficial") return null;
-      semanas[idx] = snap;
-    } else {
-      semanas.push(snap);
-    }
-    semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
-    const recortadas = semanas.slice(-52);
-    await fsSet(path, { semanas: recortadas });
-    return snap;
-  } catch (e) {
-    console.error('crearSnapshotAvanceSub', e);
-    return null;
-  }
-};
-
-// ── Recálculo de la serie histórica de SUBCONTRATOS ───────────────────
-// A diferencia de la serie de obra, esta SÍ es recuperable: el snapshot de
-// subcontrato guardó `cantEjec` desde el primer día (solo el `montoEjecutado`
-// se calculaba del `avance` recortado). Lo único que le falta al esquema 1 es
-// el precio unitario, que se toma del catálogo vivo empatando por `clave`.
-//
-// Es un recálculo EN LECTURA: devuelve objetos nuevos y no reescribe Firestore.
-// Deja dos banderas por snapshot:
-//   recalculado — se reconstruyó con cantEjec × pu
-//   comparable  — todos los conceptos con avance tenían precio unitario.
-//                 Si un concepto se borró o le cambiaron la clave, no hay de
-//                 dónde sacar el pu y ese punto queda marcado como no comparable.
-const recalcularHistorialSub = (semanas = [], conceptosVivos = [], modoVol = false, contrato = 0) => {
-  const lista = Array.isArray(semanas) ? semanas : [];
-  if (!modoVol) return lista.map(s => ({ ...s, recalculado: false, comparable: true }));
-
-  const refPorClave = new Map();
-  for (const c of (conceptosVivos || [])) {
-    const k = (c?.clave || '').trim();
-    if (!k) continue;
-    const cantidad = parseFloat(c.cantidad) || 0;
-    const importe = parseFloat(c.importe) || 0;
-    const pu = parseFloat(c.pu) || (cantidad > 0 ? importe / cantidad : 0);
-    refPorClave.set(k, { pu, cantidad });
-  }
-
-  return lista.map(s => {
-    if ((s?.esquema || 1) >= ESQUEMA_SNAPSHOT) {
-      return { ...s, recalculado: false, comparable: true };
-    }
-    let sinPrecio = 0;
-    const conceptos = (s?.conceptos || []).map(c => {
-      const ref = refPorClave.get((c?.clave || '').trim());
-      const importe = parseFloat(c?.importe) || 0;
-      const cantidad = parseFloat(c?.cantidad) || ref?.cantidad || 0;
-      const pu = parseFloat(c?.pu) || ref?.pu
-        || (cantidad > 0 ? importe / cantidad : 0);
-      if ((parseFloat(c?.cantEjec) || 0) > 0 && !(pu > 0)) sinPrecio++;
-      return { ...c, pu, cantidad, importe: importe || cantidad * pu };
-    });
-    const totalImporte = conceptos.reduce((t, c) => t + (parseFloat(c.importe) || 0), 0);
-    const contratoRef = (parseFloat(contrato) || 0) > 0 ? parseFloat(contrato) : totalImporte;
-    const { catalogo, excedente, total } = desgloseEjecutado(conceptos, true);
-    return {
-      ...s,
-      conceptos,
-      avancePonderado: avanceFisicoPonderado(conceptos, contratoRef, true),
-      montoEjecutado: total,
-      montoCatalogo: catalogo,
-      montoExcedente: excedente,
-      contratoRef,
-      // El esquema sube porque el punto ya es comparable con los nuevos.
-      esquema: ESQUEMA_SNAPSHOT,
-      recalculado: true,
-      comparable: sinPrecio === 0,
-      conceptosSinPrecio: sinPrecio,
-    };
-  });
-};
-
+// ── Aquí vivía el histórico semanal del SUBCONTRATO ───────────────────
+// Retirado el 2026-09-22 junto con su gráfica. Escribía en
+// `obras/{obraId}/subcontratos/historial_{subId}`, ruta que no tiene regla en
+// firestore.rules y cae en el `match /{document=**}` que deniega todo. Como
+// `fsSet` se traga el fallo, la escritura llevaba meses rebotando en silencio y
+// la lectura devolvía siempre vacío: nunca existió un solo snapshot de sub en
+// producción, en ninguna de las cinco obras. Ver PENDIENTES #31 para lo que
+// habría que hacer si algún día se quiere de verdad.
 // ════════════════════════════════════════════════════════════════════════════
 // BIBLIOTECA DE RIESGOS
 // ════════════════════════════════════════════════════════════════════════════
@@ -14882,175 +14660,6 @@ function ModalNuevoSubcontrato({onSave, onClose}){
   </div>;
 }
 
-// ── GRÁFICA SEMANAL DEL SUBCONTRATO ─────────────────────────────────────
-// 2 líneas: % ejecutado y % pagado (relativos al monto contratado).
-// Área sombreada entre ambas = "Balance físico-financiero":
-//   verde si el sub ejecutó más de lo que se le pagó (rezago de pago),
-//   ámbar si el sub cobró más de lo que ejecutó (adelanto de pago).
-// Reutiliza el mismo enfoque de tendencia de la obra madre.
-function GraficaSemanalSub({sub, historial, pagos, estimaciones}) {
-  // Semanas ordenadas y su porcentaje de ejecución
-  const semanas = [...historial]
-    .sort((a,b) => (a.año - b.año) || (a.semana - b.semana))
-    .map(s => ({
-      key: `${s.año}-W${String(s.semana).padStart(2,'0')}`,
-      sem: s.semana, año: s.año,
-      pctEjec: s.montoEjecutado > 0 && sub.monto > 0 ? (s.montoEjecutado / sub.monto) * 100 : 0,
-      fecha: s.fechaCaptura,
-    }));
-  // Calcular % pagado acumulado por semana ISO
-  const semanaISOLocal = (fecha) => {
-    const d = new Date(fecha);
-    if (isNaN(d)) return null;
-    d.setHours(0,0,0,0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const inicioAño = new Date(d.getFullYear(), 0, 1);
-    return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
-  };
-  // Sumar "pagado" por semana ISO — desde estimaciones Pagadas +
-  // pagos legacy sin origenEstimacionId (para no doble-contar).
-  const _neS = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const pagosPorSem = new Map();
-  const sumarASemLocal = (fecha, monto) => {
-    if (!fecha || !monto) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    const k = `${iso.año}-W${String(iso.sem).padStart(2,'0')}`;
-    pagosPorSem.set(k, (pagosPorSem.get(k) || 0) + monto);
-  };
-  (estimaciones || []).forEach(e => {
-    if (_neS(e.estatus) === 'pagada') sumarASemLocal(e.fecha, parseFloat(e.monto) || 0);
-  });
-  (pagos || []).filter(p => p.estatus === 'pagado' && !p.origenEstimacionId).forEach(p => {
-    sumarASemLocal(p.fecha, parseFloat(p.monto) || 0);
-  });
-  // Recorrer semanas cronológicamente y acumular pagos hasta la fecha
-  let acumPag = 0;
-  // Primero: pagos anteriores a la primera semana visible
-  if (semanas[0]) {
-    const primKey = semanas[0].key;
-    pagosPorSem.forEach((v, k) => { if (k < primKey) acumPag += v; });
-  }
-  const puntos = semanas.map(s => {
-    acumPag += pagosPorSem.get(s.key) || 0;
-    return { ...s, pctPag: sub.monto > 0 ? Math.min(100, (acumPag / sub.monto) * 100) : 0 };
-  });
-
-  if (puntos.length < 2) return null;
-
-  // Rango del eje Y: 0 a max(ejec, pag) + 10, tope 100
-  const maxY = Math.min(100, Math.max(...puntos.map(p => Math.max(p.pctEjec, p.pctPag))) + 10);
-
-  // SVG
-  const W = 720, H = 170, PL = 40, PR = 18, PT = 22, PB = 32;
-  const cw = W - PL - PR, ch = H - PT - PB;
-  const xPos = (i) => PL + (cw / Math.max(puntos.length - 1, 1)) * i;
-  const yPos = (v) => PT + ch - (Math.min(v, maxY) / maxY) * ch;
-
-  // Ruta del área sombreada entre las 2 líneas (para relleno)
-  const areaPath = (() => {
-    const top = puntos.map((p, i) => `${xPos(i)},${yPos(Math.max(p.pctEjec, p.pctPag))}`);
-    const bot = [...puntos].reverse().map((p, i) => {
-      const idx = puntos.length - 1 - i;
-      return `${xPos(idx)},${yPos(Math.min(p.pctEjec, p.pctPag))}`;
-    });
-    return `M ${top.join(' L ')} L ${bot.join(' L ')} Z`;
-  })();
-
-  // Color del área: verde si en promedio ejec > pag (rezago de pago),
-  // ámbar si pag > ejec (adelanto de pago). El "peor" define el color.
-  const ultimo = puntos[puntos.length - 1];
-  const areaColor = ultimo.pctEjec >= ultimo.pctPag ? C.green : C.yellow;
-
-  return <Card>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,flexWrap:"wrap",gap:6}}>
-      <Tit>Tendencia semanal del subcontrato</Tit>
-      <span style={{fontSize:9,color:C.textMut}}>
-        {puntos.length} semana(s) con snapshot
-      </span>
-    </div>
-    {/* Leyenda */}
-    <div style={{display:"flex",gap:12,marginBottom:6,fontSize:10,color:C.textSec,flexWrap:"wrap"}}>
-      <div style={{display:"flex",alignItems:"center",gap:5}}>
-        <span style={{display:"inline-block",width:14,height:2,background:C.blueDk}}/>
-        % Ejecutado
-      </div>
-      <div style={{display:"flex",alignItems:"center",gap:5}}>
-        <span style={{display:"inline-block",width:14,height:2,background:C.greenDk,borderStyle:"dashed"}}/>
-        % Pagado
-      </div>
-      <div style={{display:"flex",alignItems:"center",gap:5}}>
-        <span style={{display:"inline-block",width:12,height:8,background:areaColor,opacity:0.25,borderRadius:2}}/>
-        Balance físico-financiero
-      </div>
-    </div>
-    <div style={{overflowX:"auto",width:"100%"}}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",minWidth:500}}
-        preserveAspectRatio="xMidYMid meet">
-        {/* Eje Y: 3 líneas guía */}
-        {[0, 0.5, 1].map(p => (
-          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
-            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
-        ))}
-        {[0, 0.5, 1].map(p => {
-          const v = maxY - maxY * p;
-          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
-            textAnchor="end" fontSize="9" fill={C.textMut}>
-            {v.toFixed(0)}%
-          </text>;
-        })}
-        {/* Área sombreada entre las 2 líneas */}
-        <path d={areaPath} fill={areaColor} opacity={0.2}/>
-        {/* Línea de % ejecutado */}
-        <polyline
-          fill="none" stroke={C.blueDk} strokeWidth={2}
-          points={puntos.map((p, i) => `${xPos(i)},${yPos(p.pctEjec)}`).join(' ')}/>
-        {/* Línea de % pagado (dashed para diferenciar) */}
-        <polyline
-          fill="none" stroke={C.greenDk} strokeWidth={2} strokeDasharray="4,3"
-          points={puntos.map((p, i) => `${xPos(i)},${yPos(p.pctPag)}`).join(' ')}/>
-        {/* Puntos + valores en último */}
-        {puntos.map((p, i) => (
-          <g key={p.key}>
-            <circle cx={xPos(i)} cy={yPos(p.pctEjec)} r={2.5} fill={C.blueDk}/>
-            <circle cx={xPos(i)} cy={yPos(p.pctPag)}  r={2.5} fill={C.greenDk}/>
-            {i === puntos.length - 1 && <>
-              <text x={xPos(i) - 4} y={yPos(p.pctEjec) - 4}
-                textAnchor="end" fontSize="9" fill={C.blueDk} fontWeight="700">
-                {p.pctEjec.toFixed(1)}%
-              </text>
-              <text x={xPos(i) - 4} y={yPos(p.pctPag) + 10}
-                textAnchor="end" fontSize="9" fill={C.greenDk} fontWeight="700">
-                {p.pctPag.toFixed(1)}%
-              </text>
-            </>}
-          </g>
-        ))}
-        {/* Eje X: labels de semanas cada N para no encimar */}
-        {puntos.map((p, i) => {
-          // Mostrar máximo 6 labels distribuidos
-          const step = Math.max(1, Math.floor(puntos.length / 6));
-          if (i % step !== 0 && i !== puntos.length - 1) return null;
-          return <text key={p.key} x={xPos(i)} y={H - 12}
-            textAnchor="middle" fontSize="9" fill={C.textSec} fontWeight="600">
-            S{p.sem}
-          </text>;
-        })}
-      </svg>
-    </div>
-    {/* Resumen abajo — mismo lenguaje que el KPI del header */}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-      marginTop:6,paddingTop:6,borderTop:`0.5px solid ${C.border}`,fontSize:10,color:C.textMut,flexWrap:"wrap",gap:8}}>
-      <span>Ejecutado <b style={{color:C.blueDk}}>{ultimo.pctEjec.toFixed(1)}%</b> · Pagado <b style={{color:C.greenDk}}>{ultimo.pctPag.toFixed(1)}%</b></span>
-      <span style={{fontWeight:600,color:areaColor}}>
-        {(ultimo.pctEjec - ultimo.pctPag) >= 0
-          ? `Rezago de pago +${(ultimo.pctEjec - ultimo.pctPag).toFixed(1)}pp`
-          : `Adelanto de pago ${(ultimo.pctEjec - ultimo.pctPag).toFixed(1)}pp`}
-      </span>
-    </div>
-  </Card>;
-}
-
 // ── DETALLE DE UN SUBCONTRATO ──
 function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, usuario}){
   const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
@@ -15065,32 +14674,10 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   const fileAdjuntoRef = useRef();
   const[uploadingAdj,setUploadingAdj]=useState(false);
 
-  // ── HISTORIAL SEMANAL DEL SUB ──
-  // Carga snapshots guardados por crearSnapshotAvanceSub para graficar la
-  // evolución de % ejecutado y % pagado semana a semana.
-  const [historialSub, setHistorialSub] = useState([]);
-  const [historialLoaded, setHistorialLoaded] = useState(false);
-  useEffect(() => {
-    fsGet(`obras/${obra.id}/subcontratos/historial_${sub.id}`).then(d => {
-      setHistorialSub(Array.isArray(d?.semanas) ? d.semanas : []);
-      setHistorialLoaded(true);
-    });
-  }, [obra.id, sub.id]);
-
   // ── Modo de captura de avance del subcontrato ──
   // Igual que en la obra madre: "porcentaje" (default) o "volumen".
-  // Se declara aquí arriba porque el cálculo del ejecutado y el recálculo
-  // del historial ya lo necesitan.
   const modoAvance = sub.modoAvance || "porcentaje";
   const modoVolSub = modoAvance === "volumen";
-
-  // La serie histórica de subcontratos SÍ es recuperable: sus snapshots
-  // guardaron `cantEjec` desde el primer día. Se recalcula en lectura contra
-  // el catálogo vivo, así que la gráfica es comparable de punta a punta sin
-  // reescribir nada en Firestore.
-  const historialSubCalc = useMemo(
-    () => recalcularHistorialSub(historialSub, sub.conceptos, modoVolSub, contratoDeSub(sub)),
-    [historialSub, sub.conceptos, modoVolSub, sub.monto]);
 
   const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
   const ejecutado = desgloseEjecutado(sub.conceptos, modoVolSub).total;
@@ -15297,19 +14884,9 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     onUpdate({conceptos: [...sub.conceptos,
       {id: Date.now(), clave:"", desc:"", unidad:"", cantidad:0, pu:0, importe:0, avance:0, cantEjec:0, fotos:[]}]});
   };
-  // ── Snapshot semanal automático (debounced) ──
-  // Se dispara 3s después del último cambio para evitar escribir Firestore
-  // por cada tecla. Solo se agenda si el cambio afectó el avance real
-  // (avance% o cantEjec).
-  const snapshotDebounceRef = useRef(null);
-  const agendarSnapshot = (conceptosNuevos) => {
-    if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current);
-    snapshotDebounceRef.current = setTimeout(() => {
-      crearSnapshotAvanceSub(obra.id, sub.id, conceptosNuevos, usuario?.correo,
-        "intermedio", (sub.modoAvance || "porcentaje") === "volumen",
-        contratoDeSub(sub));
-    }, 3000);
-  };
+  // Aquí se agendaba un snapshot semanal del sub 3s después del último cambio.
+  // Retirado el 2026-09-22: escribía en una ruta que las reglas deniegan, así
+  // que en tres años no guardó ni un punto. Ver PENDIENTES #31.
   const actualizarConcepto = (idx, cambios) => {
     const nuevosConceptos = sub.conceptos.map((c,i) => {
       if(i !== idx) return c;
@@ -15318,10 +14895,6 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       return nuevo;
     });
     onUpdate({conceptos: nuevosConceptos});
-    // Snapshot solo si cambió el avance
-    if ("avance" in cambios || "cantEjec" in cambios) {
-      agendarSnapshot(nuevosConceptos);
-    }
   };
   const eliminarConcepto = (idx) => {
     onUpdate({conceptos: sub.conceptos.filter((_,i) => i !== idx)});
@@ -15442,14 +15015,8 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       })()}
     </Card>
 
-    {/* GRÁFICA SEMANAL DEL SUB — 2 líneas + área sombreada del delta ────
-        Muestra la evolución semanal de: % ejecutado y % pagado (relativos
-        al monto contratado). El área entre ambas es el "balance físico-
-        financiero". Solo aparece si hay al menos 2 snapshots en el
-        historial (una semana sola no forma tendencia). */}
-    {historialLoaded && historialSubCalc.length >= 2 && (
-      <GraficaSemanalSub sub={sub} historial={historialSubCalc} pagos={pagos} estimaciones={estimacionesSub}/>
-    )}
+    {/* Aquí iba la gráfica semanal del sub. Retirada el 2026-09-22: ver la
+        nota en `generarPDFObra`. Nunca hubo serie que graficar. */}
 
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
@@ -17078,9 +16645,10 @@ const JOBS_PROGRAMADOS = [
   { id:"recordatorio_obra", funcion:"recordatorioCapturaObra",nombre:"Recordatorio de captura · obra",
     que:"Notifica a las obras que no han capturado avance.",
     cuando:"viernes 10:00",  limiteHoras: 9*24 },
-  { id:"recordatorio_subs", funcion:"recordatorioCapturaSubs",nombre:"Recordatorio de captura · subcontratos",
-    que:"Notifica a los subcontratistas sin captura.",
-    cuando:"viernes 12:00",  limiteHoras: 9*24 },
+  // `recordatorio_subs` salió de esta lista el 2026-09-22 con la función que lo
+  // alimentaba. Si se quedara, la pantalla de salud lo enseñaría para siempre
+  // como "nunca ejecutado" — que es justo la mentira que esta pantalla existe
+  // para no contar. Ver PENDIENTES #31.
   { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
     que:"Baja la hoja de gastos y la deja lista para el dashboard.",
     cuando:"diario 8:00",    limiteHoras: 36 },
@@ -18297,16 +17865,11 @@ export default function App(){
             const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
             if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
           } catch (e) { console.warn('gpDetalle no disponible', e); }
-          // Cargar el historial semanal de cada subcontrato (para las
-          // gráficas de tendencia en los slides individuales del PDF).
-          const historialSubs = {};
-          try {
-            await Promise.all((subcontratos||[]).map(async (s) => {
-              const h = await fsGet(`obras/${obra.id}/subcontratos/historial_${s.id}`);
-              historialSubs[s.id] = Array.isArray(h?.semanas) ? h.semanas : [];
-            }));
-          } catch(e) { console.warn('historialSubs no disponible', e); }
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, historialSubs, nominaHistorial);
+          // Aquí se leía el historial semanal de cada subcontrato para las
+          // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
+          // lecturas —una por sub— de documentos que nunca existieron, porque
+          // las reglas denegaban la escritura. Ver PENDIENTES #31.
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,

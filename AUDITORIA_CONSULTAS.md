@@ -72,7 +72,7 @@ Para residente/supervisor/administrador_obra/superintendente/**cliente** — tod
 | `obras/{id}/contrato/plazos` | get/setA | Plazos | ✓ | ✓ read / ✗ set | ✓ read |
 | `obras/{id}/contrato/documentos` | get/setA | Docs contrato | ✓ | ✓ read / ✗ set | ✗ deny |
 | `obras/{id}/subcontratos/lista` | get/setA | Subcontratos | ✓ | ✓ read / ✗ set | ✗ deny |
-| `obras/{id}/subcontratos/historial_{sid}` | get | Historial de un sub | ✓ | ✓ read / ✗ set | ✗ deny |
+| ~~`obras/{id}/subcontratos/historial_{sid}`~~ | — | Retirado 2026-09-22 — la ruta no tiene regla, caía en el deny final y nunca existió un documento (PENDIENTES #31) | — | — | — |
 | `obras/{id}/bitacora/{eid}` | create/read | Bitácora | ✓ create + read | ✓ read / ✗ create | ✗ deny |
 
 Todo lo que dice **✗ deny** en la columna cliente es **intencional** (el módulo no le corresponde). Lo que dice **N/A** es que el frontend nunca abre esa pantalla para ese rol.

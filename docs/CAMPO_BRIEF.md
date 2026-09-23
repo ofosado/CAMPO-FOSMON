@@ -408,7 +408,7 @@ Nivel: ≥20% Bien · 15–20% Normal · 10–15% Aceptable · 5–10% Atención
 | `backupSemanalFirestore` | onSchedule | Backup semanal (revisar destino) |
 | `probarBackup` | onCall | Trigger manual para pruebas |
 | `recordatorioCapturaObra` | onSchedule (viernes 10:00) | Notif interna a residentes sin captura |
-| `recordatorioCapturaSubs` | onSchedule (viernes 12:00) | Notif interna sobre subs |
+| ~~`recordatorioCapturaSubs`~~ | — | Retirado 2026-09-22 con el histórico de subs: pedía un cierre que el sistema no puede registrar (PENDIENTES #31) |
 | `recordatorioLunes` | onSchedule (lunes 9:00) | Notif de pendientes acumulados |
 
 Todas las Cloud Functions v2 requieren plan Blaze. Si el proyecto se baja a Spark, se caen `crearUsuario` y todo el resto (síntoma: error `internal` al gestionar usuarios).

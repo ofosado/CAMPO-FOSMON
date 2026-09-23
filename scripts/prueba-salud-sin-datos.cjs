@@ -58,19 +58,31 @@ const AHORA = Date.parse('2026-09-22T12:00:00-06:00');
 const haceHoras = h => new Date(AHORA - h * 3600000).toISOString();
 const buscar = id => JOBS.find(j => j.id === id);
 
-// ── La tabla cubre los seis jobs que existen de verdad ────────────────────
-const ESPERADOS = ['backupSemanalFirestore', 'resumenSemanalEmail', 'recordatorioLunes',
-  'recordatorioCapturaSubs', 'recordatorioCapturaObra', 'actualizarGPSheet'];
+// ── La tabla cubre los jobs que existen de verdad ─────────────────────────
+// La lista NO se escribe a mano: se lee de `functions/index.js`. Antes era una
+// constante, y cuando se retiró `recordatorioCapturaSubs` (2026-09-22) la
+// prueba siguió exigiendo un job inexistente. Derivarla hace que la pantalla
+// de salud y las funciones desplegadas no puedan separarse en silencio: si
+// alguien agrega un cron y no lo pone en la tabla, esto se pone en rojo.
+const fnSrc = (() => { try { return fs.readFileSync(path.join(raiz, 'functions/index.js'), 'utf8'); } catch { return ''; } })();
+const ESPERADOS = [...fnSrc.matchAll(/^exports\.([A-Za-z]+) = onSchedule/gm)].map(m => m[1]);
 console.log('1. La tabla corresponde a las funciones que existen');
+check(ESPERADOS.length > 0, `se leyeron ${ESPERADOS.length} crons de functions/index.js`);
 check(JOBS.length === ESPERADOS.length, `hay ${JOBS.length} jobs declarados`, `esperados ${ESPERADOS.length}`);
 for (const f of ESPERADOS)
   check(JOBS.some(j => j.funcion === f), `cubre \`${f}\``);
+// Y al revés: ningún job de la tabla puede apuntar a una función que ya no se
+// despliega. Si se quedara, la pantalla lo enseñaría como "nunca ejecutado"
+// para siempre — un job muerto disfrazado de job atrasado.
+for (const j of JOBS)
+  check(ESPERADOS.includes(j.funcion),
+    `\`${j.funcion}\` existe en functions/index.js`,
+    ESPERADOS.includes(j.funcion) ? '' : 'la tabla lo anuncia pero no hay cron que lo escriba');
 check(JOBS.every(j => j.id && j.nombre && j.que && j.cuando && j.limiteHoras > 0),
   'cada job dice qué es, cada cuándo debería correr y a partir de cuándo es tarde');
 
 // Los ids tienen que ser los que escribe `registrarSalud` en functions/index.js,
 // o la pantalla leería llaves que nadie escribe y mostraría seis "sin datos".
-const fnSrc = (() => { try { return fs.readFileSync(path.join(raiz, 'functions/index.js'), 'utf8'); } catch { return ''; } })();
 if (fnSrc) {
   const escritos = [...fnSrc.matchAll(/registrarSalud\(\s*"([^"]+)"/g)].map(m => m[1]);
   const unicos = [...new Set(escritos)];

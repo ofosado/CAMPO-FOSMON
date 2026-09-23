@@ -2380,6 +2380,104 @@ que ya se usan.
 
 ---
 
+## 31. El histórico semanal de subcontratos nunca existió — retirado 2026-09-22
+
+**Descubierto**: 2026-09-21, verificando por qué la gráfica de tendencia
+del subcontrato salía siempre vacía. **Retirado del código el
+2026-09-22** en `fix/historico-subs-inexistente`. Queda aquí porque la
+funcionalidad puede quererse de verdad algún día, y entonces hay que
+saber qué la mató.
+
+`crearSnapshotAvanceSub` escribía en
+`obras/{obraId}/subcontratos/historial_{subId}`. Esa ruta **no tiene
+regla** en `firestore.rules`: cae en el `match /{document=**}` final
+(`firestore.rules:351`) que deniega todo. Comprobado con una prueba
+contra el emulador.
+
+Y como la escritura pasaba por `fsSet`, que se traga el fallo (#22),
+**nadie se enteró**. El debounce de 3 segundos se disparaba, la
+escritura rebotaba, la consola no decía nada y la gráfica leía un
+documento que no existía y pintaba vacío. No hay **ni un solo snapshot
+de subcontrato en producción**, en ninguna de las cinco obras.
+
+Es el #22 en su forma más cara: no se perdió un dato, se perdió una
+funcionalidad entera, y estuvo en el menú todo ese tiempo prometiendo
+una serie que ningún usuario pudo ver nunca.
+
+**Qué se quitó** (todo en `src/App.jsx`):
+
+- `GraficaSemanalSub` — el componente de la gráfica.
+- El bloque "Tendencia semanal del subcontrato" del PDF ejecutivo.
+- `crearSnapshotAvanceSub` — el escritor, y el debounce de 3 s que lo
+  llamaba desde `actualizarConcepto`.
+- `recalcularHistorialSub` — el recálculo en lectura para el esquema 1.
+- El `fsGet` por sub en el estado de `DetalleSubcontrato`.
+- El parámetro `historialSubs` de `generarPDFObra` y el bucle que lo
+  poblaba: eran **N lecturas por PDF** —una por subcontrato— de
+  documentos inexistentes.
+- La mitad de `scripts/prueba-snapshot-sin-descripcion.cjs` que medía el
+  snapshot del sub.
+
+**No se migró nada**: no había nada que migrar.
+
+**Si algún día se quiere de verdad**, hacen falta tres cosas, no una:
+
+1. La regla en `firestore.rules` para `obras/{id}/subcontratos/**`.
+   Sin eso, cualquier cosa que se escriba ahí se deniega igual.
+2. Que la escritura **no sea silenciosa** — `fsSetA`, no `fsSet`. Este
+   pendiente existe precisamente porque nadie vio fallar nada.
+3. Un dato que graficar: hoy **ningún subcontrato de ninguna obra tiene
+   `conceptos` capturados**, así que aunque las reglas lo permitieran, la
+   serie estaría vacía por falta de captura. Esa es la razón de fondo
+   para no rehacerlo todavía.
+
+**El recordatorio se fue con él.** `recordatorioCapturaSubs` (viernes
+12:00) leía esa misma ruta denegada para decidir si avisar. Las Cloud
+Functions usan el Admin SDK, que **se salta las reglas**, así que leer sí
+podía — pero el documento nunca existía, de modo que su `yaCapturado` era
+permanentemente falso. Estaba callado solo porque ningún sub tiene
+conceptos capturados; el día que alguien capturara uno, habría insistido
+para siempre sobre un cierre imposible de registrar. Retirado el
+2026-09-22:
+
+- `exports.recordatorioCapturaSubs` en `functions/index.js`.
+- Su fila en `JOBS_PROGRAMADOS` (`src/App.jsx`). Si se quedaba, la
+  pantalla de salud lo enseñaría como "nunca ejecutado" para siempre —
+  un job muerto disfrazado de job atrasado, que es justo la mentira que
+  esa pantalla existe para no contar (#25, #26).
+- La fila en `docs/CAMPO_BRIEF.md`.
+
+De paso, `scripts/prueba-salud-sin-datos.cjs` dejó de traer la lista de
+crons escrita a mano: ahora la **deriva de `functions/index.js`** y
+comprueba las dos direcciones. Un cron nuevo sin fila en la tabla se pone
+en rojo, y una fila que apunte a una función que ya no se despliega
+también. La lista a mano fue exactamente lo que se quedó viejo aquí.
+
+> **Sin desplegar — y va en un despliegue compartido.** El retiro está en
+> el código pero **no en producción**: el cron sigue vivo allá arriba.
+> Sale en el **mismo despliegue de functions que la rama del resumen
+> semanal** (`feature/resumen-semanal`), con canario.
+>
+> El cambio de functions vive en esta rama, no en la del resumen, así que
+> **las dos se juntan antes de desplegar**. Si se despliega solo el
+> resumen semanal, el cron retirado sigue corriendo en producción y el
+> código y lo desplegado quedan separados sin que nada lo diga. Acordado
+> con Omar el 2026-09-22.
+>
+> Mezclar esta rama a main **no** despliega functions: main se publica en
+> Netlify, que solo construye el front. Así que el frente puede irse hoy
+> y el cron esperar al canario sin que nada quede a medias en pantalla.
+>
+> Mientras tanto sigue callado por la misma razón de siempre: ningún sub
+> tiene conceptos capturados.
+
+**Si se revive el histórico de subs, este recordatorio vuelve con él** —
+pero solo después de los tres puntos de arriba, y con `fsSetA`, no
+`fsSet`. Un recordatorio que pregunta por algo que nadie puede escribir
+es peor que no tenerlo: convierte un hueco de captura en ruido diario.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -2417,6 +2515,7 @@ cierran, gobiernan.
 | 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
 | 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; a escala municipal la nómina se llena en ~3 meses desde el alta, y la 0125 va en marzo 2027 con su nómina en febrero |
 | 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
+| 31 | El histórico semanal de subs nunca existió | | retirado del código 2026-09-22; el cron sigue vivo en producción hasta el despliegue con canario |
 
 ---
 
