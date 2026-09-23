@@ -14131,8 +14131,22 @@ function AvanceCliente({obra, subs}){
 function FotosCliente({obra, subs}){
   const[lightbox,setLightbox]=useState(null);
   // subsecciones con al menos 1 foto
+  //
+  // El mapa de una partida es `{ idPartida: [foto, foto, …] }`, así que
+  // `Object.values` devuelve un arreglo DE ARREGLOS. Sin `.flat()` cada
+  // elemento era un grupo: la insignia contaba grupos —una partida con 43
+  // fotos anunciaba "1 foto"— y al pintar, un arreglo no tiene `.url` ni
+  // `.src`, así que el `if(!url) return null` de abajo se las saltaba todas.
+  // La galería anunciaba fotos y dejaba la rejilla en blanco. Las 475 fotos
+  // que hay hoy en producción eran invisibles en la pantalla que se le
+  // enseña al cliente (PENDIENTES #32).
+  //
+  // El `.filter(Boolean)` tira los huecos sin tirar las fotos que son una
+  // cadena suelta: el esquema es mixto y abajo se contempla ese caso.
   const conFotos = subs.map(s => {
-    const fotos = Array.isArray(s.fotos) ? s.fotos : Object.values(s.fotos||{});
+    const fotos = (Array.isArray(s.fotos)
+      ? s.fotos
+      : Object.values(s.fotos||{}).flat()).filter(Boolean);
     return {...s, _fotos: fotos};
   }).filter(s => s._fotos.length > 0);
 
