@@ -604,11 +604,27 @@ pasó.
 
 Más grande que el manual de hace 10 días, que es lo que debe ser.
 
+Los cinco 403 que quedan en `backup_historial` (2026-08-09, 08-16,
+09-06, 09-13, 09-20) son **todos anteriores** a este arreglo. No hay
+ninguno después.
+
 **Falta todavía**: quitar el binding huérfano de
 `campo-fosmon@appspot.gserviceaccount.com` (pendiente a propósito, para
 no mezclar causas), corregir el comentario de instalación de
 `functions/index.js:1127-1130` que nombra la cuenta equivocada, y
 confirmar que el domingo 2026-09-27 corra solo.
+
+**La prueba real del cron es el domingo 2026-09-27.** El 21 pasó gracias
+al reintento del scheduler mientras el rol terminaba de propagar; hasta
+que un domingo arranque a la primera, el arreglo está verificado a
+medias.
+
+Ojo al leer el bucket: hay un tercer respaldo,
+`gs://campo-fosmon-backups/firestore/2026-09-23-premigracion/`
+(SUCCESSFUL, 3 416 documentos). Ése **no es del cron** — se tomó a mano
+el miércoles 23, a propósito y con autorización, antes de migrar la
+nómina de la 0127 a subcolección (#28). No cuenta como ejecución
+automática.
 
 **Qué hacer, en orden**:
 
@@ -2372,11 +2388,74 @@ heurística y la tabla discrepen. Hoy: 33 registros, 0 problemas.
 > arriba sobre "la semana 21 en dos archivos" era falsa — son dos semanas
 > distintas colapsadas por un número mal leído.
 
+### De cuántas fuentes sale el id de cada semana de la 0125 (2026-09-23)
+
+Se anota por si algún día alguien encuentra una discrepancia y quiere saber
+sobre qué se apoyaba cada id. **No todas las semanas están sostenidas por lo
+mismo**, y la diferencia importa.
+
+Las nueve de la carga masiva traen el periodo dentro del nombre del archivo
+(`…SEM. 23 DEL 28 DE MAY AL 03 DE JUN DE 2026.xlsx`), así que el número se
+puede derivar del **calendario** sin creerle a la etiqueta. Las dos de
+septiembre se llaman `NOMINA_FOSMON_0125_TAMSA_VER_SEM36.xlsx`: sólo etiqueta.
+
+| semanas | etiqueta del nombre | periodo → ISO del cierre | campo `semana` | lo que sostiene el id |
+|---|---|---|---|---|
+| S19 – S27 | sí | **sí** | contradice (el defecto) | **dos fuentes independientes** |
+| S36, S37 | sí | **no hay** | coincide | **dos fuentes, pero una es el campo** |
+
+En las nueve, la etiqueta y la ISO del día de cierre coinciden **en las
+nueve**, y los nueve cierres caen en miércoles — la convención de TAMSA, que
+corre de jueves a miércoles. Ahí el campo `semana` es un tercer testigo que
+dice otra cosa, y sabemos por qué: es el número mal raspado.
+
+En las dos de septiembre el campo coincide con la etiqueta, pero **eso vale
+menos de lo que parece**: no se puede saber cuál de las dos ramas de la
+expresión vieja lo produjo. En la 0125 el defecto se detectó por los ceros a
+la izquierda (`"Semana 07"`, `"Semana 04"`), y con 36 y 37 las dos ramas dan
+el mismo texto. El acuerdo puede ser real o puede ser casualidad.
+
+#### Se buscó una tercera fuente y no existe
+
+Antes de migrar se revisaron los cuatro sitios donde podría haber quedado el
+periodo de esas dos cargas:
+
+1. **Los campos del registro.** `archivo`, `fecha`, `semana`, los totales y
+   `trabajadores`. Ninguna fecha de periodo, ni de inicio ni de cierre.
+2. **Las instantáneas de `auditoria`.** Guardan `antes`/`despues` del
+   documento completo, pero son copias de lo mismo: el juego de llaves es
+   idéntico, carga por carga.
+3. **El Excel original en Storage.** No está. El bucket sólo tiene fotos; el
+   archivo se parsea en el navegador y nunca se sube. No es un descuido de
+   estas dos cargas — no hay un solo `.xlsx` en todo el proyecto.
+4. **Las filas de encabezado de la hoja.** Es donde `semanaDeNomina` busca hoy
+   la fuente «de la hoja» y «el periodo», pero eso corre **al cargar**. De lo
+   ya cargado sólo se guardaron las filas de trabajadores.
+
+Lo que sí corrobora, y se deja dicho como corroboración y no como prueba:
+aplicando la convención jueves–miércoles ya comprobada en las otras nueve, la
+S36 cierra el miércoles 02/09 y se subió el **jueves 03/09, un día después**;
+la S37 cierra el 09/09 y se subió el lunes 14/09, **cinco días después**. Las
+dos encajan. Una etiqueta equivocada por una semana o más no encajaría.
+
+**Con eso se procedió**: dos fuentes que coinciden más una fecha de carga
+coherente. Pero queda escrito que S36 y S37 de la 0125 son las **únicas dos
+semanas de toda la migración cuyo id no se pudo derivar del calendario**.
+
+De aquí en adelante el problema no se repite: `semanaDeNomina` exige que las
+fuentes disponibles coincidan y, si no, deja `semana` vacía y **pregunta a
+quien sube el archivo**, que es el único con el Excel delante.
+
 ### El guion de migración y el bloqueador de la 0125 (2026-09-22)
 
 [`scripts/migrar-nomina-subcoleccion.cjs`](scripts/migrar-nomina-subcoleccion.cjs).
 **Sin `--escribir` no toca nada**; el ensayo lee, agrupa, valida y enseña lo
-que haría. Nunca se ha corrido en modo escritura.
+que haría.
+
+> **Estado al 2026-09-23.** Ya corrió en modo escritura sobre **0127, 0112 y
+> 0126**, las tres verificadas releyendo producción por fuera del guion.
+> Faltan **0125 y 0114**. El documento viejo sigue intacto en las tres: la
+> bandera cambia de formato, no borra nada.
 
 El orden está fijado a propósito: leer y agrupar → validar TODO → escribir →
 **volver a leer y comparar contra el origen** → y solo entonces levantar la
@@ -3222,6 +3301,95 @@ función y no por omisión, que es como está hoy.
 
 ---
 
+## 34. El transporte que decodificaba a medias — ARREGLADO 2026-09-23
+
+### Lo que pasó
+
+Migrando la nómina de la **0112** a subcolección (#28), el guion escribió
+las dos semanas y se paró en el paso 4:
+
+```
+1 problema(s):
+  Y2026-S36: lo que se lee NO es igual a lo que se mandó
+```
+
+La guarda hizo lo suyo: la bandera no subió y el documento viejo quedó
+intacto. **Al repetir la corrida, con los mismos datos, pasó limpio.**
+
+Eso último es lo importante. No pasó porque algo se hubiera arreglado
+entre una corrida y otra: pasó porque los paquetes cayeron distinto. Un
+proceso que a veces pasa y a veces no, con la misma entrada, no está
+bien aunque haya pasado.
+
+### La causa
+
+`scripts/migrar-nomina-subcoleccion.cjs`, en el transporte:
+
+```js
+let b = ''; resp.on('data', d => b += d);
+```
+
+`d` es un `Buffer`, y `b += d` lo convierte a texto **trozo por trozo**.
+Un carácter UTF-8 de varios bytes partido en la frontera de dos trozos
+TCP se decodifica a la mitad por cada lado y sale como carácter de
+reemplazo. Dónde caen las fronteras depende de la red, del tamaño de la
+respuesta y del momento: de ahí el no-determinismo.
+
+Reproducido con un servidor local que corta justo en medio de una `Í`:
+
+```
+FALLA  b += d (lo que había)         "MAR��A DE LOURDES MUÑOZ PEÑA"
+ ok    Buffer.concat (la corrección) "MARÍA DE LOURDES MUÑOZ PEÑA"
+```
+
+En una nómina mexicana hay acentos o `Ñ` en casi cada renglón: 14 de los
+165 nombres de la 0127 y la 0112 llevan caracteres no-ASCII.
+
+### Por qué el rojo falso era lo de menos
+
+El fallo ruidoso **para** la migración, que es el comportamiento seguro.
+El peligro está en el otro sentido: si lo que se corrompe es la lectura
+del **origen**, el guion escribe el nombre mutilado y después lo compara
+contra esa misma lectura corrupta. **Mutilado contra mutilado cuadra**,
+la bandera sube, y el apellido queda roto en producción sin que nada lo
+delate. El dinero no se mueve, así que ninguna suma lo atrapa.
+
+Se verificó que **no llegó a pasar**: 165 de 165 nombres de la 0127 y la
+0112 idénticos al origen carácter por carácter, cero caracteres de
+reemplazo.
+
+### Lo que se arregló
+
+1. **El transporte del guion de migración**: el cuerpo se junta en
+   `Buffer`s y se decodifica una sola vez al final (`juntarCuerpo`).
+2. **Paso 4c nuevo — los nombres contra el origen releído.** Arreglar el
+   transporte no cierra el agujero de fondo, que es *confiar en una sola
+   lectura*. Después de escribir, el guion relee el documento viejo —otro
+   momento, otra conexión— y coteja nombre por nombre contra lo que
+   quedó en la subcolección. Si uno solo no coincide, aborta sin subir la
+   bandera y dice quién y cómo se leyó de cada lado.
+3. **Los otros siete guiones** que traían el mismo patrón
+   (`migracion-nomina-anios`, `medir-historial-0114`, `volcar-0114`,
+   `medir-portafolio-semana-actual`, `medir-acumuladores`, `medir-fotos`,
+   `medir-fechas-fotos`) llevan `setEncoding('utf8')`. Hoy sólo imprimen,
+   pero de sus números salieron decisiones —las mediciones de tamaño del
+   #28 y el #30, las fechas de fotos— y mañana alguien puede apoyar en
+   ellos algo que escriba.
+4. **`scripts/prueba-migracion-no-mutila-nombres.cjs`**, 14
+   comprobaciones. Pasa una respuesta partida en medio de una `Í` y de
+   una `Ñ`, por `EventEmitter` y por un socket real; lleva contraprueba
+   que confirma que la forma vieja **sí** mutila; y ejercita el cotejo de
+   nombres con un carácter de reemplazo metido a mano. Si alguien
+   desconecta el cotejo, la prueba da **NO ARRANCÓ**, no verde.
+
+### Lo que queda de lección
+
+Una comparación sólo vale si sus dos lados vienen de lecturas distintas.
+Verificar lo escrito contra la variable de la que se escribió no verifica
+el transporte: verifica que la memoria no cambió sola.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -3263,6 +3431,7 @@ cierran, gobiernan.
 | 31 | Histórico semanal de subcontratos — **retirado** | | cerrado por retiro — nunca escribió nada (ruta denegada + `fsSet` mudo); el cron `recordatorioCapturaSubs` se retiró con él, pendiente de desplegar |
 | 32 | La galería de fotos del cliente no pinta ni una foto | **BLOQUEANTE DE DEMO** si se abre la vista de cliente | **arreglado** en `fix/galeria-cliente-vacia`, pendiente de fusionar; queda abierto unificar las tres copias del aplanado (va con el #30) |
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
+| 34 | El transporte decodificaba el cuerpo trozo a trozo | | **arreglado 2026-09-23** — partía caracteres UTF-8 en la frontera de los paquetes; hacía que la migración fallara y pasara con los mismos datos, y podía dejar nombres mutilados que cuadraban contra sí mismos. Arreglado en los 8 guiones + paso 4c que coteja contra el origen releído |
 
 ---
 
