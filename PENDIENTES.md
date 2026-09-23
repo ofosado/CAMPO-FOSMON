@@ -2452,10 +2452,13 @@ quien sube el archivo**, que es el único con el Excel delante.
 **Sin `--escribir` no toca nada**; el ensayo lee, agrupa, valida y enseña lo
 que haría.
 
-> **Estado al 2026-09-23.** Ya corrió en modo escritura sobre **0127, 0112 y
-> 0126**, las tres verificadas releyendo producción por fuera del guion.
-> Faltan **0125 y 0114**. El documento viejo sigue intacto en las tres: la
-> bandera cambia de formato, no borra nada.
+> **Estado al 2026-09-23 — las cinco obras migradas.** Corrió en modo
+> escritura sobre **0127, 0112, 0126, 0125 y 0114**, una por una, cada una
+> verificada releyendo producción por fuera del guion: 32 documentos, 33
+> partes, 2,394 nombres idénticos al origen, $15,483,487 cuadrados, cero
+> caracteres de reemplazo. El documento viejo sigue intacto en las cinco: la
+> bandera cambia de formato, no borra nada. Vaciarlo es un paso aparte, a
+> mano, y **no se hace hasta que lleve días sin incidencias**.
 
 El orden está fijado a propósito: leer y agrupar → validar TODO → escribir →
 **volver a leer y comparar contra el origen** → y solo entonces levantar la
@@ -2661,6 +2664,53 @@ y no aplicar.
 
 Falta el movimiento 2: el guion de migración y el cambio de los dos sitios
 de escritura.
+
+### La salida: cómo se vuelve al documento viejo (2026-09-23)
+
+[`scripts/revertir-bandera-nomina.cjs`](scripts/revertir-bandera-nomina.cjs).
+Baja `formatoHistorial.nomina` de 2 a 1. **No hace falta desplegar código**:
+la bandera es dato, y el camino de lectura del formato 1 sigue vivo y
+probado. La app vuelve al documento viejo en la siguiente carga de pantalla.
+
+**Lo que hace que esto no sea trivial: la escritura NO es dual.**
+`escribirHistorialNomina` escribe en UN formato, el que diga la bandera. Con
+la bandera en 2 una nómina capturada entra **sólo** a la subcolección. Bajar
+la bandera ese día no borra esa captura, pero **deja de enseñarla**, y una
+semana que nadie sabe que existe no la reclama nadie.
+
+De ahí la regla, en una línea:
+
+> Revertir es gratis mientras nadie haya capturado nómina después del
+> despliegue. En cuanto alguien captura, hay que copiar antes.
+
+Por eso el guion no baja la bandera a ciegas: compara el documento viejo
+contra la subcolección con la **misma huella** que usa la migración —contar
+no basta, corregir una carga deja el mismo número de registros—, y si la
+subcolección tiene algo que el viejo no tiene, se planta y **nombra el
+archivo, la semana, la gente y el dinero** que escondería. Para revertir
+igual hay que pedirlo con `--reconciliar`, que copia la subcolección al
+documento viejo **antes** de bajar la bandera y vuelve a leer las dos partes
+para comprobarlo.
+
+El caso peor es el documento viejo **ya vaciado a mano**: ahí revertir
+dejaría la pantalla en cero semanas, y `avisarSiFaltanSemanas` no lo
+atraparía porque sale temprano cuando el viejo está vacío
+(`if (antes.length === 0) return;`). El guion lo trata como bloqueo aparte,
+con motivo `vacio`. **Ésa es la razón de no vaciar los documentos viejos el
+mismo día**: mientras estén llenos, la salida es un guion de dos minutos.
+
+Revertir **no desmigra**: la subcolección se queda entera, para volver a
+intentarlo sin migrar de cero.
+
+Ensayo contra producción el 2026-09-23, antes de mezclar: las cinco obras
+inocuas, documento viejo y subcolección con las mismas cargas y el mismo
+dinero (0112 $447,651 · 0114 $7,299,715 · 0125 $5,484,664 · 0126 $1,962,457 ·
+0127 $289,000).
+
+`scripts/prueba-revertir-bandera.cjs` no mira el código: corre el guion
+entero contra un Firestore de mentiras y apunta **qué intenta escribir** —si
+manda el PATCH, con qué máscara, en qué orden— y le parte el cuerpo de la
+respuesta dentro de un carácter multibyte, como lo parte la red (#34).
 
 ### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
 
