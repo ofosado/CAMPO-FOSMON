@@ -12994,7 +12994,117 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 // horasEfectivas) antes de calcular horasExtra. Investigar con nomina Excel
 // original de TAMSA y ajustar la detección de columna colHE / la conversión
 // capturaEnHoras. Ese costo real de HE está quedando escondido en dias.
-function parsearNomina(data) {
+// ════════════════════════════════════════════════════════════════════════════
+// DE QUÉ SEMANA ES UNA NÓMINA
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El número de semana es la identidad del cierre: ordena el historial, decide
+// cuál es la semana actual contra la que se comparan los deltas, y es parte
+// del id del documento cuando la nómina pase a subcolección. Un número
+// equivocado no se ve raro — la semana simplemente aterriza donde nadie la
+// busca, o encima de otra.
+//
+// Y es exactamente lo que pasó. En la 0125 las nueve cargas de mayo y junio
+// quedaron archivadas como semanas 30, 07, 14, 21, 21, 04, 11, 18 y 25: el
+// tablero ordena junio antes que mayo, pinta la curva de nómina en zigzag
+// sobre una obra cuya plantilla creció de 2 a 141 personas sin un solo
+// retroceso, y funde dos semanas distintas —SEM. 22 y SEM. 23— en una fila
+// de $400,546 que nunca existió.
+//
+// La causa es el raspado que había aquí:
+//
+//   const mSem = rowText.match(/semana\s*(\d+)/i) || rowText.match(/s\.?\s*(\d{2})/i);
+//   if (mSem) semana = `Semana ${mSem[1]}`;     // sin break: gana la última
+//   …
+//   if (!semana) semana = `Semana ${new Date().toLocaleDateString('es-MX')}`;
+//
+// Tres defectos, y el tercero es el grave:
+//
+//   1. El respaldo no pide que nada diga "semana". `/s\.?\s*(\d{2})/i` casa
+//      con cualquier palabra terminada en «s» seguida de dos dígitos:
+//      "SERVICIOS 30" captura 30, "DIAS 21" captura 21, "LOS 04" captura 04.
+//   2. El bucle no corta, así que de varias filas gana la ÚLTIMA que empate,
+//      que no tiene por qué ser la buena.
+//   3. Cuando no encuentra nada, INVENTA: escribe la fecha de hoy como si
+//      fuera un número de semana. Esa última línea es la que convierte un
+//      "no lo sé" en un dato que parece bueno (P2).
+//
+// Sobre la 0125 quedó comprobado que el valor pasó por el respaldo —producción
+// guarda "Semana 07" y "Semana 04", y solo esa rama captura dos dígitos fijos,
+// mientras la principal ni siquiera casa con "SEM. 20"—. Qué celda exacta lo
+// produjo no se pudo reconstruir sin los Excel originales, y eso es parte del
+// argumento: si nadie puede explicar de dónde salió el número, el parser no
+// tiene por qué estar afirmándolo.
+//
+// Lo que se hace ahora: tres fuentes independientes, y si no coinciden se
+// PREGUNTA. Nunca se elige por el usuario y nunca se inventa.
+
+const MESES_ES = {
+  ene:1, feb:2, mar:3, abr:4, may:5, jun:6,
+  jul:7, ago:8, sep:9, set:9, oct:10, nov:11, dic:12,
+};
+
+// FUENTE 1 y 2 — una semana DECLARADA, en la hoja o en el nombre del archivo.
+// Exige la palabra: "semana", "sem" o "sem." pegada al número. Ya no vale que
+// una palabra acabe en «s». `\b` al final impide morder "2026" como "20".
+// Al principio NO sirve `\b`: los archivos de TAMSA se llaman
+// "…NÓMINA_SEM. 23…" y el guion bajo cuenta como letra, así que entre «_» y
+// «SEM» no hay frontera de palabra y el nombre del archivo se quedaba mudo.
+const semanaDeclarada = (texto) => {
+  const m = String(texto || '')
+    .match(/(?:^|[^a-záéíóúüñ])sem(?:ana)?s?\.?\s*(?:n[°ºo]?\.?\s*)?(\d{1,2})\b/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return (n >= 1 && n <= 53) ? n : null;
+};
+
+// FUENTE 3 — la semana de CALENDARIO del periodo que declara el texto:
+// "DEL 28 DE MAY AL 03 DE JUN DE 2026". Se toma la semana ISO del día de
+// CIERRE, no la del inicio: una nómina pertenece a la semana en que se cierra.
+// En la 0125 eso reproduce exactamente la numeración de TAMSA, que corre de
+// jueves a miércoles — numerar por el cierre da la semana ISO sin traducir.
+const semanaDelPeriodo = (texto) => {
+  const t = String(texto || '');
+  const m = t.match(/\b(\d{1,2})\s*(?:de\s*)?([a-záéíóú]{3,})\w*\s*(?:al?|a|-|hasta)\s*(\d{1,2})\s*(?:de\s*)?([a-záéíóú]{3,})\w*/i);
+  if (!m) return null;
+  const mesFin = MESES_ES[m[4].toLowerCase().slice(0, 3)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+  if (!mesFin) return null;
+  const dia = parseInt(m[3], 10);
+  if (!(dia >= 1 && dia <= 31)) return null;
+  // El año: el que diga el texto, y si no lo dice, el actual. Solo se usa para
+  // situar la semana ISO, que apenas cambia de un año a otro.
+  const mAño = t.match(/\b(20\d{2})\b/);
+  const año = mAño ? parseInt(mAño[1], 10) : new Date().getFullYear();
+  const f = new Date(año, mesFin - 1, dia);
+  if (isNaN(f.getTime()) || f.getMonth() !== mesFin - 1) return null;
+  return semanaISO(f).semana;
+};
+
+// Reúne las tres fuentes y decide si hay acuerdo. NO elige entre ellas: si
+// discrepan, devuelve el desacuerdo para que lo resuelva quien sube el
+// archivo, que es el único que tiene el Excel delante.
+const semanaDeNomina = (filas, headerIdx, nombreArchivo) => {
+  const encabezado = filas.slice(0, Math.max(headerIdx, 1)).slice(0, 8)
+    .map(f => f.join(' ')).join(' · ');
+
+  const fuentes = [
+    { de: 'la hoja',              n: semanaDeclarada(encabezado) },
+    { de: 'el nombre del archivo', n: semanaDeclarada(nombreArchivo) },
+    { de: 'el periodo',           n: semanaDelPeriodo(encabezado) || semanaDelPeriodo(nombreArchivo) },
+  ].filter(f => f.n !== null);
+
+  const distintos = [...new Set(fuentes.map(f => f.n))];
+  return {
+    numero: distintos.length === 1 ? distintos[0] : null,
+    fuentes,
+    // `null` = nadie lo dijo; `false` = se contradicen. Son dos situaciones
+    // distintas y el aviso tiene que decir cuál es.
+    acuerdo: fuentes.length === 0 ? null : distintos.length === 1,
+  };
+};
+
+function parsearNomina(data, nombreArchivo = '') {
   // Parser inteligente — detecta columnas por patrón
   const filas = data.filter(row => row.some(c => c !== null && c !== undefined && String(c).trim() !== ''));
   if (filas.length < 3) return {trabajadores:[], semana:'', errores:['Archivo demasiado pequeño']};
@@ -13070,16 +13180,13 @@ function parsearNomina(data) {
     if (colHE < 0 && numCols.length > 2) colHE = numCols[numCols.length-1].ci;
   }
 
-  // Extraer semana del encabezado del archivo
-  let semana = '';
-  for (let i = 0; i < Math.min(headerIdx, 8); i++) {
-    const rowText = filas[i].join(' ');
-    const mSem = rowText.match(/semana\s*(\d+)/i) || rowText.match(/s\.?\s*(\d{2})/i);
-    const mFec = rowText.match(/(\d{1,2})\s*(?:de|\/)\s*(\w+)\s*(?:al|a|-)\s*(\d{1,2})\s*(?:de|\/)\s*(\w+)/i);
-    if (mSem) semana = `Semana ${mSem[1]}`;
-    if (mFec && !semana) semana = rowText.match(/\d{1,2}[^.]*\d{4}/)?.[0]?.trim() || '';
-  }
-  if (!semana) semana = `Semana ${new Date().toLocaleDateString('es-MX')}`;
+  // La semana, contrastada entre sus tres fuentes (ver el bloque de arriba).
+  // Si no hay acuerdo, `semana` queda VACÍA a propósito: quien sube el archivo
+  // la confirma antes de guardar. Aquí no se inventa nada.
+  const semanaInfo = semanaDeNomina(filas, headerIdx, nombreArchivo);
+  const semana = semanaInfo.numero === null
+    ? ''
+    : `Semana ${String(semanaInfo.numero).padStart(2, '0')}`;
 
   // Helper: parsear celda numérica — ignora fórmulas (strings que empiezan
   // con "=") porque openpyxl las escribe SIN evaluar y XLSX.js las lee como
@@ -13213,7 +13320,7 @@ function parsearNomina(data) {
     });
   });
 
-  return {trabajadores, semana, colsDetectadas:{colNombre,colCategoria,colTipo,colHE,colTotal}};
+  return {trabajadores, semana, semanaInfo, colsDetectadas:{colNombre,colCategoria,colTipo,colHE,colTotal}};
 }
 
 // ── VALIDACIÓN de nómina — detecta duplicidades, sumas raras y anomalías
@@ -13388,7 +13495,10 @@ function Nomina({obra, rol, onHistorialCambio}) {
   // useEffect arriba). Antes se quedaba en 0 → mostraba la primera semana
   // cargada (la más antigua), no la más reciente.
   const [semanaVer, setSemanaVer] = useState(0);
-  const [pendienteRevisar, setPendienteRevisar] = useState(null); // {nueva, errores, advertencias}
+  const [pendienteRevisar, setPendienteRevisar] = useState(null); // {nueva, errores, advertencias, semanaInfo, preguntarSemana}
+  // El número de semana que teclea el usuario cuando el archivo no lo dice —o
+  // lo dice de dos maneras distintas. Vacío mientras no lo conteste.
+  const [semanaManual, setSemanaManual] = useState('');
   const [ordenTabla, setOrdenTabla] = useState({col:'total', dir:'desc'}); // ordenamiento de la tabla
   const fileRef = useRef();
   const editar  = can(rol, 'captura', 'editar');
@@ -13452,13 +13562,20 @@ function Nomina({obra, rol, onHistorialCambio}) {
           const ws = wb.Sheets[nomHoja];
           rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
         }
-        const resultado = parsearNomina(rows);
+        // El nombre del archivo es una de las tres fuentes de la semana, así
+        // que tiene que llegar hasta el parser.
+        const resultado = parsearNomina(rows, file.name);
         if (resultado.trabajadores.length === 0) {
           setError('No se encontraron trabajadores en el archivo. Verifica el formato.');
           setCargando(false); return;
         }
-        // Verificar si esa semana ya está cargada (por nombre de semana)
-        const yaCargada = historial.find(h => (h.semana||'').toLowerCase() === (resultado.semana||'').toLowerCase());
+        // Verificar si esa semana ya está cargada (por nombre de semana).
+        // Si la semana quedó vacía —porque las fuentes no se pusieron de
+        // acuerdo— esta comparación no significa nada y se salta: el duplicado
+        // se revisa más abajo, contra el número que confirme el usuario.
+        const yaCargada = resultado.semana
+          ? historial.find(h => (h.semana||'').toLowerCase() === resultado.semana.toLowerCase())
+          : null;
         const nueva = {
           semana: resultado.semana,
           fecha: new Date().toLocaleDateString('es-MX'),
@@ -13492,9 +13609,17 @@ function Nomina({obra, rol, onHistorialCambio}) {
             msg: `Ya existe una carga previa con el nombre "${resultado.semana}" (${yaCargada.fecha}). Cargar de nuevo duplicaría los registros.`,
           });
         }
+        // Si la semana no quedó determinada, o si las fuentes se contradicen,
+        // NO se guarda: se pregunta. Es la regla que rompió la 0125 —once
+        // nóminas guardadas con un número inventado, sin que nadie viera nada
+        // raro en pantalla. Un número mal puesto no se nota: la semana cae
+        // donde nadie la busca, o encima de otra.
+        const preguntarSemana = resultado.semanaInfo.acuerdo !== true;
         // Si hay algo que revisar, mostrar diálogo; si no, guardar directo
-        if (errores.length > 0 || advertencias.length > 0) {
-          setPendienteRevisar({ nueva, errores, advertencias });
+        if (preguntarSemana || errores.length > 0 || advertencias.length > 0) {
+          setSemanaManual('');
+          setPendienteRevisar({ nueva, errores, advertencias,
+            semanaInfo: resultado.semanaInfo, preguntarSemana });
         } else {
           // Con `await` para que el spinner siga puesto hasta que la escritura
           // termine, y para que un fallo se vea antes de que la pantalla se dé
@@ -13634,24 +13759,82 @@ function Nomina({obra, rol, onHistorialCambio}) {
 
       {/* MODAL: revisar errores/advertencias antes de guardar */}
       {pendienteRevisar && (() => {
-        const {nueva, errores, advertencias} = pendienteRevisar;
-        const bloqueado = errores.length > 0;
+        const {nueva, errores, advertencias, semanaInfo, preguntarSemana} = pendienteRevisar;
+        // Lo tecleado vale como semana solo si es un número de semana de
+        // verdad. "0", "54" o vacío no lo son, y mientras no lo sea el botón
+        // de guardar no aparece.
+        const nManual = /^\d{1,2}$/.test(semanaManual.trim()) ? parseInt(semanaManual, 10) : null;
+        const manualValida = nManual !== null && nManual >= 1 && nManual <= 53;
+        const semanaFinal = preguntarSemana
+          ? (manualValida ? `Semana ${String(nManual).padStart(2,'0')}` : '')
+          : nueva.semana;
+        // El duplicado se recalcula contra el número que se va a guardar de
+        // verdad, no contra el que traía el archivo.
+        const duplicada = semanaFinal &&
+          historial.find(h => (h.semana||'').toLowerCase() === semanaFinal.toLowerCase());
+        const paraGuardar = {...nueva, semana: semanaFinal};
+        const bloqueado = errores.length > 0 || (preguntarSemana && !manualValida);
         return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',
           zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
           onClick={()=>setPendienteRevisar(null)}>
           <div style={{background:C.surface,borderRadius:12,maxWidth:560,width:'100%',
             maxHeight:'85vh',overflowY:'auto',boxShadow:'0 12px 48px rgba(0,0,0,0.4)'}}
             onClick={e=>e.stopPropagation()}>
-            <div style={{background:bloqueado?C.red:C.yellow,color:'#fff',
+            <div style={{background:errores.length>0?C.red:C.yellow,color:'#fff',
               padding:'14px 18px',borderRadius:'12px 12px 0 0'}}>
               <div style={{fontSize:14,fontWeight:700}}>
-                {bloqueado ? 'Errores detectados — revisar antes de cargar' : 'Advertencias — verifica antes de guardar'}
+                {errores.length > 0 ? 'Errores detectados — revisar antes de cargar'
+                  : preguntarSemana ? 'Falta confirmar la semana'
+                  : 'Advertencias — verifica antes de guardar'}
               </div>
               <div style={{fontSize:10,marginTop:4,opacity:0.95}}>
-                {nueva.semana} · {nueva.trabajadores.length} trabajadores · Total ${nueva.totalNomina.toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}
+                {semanaFinal || 'Semana sin determinar'} · {nueva.trabajadores.length} trabajadores · Total ${nueva.totalNomina.toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2})}
               </div>
             </div>
             <div style={{padding:'14px 18px'}}>
+              {preguntarSemana && (
+                <div style={{background:'rgba(239,159,39,0.10)',
+                  border:'0.5px solid rgba(239,159,39,0.35)',borderRadius:7,
+                  padding:'10px 12px',marginBottom:14}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.yellowDk,
+                    textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>
+                    ¿A qué semana corresponde esta nómina?
+                  </div>
+                  <div style={{fontSize:11,color:C.textPri,lineHeight:1.45,marginBottom:8}}>
+                    {semanaInfo.acuerdo === null
+                      ? 'Ni la hoja ni el nombre del archivo dicen el número de semana, y el periodo de fechas tampoco se pudo leer. Escríbelo tú: si se guarda con un número equivocado, la semana queda fuera de lugar en el historial y las comparativas salen mal.'
+                      : 'El archivo dice dos cosas distintas. Decide cuál es la buena:'}
+                  </div>
+                  {semanaInfo.acuerdo === false && (
+                    <div style={{marginBottom:8}}>
+                      {semanaInfo.fuentes.map((f,i) => (
+                        <div key={i} style={{fontSize:11,color:C.textPri,marginBottom:3}}>
+                          <span style={{fontWeight:700,marginRight:6}}>Semana {String(f.n).padStart(2,'0')}</span>
+                          <span style={{color:C.textSec}}>según {f.de}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontSize:11,color:C.textSec}}>Semana</span>
+                    <input type="number" min="1" max="53" value={semanaManual} autoFocus
+                      onChange={e=>setSemanaManual(e.target.value)}
+                      placeholder="—"
+                      style={{width:72,background:C.bg,color:C.textPri,
+                        border:`0.5px solid ${C.border}`,borderRadius:6,
+                        padding:'7px 9px',fontSize:13,fontWeight:700,textAlign:'center'}}/>
+                    <span style={{fontSize:10.5,color:C.textMut}}>
+                      {semanaFinal ? `Se guardará como «${semanaFinal}»` : 'Del 1 al 53'}
+                    </span>
+                  </div>
+                  {duplicada && (
+                    <div style={{marginTop:8,fontSize:10.5,color:C.red,lineHeight:1.4}}>
+                      Ya existe una carga con el nombre «{semanaFinal}» ({duplicada.fecha}). Cargar de
+                      nuevo duplicaría los registros.
+                    </div>
+                  )}
+                </div>
+              )}
               {errores.length > 0 && (
                 <>
                   <div style={{fontSize:11,fontWeight:700,color:C.red,textTransform:'uppercase',
@@ -13707,10 +13890,10 @@ function Nomina({obra, rol, onHistorialCambio}) {
                 Cancelar
               </button>
               {!bloqueado && (
-                <button onClick={()=>guardarSemana(nueva)}
+                <button onClick={()=>guardarSemana(paraGuardar)}
                   style={{background:C.caliza,border:'none',color:C.bg,
                     padding:'8px 16px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer'}}>
-                  Guardar de todos modos
+                  {advertencias.length > 0 || errores.length > 0 ? 'Guardar de todos modos' : 'Guardar'}
                 </button>
               )}
             </div>
