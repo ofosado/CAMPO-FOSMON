@@ -2234,6 +2234,16 @@ lectura nueva no encuentra la subcolección y cae al documento viejo sin
 avisar, se repite el patrón del #22 — una pantalla que muestra menos de lo
 que hay y parece normal.
 
+**La regla va primero, 2026-09-22.** `obras/{obraId}/nomina_historial/{id}`
+ya tiene su regla en `firestore.rules`, con los mismos permisos que el
+documento que va a reemplazar, y se despliega **antes** de escribir la
+primera semana. No al revés. Una ruta sin regla cae en el
+`match /{document=**}` final, que deniega todo, y como las escrituras pasan
+por helpers que se tragan el fallo (#22), la migración parecería funcionar
+mientras no guarda nada: es letra por letra lo que le pasó al histórico de
+subcontratos durante tres años (#31). La regla sola no rompe nada si se
+despliega antes que la migración — abre una ruta que todavía nadie usa.
+
 Mientras tanto, lo que ya está hecho en `fix/historial-lleno`: el fallo de
 escritura ya no es silencioso —ni en avance ni en nómina—, y el snapshot
 dejó de copiar la descripción de la partida en cada semana (140 KB → 29 KB
