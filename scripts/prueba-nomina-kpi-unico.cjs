@@ -18,6 +18,7 @@ const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const noArranco = require('./no-arranco.cjs');
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
@@ -65,8 +66,7 @@ traverse(ast, {
   },
 });
 
-if (!global['heImporte']) { check(false, 'existe un cálculo único `heImporte`'); }
-if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
+if (!global['heImporte']) noArranco(['heImporte']);
 
 const heImporte = new Function(`"use strict"; return ${global['heImporte']};`)();
 

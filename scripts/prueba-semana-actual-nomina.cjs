@@ -27,6 +27,7 @@
 //       node scripts/prueba-semana-actual-nomina.cjs --contraprueba
 
 const fs = require('fs');
+const noArranco = require('./no-arranco.cjs');
 const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
@@ -82,11 +83,13 @@ traverse(ast, {
 
 const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
   'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
-for (const n of necesarios)
-  if (!global[n]) check(false, `se pudo extraer \`${n}\` de ${path.basename(archivo)}`);
-if (!oyenteNomina) check(false, 'se localizó el oyente de obras/{id}/nomina/historial');
-if (!kpiPersonal) check(false, 'se localizó el KPI «Personal» del tablero principal');
-if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
+const faltan = necesarios.filter(n => !global[n]);
+// Los dos de abajo se localizan por lo que hacen —la ruta que escuchan, la
+// etiqueta que pintan—, no por nombre. Si no aparecen no hubo un renombre:
+// desapareció el sitio. Se reportan igual: la conducta se quedó sin mirar.
+if (!oyenteNomina) faltan.push('el oyente de obras/{id}/nomina/historial');
+if (!kpiPersonal)  faltan.push('el KPI «Personal» del tablero principal');
+if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
 // Se devuelve `semanasDeNomina` a la conducta vieja —entregar las cargas en

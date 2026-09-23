@@ -35,6 +35,7 @@ const { initializeApp } = require('firebase/app');
 const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc } =
   require('firebase/firestore');
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
+const noArranco = require('./no-arranco.cjs');
 
 const VOLCADO = process.argv[2] || '/tmp/0114-produccion.json';
 const HOST = process.env.EMU_HOST || '127.0.0.1';
@@ -83,8 +84,8 @@ const NECESARIAS = ['crearSnapshotAvance', 'tamañoFirestore', 'LIMITE_DOC_FIRES
   'ESQUEMA_SNAPSHOT', 'mensajeFalloSnapshot', 'ErrorSnapshot', 'avanceFisicoPonderado',
   'desgloseEjecutado', 'importeEjecutadoPartida', 'importeCatalogoPartida',
   'semanaISO', 'snapshotId'];
-for (const n of NECESARIAS)
-  if (!decl[n]) { console.error(`No se pudo extraer \`${n}\` de src/App.jsx`); process.exit(1); }
+const faltan = NECESARIAS.filter(n => !decl[n]);
+if (faltan.length) noArranco(faltan);
 
 (async () => {
   if (!fs.existsSync(VOLCADO)) {

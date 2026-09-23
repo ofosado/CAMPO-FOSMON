@@ -155,6 +155,56 @@ significa "nunca existió".
 
 ---
 
+## P4. Una prueba que no arranca es tan visible como una que falla
+
+**Adoptado**: 2026-09-23, rama `fix/prueba-muda`.
+
+El P3 dice qué debe afirmar una prueba. Este dice qué pasa cuando la
+prueba **no llega a afirmar nada**.
+
+Las pruebas de este repositorio sacan el código vivo de `src/App.jsx`
+recorriendo el AST y buscando declaraciones por nombre. Eso es legítimo
+—el P3 prohíbe *afirmar* que un nombre existe, no usarlo como dirección
+para llegar al código— pero tiene un costo: el día que alguien renombra
+un símbolo, la prueba deja de encontrar lo que iba a ejercitar.
+
+Ese día la prueba no sabe nada. No sabe si la conducta sigue viva bajo
+otro nombre ni si se rompió: sabe que **no pudo mirar**. Llamarlo
+"falla" es mentir en una dirección y callarlo es mentir en la otra.
+
+**Por qué**: tres veces en la semana del 2026-09-22 una prueba se rompió
+por un renombre y no por una regresión. La última dejó `main` en rojo
+durante horas — `eliminarSemana` pasó a ser `eliminarCarga`, la prueba
+murió antes de montar nada y el mensaje se perdió entre el ruido. No se
+vio porque **no había forma de correr la suite**: cada prueba se
+invocaba a mano, así que en la práctica sólo se corrían las de la rama
+en curso, y la que se rompió no era la que se estaba mirando.
+
+**Cómo se aplica:**
+
+1. **Tres estados, no dos.** Verde (se comprobó y se sostiene), ROJO
+   (se comprobó y no se sostiene) y NO ARRANCÓ (no se comprobó). El
+   tercero tiene código de salida propio: `scripts/no-arranco.cjs`
+   sale con 2.
+2. **Nunca confundir un punto ciego con una regresión.** Un rojo se
+   arregla tocando el código; un "no arrancó" se arregla apuntando la
+   extracción al nombre nuevo, o borrando la prueba junto con la
+   conducta que ya no existe. Tratar lo segundo como lo primero
+   —"toco la prueba hasta que pase"— es como se pierde la cobertura
+   sin que nadie lo note.
+3. **La suite se corre entera, y después de cada merge a main.** `npm
+   test`. Correr sólo las pruebas de la rama es lo que falló aquí: la
+   rama estaba verde y main no.
+4. **Lo que no se pudo comprobar se dice.** Las pruebas que necesitan
+   el emulador se listan aparte en vez de contarse como rojas: sin
+   emulador no se miró nada, y decir "rojo" sería inventar un
+   resultado.
+
+Si la suite puede quedarse muda sin que nadie lo note, la suite no
+sirve.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
