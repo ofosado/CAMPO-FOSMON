@@ -6111,12 +6111,15 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
         // Consolidar el último snapshot de nómina de TODAS las obras (SUMA)
         let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0;
         let heHrs = 0, heImp = 0;
-        let obrasConDato = 0, tendencia = null;
+        let obrasConDato = 0, tendencia = null, enPartes = 0;
         obrasConKPIs.forEach(({obra}) => {
           const d = datosPorObra[obra.id] || {};
           const semanas = d.nominaSemanas || [];
           if (semanas.length === 0) return;
           const ult = semanas[semanas.length - 1];
+          // La obra rayó su semana en más de un archivo: la cifra que entra
+          // aquí es la suma de todos, no la del último que subieron.
+          if ((ult.partes || []).length > 1) enPartes++;
           totalEmp += (ult.totalDir || 0) + (ult.totalInd || 0);
           dir      += (ult.totalDir || 0);
           ind      += (ult.totalInd || 0);
@@ -6144,7 +6147,8 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
             textTransform:"uppercase",marginBottom:6}}>
             MANO DE OBRA CONSOLIDADA · SEMANA ACTUAL
             <span style={{fontWeight:400,color:C.textMut,textTransform:"none",marginLeft:8}}>
-              (suma de {obrasConDato} de {activas.length} obras con nómina cargada)
+              (suma de {obrasConDato} de {activas.length} obras con nómina cargada
+              {enPartes > 0 && `; ${enPartes} rayó su semana en varios archivos, sumados`})
             </span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:12}}>
@@ -18141,11 +18145,16 @@ export default function App(){
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
-      // Historial de nómina semanal — se usa el ÚLTIMO snapshot para KPIs de mano de obra
+      // Historial de nómina semanal — los KPIs de mano de obra del portafolio
+      // leen la ÚLTIMA de estas semanas, así que aquí se entregan ya ordenadas
+      // por calendario y con las partes de una misma semana sumadas. En crudo
+      // el arreglo viene en orden de CARGA, y una obra que raya su semana en
+      // dos archivos —o que sube siete semanas de golpe— sale mal contada en
+      // el consolidado.
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
-        patch(o.id, { nominaSemanas: semanas });
+        patch(o.id, { nominaSemanas: semanasDeNomina(semanas) });
       }, alFallar(o.id, 'nominaSemanas', [], 'nomina')));
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
