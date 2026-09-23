@@ -2688,6 +2688,58 @@ const avisarSiFaltanSemanas = async (obraId, registros) => {
     `mientras se revisa. El documento viejo sigue intacto.`);
 };
 
+// Una carga cuyo archivo no dijo de qué semana es no tiene clave, y sin clave
+// no hay nombre de documento. Se van todas a un documento aparte en vez de
+// perderse: siguen saliendo por `leerHistorialNomina`, que aplana las partes
+// de todos los documentos sin mirar cómo se llaman.
+const CLAVE_SIN_SEMANA = 'sin-semana';
+const claveDocSemana = (reg) => claveSemanaNomina(reg) || CLAVE_SIN_SEMANA;
+
+// Escribe el historial en el formato que diga la bandera. El llamador entrega
+// el historial COMPLETO ya con el cambio hecho —igual que cuando todo vivía en
+// un arreglo— y además qué cargas tocó; de ahí sale qué documentos reescribir.
+//
+// Por qué el historial completo y no sólo el delta: así la única fuente de
+// verdad sigue siendo la lista que la pantalla ya tiene en la mano, y los dos
+// formatos se escriben desde el mismo dato. Un guardado que arma el documento
+// nuevo por su cuenta puede divergir del que se está enseñando, y eso no se ve
+// hasta que alguien recarga.
+//
+// Lanza si falla. No se traga nada: estas escrituras las pide el usuario y
+// tiene que poder saber QUÉ pasó (el #22 es exactamente lo contrario).
+const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx) => {
+  if (formato === FORMATO_HISTORIAL_ARREGLO) {
+    await fsSetAEstricto(`obras/${obraId}/nomina/historial`, { semanas: historial }, ctx);
+    return;
+  }
+
+  // Formato 2: un documento por semana. Sólo se reescriben las semanas que el
+  // cambio tocó — las demás ni se leen, que es el punto de haber migrado.
+  for (const clave of new Set(tocadas)) {
+    const partes = historial.filter(r => claveDocSemana(r) === clave);
+    const ruta = rutaSemanaNomina(obraId, clave);
+    if (partes.length === 0) {
+      // La última carga de esa semana se fue: el documento se borra en vez de
+      // quedarse con `partes: []`. Un documento vacío y uno que nunca existió
+      // tienen que verse igual al leer, o `avisarSiFaltanSemanas` empieza a
+      // contar semanas que ya no están.
+      const antes = await fsGet(ruta);
+      await deleteDoc(doc(fbDb, ...ruta.split('/')));
+      if (ctx) fsAudit('borrar', { path: ruta, modulo: ctx.modulo, entidad: ctx.entidad,
+        obraId: ctx.obraId, obraNombre: ctx.obraNombre, antes, meta: ctx.meta });
+      continue;
+    }
+    // `merge:false`: el documento ES la lista de partes de esa semana. Con
+    // merge, borrar una de dos partes dejaría la vieja dentro del arreglo.
+    const datos = { clave, partes, actualizado: new Date().toISOString() };
+    const antes = ctx ? await fsGet(ruta) : null;
+    await setDoc(doc(fbDb, ...ruta.split('/')), datos);
+    if (ctx) fsAudit(antes ? 'editar' : 'crear', { path: ruta, modulo: ctx.modulo,
+      entidad: ctx.entidad, obraId: ctx.obraId, obraNombre: ctx.obraNombre,
+      antes, despues: datos, meta: ctx.meta });
+  }
+};
+
 // Fallo al escribir el snapshot semanal. Tiene tipo propio para que el
 // llamador lo distinga de "no había nada que guardar", que también devolvía
 // `null` y por eso el cierre semanal no podía diferenciar éxito de fracaso.
@@ -2753,13 +2805,28 @@ const mensajeFalloSnapshot = (err, semanas, obraId) => {
 // donde vive la semana. Si la escritura falla, la semana no existe. Por eso el
 // mensaje no dice "tu captura sí quedó guardada" —sería mentira— sino que no
 // cierres sin reintentar.
-const mensajeFalloNomina = (err, semanas, obraId) => {
+// `semanas` es lo que iba a caber en UN documento, que no es lo mismo en los
+// dos formatos: con el arreglo es el historial entero, con la subcolección son
+// sólo las partes de la semana que se tocó. Medir el historial completo contra
+// el techo de un documento cuando la obra ya migró diría "llegó al límite" de
+// una obra que tiene espacio de sobra, y mandaría al residente a pedir que
+// compacten algo que ya no comparte espacio con nada.
+const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_ARREGLO) => {
   const bytes = tamañoFirestore({ semanas });
   const midePasado = bytes >= LIMITE_DOC_FIRESTORE * 0.9;
   const loDiceFirestore = /maximum|too large|exceeds|invalid-argument/i.test(err?.message || '');
   if (midePasado || loDiceFirestore) {
     const cuanto = midePasado
       ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
+    if (formato === FORMATO_HISTORIAL_SUBCOLECCION) {
+      // Aquí el documento es UNA semana. Que no quepa no dice nada del
+      // historial: dice que esa raya trae demasiados trabajadores.
+      return `Esta semana de nómina no cabe en un documento de Firestore` +
+        `${cuanto}, así que NO se guardó.\n\n` +
+        `No es el historial de la obra —ése ya está repartido por semanas y ` +
+        `tiene espacio—: es esta carga en particular. Guarda el archivo y ` +
+        `avisa a sistemas con el número de obra ${obraId} y la semana.`;
+    }
     return `El historial de nómina de esta obra llegó al límite de tamaño que ` +
       `permite Firestore${cuanto}, así que esta semana NO se guardó.\n\n` +
       `No se perdió nada de lo que ya estaba, pero esta carga tampoco quedó: ` +
@@ -7197,6 +7264,16 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       fsDel(`obras/${id}/contrato/documentos`),
       fsDel(`obras/${id}/subcontratos/lista`),
     ]);
+    // La subcolección de nómina son N documentos, no uno: borrar la obra sin
+    // recorrerla dejaría las semanas colgando de una obra que ya no existe.
+    // Firestore no borra hijos al borrar el padre, y esos huérfanos no se ven
+    // desde ninguna pantalla.
+    try {
+      const semanas = await getDocs(collection(fbDb, 'obras', id, 'nomina_historial'));
+      await Promise.all(semanas.docs.map(d => deleteDoc(d.ref)));
+    } catch (e) {
+      console.error('borrar nomina_historial', id, e);
+    }
     // Auditar (1 sola entrada por operación de borrado de obra)
     fsAudit("borrar", { modulo: "obra", entidad: snapshotPrev.nombre || id,
       obraId: id, obraNombre: snapshotPrev.contrato || snapshotPrev.nombre || "",
@@ -13589,11 +13666,17 @@ function Nomina({obra, rol, onHistorialCambio}) {
     const nuevo_hist = [...historial, nueva];
     setError('');
     try {
-      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo_hist},
+      await escribirHistorialNomina(obra.id, formatoHist, nuevo_hist, [claveDocSemana(nueva)],
         { modulo:"nomina", entidad:`semana ${nueva.semana} (${nueva.trabajadores.length} trab.)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
           meta:{ totalNomina: nueva.totalNomina } });
     } catch (e) {
-      setError(mensajeFalloNomina(e, nuevo_hist, obra.id));
+      // Lo que se midió contra el techo es lo que se intentó escribir en un
+      // documento: el historial entero con el formato viejo, sólo las partes
+      // de esta semana con la subcolección.
+      const cupo = formatoHist === FORMATO_HISTORIAL_SUBCOLECCION
+        ? nuevo_hist.filter(r => claveDocSemana(r) === claveDocSemana(nueva))
+        : nuevo_hist;
+      setError(mensajeFalloNomina(e, cupo, obra.id, formatoHist));
       // El diálogo se queda abierto a propósito: `nueva` sigue en la mano y el
       // botón de guardar reintenta con los mismos datos. Cerrarlo obligaría a
       // volver a cargar el archivo por un fallo que puede ser de un segundo.
@@ -13743,7 +13826,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
     if (nuevo.length === historial.length) return;
     setError('');
     try {
-      await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
+      await escribirHistorialNomina(obra.id, formatoHist, nuevo, [claveDocSemana(reg)],
         { modulo:"nomina", entidad:`eliminar carga ${reg?.semana||''} (${reg?.archivo||'sin archivo'})`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     } catch (e) {
       setError(`No se pudo eliminar la carga ${reg?.semana||''}: ` +
