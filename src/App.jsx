@@ -2554,6 +2554,140 @@ const semanasDeNomina = (registros) => {
   ];
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// DE DÓNDE SE LEE EL HISTORIAL DE NÓMINA — LA BANDERA, NO EL VACÍO
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El historial vive hoy en UN documento, `obras/{id}/nomina/historial`, con
+// todas las semanas dentro de un arreglo. Eso tiene techo: la 0114 ya reventó
+// el suyo en avance y perdió siete cierres (PENDIENTES #28). El destino es una
+// subcolección con un documento por semana, `obras/{id}/nomina_historial/
+// {Y2026-S38}`, que no compite por espacio consigo misma.
+//
+// Mientras las dos formas conviven hay que saber cuál mandar a leer, y la
+// tentación es preguntárselo a los datos: "si la subcolección trae algo, es la
+// nueva". NO. Una subcolección vacía y una subcolección que no se pudo leer se
+// ven igual desde aquí, y las dos son indistinguibles de una obra que todavía
+// no migra. Adivinar mal significa enseñar CERO SEMANAS DE NÓMINA con la misma
+// cara con la que se enseñan tres: el P2 en su forma más cara, porque el
+// historial de nómina es el único sitio donde vive la semana rayada.
+//
+// Por eso decide una bandera escrita a propósito, `formatoHistorial` en
+// `config/info`, y nunca el vacío:
+//
+//   formatoHistorial: { nomina: 1 }   ← el arreglo de siempre (por omisión)
+//   formatoHistorial: { nomina: 2 }   ← la subcolección
+//
+// Es un MAPA, no un número suelto, porque `avance/historial` migra después y
+// por su cuenta: una sola bandera obligaría a mover los dos historiales el
+// mismo día, y a que las Cloud Functions que leen avance (`recordatorioCaptura
+// Obra`, `recordatorioLunes`) cambiaran en el mismo despliegue. Un historial,
+// una bandera, una migración.
+//
+// Ausente significa 1. Eso sí es seguro al revés que el vacío de datos: una
+// obra nueva sin bandera lee el formato viejo, lo encuentra vacío porque
+// todavía no tiene nómina, y acierta.
+
+const FORMATO_HISTORIAL_ARREGLO = 1;
+const FORMATO_HISTORIAL_SUBCOLECCION = 2;
+
+const formatoHistorial = (info, cual) => {
+  const v = info?.formatoHistorial?.[cual];
+  return v === FORMATO_HISTORIAL_SUBCOLECCION
+    ? FORMATO_HISTORIAL_SUBCOLECCION : FORMATO_HISTORIAL_ARREGLO;
+};
+
+const rutaSemanaNomina = (obraId, clave) => `obras/${obraId}/nomina_historial/${clave}`;
+
+// Un fallo de lectura del historial no se convierte en lista vacía. Tiene tipo
+// propio para que la pantalla pueda decir "no se pudo leer" en vez de "no hay
+// nómina", que es la distinción que el #22 se pasa por alto 64 veces.
+class ErrorHistorialNomina extends Error {
+  constructor(mensaje, causa) {
+    super(mensaje);
+    this.name = 'ErrorHistorialNomina';
+    this.causa = causa;
+  }
+}
+
+// Lee el historial en cualquiera de los dos formatos y devuelve SIEMPRE lo
+// mismo: el arreglo de CARGAS, tal como lo espera el resto de la app. Quien
+// llama no se entera de dónde salió, que es justo el punto de tener esto.
+//
+// Lanza si no puede leer. No devuelve `[]` ante un fallo.
+const leerHistorialNomina = async (obraId) => {
+  let info;
+  try { info = await fsGet(`obras/${obraId}/config/info`); }
+  catch (e) {
+    throw new ErrorHistorialNomina(
+      `No se pudo leer la configuración de la obra ${obraId}, así que no se ` +
+      `sabe en qué formato está guardado su historial de nómina. No se muestra ` +
+      `nada porque mostrar cero semanas sería indistinguible de no tener nómina.`, e);
+  }
+  const formato = formatoHistorial(info, 'nomina');
+
+  if (formato === FORMATO_HISTORIAL_ARREGLO) {
+    const d = await fsGet(`obras/${obraId}/nomina/historial`);
+    return { registros: Array.isArray(d?.semanas) ? d.semanas : [], formato };
+  }
+
+  // Formato 2. `fsGet` se traga los fallos, así que aquí se lee en crudo para
+  // poder distinguir "no hay semanas" de "no se pudo preguntar".
+  let snap;
+  try { snap = await getDocs(collection(fbDb, 'obras', obraId, 'nomina_historial')); }
+  catch (e) {
+    throw new ErrorHistorialNomina(
+      `La obra ${obraId} tiene el historial de nómina en subcolección, pero no ` +
+      `se pudo leer: ${e?.message || e}. Sus semanas están guardadas; esto es ` +
+      `un fallo de lectura, no una pérdida.`, e);
+  }
+  // Cada documento guarda las PARTES de su semana, no una semana ya sumada:
+  // la 0126 rayó su semana 38 en dos archivos y borrar "la semana" tiene que
+  // poder borrar una sola de las dos cargas. La suma la sigue haciendo
+  // `semanasDeNomina`, igual que con el formato viejo.
+  const registros = [];
+  snap.forEach(doc => {
+    const partes = doc.data()?.partes;
+    if (Array.isArray(partes)) registros.push(...partes);
+  });
+  await avisarSiFaltanSemanas(obraId, registros);
+  return { registros, formato };
+};
+
+// LA GUARDA. Si la bandera dice 2, el documento viejo tuvo que quedarse atrás
+// —se deja a propósito durante la migración, como red— y todas sus semanas
+// tienen que estar también en la subcolección. Si falta alguna, la pantalla
+// enseñaría menos nómina de la que hay y NADIE LO NOTARÍA: no hay hueco visible
+// entre la semana 33 y la 36 si nunca supiste que existía la 34.
+//
+// Grita lanzando, no con un `console.warn`. Un aviso en la consola es lo que
+// dejó pasar dieciséis días el fallo de agosto (#26).
+const avisarSiFaltanSemanas = async (obraId, registros) => {
+  const viejo = await fsGet(`obras/${obraId}/nomina/historial`);
+  const antes = Array.isArray(viejo?.semanas) ? viejo.semanas : [];
+  if (antes.length === 0) return;   // ya se limpió: la migración terminó
+
+  const hay = new Set(registros.map(claveSemanaNomina).filter(Boolean));
+  const faltan = [...new Set(antes.map(claveSemanaNomina).filter(Boolean))]
+    .filter(c => !hay.has(c)).sort();
+  // Una carga sin semana legible no tiene clave y no se puede contar por clave.
+  // Se cuenta aparte para que no desaparezca del recuento (P2).
+  const sinClaveAntes = antes.filter(r => !claveSemanaNomina(r)).length;
+  const sinClaveAhora = registros.filter(r => !claveSemanaNomina(r)).length;
+
+  if (faltan.length === 0 && sinClaveAhora >= sinClaveAntes) return;
+
+  throw new ErrorHistorialNomina(
+    `La obra ${obraId} está marcada como migrada (formatoHistorial.nomina = 2) ` +
+    `pero a su subcolección le faltan semanas que sí están en el documento ` +
+    `viejo: ${faltan.join(', ') || '(ninguna por clave)'}` +
+    (sinClaveAhora < sinClaveAntes
+      ? ` — y ${sinClaveAntes - sinClaveAhora} carga(s) sin semana legible.` : '.') +
+    ` No se muestra un historial incompleto: parecería nómina de menos y nadie ` +
+    `lo notaría. Volver a correr la migración, o regresar la bandera a 1 ` +
+    `mientras se revisa. El documento viejo sigue intacto.`);
+};
+
 // Fallo al escribir el snapshot semanal. Tiene tipo propio para que el
 // llamador lo distinga de "no había nada que guardar", que también devolvía
 // `null` y por eso el cierre semanal no podía diferenciar éxito de fracaso.
@@ -13378,6 +13512,10 @@ function Nomina({obra, rol, onHistorialCambio}) {
   // ensureXLSX() para garantizar disponibilidad antes de usarlo)
   useEffect(() => { ensureXLSX().catch(() => {}); }, []);
   const [historial, setHistorial] = useState([]);
+  // En qué formato se leyó el historial de esta obra, para escribir en el
+  // mismo. Arranca en el viejo: si la lectura no llegó a contestar, todavía no
+  // hay nada que guardar, y si falla se queda en el formato que no borra nada.
+  const [formatoHist, setFormatoHist] = useState(FORMATO_HISTORIAL_ARREGLO);
   // fix/kpis-en-cero (2026-09-17): Nomina mantiene su state local (para su
   // propia UI), pero notifica los cambios al App via onHistorialCambio para
   // que Dashboard, MiniDashNomina y detectarRiesgos vean el snapshot fresco.
@@ -13388,17 +13526,35 @@ function Nomina({obra, rol, onHistorialCambio}) {
     setHistorial(nuevo);
     onHistorialCambio && onHistorialCambio(semanasDeNomina(nuevo));
   };
+  // El historial se pide por `leerHistorialNomina`, que mira la bandera
+  // `formatoHistorial.nomina` de la obra y trae las cargas del formato que
+  // corresponda. Aquí adentro da igual cuál sea: llegan las mismas cargas.
+  //
+  // Si la lectura falla, la pantalla lo DICE. Antes el `.then` sin `.catch` y
+  // el `fsGet` mudo hacían que un fallo se viera como una obra sin nómina, y
+  // desde esa pantalla se sube la siguiente semana: quien no ve las diez
+  // anteriores no tiene cómo saber que le faltan.
   useEffect(()=>{
-    fsGet(`obras/${obra.id}/nomina/historial`).then(d=>{
-      if(d&&Array.isArray(d.semanas)) {
-        setHistorial(d.semanas);
-        onHistorialCambio && onHistorialCambio(semanasDeNomina(d.semanas));
-        // Al cargar, apuntar SIEMPRE a la última semana del CALENDARIO, que no
-        // tiene por qué ser la última carga: la 0125 subió de golpe siete
-        // semanas y el orden del arreglo es el de subida.
-        setSemanaVer(Math.max(0, semanasDeNomina(d.semanas).length - 1));
-      }
+    let vigente = true;
+    leerHistorialNomina(obra.id).then(({registros, formato})=>{
+      if(!vigente) return;
+      setHistorial(registros);
+      // El formato con el que se LEYÓ es el que se usa para escribir. Sale de
+      // la misma lectura a propósito: preguntarlo otra vez al guardar abriría
+      // la puerta a leer de un formato y escribir en el otro si alguien mueve
+      // la bandera en medio, y esa carga se escribiría donde nadie la lee.
+      setFormatoHist(formato);
+      onHistorialCambio && onHistorialCambio(semanasDeNomina(registros));
+      // Al cargar, apuntar SIEMPRE a la última semana del CALENDARIO, que no
+      // tiene por qué ser la última carga: la 0125 subió de golpe siete
+      // semanas y el orden del arreglo es el de subida.
+      setSemanaVer(Math.max(0, semanasDeNomina(registros).length - 1));
+    }).catch(e=>{
+      if(!vigente) return;
+      console.error('leerHistorialNomina', obra.id, e);
+      setError(`No se pudo cargar el historial de nómina: ${e?.message || e}`);
     });
+    return ()=>{ vigente = false; };
   },[obra.id]);
   const [cargando, setCargando]   = useState(false);
   const [error, setError]         = useState('');
@@ -17437,8 +17593,7 @@ export default function App(){
     // previo), ahora POBLA setNominaHistorial para alimentar KPIs de Dashboard,
     // MiniDashNomina, motor detectarRiesgos y PDF.
     if (usuario?.rol !== 'cliente') {
-      fsGet(`obras/${obraId}/nomina/historial`).then(d=>{
-        const registros = Array.isArray(d?.semanas) ? d.semanas : [];
+      leerHistorialNomina(obraId).then(({registros})=>{
         // Calendario, no orden de carga: ver `semanasDeNomina`. De aquí comen
         // el PDF, los tres avisos de nómina y el KPI de personal del tablero.
         setNominaHistorial(semanasDeNomina(registros));
@@ -17453,9 +17608,21 @@ export default function App(){
           setFechasModulos(f => ({...f, nomina: masReciente.toISOString()}));
         }
       }).catch(err => {
-        // Fallo defensivo: si por alguna razón el fetch falla, dejar historial
-        // vacío. Los consumers toleran array vacío y muestran valores neutros.
-        // NO rompe la carga de la obra.
+        // Una inconsistencia de migración NO se traga. Si la bandera dice que
+        // la obra ya está en subcolección y a la subcolección le faltan
+        // semanas, el tablero enseñaría menos nómina de la que hay con cara de
+        // normalidad. Eso tiene que interrumpir a quien esté mirando.
+        if (err?.name === 'ErrorHistorialNomina') {
+          console.error('historial de nómina inconsistente:', obraId, err);
+          alert(err.message);
+          setNominaHistorial([]);
+          return;
+        }
+        // El resto —típicamente permisos— sigue siendo defensivo para no
+        // tumbar la carga de la obra. Queda el hueco conocido: los KPIs del
+        // tablero muestran valores neutros, que es lo mismo que enseñarían si
+        // de verdad no hubiera nómina. Distinguir las dos cosas en el tablero
+        // es parte del #22 y no cabe en esta rama.
         console.warn('nomina/historial no accesible:', err?.code || err?.message);
         setNominaHistorial([]);
       });
@@ -17670,7 +17837,27 @@ export default function App(){
       const base = prev[id] || {info:{},subs:[],maquinaria:[],materiales:[],estimaciones:[],otrosGastos:[]};
       const listos = { ...(base._listos || {}) };
       Object.keys(parcial).forEach(k => { listos[k] = true; });
-      return { ...prev, [id]: { ...base, ...parcial, _listos: listos } };
+      const mezcla = { ...base, ...parcial, _listos: listos };
+
+      // El historial de nómina llega por DOS oyentes —el documento viejo y la
+      // subcolección— y cuál manda lo dice la bandera, que llega por un
+      // tercero (`config/info`). Los tres pueden aterrizar en cualquier orden,
+      // así que la elección se rehace en cada `patch` en vez de fijarse al
+      // suscribirse. Si no, la bandera que llega tarde no cambia nada y el
+      // portafolio se queda leyendo el formato equivocado hasta que alguien
+      // recargue.
+      if (listos.info && (listos._nomDoc || listos._nomSub)) {
+        const usaSub = formatoHistorial(mezcla.info, 'nomina') === FORMATO_HISTORIAL_SUBCOLECCION;
+        const clave = usaSub ? '_nomSub' : '_nomDoc';
+        // Sólo se resuelve cuando llegó la fuente QUE MANDA. Con la otra ya
+        // resuelta y ésta todavía en vuelo, dar por buena la que hay sería
+        // enseñar cero semanas de una obra que sí tiene nómina.
+        if (listos[clave]) {
+          mezcla.nominaSemanas = semanasDeNomina(mezcla[clave] || []);
+          listos.nominaSemanas = true;
+        }
+      }
+      return { ...prev, [id]: mezcla };
     });
 
     // Un listener que falla (permisos, red) debe marcar su clave como
@@ -17717,16 +17904,27 @@ export default function App(){
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
       // Historial de nómina semanal — los KPIs de mano de obra del portafolio
-      // leen la ÚLTIMA de estas semanas, así que aquí se entregan ya ordenadas
-      // por calendario y con las partes de una misma semana sumadas. En crudo
-      // el arreglo viene en orden de CARGA, y una obra que raya su semana en
-      // dos archivos —o que sube siete semanas de golpe— sale mal contada en
-      // el consolidado.
+      // leen la ÚLTIMA de estas semanas, así que se entregan ya ordenadas por
+      // calendario y con las partes de una misma semana sumadas. En crudo el
+      // arreglo viene en orden de CARGA, y una obra que raya su semana en dos
+      // archivos —o que sube siete semanas de golpe— sale mal contada en el
+      // consolidado.
+      //
+      // Dos oyentes, no uno, porque las obras migran de una en una y las dos
+      // formas conviven. El `patch` elige cuál usar según la bandera; aquí
+      // sólo se traen las cargas en crudo. Escuchar las dos cuesta un oyente
+      // más por obra —cinco hoy— y a cambio un cambio de bandera se ve sin
+      // recargar, que es justo lo que hay que poder comprobar el día de la
+      // migración.
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
-        const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
-        patch(o.id, { nominaSemanas: semanasDeNomina(semanas) });
-      }, alFallar(o.id, 'nominaSemanas', [], 'nomina')));
+        patch(o.id, { _nomDoc: (d && Array.isArray(d.semanas)) ? d.semanas : [] });
+      }, alFallar(o.id, '_nomDoc', [], 'nomina doc')));
+      unsubs.push(onSnapshot(collection(fbDb, 'obras', o.id, 'nomina_historial'), snap => {
+        const registros = [];
+        snap.forEach(dd => { const p = dd.data()?.partes; if (Array.isArray(p)) registros.push(...p); });
+        patch(o.id, { _nomSub: registros });
+      }, alFallar(o.id, '_nomSub', [], 'nomina subcoleccion')));
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
       // captura ≥ 7 días"). feature/dashboard-principal 2026-09-18.
