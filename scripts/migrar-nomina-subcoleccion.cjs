@@ -50,12 +50,21 @@ const { idSemana, semanaCorregida, añoDeSemana, AÑOS } =
 const P = 'campo-fosmon';
 const BASE = `/v1/projects/${P}/databases/(default)/documents`;
 
+// El orden de migración, de menos a más que perder. La 0127 y la 0112 tienen
+// dos semanas cada una; la 0114 tiene catorce y es la que ya perdió siete
+// cierres en avance por este mismo defecto, así que va al final, cuando el
+// camino esté recorrido. Va escrito aquí y no en la cabeza de nadie: el día de
+// la migración se corre obra por obra y el orden es la mitad de la seguridad.
+const ORDEN = ['0127', '0112', '0126', '0125', '0114'];
+
 const args = process.argv.slice(2);
 const ESCRIBIR = args.includes('--escribir');
 const iObra = args.indexOf('--obra');
 const OBRAS = iObra >= 0 && args[iObra + 1]
   ? [args[iObra + 1]]
-  : Object.keys(AÑOS);
+  // Ninguna obra de la tabla se queda fuera por no estar en ORDEN: las que no
+  // figuren van detrás, no desaparecen.
+  : [...new Set([...ORDEN, ...Object.keys(AÑOS)])].filter(o => AÑOS[o]);
 
 let TOKEN;
 try { TOKEN = fs.readFileSync('/tmp/adc.tok', 'utf8').trim(); }
@@ -197,6 +206,56 @@ const planDe = async (obra) => {
   return { regs, semanas, errores };
 };
 
+// ── 4b. ¿Se movió el origen mientras corríamos? ─────────────────────────────
+// Entre que se lee el documento viejo y que se levanta la bandera pasan varios
+// segundos, y en ese hueco un residente puede guardar una raya desde la app.
+// Esa carga entra al documento viejo —que es el que la app todavía usa— y la
+// subcolección no la tendría. Al subir la bandera desaparecería de la pantalla,
+// y en nómina no hay de dónde recuperarla salvo del Excel, si alguien lo
+// guardó.
+//
+// No basta con contar. Un guardado puede dejar el mismo número de registros
+// —editar una carga, o borrar una y agregar otra— así que se compara registro
+// por registro con una huella de lo que identifica a cada uno. Y se dice QUÉ
+// se movió, no sólo que algo se movió: abortar sin decir qué obliga a
+// reconstruirlo a mano desde la consola.
+const huella = (r) => JSON.stringify([
+  String(r?.archivo ?? ''), String(r?.semana ?? ''), String(r?.fecha ?? ''),
+  Number(r?.totalNomina) || 0, (r?.trabajadores || []).length,
+]);
+const nombrar = (r) => `«${r?.archivo || 'sin archivo'}» (semana «${r?.semana ?? '?'}», ` +
+  `${(r?.trabajadores || []).length} trab, ${MXN(r?.totalNomina)})`;
+
+// La comparación va aparte de la lectura para poder probarla sin red: es la
+// parte con lógica, y es la que decide si se sube la bandera o no.
+const compararOrigen = (antesRegs, regs) => {
+  const cuenta = (lista) => {
+    const m = new Map();
+    for (const r of lista) m.set(huella(r), (m.get(huella(r)) || 0) + 1);
+    return m;
+  };
+  const antes = cuenta(antesRegs), despues = cuenta(regs);
+  const nuevos = [], idos = [];
+  for (const r of regs) if ((despues.get(huella(r)) || 0) > (antes.get(huella(r)) || 0)) {
+    nuevos.push(r); antes.set(huella(r), (antes.get(huella(r)) || 0) + 1);
+  }
+  for (const r of antesRegs) if ((antes.get(huella(r)) || 0) > (despues.get(huella(r)) || 0)) {
+    idos.push(r); despues.set(huella(r), (despues.get(huella(r)) || 0) + 1);
+  }
+
+  if (regs.length === antesRegs.length && !nuevos.length && !idos.length) return null;
+
+  const l = [`el documento viejo tenía ${antesRegs.length} registro(s) al empezar y ahora tiene ${regs.length}`];
+  for (const r of nuevos) l.push(`  entró:  ${nombrar(r)}`);
+  for (const r of idos)  l.push(`  salió:  ${nombrar(r)}`);
+  return l.join('\n');
+};
+
+const seMovioElOrigen = async (obra, plan) => {
+  const ahora = deCampos(await pedir('GET', `/obras/${obra}/nomina/historial`));
+  return compararOrigen(plan.regs, Array.isArray(ahora?.semanas) ? ahora.semanas : []);
+};
+
 // ── 4. Releer y comparar contra el origen ───────────────────────────────────
 const verificar = async (obra, plan) => {
   const fallas = [];
@@ -295,6 +354,22 @@ const verificar = async (obra, plan) => {
       continue;
     }
     console.log('  todo cuadra: mismas semanas, mismas partes, mismo dinero.');
+
+    // 4b. Última mirada al origen antes del punto de no retorno.
+    console.log('\nComprobando que nadie cargó nómina mientras tanto…');
+    const movido = await seMovioElOrigen(obra, plan);
+    if (movido) {
+      console.log('\nEl documento viejo CAMBIÓ durante la migración:\n');
+      console.log(movido.split('\n').map(l => '  ' + l).join('\n'));
+      console.log('\nLa bandera NO se levanta. La app sigue leyendo el documento viejo,');
+      console.log('que tiene esa carga; si subiéramos la bandera ahora, desaparecería de');
+      console.log('la pantalla y en nómina no hay de dónde sacarla otra vez.');
+      console.log('La subcolección quedó escrita pero nadie la lee: volver a correr esto');
+      console.log('cuando no haya nadie capturando la reescribe completa.');
+      problemas++;
+      continue;
+    }
+    console.log('  el origen sigue igual que al empezar.');
 
     // 5. Bandera
     // La máscara es `formatoHistorial.nomina`, ANIDADA, no `formatoHistorial`.
