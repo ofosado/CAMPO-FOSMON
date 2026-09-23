@@ -49,7 +49,9 @@ const check = (ok, titulo, detalle = '') => {
   if (!ok) fallas++;
 };
 
-for (const n of ['fn:guardarSemana', 'fn:eliminarSemana', 'tamañoFirestore', 'LIMITE_DOC_FIRESTORE'])
+for (const n of ['fn:guardarSemana', 'fn:eliminarCarga', 'tamañoFirestore', 'LIMITE_DOC_FIRESTORE',
+                 'semanasDeNomina', 'claveSemanaNomina', 'numSemanaNomina', 'añoSemanaNomina',
+                 'fechaCargaNomina', 'semanaISO', 'heImporte'])
   if (!decl[n]) check(false, `se pudo extraer \`${n.replace('fn:', '')}\``);
 if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
 
@@ -86,20 +88,30 @@ const preludio = `
   const tamañoFirestore = ${decl['tamañoFirestore']};
   const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
   const mensajeFalloNomina = ${decl['mensajeFalloNomina'] || '(e) => String(e && e.message)'};
+  // El guardado decide a qué semana saltar por calendario, no por posición.
+  const semanaISO = ${decl['semanaISO']};
+  const heImporte = ${decl['heImporte']};
+  const numSemanaNomina = ${decl['numSemanaNomina']};
+  const fechaCargaNomina = ${decl['fechaCargaNomina']};
+  const añoSemanaNomina = ${decl['añoSemanaNomina']};
+  const claveSemanaNomina = ${decl['claveSemanaNomina']};
+  const semanasDeNomina = ${decl['semanasDeNomina']};
 `;
 
 const montar = (modo, historial) => new Function('modo', 'historial',
   `"use strict";
    ${preludio}
    ${decl['fn:guardarSemana']}
-   ${decl['fn:eliminarSemana']}
-   return { guardarSemana, eliminarSemana, efectos };`
+   ${decl['fn:eliminarCarga']}
+   return { guardarSemana, eliminarCarga, efectos };`
 )(modo, historial);
 
 // Una semana con la forma de las de verdad: el peso está en `trabajadores`, y
-// cada trabajador carga una docena de campos, no dos.
+// cada trabajador carga una docena de campos, no dos. La `fecha` va en d/m/aaaa
+// porque es lo que escribe la app (`toLocaleDateString('es-MX')`) y ahora el
+// guardado la lee para saber a qué semana del calendario saltar.
 const semana = (n, trabs = 40) => ({
-  semana: 'SEM ' + n, fecha: '2027-02-0' + (n % 9 || 1), totalNomina: 1200000 + n,
+  semana: 'SEM ' + n, fecha: `${(n % 28) + 1}/2/2027`, totalNomina: 1200000 + n,
   totalDir: trabs, totalInd: 4, totalHE: 180,
   trabajadores: Array.from({ length: trabs }, (_, i) => ({
     nombre: `APELLIDO PATERNO APELLIDO MATERNO NOMBRE ${i}`,
@@ -168,8 +180,11 @@ const correrGuardar = async (modo, historial = [semana(5)]) => {
   // 5) Borrar tiene el mismo problema al revés: si el borrado no llegó, la
   //    semana sigue ahí y la pantalla no puede decir que ya no está.
   const borrar = async modo => {
-    const mod = montar(modo, [semana(1), semana(2), semana(3)]);
-    await mod.eliminarSemana(1);
+    const hist = [semana(1), semana(2), semana(3)];
+    const mod = montar(modo, hist);
+    // Se borra UNA CARGA, no una posición: cuando una semana llegó en dos
+    // archivos, quitar "la semana" se llevaría también la parte buena.
+    await mod.eliminarCarga(hist[1]);
     return mod.efectos;
   };
   const borrOk = await borrar('ok');
