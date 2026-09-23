@@ -30,6 +30,10 @@ const OBRA = process.argv[2] || '0114';
 const get = ruta => new Promise((res, rej) => {
   https.get({ host: 'firestore.googleapis.com', path: BASE + ruta,
     headers: { Authorization: `Bearer ${TOKEN}`, 'X-Goog-User-Project': PROYECTO } }, r => {
+    // Ver PENDIENTES, «El transporte que decodificaba a medias»: sin
+    // `setEncoding`, un carácter UTF-8 partido entre dos trozos TCP se
+    // decodifica a la mitad por cada lado.
+    r.setEncoding('utf8');
     let b = ''; r.on('data', d => b += d);
     r.on('end', () => r.statusCode === 200 ? res(JSON.parse(b))
       : r.statusCode === 404 ? res(null) : rej(new Error(`HTTP ${r.statusCode}: ${b.slice(0,200)}`)));
