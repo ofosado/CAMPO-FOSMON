@@ -2107,10 +2107,10 @@ Contra eso no sirve un emisor. Sirve un **lector**: el navegador, que
 sigue vivo porque habla con Firestore directo.
 
 **Qué**: una pantalla en administración que lea `global/health` y
-muestre, **por cada función programada** —hoy son seis jobs:
+muestre, **por cada función programada** —hoy son cinco jobs:
 `backupSemanalFirestore`, `resumenSemanalEmail`, `recordatorioLunes`,
-`recordatorioCapturaSubs`, `recordatorioCapturaObra`,
-`actualizarGPSheet`—:
+`recordatorioCapturaObra`, `actualizarGPSheet`; eran seis hasta que
+`recordatorioCapturaSubs` se retiró el 2026-09-22 (#31)—:
 
 - qué es y cada cuándo debería correr,
 - **"última ejecución hace N días"**,
@@ -2318,6 +2318,271 @@ original y `fsSetA` lo sigue envolviendo devolviendo `false`. Ningún
 llamador existente cambia de conducta; el que necesita explicar el fallo
 ahora tiene con qué.
 
+### El año de las semanas de nómina va escrito, no deducido (2026-09-22)
+
+Un registro de nómina **no guarda el año**: trae `semana` como texto y
+`fecha`, que es cuándo se subió el archivo, no cuándo se rayó la semana.
+La app lo deduce con una heurística (`añoSemanaNomina`): elige el año que
+deja la semana más cerca de la semana ISO de la carga, con un umbral de
+±26.
+
+Para pintar la pantalla, deducir está bien: si se equivoca se ve raro y
+alguien lo corrige. **Para migrar, no.** En la subcolección el año es
+parte del id (`Y2026-S04`), y un id equivocado no se ve raro — la semana
+aterriza en un año donde nadie la busca, o encima de otra, y se pierde en
+silencio. Es el patrón del #22 otra vez, pero con el dato ya movido.
+
+Y el margen es más fino de lo que parece. El caso más apretado que hay en
+producción es la **semana 04 de la 0125**, subida el 19/6/2026:
+
+| | |
+|---|---|
+| semana rayada | 4 |
+| semana ISO de la carga | 25 |
+| `d = 25 − 4` | **21** (umbral: 26) |
+| margen | **5 semanas** |
+
+Si esa misma carga masiva se hubiera hecho el 1/8/2026 en vez del 19/6,
+`d` habría valido 27, la heurística habría dicho **2027** y la semana 4 de
+2026 se habría archivado como `Y2027-S04`: un año en el futuro, invisible
+para siempre. **Seis semanas de retraso en subir un Excel separan el
+acierto del error**, y de eso no depende ningún dato de la obra — depende
+de cuándo se acordó alguien.
+
+Por eso el año vive escrito en
+[`scripts/migracion-nomina-anios.cjs`](scripts/migracion-nomina-anios.cjs):
+una tabla obra → semana → año, con la procedencia de cada bloque
+documentada. Cubre las **31 semanas de calendario / 33 registros** que hay
+hoy en las cinco obras; **todas son 2026**, las siete de la carga masiva
+de la 0125 confirmadas por Omar el 2026-09-22.
+
+La función `añoDeSemana(obraId, reg)` **lanza si el registro no está en la
+tabla**. Es a propósito: una semana que apareció después de fijar esto es
+una semana cuyo año nadie confirmó, y la migración tiene que parar y
+preguntar, no adivinar (P2). Si salta, se agrega la fila con su
+justificación — no se quita la comprobación.
+
+`node scripts/migracion-nomina-anios.cjs --verificar` contrasta la tabla
+contra producción: avisa de semanas que falten, que sobren, o donde la
+heurística y la tabla discrepen. Hoy: 33 registros, 0 problemas.
+
+> **Corrección (2026-09-22).** Confirmar el año no bastó: **el número de
+> semana de la 0125 también está mal**, y viene de la misma fuente. Ver
+> "El guion de migración y el bloqueador de la 0125" más abajo. La frase de
+> arriba sobre "la semana 21 en dos archivos" era falsa — son dos semanas
+> distintas colapsadas por un número mal leído.
+
+### El guion de migración y el bloqueador de la 0125 (2026-09-22)
+
+[`scripts/migrar-nomina-subcoleccion.cjs`](scripts/migrar-nomina-subcoleccion.cjs).
+**Sin `--escribir` no toca nada**; el ensayo lee, agrupa, valida y enseña lo
+que haría. Nunca se ha corrido en modo escritura.
+
+El orden está fijado a propósito: leer y agrupar → validar TODO → escribir →
+**volver a leer y comparar contra el origen** → y solo entonces levantar la
+bandera. Media obra migrada es peor que ninguna, y con la bandera al final
+lo peor que deja una interrupción es una subcolección incompleta que nadie
+lee todavía. El documento viejo no se borra: es la red y es contra lo que
+compara `avisarSiFaltanSemanas`.
+
+**El ensayo encontró un bloqueador en la 0125.** La 0125 agrupaba dos
+archivos de semanas distintas —"SEM. 22 DEL 21 DE MAY" y "SEM. 23 DEL 28 DE
+MAY"— en un mismo `Y2026-S21`. El campo `semana` de sus nueve registros de
+carga masiva no guarda el número de semana, guarda un número suelto raspado
+del encabezado que en ocho de los nueve casos coincide con el **día del mes**
+en que empieza el periodo (la SEM. 23 empieza el 28 y guardó 21: ahí ni eso):
+
+| archivo dice | campo guarda | id al que iría |
+|---|---|---|
+| SEM. 19 (30 abr) | Semana 30 | `Y2026-S30` |
+| SEM. 20 (07 may) | Semana 07 | `Y2026-S07` |
+| SEM. 21 (14 may) | Semana 14 | `Y2026-S14` |
+| SEM. 22 (21 may) | Semana 21 | `Y2026-S21` |
+| SEM. 23 (28 may) | Semana 21 | `Y2026-S21` ← encima de la anterior |
+| SEM. 24 (04 jun) | Semana 04 | `Y2026-S04` |
+| SEM. 25 (11 jun) | Semana 11 | `Y2026-S11` |
+| SEM. 26 (18 jun) | Semana 18 | `Y2026-S18` |
+| SEM. 27 (25 jun) | Semana 25 | `Y2026-S25` |
+
+**La causa está en `parsearNomina`**, que raspa la semana de las filas de
+encabezado del Excel. Lo que está **probado**: el único que escribe ese campo
+es ese raspado; el valor pasó por el respaldo `/s\.?\s*(\d{2})/i` y no por la
+expresión principal (producción guarda literalmente `"Semana 07"` y
+`"Semana 04"` —con cero delante, y solo `(\d{2})` captura dos dígitos fijos—,
+mientras que `/semana\s*(\d+)/i` ni siquiera casa con `"SEM. 20"`, y la rama
+de fechas habría escrito `"30 DE ABR AL 06…"`, no `"Semana NN"`); ese respaldo
+muerde cualquier palabra acabada en «s» pegada a dos dígitos (`"SERVICIOS 30"`
+→ 30, `"DIAS 21"` → 21, `"LOS 04"` → 04); y el bucle no corta, así que gana la
+última fila que empate.
+
+Lo que **no** está probado: qué celda exacta produjo cada número. No se puede
+reconstruir sin los Excel originales, y no hace falta para arreglarlo.
+
+Ojo con la tentación de "ponerle `break`": no arregla nada. Con las filas
+`["NOMINA SEMANAL","TOTAL DIAS 21","SEMANA 23"]`, sin `break` sale 23 y con
+`break` sale 21 — las dos mal, por motivos distintos.
+
+Las otras cuatro obras usan `NOMINA_FOSMON_xxxx_SEMnn.xlsx` y salen bien por
+casualidad del formato, no porque el código lo resuelva.
+
+Esto obliga a corregir dos cosas escritas antes: la nota de que "la semana 21
+de la 0125 vino en DOS archivos: misma semana" es falsa, y la tabla de
+`AÑOS['0125']` documenta ocho números que no son semanas. Arreglar el año no
+arregló el número **porque ambos salen de la misma fuente y solo se verificó
+uno**.
+
+**Cómo lo para el guion.** La semana del nombre del archivo —que la escribió
+una persona— es la segunda opinión. Si discrepa del campo, la migración no
+elige: para la obra entera y lo dice. Un id de semana equivocado no se ve
+raro (la semana aterriza donde nadie la busca, o encima de otra) y es
+irreversible una vez vaciado el documento viejo.
+
+Ensayo de hoy, sin escribir nada:
+
+| obra | registros | semanas | estado |
+|---|---|---|---|
+| 0112 | 2 | 2 | limpia |
+| 0114 | 14 | 14 | limpia |
+| 0125 | 11 | — | **bloqueada**: 9 registros con semana no confiable |
+| 0126 | 4 | 3 | limpia (S38 sí es un cierre en dos archivos) |
+| 0127 | 2 | 2 | limpia |
+
+**Resuelto (2026-09-22).** Las nueve semanas correctas están escritas a mano
+en la tabla `SEMANAS` de `scripts/migracion-nomina-anios.cjs`, indexadas por
+**nombre de archivo** —no por el campo `semana`, que tiene una colisión: dos
+registros dicen "Semana 21"— y cada una con su procedencia. Con eso el ensayo
+queda limpio en las cinco obras (0125: 11 registros → 11 semanas).
+
+Y `parsearNomina` se arregló en la rama `fix/semana-nomina`, **antes** de
+migrar: si hubiéramos migrado primero, la siguiente nómina que suba TAMSA
+volvería a meter un documento con el id equivocado. Ahora la semana se
+contrasta entre tres fuentes —la hoja, el nombre del archivo y la semana de
+calendario del periodo, tomada por el día de **cierre**— y si no coinciden la
+pantalla pregunta y no deja guardar. Ver `scripts/prueba-semana-de-nomina.cjs`.
+
+**Qué más quedó mal etiquetado.** Medido con
+[`scripts/medir-dano-semana-0125.cjs`](scripts/medir-dano-semana-0125.cjs),
+que corre el recorrido real de la app (el oyente de `nomina/historial` se
+extrae de `src/App.jsx`) sobre los datos de producción, dos veces: con los
+números guardados y con los corregidos.
+
+Ningún otro **campo** deriva del número. Lo que el número decide es el
+**orden**, y de ahí cuelga todo lo demás:
+
+| | hoy | de verdad |
+|---|---|---|
+| orden en pantalla | 04→07→11→14→18→21→25→30→36→37 | 19→20→21→22→23→24→25→26→27→36→37 |
+| filas del historial | 10 | 11 |
+| bajadas de plantilla en la curva | 4 | 1 |
+| semanas sin captura aparentes | 24 | 8 |
+
+Y una fila que nunca existió: «Semana 21» con 83 trabajadores y $400,546,
+que es SEM. 22 (50 personas, $240,546) fundida con SEM. 23 (33, $160,000).
+
+Cada cierre además aparece en otro mes: la SEM. 24 (junio) se enseña como
+S04 (enero), la SEM. 19 (mayo) como S30 (julio), la SEM. 26 (junio) como S18
+(abril).
+
+**Lo que NO está afectado**, comprobado uno por uno para no inflar el daño:
+
+- Los KPIs de semana actual/anterior y sus deltas —personal, nómina, HE,
+  altas, bajas, top incremento— se calculan **solo entre las dos últimas**
+  (`src/App.jsx:13449-13450`), que en la 0125 son S36 y S37, correctas. La
+  medición da cifras idénticas con números buenos y malos.
+- Ver una semana vieja en el desplegable no calcula deltas: el `delta` por
+  trabajador solo sale si `semVer===semanaActual` (`src/App.jsx:13923-13926`).
+- El sparkline de "tendencia de gasto por rubro" y las "semanas anómalas"
+  (`src/App.jsx:10947`) se alimentan de `gpData.semanasDisponibles` —GP,
+  gastos— y no tocan la nómina.
+- El **correo de resumen semanal** no lee nómina: `calcularKpisObra` en
+  `functions/index.js` no la abre.
+- El **recordatorio de captura** (`functions/index.js:1330-1344`) lee
+  `obras/{id}/avance/historial` con el id de semana ISO. Es avance, no nómina.
+
+**Un defecto distinto que salió al mirar** (no es del número de semana):
+cuatro lectores siguen tomando `nominaHistorial[length-1]`, el arreglo **en
+orden de carga**, en vez de la semana de calendario: el PDF
+(`src/App.jsx:1158`) y los tres avisos de nómina `nom_001`, `nom_002` y
+`nom_003` (`src/App.jsx:3136, 3150, 3168`). Es el mismo defecto que arregló
+`semanasDeNomina` en el panel, y estos cuatro no se enteraron. En la 0125 no
+hace daño porque la última carga es la S37 y es correcta; en la **0126** sí:
+su S38 vino en dos archivos, así que el PDF y los avisos leen solo la segunda
+parte —35 trabajadores en vez de 134, $152,950 de $655,553—. Rama aparte.
+
+De rebote: los "5 semanas de margen" que esta misma nota documentaba como el
+caso más apretado de la heurística del año eran un artefacto del número mal
+leído. Con el número correcto, ese registro tiene 25 semanas de margen.
+
+**¿Y los otros parsers?** Revisados. `parsearPresupuesto` —que es también el
+de subcontratos, lo reusa— tiene un respaldo de encabezado igual de permisivo
+(toma la primera fila con ≥3 celdas de texto), pero corta al primer acierto y
+no inventa ningún valor por omisión; y sobre todo, **enseña lo que leyó antes
+de guardar**: presupuesto pasa por `fase = 'revisando'` y subcontratos por su
+panel de import. La nómina era el único sitio donde el parser escribía sin
+que nadie viera lo que había entendido. Por eso el defecto era solo suyo.
+
+### Movimiento 1 de la migración de nómina: leer los dos formatos (2026-09-22)
+
+En `feature/historial-subcoleccion`. **Se lee de los dos sitios; se sigue
+escribiendo solo en el viejo.** Ningún dato se ha movido todavía.
+
+**La regla de Firestore va primero, antes que el código.** Se agregó
+`match /obras/{obraId}/nomina_historial/{semanaId}` con los mismos permisos
+que el documento que reemplaza: lee quien ve la obra y no es cliente,
+escribe quien la edita. Sin ella la ruta cae en el `match /{document=**}`
+final —que deniega todo— y, como las escrituras pasan por ayudantes que se
+tragan el fallo (#22), la migración parecería funcionar mientras no guarda
+nada. Es exactamente lo que le costó tres años de silencio al histórico de
+subcontratos (#31).
+
+**La bandera decide, nunca el vacío.** `config/info` lleva
+`formatoHistorial: { nomina: 1 | 2 }` y `formatoHistorial(info, cual)` solo
+devuelve 2 si el valor es **exactamente** el número 2: `true`, `"2"`, `null`
+y el campo ausente son formato 1. Deducir el formato de los datos —"si la
+subcolección trae documentos, está migrada"— es el error que convierte una
+lectura fallida en una obra sin historial. Por eso, si no se puede leer
+`config/info`, `leerHistorialNomina` **lanza** en vez de caer al formato
+viejo por omisión: no saber qué formato tiene una obra no es lo mismo que
+saber que tiene el viejo.
+
+**La guarda que grita.** `avisarSiFaltanSemanas` compara, cuando la bandera
+dice 2, las claves de la subcolección contra las del documento viejo. Si al
+viejo le quedan semanas que la subcolección no tiene, lanza con la lista de
+claves faltantes. Se calla sola cuando el documento viejo queda vacío, que
+es la señal de que la migración terminó. Cubre el caso que de verdad da
+miedo: una migración a medias que la pantalla pinta como historial completo.
+
+**Las Cloud Functions quedan fuera, y es una decisión, no un olvido.**
+`functions/index.js` no lee `obras/{id}/nomina/historial` en ningún sitio —
+las dos únicas apariciones de "nomina" son elementos de los arreglos de
+permisos por rol. Copiar el ayudante de la bandera sin un lector que lo use
+sería código muerto que se desincroniza en silencio con el de `App.jsx`, y
+el día que hiciera falta nadie recordaría que hay dos copias. **Requisito
+para la primera función que lea nómina: tiene que mirar
+`formatoHistorial.nomina` de `config/info`, no la existencia de la
+subcolección.** Si esta línea se ignora, la función leerá el documento viejo
+—vacío tras la migración— y reportará una obra sin nómina.
+
+**El id es `Y2026-S38`**, no `S38-2026` como decía la propuesta de arriba:
+con el año delante y la semana a dos dígitos, ordenar por nombre es ordenar
+por calendario. Con el otro orden, la semana 1 de 2027 se colaría entre las
+de 2026.
+
+Pruebas:
+
+| guion | qué afirma | contraprueba |
+|---|---|---|
+| [`prueba-formato-historial.cjs`](scripts/prueba-formato-historial.cjs) | 20 comprobaciones: quién decide el formato, que un fallo de lectura no sea lista vacía, la guarda, la bandera por historial | deducir el formato de los datos → 1 roja · quitar la guarda → 3 rojas · subcolección vacía → 4 rojas |
+| [`prueba-reglas-nomina-subcoleccion.cjs`](scripts/prueba-reglas-nomina-subcoleccion.cjs) | 10 comprobaciones contra el emulador: se escribe, se relee con sus partes, se **lista** (`get` y `list` son permisos distintos), ordena por calendario, y discrimina — otro residente rebota, el cliente no ve sueldos | quitar la regla → cae en la primera comprobación |
+
+La segunda prueba se escribió **antes** de mover un solo dato, y no
+comprueba que la regla exista en el archivo: intenta escribir contra un
+Firestore de verdad y mira si la escritura llega. Un `match` puede existir
+y no aplicar.
+
+Falta el movimiento 2: el guion de migración y el cambio de los dos sitios
+de escritura.
+
 ### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
 
 Los siete cierres oficiales que no llegaron al historial, con lo que hay
@@ -2440,6 +2705,316 @@ que ya se usan.
 
 ---
 
+## 30. El catálogo vivo `avance/subs` se llena, y lo llenan las URLs de las fotos — no las partidas
+
+**Descubierto**: 2026-09-22, midiendo producción al retirar el #31.
+**BLOQUEANTE DE DEMO**, prioridad **crítica**. Hermano del #28, pero **no
+es el mismo pendiente**: el #28 es el historial semanal, que crece con el
+tiempo y se puede recortar con `slice(-52)`. Este es el catálogo **vivo**,
+el estado de hoy. No se puede recortar: si no cabe, no cabe, y si no cabe
+el residente no puede capturar.
+
+### El hallazgo, en una línea
+
+**El peso lo mandan las URLs de las fotos, no las partidas.** La
+intuición —"pocas partidas, documento chico"— es falsa, y por eso esto no
+se iba a ver venir.
+
+En la 0112, con **14 partidas**, las fotos son el **85% del documento**:
+4,225 B por partida contra 845 B en la 0114, que tiene 335. Una sola
+partida de la 0112 carga **10.5 KB solo de URLs** — unas 44 fotos.
+
+El motivo es que cada foto guarda su **URL de descarga completa de
+Firebase Storage, con token**, dentro del documento del catálogo:
+
+```
+https://firebasestorage.googleapis.com/v0/b/campo-fosmon.firebasestorage.app/
+  o/obras%2F0112%2Ffotos%2Favance_SIOP-JS-MRN-001__8%2Fmbpir52ggxb
+  ?alt=media&token=2990ecfc-27e2-43e7-b531-f02191a5f0b8
+```
+
+Unos **240 bytes por foto**, de los cuales lo único que no es plantilla
+son el id de obra, la clave de la partida y el id de la foto. Y las fotos
+**no se recortan nunca**: se acumulan mientras dure la obra. Es el único
+campo del documento que crece sin tope y sin que nadie decida que crezca.
+
+**La consecuencia que hay que entender**: una obra de 14 partidas puede
+llenar el documento antes que una de 461. La 0112 no tiene un catálogo
+grande — tiene un residente que toma muchas fotos, que es exactamente lo
+que queremos que haga.
+
+### La URL no hace falta guardarla
+
+Es **reconstruible desde la ruta**. El patrón es fijo:
+
+```
+obras/{obraId}/fotos/avance_{idPartida}/{fotoId}
+```
+
+y el SDK de Storage arma la URL a partir de ahí (`getDownloadURL`), o se
+sirve directo si el bucket lo permite. Lo único irreductible por foto es
+**`id` y `fecha`** — unos 40 bytes contra 240. **Divide el campo entre
+seis**, y es el cambio más barato de los tres: no toca el esquema del
+catálogo, solo deja de escribir un campo derivable.
+
+**Corrección (2026-09-22): el segmento no es la clave, es el id de la
+partida — y el id lleva dentro el índice del arreglo.** `addFoto` escribe
+en `avance_${subId}` con `subId = ${clave}__${idx}`; de ahí el `__8` del
+ejemplo de arriba. Eso cambia el riesgo del plan, no el plan: la clave es
+estable, el índice no. Si al recargar el catálogo una partida cambia de
+posición, la ruta reconstruida apunta a donde no está el archivo y la
+foto sale rota. Hoy la URL guardada tapa ese problema porque apunta al
+sitio viejo pase lo que pase. **Antes de dejar de guardar la URL hay que
+estabilizar el id de la partida** —que no dependa del índice— o guardar
+por foto la ruta de Storage en vez de la URL completa: sigue costando
+mucho menos que 240 bytes, pero deja de ser gratis. Medido el mismo día:
+las 475 fotos de producción están todas bajo llaves que su partida
+todavía reconoce, así que el arreglo se puede hacer sin rescatar nada.
+
+El token del query string, además, es una razón aparte para no guardarlo:
+es un secreto de acceso replicado en un documento que leen todos los roles
+con permiso de lectura de la obra, y si alguna vez se rota, **todas las
+URLs guardadas quedan muertas a la vez** y no hay de dónde regenerarlas
+salvo… reconstruyendo la ruta. O sea: el arreglo es también el plan de
+contingencia.
+
+### Los números
+
+Medido contra producción con las reglas de tamaño de Firestore:
+
+| obra | partidas | documento hoy | B/partida | revienta a |
+|---|---|---|---|---|
+| 0112 | 14 | 68 KB (6.6%) | 4,957 | **211 partidas** |
+| 0114 | 335 | 276 KB (27.0%) | 845 | 1,240 partidas |
+| 0125 | 461 | 110 KB (10.7%) | 243 | 4,308 partidas |
+| 0126 | 51 | 44 KB (4.3%) | 885 | 1,184 partidas |
+| 0127 | 112 | 63 KB (6.1%) | 572 | 1,832 partidas |
+
+El "revienta a" sale del peso por partida de **hoy**. Como las fotos
+siguen entrando, ese número **baja con el uso**: no es un techo fijo, es
+el techo de esta semana.
+
+Desglose por campo, que es donde se ve de dónde viene el peso:
+
+| obra | 1º | 2º | 3º |
+|---|---|---|---|
+| 0112 | `fotos` **85%** | `sub` 10% | `ruta` 2% |
+| 0114 | `sub` 44% | `ruta` 19% | `fotos` 17% |
+| 0125 | `ruta` 21% | `sub` 20% | `cat` 10% |
+
+Dos maneras distintas de llenarse, y hay que arreglar las dos: la 0114 se
+llena por **catálogo** (descripción y ruta, ~63%), la 0112 por **fotos**.
+Un municipio con catálogo grande tiene las dos a la vez.
+
+Y hay un segundo filo: **un catálogo de 2,000 o 3,000 partidas no cabe el
+día que se da de alta.** No es que se llene con el uso — no entra. Por eso
+esto bloquea demo con un cliente de ese tamaño, igual que el #28.
+
+Cuando reviente, revienta peor que el #28: `fsSetA` propaga el fallo —ya
+lo hace desde `fix/robustez`, así que al menos se verá—, pero el catálogo
+es lo que se escribe **en cada guardado de avance**. El residente no
+pierde una semana: **se queda sin poder capturar la obra**.
+
+### Qué hace falta, en orden de rendimiento por esfuerzo
+
+1. **Dejar de guardar la URL de la foto.** La más barata y la que más
+   rinde en la 0112. Se guardan `id` y `fecha` y la URL se arma desde
+   `obras/{obraId}/fotos/avance_{idPartida}/{fotoId}` al pintarla.
+   ~240 B → ~40 B por foto, **entre seis**. No cambia el esquema del
+   catálogo ni la pantalla: solo deja de escribir un campo derivable.
+   Hace falta un paso de lectura que acepte las dos formas mientras
+   queden URLs viejas guardadas, y un barrido que las tire. **Requisito
+   previo**: estabilizar el id de la partida, porque hoy lleva el índice
+   del arreglo y la ruta reconstruida se rompería al reordenar el
+   catálogo (ver la corrección de arriba).
+2. **Sacar la descripción (`sub`) y la ruta**, igual que se hizo en los
+   snapshots: viven en el catálogo maestro y se cruzan por `sec`. Es el
+   63% de la 0114. Un poco más de trabajo que el punto 1 porque hay
+   pantallas que leen `sub` directo del catálogo vivo.
+3. **Las fotos a su propia subcolección** `obras/{id}/fotos/{partida}`.
+   Con el punto 1 hecho esto deja de correr prisa, pero es lo que quita
+   el crecimiento sin tope de raíz.
+4. **Un documento por partida en subcolección**, el fondo, lo único que
+   de verdad quita el techo. Mismo trabajo que el #28 y conviene hacerlo
+   en la misma migración.
+
+**Medir antes de tocar**: cargar un catálogo de 2,000 partidas en el
+proyecto de pruebas (#4) y ver en qué punto rebota de verdad. La tabla de
+arriba extrapola desde obras vivas, que ya traen fotos; un catálogo
+recién cargado pesa distinto por partida.
+
+**Nota de método**: los números salieron de medir producción con
+`tamañoFirestore` extraído del propio `src/App.jsx` por AST, no con
+`JSON.stringify`, que da otra cifra. Si se rehace la medición, hacerlo
+igual. El guion está en `scripts/medir-fotos.cjs` (solo lee).
+
+---
+
+### El #30 no es un problema de peso: la evidencia no es consultable (2026-09-22)
+
+Replanteado con Omar el mismo día. El peso es el síntoma; el problema es
+que **el director de operaciones quiere abrir las fotos de hace tres
+semanas para enseñarle a un cliente cómo cambió la obra, y hoy no
+puede.** La evidencia fotográfica es el diferenciador del producto, y
+está guardada de una forma que no admite la única pregunta que se le
+hace: *¿cómo se veía esto en la semana 12?*
+
+**Lo que hay hoy, medido** (`scripts/medir-fotos.cjs`, 475 fotos):
+
+| | |
+|---|---|
+| ¿se acumulan sin limpiarse? | **sí**, 63 días conviviendo; nada las recorta nunca |
+| ¿la foto sabe su semana? | **no**. Solo `{id, url, fecha}`, y `fecha` es la de **subida**, no la de la toma |
+| máximo en una partida | **43** (0112 `SIOP-JS-MRN-001`) |
+| ¿sobreviven al recambio de catálogo? | solo si la `clave` coincide; el mapa se copia con las llaves viejas |
+| ¿se puede ver una semana? | **no**. Ni filtro, ni orden por fecha, ni agrupación |
+
+El ritmo real por semana, que es lo que decide si un tope estorba:
+
+| obra | semanas con fotos | por semana |
+|---|---|---|
+| 0112 | **1** (S30) | 255 de golpe — una carga masiva, no trabajo semanal |
+| 0114 | 6 (S30, 32, 33, 36–38) | 31 a 45 |
+| 0126 | 2 (S37, S39) | 14 y 18 |
+
+**Sobre el tope de 3-4 fotos por partida por semana: no.** Los números
+dicen que no hace falta y que además dolería. El 0112 acumula 255 fotos
+en **una sola semana** porque fue un volcado histórico; la 0114, que es
+captura semanal de verdad, mueve 30-45 por obra y hasta 8 por partida.
+Un tope de 3-4 recortaría a la mitad la obra que mejor documenta. Y el
+tope ataca el peso, que es justo lo que la subcolección resuelve sin
+borrar nada. **La evidencia vieja no se borra: se archiva por semana.**
+
+### Las fechas, comprobadas contra Storage (2026-09-22)
+
+La tabla de arriba decía "255 de golpe" apoyándose en que las 255 fotos
+de la 0112 comparten la misma `fecha`. Ese campo lo escribe el cliente, y
+una conclusión que depende de un solo campo escrito por el cliente no
+vale nada hasta que otra fuente la confirme. **Omar lo señaló; se
+comprobó.** `scripts/medir-fechas-fotos.cjs` pregunta a dos fuentes que no
+pasan por el reloj del teléfono: el `timeCreated` que Storage le pone a
+cada objeto, y el `ts` de la bitácora.
+
+**El campo `fecha` es fiel.** Se escribe una vez por foto, en el momento
+de agregarla (`src/App.jsx:10430`, `new Date().toISOString().slice(0,10)`),
+y nadie lo reescribe después: `delFoto` solo filtra y guardar el catálogo
+copia el objeto foto tal cual. La prueba no es leer el código, es que
+**los días coinciden uno a uno con Storage**: 1 de 1 en la 0112, **11 de
+11** en la 0114, 4 de 4 en la 0126. Si se reescribiera al guardar, las 188
+fotos de la 0114 compartirían la fecha del último guardado en vez de
+repartirse en once días distintos.
+
+**Consecuencia para la migración: la semana se puede reconstruir.** No
+hace falta marcar nada como "fecha desconocida". Cada foto sabe su día con
+la precisión de un día, verificada contra el servidor.
+
+Lo que dicen las tres fuentes, ya solo sobre las fotos de **avance** —
+bajo `obras/{id}/fotos/` cuelgan además documentos de subcontrato
+(`subdoc_`), fotos de concepto (`sub_`) y documentos de obra:
+
+| obra | fotos en Storage | semanas | días | capturas de avance en bitácora | veredicto |
+|---|---:|---:|---:|---|---|
+| 0112 | 255 | 1 | **1** (24/7) | 14 en 5 semanas | **volcado**, confirmado |
+| 0114 | 238 | 6 | 12 | 60 en 14 semanas | **acumulación** semanal |
+| 0126 | 44 | 2 | 4 | 25 en 7 semanas | acumulación, arranque reciente |
+
+El volcado de la 0112 era real. Pero la bitácora corrige la otra mitad de
+la lectura: **la 0112 sí se captura** —14 cierres de avance repartidos en
+cinco semanas, hasta el 21 de septiembre—, lo que no ha vuelto a hacer es
+subir fotos. No es una obra abandonada con un archivo histórico encima: es
+una obra activa cuya evidencia fotográfica se quedó en julio. Esa es
+justamente la obra donde el director no puede enseñar "cómo se veía hace
+tres semanas".
+
+**El tope de 3-4 sigue descartado, y ahora por una razón más:** la 0114
+mueve hasta **61 fotos en una semana** (S32) contando las de Storage. Un
+tope no habría evitado el volcado de la 0112 —que fue una sola semana— y
+sí habría cortado a la obra que documenta bien.
+
+### 62 fotos están en Storage y no en el catálogo
+
+Hallazgo lateral de la misma medición, y no es contable:
+
+| obra | en Storage | referenciadas en `avance/subs` | sin referencia |
+|---|---:|---:|---:|
+| 0112 | 255 | 255 | 0 |
+| 0114 | 238 | 188 | **50** |
+| 0126 | 44 | 32 | **12** |
+
+Hay **dos causas posibles y hoy no se pueden distinguir**:
+
+1. `delFoto` (`src/App.jsx:10444`) quita la foto del documento y **no
+   borra el objeto de Storage**. Toda foto borrada a propósito deja su
+   objeto atrás. Es lo esperable y no es pérdida de nada.
+2. La subida llegó y la escritura del catálogo no. Es la firma del #22:
+   `uploadFoto` sí lanza si falla, pero el guardado posterior del catálogo
+   pasa por los ayudantes mudos. En ese caso el residente vio su foto
+   subir y nadie volverá a verla.
+
+No se puede afirmar cuál es. **Lo que sí se puede afirmar es que hoy no
+hay manera de saberlo**, y que la mitad de las fotos de la 0126 sin
+referencia (12 de 44, 27%) se subieron la misma semana en que se
+capturaba. Dos cosas del diseño de arriba lo resuelven de paso: si la foto
+vive en su documento de semana, un objeto sin documento es inequívoco; y
+si borrar es un acto explícito, se puede borrar de los dos sitios.
+
+Mientras tanto son bytes que se pagan y no se ven. No urge; conviene
+anotarlo antes de que la próxima medición los cuente como fotos vivas.
+
+### Cómo debería quedar
+
+**1. La foto guarda su semana, y las fotos salen del catálogo.**
+Subcolección con el mismo convenio de id que la nómina (#28):
+
+```
+obras/{obraId}/evidencia/{Y2026-S38}
+  { año: 2026, semana: 38,
+    fotos: [ { id, sec, ruta, subida, fechaEsDeSubida? } ] }
+```
+
+- `ruta` es la ruta de Storage **literal**, no la URL con token y no una
+  regla de reconstrucción. Unos 50 B contra 240, y al guardarse tal cual
+  no se rompe si el catálogo se reordena — que es el riesgo de la
+  corrección de arriba. El token deja de estar replicado en un documento
+  que leen todos los roles.
+- `avance/subs` deja de llevar `fotos`: en la 0112 el documento pierde el
+  **85%**.
+- Una semana cerrada ya no crece. El techo desaparece de verdad, no se
+  aleja.
+
+**2. Las 475 fotos actuales se migran con la fecha que tienen, dicha como
+lo que es.** Solo hay fecha de subida —pero es una fecha **fiable**, ya
+contrastada con el `timeCreated` de Storage—, así que la semana se deduce
+de ella y la foto se marca `fechaEsDeSubida: true`. La pantalla entonces
+dice "subidas el 24 de julio", no "tomadas en la semana 30" (P2: no se
+inventa lo que no se sabe). Las 255 de la 0112 caerán todas en S30, que
+es exactamente lo que pasó. Si alguna foto apareciera sin `fecha`, su
+objeto de Storage la tiene: la migración puede ir a buscarla ahí en vez
+de archivarla como desconocida.
+
+**3. Tres pantallas, no una.**
+
+- **Ver una semana**: selector de semana arriba, por omisión la última
+  con fotos. Dentro, agrupado por partida. Una lectura, un documento.
+- **Comparar dos semanas**: dos selectores, dos columnas. Las partidas
+  que aparecen en ambas se alinean en la misma fila, para que el cambio
+  se vea sin buscarlo. Ese es el momento de la demo.
+- **Capturar**: igual de fácil que hoy. Se sigue subiendo desde la
+  partida, pero la foto se sella con **la semana que se está
+  capturando**, no con `Date.now()`. Y el cuadro inline enseña las fotos
+  *de esta semana* más un "ver semanas anteriores" — que de paso arregla
+  que hoy muestre 43 miniaturas en una rejilla de cuatro columnas.
+
+**4. Orden respecto a la nómina.** Va **después**, y sale más barato por
+ir después: la migración de nómina deja probados el convenio `Y2026-S38`,
+la bandera `formatoHistorial` y la guarda de lectura dual, y esto los
+copia tal cual. Lo único que conviene adelantar es el **#32**, que es una
+línea y hoy deja la galería del cliente en blanco.
+
+---
+
+---
+
 ## 31. El histórico semanal de subcontratos nunca existió — retirado 2026-09-22
 
 **Descubierto**: 2026-09-21, verificando por qué la gráfica de tendencia
@@ -2538,6 +3113,80 @@ es peor que no tenerlo: convierte un hueco de captura en ruido diario.
 
 ---
 
+## 32. La galería de fotos del cliente no pinta ni una foto — y anuncia que sí hay
+
+**Descubierto**: 2026-09-22, midiendo las fotos para el #30. Prioridad
+**alta**, y **bloquea la demo** si en la demo se abre la vista de
+cliente: es la pestaña "Evidencia fotográfica", que es justo lo que se
+quiere enseñar.
+
+`FotosCliente` (`src/App.jsx:14092`) aplana mal el mapa de fotos:
+
+```js
+const fotos = Array.isArray(s.fotos) ? s.fotos : Object.values(s.fotos||{});
+```
+
+Falta `.flat()`. El mapa de una partida es `{ idPartida: [foto, foto, …] }`,
+así que `Object.values` devuelve **un arreglo de arreglos**, no de fotos.
+Las consecuencias encadenan:
+
+- La insignia cuenta **grupos**, no fotos: una partida con 43 fotos
+  anuncia "1 foto".
+- Al pintar, cada elemento es un arreglo, y un arreglo no tiene `.url`
+  ni `.src`. La galería hace `if(!url) return null` y **no dibuja nada**.
+
+Resultado: encabezados de partida con una insignia que miente, y debajo
+una rejilla vacía. Medido contra producción ejecutando la propia
+expresión extraída del archivo:
+
+| obra | la galería anuncia | pinta | hay en el documento |
+|---|---|---|---|
+| 0112 | 12 fotos en 12 partidas | **0** | 255 |
+| 0114 | 88 fotos en 88 partidas | **0** | 188 |
+| 0126 | 22 fotos en 22 partidas | **0** | 32 |
+
+Las **475 fotos** de producción son invisibles en la vista de cliente.
+
+Dos detalles que valen para el arreglo:
+
+1. El mismo aplanado está bien resuelto en otras dos partes —
+   `fotosDeSub` del PDF (`src/App.jsx:1718`) y el del tablero
+   (`src/App.jsx:9393`) sí hacen `.flat()` y además ordenan por fecha.
+   Son tres copias de la misma idea y solo una está mal: **el arreglo es
+   unificarlas, no parchear la tercera.**
+2. En la 0114 la galería cuenta 88 partidas con fotos y en el documento
+   solo 78 las tienen: diez partidas guardan un mapa con arreglos
+   vacíos. Con `.flat()` esas diez desaparecen solas, pero conviene
+   saber que están ahí — son bytes que no representan nada.
+
+Cae dentro de la propuesta de evidencia por semana del #30, que
+reescribe esta pantalla entera. Si el #30 se pospusiera, esto se arregla
+aparte en una línea.
+
+### Arreglado en `fix/galeria-cliente-vacia` (2026-09-22)
+
+Se adelantó al #30 a propósito: el #30 reescribe esta pantalla entera,
+pero mientras tanto hay una demo de por medio y 475 fotos invisibles.
+
+El aplanado se corrigió en su sitio —`Object.values(...).flat()` más un
+`.filter(Boolean)` que tira los huecos sin tirar las fotos guardadas como
+cadena suelta, que el esquema mixto todavía tiene—. **No se unificaron las
+tres copias**: `fotosDeSub` del PDF y el del tablero ordenan además por
+fecha y viven en ámbitos distintos; unificarlas es trabajo del #30, que
+reescribe la pantalla, y meterlo aquí convertiría una línea en un
+refactor que nadie pidió. Queda escrito para que no se olvide.
+
+La prueba es
+[`scripts/prueba-galeria-cliente.cjs`](scripts/prueba-galeria-cliente.cjs).
+No busca `.flat()` en el archivo: extrae de `FotosCliente` las dos
+expresiones reales —la que arma la lista y la que resuelve la URL de cada
+foto al pintarla— y afirma los **dos números que el cliente ve**: lo que
+anuncia la insignia y lo que pinta la rejilla. El defecto era justo que
+no coincidían. Contra el árbol anterior sale con **11 comprobaciones en
+rojo**, entre ellas `anuncia "1 foto", pinta 0` con la partida de 43 fotos
+de la 0112.
+
+Falta fusionarla.
 ## 33. `PanelEjecutivo` lleva desde el 18 de septiembre sin renderizarse
 
 **Descubierto**: 2026-09-22, trabajando en los KPIs de mano de obra del
@@ -2610,7 +3259,9 @@ cierran, gobiernan.
 | 27 | La proyección asume contrato cerrado — en TAMSA no aplica | | media-alta — depende de `tipoContrato` |
 | 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; a escala municipal la nómina se llena en ~3 meses desde el alta, y la 0125 va en marzo 2027 con su nómina en febrero |
 | 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
-| 31 | El histórico semanal de subs nunca existió | | retirado del código 2026-09-22; el cron sigue vivo en producción hasta el despliegue con canario |
+| 30 | El catálogo vivo `avance/subs` se llena — lo llenan las URLs de las fotos | **BLOQUEANTE DE DEMO** | **crítica** — el peso lo mandan las URLs de Storage, no las partidas (85% del documento en la 0112, con 14 partidas); la URL es reconstruible desde la ruta y no hace falta guardarla; un catálogo de 2,000 partidas no cabe el día del alta |
+| 31 | Histórico semanal de subcontratos — **retirado** | | cerrado por retiro — nunca escribió nada (ruta denegada + `fsSet` mudo); el cron `recordatorioCapturaSubs` se retiró con él, pendiente de desplegar |
+| 32 | La galería de fotos del cliente no pinta ni una foto | **BLOQUEANTE DE DEMO** si se abre la vista de cliente | **arreglado** en `fix/galeria-cliente-vacia`, pendiente de fusionar; queda abierto unificar las tres copias del aplanado (va con el #30) |
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 
 ---
