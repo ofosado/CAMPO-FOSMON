@@ -25,6 +25,7 @@
 'use strict';
 
 const fs = require('fs');
+const noArranco = require('./no-arranco.cjs');
 const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
@@ -94,13 +95,16 @@ traverse(ast, {
 
 const NECESARIOS = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
   'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
-for (const n of NECESARIOS)
-  if (!global[n]) check(false, `se pudo extraer \`${n}\` de ${path.basename(archivo)}`);
-if (!cargador)   check(false, 'se localizó el cargador de obras/{id}/nomina/historial');
-if (!tarjetaKPI) check(false, 'se localizó la tarjeta «Personal en campo» del tablero');
+const faltan = NECESARIOS.filter(n => !global[n]);
+// Estos tres no se buscan por nombre sino por lo que hacen —la ruta que leen,
+// el texto que pintan, el id del aviso—, así que si no aparecen no es un
+// renombre: es que el sitio dejó de existir. Se reportan igual, porque el
+// efecto es el mismo: la conducta se quedó sin mirar.
+if (!cargador)   faltan.push('el cargador de obras/{id}/nomina/historial');
+if (!tarjetaKPI) faltan.push('la tarjeta «Personal en campo» del tablero');
 for (const id of ['nom_001', 'nom_002', 'nom_003'])
-  if (!avisos[id]) check(false, `se localizó el aviso \`${id}\``);
-if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
+  if (!avisos[id]) faltan.push(`el aviso ${id}`);
+if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
 // Se devuelve `semanasDeNomina` a la conducta vieja —entregar las cargas tal

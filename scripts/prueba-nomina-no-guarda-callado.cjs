@@ -24,6 +24,7 @@ const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const noArranco = require('./no-arranco.cjs');
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
@@ -49,11 +50,10 @@ const check = (ok, titulo, detalle = '') => {
   if (!ok) fallas++;
 };
 
-for (const n of ['fn:guardarSemana', 'fn:eliminarCarga', 'tamañoFirestore', 'LIMITE_DOC_FIRESTORE',
-                 'semanasDeNomina', 'claveSemanaNomina', 'numSemanaNomina', 'añoSemanaNomina',
-                 'fechaCargaNomina', 'semanaISO', 'heImporte'])
-  if (!decl[n]) check(false, `se pudo extraer \`${n.replace('fn:', '')}\``);
-if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
+const faltan = ['fn:guardarSemana', 'fn:eliminarCarga', 'tamañoFirestore', 'LIMITE_DOC_FIRESTORE',
+                'semanasDeNomina', 'claveSemanaNomina', 'numSemanaNomina', 'añoSemanaNomina',
+                'fechaCargaNomina', 'semanaISO', 'heImporte'].filter(n => !decl[n]);
+if (faltan.length) noArranco(faltan);
 
 // ── Montaje ────────────────────────────────────────────────────────────────
 // Todo lo que las dos funciones tocan queda registrado en `efectos`, para poder

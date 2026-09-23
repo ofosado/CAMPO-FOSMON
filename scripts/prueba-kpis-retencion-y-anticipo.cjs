@@ -24,6 +24,7 @@ const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const noArranco = require('./no-arranco.cjs');
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
@@ -71,13 +72,12 @@ traverse(ast, {
     });
   },
 });
-if (!decl) { console.log('No se pudo extraer `Estimaciones`.'); process.exit(1); }
+if (!decl) noArranco(['Estimaciones']);
 
 const NECESARIAS = ['cE', 'totalEst', 'retenido', 'retenEstra',
   'anticipoPactado', 'anticipoAmort', 'porRecuperarAnt'];
-for (const n of NECESARIAS)
-  if (!decl[n]) check(false, `se pudo extraer \`${n}\``);
-if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
+const faltan = NECESARIAS.filter(n => !decl[n]);
+if (faltan.length) noArranco(faltan);
 
 const montar = (obra, estimaciones) => new Function('obra', 'estimaciones', `
   "use strict";
