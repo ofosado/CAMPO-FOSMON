@@ -23,7 +23,9 @@
 //      operador tendría que deshacer a mano.
 //   3. Escribir los documentos de semana.
 //   4. VOLVER A LEERLOS y comparar contra el origen, registro por registro.
-//   5. Solo si el paso 4 sale limpio, levantar la bandera.
+//   4b. Releer el documento viejo y comprobar que no se movió mientras
+//      corríamos — que nadie capturó nómina desde la app.
+//   5. Solo si 4 y 4b salen limpios, levantar la bandera.
 //
 // El documento viejo NO se borra. Sigue ahí, intacto, por dos razones: es la
 // red si algo sale mal, y es contra él que compara `avisarSiFaltanSemanas` en
