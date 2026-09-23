@@ -62,16 +62,21 @@ traverse(ast, {
       }
     }
   },
-  // El cargador del historial de la obra: `fsGet('obras/${obraId}/nomina/
-  // historial').then(cb)`. Se localiza por la RUTA que pide.
+  // El cargador del historial de la obra. Antes se localizaba por la ruta que
+  // pedía —`fsGet('obras/${obraId}/nomina/historial')`—, pero la ruta se mudó
+  // dentro de `leerHistorialNomina` cuando el historial pasó a poder vivir en
+  // una subcolección. El ancla sube un nivel y sigue siendo de conducta: el
+  // `.then` que PUEBLA `setNominaHistorial`, que es lo que alimenta al PDF, a
+  // los tres avisos y al KPI de personal. Hay dos llamadas al helper y sólo
+  // una hace eso; la otra es la pantalla de Nómina.
   CallExpression(p) {
     const c = p.node.callee;
     if (c.type !== 'MemberExpression' || c.property.name !== 'then') return;
-    const obj = c.object;
-    if (obj.type !== 'CallExpression' || obj.callee.name !== 'fsGet') return;
-    const ruta = src.slice(obj.arguments[0].start, obj.arguments[0].end);
-    if (!/nomina\/historial/.test(ruta)) return;
-    cargador = src.slice(p.node.arguments[0].start, p.node.arguments[0].end);
+    const cb = p.node.arguments[0];
+    if (!cb) return;
+    const txt = src.slice(cb.start, cb.end);
+    if (!/setNominaHistorial\s*\(/.test(txt)) return;
+    cargador = txt;
   },
   // Los avisos viven en un arreglo de objetos con `id` y `detect`.
   ObjectExpression(p) {
@@ -100,7 +105,7 @@ const faltan = NECESARIOS.filter(n => !global[n]);
 // el texto que pintan, el id del aviso—, así que si no aparecen no es un
 // renombre: es que el sitio dejó de existir. Se reportan igual, porque el
 // efecto es el mismo: la conducta se quedó sin mirar.
-if (!cargador)   faltan.push('el cargador de obras/{id}/nomina/historial');
+if (!cargador)   faltan.push('el cargador que puebla setNominaHistorial');
 if (!tarjetaKPI) faltan.push('la tarjeta «Personal en campo» del tablero');
 for (const id of ['nom_001', 'nom_002', 'nom_003'])
   if (!avisos[id]) faltan.push(`el aviso ${id}`);
@@ -137,12 +142,15 @@ const { heImporte } = api;
 
 const MXN = n => '$' + (n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// Corre el cargador real y devuelve lo que acaba en `nominaHistorial`.
+// Corre el cargador real y devuelve lo que acaba en `nominaHistorial`. Recibe
+// lo mismo que le entrega `leerHistorialNomina`: `{registros, formato}`, las
+// cargas ya aplanadas vengan del documento viejo o de la subcolección. Desde
+// aquí adentro los dos formatos son indistinguibles, que es justo el contrato.
 const loQueVeLaObra = (registros) => {
   let recibido = null, fecha = null;
   new Function('d', 'setNominaHistorial', 'setFechasModulos', ...NECESARIOS,
     `"use strict"; (${cargador})(d);`)(
-    { semanas: registros },
+    { registros, formato: 1 },
     (v) => { recibido = v; },
     (fn) => { fecha = fn({}).nomina; },
     ...NECESARIOS.map(n => api[n]),

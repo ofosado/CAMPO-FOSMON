@@ -50,6 +50,10 @@ const global = {};
 const rango = {};          // dónde vive cada uno, para poder mutarlo
 let oyenteNomina = null;   // el callback del onSnapshot de nomina/historial
 let kpiPersonal = null;  // el KPI «Personal» de DashboardPrincipal
+// El oyente ya no entrega `nominaSemanas` hecho: deja la lectura cruda y el
+// agrupado ocurre en `patch`, que es quien sabe de qué formato hay que leer.
+// Para ver lo que el tablero recibe hay que correr los dos.
+let patchSrc = null;
 traverse(ast, {
   // El KPI «Personal» del tablero principal. OJO: existe un bloque muy
   // parecido, «MANO DE OBRA CONSOLIDADA», dentro de PanelEjecutivo — pero ese
@@ -64,6 +68,9 @@ traverse(ast, {
     kpiPersonal = txt;
   },
   VariableDeclarator(p) {
+    if (p.node.id.type === 'Identifier' && p.node.id.name === 'patch' && p.node.init && !patchSrc) {
+      patchSrc = src.slice(p.node.init.start, p.node.init.end);
+    }
     if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent) {
       if (global[p.node.id.name] === undefined) {
         global[p.node.id.name] = src.slice(p.node.init.start, p.node.init.end);
@@ -82,13 +89,15 @@ traverse(ast, {
 });
 
 const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina',
+  'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION', 'formatoHistorial'];
 const faltan = necesarios.filter(n => !global[n]);
 // Los dos de abajo se localizan por lo que hacen —la ruta que escuchan, la
 // etiqueta que pintan—, no por nombre. Si no aparecen no hubo un renombre:
 // desapareció el sitio. Se reportan igual: la conducta se quedó sin mirar.
 if (!oyenteNomina) faltan.push('el oyente de obras/{id}/nomina/historial');
 if (!kpiPersonal)  faltan.push('el KPI «Personal» del tablero principal');
+if (!patchSrc)     faltan.push('el `patch` que recibe lo que lee el oyente');
 if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
@@ -118,20 +127,26 @@ const api = new Function(`"use strict";
   return { ${necesarios.join(', ')} };`)();
 const { semanasDeNomina, añoSemanaNomina, fechaCargaNomina } = api;
 
-// Ejecuta el oyente real con un documento falso y devuelve lo que el tablero
-// acaba recibiendo en `nominaSemanas`.
+// Ejecuta el oyente real con un documento falso, le pasa lo que lee al `patch`
+// real, y devuelve lo que el tablero acaba teniendo en `nominaSemanas`. Las
+// cinco obras de producción son todavía del formato viejo, así que la bandera
+// llega vacía — que es justo lo que debe hacer que mande el documento.
 const loQueRecibeElTablero = (registros) => {
-  let recibido = null;
+  let estado = {};
+  const patch = new Function('setDatosPorObra', ...necesarios,
+    `"use strict"; return ${patchSrc};`)(
+      f => { estado = f(estado); }, ...necesarios.map(n => api[n]));
+  patch('0126', { info: {} });
   new Function('snap', 'patch', 'o', ...necesarios, `
     "use strict";
     (${oyenteNomina})(snap);
   `)(
     { exists: () => true, data: () => ({ semanas: registros }) },
-    (_id, parche) => { recibido = parche.nominaSemanas; },
+    patch,
     { id: '0126' },
     ...necesarios.map(n => api[n]),
   );
-  return recibido;
+  return estado['0126']?.nominaSemanas;
 };
 
 // ── Los datos ─────────────────────────────────────────────────────────────

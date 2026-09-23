@@ -343,43 +343,110 @@ check(/obrasIncompletas/.test(codigo),
 // ── 5. La precondición del guard: los 8 errores marcan resuelto ────────
 // Si un callback de error no marca su clave, el guard nuevo convierte un
 // bug intermitente en uno permanente. Esto es lo que más importa vigilar.
-console.log('\n5. Los 8 listeners — ¿todo callback de error marca su clave?');
+console.log('\n5. Los listeners — ¿todo callback de error deja las 8 resueltas?');
 
-const escritas = new Set();   // claves que el camino feliz escribe
-const falladas = new Set();   // claves que un callback de error resuelve
-
+// Antes esto se comprobaba contando nombres: que cada clave del catálogo
+// apareciera literal en un `alFallar`. Dejó de servir cuando `nominaSemanas`
+// pasó a derivarse dentro de `patch` a partir de DOS oyentes (el documento
+// viejo y la subcolección) más la bandera — ninguno de los tres se llama
+// `nominaSemanas`, y el conteo lo leía como clave sin rescate. Contar nombres
+// nunca fue la propiedad que importa; la que importa es que, si TODOS los
+// oyentes fallan, el guard no se quede esperando. Así que en vez de contar,
+// se corre: se extrae el `patch` real y se le dan los mismos valores vacíos
+// que le daría cada `alFallar` del código.
+const claveDeFallo = [];
 traverse(ast, {
   CallExpression(p) {
-    const callee = p.node.callee;
-    if (callee?.name === 'patch') {
-      const arg = p.node.arguments[1];
-      if (arg?.type === 'ObjectExpression') {
-        arg.properties.forEach(pr => {
-          const k = pr.key?.name || pr.key?.value;
-          if (k && k !== '_listos') escritas.add(k);
-        });
-      }
-    }
-    if (callee?.name === 'alFallar') {
-      const clave = p.node.arguments[1];
-      if (clave?.type === 'StringLiteral') falladas.add(clave.value);
+    if (p.node.callee?.name !== 'alFallar') return;
+    const clave = p.node.arguments[1];
+    const vacio = p.node.arguments[2];
+    if (clave?.type === 'StringLiteral' && vacio) {
+      claveDeFallo.push({ clave: clave.value, vacio: fuente(vacio) });
     }
   },
 });
+check(claveDeFallo.length > 0, 'se encontraron los callbacks de error de los listeners');
 
-// `patch` también se llama dentro de alFallar con clave computada; esas no
-// cuentan como camino feliz. Se comparan contra el catálogo declarado.
-const faltan = CLAVES.filter(k => !falladas.has(k));
-check(faltan.length === 0,
-  `las ${CLAVES.length} claves de CLAVES_BULK tienen callback de error que las resuelve${faltan.length ? ' — faltan: ' + faltan.join(', ') : ''}`);
+let patchSrc = null;
+traverse(ast, {
+  VariableDeclarator(p) {
+    if (patchSrc || p.node.id?.name !== 'patch') return;
+    patchSrc = fuente(p.node.init);
+  },
+});
+check(!!patchSrc, 'se encontró el `patch` que alimenta el mapa por obra');
 
-const sobran = [...falladas].filter(k => !CLAVES.includes(k));
-check(sobran.length === 0,
-  `ningún alFallar marca una clave fuera del catálogo${sobran.length ? ' — sobran: ' + sobran.join(', ') : ''}`);
+// Los helpers que `patch` usa se toman del propio App.jsx, no se fingen: si
+// la derivación cambia de criterio (otro agrupado de semanas, otra lectura de
+// la bandera), esta prueba lo ve. Van en orden de dependencia.
+const NECESARIOS = ['heImporte', 'semanaISO', 'numSemanaNomina', 'fechaCargaNomina',
+                    'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina',
+                    'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION',
+                    'formatoHistorial'];
+const sinHelper = NECESARIOS.filter(n => !initModulo(n));
+check(sinHelper.length === 0,
+  `se encontraron los helpers que alimentan la derivación${sinHelper.length ? ' — faltan: ' + sinHelper.join(', ') : ''}`);
+const preludio = NECESARIOS.map(n => `const ${n} = ${initModulo(n)};`).join('\n');
 
-const sinPatch = CLAVES.filter(k => !escritas.has(k));
-check(sinPatch.length === 0,
-  `las ${CLAVES.length} claves también se escriben en el camino feliz${sinPatch.length ? ' — faltan: ' + sinPatch.join(', ') : ''}`);
+let estado = {};
+const hacerPatch = new Function('setDatosPorObra',
+  `${preludio}\nreturn ${patchSrc};`)(f => { estado = f(estado); });
+
+const vacioDe = {};
+claveDeFallo.forEach(({ clave, vacio }) => {
+  vacioDe[clave] = new Function(`return (${vacio});`)();
+});
+
+// Caso peor: se cayeron TODOS los oyentes.
+estado = {};
+claveDeFallo.forEach(({ clave }) => hacerPatch('0126', { [clave]: vacioDe[clave] }));
+const listosTrasFallo = estado['0126']?._listos || {};
+const sinResolver = CLAVES.filter(k => !listosTrasFallo[k]);
+check(sinResolver.length === 0,
+  `si fallan todos los listeners, las ${CLAVES.length} claves quedan resueltas${sinResolver.length ? ' — colgadas: ' + sinResolver.join(', ') : ''}`);
+
+// Y el camino feliz: llegan los datos de verdad y las 8 quedan resueltas,
+// con la nómina contada, no sólo marcada.
+const registro = { numSemana: 38, fecha: '15/9/2026', totalNomina: 655553,
+  trabajadores: Array.from({ length: 134 }, (_, i) => ({ nombre: `T${i}` })) };
+estado = {};
+claveDeFallo.forEach(({ clave }) => {
+  const valor = clave === 'info' ? { formatoHistorial: { nomina: 2 } }
+    : clave === '_nomSub' ? [registro]
+    : vacioDe[clave];
+  hacerPatch('0126', { [clave]: valor });
+});
+const feliz = estado['0126'] || {};
+const sinCamino = CLAVES.filter(k => !feliz._listos?.[k]);
+check(sinCamino.length === 0,
+  `con datos reales las ${CLAVES.length} claves también quedan resueltas${sinCamino.length ? ' — faltan: ' + sinCamino.join(', ') : ''}`);
+check((feliz.nominaSemanas || []).length === 1,
+  'y la nómina de la subcolección llega contada, no vacía');
+
+// La otra mitad de la derivación: con la bandera en subcolección, que llegue
+// el documento VIEJO no basta. Si bastara, una obra migrada enseñaría cero
+// semanas mientras su subcolección sigue en vuelo — y cero semanas de nómina
+// se ve igual que una obra que nunca cargó gente.
+estado = {};
+hacerPatch('0126', { info: { formatoHistorial: { nomina: 2 } } });
+hacerPatch('0126', { _nomDoc: [] });
+check(!estado['0126']?._listos?.nominaSemanas,
+  'con la bandera en subcolección, el documento viejo NO da por resuelta la nómina');
+hacerPatch('0126', { _nomSub: [registro] });
+check(estado['0126']?._listos?.nominaSemanas === true &&
+      (estado['0126'].nominaSemanas || []).length === 1,
+  'y al llegar la subcolección sí se resuelve, con sus semanas');
+
+// Y al revés: sin bandera (obra no migrada) manda el documento viejo, aunque
+// la subcolección conteste antes con nada.
+estado = {};
+hacerPatch('0126', { info: {} });
+hacerPatch('0126', { _nomSub: [] });
+check(!estado['0126']?._listos?.nominaSemanas,
+  'sin bandera, una subcolección vacía NO da por resuelta la nómina');
+hacerPatch('0126', { _nomDoc: [registro] });
+check((estado['0126']?.nominaSemanas || []).length === 1,
+  'la obra sin migrar sigue leyendo su documento viejo');
 
 // ── Resultado ──────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(70));

@@ -52,7 +52,10 @@ const check = (ok, titulo, detalle = '') => {
 
 const faltan = ['fn:guardarSemana', 'fn:eliminarCarga', 'tamañoFirestore', 'LIMITE_DOC_FIRESTORE',
                 'semanasDeNomina', 'claveSemanaNomina', 'numSemanaNomina', 'añoSemanaNomina',
-                'fechaCargaNomina', 'semanaISO', 'heImporte'].filter(n => !decl[n]);
+                'fechaCargaNomina', 'semanaISO', 'heImporte', 'mensajeFalloNomina',
+                'escribirHistorialNomina', 'claveDocSemana', 'rutaSemanaNomina',
+                'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION',
+                'CLAVE_SIN_SEMANA'].filter(n => !decl[n]);
 if (faltan.length) noArranco(faltan);
 
 // ── Montaje ────────────────────────────────────────────────────────────────
@@ -60,7 +63,8 @@ if (faltan.length) noArranco(faltan);
 // preguntar después qué hizo la pantalla. `modo` controla la escritura.
 const preludio = `
   const efectos = { escrituras: 0, notificado: null, tab: null, semanaVer: null,
-                    modalCerrado: false, error: '' };
+                    modalCerrado: false, error: '',
+                    rutas: [], borrados: [], escrito: {} };
   const setError            = m => { efectos.error = m; };
   const notificarCambio     = h => { efectos.notificado = h; };
   const setVistaTab         = t => { efectos.tab = t; };
@@ -76,7 +80,7 @@ const preludio = `
     }
     if (modo === 'red') throw new Error('Failed to get document because the client is offline.');
   };
-  const fsSetAEstricto = async () => { efectos.escrituras++; reventar(); return true; };
+  const fsSetAEstricto = async (ruta) => { efectos.escrituras++; efectos.rutas.push(ruta); reventar(); return true; };
   // El ayudante viejo, tal como se comportaba: se traga el error y devuelve
   // false. Está para que la contraprueba —el mismo archivo con el patrón
   // anterior— se monte y salga en rojo por conducta, no por dependencias.
@@ -84,6 +88,27 @@ const preludio = `
     efectos.escrituras++;
     try { reventar(); return true; } catch (e) { return false; }
   };
+
+  // Las primitivas crudas que usa la rama de subcolección. Se apuntan igual
+  // que las otras para poder preguntar DÓNDE escribió y qué borró.
+  const fbDb = {};
+  const doc = (db, ...partes) => partes.join('/');
+  const collection = (db, ...partes) => partes.join('/');
+  const setDoc = async (ruta, datos) => {
+    efectos.escrituras++; efectos.rutas.push(ruta); efectos.escrito[ruta] = datos; reventar();
+  };
+  const deleteDoc = async (ruta) => { efectos.borrados.push(ruta); delete efectos.escrito[ruta]; };
+  const fsGet = async () => null;
+  const fsAudit = () => {};
+  // En qué formato está la obra de la prueba. Lo fija cada caso.
+  const formatoHist = modoFormato;
+
+  const FORMATO_HISTORIAL_ARREGLO = ${decl['FORMATO_HISTORIAL_ARREGLO']};
+  const FORMATO_HISTORIAL_SUBCOLECCION = ${decl['FORMATO_HISTORIAL_SUBCOLECCION']};
+  const CLAVE_SIN_SEMANA = ${decl['CLAVE_SIN_SEMANA']};
+  const rutaSemanaNomina = ${decl['rutaSemanaNomina']};
+  const claveDocSemana = ${decl['claveDocSemana']};
+  const escribirHistorialNomina = ${decl['escribirHistorialNomina']};
 
   const tamañoFirestore = ${decl['tamañoFirestore']};
   const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
@@ -98,13 +123,13 @@ const preludio = `
   const semanasDeNomina = ${decl['semanasDeNomina']};
 `;
 
-const montar = (modo, historial) => new Function('modo', 'historial',
+const montar = (modo, historial, modoFormato = 1) => new Function('modo', 'historial', 'modoFormato',
   `"use strict";
    ${preludio}
    ${decl['fn:guardarSemana']}
    ${decl['fn:eliminarCarga']}
    return { guardarSemana, eliminarCarga, efectos };`
-)(modo, historial);
+)(modo, historial, modoFormato);
 
 // Una semana con la forma de las de verdad: el peso está en `trabajadores`, y
 // cada trabajador carga una docena de campos, no dos. La `fecha` va en d/m/aaaa
@@ -194,6 +219,69 @@ const correrGuardar = async (modo, historial = [semana(5)]) => {
     'un borrado que falla NO la quita: sigue guardada y reaparecería al recargar',
     borrMal.notificado ? 'la quitó igual' : 'no la quitó');
   check(/no se pudo eliminar/i.test(borrMal.error || ''), 'y lo dice');
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 6) La obra migrada escribe en su subcolección, y sólo en la semana que
+  //    tocó. Es la mitad que faltaba: hasta ahora la lectura miraba la
+  //    bandera y la escritura no, así que migrar una obra habría mandado la
+  //    semana nueva al documento viejo —donde ya nadie lee— sin decir nada.
+  console.log('\n6. Con el historial en subcolección\n');
+  const SUB = 2;
+  const s38a = { ...semana(38), archivo: 'parte 1' };
+  const s38b = { ...semana(38), archivo: 'parte 2' };
+  const s37   = semana(37);
+
+  const guardaSub = montar('ok', [s37], SUB);
+  await guardaSub.guardarSemana(s38a);
+  check(guardaSub.efectos.rutas.length === 1,
+    'guardar una semana escribe UN documento, no el historial entero',
+    `${guardaSub.efectos.rutas.length} escritura(s)`);
+  // El año no se fija aquí a propósito: `añoSemanaNomina` puede resolver una
+  // carga fechada en enero como la semana 38 del año anterior, y eso es lo
+  // correcto. Lo que se afirma es dónde cae el documento, no cómo se llama.
+  check(/nomina_historial\/Y\d{4}-S38$/.test(guardaSub.efectos.rutas[0] || ''),
+    'y lo escribe en la subcolección, no en nomina/historial',
+    guardaSub.efectos.rutas[0] || 'ninguna');
+  check(!/\/nomina\/historial$/.test(guardaSub.efectos.rutas[0] || ''),
+    'el documento viejo no se toca');
+
+  // La 0126 rayó su semana 38 en dos archivos. Las dos partes van al MISMO
+  // documento, y el segundo guardado tiene que dejar las dos dentro: si
+  // escribiera sólo la que trae en la mano, la primera desaparecería.
+  const dosPartes = montar('ok', [s37, s38a], SUB);
+  await dosPartes.guardarSemana(s38b);
+  const docSem = Object.values(dosPartes.efectos.escrito)[0];
+  check(Object.keys(dosPartes.efectos.escrito).length === 1,
+    'las dos partes de una misma semana caen en un solo documento');
+  check(docSem?.partes?.length === 2,
+    'y el documento queda con las DOS, no sólo con la última',
+    `${docSem?.partes?.length ?? 0} parte(s)`);
+
+  // Borrar una de las dos partes deja la otra. Borrar la última deja el
+  // documento vacío, y un documento vacío tiene que desaparecer: si se
+  // quedara con `partes: []`, la guarda que compara contra el documento
+  // viejo seguiría contando una semana que ya no está.
+  const borraUna = montar('ok', [s37, s38a, s38b], SUB);
+  await borraUna.eliminarCarga(s38a);
+  const tras = Object.values(borraUna.efectos.escrito)[0];
+  check(tras?.partes?.length === 1 && borraUna.efectos.borrados.length === 0,
+    'borrar una parte deja la otra, y no borra el documento',
+    `${tras?.partes?.length ?? 0} parte(s)`);
+
+  const borraUltima = montar('ok', [s37, s38a], SUB);
+  await borraUltima.eliminarCarga(s38a);
+  check(borraUltima.efectos.borrados.length === 1,
+    'borrar la última parte borra el documento en vez de dejarlo vacío',
+    borraUltima.efectos.borrados[0] || 'no lo borró');
+
+  // Una carga cuyo archivo no dijo la semana no tiene clave. No se tira: va a
+  // un documento aparte, porque perderla sería nómina que no está en ningún
+  // otro lado (P2 — lo que no se pudo determinar se dice, no se descarta).
+  const sinSemana = montar('ok', [], SUB);
+  await sinSemana.guardarSemana({ ...semana(9), semana: '', fecha: '' });
+  check(/nomina_historial\/sin-semana$/.test(sinSemana.efectos.rutas[0] || ''),
+    'una carga sin semana legible se guarda aparte, no se pierde',
+    sinSemana.efectos.rutas[0] || 'ninguna');
 
   console.log(fallas === 0
     ? '\nTodas las comprobaciones en verde.'
