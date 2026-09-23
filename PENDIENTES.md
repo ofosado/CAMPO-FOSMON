@@ -2488,6 +2488,41 @@ es peor que no tenerlo: convierte un hueco de captura en ruido diario.
 
 ---
 
+## 33. `PanelEjecutivo` lleva desde el 18 de septiembre sin renderizarse
+
+**Descubierto**: 2026-09-22, trabajando en los KPIs de mano de obra del
+portafolio. No es un defecto de producto: nadie ve nada mal. Es una
+trampa para quien edite el archivo.
+
+`function PanelEjecutivo(...)` (271 líneas en `src/App.jsx`) fue
+reemplazada por `DashboardPrincipal` el 2026-09-18, y el propio código lo
+dice en el comentario que precede al render. Lo que no dice en ningún
+lado es que la función vieja **se quedó**. No hay un solo
+`<PanelEjecutivo` en el archivo, así que Rollup la elimina del bundle:
+ninguna de sus cadenas —`MANO DE OBRA CONSOLIDADA`, `overhead alto`,
+`Total trabajadores`— aparece en `dist`.
+
+**Lo que ya costó.** Al arreglar la semana de nómina del portafolio, el
+aviso de "semana rayada en varios archivos" se escribió dentro de este
+panel. Compilaba, la prueba de comportamiento salía verde y el informe
+reportó cifras —32.5% de indirectos, $5,603 de costo promedio semanal—
+que **no estaban en pantalla de nadie**. Se descubrió buscando las
+cadenas en el bundle construido, no leyendo el código: leyéndolo, los
+dos bloques son indistinguibles. El equivalente vivo está en
+`DashboardPrincipal`, en `<_KpiConDelta label="Personal">`.
+
+**Qué hacer.** Si nadie va a reactivarlo, **se borra**. Cuesta poco —el
+build ya demuestra que nada depende de él— y quita una copia
+convincente de un componente vivo a la que un cambio puede irse por
+error. Ojo con no llevarse por delante `vePanelEjecutivo` ni
+`ROLES_PANEL_EJECUTIVO`: ésos **sí** se usan, son los que deciden quién
+ve `DashboardPrincipal`.
+
+Si se decide conservarlo, que sea con una razón escrita encima de la
+función y no por omisión, que es como está hoy.
+
+---
+
 # Referencia rápida — resumen de prioridad
 
 Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
@@ -2526,6 +2561,7 @@ cierran, gobiernan.
 | 28 | Historiales semanales en un solo documento — se llenan | **BLOQUEANTE DE DEMO** | **crítica** — la 0114 ya reventó y perdió 7 cierres; a escala municipal la nómina se llena en ~3 meses desde el alta, y la 0125 va en marzo 2027 con su nómina en febrero |
 | 29 | Falta índice de `auditoria` por `obraId` | | alta — la bitácora filtrada por obra sale vacía como si no hubiera actividad |
 | 31 | El histórico semanal de subs nunca existió | | retirado del código 2026-09-22; el cron sigue vivo en producción hasta el despliegue con canario |
+| 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 
 ---
 
