@@ -1155,8 +1155,14 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // fix/kpis-en-cero (2026-09-17): lee del snapshot real vía parámetro
   // nominaHistorial. Antes leía la constante hardcoded vacía NOMINA_S18 y el
   // PDF siempre mostraba "Nómina pendiente de cargar" aunque hubiera datos.
+  // `nominaHistorial` llega ya como CALENDARIO (ver `semanasDeNomina`), así
+  // que "la última" es la última semana rayada con sus partes sumadas, no el
+  // último archivo subido. El PDF es un documento que se entrega: cuando leía
+  // por posición, el de Cangrejera decía 35 trabajadores donde había 134,
+  // porque esa semana llegó en dos archivos y sólo se imprimía el segundo.
   const _ultNominaPDF = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
   const nomData = Array.isArray(_ultNominaPDF?.trabajadores) ? _ultNominaPDF.trabajadores : [];
+  const _partesPDF = _ultNominaPDF?.partes?.length || 1;
   const hayNomina = nomData.length > 0;
   const dir = nomData.filter(p => p.tipo === 'D').length;
   const ind = nomData.filter(p => p.tipo === 'I').length;
@@ -1164,11 +1170,18 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const conHE = nomData.filter(p => (p.horasExtra || 0) > 0).length;
 
   if (hayNomina) {
+    // De qué semana SON estas cifras. Sin esto, el lector del PDF no tiene cómo
+    // saber si mira la semana pasada o una de hace un mes, ni que el total sale
+    // de sumar dos archivos.
+    st(K.gmu); fs(8); fw('normal');
+    T(`${_ultNominaPDF.semana || 'semana sin identificar'}` +
+      (_partesPDF > 1 ? ` · rayada en ${_partesPDF} archivos, sumados` : ''), ML, y + 3);
+    y += 6;
     y = kpiRow([
       ['Total personal',  String(tot),   'trabajadores en sitio', K.ng],
       ['Directo',         String(dir),   'mano de obra',          K.ak],
       ['Indirecto',       String(ind),   'administración',        K.mk],
-      ['Con horas extra', String(conHE), 'semana actual',         K.ak2],
+      ['Con horas extra', String(conHE), 'de esta semana',        K.ak2],
     ], y) + 2;
   } else {
     // Placeholder cuando no hay nómina cargada
@@ -2551,6 +2564,105 @@ const semanaISO = (fecha) => {
 
 // ID de snapshot: S{semana}-{año} ej. "S22-2026"
 const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}`;
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
+// ════════════════════════════════════════════════════════════════════════════
+// A diferencia del snapshot de avance, un registro de nómina NO guarda el año:
+// trae `semana` como texto ("SEM 38") y `fecha`, que es la fecha en que se
+// SUBIÓ el archivo —`new Date().toLocaleDateString('es-MX')`—, no la de la
+// semana rayada.
+//
+// Durante mucho tiempo "la semana actual" fue `historial[historial.length-1]`,
+// o sea la última SUBIDA. Eso es falso de dos maneras, y las dos están en
+// producción hoy:
+//   · La 0126 rayó su semana 38 en dos archivos (99 y 35 trabajadores, gente
+//     distinta) porque así llegó la raya. Por posición, el tablero enseñaba
+//     sólo el segundo: $152,950 de $655,553 reales — el 23% de la nómina.
+//   · La 0125 subió de golpe siete semanas (4 a 30) el mismo día. El orden del
+//     arreglo es el de carga, no el del calendario.
+// Por eso la semana se determina por (año, número) y las partes se suman.
+
+const numSemanaNomina = (reg) => {
+  const m = String(reg?.semana ?? '').match(/(\d+)/);
+  const n = m ? parseInt(m[1], 10) : NaN;
+  return (n >= 1 && n <= 53) ? n : null;
+};
+
+// `fecha` viene en es-MX (d/m/aaaa) y hay que partirla a mano: `new
+// Date('2/9/2026')` da el 9 de FEBRERO, no el 2 de septiembre.
+const fechaCargaNomina = (reg) => {
+  const p = String(reg?.fecha ?? '').split('/').map(x => parseInt(x, 10));
+  if (p.length !== 3 || p.some(x => !Number.isFinite(x))) return null;
+  const d = new Date(p[2], p[1] - 1, p[0]);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+// El año no está escrito en ningún lado, así que se deduce de la fecha de
+// carga: se elige el que deja la semana más cerca de la semana ISO en que se
+// subió el archivo. Así una raya de la semana 52 subida el 2 de enero se queda
+// en el año que le toca, y las siete de la 0125 —subidas en la semana 25 de
+// 2026, todas dentro de ±26— caen todas en 2026.
+// Si no hay fecha de carga legible no se inventa un año: devuelve null (P2).
+const añoSemanaNomina = (reg) => {
+  const n = numSemanaNomina(reg);
+  const f = fechaCargaNomina(reg);
+  if (n === null || !f) return null;
+  const { semana: sCarga, año: aCarga } = semanaISO(f);
+  const d = sCarga - n;
+  return d > 26 ? aCarga + 1 : d < -26 ? aCarga - 1 : aCarga;
+};
+
+// Clave de calendario de una semana de nómina: "Y2026-S38".
+const claveSemanaNomina = (reg) => {
+  const n = numSemanaNomina(reg), a = añoSemanaNomina(reg);
+  return (n === null || a === null) ? null : `Y${a}-S${String(n).padStart(2,'0')}`;
+};
+
+// Agrupa el historial por (año, semana) sumando las partes, y lo devuelve
+// ordenado por CALENDARIO. Cada elemento tiene la misma forma que un registro
+// suelto —para que los lectores no tengan que cambiar de vocabulario— más
+// `clave`, `año`, `numSemana` y `partes` (los registros originales).
+//
+// Un registro cuya semana no se puede leer no se tira (P2): se queda solo, con
+// `clave: null`, y va al PRINCIPIO de la lista, para que nunca gane el puesto
+// de "semana actual" por accidente.
+const semanasDeNomina = (registros) => {
+  const grupos = new Map();
+  const sueltos = [];
+  (registros || []).forEach((reg, i) => {
+    const clave = claveSemanaNomina(reg);
+    if (!clave) { sueltos.push({ clave: null, orden: i, partes: [reg] }); return; }
+    if (!grupos.has(clave)) grupos.set(clave, { clave, orden: i, partes: [] });
+    grupos.get(clave).partes.push(reg);
+  });
+  const unir = ({ clave, orden, partes }) => {
+    const base = partes[0];
+    const suma = (campo) => partes.reduce((t, p) => t + (p?.[campo] || 0), 0);
+    const impHE = partes.reduce((t, p) => t + heImporte(p), 0);
+    return {
+      ...base,
+      clave, orden, partes,
+      año: añoSemanaNomina(base),
+      numSemana: numSemanaNomina(base),
+      trabajadores: partes.flatMap(p => p?.trabajadores || []),
+      totalNomina: suma('totalNomina'),
+      // `totalHE` es un IMPORTE (ver `heImporte`); las horas van aparte.
+      totalHE: impHE,
+      totalHEImp: impHE,
+      totalHEHrs: suma('totalHEHrs'),
+      totalDias: suma('totalDias'),
+      totalDir: suma('totalDir'),
+      totalInd: suma('totalInd'),
+      archivo: partes.map(p => p?.archivo).filter(Boolean).join(' + '),
+    };
+  };
+  return [
+    ...sueltos.map(unir),
+    ...[...grupos.values()].map(unir)
+      .sort((a, b) => (a.año - b.año) || (a.numSemana - b.numSemana)),
+  ];
+};
 
 // Fallo al escribir el snapshot semanal. Tiene tipo propio para que el
 // llamador lo distinga de "no había nada que guardar", que también devolvía
@@ -6477,8 +6589,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       dir:   t.dir   + (ult.totalDir || 0),
       ind:   t.ind   + (ult.totalInd || 0),
       obrasConNom: t.obrasConNom + 1,
+      // Obras que rayaron su semana en más de un archivo: lo que entra al
+      // total es la SUMA de todos, no el último que subieron. Se declara en
+      // pantalla para que la cifra no parezca salida de la nada.
+      enPartes: t.enPartes + ((ult.partes || []).length > 1 ? 1 : 0),
     };
-  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0 });
+  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0, enPartes: 0 });
 
   // ── DELTAS vs semana previa (snapshots históricos) ──
   // Ejecutado: suma de montoEjecutado del último snapshot de avance con
@@ -6816,7 +6932,10 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
         <_KpiConDelta
           label="Personal"
           valor={`${personalAgg.total}`}
-          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
+          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos` +
+            (personalAgg.enPartes > 0
+              ? ` · ${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos, sumados`
+              : '')}
           deltaValor={deltaPersonal}
           deltaSub={deltaPersonal !== null
             ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`
@@ -9478,7 +9597,18 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     </Card>
 
     <Card {...clickableCard("operacion","nomina")}>
-      <Tit>Personal en campo — Semana {(() => { const t = new Date(); t.setDate(t.getDate() + 4 - (t.getDay() || 7)); return Math.ceil((((t - new Date(t.getFullYear(),0,1)) / 86400000) + 1) / 7); })()} {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver nómina ›</span>}</Tit>
+      {/* El título decía la semana de HOY mientras enseñaba la última nómina
+          cargada, que puede ser de hace un mes. Ahora dice la semana de la que
+          SON las cifras, y avisa si esa semana llegó en varios archivos. */}
+      <Tit>
+        Personal en campo — {_ultNom ? _ultNom.semana : 'sin nómina cargada'}
+        {_ultNom?.partes?.length > 1 && (
+          <span style={{marginLeft:6,verticalAlign:'middle'}}>
+            <Bdg color={C.blue} small>{_ultNom.partes.length} partes · sumadas</Bdg>
+          </span>
+        )}
+        {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}> · ver nómina ›</span>}
+      </Tit>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
         <Kpi label="Total"     value={dir+ind} sub="trabajadores"  color={C.caliza}/>
         <Kpi label="Directo"   value={dir}     sub="mano de obra"  color={C.blue}/>
@@ -13473,17 +13603,22 @@ function Nomina({obra, rol, onHistorialCambio}) {
   // fix/kpis-en-cero (2026-09-17): Nomina mantiene su state local (para su
   // propia UI), pero notifica los cambios al App via onHistorialCambio para
   // que Dashboard, MiniDashNomina y detectarRiesgos vean el snapshot fresco.
+  // `historial` son las CARGAS tal como están en Firestore —es lo que se
+  // escribe de vuelta— y `semanas` es el calendario que se enseña: ordenado y
+  // con las partes de una misma semana sumadas (ver `semanasDeNomina`).
   const notificarCambio = (nuevo) => {
     setHistorial(nuevo);
-    onHistorialCambio && onHistorialCambio(nuevo);
+    onHistorialCambio && onHistorialCambio(semanasDeNomina(nuevo));
   };
   useEffect(()=>{
     fsGet(`obras/${obra.id}/nomina/historial`).then(d=>{
       if(d&&Array.isArray(d.semanas)) {
         setHistorial(d.semanas);
-        onHistorialCambio && onHistorialCambio(d.semanas);
-        // Al cargar, apuntar SIEMPRE a la última semana (más reciente)
-        setSemanaVer(Math.max(0, d.semanas.length - 1));
+        onHistorialCambio && onHistorialCambio(semanasDeNomina(d.semanas));
+        // Al cargar, apuntar SIEMPRE a la última semana del CALENDARIO, que no
+        // tiene por qué ser la última carga: la 0125 subió de golpe siete
+        // semanas y el orden del arreglo es el de subida.
+        setSemanaVer(Math.max(0, semanasDeNomina(d.semanas).length - 1));
       }
     });
   },[obra.id]);
@@ -13503,8 +13638,12 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const fileRef = useRef();
   const editar  = can(rol, 'captura', 'editar');
 
-  const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
-  const semanaAnterior = historial.length > 1 ? historial[historial.length - 2] : null;
+  const semanas = useMemo(() => semanasDeNomina(historial), [historial]);
+  // "La semana actual" es la última del CALENDARIO, no la última subida. La
+  // 0126 rayó su semana 38 en dos archivos y por posición el tablero enseñaba
+  // sólo el segundo: $152,950 de $655,553 reales.
+  const semanaActual = semanas.length > 0 ? semanas[semanas.length - 1] : null;
+  const semanaAnterior = semanas.length > 1 ? semanas[semanas.length - 2] : null;
 
   // Guardar semana en Firestore (extraído para reusar entre carga directa y confirmación de warnings)
   // El guardado espera y revisa el resultado. Antes no hacía ninguna de las
@@ -13528,7 +13667,11 @@ function Nomina({obra, rol, onHistorialCambio}) {
     }
     notificarCambio(nuevo_hist);
     setVistaTab('actual');
-    setSemanaVer(nuevo_hist.length - 1);
+    // Apuntar a la semana que se acaba de cargar, que no tiene por qué ser la
+    // última del calendario: se puede subir una raya atrasada.
+    const cal = semanasDeNomina(nuevo_hist);
+    const i = cal.findIndex(s => s.clave === claveSemanaNomina(nueva));
+    setSemanaVer(i >= 0 ? i : Math.max(0, cal.length - 1));
     setPendienteRevisar(null);
     return true;
   }
@@ -13592,21 +13735,25 @@ function Nomina({obra, rol, onHistorialCambio}) {
           totalDir: resultado.trabajadores.filter(p=>p.tipo==='D').length,
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
         };
-        // Validar contra la ÚLTIMA semana del historial (que ES la anterior
-        // respecto a la que se está por cargar). OJO: el state `semanaAnterior`
-        // es la penúltima del historial — sirve para la UI al ver el detalle,
-        // pero NO para comparar contra una carga nueva.
-        // Ejemplo: al subir SEM 37 con solo SEM 36 en historial:
-        //   historial = [SEM 36]
-        //   semanaActual   = SEM 36 (última cargada = anterior a la nueva)
-        //   semanaAnterior = null   (no hay penúltima)
-        // La comparativa correcta es contra semanaActual.
-        const previaParaComparar = semanaActual;
+        // Comparar contra la última semana del calendario ANTERIOR a la que se
+        // está cargando. No sirve "la última que haya": si esta raya es la
+        // segunda parte de la semana 38, la última es la primera parte de esa
+        // misma semana, y validar 35 trabajadores contra los otros 99 del mismo
+        // cierre levantaría alarmas de gente que nunca se fue.
+        // Tampoco sirve "la penúltima": al subir una raya atrasada, lo anterior
+        // no es el final de la lista.
+        const claveNueva = claveSemanaNomina({ semana: resultado.semana, fecha: new Date().toLocaleDateString('es-MX') });
+        const previaParaComparar = claveNueva
+          ? [...semanas].reverse().find(s => s.clave && s.clave < claveNueva) || null
+          : semanaActual;
         const {errores, advertencias} = validarNomina(resultado.trabajadores, previaParaComparar);
         if (yaCargada) {
           advertencias.unshift({
             tipo: 'semana_duplicada',
-            msg: `Ya existe una carga previa con el nombre "${resultado.semana}" (${yaCargada.fecha}). Cargar de nuevo duplicaría los registros.`,
+            msg: `Ya existe una carga de "${resultado.semana}" (${yaCargada.fecha}, ${yaCargada.trabajadores?.length || 0} trabajadores). ` +
+              `Si esta raya es la OTRA PARTE del mismo cierre, continúa: las dos se sumarán y la semana valdrá ` +
+              `${(yaCargada.trabajadores?.length || 0) + resultado.trabajadores.length} trabajadores. ` +
+              `Si es el MISMO archivo otra vez, cancela: se contaría dos veces.`,
           });
         }
         // Si la semana no quedó determinada, o si las fuentes se contradicen,
@@ -13653,20 +13800,24 @@ function Nomina({obra, rol, onHistorialCambio}) {
   // Igual que el guardado: si el borrado no llegó a Firestore, la semana sigue
   // ahí. Quitarla de la pantalla de todos modos deja a quien la borró creyendo
   // que ya no está, y reaparece al recargar.
-  async function eliminarSemana(idx) {
-    const semPrev = historial[idx];
-    const nuevo = historial.filter((_,i) => i !== idx);
+  // Borra UNA CARGA, no una semana del calendario: cuando una semana vino en
+  // dos archivos, quitar "la semana" borraría también la parte que sí estaba
+  // bien. Recibe el registro original, no un índice, porque la pantalla ya no
+  // enumera cargas sino semanas.
+  async function eliminarCarga(reg) {
+    const nuevo = historial.filter(r => r !== reg);
+    if (nuevo.length === historial.length) return;
     setError('');
     try {
       await fsSetAEstricto(`obras/${obra.id}/nomina/historial`, {semanas:nuevo},
-        { modulo:"nomina", entidad:`eliminar semana ${semPrev?.semana||idx}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+        { modulo:"nomina", entidad:`eliminar carga ${reg?.semana||''} (${reg?.archivo||'sin archivo'})`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     } catch (e) {
-      setError(`No se pudo eliminar la semana ${semPrev?.semana||idx}: ` +
+      setError(`No se pudo eliminar la carga ${reg?.semana||''}: ` +
         `${e?.message || 'error desconocido'}. Sigue guardada; vuelve a intentar.`);
       return;
     }
     notificarCambio(nuevo);
-    setSemanaVer(Math.max(0, idx-1));
+    setSemanaVer(v => Math.max(0, Math.min(v, semanasDeNomina(nuevo).length - 1)));
   }
 
   // KPIs comparativos
@@ -13722,7 +13873,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
     return semanaAnterior.trabajadores.filter(p => !actualNombres.has(p.nombre.trim().toLowerCase()));
   })() : [];
 
-  const semVer = historial[semanaVer];
+  const semVer = semanas[semanaVer];
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -13734,8 +13885,9 @@ function Nomina({obra, rol, onHistorialCambio}) {
           <div>
             <Tit>Nómina semanal — {obra.nombre}</Tit>
             <div style={{fontSize:10,color:C.textMut,marginTop:-6}}>
-              {historial.length > 0
-                ? `${historial.length} semana(s) cargada(s) · Última: ${semanaActual?.semana}`
+              {semanas.length > 0
+                ? `${semanas.length} semana(s) · ${historial.length} carga(s) · Última: ${semanaActual?.semana}` +
+                  (semanaActual?.partes.length > 1 ? ` (${semanaActual.partes.length} partes)` : '')
                 : 'Sin nóminas cargadas aún'}
             </div>
           </div>
@@ -13952,16 +14104,34 @@ function Nomina({obra, rol, onHistorialCambio}) {
           <Card>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,gap:8}}>
               <div>
-                <Tit>{semVer.semana}</Tit>
+                <Tit>
+                  {semVer.semana}
+                  {semVer.partes.length > 1 && (
+                    <span style={{marginLeft:8,verticalAlign:'middle'}}>
+                      <Bdg color={C.blue} small>{semVer.partes.length} partes · sumadas</Bdg>
+                    </span>
+                  )}
+                </Tit>
                 <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
                   {semVer.trabajadores.length} trabajadores · Cargado {semVer.fecha} · {semVer.archivo}
                 </div>
+                {/* Una semana que llegó en varios archivos: se dice cuáles, para
+                    que el total no parezca salido de la nada. */}
+                {semVer.partes.length > 1 && (
+                  <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+                    {semVer.partes.map((p,i)=>(
+                      <div key={i}>· {p.archivo || 'sin archivo'} — {(p.trabajadores||[]).length} trab · {MXN(p.totalNomina||0)}</div>
+                    ))}
+                  </div>
+                )}
               </div>
               {/* Selector de semana */}
-              {historial.length > 1 && (
+              {semanas.length > 1 && (
                 <Sel value={semanaVer} onChange={e=>setSemanaVer(Number(e.target.value))}
                   style={{fontSize:10,padding:'4px 8px'}}>
-                  {historial.map((s,i)=><option key={i} value={i}>{s.semana}</option>)}
+                  {semanas.map((s,i)=><option key={s.clave ?? `x${i}`} value={i}>
+                    {s.semana}{s.partes.length > 1 ? ` (${s.partes.length} partes)` : ''}
+                  </option>)}
                 </Sel>
               )}
             </div>
@@ -14188,29 +14358,50 @@ function Nomina({obra, rol, onHistorialCambio}) {
         {/* VISTA: Historial */}
         {vistaTab==='historico' && (
           <Card>
-            <Tit>Historial de semanas cargadas</Tit>
-            {historial.slice().reverse().map((sem, ri) => {
-              const i = historial.length - 1 - ri;
-              const prev = i > 0 ? historial[i-1] : null;
+            <Tit>Historial por semana</Tit>
+            {/* Se enumeran SEMANAS del calendario, no cargas: una semana que
+                llegó en dos archivos es una sola fila, con sus partes desglosadas
+                y un botón de borrar por parte. */}
+            {semanas.slice().reverse().map((sem, ri) => {
+              const i = semanas.length - 1 - ri;
+              const prev = i > 0 ? semanas[i-1] : null;
               const deltaTot = prev ? sem.totalNomina - prev.totalNomina : 0;
               const deltaP   = prev ? (sem.totalDir+sem.totalInd) - (prev.totalDir+prev.totalInd) : 0;
               return (
-                <div key={i} style={{background:C.bg,borderRadius:8,padding:'10px 12px',
-                  marginBottom:8,borderLeft:`3px solid ${i===historial.length-1?C.caliza:C.border}`}}>
+                <div key={sem.clave ?? `x${i}`} style={{background:C.bg,borderRadius:8,padding:'10px 12px',
+                  marginBottom:8,borderLeft:`3px solid ${i===semanas.length-1?C.caliza:C.border}`}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,gap:8}}>
                     <div>
                       <div style={{fontSize:12,fontWeight:600,color:C.caliza}}>{sem.semana}</div>
                       <div style={{fontSize:9,color:C.textMut}}>{sem.fecha} · {sem.archivo}</div>
                     </div>
                     <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                      {i===historial.length-1&&<Bdg color={C.green} small>Actual</Bdg>}
-                      {editar&&<button onClick={()=>eliminarSemana(i)}
+                      {sem.partes.length > 1 && <Bdg color={C.blue} small>{sem.partes.length} partes</Bdg>}
+                      {sem.clave === null && <Bdg color={C.yellow} small>sin fecha de semana</Bdg>}
+                      {i===semanas.length-1&&<Bdg color={C.green} small>Actual</Bdg>}
+                      {editar&&sem.partes.length===1&&<button onClick={()=>eliminarCarga(sem.partes[0])}
                         style={{background:'none',border:`0.5px solid rgba(220,38,38,0.3)`,
                           borderRadius:4,padding:'2px 7px',fontSize:9,color:C.red,cursor:'pointer'}}>
                         Eliminar
                       </button>}
                     </div>
                   </div>
+                  {sem.partes.length > 1 && (
+                    <div style={{marginBottom:8,fontSize:9,color:C.textMut,
+                      borderLeft:`2px solid ${C.border}`,paddingLeft:8}}>
+                      {sem.partes.map((p,pi)=>(
+                        <div key={pi} style={{display:'flex',justifyContent:'space-between',
+                          alignItems:'center',gap:8,padding:'2px 0'}}>
+                          <span>{p.archivo || 'sin archivo'} · {(p.trabajadores||[]).length} trab · {MXN(p.totalNomina||0)} · {p.fecha}</span>
+                          {editar&&<button onClick={()=>eliminarCarga(p)}
+                            style={{background:'none',border:`0.5px solid rgba(220,38,38,0.3)`,
+                              borderRadius:4,padding:'1px 6px',fontSize:9,color:C.red,cursor:'pointer',flexShrink:0}}>
+                            Eliminar parte
+                          </button>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(90px,1fr))',gap:6}}>
                     {[
                       ['Personal',sem.totalDir+sem.totalInd,deltaP!==0?`${deltaP>0?'+':''}${deltaP}`:'',C.caliza],
@@ -17679,14 +17870,19 @@ export default function App(){
     // MiniDashNomina, motor detectarRiesgos y PDF.
     if (usuario?.rol !== 'cliente') {
       fsGet(`obras/${obraId}/nomina/historial`).then(d=>{
-        const semanas = Array.isArray(d?.semanas) ? d.semanas : [];
-        setNominaHistorial(semanas);
-        if (semanas.length > 0) {
-          const ultima = semanas[semanas.length - 1];
-          const fechaIso = ultima.fechaISO || (ultima.fecha
-            ? new Date(ultima.fecha.split('/').reverse().join('-')).toISOString()
-            : null);
-          if (fechaIso) setFechasModulos(f => ({...f, nomina: fechaIso}));
+        const registros = Array.isArray(d?.semanas) ? d.semanas : [];
+        // Calendario, no orden de carga: ver `semanasDeNomina`. De aquí comen
+        // el PDF, los tres avisos de nómina y el KPI de personal del tablero.
+        setNominaHistorial(semanasDeNomina(registros));
+        // La fecha del módulo es "cuándo se capturó nómina por última vez", así
+        // que sale de la carga MÁS RECIENTE de todas, no de la última semana
+        // del calendario: la 0125 subió en junio semanas de febrero.
+        const cargas = registros
+          .map(r => r.fechaISO ? new Date(r.fechaISO) : fechaCargaNomina(r))
+          .filter(f => f && !isNaN(f.getTime()));
+        if (cargas.length > 0) {
+          const masReciente = new Date(Math.max(...cargas.map(f => f.getTime())));
+          setFechasModulos(f => ({...f, nomina: masReciente.toISOString()}));
         }
       }).catch(err => {
         // Fallo defensivo: si por alguna razón el fetch falla, dejar historial
@@ -17952,11 +18148,16 @@ export default function App(){
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
-      // Historial de nómina semanal — se usa el ÚLTIMO snapshot para KPIs de mano de obra
+      // Historial de nómina semanal — los KPIs de mano de obra del portafolio
+      // leen la ÚLTIMA de estas semanas, así que aquí se entregan ya ordenadas
+      // por calendario y con las partes de una misma semana sumadas. En crudo
+      // el arreglo viene en orden de CARGA, y una obra que raya su semana en
+      // dos archivos —o que sube siete semanas de golpe— sale mal contada en
+      // el consolidado.
       unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
-        patch(o.id, { nominaSemanas: semanas });
+        patch(o.id, { nominaSemanas: semanasDeNomina(semanas) });
       }, alFallar(o.id, 'nominaSemanas', [], 'nomina')));
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
