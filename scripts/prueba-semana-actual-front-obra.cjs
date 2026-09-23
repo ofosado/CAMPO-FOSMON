@@ -150,28 +150,15 @@ const correrAviso = (id, nominaHistorial) =>
   new Function('ctx', 'heImporte', 'MXN',
     `"use strict"; return (${avisos[id]})(ctx);`)({ nominaHistorial }, heImporte, MXN);
 
-// ── Datos de producción, 0126 (Cangrejera), leídos el 2026-09-22 ──────────
-// El arreglo va en ORDEN DE CARGA, que es como está guardado en Firestore.
-const trabs = (n, totalCada, heHrs = 0, salSem = 0) =>
-  [...Array(n)].map((_, i) => ({
-    nombre: `TRABAJADOR NUMERO ${i}`, total: totalCada, horasExtra: heHrs,
-    salSem, impHE: 0, dias: 6, tipo: i % 9 === 0 ? 'I' : 'D',
-  }));
-
-const P0126 = [
-  { semana: 'Semana 36', fecha: '3/9/2026',  archivo: 'S36.xlsx', trabajadores: trabs(135, 4886.11),
-    totalNomina: 659725.00, totalDir: 120, totalInd: 15, totalHEImp: 12000, totalHEHrs: 300, totalDias: 810 },
-  { semana: 'Semana 37', fecha: '14/9/2026', archivo: 'S37.xlsx', trabajadores: trabs(138, 4689.70),
-    totalNomina: 647179.17, totalDir: 123, totalInd: 15, totalHEImp: 11000, totalHEHrs: 275, totalDias: 828 },
-  // La semana 38 llegó en dos archivos, con gente distinta en cada uno.
-  // En el primero hay 24 personas con 22 horas extra; en el segundo, ninguna.
-  { semana: 'Semana 38', fecha: '21/9/2026', archivo: 'S38-parte1.xlsx',
-    trabajadores: [...trabs(24, 5076.80, 22, 1800), ...trabs(75, 5076.80, 0, 1800)],
-    totalNomina: 502603.33, totalDir: 86, totalInd: 13, totalHEImp: 108000, totalHEHrs: 528, totalDias: 594 },
-  { semana: 'Semana 38', fecha: '21/9/2026', archivo: 'S38-parte2.xlsx',
-    trabajadores: trabs(35, 4370.00, 0, 1800),
-    totalNomina: 152950.00, totalDir: 31, totalInd: 4, totalHEImp: 0, totalHEHrs: 0, totalDias: 210 },
-];
+// ── Datos ─────────────────────────────────────────────────────────────────
+// La nómina real de la 0126 (Cangrejera), leída de producción el 2026-09-22 y
+// guardada en `nomina-produccion-2026-09-22.cjs`. El arreglo va en ORDEN DE
+// CARGA, que es como está en Firestore.
+const P0126 = require(path.join(__dirname, 'nomina-produccion-2026-09-22.cjs'))['0126'];
+const trabs = (n, totalCada) => [...Array(n)].map((_, i) => ({
+  nombre: `TRABAJADOR ${i + 1}`, total: totalCada, horasExtra: 0,
+  salSem: totalCada, impHE: 0, dias: 6, tipo: 'D',
+}));
 
 const personal = s => (s.totalDir || 0) + (s.totalInd || 0);
 const ultimaSubida = P0126[P0126.length - 1];
@@ -217,33 +204,49 @@ check(/\|134\|/.test(texto), 'el total en pantalla es 134', texto.match(/Total\|
 check(/partes/.test(texto) && /2 partes/.test(texto),
   'y avisa que esa semana vino en 2 partes sumadas');
 
-console.log('\n3. Los tres avisos de nómina miran la semana completa\n');
-const a1 = correrAviso('nom_001', H);
-check(a1 !== null && a1.valor === '24',
-  'nom_001 cuenta los 24 con horas extra ≥20 de la primera parte',
-  a1 ? a1.valor : 'no disparó');
-check(a1 !== null && a1.severidad === 'alto',
-  'y lo marca ALTO porque son más de 10', a1 ? a1.severidad : '—');
-
-const a2 = correrAviso('nom_002', H);
-const pctReal = 108000 / 655553.33 * 100;
-check(a2 !== null && a2.valor === `${pctReal.toFixed(0)}%`,
-  `nom_002 mide las HE contra los $655,553 de la semana: ${pctReal.toFixed(0)}%`,
-  a2 ? a2.valor : 'no disparó');
-// Contra la parte 2 sola, el importe de HE es 0 y el aviso ni siquiera existe.
+console.log('\n3. Los tres avisos de nómina revisan a los 134, no a 35\n');
+// En la semana 38 real de la 0126 nadie tiene horas extra ni el sueldo fuera
+// de rango, así que ninguno de los tres avisos dispara — ni antes ni después
+// del fix. Eso NO es prueba de nada: lo que hay que demostrar es a cuánta
+// gente alcanzan a mirar.
 const soloParte2 = loQueVeLaObra([ultimaSubida]).historial;
-check(correrAviso('nom_002', soloParte2) === null,
-  'leyendo sólo la última raya, ese aviso no existiría');
+const mirados = (h) => (h[h.length - 1]?.trabajadores || []).length;
+check(mirados(H) === 134 && mirados(soloParte2) === 35,
+  'la población que revisan pasa de 35 a 134 personas',
+  `${mirados(soloParte2)} → ${mirados(H)}`);
+for (const id of ['nom_001', 'nom_002', 'nom_003'])
+  check(correrAviso(id, H) === null,
+    `con la semana 38 real de la 0126, ${id} no dispara — y así debe ser`);
 
-// nom_003 no cuenta gente: cuenta anomalías de cálculo. Las 99 de la 0126
-// están todas en la primera parte, así que leyendo sólo la última raya el
-// aviso no aparece y esos 99 sueldos raros no los revisa nadie.
-const a3 = correrAviso('nom_003', H);
-check(a3 !== null && Number(a3.valor) === 99,
-  'nom_003 revisa a los 134 y encuentra 99 sueldos fuera de rango',
-  a3 ? a3.valor : 'no disparó');
-check(correrAviso('nom_003', soloParte2) === null,
-  'leyendo sólo la última raya, esos 99 no los revisaría nadie');
+// Para ver la ceguera hace falta algo que denunciar, y en esa semana no lo
+// hay. Se CONSTRUYE: a 24 de las 99 personas de la primera parte —la que el
+// criterio viejo tiraba— se les ponen 22 horas extra y un sueldo fuera de
+// rango. La segunda parte queda intacta, tal como está en producción.
+const conHE = P0126.map(r => {
+  if (r.archivo !== P0126[2].archivo) return r;
+  return { ...r, totalHEImp: 108000 + (r.totalHEImp || 0),
+    trabajadores: r.trabajadores.map((p, i) => i < 24
+      ? { ...p, horasExtra: 22, impHE: 4500, total: p.salSem * 3 }
+      : p) };
+});
+const HC = loQueVeLaObra(conHE).historial;
+const SC = loQueVeLaObra([conHE[3]]).historial;
+
+const a1 = correrAviso('nom_001', HC), a1p = correrAviso('nom_001', SC);
+check(a1 !== null && a1.valor === '24' && a1.severidad === 'alto',
+  'nom_001 ve a las 24 personas con 22 horas extra y lo marca ALTO',
+  a1 ? `${a1.valor} · ${a1.severidad}` : 'no disparó');
+check(a1p === null, 'leyendo sólo la última raya, esas 24 no las ve nadie');
+
+const a2 = correrAviso('nom_002', HC), a2p = correrAviso('nom_002', SC);
+check(a2 !== null, 'nom_002 mide las HE contra los $655,553 de la semana completa',
+  a2 ? a2.valor : 'no disparó');
+check(a2p === null, 'y contra los $152,950 de la última raya ni siquiera existe');
+
+const a3 = correrAviso('nom_003', HC), a3p = correrAviso('nom_003', SC);
+check(a3 !== null && Number(a3.valor) === 24,
+  'nom_003 encuentra los 24 sueldos fuera de rango', a3 ? a3.valor : 'no disparó');
+check(a3p === null, 'que por posición tampoco los revisaría nadie');
 
 console.log('\n4. El PDF que se entrega imprime la semana completa\n');
 // El PDF toma el mismo `nominaHistorial`; se reproduce su cálculo de cabecera.
@@ -252,8 +255,10 @@ const tot = nomData.filter(p => p.tipo === 'D').length + nomData.filter(p => p.t
 check(tot === 134, 'el PDF cuenta 134 trabajadores en sitio', String(tot));
 check((act.partes?.length || 1) === 2,
   'y sabe que la cifra sale de 2 archivos, para poder decirlo', String(act.partes?.length));
-check(/S38-parte1\.xlsx \+ S38-parte2\.xlsx/.test(act.archivo || ''),
-  'con los dos archivos identificados', act.archivo);
+check((act.archivo || '').split(' + ').length === 2 &&
+      (act.archivo || '').includes(P0126[2].archivo) &&
+      (act.archivo || '').includes(P0126[3].archivo),
+  'con los dos archivos identificados por su nombre', act.archivo);
 
 console.log('\n5. La fecha del módulo es la de la última CARGA, no la de la última semana\n');
 // Una raya atrasada no debe hacer parecer que la obra lleva un mes sin
