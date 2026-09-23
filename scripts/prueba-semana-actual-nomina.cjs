@@ -48,15 +48,19 @@ const cerca = (a, b) => Math.abs(a - b) < 0.005;
 const global = {};
 const rango = {};          // dónde vive cada uno, para poder mutarlo
 let oyenteNomina = null;   // el callback del onSnapshot de nomina/historial
-let bloqueMO = null;       // el bloque «MANO DE OBRA CONSOLIDADA» del Panel
+let kpiPersonal = null;  // el KPI «Personal» de DashboardPrincipal
 traverse(ast, {
-  // El bloque de KPIs consolidados se busca por el rótulo que imprime.
-  ArrowFunctionExpression(p) {
-    if (bloqueMO) return;
-    if (p.parent.type !== 'CallExpression' || p.parent.callee !== p.node) return;
+  // El KPI «Personal» del tablero principal. OJO: existe un bloque muy
+  // parecido, «MANO DE OBRA CONSOLIDADA», dentro de PanelEjecutivo — pero ese
+  // componente lo reemplazó DashboardPrincipal el 2026-09-18, ya no se
+  // renderiza y el build lo tira. Aquí se agarra el que SÍ sale a pantalla,
+  // y se le pide al AST que sea un `<_KpiConDelta label="Personal">`.
+  JSXElement(p) {
+    if (kpiPersonal) return;
+    if (p.node.openingElement.name.name !== '_KpiConDelta') return;
     const txt = src.slice(p.node.start, p.node.end);
-    if (!/MANO DE OBRA CONSOLIDADA/.test(txt)) return;
-    bloqueMO = txt;
+    if (!/label="Personal"/.test(txt)) return;
+    kpiPersonal = txt;
   },
   VariableDeclarator(p) {
     if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent) {
@@ -81,7 +85,7 @@ const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomi
 for (const n of necesarios)
   if (!global[n]) check(false, `se pudo extraer \`${n}\` de ${path.basename(archivo)}`);
 if (!oyenteNomina) check(false, 'se localizó el oyente de obras/{id}/nomina/historial');
-if (!bloqueMO) check(false, 'se localizó el bloque «MANO DE OBRA CONSOLIDADA»');
+if (!kpiPersonal) check(false, 'se localizó el KPI «Personal» del tablero principal');
 if (fallas) { console.log('\nNo se pudo montar la prueba.'); process.exit(1); }
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
@@ -237,47 +241,60 @@ const unaSola = loQueRecibeElTablero([P0126[0]]);
 check(unaSola.length === 1 && (unaSola[0].partes||[]).length === 1,
   'una sola carga es una semana de una parte — no se marca como partida');
 
-console.log('\n9. El Panel Ejecutivo suma las cinco obras sobre la semana completa');
-// Se renderiza el bloque «MANO DE OBRA CONSOLIDADA» de verdad, alimentado con
-// lo que el oyente entrega para cada una de las cinco obras activas.
+console.log('\n9. El tablero principal suma las cinco obras sobre la semana completa');
+// Se alimenta el oyente con la nómina real de las cinco obras activas y se
+// renderiza el KPI «Personal» del tablero principal, tal como sale a pantalla.
 const OBRAS = ['0112', '0114', '0125', '0126', '0127'];
 const datosPorObra = Object.fromEntries(OBRAS.map(id =>
   [id, { nominaSemanas: loQueRecibeElTablero(PROD[id]) }]));
-const obrasConKPIs = OBRAS.map(id => ({ obra: { id, nombre: PROD.nombres[id] } }));
+
+// Las dos cuentas que alimentan el KPI, copiadas del tablero: el total de la
+// semana actual de cada obra y el de su semana previa.
+const kpisPorObra = OBRAS.map(id => ({ d: datosPorObra[id] }));
+const personalAgg = kpisPorObra.reduce((t, { d }) => {
+  const ult = (d.nominaSemanas || []).slice(-1)[0];
+  if (!ult) return t;
+  return { total: t.total + personal(ult), dir: t.dir + (ult.totalDir || 0),
+    ind: t.ind + (ult.totalInd || 0), obrasConNom: t.obrasConNom + 1,
+    enPartes: t.enPartes + ((ult.partes || []).length > 1 ? 1 : 0) };
+}, { total: 0, dir: 0, ind: 0, obrasConNom: 0, enPartes: 0 });
+let personalPrev = 0, obrasSinPrevNom = 0;
+for (const { d } of kpisPorObra) {
+  const nom = d.nominaSemanas || [];
+  if (nom.length === 0) continue;
+  if (nom.length >= 2) personalPrev += personal(nom[nom.length - 2]);
+  else obrasSinPrevNom++;
+}
+const deltaPersonal = (personalAgg.obrasConNom > 0 && obrasSinPrevNom === 0)
+  ? personalAgg.total - personalPrev : null;
 
 const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
-const kpiBox = (label, valor, _c, sub) =>
-  React.createElement('div', null, ` ${label}: ${valor} (${sub}) `);
 const C = new Proxy({}, { get: () => '#888' });
-const NUM = (n, d) => (n || 0).toLocaleString('es-MX', { minimumFractionDigits: d, maximumFractionDigits: d });
-const MXN = n => '$' + (n || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 });
-const js = esbuild.transformSync(`(${bloqueMO})`, { loader: 'jsx' }).code.trim().replace(/;$/, '');
+const _KpiConDelta = ({label, valor, valorSub, deltaValor, deltaSub}) =>
+  React.createElement('div', null,
+    ` ${label}: ${valor} | ${valorSub} | ${deltaValor === null ? '·' : deltaValor} ${deltaSub} `);
+const js = esbuild.transformSync(`(${kpiPersonal})`, { loader: 'jsx' }).code.trim().replace(/;$/, '');
 const panel = renderToStaticMarkup(new Function(
-  'React', 'kpiBox', 'C', 'NUM', 'MXN', 'heImporte',
-  'obrasConKPIs', 'datosPorObra', 'activas',
-  `"use strict"; return (${js})();`)(
-  React, kpiBox, C, NUM, MXN, api.heImporte,
-  obrasConKPIs, datosPorObra, OBRAS));
+  'React', '_KpiConDelta', 'C', 'personalAgg', 'deltaPersonal', 'obrasSinPrevNom',
+  `"use strict"; return ${js};`)(
+  React, _KpiConDelta, C, personalAgg, deltaPersonal, obrasSinPrevNom));
 const txt = panel.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 console.log('\n   « ' + txt + ' »\n');
 
-check(/Total trabajadores: 449 /.test(txt),
+check(/Personal: 449 \|/.test(txt),
   'el consolidado son 449 trabajadores, no 350',
-  txt.match(/Total trabajadores: (\d+)/)?.[1] || '?');
-check(/Nómina semanal total: \$2,515,708 /.test(txt),
-  'y $2,515,708 de nómina, no $2,013,104',
-  txt.match(/Nómina semanal total: (\S+)/)?.[1] || '?');
-check(/1 rayó su semana en varios archivos, sumados/.test(txt),
-  'y el panel declara que una obra rayó su semana en varios archivos');
+  txt.match(/Personal: (\d+)/)?.[1] || '?');
+check(/303 directos · 146 indirectos/.test(txt),
+  'con su desglose, 303 directos y 146 indirectos');
+check(/−11 trab\. vs semana previa/.test(txt),
+  'y una caída de 11 trabajadores, no de 71',
+  txt.match(/(−|\+)\d+ trab\./)?.[0] || '?');
+check(/1 obra rayó su semana en varios archivos, sumados/.test(txt),
+  'el KPI declara que una obra rayó su semana en varios archivos');
 
-// El delta de personal del Panel: la semana anterior de cada obra. Con el
-// criterio viejo, la «anterior» de la 0126 era la otra mitad de su propia
-// semana 38 (99 personas), así que el portafolio parecía perder 71.
-const suma = (f) => OBRAS.reduce((t, id) => t + f(datosPorObra[id].nominaSemanas), 0);
-const act = suma(s => personal(s[s.length - 1]));
-const ant = suma(s => (s.length >= 2 ? personal(s[s.length - 2]) : 0));
+const act = personalAgg.total, ant = personalPrev;
 check(act === 449 && act - ant === -11,
   'el delta de personal es -11, no -71', `${act} − ${ant} = ${act - ant}`);
 

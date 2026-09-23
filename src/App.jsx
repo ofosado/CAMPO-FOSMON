@@ -6111,15 +6111,12 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
         // Consolidar el último snapshot de nómina de TODAS las obras (SUMA)
         let totalEmp = 0, dir = 0, ind = 0, nomTotal = 0;
         let heHrs = 0, heImp = 0;
-        let obrasConDato = 0, tendencia = null, enPartes = 0;
+        let obrasConDato = 0, tendencia = null;
         obrasConKPIs.forEach(({obra}) => {
           const d = datosPorObra[obra.id] || {};
           const semanas = d.nominaSemanas || [];
           if (semanas.length === 0) return;
           const ult = semanas[semanas.length - 1];
-          // La obra rayó su semana en más de un archivo: la cifra que entra
-          // aquí es la suma de todos, no la del último que subieron.
-          if ((ult.partes || []).length > 1) enPartes++;
           totalEmp += (ult.totalDir || 0) + (ult.totalInd || 0);
           dir      += (ult.totalDir || 0);
           ind      += (ult.totalInd || 0);
@@ -6147,8 +6144,7 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
             textTransform:"uppercase",marginBottom:6}}>
             MANO DE OBRA CONSOLIDADA · SEMANA ACTUAL
             <span style={{fontWeight:400,color:C.textMut,textTransform:"none",marginLeft:8}}>
-              (suma de {obrasConDato} de {activas.length} obras con nómina cargada
-              {enPartes > 0 && `; ${enPartes} rayó su semana en varios archivos, sumados`})
+              (suma de {obrasConDato} de {activas.length} obras con nómina cargada)
             </span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:12}}>
@@ -6593,8 +6589,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       dir:   t.dir   + (ult.totalDir || 0),
       ind:   t.ind   + (ult.totalInd || 0),
       obrasConNom: t.obrasConNom + 1,
+      // Obras que rayaron su semana en más de un archivo: lo que entra al
+      // total es la SUMA de todos, no el último que subieron. Se declara en
+      // pantalla para que la cifra no parezca salida de la nada.
+      enPartes: t.enPartes + ((ult.partes || []).length > 1 ? 1 : 0),
     };
-  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0 });
+  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0, enPartes: 0 });
 
   // ── DELTAS vs semana previa (snapshots históricos) ──
   // Ejecutado: suma de montoEjecutado del último snapshot de avance con
@@ -6932,7 +6932,10 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
         <_KpiConDelta
           label="Personal"
           valor={`${personalAgg.total}`}
-          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
+          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos` +
+            (personalAgg.enPartes > 0
+              ? ` · ${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos, sumados`
+              : '')}
           deltaValor={deltaPersonal}
           deltaSub={deltaPersonal !== null
             ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`
