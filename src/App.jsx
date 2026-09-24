@@ -13001,7 +13001,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                 </thead>
                 <tbody>
                   {conceptosPagina.map((c,i)=>(
-                    <tr key={c.id} style={{background:i%2===0?C.calizaD:'transparent',
+                    <tr key={c.id} style={{background:i%2===0?C.bg:'transparent',
                       borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                       <td style={{padding:'5px 8px',fontSize:10,color:C.textMut,
                         fontFamily:'monospace',whiteSpace:'nowrap'}}>{c.clave}</td>
@@ -13109,7 +13109,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                   </thead>
                   <tbody>
                     {catsPag.map((c,i)=>(
-                      <tr key={c.id} style={{background:i%2===0?C.calizaD:'transparent',
+                      <tr key={c.id} style={{background:i%2===0?C.bg:'transparent',
                         borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                         <td style={{padding:'5px 8px',fontSize:10,color:C.textMut,fontFamily:'monospace',whiteSpace:'nowrap'}}>{c.clave}</td>
                         <td style={{padding:'5px 8px',color:C.textSec,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.desc}</td>
@@ -14254,7 +14254,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                     const delta = semVer===semanaActual ? p.total - prevTotal : 0;
                     const esAlta = altas.some(a=>a.nombre===p.nombre);
                     return (
-                      <tr key={p.id} style={{background:i%2===0?'rgba(255,254,249,0.03)':'transparent',
+                      <tr key={p.id} style={{background:i%2===0?C.bg:'transparent',
                         borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                         <td style={{padding:'5px 8px',color:C.textPri}}>
                           <span>{p.nombre}</span>
