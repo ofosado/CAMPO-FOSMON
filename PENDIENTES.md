@@ -2712,6 +2712,48 @@ entero contra un Firestore de mentiras y apunta **qué intenta escribir** —si
 manda el PATCH, con qué máscara, en qué orden— y le parte el cuerpo de la
 respuesta dentro de un carácter multibyte, como lo parte la red (#34).
 
+### Cuándo se pueden vaciar los documentos viejos — NO ANTES DEL 2026-09-30
+
+Desplegado el **2026-09-23**: producción lee de la subcolección en las cinco
+obras desde ese día. Los cinco `obras/{id}/nomina/historial` siguen llenos e
+intactos **a propósito**, y así se quedan hasta que se cumplan las cuatro
+condiciones de abajo.
+
+**Fecha más temprana: 2026-09-30.** Una semana corrida desde el despliegue.
+La fecha sola no basta; es el piso, no el permiso.
+
+- [ ] **2026-09-30 o después.** Siete días desde el 2026-09-23.
+- [ ] **Una vuelta completa de capturas normales**, no un calendario vacío.
+      Los cierres son de miércoles a miércoles, así que la ronda del
+      2026-09-23 se sube entre el jueves 24 y el domingo 28. Que se haya
+      capturado **en el formato nuevo** y que se vea en pantalla.
+- [ ] **Cero incidencias de nómina** en esa semana: nada de semanas que no
+      aparecen, cifras que no cuadran, o la guarda `avisarSiFaltanSemanas`
+      gritando. Si hubo una, el reloj se reinicia — no se descuenta.
+- [ ] **Un respaldo posterior a la migración, verificado SUCCESSFUL.** El cron
+      corre los domingos; el primero que sirve es el del **2026-09-27**, que
+      además es su primera prueba real desde el arreglo del 2026-09-21 (ver
+      #5). Sin respaldo bueno después de migrar, vaciar es el único paso de
+      todo esto que no tiene vuelta atrás.
+
+**Por qué el criterio es éste y no una fecha a secas.** Mientras los
+documentos viejos estén llenos, volver atrás cuesta dos minutos: se baja la
+bandera y la pantalla vuelve al formato de siempre. **Vaciados, la reversa
+deja de existir** — bajar la bandera dejaría la nómina en cero semanas, y la
+guarda no lo atraparía porque sale temprano cuando el viejo está vacío. El
+único camino sería reconciliar desde la subcolección, que es justo el estado
+del que se quería poder escapar.
+
+Lo que se gana vaciando es espacio en un documento que ya nadie lee. Lo que
+se pierde es la salida. Una semana de espera no cuesta nada; equivocarse en
+el orden, sí.
+
+**Cuando toque**, la subcolección queda como única fuente: antes de vaciar,
+correr `node scripts/revertir-bandera-nomina.cjs` (ensayo, sólo lectura) y
+exigir que las cinco digan **inocuo** — eso prueba que el viejo no tiene nada
+que la subcolección no tenga, que es la condición para que borrarlo no pierda
+un dato.
+
 ### Qué se puede rescatar de las siete semanas perdidas (2026-09-21)
 
 Los siete cierres oficiales que no llegaron al historial, con lo que hay
@@ -3234,6 +3276,20 @@ también. La lista a mano fue exactamente lo que se quedó viejo aquí.
 >
 > Mientras tanto sigue callado por la misma razón de siempre: ningún sub
 > tiene conceptos capturados.
+>
+> **Ojo con el canario: el borrado no cabe en él.** Verificado el
+> 2026-09-23 contra producción — `recordatorioCapturaSubs` sigue **ACTIVE,
+> GEN_2**, y dispara los viernes a las 12:00. El canario despliega con
+> `--only functions:probarBackup,functions:probarResumenSemanal`, y ese
+> filtro **no borra nada**: Firebase solo propone borrar las funciones que
+> faltan en el código cuando el despliegue abarca el grupo entero. Así que
+> el retiro cae en la **segunda tanda**, y ahí `firebase deploy --only
+> functions` se detiene a preguntar «*The following functions are found in
+> your project but do not exist in your local source code… delete?*».
+> Conviene saberlo de antemano: es un prompt interactivo, dice **delete** y
+> aparece a media operación. Se responde que sí **solo** para
+> `recordatorioCapturaSubs`; si la lista trae alguna otra, **parar** — quiere
+> decir que se está desplegando desde un árbol que no es el que se cree.
 
 **Si se revive el histórico de subs, este recordatorio vuelve con él** —
 pero solo después de los tres puntos de arriba, y con `fsSetA`, no
