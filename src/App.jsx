@@ -1949,38 +1949,80 @@ class ErrorBoundary extends React.Component {
 
 
 
-// ── PALETA FOSMON ──────────────────────────────────────────────────────────
+// ── PALETA ─────────────────────────────────────────────────────────────────
+// Ya no guarda colores: guarda punteros. Los valores viven en
+// src/styles/tokens.css y hoy son EXACTAMENTE los de antes —el puente no
+// cambia ni un pixel, y scripts/prueba-puente-color.cjs lo afirma contra un
+// navegador de verdad—. Cuando entre la marca se cambia aquel archivo y estos
+// 1,817 usos no se tocan.
+//
+// `var()` sirve en todo lo que esta app hace con un color: estilos inline de
+// React y atributos `fill`/`stroke` de SVG (medido: los 37 sitios de SVG
+// pintan igual). Lo único que NO sirve es pegarle texto.
+const tok = k => `var(--c-${k})`;
 const C = {
   // Tema claro
-  bg:      "#F0F2F5",
-  surface: "#FFFFFF",
-  card:    "#FFFFFF",
-  border:  "#E8EAF0",
-  borderM: "#D0D4DC",
-  caliza:  "#0D1619",
-  textPri: "#0D1619",
-  textSec: "#555E6B",
-  textMut: "#9AA0AC",
+  bg:      tok("bg"),
+  surface: tok("surface"),
+  card:    tok("card"),
+  border:  tok("border"),
+  borderM: tok("borderM"),
+  caliza:  tok("caliza"),
+  textPri: tok("textPri"),
+  textSec: tok("textSec"),
+  textMut: tok("textMut"),
   // Colores semánticos
-  green:   "#639922",
-  greenBg: "#EAF3DE",
-  greenDk: "#3B6D11",
-  red:     "#E24B4A",
-  redBg:   "#FCEBEB",
-  redDk:   "#A32D2D",
-  blue:    "#378ADD",
-  blueBg:  "#E6F1FB",
-  blueDk:  "#185FA5",
-  yellow:  "#EF9F27",
-  yellowBg:"#FAEEDA",
-  yellowDk:"#854F0B",
-  purple:  "#7F77DD",
-  purpleBg:"#EEEDFE",
-  purpleDk:"#3C3489",
-  orange:  "#D97706",
-  orangeBg:"#FEF3C7",
-  pink:    "#F43F5E",
-  indigo:  "#6366F1",
+  green:   tok("green"),
+  greenBg: tok("greenBg"),
+  greenDk: tok("greenDk"),
+  red:     tok("red"),
+  redBg:   tok("redBg"),
+  redDk:   tok("redDk"),
+  blue:    tok("blue"),
+  blueBg:  tok("blueBg"),
+  blueDk:  tok("blueDk"),
+  yellow:  tok("yellow"),
+  yellowBg:tok("yellowBg"),
+  yellowDk:tok("yellowDk"),
+  purple:  tok("purple"),
+  purpleBg:tok("purpleBg"),
+  purpleDk:tok("purpleDk"),
+  orange:  tok("orange"),
+  orangeBg:tok("orangeBg"),
+  pink:    tok("pink"),
+  indigo:  tok("indigo"),
+};
+
+// ── alfa() — LA ÚNICA MANERA DE PEDIR UN COLOR TRANSPARENTE ────────────────
+// Antes se escribía `${C.red}15`, porque C.red era el texto "#E24B4A" y el
+// resultado era un hex con alfa. Hoy C.red es "var(--c-red)" y esa misma línea
+// produce "var(--c-red)15", que el navegador **descarta sin decir nada**: la
+// declaración se cae y el fondo queda transparente. Medido en Chrome:
+// background-color = rgba(0, 0, 0, 0). No truena, no avisa, sólo desaparece.
+//
+//     alfa(C.red, 8.24)  →  "rgb(var(--c-red-rgb) / 8.24%)"
+//
+// El segundo argumento es PORCENTAJE (0–100), no los dos dígitos hex de antes.
+// La conversión ya se hizo en cada sitio de uso, y va con DOS DECIMALES a
+// propósito:
+//
+//     10 → 6.27 %    15 → 8.24 %    22 → 13.33 %
+//     44 → 26.67 %   55 → 33.33 %   66 → 40.00 %
+//
+// `15` hex es 21/255 = 8.2353 %. Redondear a 8 % se ve igual, pero no ES
+// igual: compuesto sobre los fondos reales de la app, 81 de 120 combinaciones
+// se corrían un paso de 255 en algún canal. Con dos decimales las 120 dan
+// idéntico, y entonces sí se puede afirmar —y probar— que el puente no cambió
+// un solo pixel. Esa afirmación exacta es lo que lo hace revisable; un
+// "se ve igual" no se puede revisar.
+//
+// Si le llega algo que no es un token —un hex suelto, por ejemplo— no lo
+// adivina: truena. Un color mal pedido tiene que verse al primer render y no
+// convertirse en un fondo opaco que nadie nota.
+const alfa = (color, pct) => {
+  const m = /^var\(--c-([A-Za-z0-9]+)\)$/.exec(color || "");
+  if (!m) throw new Error(`alfa() espera un color de la paleta C, recibió: ${color}`);
+  return `rgb(var(--c-${m[1]}-rgb) / ${pct}%)`;
 };
 
 // ── FIREBASE CONFIG ────────────────────────────────────────────────────────
@@ -5341,14 +5383,14 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
         <>
           {/* Aviso + botón refresh si el Sheet no está cargado */}
           {!gpData?.obras && (
-            <div style={{background:`${C.yellow}15`,border:`0.5px solid ${C.yellow}55`,borderRadius:6,
+            <div style={{background:`${alfa(C.yellow, 8.24)}`,border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,
               padding:"9px 12px",marginBottom:8}}>
               <div style={{fontSize:10,color:C.yellowDk,marginBottom:6}}>
                 ⚠ El Sheet de GP no está cargado. Estás viendo un catálogo de referencia desactualizado.
               </div>
               {gpError && (
                 <div style={{fontSize:9,color:C.redDk,marginBottom:6,
-                  background:`${C.red}10`,padding:"5px 8px",borderRadius:4}}>
+                  background:`${alfa(C.red, 6.27)}`,padding:"5px 8px",borderRadius:4}}>
                   {gpError}
                 </div>
               )}
@@ -5653,7 +5695,7 @@ function GestionUsuarios({usuario, obras, onClose}){
   };
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {error && <div style={{background:`${C.red}15`,border:`0.5px solid ${C.red}55`,borderRadius:8,
+    {error && <div style={{background:`${alfa(C.red, 8.24)}`,border:`0.5px solid ${alfa(C.red, 33.33)}`,borderRadius:8,
       padding:"9px 12px",fontSize:11,color:C.redDk}}>⚠ {error}</div>}
 
     <Card>
@@ -5700,7 +5742,7 @@ function GestionUsuarios({usuario, obras, onClose}){
                     padding:"3px 8px",fontSize:9,color:C.textSec,cursor:"pointer"}}>Pass</button>
                 {u.email !== usuario.correo && (
                   <button onClick={()=>setModalEliminar(u)} title="Eliminar"
-                    style={{background:"none",border:`0.5px solid ${C.red}44`,borderRadius:4,
+                    style={{background:"none",border:`0.5px solid ${alfa(C.red, 26.67)}`,borderRadius:4,
                       padding:"3px 8px",fontSize:9,color:C.red,cursor:"pointer"}}>×</button>
                 )}
               </div>
@@ -7311,7 +7353,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     {confirmarArchivar&&<div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,
       display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:380,
-        border:`0.5px solid ${C.red}44`}}>
+        border:`0.5px solid ${alfa(C.red, 26.67)}`}}>
         <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:8}}>¿Archivar esta obra?</div>
         <div style={{fontSize:12,color:C.textSec,marginBottom:4}}>
           <b>{confirmarArchivar.nombre}</b>
@@ -9135,7 +9177,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
             <span style={{fontSize:11,fontWeight:700,color:C.textPri}}>S{s.sem} · {dd}/{mm}/{yy}</span>
             <span style={{fontSize:8,padding:"1px 5px",borderRadius:3,fontWeight:600,
-              background: esProy ? C.yellow+"22" : C.green+"22",
+              background: esProy ? alfa(C.yellow, 13.33) : alfa(C.green, 13.33),
               color: esProy ? C.yellowDk : C.greenDk}}>
               {esProy ? "PROYECT." : "REAL"}
             </span>
@@ -9178,7 +9220,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     </div>
     {soloGasto && (
       <div style={{marginTop:8,padding:'8px 12px',background:C.yellowBg,
-        border:`0.5px solid ${C.yellow}55`,borderRadius:6,fontSize:10,color:C.textSec}}>
+        border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,fontSize:10,color:C.textSec}}>
         Solo se muestra el <b>gasto acumulado</b> porque no hay {!presupuesto?'presupuesto capturado':'catálogo de avance físico'}. Al cargar el {!presupuesto?'presupuesto en Planeación → Contrato':'catálogo en Planeación → Presupuesto'}, aparecerá la línea de ejecutado y la proyección de fin de obra.
       </div>
     )}
@@ -9222,7 +9264,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
         de contrato ni qué está autorizado— y encendía una alarma en las obras
         que operan así todo el tiempo. Se muestran las dos cifras y ya. */}
     {!soloGasto && excedenteSobreContrato > 0 && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${C.textMut}10`,
+      <div style={{marginTop:8,padding:"7px 10px",background:`${alfa(C.textMut, 6.27)}`,
         border:`0.5px solid ${C.border}`,borderRadius:6,fontSize:10,color:C.textSec}}>
         Ejecutado proyectado <b style={{color:C.blueDk}}>{fmtCompacto(ejecFinProy)}</b>
         {' · '}contrato <b style={{color:C.textPri}}>{fmtCompacto(presupuesto)}</b>
@@ -11536,7 +11578,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
               </div>
             </div>
             {semanasParaAgotar !== null && (
-              <div style={{marginTop:10,padding:"10px 12px",background:semanasParaAgotar<8?`${C.red}15`:`${C.blue}15`,
+              <div style={{marginTop:10,padding:"10px 12px",background:semanasParaAgotar<8?`${alfa(C.red, 8.24)}`:`${alfa(C.blue, 8.24)}`,
                 borderRadius:6,fontSize:10,color:semanasParaAgotar<8?C.redDk:C.blueDk}}>
                 A la velocidad actual el presupuesto se agota en aproximadamente <b>{semanasParaAgotar} semanas</b>
                 {obra.fin && (() => {
@@ -11723,7 +11765,7 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
         )}
 
         {!datosObra && (
-          <div style={{marginTop:14,padding:10,background:`${C.red}10`,borderRadius:6,fontSize:10,color:C.redDk}}>
+          <div style={{marginTop:14,padding:10,background:`${alfa(C.red, 6.27)}`,borderRadius:6,fontSize:10,color:C.redDk}}>
             ⚠ Esta obra no fue encontrada en el Sheet. Si esperabas verla, verifica el código de 4 dígitos.
           </div>
         )}
@@ -12772,11 +12814,11 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             <div style={{padding:'16px 18px',fontSize:11,color:C.textPri,lineHeight:1.5}}>
               <p style={{margin:'0 0 10px'}}>Vas a cargar un catálogo nuevo que sustituirá al actual (<b>{catalogoGuardado?.conceptos?.length||0} partidas</b>).</p>
               <p style={{margin:'0 0 10px',padding:'10px 12px',background:C.greenBg,
-                border:`0.5px solid ${C.green}55`,borderRadius:6,color:C.textPri}}>
+                border:`0.5px solid ${alfa(C.green, 33.33)}`,borderRadius:6,color:C.textPri}}>
                 <b>Bueno:</b> las partidas del catálogo nuevo cuya <b>clave</b> coincida con las actuales <b>conservarán su % de avance y sus fotos capturadas</b>. Los snapshots semanales de avance también se preservan.
               </p>
               <p style={{margin:'0 0 10px',padding:'10px 12px',background:C.yellowBg,
-                border:`0.5px solid ${C.yellow}55`,borderRadius:6,color:C.textPri}}>
+                border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,color:C.textPri}}>
                 <b>Cuidado:</b> las partidas <b>nuevas</b> arrancan en 0%. Las partidas <b>que ya no vengan</b> en el catálogo nuevo <b>desaparecen</b> junto con su avance. Los importes de todas se toman del archivo nuevo (aunque la clave coincida).
               </p>
               <p style={{margin:'0 0 10px',color:C.textSec}}>
@@ -12875,7 +12917,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             </div>
             {/* Banner de duplicación detectada (cuando ratio es ~entero 2-5) */}
             {duplicacion && (
-              <div style={{background:`${C.red}10`,border:`1px solid ${C.red}55`,borderRadius:8,
+              <div style={{background:`${alfa(C.red, 6.27)}`,border:`1px solid ${alfa(C.red, 33.33)}`,borderRadius:8,
                 padding:'12px 14px',marginTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:C.redDk,marginBottom:6}}>
                   ⚠ Posible duplicación detectada ({duplicacion.multiplo}× el monto contratado)
@@ -12895,7 +12937,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 
             {/* Botones de ajuste manual cuando no cuadra (sin ser duplicación obvia) */}
             {!duplicacion && pctLeido < 95 && resultado.totalLeido > 0 && (
-              <div style={{background:`${C.yellow}10`,border:`0.5px solid ${C.yellow}55`,borderRadius:8,
+              <div style={{background:`${alfa(C.yellow, 6.27)}`,border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:8,
                 padding:'12px 14px',marginTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:C.yellowDk,marginBottom:6}}>
                   Diferencia de {pctLeido < 100 ? `-${(100-pctLeido).toFixed(1)}%` : `+${(pctLeido-100).toFixed(1)}%`} vs monto contratado
@@ -12959,7 +13001,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                 </thead>
                 <tbody>
                   {conceptosPagina.map((c,i)=>(
-                    <tr key={c.id} style={{background:i%2===0?C.calizaD:'transparent',
+                    <tr key={c.id} style={{background:i%2===1?C.bg:'transparent',
                       borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                       <td style={{padding:'5px 8px',fontSize:10,color:C.textMut,
                         fontFamily:'monospace',whiteSpace:'nowrap'}}>{c.clave}</td>
@@ -13067,7 +13109,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                   </thead>
                   <tbody>
                     {catsPag.map((c,i)=>(
-                      <tr key={c.id} style={{background:i%2===0?C.calizaD:'transparent',
+                      <tr key={c.id} style={{background:i%2===1?C.bg:'transparent',
                         borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                         <td style={{padding:'5px 8px',fontSize:10,color:C.textMut,fontFamily:'monospace',whiteSpace:'nowrap'}}>{c.clave}</td>
                         <td style={{padding:'5px 8px',color:C.textSec,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.desc}</td>
@@ -14212,11 +14254,11 @@ function Nomina({obra, rol, onHistorialCambio}) {
                     const delta = semVer===semanaActual ? p.total - prevTotal : 0;
                     const esAlta = altas.some(a=>a.nombre===p.nombre);
                     return (
-                      <tr key={p.id} style={{background:i%2===0?'rgba(255,254,249,0.03)':'transparent',
+                      <tr key={p.id} style={{background:i%2===1?C.bg:'transparent',
                         borderBottom:`0.5px solid rgba(255,254,249,0.05)`}}>
                         <td style={{padding:'5px 8px',color:C.textPri}}>
                           <span>{p.nombre}</span>
-                          {esAlta&&<span style={{marginLeft:4,fontSize:8,background:`${C.green}22`,color:C.green,
+                          {esAlta&&<span style={{marginLeft:4,fontSize:8,background:`${alfa(C.green, 13.33)}`,color:C.green,
                             borderRadius:3,padding:'1px 4px'}}>ALTA</span>}
                         </td>
                         <td style={{padding:'5px 8px',color:C.textMut,fontSize:10}}>{p.categoria||'—'}</td>
@@ -15354,7 +15396,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               Ver / Descargar
             </a>
             {editar && <button onClick={eliminarAdjunto}
-              style={{background:"none",border:`0.5px solid ${C.red}44`,borderRadius:6,
+              style={{background:"none",border:`0.5px solid ${alfa(C.red, 26.67)}`,borderRadius:6,
                 padding:"4px 8px",fontSize:10,color:C.red,cursor:"pointer"}}>×</button>}
           </div>
         ) : (
@@ -15363,7 +15405,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       </div>
 
       {editar && <div style={{marginTop:18,paddingTop:14,borderTop:`0.5px solid ${C.border}`,display:"flex",justifyContent:"flex-end"}}>
-        <button onClick={onEliminar} style={{background:"none",border:`0.5px solid ${C.red}66`,
+        <button onClick={onEliminar} style={{background:"none",border:`0.5px solid ${alfa(C.red, 40)}`,
           borderRadius:6,padding:"6px 14px",fontSize:11,color:C.redDk,cursor:"pointer"}}>
           Eliminar subcontrato
         </button>
@@ -15444,7 +15486,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
           <input ref={fileImportRef} type="file" accept=".xlsx,.xls,.csv" style={{display:"none"}}
             onChange={e=>{ if(e.target.files?.[0]) procesarImport(e.target.files[0]); e.target.value=""; }}/>
           {importError && (
-            <div style={{background:`${C.red}15`,border:`0.5px solid ${C.red}55`,borderRadius:6,
+            <div style={{background:`${alfa(C.red, 8.24)}`,border:`0.5px solid ${alfa(C.red, 33.33)}`,borderRadius:6,
               padding:"7px 10px",fontSize:10,color:C.redDk,marginTop:8}}>
               {importError}
             </div>
@@ -16220,7 +16262,7 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
       {bloqueoModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
         <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
-          border:`0.5px solid ${C.red}44`}}>
+          border:`0.5px solid ${alfa(C.red, 26.67)}`}}>
           <div style={{fontSize:14,fontWeight:700,color:C.redDk,marginBottom:10}}>
             Esta obra no puede pasar a modo volumen
           </div>
@@ -16258,7 +16300,7 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
       {cambioModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
         display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
         <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
-          border:`0.5px solid ${C.yellow}44`}}>
+          border:`0.5px solid ${alfa(C.yellow, 26.67)}`}}>
           <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:4}}>
             ¿Cambiar el modo de captura?
           </div>

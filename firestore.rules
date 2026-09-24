@@ -248,9 +248,41 @@ service cloud.firestore {
     }
 
     // ═════════════════════════════════════════════════════════════════════
-    // DEPENDENCIA — /orgs/{orgId}/obras/{obraId} (declarado sin datos)
-    // Reglas ya blindan aunque no haya UI.
+    // DEPENDENCIA — /orgs/{orgId}/obras/{obraId}
     // Constructora / cliente / soporte NO pueden leer estos paths.
+    //
+    // PRINCIPIO (decisión de producto, 2026-09-23) — LA FRONTERA DEL MARGEN
+    // ---------------------------------------------------------------------
+    // Una dependencia NO ve el costo del contratista. No ve su nómina, ni
+    // sus subcontratos, ni su maquinaria, ni su almacén, ni sus otros
+    // gastos. Ve avance físico, avance financiero contra contrato, y las
+    // incidencias. Nada más.
+    //
+    // Esto no es una omisión que alguien completará después: es el trato.
+    // Un contratista entrega avance a la dependencia que lo contrató; lo
+    // que le cuesta ejecutarlo es suyo. Por eso las seis rutas de costo del
+    // bloque de constructora —`nomina/historial`, `nomina_historial`,
+    // `subcontratos/lista`, `avance/maquinaria`, `avance/materiales` y
+    // `config/otros_gastos`— NO tienen equivalente aquí abajo, y no deben
+    // tenerlo. Si algún día alguien "completa la simetría", habrá roto el
+    // producto sin darse cuenta.
+    //
+    // Corolario: el PDF ejecutivo de constructora no se le entrega a una
+    // dependencia. Enseña «Margen bruto», gasto por rubro y top de
+    // proveedores. El informe de dependencia es otro documento.
+    //
+    // CORRECCIÓN DE MODELO (2026-09-23) — EL SUPERVISOR SÍ CAPTURA
+    // ---------------------------------------------------------------------
+    // El modelo anterior decía «la constructora ejecuta y captura, la
+    // dependencia supervisa», y de ahí salieron las cinco subcolecciones
+    // documentales de abajo, ninguna de captura. Es falso: el supervisor de
+    // obra va, verifica físicamente y levanta el avance — diario o semanal
+    // según lo pida la dirección de Obras Públicas.
+    //
+    // Sin las rutas de avance, la captura cae en el `match /{document=**}`
+    // final y `fsSet` se traga el fallo: parecería funcionar sin guardar
+    // nada. Es el defecto del #31 (tres años sin detectarse) y el que se
+    // evitó a tiempo en el #28. Ver PENDIENTES #35.
     // ═════════════════════════════════════════════════════════════════════
     match /orgs/{oid}/obras/{obraId} {
       allow read: if oid == orgId() && puedeVerObraD(obraId);
@@ -284,6 +316,60 @@ service cloud.firestore {
                       && obraId in obrasAsignadas();
         allow update, delete: if oid == orgId() && esDirectivoD();
       }
+
+      // ── CAPTURA DE AVANCE ───────────────────────────────────────────────
+      // Espejo de las rutas de constructora, con permisos de dependencia.
+      // Escribe quien captura: supervisor_obra y administrativo en sus obras
+      // asignadas, y jefe_supervision / director_obras / subdirector en
+      // cualquiera (`puedeEditarObraD`). Contralor NO escribe: está en
+      // `esDirectivoD` pero no en `esDirectivoDEditor`.
+      match /config/info {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/parametros {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/catalogo {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/estimaciones {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/permisos {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && esDirectivoDEditor();
+      }
+
+      // Donde escribe el supervisor cuando captura.
+      match /avance/subs {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Cortes semanales. De aquí sale el informe del artículo 73.
+      // El contratista no los ve, igual que el `cliente` en constructora.
+      match /avance/historial {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Incidencias. Append-only para quien captura; sólo dirección corrige.
+      match /bitacora/{id} {
+        allow read:   if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow create: if oid == orgId() && puedeEditarObraD(obraId);
+        allow update, delete: if oid == orgId() && esDirectivoDEditor();
+      }
+    }
+
+    // Marca del cliente. El paquete de marca de cotea lee de aquí, en tiempo
+    // de ejecución, el logo que va junto al saludo. El manifest es del
+    // producto —la app se llama cotea para todos—; esto es sólo del cliente.
+    match /orgs/{oid}/config/branding {
+      allow read:  if oid == orgId();
+      allow write: if ((esAdminSistemaC() || esAdminSistemaD()) && oid == orgId())
+                      || esSoporte();
     }
 
     // Comparativo cross-obras SOLO para director_obras/subdirector.

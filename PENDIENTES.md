@@ -3586,3 +3586,169 @@ evidencia de error.
 **Nota sobre la propuesta #3 del pendiente original** (advertir cuando
 `pctHE < 2%` en obras con turnos > 48 h/semana): esa alerta habría
 marcado en rojo un dato correcto. No implementarla tal cual.
+
+---
+
+## 35. El modelo escrito decía que la dependencia no captura — y es falso
+
+**Corregido en documento el 2026-09-23. Las reglas todavía NO.**
+
+### Lo que decía, y por qué confunde
+
+`SECURITY_RULES.md` describía el reparto como «la constructora ejecuta y
+captura, la dependencia supervisa». De ahí salieron las cinco subcolecciones
+que hoy tiene `orgs/{oid}/obras/{obraId}` en las reglas vivas —
+`contratistas`, `supervisores`, `programa`, `convenios`, `evidencia` —, todas
+de supervisión documental y **ninguna de captura**.
+
+**En una dependencia el supervisor de obra sí captura el avance.** Es quien va
+a la obra, verifica físicamente y reporta; diario o semanal según lo exija la
+dirección de Obras Públicas. No recibe un número del contratista para
+validarlo: lo levanta él. Decisión de producto del usuario, 2026-09-23.
+
+### Por qué importa más de lo que parece
+
+Con las reglas como están, escribir `orgs/{oid}/obras/{id}/avance/subs` cae en
+el `match /{document=**}` final, que deniega. Y como las escrituras pasan por
+`fsSet`, que **devuelve `false` en silencio**, la captura parecería funcionar
+sin guardar nada.
+
+Es el mismo defecto del #31 —el histórico de subcontratos, que tardó tres años
+en descubrirse— y el mismo que se evitó a tiempo en el #28 escribiendo la
+regla de `nomina_historial` *antes* de la primera escritura. Tercera vez que
+aparece el patrón: **ruta no declarada + helper que se traga el fallo = datos
+que se evaporan sin un solo error en consola**.
+
+### Qué hay que agregar
+
+Siete rutas, con el bloque exacto en `SECURITY_RULES.md` §«CORRECCIÓN DE
+MODELO»: `config/info`, `config/parametros`, `config/catalogo`,
+`config/estimaciones`, `config/permisos`, `avance/subs` y `avance/historial`,
+más `bitacora/{id}` para las incidencias. Y `orgs/{oid}/config/branding`, que
+es de donde el paquete de marca de cotea lee el logo del cliente.
+
+### Qué NO se agrega, a propósito
+
+`nomina/historial`, `nomina_historial/{semanaId}`, `subcontratos/lista`,
+`avance/maquinaria`, `avance/materiales` y `config/otros_gastos`. Entre esas
+seis está el margen del contratista. Dejarlas fuera de las reglas hace que la
+frontera de confidencialidad sea **estructura**, no disciplina.
+
+### Los roles cuadran — verificado contra las reglas vivas
+
+`contralor` está en `esDirectivoD()` (lectura) y **no** en
+`esDirectivoDEditor()` (escritura): sólo lee, tal como se quería.
+`jefe_supervision` escribe sin límite de obra; `supervisor_obra` sólo en las
+asignadas. `contratista` está en `puedeVerObraD` pero **no** en
+`puedeEditarObraD`: hoy sólo lee, y así se queda hasta que le toque.
+
+Dos cosas que el usuario no pidió pero las reglas ya conceden, y conviene
+mirar antes de desplegar: **`administrativo` también escribe** obras asignadas
+vía `puedeEditarObraD`, y **`director_obras` y `subdirector` escriben**, no
+sólo leen.
+
+**Resuelto el 2026-09-23: se quedan como están, por decisión del usuario.**
+*«Si alguien de dirección no puede corregir una captura mala, el sistema
+estorba en lugar de ayudar. Y administrativo también.»* No es un descuido de
+las reglas: es el permiso que se quiso dar. No "arreglarlo" después.
+
+### Estado
+
+- [x] `SECURITY_RULES.md` corregido — 2026-09-23
+- [x] Este apunte — 2026-09-23
+- [x] `firestore.rules`: las ocho rutas más `config/branding` — 2026-09-23, `e2b2d73`
+- [x] Prueba de emulador — 2026-09-23, `17da398`. 24/24 verde, y cuatro
+      contrapruebas semánticas que fallan cada una en una afirmación distinta:
+      quitar `avance/subs` (§1), agregar `nomina_historial` "por simetría"
+      (§2), quitar `!esContratista()` (§4), escribir con `puedeVerObraD`
+      (§3 y §4).
+- [x] Desplegar reglas — **2026-09-24 19:32 UTC**, lo disparó el usuario.
+      Ruleset `d29ec434-df74-4542-96c9-9a47f9aa46ce`, idéntico byte a byte al
+      archivo y comprobado vivo 34/34 con la API `projects:test` sobre el
+      ruleset bajado del servidor. **El defecto de #35 ya no puede ocurrir en
+      producción.**
+
+**Ojo con el orden:** se desplegó desde la rama, antes de mezclar. Hasta que
+`fix/modelo-dependencia-captura` entre a `main`, el archivo de `main` **no**
+es el que corre en producción — exactamente la clase de desfase que hizo que
+«NO desplegado» envenenara dos análisis. Conviene mezclar pronto.
+
+Un defecto latente que se vio de paso y **no** se tocó, para no mezclarlo con
+esto: `match /evidencia/{eid}` exige `obraId in obrasAsignadas()` en el
+`create` incluso para `esDirectivoD()`, así que un director con `todas:true`
+y `obras:[]` no puede subir evidencia. No estorba para la demo.
+
+---
+
+## 36. El naranja de marca choca con el naranja de estado — y el color va solo
+
+**No es para la demo.** Decisión del usuario el 2026-09-23: *«Tienes razón y es
+más grande de lo que parecía. Pero NO lo hagas ahora. Para la demo el color de
+estado puede quedarse como está.»*
+
+### El choque
+
+El manual de marca reserva el naranja `#FF6B35` para la marca y dice, con todas
+sus letras, que **el naranja nunca comunica estado**. Hoy la app usa naranja/
+ámbar para «atraso moderado» en las barras, en los chips y en el PDF. Si se
+pinta el logo en naranja y al lado una barra naranja, el usuario no puede saber
+si eso es marca o es alarma — y cuando el color deja de significar, deja de
+servir para las dos cosas.
+
+El paquete ya trae la salida: `--c-estado-moderado-barra` apunta a
+`--c-grafito-500` (acero), de modo que **las barras de atraso moderado se
+rellenan en acero, no en ámbar**, y el ámbar queda sólo para el punto de
+estado, que es chico y no compite con la marca.
+
+### Lo que hay que hacer, que es más que cambiar hexes
+
+El color va solo. Un usuario con daltonismo rojo-verde —entre el 6 % y el 8 %
+de los hombres, y esta app la usan casi puros hombres en obra, a pleno sol, en
+un celular— **no distingue hoy «al corriente» de «crítico»**. Ese defecto ya
+existe; el tema de marca sólo lo hizo visible.
+
+Los tokens ya declaran la forma junto al color:
+
+| Estado    | Color              | Forma       |
+|-----------|--------------------|-------------|
+| Al día    | verde `#2E9E6B`    | círculo     |
+| Moderado  | ámbar `#E8A33D`    | triángulo   |
+| Crítico   | rojo `#D14B3D`     | cuadrado    |
+
+`--c-estado-*-forma` es una cadena, no CSS: **se implementa con ícono**, no con
+`border-radius`. Hay que recorrer los lugares donde hoy el estado se comunica
+sólo pintando —chips, barras, semáforos de la tabla, leyendas, el PDF de
+jsPDF— y agregar la forma. La regla para saber si quedó: **en escala de grises
+el informe se sigue leyendo.** Esa es la prueba, y es fácil de correr.
+
+### Por qué no ahora
+
+Toca decenas de puntos de render y el riesgo no está en cada cambio sino en el
+total: es exactamente el tipo de barrido que se hace en una rama propia, con la
+suite completa encima, y no la semana de una demo. El puente de `var()` —que sí
+va antes de la demo— deja esto **más barato**, porque después de él los colores
+de estado se cambian en un lugar.
+
+---
+
+## 37. Los íconos de PWA no se despliegan hasta después de la demo
+
+Decisión del usuario el 2026-09-23. El paquete de marca trae íconos nuevos y
+sería tentador subirlos con el resto del cambio visual. **No van.**
+
+**Por qué:** FOSMON ya tiene la app instalada en las pantallas de inicio de sus
+teléfonos. Cambiar a la vez el `name`, los íconos y el `theme_color` del
+manifiesto es justo la combinación con la que iOS se comporta peor: no
+re-renderiza el ícono de una app ya instalada, y en algunos casos hay que
+desinstalar y reinstalar para que tome el nuevo. Es decir, el precio del cambio
+lo pagarían los usuarios que ya trabajan con la app, a cambio de un ícono que
+en la demo **nadie va a ver**: la demo se enseña en una laptop, en el navegador.
+
+**Qué sí entra antes de la demo:** las cadenas visibles, la tipografía y el
+color en pantalla. Nada de eso toca el manifiesto.
+
+**Cuándo entra:** después de la demo, como cambio propio, avisando antes a
+quien tenga la app instalada y con un canario en un teléfono iOS real antes de
+soltarlo. El `id` del manifiesto es el que decide si iOS lo trata como la misma
+app o como otra; hay que fijarlo explícitamente en ese cambio y no dejarlo al
+valor por omisión.
