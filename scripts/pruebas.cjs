@@ -47,6 +47,7 @@ if (archivos.length === 0) {
 const NECESITAN_EMULADOR = new Set([
   'prueba-cierre-emulador.cjs',
   'prueba-reglas-nomina-subcoleccion.cjs',
+  'prueba-reglas-dependencia-captura.cjs',
 ]);
 
 const verdes = [], rojas = [], mudas = [], sinEmulador = [];
