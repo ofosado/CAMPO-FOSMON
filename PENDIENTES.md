@@ -3752,3 +3752,80 @@ quien tenga la app instalada y con un canario en un teléfono iOS real antes de
 soltarlo. El `id` del manifiesto es el que decide si iOS lo trata como la misma
 app o como otra; hay que fijarlo explícitamente en ese cambio y no dejarlo al
 valor por omisión.
+
+---
+
+## 38. El login inventaba el perfil que no encontraba — ARREGLADO 2026-09-24
+
+`Login.handleLogin` hacía esto: si `usuarios/{emailId}` no existía, tomaba un
+mapa `ROLES_DEFAULT` cableado en el código, y si el correo tampoco estaba ahí
+**se autoasignaba `administrador_obra`** y lo **escribía** en Firestore.
+
+```js
+perfil = ROLES_DEFAULT[email] || { rol:"administrador_obra", nombre:email };
+await fsSet(`usuarios/${emailId}`, { ..., creadoPor: "auto-sync-from-login" });
+```
+
+**Por qué es grave más allá de la rama en la que se encontró.** Son tres cosas
+a la vez:
+
+1. **Un usuario autenticado se concede permisos a sí mismo.** El único
+   requisito es pasar Auth y que el perfil no cargue. `administrador_obra`
+   escribe avance, nómina y estimaciones.
+2. **Deja rastro escrito.** No es un rol en memoria que se pierde al recargar:
+   el documento queda creado, así que el permiso es permanente y el siguiente
+   que lo mire creerá que alguien lo dio de alta a propósito. El único indicio
+   es `creadoPor: "auto-sync-from-login"`.
+3. **Le basta que la LECTURA falle, no que el perfil falte.** `fsGet` se traga
+   el error y devuelve `null` (es el patrón de #31 y #35). Un `permission-denied`
+   transitorio o una red mala son indistinguibles de "no existe". Y el mapa ya
+   mentía: le daba `admin_sistema` a un usuario que en producción es
+   `director_operaciones`.
+
+Con organizaciones el daño crece: una cuenta de dependencia cuyo perfil no
+cargue entra como constructora y escribe en la raíz, o sea en el espacio de
+FOSMON.
+
+**Cómo quedó.** Sin perfil no se entra: mensaje claro, `signOut`, y ni una
+escritura. Un huérfano de verdad lo repara un administrador —`crearUsuario` ya
+contempla ese caso, ver `functions/index.js:157`—, no el propio login.
+`ROLES_DEFAULT` se borró: era su único lector.
+
+**Costo comprobado: ninguno.** Medido contra producción el 2026-09-24 con ADC
+en sólo lectura: 14 usuarios en Auth, 14 perfiles, los 14 con `orgId`. Nadie
+dependía de esta rama para entrar.
+
+---
+
+## 39. El resumen semanal por correo no mira la organización
+
+`enviarResumenSemanal` arma sus destinatarios así (`functions/index.js:1078`):
+
+```js
+const usuariosSnap = await db.collection("usuarios").get();
+const destinatarios = usuariosSnap.docs.map(d => d.data())
+  .filter(u => u.activo !== false && ROLES_RESUMEN_SEMANAL.includes(u.rol))
+```
+
+Lee la colección **raíz** de usuarios y filtra **sólo por rol**. No mira
+`orgId`. Hoy no hace daño porque `ROLES_RESUMEN_SEMANAL` son tres roles de
+constructora (`director_general`, `director_operaciones`,
+`gerente_construccion`) y sólo existe una organización.
+
+**El día que deje de ser inofensivo** es el día que un rol de dependencia entre
+a esa lista —o que se agregue una segunda constructora—. Entonces el correo,
+que lleva **margen bruto por obra**, sale a gente de otra organización. Es la
+misma frontera del margen que las reglas sí defienden (#35), abierta por un
+camino que las reglas no tocan: Cloud Functions corre con privilegios de
+administrador y las reglas no se le aplican.
+
+Y el cuerpo del correo tiene el mismo problema por otro lado: `calcularKpisObra`
+lee `obras/*` de la raíz, así que aunque los destinatarios se filtraran bien,
+las cifras seguirían siendo las de FOSMON.
+
+**Va con la rama del resumen semanal** (`feature/resumen-semanal`, pendiente de
+rebase y canario), no antes: es el mismo archivo y conviene un solo canario.
+Cuando se haga, el filtro tiene que ser por `orgId` **y** la obtención de obras
+tiene que respetar el prefijo de la organización. Y hace falta una prueba que
+afirme que un usuario de otra organización **no** aparece entre los
+destinatarios.
