@@ -171,7 +171,8 @@ declarada y hoy cae en el deny final:
 ```
     match /orgs/{oid}/config/branding {
       allow read:  if oid == orgId();
-      allow write: if (esAdminSistemaC() || esAdminSistemaD()) && oid == orgId() || esSoporte();
+      allow write: if ((esAdminSistemaC() || esAdminSistemaD()) && oid == orgId())
+                      || esSoporte();
     }
 ```
 
