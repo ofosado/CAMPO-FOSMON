@@ -64,7 +64,7 @@ if (!srcConfirmar) {
 const LIBRES = ['resultado','obra','importeContrato','catalogoGuardado','getDoc','getDocFromServer',
                 'doc','fbDb','setError','fsSetA','fsGet','setObra','setSubsGlobal','setCatalogoGuardado',
                 'setFase','setDoc','addDoc','updateDoc','deleteDoc','writeBatch','fsSet','fsDel',
-                'fsAudit','crearSnapshotAvance'];
+                'fsAudit','crearSnapshotAvance','docObra'];
 
 // Toda API capaz de escribir en Firestore. La prueba de la garantía de
 // seguridad (sección 1) exige que NINGUNA se invoque si la lectura falla:
@@ -124,6 +124,9 @@ function correr({ lectura, escrituraOk = true, catalogoGuardado = { viejo: true 
     getDoc: getDocFalso,
     getDocFromServer: getDocFalso,
     doc: docFalso,
+    // Armado igual que en App.jsx, con el `doc` de mentira de arriba.
+    // `conOrgReal` es la función real de src/rutas-org.js, no una copia.
+    docObra: (...segs) => docFalso({}, ...conOrgReal(['obras', ...segs].join('/')).split('/')),
     fbDb: {},
     setError: m => errores.push(m),
     fsSetA: fsSetAFalso,
@@ -157,7 +160,9 @@ const subsDe = (escrituras) => {
 };
 
 // ── Las pruebas ────────────────────────────────────────────────────────
+let conOrgReal = null;
 (async () => {
+({ conOrg: conOrgReal } = await require('./rutas-org-para-pruebas.cjs')());
 
 console.log('\n1. Falla la lectura del avance previo — ¿se borra el avance?');
 {

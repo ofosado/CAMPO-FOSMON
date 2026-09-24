@@ -88,18 +88,24 @@ const preludio = `
   const avanceFisicoPonderado = ${decl['avanceFisicoPonderado']};
 `;
 
+// `conOrg` entra como parámetro y no como copia: es la función real de
+// src/rutas-org.js, la misma con la que la app decide bajo qué organización
+// cuelga cada ruta de obra. `docObra` se arma aquí igual que en App.jsx, con
+// el `doc` de mentira del preludio, para poder seguir preguntando por la ruta.
+let conOrgReal = null;
 const montar = () => new Function(
-  'escrituras', 'modoEscritura', 'historialFalso', 'reportar',
+  'escrituras', 'modoEscritura', 'historialFalso', 'reportar', 'conOrg',
   `"use strict";
    let _e = escrituras;
    const _inc = () => _e++;
    ${preludio.replace('escrituras++;', '_inc();')}
+   const docObra = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
    const crearSnapshotAvance = ${decl['crearSnapshotAvance']};
    return { crearSnapshotAvance, cuenta: () => _e, ErrorSnapshot };`
 );
 
 const correr = async (modo, historial = []) => {
-  const mod = montar()(0, modo, historial, null);
+  const mod = montar()(0, modo, historial, null, conOrgReal);
   const subs = [
     { sec: 'A-1', a: 100, imp: 1000000, cant: 10, pu: 100000, cantEjec: 10 },
     { sec: 'A-2', a: 50,  imp: 2000000, cant: 20, pu: 100000, cantEjec: 10 },
@@ -114,6 +120,8 @@ const correr = async (modo, historial = []) => {
 };
 
 (async () => {
+  ({ conOrg: conOrgReal } = await require('./rutas-org-para-pruebas.cjs')());
+
   // 1) Camino feliz: guarda y devuelve el snapshot.
   const ok = await correr('ok');
   check(!ok.lanzo && ok.devolvio && ok.devolvio.id === 'S39-2026',

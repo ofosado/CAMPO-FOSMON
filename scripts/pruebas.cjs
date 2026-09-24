@@ -48,7 +48,25 @@ const NECESITAN_EMULADOR = new Set([
   'prueba-cierre-emulador.cjs',
   'prueba-reglas-nomina-subcoleccion.cjs',
   'prueba-reglas-dependencia-captura.cjs',
+  'prueba-prefijo-organizacion.cjs',
 ]);
+
+// ¿Está el emulador de Firestore escuchando?
+//
+// Antes esto no se preguntaba: cualquier salida distinta de cero en una prueba
+// de la lista de arriba se atribuía al emulador. El 2026-09-24 eso escondió un
+// ReferenceError real —la prueba reventaba con los emuladores arriba y el
+// resumen decía "sin emulador"—, que es justo el modo de fallo que la
+// categoría existe para evitar. Si el puerto responde, una prueba que falla
+// está ROJA y se dice ROJA.
+const PUERTO_FIRESTORE = Number(process.env.EMU_PORT || 8080);
+const hayEmulador = spawnSync(process.execPath, ['-e', `
+  const net = require('net');
+  const s = net.connect(${PUERTO_FIRESTORE}, '127.0.0.1');
+  s.on('connect', () => { s.end(); process.exit(0); });
+  s.on('error', () => process.exit(1));
+  setTimeout(() => process.exit(1), 1500);
+`]).status === 0;
 
 const verdes = [], rojas = [], mudas = [], sinEmulador = [];
 
@@ -62,7 +80,7 @@ for (const f of archivos) {
   let estado;
   if (r.status === 0) { estado = 'verde'; verdes.push(f); }
   else if (r.status === NO_ARRANCO) { estado = 'NO ARRANCÓ'; mudas.push([f, salida]); }
-  else if (NECESITAN_EMULADOR.has(f)) { estado = 'sin emulador'; sinEmulador.push(f); }
+  else if (NECESITAN_EMULADOR.has(f) && !hayEmulador) { estado = 'sin emulador'; sinEmulador.push(f); }
   else { estado = 'ROJO'; rojas.push([f, salida, rojasAqui]); }
 
   const detalle = rojasAqui > 0 ? `${rojasAqui} comprobación(es)` : '';

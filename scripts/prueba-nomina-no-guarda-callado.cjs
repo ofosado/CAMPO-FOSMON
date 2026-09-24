@@ -123,13 +123,18 @@ const preludio = `
   const semanasDeNomina = ${decl['semanasDeNomina']};
 `;
 
-const montar = (modo, historial, modoFormato = 1) => new Function('modo', 'historial', 'modoFormato',
+// `conOrg` entra como parámetro y no como copia dentro del preludio: es la
+// función real de src/rutas-org.js, la misma con la que la app decide bajo
+// qué organización cuelga cada ruta de obra. Una copia se desincronizaría y
+// esta prueba seguiría en verde mientras la app escribe en otro lado.
+let conOrgReal = null;
+const montar = (modo, historial, modoFormato = 1) => new Function('modo', 'historial', 'modoFormato', 'conOrg',
   `"use strict";
    ${preludio}
    ${decl['fn:guardarSemana']}
    ${decl['fn:eliminarCarga']}
    return { guardarSemana, eliminarCarga, efectos };`
-)(modo, historial, modoFormato);
+)(modo, historial, modoFormato, conOrgReal);
 
 // Una semana con la forma de las de verdad: el peso está en `trabajadores`, y
 // cada trabajador carga una docena de campos, no dos. La `fecha` va en d/m/aaaa
@@ -153,6 +158,8 @@ const correrGuardar = async (modo, historial = [semana(5)]) => {
 };
 
 (async () => {
+  ({ conOrg: conOrgReal } = await require('./rutas-org-para-pruebas.cjs')());
+
   // 1) Camino feliz: la pantalla avanza.
   const ok = await correrGuardar('ok');
   check(ok.escrituras === 1 && !!ok.notificado, 'cuando la escritura funciona, la semana entra al historial',
