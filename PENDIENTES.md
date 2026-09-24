@@ -3586,3 +3586,71 @@ evidencia de error.
 **Nota sobre la propuesta #3 del pendiente original** (advertir cuando
 `pctHE < 2%` en obras con turnos > 48 h/semana): esa alerta habría
 marcado en rojo un dato correcto. No implementarla tal cual.
+
+---
+
+## 35. El modelo escrito decía que la dependencia no captura — y es falso
+
+**Corregido en documento el 2026-09-23. Las reglas todavía NO.**
+
+### Lo que decía, y por qué confunde
+
+`SECURITY_RULES.md` describía el reparto como «la constructora ejecuta y
+captura, la dependencia supervisa». De ahí salieron las cinco subcolecciones
+que hoy tiene `orgs/{oid}/obras/{obraId}` en las reglas vivas —
+`contratistas`, `supervisores`, `programa`, `convenios`, `evidencia` —, todas
+de supervisión documental y **ninguna de captura**.
+
+**En una dependencia el supervisor de obra sí captura el avance.** Es quien va
+a la obra, verifica físicamente y reporta; diario o semanal según lo exija la
+dirección de Obras Públicas. No recibe un número del contratista para
+validarlo: lo levanta él. Decisión de producto del usuario, 2026-09-23.
+
+### Por qué importa más de lo que parece
+
+Con las reglas como están, escribir `orgs/{oid}/obras/{id}/avance/subs` cae en
+el `match /{document=**}` final, que deniega. Y como las escrituras pasan por
+`fsSet`, que **devuelve `false` en silencio**, la captura parecería funcionar
+sin guardar nada.
+
+Es el mismo defecto del #31 —el histórico de subcontratos, que tardó tres años
+en descubrirse— y el mismo que se evitó a tiempo en el #28 escribiendo la
+regla de `nomina_historial` *antes* de la primera escritura. Tercera vez que
+aparece el patrón: **ruta no declarada + helper que se traga el fallo = datos
+que se evaporan sin un solo error en consola**.
+
+### Qué hay que agregar
+
+Siete rutas, con el bloque exacto en `SECURITY_RULES.md` §«CORRECCIÓN DE
+MODELO»: `config/info`, `config/parametros`, `config/catalogo`,
+`config/estimaciones`, `config/permisos`, `avance/subs` y `avance/historial`,
+más `bitacora/{id}` para las incidencias. Y `orgs/{oid}/config/branding`, que
+es de donde el paquete de marca de cotea lee el logo del cliente.
+
+### Qué NO se agrega, a propósito
+
+`nomina/historial`, `nomina_historial/{semanaId}`, `subcontratos/lista`,
+`avance/maquinaria`, `avance/materiales` y `config/otros_gastos`. Entre esas
+seis está el margen del contratista. Dejarlas fuera de las reglas hace que la
+frontera de confidencialidad sea **estructura**, no disciplina.
+
+### Los roles cuadran — verificado contra las reglas vivas
+
+`contralor` está en `esDirectivoD()` (lectura) y **no** en
+`esDirectivoDEditor()` (escritura): sólo lee, tal como se quería.
+`jefe_supervision` escribe sin límite de obra; `supervisor_obra` sólo en las
+asignadas. `contratista` está en `puedeVerObraD` pero **no** en
+`puedeEditarObraD`: hoy sólo lee, y así se queda hasta que le toque.
+
+Dos cosas que el usuario no pidió pero las reglas ya conceden, y conviene
+mirar antes de desplegar: **`administrativo` también escribe** obras asignadas
+vía `puedeEditarObraD`, y **`director_obras` y `subdirector` escriben**, no
+sólo leen.
+
+### Estado
+
+- [x] `SECURITY_RULES.md` corregido — 2026-09-23
+- [x] Este apunte — 2026-09-23
+- [ ] `firestore.rules`: agregar las ocho rutas
+- [ ] Prueba de emulador que capture como `supervisor_obra` y falle como `contratista`
+- [ ] Desplegar reglas (**el usuario dispara**)

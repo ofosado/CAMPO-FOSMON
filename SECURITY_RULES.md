@@ -1,8 +1,26 @@
 # CAMPO — Reglas de seguridad por rol
 
-**Rama:** `feature/organizaciones` · **Estado:** listo para revisar, **NO desplegado**.
+**Estado: DESPLEGADO EN PRODUCCIÓN desde el 2026-09-15.**
 
-## Modelo multi-tenant (2026-09, feature/organizaciones)
+| | |
+|---|---|
+| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15** |
+| Ruleset vivo | `projects/campo-fosmon/rulesets/1de0cdf3-eec1-44d7-aa85-583b8f4c42b3` |
+| Publicado | **2026-09-23 06:54 UTC** |
+| Contra el repo | **idéntico byte a byte** a `firestore.rules` (19 588 bytes), verificado el 2026-09-23 |
+| `orgs/fosmon` | existe desde el **2026-09-16 05:28**, `tipo: constructora`, `activa: true` |
+| Usuarios etiquetados | **14 de 14** con `orgId: "fosmon"` |
+
+> **Este renglón decía «NO desplegado» hasta el 2026-09-23 y llevaba ocho días
+> caduco.** Hizo que dos análisis independientes concluyeran que las reglas
+> seguían en `allow read, write: if request.auth != null`, que
+> `crear-org-fosmon.cjs` no se había corrido nunca y que el aislamiento era
+> "solo por convención de UI" — las tres cosas falsas desde el 2026-09-15.
+> Si vuelves a tocar el estado de despliegue, **actualiza esta tabla en el
+> mismo commit**. Un documento maestro que miente es peor que no tenerlo:
+> se le cree.
+
+## Modelo multi-tenant (2026-09, desplegado)
 
 CAMPO introduce el concepto de **organización** (`orgs/{orgId}`) con
 `tipo ∈ {"constructora","dependencia"}`, **inmutable después de create**.
@@ -36,9 +54,9 @@ CAMPO introduce el concepto de **organización** (`orgs/{orgId}`) con
 |---|---|
 | `director_obras` | máxima autoridad; ve comparativo |
 | `subdirector` | segunda línea; ve comparativo |
-| `jefe_supervision` | responsable del cuerpo de supervisión |
-| `supervisor_obra` | supervisor municipal; captura evidencia en obras asignadas |
-| `administrativo` | back-office; escribe convenios |
+| `jefe_supervision` | responsable del cuerpo de supervisión; **captura avance en cualquier obra de la org** |
+| `supervisor_obra` | supervisor municipal; **captura avance** en obras asignadas |
+| `administrativo` | back-office; escribe convenios y estimaciones |
 | `contralor` | fiscalización, lectura amplia sin edición, **NO ve comparativo** |
 | `contratista` | equivalente a `cliente`; solo su obra, sin datos de otros |
 
@@ -48,15 +66,130 @@ CAMPO introduce el concepto de **organización** (`orgs/{orgId}`) con
 |---|---|
 | `soporte` | crea orgs y usuarios; **NO** lee avances, montos, evidencia ni comparativos; todo acceso registrado en `/auditoria` |
 
-### Migración incluida
+### CORRECCIÓN DE MODELO — en una dependencia el supervisor SÍ captura (2026-09-23)
+
+> **Lo que decía este documento era falso.** El modelo escrito —«la
+> constructora ejecuta y captura, la dependencia supervisa»— describía a la
+> dependencia como un lector. No lo es.
+
+**En una dependencia, el supervisor de obra captura el avance.** Es quien va
+a la obra, verifica físicamente y reporta; diario o semanal según lo exija la
+dirección de Obras Públicas. No recibe un número del contratista para
+validarlo: **lo levanta él**. Esa es la razón de existir del puesto, y es
+también lo que hace que el informe del artículo 73 tenga valor probatorio.
+
+Consecuencia directa: la obra de dependencia **necesita las rutas de captura
+de avance**, que hoy no tiene. Las cinco subcolecciones declaradas
+(`contratistas`, `supervisores`, `programa`, `convenios`, `evidencia`) modelan
+la supervisión documental, pero **ninguna recibe la captura**. Con las reglas
+vivas, escribir `orgs/{oid}/obras/{id}/avance/subs` cae en el
+`match /{document=**}` final, que deniega — y como las escrituras pasan por
+helpers que se tragan el fallo, **la captura parecería funcionar sin guardar
+nada**. Es literalmente el defecto de PENDIENTES #31, que tardó tres años en
+salir a la luz.
+
+**Lo que el contratista NO hace todavía.** Cuando exista, capturará sus
+propias obras. Hoy `puedeEditarObraD` no lo incluye, y así se queda: en las
+reglas de abajo el `contratista` sólo lee, y queda fuera de `avance/historial`
+y de `bitacora` igual que el `cliente` en el lado constructora. Habilitarlo
+después es una línea; habilitarlo antes de tiempo es regalar escritura.
+
+#### Las siete rutas que hay que agregar
+
+Se replican **sólo** las de avance, con los permisos de dependencia:
+
+```
+    match /orgs/{oid}/obras/{obraId} {
+      // … las cinco que ya existen …
+
+      // ── Captura de avance (corrección de modelo, 2026-09-23) ──────────
+      match /config/info {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/parametros {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/catalogo {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/estimaciones {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      match /config/permisos {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && esDirectivoDEditor();
+      }
+
+      // Donde escribe el supervisor cuando captura.
+      match /avance/subs {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Cortes semanales. De aquí sale el informe del artículo 73.
+      // El contratista no los ve, igual que el `cliente` en constructora.
+      match /avance/historial {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Incidencias. Append-only para quien captura; sólo directivo corrige.
+      match /bitacora/{id} {
+        allow read:   if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow create: if oid == orgId() && puedeEditarObraD(obraId);
+        allow update, delete: if oid == orgId() && esDirectivoDEditor();
+      }
+    }
+```
+
+#### Las cinco que NO se replican, y por qué
+
+Esto **no es un olvido, es la frontera**:
+
+| Ruta de constructora | Por qué no existe en dependencia |
+|---|---|
+| `nomina/historial` y `nomina_historial/{semanaId}` | Los sueldos de los trabajadores del contratista. Una dependencia no tiene por qué verlos |
+| `subcontratos/lista` | Lleva proveedor y monto de cada subcontrato |
+| `avance/maquinaria` y `avance/materiales` | La maquinaria y el almacén son del contratista |
+| `config/otros_gastos` | Los gastos del contratista |
+
+Entre esas cinco está el margen. **Son la razón por la que el PDF ejecutivo de
+FOSMON no se le puede entregar a un director de Obras Públicas** — no por el
+logo, sino porque enseña «Margen bruto», gasto por rubro y top de proveedores,
+y su propio pie dice "Documento confidencial". Dejarlas fuera de las reglas
+convierte esa frontera en estructura, en vez de en algo que hay que acordarse
+de respetar.
+
+#### Una ruta más, para la marca
+
+El paquete de marca de cotea lee el logo del cliente de
+`orgs/{orgId}/config/branding` en tiempo de ejecución. Esa ruta tampoco está
+declarada y hoy cae en el deny final:
+
+```
+    match /orgs/{oid}/config/branding {
+      allow read:  if oid == orgId();
+      allow write: if (esAdminSistemaC() || esAdminSistemaD()) && oid == orgId() || esSoporte();
+    }
+```
+
+### Migración — YA EJECUTADA
+
+Las dos corrieron. No volver a correrlas "por si acaso": son idempotentes,
+pero el registro de que ya pasaron vive aquí.
 
 - Rol `supervisor` → `auditor` en usuarios existentes (3 usuarios externos:
   2 `@hytorc.com.mx`, 1 `@noleaks.com.mx`, auditando una obra que FOSMON
   ejecuta en conjunto con esas empresas). Script:
-  `scripts/migrar-supervisor-a-auditor.js`.
+  `scripts/migrar-supervisor-a-auditor.cjs`.
 - Creación de `orgs/fosmon` y etiquetado de todos los usuarios con
-  `orgId="fosmon"`. Script: `scripts/crear-org-fosmon.js`. **No mueve
-  datos de obras** — las obras siguen viviendo en `/obras/*`.
+  `orgId="fosmon"`. Script: `scripts/crear-org-fosmon.cjs`. Corrió el
+  **2026-09-16 05:28**; verificado el 2026-09-23: 14 de 14 usuarios
+  etiquetados. **No mueve datos de obras** — las obras de FOSMON siguen
+  viviendo en `/obras/*`, que es donde las reglas vivas las esperan.
+  **FOSMON no tiene que migrar** para que exista una segunda organización.
 
 ---
 
@@ -66,18 +199,20 @@ Este documento traduce a lenguaje humano lo que las reglas
 `firestore.rules` y `storage.rules` permiten y bloquean. Revísalo contra
 la operación real y avísame de cualquier mismatch antes de desplegar.
 
-## Cambios respecto a hoy
+## Qué cambió al desplegar (2026-09-15)
 
-**Hoy** (rama `main`):
-- Firestore: `allow read, write: if request.auth != null` — cualquier autenticado hace todo.
+**Antes:**
+- Firestore: `allow read, write: if request.auth != null` — cualquier autenticado hacía todo.
 - Storage: `allow read, write: if request.auth != null` bajo `/obras/**`.
 
-**Ahora** (rama `claude/rules-seguridad`):
+**Desde el 2026-09-15, en producción:**
 - Reglas por rol y por documento, respetando `PERMISOS[rol][modulo]` del frontend.
 - Denegar por defecto. Cualquier ruta no declarada explícitamente cae en `deny`.
+  Esto **no es teórico**: una ruta que falta no da error visible, se traga la
+  escritura en silencio. Ya pasó dos veces (PENDIENTES #28 y #31).
 - Requiere custom claims en el token de Auth. La Cloud Function
   `sincronizarClaims` los asigna al escribir `usuarios/{docId}`. El script
-  `scripts/backfill-claims.js` los asigna a los usuarios existentes una sola vez.
+  `scripts/backfill-claims.cjs` los asignó a los usuarios existentes, una sola vez.
 
 ## Refresh proactivo del token (fix/refresh-token, 2026-09-16)
 
@@ -341,7 +476,7 @@ Ver `AUDITORIA_CONSULTAS.md` para el análisis de qué consultas del frontend qu
      - O invocar la Callable desde la app con un usuario admin
    Opción B (script standalone):
      ```
-     GOOGLE_APPLICATION_CREDENTIALS=~/campo-sa.json node scripts/backfill-claims.js
+     GOOGLE_APPLICATION_CREDENTIALS=~/campo-sa.json node scripts/backfill-claims.cjs
      ```
 
 4. **Verificar que los usuarios reales tienen claims:**
