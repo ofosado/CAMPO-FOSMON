@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { conOrg, fijarPrefijoOrg, limpiarPrefijoOrg } from "./rutas-org.js";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
+import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -2064,7 +2065,7 @@ if (typeof window !== 'undefined') {
       const gp = gpSnap.data();
       const rx = new RegExp(filtroNombre, 'i');
       const obraGP = Object.values(gp?.obras || {}).find(o => rx.test(o.nombre));
-      const obrasSnap = await getDocs(collection(fbDb, 'obras'));
+      const obrasSnap = await getDocs(collObra());
       const obraCAMPO = obrasSnap.docs.map(d => d.data()).find(o => rx.test(o.nombre || ''));
       const info = {
         sheet: obraGP ? {
@@ -2101,11 +2102,23 @@ const callFn = async (name, data) => {
   }
 };
 
+// Referencias de obra para los sitios que arman la ruta por segmentos y no
+// pasan por los helpers de abajo. `conOrg` vive en src/rutas-org.js: ahí está
+// explicado por qué el discriminante es `tipo` y no la presencia de `orgId`.
+const docObra  = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+const collObra = (...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+
 // Helpers Firestore
-const fsGet  = async (path) => { try { const d = await getDoc(doc(fbDb, ...path.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
-const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
-const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
-const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
+//
+// OJO CON LOS `catch`: se tragan el error y devuelven un valor neutro. Eso es
+// deliberado para fallos de red —una lectura que no llega no debe tumbar la
+// pantalla— pero es también el mecanismo exacto de PENDIENTES #31 y #35. Por
+// eso `conOrg()` se evalúa FUERA del try: si el prefijo no resuelve, la
+// excepción sale a la superficie en vez de convertirse en `null`/`false`.
+const fsGet  = async (path) => { const r = conOrg(path); try { const d = await getDoc(doc(fbDb, ...r.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
+const fsSet  = async (path, data) => { const r = conOrg(path); try { await setDoc(doc(fbDb, ...r.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
+const fsDel  = async (path) => { const r = conOrg(path); try { await deleteDoc(doc(fbDb, ...r.split('/'))); return true; } catch { return false; } };
+const fsColl = async (path) => { const r = conOrg(path); try { const s = await getDocs(collection(fbDb, ...r.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
 // ── Horas extra de una semana de nómina ──────────────────────────────────
 // Existe como función, y una sola, porque el snapshot guarda el importe con
@@ -2676,7 +2689,7 @@ const leerHistorialNomina = async (obraId) => {
   // Formato 2. `fsGet` se traga los fallos, así que aquí se lee en crudo para
   // poder distinguir "no hay semanas" de "no se pudo preguntar".
   let snap;
-  try { snap = await getDocs(collection(fbDb, 'obras', obraId, 'nomina_historial')); }
+  try { snap = await getDocs(collObra(obraId, 'nomina_historial')); }
   catch (e) {
     throw new ErrorHistorialNomina(
       `La obra ${obraId} tiene el historial de nómina en subcolección, pero no ` +
@@ -2766,7 +2779,7 @@ const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx)
       // tienen que verse igual al leer, o `avisarSiFaltanSemanas` empieza a
       // contar semanas que ya no están.
       const antes = await fsGet(ruta);
-      await deleteDoc(doc(fbDb, ...ruta.split('/')));
+      await deleteDoc(doc(fbDb, ...conOrg(ruta).split('/')));
       if (ctx) fsAudit('borrar', { path: ruta, modulo: ctx.modulo, entidad: ctx.entidad,
         obraId: ctx.obraId, obraNombre: ctx.obraNombre, antes, meta: ctx.meta });
       continue;
@@ -2775,7 +2788,7 @@ const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx)
     // merge, borrar una de dos partes dejaría la vieja dentro del arreglo.
     const datos = { clave, partes, actualizado: new Date().toISOString() };
     const antes = ctx ? await fsGet(ruta) : null;
-    await setDoc(doc(fbDb, ...ruta.split('/')), datos);
+    await setDoc(doc(fbDb, ...conOrg(ruta).split('/')), datos);
     if (ctx) fsAudit(antes ? 'editar' : 'crear', { path: ruta, modulo: ctx.modulo,
       entidad: ctx.entidad, obraId: ctx.obraId, obraNombre: ctx.obraNombre,
       antes, despues: datos, meta: ctx.meta });
@@ -2958,7 +2971,7 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // Aquí se escribe directo para que el error llegue vivo y el llamador
     // pueda enseñárselo a quien acaba de cerrar la semana.
     try {
-      await setDoc(doc(fbDb, 'obras', obraId, 'avance', 'historial'),
+      await setDoc(docObra(obraId, 'avance', 'historial'),
         { semanas: recortadas }, { merge: true });
     } catch (err) {
       throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
@@ -3917,15 +3930,10 @@ const ensureXLSX = () => {
   return _xlsxPromise;
 };
 
-// Mapa de roles por correo — se carga desde Firestore
-// Si no existe en Firestore, usa este default
-const ROLES_DEFAULT = {
-  "ofosado@fosmon.com.mx":   { rol:"director_general",    nombre:"Oscar Fosado Monsalvo" },
-  "ofosadog@fosmon.com.mx":  { rol:"director_operaciones", nombre:"Oscar Fosado Galland" },
-  "aoliva@fosmon.com.mx":    { rol:"gerente_construccion", nombre:"Alejandro Noe Oliva Somellera" },
-  "pcastillo@fosmon.com.mx": { rol:"administrador_obra",   nombre:"Pablo Castillo Villalobos" },
-  "lmayo@fosmon.com.mx":     { rol:"admin_sistema",        nombre:"Luis Mayo" },
-};
+// Aquí vivía ROLES_DEFAULT, un mapa de correo→rol que sólo usaba la rama del
+// login que inventaba perfiles. Muerta esa rama, queda sin lectores — y ya
+// estaba desactualizado: daba `admin_sistema` a un usuario que en producción
+// es `director_operaciones`. Un default que miente es peor que ninguno.
 
 
 // ── EMBLEMA FOSMON ─────────────────────────────────────────────────────────
@@ -4752,24 +4760,41 @@ function Login({onLogin}){
         console.warn('refresh inicial de token falló, continuando con token de signIn:', e?.code || e?.message);
       }
       // Buscar perfil en Firestore (para roles dinámicos)
-      let perfil = await fsGet(`usuarios/${emailId}`);
+      const perfil = await fsGet(`usuarios/${emailId}`);
       if (!perfil) {
-        // Si no existe en Firestore: usar default hardcodeado y crear el documento
-        // (necesario para que Cloud Functions puedan verificar el rol del usuario)
-        perfil = ROLES_DEFAULT[email] || { rol:"administrador_obra", nombre:email };
-        await fsSet(`usuarios/${emailId}`, {
-          email,
-          nombre: perfil.nombre,
-          rol: perfil.rol,
-          obras_asignadas: [],
-          activo: true,
-          uid: cred.user.uid,
-          creadoEn: new Date().toISOString(),
-          creadoPor: "auto-sync-from-login",
-        });
+        // ANTES esta rama INVENTABA el perfil: si no lo encontraba, se
+        // autoasignaba `administrador_obra` —un rol de constructora— y lo
+        // ESCRIBÍA en `usuarios/{id}`. Una cuenta huérfana entraba con
+        // permisos que nadie le dio, y una cuenta de dependencia cuyo perfil
+        // no cargara se volvía constructora en la raíz, en silencio y
+        // dejando rastro escrito. Medido el 2026-09-24: los 14 usuarios de
+        // producción tienen perfil, así que cerrar esta rama no le quita el
+        // acceso a nadie. Un huérfano real lo repara un administrador
+        // —`crearUsuario` ya contempla ese caso—, no el propio login.
+        setError("Tu cuenta no tiene perfil en el sistema. Contacta al administrador.");
+        try { await signOut(fbAuth); } catch {}
+        setLoading(false);
+        return;
       }
       if (perfil.activo === false) {
         setError("Tu usuario está desactivado. Contacta al administrador.");
+        try { await signOut(fbAuth); } catch {}
+        setLoading(false);
+        return;
+      }
+      // Resolver de qué organización cuelgan las obras de este usuario. Se
+      // decide con los claims del token —el mismo dato que evalúan las reglas
+      // de Firestore— y no con el perfil, que no guarda `tipo`.
+      //
+      // Si no se puede decidir, NO se entra. La alternativa —entrar y que
+      // cada lectura caiga a la raíz— es cómo un cliente termina viendo o
+      // pisando los datos de otro sin que nada falle a la vista.
+      try {
+        const { claims } = await getIdTokenResult(cred.user);
+        fijarPrefijoOrg(claims.tipo, claims.orgId);
+      } catch (e) {
+        limpiarPrefijoOrg();
+        setError(`${e.message || 'No se pudo determinar tu organización.'} Contacta al administrador.`);
         try { await signOut(fbAuth); } catch {}
         setLoading(false);
         return;
@@ -7311,7 +7336,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     // Firestore no borra hijos al borrar el padre, y esos huérfanos no se ven
     // desde ninguna pantalla.
     try {
-      const semanas = await getDocs(collection(fbDb, 'obras', id, 'nomina_historial'));
+      const semanas = await getDocs(collObra(id, 'nomina_historial'));
       await Promise.all(semanas.docs.map(d => deleteDoc(d.ref)));
     } catch (e) {
       console.error('borrar nomina_historial', id, e);
@@ -12624,7 +12649,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     if (catalogoGuardado) {
       let snapPrev;
       try {
-        snapPrev = await getDocFromServer(doc(fbDb, 'obras', obra.id, 'avance', 'subs'));
+        snapPrev = await getDocFromServer(docObra(obra.id, 'avance', 'subs'));
       } catch (e) {
         // No sabemos si hay avance que preservar. Escribir aquí es destructivo
         // e irreversible, así que no se escribe.
@@ -17806,7 +17831,7 @@ export default function App(){
   // sube una estimación, aparece en tiempo real sin reiniciar la app.
   useEffect(()=>{
     if(!obraId) return;
-    const ref = doc(fbDb, 'obras', obraId, 'config', 'estimaciones');
+    const ref = docObra(obraId, 'config', 'estimaciones');
     const unsub = onSnapshot(ref, (snap) => {
       const d = snap.exists() ? snap.data() : null;
       if (d && Array.isArray(d.data)) setEstimaciones(d.data);
@@ -17842,7 +17867,7 @@ export default function App(){
         let obrasFromDB;
         if (esDirectivo) {
           // Directivos: lista completa (mismo comportamiento previo)
-          const snap = await getDocs(collection(fbDb, 'obras'));
+          const snap = await getDocs(collObra());
           obrasFromDB = snap.docs.map(d => ({id: d.id, ...d.data()}));
         } else {
           // No-directivos: solo obras asignadas. Sin asignadas → lista vacía.
@@ -17857,7 +17882,7 @@ export default function App(){
             const resultados = await Promise.all(
               asignadas.map(async (id) => {
                 try {
-                  const d = await getDoc(doc(fbDb, 'obras', id));
+                  const d = await getDoc(docObra(id));
                   if (!d.exists()) return { id, motivo: 'no_existe' };
                   return { id, ok: true, doc: d };
                 } catch (e) {
@@ -17998,33 +18023,33 @@ export default function App(){
     const unsubs = [];
     activas.forEach(o => {
       // info general (para enriquecer la obra)
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'info'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'config', 'info'), snap => {
         const info = snap.exists() ? snap.data() : {};
         patch(o.id, { info });
         setObras(oo => oo.map(ob => ob.id === o.id ? { ...ob, ...info } : ob));
       }, alFallar(o.id, 'info', {}, 'info')));
       // subs (avance)
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'subs'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'subs'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { subs: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'subs', [], 'subs')));
       // maquinaria
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'maquinaria'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'maquinaria'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { maquinaria: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'maquinaria', [], 'maq')));
       // materiales
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'materiales'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'materiales'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { materiales: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'materiales', [], 'mat')));
       // estimaciones — LO QUE FALTABA para el dashboard portafolio
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'estimaciones'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'config', 'estimaciones'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { estimaciones: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'estimaciones', [], 'est')));
       // otros gastos
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'otros_gastos'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'config', 'otros_gastos'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
@@ -18041,11 +18066,11 @@ export default function App(){
       // más por obra —cinco hoy— y a cambio un cambio de bandera se ve sin
       // recargar, que es justo lo que hay que poder comprobar el día de la
       // migración.
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { _nomDoc: (d && Array.isArray(d.semanas)) ? d.semanas : [] });
       }, alFallar(o.id, '_nomDoc', [], 'nomina doc')));
-      unsubs.push(onSnapshot(collection(fbDb, 'obras', o.id, 'nomina_historial'), snap => {
+      unsubs.push(onSnapshot(collObra(o.id, 'nomina_historial'), snap => {
         const registros = [];
         snap.forEach(dd => { const p = dd.data()?.partes; if (Array.isArray(p)) registros.push(...p); });
         patch(o.id, { _nomSub: registros });
@@ -18053,7 +18078,7 @@ export default function App(){
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
       // captura ≥ 7 días"). feature/dashboard-principal 2026-09-18.
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'historial'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
         patch(o.id, { historialAvanceSemanas: semanas });
@@ -18088,6 +18113,9 @@ export default function App(){
   const logout=async()=>{
     try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
     try { await signOut(fbAuth); } catch {}
+    // El prefijo es estado de módulo, no de React: si no se borra aquí, la
+    // siguiente sesión arrancaría apuntando a la organización de la anterior.
+    limpiarPrefijoOrg();
     setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
