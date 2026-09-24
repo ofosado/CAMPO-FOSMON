@@ -3647,10 +3647,99 @@ mirar antes de desplegar: **`administrativo` también escribe** obras asignadas
 vía `puedeEditarObraD`, y **`director_obras` y `subdirector` escriben**, no
 sólo leen.
 
+**Resuelto el 2026-09-23: se quedan como están, por decisión del usuario.**
+*«Si alguien de dirección no puede corregir una captura mala, el sistema
+estorba en lugar de ayudar. Y administrativo también.»* No es un descuido de
+las reglas: es el permiso que se quiso dar. No "arreglarlo" después.
+
 ### Estado
 
 - [x] `SECURITY_RULES.md` corregido — 2026-09-23
 - [x] Este apunte — 2026-09-23
-- [ ] `firestore.rules`: agregar las ocho rutas
-- [ ] Prueba de emulador que capture como `supervisor_obra` y falle como `contratista`
+- [x] `firestore.rules`: las ocho rutas más `config/branding` — 2026-09-23, `e2b2d73`
+- [x] Prueba de emulador — 2026-09-23, `17da398`. 24/24 verde, y cuatro
+      contrapruebas semánticas que fallan cada una en una afirmación distinta:
+      quitar `avance/subs` (§1), agregar `nomina_historial` "por simetría"
+      (§2), quitar `!esContratista()` (§4), escribir con `puedeVerObraD`
+      (§3 y §4).
 - [ ] Desplegar reglas (**el usuario dispara**)
+
+Un defecto latente que se vio de paso y **no** se tocó, para no mezclarlo con
+esto: `match /evidencia/{eid}` exige `obraId in obrasAsignadas()` en el
+`create` incluso para `esDirectivoD()`, así que un director con `todas:true`
+y `obras:[]` no puede subir evidencia. No estorba para la demo.
+
+---
+
+## 36. El naranja de marca choca con el naranja de estado — y el color va solo
+
+**No es para la demo.** Decisión del usuario el 2026-09-23: *«Tienes razón y es
+más grande de lo que parecía. Pero NO lo hagas ahora. Para la demo el color de
+estado puede quedarse como está.»*
+
+### El choque
+
+El manual de marca reserva el naranja `#FF6B35` para la marca y dice, con todas
+sus letras, que **el naranja nunca comunica estado**. Hoy la app usa naranja/
+ámbar para «atraso moderado» en las barras, en los chips y en el PDF. Si se
+pinta el logo en naranja y al lado una barra naranja, el usuario no puede saber
+si eso es marca o es alarma — y cuando el color deja de significar, deja de
+servir para las dos cosas.
+
+El paquete ya trae la salida: `--c-estado-moderado-barra` apunta a
+`--c-grafito-500` (acero), de modo que **las barras de atraso moderado se
+rellenan en acero, no en ámbar**, y el ámbar queda sólo para el punto de
+estado, que es chico y no compite con la marca.
+
+### Lo que hay que hacer, que es más que cambiar hexes
+
+El color va solo. Un usuario con daltonismo rojo-verde —entre el 6 % y el 8 %
+de los hombres, y esta app la usan casi puros hombres en obra, a pleno sol, en
+un celular— **no distingue hoy «al corriente» de «crítico»**. Ese defecto ya
+existe; el tema de marca sólo lo hizo visible.
+
+Los tokens ya declaran la forma junto al color:
+
+| Estado    | Color              | Forma       |
+|-----------|--------------------|-------------|
+| Al día    | verde `#2E9E6B`    | círculo     |
+| Moderado  | ámbar `#E8A33D`    | triángulo   |
+| Crítico   | rojo `#D14B3D`     | cuadrado    |
+
+`--c-estado-*-forma` es una cadena, no CSS: **se implementa con ícono**, no con
+`border-radius`. Hay que recorrer los lugares donde hoy el estado se comunica
+sólo pintando —chips, barras, semáforos de la tabla, leyendas, el PDF de
+jsPDF— y agregar la forma. La regla para saber si quedó: **en escala de grises
+el informe se sigue leyendo.** Esa es la prueba, y es fácil de correr.
+
+### Por qué no ahora
+
+Toca decenas de puntos de render y el riesgo no está en cada cambio sino en el
+total: es exactamente el tipo de barrido que se hace en una rama propia, con la
+suite completa encima, y no la semana de una demo. El puente de `var()` —que sí
+va antes de la demo— deja esto **más barato**, porque después de él los colores
+de estado se cambian en un lugar.
+
+---
+
+## 37. Los íconos de PWA no se despliegan hasta después de la demo
+
+Decisión del usuario el 2026-09-23. El paquete de marca trae íconos nuevos y
+sería tentador subirlos con el resto del cambio visual. **No van.**
+
+**Por qué:** FOSMON ya tiene la app instalada en las pantallas de inicio de sus
+teléfonos. Cambiar a la vez el `name`, los íconos y el `theme_color` del
+manifiesto es justo la combinación con la que iOS se comporta peor: no
+re-renderiza el ícono de una app ya instalada, y en algunos casos hay que
+desinstalar y reinstalar para que tome el nuevo. Es decir, el precio del cambio
+lo pagarían los usuarios que ya trabajan con la app, a cambio de un ícono que
+en la demo **nadie va a ver**: la demo se enseña en una laptop, en el navegador.
+
+**Qué sí entra antes de la demo:** las cadenas visibles, la tipografía y el
+color en pantalla. Nada de eso toca el manifiesto.
+
+**Cuándo entra:** después de la demo, como cambio propio, avisando antes a
+quien tenga la app instalada y con un canario en un teléfono iOS real antes de
+soltarlo. El `id` del manifiesto es el que decide si iOS lo trata como la misma
+app o como otra; hay que fijarlo explícitamente en ese cambio y no dejarlo al
+valor por omisión.
