@@ -1,0 +1,129 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   TOKENS DE COLOR
+   ─────────────────────────────────────────────────────────────────────────────
+
+   Este archivo es el puente. Hoy vale exactamente lo que valía la paleta `C`
+   de App.jsx, color por color: **el puente no cambia ni un pixel**. Eso no es
+   una casualidad, es la condición que lo hace seguro, y hay una prueba que la
+   afirma (`scripts/prueba-puente-color.cjs`): levanta la página en un
+   navegador de verdad y compara cada token contra el hex que tenía antes.
+
+   Cuando entre la marca, se cambian los VALORES de aquí y nada más. Los 1,817
+   lugares de App.jsx que dicen `C.textMut` no se tocan nunca.
+
+   ── UNA SOLA FUENTE DE VERDAD POR COLOR ────────────────────────────────────
+
+   Cada color se declara UNA vez, como triplete:
+
+       --c-red-rgb: 226 75 74;
+       --c-red: rgb(var(--c-red-rgb));
+
+   El hex no se escribe aparte. Si se escribieran los dos, algún día alguien
+   cambiaría uno y no el otro, y el color con transparencia quedaría de un tono
+   distinto al sólido — un defecto que nadie reporta porque nadie los ve juntos.
+   Derivándolo, no pueden separarse.
+
+   El triplete existe porque **`${C.red}15` dejó de funcionar**. Antes `C.red`
+   era el texto `#E24B4A` y pegarle `15` daba `#E24B4A15`, un hex con alfa.
+   Ahora `C.red` es `var(--c-red)` y pegarle `15` da `var(--c-red)15`, que es
+   inválido: el navegador tira la declaración **sin un error ni un warning** y
+   el fondo queda transparente. Medido en Chrome: `rgba(0, 0, 0, 0)`.
+
+   Por eso existe `alfa()` en App.jsx, y por eso pide el triplete:
+
+       alfa(C.red, 8)  →  rgb(var(--c-red-rgb) / 8%)  →  rgba(226,75,74,0.08)
+
+   ── LO QUE ESTE ARCHIVO NO ALCANZA ─────────────────────────────────────────
+
+   Las pantallas de `index.html` —el aviso de reset y el fondo `#F0F2F5` de
+   `html`/`body`/`#root`— se pintan ANTES de que exista el bundle, así que no
+   pueden leer estas variables y conservan su hex literal. Cuando cambie el
+   color de fondo de la app hay que cambiarlo **también** ahí, a mano. La
+   prueba lo verifica para que no se olvide.
+
+   Y el `theme_color` del manifiesto (vite.config.js) no se toca hasta después
+   de la demo: ver PENDIENTES #37.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Superficies ──────────────────────────────────────────────────────── */
+  --c-bg-rgb:       240 242 245;
+  --c-surface-rgb:  255 255 255;
+  --c-card-rgb:     255 255 255;
+  --c-border-rgb:   232 234 240;
+  --c-borderM-rgb:  208 212 220;
+
+  /* ── Texto ────────────────────────────────────────────────────────────── */
+  --c-caliza-rgb:   13 22 25;
+  --c-textPri-rgb:  13 22 25;
+  --c-textSec-rgb:  85 94 107;
+  --c-textMut-rgb:  154 160 172;
+
+  /* ── Semánticos ───────────────────────────────────────────────────────────
+     Hoy el estado se comunica SÓLO con color. Eso es un defecto abierto
+     —PENDIENTES #36—: un usuario con daltonismo rojo-verde no distingue
+     «al día» de «crítico». No se arregla aquí; se arregla agregando forma.   */
+  --c-green-rgb:    99 153 34;
+  --c-greenBg-rgb:  234 243 222;
+  --c-greenDk-rgb:  59 109 17;
+
+  --c-red-rgb:      226 75 74;
+  --c-redBg-rgb:    252 235 235;
+  --c-redDk-rgb:    163 45 45;
+
+  --c-blue-rgb:     55 138 221;
+  --c-blueBg-rgb:   230 241 251;
+  --c-blueDk-rgb:   24 95 165;
+
+  --c-yellow-rgb:   239 159 39;
+  --c-yellowBg-rgb: 250 238 218;
+  --c-yellowDk-rgb: 133 79 11;
+
+  --c-purple-rgb:   127 119 221;
+  --c-purpleBg-rgb: 238 237 254;
+  --c-purpleDk-rgb: 60 52 137;
+
+  --c-orange-rgb:   217 119 6;
+  --c-orangeBg-rgb: 254 243 199;
+
+  --c-pink-rgb:     244 63 94;
+  --c-indigo-rgb:   99 102 241;
+
+  /* ── Derivados. No editar: cada uno sale de su triplete. ───────────────── */
+  --c-bg:       rgb(var(--c-bg-rgb));
+  --c-surface:  rgb(var(--c-surface-rgb));
+  --c-card:     rgb(var(--c-card-rgb));
+  --c-border:   rgb(var(--c-border-rgb));
+  --c-borderM:  rgb(var(--c-borderM-rgb));
+
+  --c-caliza:   rgb(var(--c-caliza-rgb));
+  --c-textPri:  rgb(var(--c-textPri-rgb));
+  --c-textSec:  rgb(var(--c-textSec-rgb));
+  --c-textMut:  rgb(var(--c-textMut-rgb));
+
+  --c-green:    rgb(var(--c-green-rgb));
+  --c-greenBg:  rgb(var(--c-greenBg-rgb));
+  --c-greenDk:  rgb(var(--c-greenDk-rgb));
+
+  --c-red:      rgb(var(--c-red-rgb));
+  --c-redBg:    rgb(var(--c-redBg-rgb));
+  --c-redDk:    rgb(var(--c-redDk-rgb));
+
+  --c-blue:     rgb(var(--c-blue-rgb));
+  --c-blueBg:   rgb(var(--c-blueBg-rgb));
+  --c-blueDk:   rgb(var(--c-blueDk-rgb));
+
+  --c-yellow:   rgb(var(--c-yellow-rgb));
+  --c-yellowBg: rgb(var(--c-yellowBg-rgb));
+  --c-yellowDk: rgb(var(--c-yellowDk-rgb));
+
+  --c-purple:   rgb(var(--c-purple-rgb));
+  --c-purpleBg: rgb(var(--c-purpleBg-rgb));
+  --c-purpleDk: rgb(var(--c-purpleDk-rgb));
+
+  --c-orange:   rgb(var(--c-orange-rgb));
+  --c-orangeBg: rgb(var(--c-orangeBg-rgb));
+
+  --c-pink:     rgb(var(--c-pink-rgb));
+  --c-indigo:   rgb(var(--c-indigo-rgb));
+}
