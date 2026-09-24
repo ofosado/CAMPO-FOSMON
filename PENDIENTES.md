@@ -3662,7 +3662,16 @@ las reglas: es el permiso que se quiso dar. No "arreglarlo" después.
       quitar `avance/subs` (§1), agregar `nomina_historial` "por simetría"
       (§2), quitar `!esContratista()` (§4), escribir con `puedeVerObraD`
       (§3 y §4).
-- [ ] Desplegar reglas (**el usuario dispara**)
+- [x] Desplegar reglas — **2026-09-24 19:32 UTC**, lo disparó el usuario.
+      Ruleset `d29ec434-df74-4542-96c9-9a47f9aa46ce`, idéntico byte a byte al
+      archivo y comprobado vivo 34/34 con la API `projects:test` sobre el
+      ruleset bajado del servidor. **El defecto de #35 ya no puede ocurrir en
+      producción.**
+
+**Ojo con el orden:** se desplegó desde la rama, antes de mezclar. Hasta que
+`fix/modelo-dependencia-captura` entre a `main`, el archivo de `main` **no**
+es el que corre en producción — exactamente la clase de desfase que hizo que
+«NO desplegado» envenenara dos análisis. Conviene mezclar pronto.
 
 Un defecto latente que se vio de paso y **no** se tocó, para no mezclarlo con
 esto: `match /evidencia/{eid}` exige `obraId in obrasAsignadas()` en el

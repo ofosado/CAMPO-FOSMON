@@ -5,11 +5,19 @@
 | | |
 |---|---|
 | En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15** |
-| Ruleset vivo | `projects/campo-fosmon/rulesets/1de0cdf3-eec1-44d7-aa85-583b8f4c42b3` |
-| Publicado | **2026-09-23 06:54 UTC** |
-| Contra el repo | **idéntico byte a byte** a `firestore.rules` (19 588 bytes), verificado el 2026-09-23 |
+| Ruleset vivo | `projects/campo-fosmon/rulesets/d29ec434-df74-4542-96c9-9a47f9aa46ce` |
+| Publicado | **2026-09-24 19:32 UTC** — trae las ocho rutas de captura de dependencia |
+| Contra el repo | **idéntico byte a byte** a `firestore.rules` (24 271 bytes), verificado el 2026-09-24 bajando el ruleset del servidor y haciendo `diff` |
+| Comprobado vivo | **34/34** con la API `projects:test` sobre el ruleset bajado del servidor — cero datos tocados. Un caso de control con expectativa falsa lo deja en 34/35, así que la comprobación no es vacía |
+| Desplegado desde | la rama `fix/modelo-dependencia-captura`, **antes de mezclar a `main`**. Mientras no se mezcle, `main` NO describe lo que corre en producción |
 | `orgs/fosmon` | existe desde el **2026-09-16 05:28**, `tipo: constructora`, `activa: true` |
 | Usuarios etiquetados | **14 de 14** con `orgId: "fosmon"` |
+
+Ruleset anterior, por si hay que volver:
+`1de0cdf3-eec1-44d7-aa85-583b8f4c42b3` (19 588 bytes, 2026-09-23 06:54 UTC).
+Es el mismo archivo **sin** las ocho rutas: volver a él deja al supervisor
+capturando contra el `match /{document=**}` final — sin guardar nada y sin
+avisar.
 
 > **Este renglón decía «NO desplegado» hasta el 2026-09-23 y llevaba ocho días
 > caduco.** Hizo que dos análisis independientes concluyeran que las reglas
