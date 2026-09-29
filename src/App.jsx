@@ -7426,12 +7426,236 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   );
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
+// ════════════════════════════════════════════════════════════════════════════
+// PORTAFOLIO — ORGANIZACIÓN DE TIPO DEPENDENCIA
+//
+// El equivalente de `DashboardPrincipal` para quien contrata obra. Componente
+// aparte por la misma razón que `DashboardDependencia` (P5): aquí no se llama
+// a `calcularKPIsObra`, que es donde nace `gt` y con él el margen, así que no
+// hay cifra de gasto que pueda filtrarse ni columna que ordenar por ella.
+//
+// Las cinco cifras del contrato, más avance y última captura. Ni margen, ni
+// gasto, ni personal, ni horas extra.
+//
+// ORDEN POR DEFECTO: avance físico ascendente, y a igual avance la de mayor
+// monto contratado primero. Es la única cifra que sale de lo que la propia
+// dependencia capturó y contesta "cuál me preocupa" sin necesitar el programa
+// de ejecución convenido. Lo estrictamente correcto sería ordenar por
+// desviación contra ese programa — pero el programa no está cargado, y
+// ordenar por una desviación calculada contra un plazo lineal supuesto sería
+// inventar la cifra que el P2 prohíbe. Cuando el programa exista, este orden
+// es lo que hay que cambiar.
+// ════════════════════════════════════════════════════════════════════════════
+function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
+  const [orden, setOrden] = useState('avance|asc');
+  const HOY = Date.now();
+
+  const activas = obras.filter(o => (o.estado || 'activa') !== 'archivada');
+
+  // Mismo guard de completud que el panel de constructora, con la lista de
+  // claves recortada: las cinco que no se suscriben nunca van a llegar, y
+  // exigirlas dejaría el consolidado esperando para siempre.
+  const incompletas = activas.filter(o => !datosObraCompletos(datosPorObra[o.id], true));
+  const listas = activas.filter(o => datosObraCompletos(datosPorObra[o.id], true));
+
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+  const filas = listas.map(o => {
+    const d = datosPorObra[o.id] || {};
+    const info = d.info || {};
+    const contratado = parseFloat(info.presupuesto ?? o.presupuesto) || 0;
+    const modoVol = (info.modoAvance ?? o.modoAvance) === 'volumen';
+    const subs = d.subs || [];
+    const ests = d.estimaciones || [];
+
+    const ejecutado = desgloseEjecutado(subs, modoVol).total;
+    const af        = avanceFisicoPonderado(subs, contratado, modoVol);
+    const estimado  = ests.reduce((t,e) => t + (e.monto||0), 0);
+    const pagado    = ests.filter(e => _ne(e.estatus) === 'pagada')
+                          .reduce((t,e) => t + (e.monto||0), 0);
+    const porEjercer = Math.max(contratado - pagado, 0);
+
+    const avSemanas = d.historialAvanceSemanas || [];
+    const ultAv = avSemanas[avSemanas.length - 1];
+    const diasSinCaptura = ultAv?.fechaCaptura
+      ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / 86400000) : null;
+
+    return {
+      obra: o,
+      nombre: info.contrato || info.nombre || o.contrato || o.nombre || o.id,
+      contratado, ejecutado, estimado, pagado, porEjercer, af, diasSinCaptura,
+    };
+  });
+
+  // ── Consolidado ──
+  // Los cinco montos se suman; el avance NO se promedia a secas sino
+  // ponderado por monto contratado, porque una obra de 40 millones al 10% y
+  // una de 2 al 90% no pesan igual en la pregunta "cómo va mi programa".
+  const totContratado = filas.reduce((t,f) => t + f.contratado, 0);
+  const totEjecutado  = filas.reduce((t,f) => t + f.ejecutado, 0);
+  const totEstimado   = filas.reduce((t,f) => t + f.estimado, 0);
+  const totPagado     = filas.reduce((t,f) => t + f.pagado, 0);
+  const totPorEjercer = filas.reduce((t,f) => t + f.porEjercer, 0);
+  const totAf = totContratado > 0
+    ? filas.reduce((t,f) => t + f.af * f.contratado, 0) / totContratado : null;
+
+  // ── Excepciones ──
+  // Sólo la de captura. Las otras dos del panel de constructora —margen bajo
+  // y horas extra— son economía interna del contratista.
+  const excepciones = filas
+    .filter(f => f.diasSinCaptura === null || f.diasSinCaptura >= 7)
+    .map(f => ({
+      obraId: f.obra.id,
+      texto: f.diasSinCaptura === null
+        ? `${f.nombre} — sin captura de avance registrada`
+        : `${f.nombre} — ${f.diasSinCaptura} días sin captura de avance`,
+    }));
+
+  const OPCIONES_ORDEN = [
+    { val:'avance|asc',     lbl:'Avance: menor primero' },
+    { val:'avance|desc',    lbl:'Avance: mayor primero' },
+    { val:'contratado|desc',lbl:'Contratado: mayor primero' },
+    { val:'porEjercer|desc',lbl:'Por ejercer: mayor primero' },
+    { val:'captura|desc',   lbl:'Última captura: más antigua' },
+    { val:'nombre|asc',     lbl:'Nombre: A → Z' },
+  ];
+  const [col, dir] = orden.split('|');
+  const signo = dir === 'asc' ? 1 : -1;
+  const ordenadas = [...filas].sort((a,b) => {
+    if (col === 'nombre')
+      return signo * (a.nombre||'').localeCompare(b.nombre||'', 'es', {sensitivity:'base'});
+    let va, vb;
+    if (col === 'captura') { va = a.diasSinCaptura; vb = b.diasSinCaptura; }
+    else                   { va = a[col];           vb = b[col]; }
+    // Dato ausente al final siempre, sin importar la dirección: una obra sin
+    // captura no es "la que menos avanzó", es la que no se sabe.
+    const aN = va === null || va === undefined, bN = vb === null || vb === undefined;
+    if (aN && bN) return 0;
+    if (aN) return 1;
+    if (bN) return -1;
+    if (va !== vb) return signo * (va - vb);
+    // Desempate: la de mayor monto contratado primero.
+    return b.contratado - a.contratado;
+  });
+
+  if (activas.length === 0) return null;
+
+  return (
+    <Card accent={C.caliza} style={{marginBottom:10}}>
+      <div style={{marginBottom:12}}>
+        <Tit>Panel principal — {activas.length} obra{activas.length!==1?'s':''} activa{activas.length!==1?'s':''}</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+          Contrato, avance y pendientes de captura
+        </div>
+      </div>
+
+      {incompletas.length > 0 && (
+        <div style={{background:C.yellowBg,border:`1px solid ${C.yellow}`,
+                     borderRadius:6,padding:"6px 9px",marginBottom:8,fontSize:10,color:C.textSec}}>
+          <b>Consolidado parcial.</b> {incompletas.length} obra
+          {incompletas.length !== 1 ? 's' : ''} no terminó de cargar y no está
+          incluida en las cifras de abajo:{' '}
+          {incompletas.map(o => o.id).join(' · ')}. Recarga la página para reintentar.
+        </div>
+      )}
+
+      {/* ── Consolidado ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <Kpi label="Contratado" value={MXN(totContratado)}
+          sub={`${filas.length} obra${filas.length!==1?'s':''}`} color={C.caliza} size={12}/>
+        <Kpi label="Ejecutado" value={MXN(totEjecutado)}
+          sub={totContratado>0?`${NUM(totEjecutado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.blueDk} size={12}/>
+        <Kpi label="Estimado" value={MXN(totEstimado)}
+          sub={totContratado>0?`${NUM(totEstimado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado" value={MXN(totPagado)}
+          sub={totContratado>0?`${NUM(totPagado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.greenDk} size={12}/>
+        <Kpi label="Por ejercer" value={MXN(totPorEjercer)}
+          sub="contratado menos pagado" color={C.textPri} size={12}/>
+        {/* Sin obras con contrato capturado el promedio ponderado no tiene
+            denominador. Se dice, no se pone 0% (P2). */}
+        <Kpi label="Avance físico"
+          value={totAf != null ? `${NUM(totAf,1)}%` : 'no disponible'}
+          sub={totAf != null ? 'ponderado por monto contratado' : 'falta capturar montos de contrato'}
+          color={totAf != null ? C.blueDk : C.textMut} size={12}/>
+      </div>
+
+      {/* ── Requiere atención ── */}
+      {excepciones.length > 0 && <>
+        <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                     textTransform:"uppercase",margin:"14px 0 6px"}}>
+          Requiere atención
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {excepciones.map(e => (
+            <div key={e.obraId} onClick={() => onSelectObra && onSelectObra(e.obraId)}
+              style={{background:C.bg,borderRadius:8,padding:"8px 11px",display:"flex",
+                justifyContent:"space-between",alignItems:"center",gap:8,
+                cursor:onSelectObra?"pointer":"default",borderLeft:`3px solid ${C.yellow}`}}>
+              <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
+              <span style={{fontSize:11,color:C.textMut}}>›</span>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      {/* ── Obras ── */}
+      <div style={{display:"flex",alignItems:"center",gap:6,margin:"14px 0 6px"}}>
+        <span style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                      textTransform:"uppercase"}}>Obras · ordenar</span>
+        <Sel value={orden} onChange={e => setOrden(e.target.value)}
+             style={{fontSize:10,padding:'4px 8px',flex:1,maxWidth:260}}>
+          {OPCIONES_ORDEN.map(o => <option key={o.val} value={o.val}>{o.lbl}</option>)}
+        </Sel>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {ordenadas.map(f => {
+          const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
+          return (
+            <div key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+              style={{background:C.bg,borderRadius:8,padding:"10px 12px",
+                cursor:onSelectObra?"pointer":"default",
+                borderLeft:`3px solid ${capAlerta?C.yellow:C.blueDk}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",
+                           gap:8,marginBottom:5}}>
+                <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
+                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
+                <span style={{fontSize:14,fontWeight:700,color:C.blueDk,flexShrink:0}}>
+                  {NUM(f.af,1)}%
+                </span>
+              </div>
+              <Bar pct={f.af} color={C.blueDk}/>
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginTop:5}}>
+                Contratado {MXN(f.contratado)}{' · '}Ejecutado {MXN(f.ejecutado)}
+              </div>
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6}}>
+                Estimado {MXN(f.estimado)}{' · '}Pagado {MXN(f.pagado)}
+                {' · '}Por ejercer {MXN(f.porEjercer)}
+              </div>
+              <div style={{fontSize:10,color:capAlerta?C.yellowDk:C.textMut,lineHeight:1.6}}>
+                {f.diasSinCaptura === null ? 'Sin captura registrada'
+                  : f.diasSinCaptura === 0 ? 'Capturada hoy'
+                  : `Última captura hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={},marca=null}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
+  // P5: de este lado de la pantalla el dinero del contratista no existe.
+  const dep=esDependencia(usuario);
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const[orden,setOrden]=useState("nombre"); // nombre|importe_asc|importe_desc|avance_asc|avance_desc
   const[verHistorial,setVerHistorial]=useState(false);
   const[modalNueva,setModalNueva]=useState(false);
@@ -7642,6 +7866,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             el tooltip, no en pantalla: en el chip sólo cabe el hecho, y
             "el Sheet nunca se sincronizó" asusta sin ayudar a nadie. */}
         {(() => {
+          // En una dependencia el chip no se pinta, y no por pudor: el Sheet
+          // GP no se consulta (P5), así que `gpUltActualiz` nunca llega y
+          // `gpDisponible` es false para siempre. Sin este corte el chip
+          // saldría en ámbar "GP Sheet · no disponible" en la primera
+          // pantalla que ve el cliente, anunciando una integración con la
+          // contabilidad de FOSMON que a él no le corresponde ni le sirve.
+          if (dep) return null;
           // Sólo los estados TERMINALES de fallo pintan ámbar. Mientras
           // carga o reintenta no se muestra nada: un chip de alarma en cada
           // arranque normal sería ruido, no información.
@@ -7695,8 +7926,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         <option value="nombre">Ordenar: A → Z</option>
         <option value="importe_desc">Importe: Mayor → Menor</option>
         <option value="importe_asc">Importe: Menor → Mayor</option>
-        <option value="avance_desc">Avance: Mayor → Menor</option>
-        <option value="avance_asc">Avance: Menor → Mayor</option>
+        {/* Estas dos dicen "Avance" y ordenan por gasto/presupuesto — es el
+            nombre viejo de la cifra, y en dependencia el gasto es cero, así
+            que las dos opciones ordenarían por nada. El orden por avance
+            físico de verdad vive en el panel de arriba. */}
+        {!dep && <option value="avance_desc">Avance: Mayor → Menor</option>}
+        {!dep && <option value="avance_asc">Avance: Menor → Mayor</option>}
       </Sel>
       {puedeGestionar&&archivadas.length>0&&<button onClick={()=>setVerHistorial(v=>!v)}
         style={{background:verHistorial?C.caliza:C.card,border:`0.5px solid ${C.borderM}`,
@@ -7710,9 +7945,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         Reemplaza el PanelEjecutivo. Se muestra a directivos y a auditor
         (auditor con sus obras asignadas, filtradas ya por todasObras arriba).
         Cliente sigue sin panel (mantiene solo su lista simplificada). */}
-    {!verHistorial && vePanelEjecutivo(usuario.rol) && (
-      <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
-        gpDisponible={gpDisponible} onSelectObra={onSelect}/>
+    {/* Dos paneles, no uno con condicionales (P5). `vePanelEjecutivo` contesta
+        "¿este rol ve UN consolidado?"; cuál se pinta lo decide el tipo. */}
+    {!verHistorial && vePanelEjecutivo(usuario.rol) && (dep
+      ? <PortafolioDependencia obras={todasObras} datosPorObra={datosPorObra}
+          onSelectObra={onSelect}/>
+      : <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
+          gpDisponible={gpDisponible} onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}
@@ -7722,17 +7961,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     </div>}
 
     {listaActual.map(o=>{
-      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + otros gastos
-      // IMPORTANTE: el ALMACÉN NO se suma al gasto. Almacén son insumos ya
-      // reportados en GP que están en tránsito/bodega esperando ser instalados
-      // para poder cobrarse al cliente — por eso suman al EJECUTADO (meO), no
-      // al gasto. (Aclaración del usuario ago-2026.)
-      const gastoGPLive=resolverGastoGP(o, gpData);
       const d = datosPorObra[o.id] || {};
-      const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-      const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-      const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
-      const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
       // Avance físico ponderado
       const subsO = d.subs || [];
       const modoVolO = (o?.modoAvance === "volumen");
@@ -7741,15 +7970,41 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         : 0;
       // Estimado total (todas las estimaciones sin importar estatus)
       const estTotalO = (d.estimaciones || []).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-      // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
-      // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
-      // autorizado como convenio.
       const amO  = desgloseEjecutado(subsO, modoVolO).total;
-      const meO  = amO + matTotal;
-      // Margen bruto (mismo criterio Dashboard/PDF)
-      const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
-      const mNiv = nivelMargen(margenPct);
-      const pg = o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0;
+
+      // ── Economía interna del contratista: no se calcula en dependencia ──
+      // No es que se pinte y se esconda: si `eco` fuera un objeto de ceros,
+      // la tarjeta diría "Gasto acumulado $0" y "Margen 100%", que son las
+      // dos cifras falsas del P5. En dependencia ni `gpData` ni maquinaria ni
+      // otros gastos se suscriben, así que no hay nada que sumar.
+      //
+      // IMPORTANTE (constructora): el ALMACÉN NO se suma al gasto. Almacén son
+      // insumos ya reportados en GP que están en tránsito/bodega esperando ser
+      // instalados para poder cobrarse al cliente — por eso suman al EJECUTADO
+      // (meO), no al gasto. (Aclaración del usuario ago-2026.)
+      const eco = dep ? null : (() => {
+        const gastoGPLive = resolverGastoGP(o, gpData);
+        const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+        const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+        const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
+        const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
+        // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
+        // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
+        // autorizado como convenio.
+        const meO = amO + matTotal;
+        const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
+        return {
+          gastoTotalLive, meO, margenPct,
+          mNiv: nivelMargen(margenPct),
+          pg: o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0,
+        };
+      })();
+
+      // Lo que sí es de la dependencia: lo que ya pagó de su propio dinero.
+      const pagadoO = dep
+        ? (d.estimaciones || []).filter(e => _ne(e.estatus) === 'pagada')
+            .reduce((t,e) => t + (parseFloat(e.monto)||0), 0)
+        : 0;
       // Nombre corto (mismo formato que el PDF y el header de obra)
       const nombreShort = resolverNombreCortoObra(o, gpData);
       const col=ec[o.estado]||C.caliza;
@@ -7783,6 +8038,35 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
                 <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
           </div>
+        ) : dep ? (
+          /* Dependencia (P5): su contrato y su avance. Las cuatro cifras son
+             las mismas que el panel de arriba consolida, para que la tarjeta y
+             el consolidado no se contradigan. La barra mide avance FÍSICO —en
+             constructora mide gasto sobre presupuesto, que es otra cosa con la
+             misma forma. */
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:8,marginBottom:9}}>
+              {[["Contratado",MXN(o.presupuesto),C.textPri,null],
+                ["Ejecutado",MXN(amO),C.blueDk,
+                  o.presupuesto>0?`${NUM(amO/o.presupuesto*100,1)}% del contrato`:null],
+                ["Estimado",MXN(estTotalO),C.purpleDk,
+                  o.presupuesto>0?`${NUM(estTotalO/o.presupuesto*100,1)}% del contrato`:null],
+                ["Pagado",MXN(pagadoO),C.greenDk,
+                  `Por ejercer ${MXN(Math.max(o.presupuesto-pagadoO,0))}`],
+              ].map(([l,v,c,s])=>(
+                <div key={l}>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>{l}</div>
+                  <div style={{fontSize:12,fontWeight:600,color:c}}>{v}</div>
+                  {s&&<div style={{fontSize:9,color:C.textMut,marginTop:1}}>{s}</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
+              title={`Avance físico ${NUM(avanceFisico,1)}%`}>
+              <div style={{width:`${Math.min(avanceFisico,100).toFixed(1)}%`,height:"100%",
+                background:C.blueDk,borderRadius:99}}/>
+            </div>
+          </>
         ) : (
           <>
             {/* KPIs por obra — MISMOS 4 que el Panel Ejecutivo del portafolio:
@@ -7796,25 +8080,25 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               </div>
               <div>
                 <div title="GP + Maquinaria + Otros gastos (el Almacén ya está incluido en el GP y suma al Ejecutado, no al Gasto)" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
-                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && pg>90?C.red:o.presupuesto>0 && pg>75?C.yellowDk:C.textPri}}>{MXN(gastoTotalLive)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(pg,1)}% del contrato</div>}
+                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && eco.pg>90?C.red:o.presupuesto>0 && eco.pg>75?C.yellowDk:C.textPri}}>{MXN(eco.gastoTotalLive)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.pg,1)}% del contrato</div>}
               </div>
               <div>
                 <div title="Avance físico ponderado por importe + almacén" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Ejecutado</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(meO)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(meO/o.presupuesto*100,1)}% del contrato</div>}
+                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(eco.meO)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.meO/o.presupuesto*100,1)}% del contrato</div>}
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Margen bruto</div>
-                <div style={{fontSize:12,fontWeight:700,color:mNiv.color}}>
-                  {meO>0 ? `${margenPct>=0?'':'-'}${MXN(Math.abs(meO-gastoTotalLive))}` : '—'}
+                <div style={{fontSize:12,fontWeight:700,color:eco.mNiv.color}}>
+                  {eco.meO>0 ? `${eco.margenPct>=0?'':'-'}${MXN(Math.abs(eco.meO-eco.gastoTotalLive))}` : '—'}
                 </div>
-                {meO>0 && <div style={{fontSize:9,color:mNiv.color,marginTop:1,fontWeight:600}}>{NUM(margenPct,1)}% ejec. vs gastado</div>}
+                {eco.meO>0 && <div style={{fontSize:9,color:eco.mNiv.color,marginTop:1,fontWeight:600}}>{NUM(eco.margenPct,1)}% ejec. vs gastado</div>}
               </div>
             </div>
             <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
-              title={`Gasto total ${NUM(pg,1)}% del presupuesto`}>
-              <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
+              title={`Gasto total ${NUM(eco.pg,1)}% del presupuesto`}>
+              <div style={{width:`${Math.min(eco.pg,100).toFixed(1)}%`,height:"100%",
                 background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
             </div>
           </>
@@ -9926,6 +10210,226 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         Agrega fotos en Operación → Avance físico
       </div>
     </Card>
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// DASHBOARD DE OBRA — ORGANIZACIÓN DE TIPO DEPENDENCIA
+//
+// Componente aparte, no el `Dashboard` de arriba con banderas. La razón está
+// en el P5: `Dashboard` calcula `gt` (gasto de GP + maquinaria + otros) en su
+// quinta línea y de ahí cuelgan el bloque de KPIs, la proyección de gasto, el
+// motor de riesgos y tres tarjetas. Sembrarlo de condicionales son unos diez
+// puntos de toque y basta olvidar uno para filtrar. Aquí el gasto no se
+// calcula, así que no puede filtrarse. Es el mismo criterio con el que se
+// separaron las vistas de rol `cliente`.
+//
+// Lo que una dependencia pregunta de su obra son ocho cosas:
+//   Contratado · Ejecutado · Estimado · Pagado · Por ejercer
+//   Avance físico · Última captura · Plazo
+//
+// Sin margen, sin gasto, sin personal. No por confidencialidad —las obras de
+// cada organización ya están aisladas por las reglas— sino porque esas cifras
+// no existen del lado de quien contrata.
+// ════════════════════════════════════════════════════════════════════════════
+function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], onNavTab}){
+  const contrato = parseFloat(obra?.presupuesto) || 0;
+  const modoVol  = obra?.modoAvance === "volumen";
+
+  // Mismas dos funciones que usa el resto de la app: el dinero ejecutado no se
+  // topa y el avance físico sí (P1). Tener aquí una tercera fórmula de
+  // "ejecutado" es exactamente el pendiente #8.
+  const ejecutado = desgloseEjecutado(subs, modoVol).total;
+  const avance    = avanceFisicoPonderado(subs, contrato, modoVol);
+
+  // Normalizador de estatus igual al de `Dashboard`: los estatus se capturaron
+  // a mano durante meses y conviven "Pagada", "pagada" y "PAGADA".
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const estimado = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
+  const pagado   = estimaciones.filter(e => _ne(e.estatus) === 'pagada')
+                               .reduce((t,e) => t + (e.monto||0), 0);
+
+  // "Por ejercer" es contra el CONTRATO y contra lo PAGADO, no contra lo
+  // ejecutado: es dinero del municipio que todavía no salió de su cuenta. Se
+  // topa en cero porque un contrato sobreejercido no deja un saldo negativo
+  // por ejercer — deja un convenio modificatorio, que es otra conversación.
+  const porEjercer = Math.max(contrato - pagado, 0);
+
+  // Última captura: la más reciente del historial semanal. Si no hay historial
+  // la cifra no se puede calcular, y entonces se dice (P2) — no se pone "hace
+  // 0 días", que se leería como "capturaron hoy".
+  const ultima = historialAvance.length > 0
+    ? historialAvance[historialAvance.length - 1] : null;
+  const fechaUltima = ultima?.fechaCierre || ultima?.fechaCaptura || null;
+  const diasSinCaptura = fechaUltima
+    ? Math.floor((Date.now() - new Date(fechaUltima).getTime()) / 86400000) : null;
+
+  // Plazo. `finVigente` sale de las ampliaciones si las hay, igual que en
+  // PlazosCliente: el plazo que importa es el vigente, no el del contrato
+  // original.
+  const [ampliaciones, setAmpliaciones] = useState([]);
+  useEffect(() => {
+    let cancel = false;
+    fsGet(`obras/${obra.id}/contrato/plazos`).then(d => {
+      if (!cancel && d && Array.isArray(d.ampliaciones)) setAmpliaciones(d.ampliaciones);
+    });
+    return () => { cancel = true; };
+  }, [obra.id]);
+  const dias = (ini, fin) => (!ini || !fin) ? null
+    : Math.round((new Date(fin) - new Date(ini)) / 86400000);
+  const finVigente   = ampliaciones.length > 0
+    ? ampliaciones[ampliaciones.length - 1].fecha : obra?.fin;
+  const totalDias    = dias(obra?.inicio, finVigente);
+  const transcurridos = obra?.inicio
+    ? Math.max(dias(obra.inicio, new Date().toISOString().slice(0,10)) || 0, 0) : 0;
+  const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
+  const pctPlazo     = (totalDias && totalDias > 0)
+    ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+
+  // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
+  // las reglas que los necesitan están fuera de la lista para dependencia, y
+  // pasarle un gasto en cero haría que las de brecha dispararan solas.
+  const riesgos = detectarRiesgos({
+    tipo: 'dependencia',
+    obra, subs, estimaciones, historialAvance,
+    kpis: { af: avance, me: ejecutado },
+  });
+  const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
+
+  const pctEjec  = contrato > 0 ? (ejecutado / contrato) * 100 : null;
+  const pctEstim = contrato > 0 ? (estimado  / contrato) * 100 : null;
+  const pctPag   = contrato > 0 ? (pagado    / contrato) * 100 : null;
+  const irA = (tabId, subTabId) => onNavTab ? () => onNavTab(tabId, subTabId) : undefined;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {/* ── El dinero del contrato ── */}
+    <Card accent={C.caliza}>
+      <Tit>El contrato</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <Kpi label="Contratado" value={MXN(contrato)}
+          sub="monto del contrato" color={C.caliza} size={12}/>
+        <Kpi label="Ejecutado" value={MXN(ejecutado)}
+          sub={pctEjec != null ? `${NUM(pctEjec,1)}% del contrato` : "sin contrato capturado"}
+          color={C.blueDk} size={12}/>
+        <Kpi label="Estimado" value={MXN(estimado)}
+          sub={pctEstim != null ? `${NUM(pctEstim,1)}% del contrato` : "—"}
+          color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado" value={MXN(pagado)}
+          sub={pctPag != null ? `${NUM(pctPag,1)}% del contrato` : "—"}
+          color={C.greenDk} size={12}/>
+        <Kpi label="Por ejercer" value={MXN(porEjercer)}
+          sub="contratado menos pagado" color={C.textPri} size={12}/>
+      </div>
+      {/* Ejecutado y pagado sobre la misma escala: la distancia entre las dos
+          barras es lo que la obra ya hizo y todavía no le pagan. */}
+      {contrato > 0 && <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:7}}>
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+            <span>Ejecutado</span><span>{NUM(pctEjec,1)}%</span>
+          </div>
+          <Bar pct={pctEjec} color={C.blueDk}/>
+        </div>
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+            <span>Pagado</span><span>{NUM(pctPag,1)}%</span>
+          </div>
+          <Bar pct={pctPag} color={C.greenDk}/>
+        </div>
+      </div>}
+    </Card>
+
+    {/* ── La obra ── */}
+    <Card accent={C.blue} style={onNavTab?{cursor:"pointer"}:undefined}>
+      <div onClick={irA("avance")}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div>
+            <Tit>La obra</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+              Avance ponderado por el importe contratado de cada partida
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:24,fontWeight:700,color:C.blueDk,lineHeight:1}}>{NUM(avance,1)}%</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:2}}>de avance físico</div>
+          </div>
+        </div>
+        <Bar pct={avance} color={C.blueDk}/>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginTop:14}}>
+          <Kpi label="Partidas" value={String(subs.length)}
+            sub={`${subs.filter(s=>(s.a||0)>=100).length} al 100%`} color={C.textPri} size={12}/>
+          {/* Cuando no hay historial la cifra NO se inventa: se dice que no
+              hay captura registrada. "hace 0 días" sería un cero falso. */}
+          <Kpi label="Última captura"
+            value={diasSinCaptura == null ? "sin captura"
+                 : diasSinCaptura === 0 ? "hoy"
+                 : `hace ${diasSinCaptura} día${diasSinCaptura===1?'':'s'}`}
+            sub={fechaUltima ? new Date(fechaUltima).toLocaleDateString("es-MX",
+                  {day:"numeric",month:"short",year:"2-digit"})
+                : "no hay semanas registradas"}
+            color={diasSinCaptura == null ? C.textMut
+                 : diasSinCaptura > 7 ? C.red : C.greenDk} size={12}/>
+        </div>
+      </div>
+    </Card>
+
+    {/* ── Plazo ── */}
+    <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
+      <Tit>Plazo</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Inicio</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.green}}>{obra?.inicio || "—"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
+          <div style={{fontSize:13,fontWeight:600,color:ampliaciones.length>0?C.yellow:C.green}}>{finVigente || "—"}</div>
+          {ampliaciones.length > 0 && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            {ampliaciones.length} ampliación{ampliaciones.length===1?'':'es'}
+          </div>}
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza}}>
+            {totalDias != null ? `${totalDias} días` : "no disponible"}
+          </div>
+          {totalDias == null && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            falta capturar inicio o fin
+          </div>}
+        </div>
+      </div>
+      {pctPlazo != null && <div style={{marginTop:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:4}}>
+          <span>Transcurridos: <b style={{color:C.textSec}}>{transcurridos} días</b></span>
+          <span>Restantes: <b style={{color:C.textSec}}>{restantes} días</b></span>
+        </div>
+        <Bar pct={pctPlazo} color={pctPlazo>=100?C.red:pctPlazo>=75?C.yellow:C.green}/>
+        <div style={{fontSize:9,color:C.textMut,marginTop:3,textAlign:"right"}}>{NUM(pctPlazo,1)}% del plazo</div>
+      </div>}
+    </Card>
+
+    {/* ── Requiere atención ──
+        Sólo críticos y altos, igual que en el banner de constructora. Si no
+        hay ninguno no se pinta la tarjeta: un "todo en orden" permanente
+        enseña a ignorar el sitio donde después aparece lo importante. */}
+    {riesgosTop.length > 0 && <Card accent={C.red}>
+      <Tit>Requiere atención</Tit>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {riesgosTop.map(r => (
+          <div key={r.id} onClick={irA(r.tab, r.subTab)}
+            style={{background:C.bg,borderRadius:8,padding:"9px 11px",
+              borderLeft:`3px solid ${r.severidad==='critico'?C.red:C.yellow}`,
+              cursor:onNavTab?"pointer":"default"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{r.titulo}</div>
+              <div style={{fontSize:12,fontWeight:700,flexShrink:0,
+                color:r.severidad==='critico'?C.red:C.yellowDk}}>{r.valor}</div>
+            </div>
+            {r.detalle && <div style={{fontSize:10,color:C.textSec,marginTop:2}}>{r.detalle}</div>}
+            {r.extra && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{r.extra}</div>}
+          </div>
+        ))}
+      </div>
+    </Card>}
   </div>;
 }
 
@@ -18551,11 +19055,13 @@ export default function App(){
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="salud"&&<PantallaSalud/>}
-      {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
       {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
+      {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount} soloContrato={dep}/>}
 
-      {/* DASHBOARD ejecutivo */}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>}
+      {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
+      {screen==="obra"&&tab==="dash"&&obra&&(dep
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} onNavTab={navTab}/>
+        : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
