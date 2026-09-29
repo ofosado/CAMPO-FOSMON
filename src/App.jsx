@@ -10594,16 +10594,32 @@ function MiniDashSubcontratos({obra, subcontratos}){
 // (Avance · Almacén · Maquinaria · Nómina · Estimaciones · Subcontratos)
 // Cada sub-tab tiene su propio mini-dashboard arriba (Sprint B).
 // ════════════════════════════════════════════════════════════════════════════
-function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
+// `subTabs` llega como parámetro en vez de leerse de la constante de módulo:
+// una dependencia sólo debe ver la captura de avance (P5), y el filtro tiene
+// que decidirse donde se conoce el tipo de organización. Leerla aquí adentro
+// era la razón por la que dar la pestaña de Operación entregaba de pasada
+// nómina, subcontratos y maquinaria.
+//
+// El default deja la interfaz de constructora exactamente como estaba.
+function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
                    historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,
-                   nominaHistorial=[], setNominaHistorial}){
+                   nominaHistorial=[], setNominaHistorial,
+                   subTabs=SUBTABS_OPERACION}){
+  // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
+  // `subTabOper` es estado que sobrevive al cambio de obra y lo mueve también
+  // `onNavTab`, así que un valor viejo —"nomina", por ejemplo— podría seguir
+  // en pie cuando la barra ya no lo ofrece. Esconder el botón no basta si el
+  // cuerpo de abajo sigue dispuesto a pintar la sección.
+  const subTab = subTabs.some(t => t.id === subTabPedido) ? subTabPedido : subTabs[0].id;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {/* Sub-tabs */}
-    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+    {/* Sub-tabs — con una sola no hay nada que elegir, así que no se pinta
+        la barra: un selector de un elemento es ruido que además insinúa que
+        hay más detrás. */}
+    {subTabs.length > 1 && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
-      {SUBTABS_OPERACION.map(t => (
+      {subTabs.map(t => (
         <button key={t.id} onClick={()=>setSubTab(t.id)}
           style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
             background: subTab===t.id ? C.caliza : "transparent",
@@ -10613,7 +10629,7 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           {t.label}
         </button>
       ))}
-    </div>
+    </div>}
 
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
@@ -10688,11 +10704,14 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
 // ════════════════════════════════════════════════════════════════════════════
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
-function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados}){
+// `subTabs` como parámetro y acotado adentro, por lo mismo que en `Operacion`.
+function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados,
+                     subTabs=SUBTABS_PLANEACION}){
+  const subTab = subTabs.some(t => t.id === subTabPedido) ? subTabPedido : subTabs[0].id;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+    {subTabs.length > 1 && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
-      {SUBTABS_PLANEACION.map(t => (
+      {subTabs.map(t => (
         <button key={t.id} onClick={()=>setSubTab(t.id)}
           style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
             background: subTab===t.id ? C.caliza : "transparent",
@@ -10702,7 +10721,7 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCa
           {t.label}
         </button>
       ))}
-    </div>
+    </div>}
     {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} subs={subs} subsCargados={subsCargados}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
     {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
@@ -16560,6 +16579,15 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
 // - Operación: lo que se reporta semana a semana (avance, almacén, maq, nómina, estimaciones, subs)
 // - Planeación: contrato y presupuesto (lo que define la obra)
 // - Gastos GP: datos del Sheet
+//
+// Para dependencia el juego es otro y vive en TABS_DEPENDENCIA (ver P5).
+const TABS_DEPENDENCIA = [
+  {id:"dash",      label:"Dashboard"},
+  {id:"avance",    label:"Avance"},
+  {id:"evidencia", label:"Evidencia"},
+  {id:"contrato",  label:"Contrato"},
+];
+
 const TABS_POR_ROL = {
   director_general:    [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   director_operaciones:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
@@ -16570,7 +16598,42 @@ const TABS_POR_ROL = {
   auditor:             [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
+
+  // ── Dependencia (P5) ──
+  // Cuatro pestañas: el estado de la obra de un vistazo, lo que se capturó,
+  // la evidencia y el contrato. No hay Gastos porque no hay economía interna
+  // del contratista que mostrar.
+  //
+  // Es el mismo juego para los seis roles operativos. Quién ESCRIBE no lo
+  // decide el menú sino `can()`: el supervisor captura dentro de Avance y el
+  // contralor ve lo mismo en solo lectura. Dar menús distintos por rol
+  // duplicaría en el menú una decisión que ya vive en PERMISOS, y las dos se
+  // desincronizarían — es lo que pasó con `ROLES_PANEL_EJECUTIVO`.
+  //
+  // El informe todavía no existe; entra como quinta cuando exista. Una
+  // pestaña que anuncia "próximamente" no se le enseña a un cliente.
+  director_obras:      TABS_DEPENDENCIA,
+  subdirector:         TABS_DEPENDENCIA,
+  jefe_supervision:    TABS_DEPENDENCIA,
+  supervisor_obra:     TABS_DEPENDENCIA,
+  administrativo:      TABS_DEPENDENCIA,
+  contralor:           TABS_DEPENDENCIA,
+  // Contratista: el equivalente a `cliente` del lado de dependencia. Ve lo
+  // suyo y nada más.
+  contratista:         [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 };
+
+// El menú de un usuario, con el respaldo del lado correcto.
+//
+// El respaldo importa más de lo que parece. Hasta hoy era
+// `TABS_POR_ROL[rol] || TABS_POR_ROL.director_operaciones`, y ese "||" es
+// exactamente por donde a `director_obras` le salía Gastos: un rol que la
+// tabla no conocía caía del lado constructora. Un rol nuevo de dependencia
+// —y van a llegar— volvería a caer ahí. Aquí el respaldo pregunta por el
+// tipo, que es lo que las reglas de Firestore juzgan (P5).
+const tabsDe = usuario =>
+  TABS_POR_ROL[usuario?.rol] ||
+  (esDependencia(usuario) ? TABS_DEPENDENCIA : TABS_POR_ROL.director_operaciones);
 
 // SUB-TABS dentro de cada sección principal
 // (El sub-tab "resumen" se removió — duplicaba info del Dashboard y solo
@@ -16588,6 +16651,26 @@ const SUBTABS_PLANEACION = [
   {id:"contrato", label:"Contrato"},
   {id:"presupuesto", label:"Presupuesto"},
   {id:"permisos", label:"Permisos"},
+];
+
+// ── Sub-pestañas cuando la organización es una dependencia (P5) ───────────
+// De Operación sobrevive sólo la captura de avance: nómina, subcontratos,
+// maquinaria y almacén son economía interna del contratista. Estimaciones
+// sale de aquí porque en dependencia no es un sub-tab escondido dentro de
+// Operación — es una de las cifras principales del Dashboard.
+//
+// De Planeación quedan contrato y presupuesto. El presupuesto es el catálogo
+// de conceptos con sus precios unitarios: es lo que la dependencia contrató y
+// contra lo que se mide el avance, así que le pertenece. "Permisos" es la
+// matriz de permisos por rol, administración del sistema, y no entra en esta
+// etapa.
+const SUBTABS_OPERACION_DEPENDENCIA = [
+  {id:"avance", label:"Avance físico"},
+];
+
+const SUBTABS_PLANEACION_DEPENDENCIA = [
+  {id:"contrato", label:"Contrato"},
+  {id:"presupuesto", label:"Presupuesto"},
 ];
 
 // Sin estimaciones de muestra. Cada obra comienza en blanco.
@@ -18301,7 +18384,7 @@ export default function App(){
   const entrar=async id=>{
     setObraId(id);setScreen("obra");
     // Tab inicial = primera tab disponible según rol del usuario
-    const primerTab = (TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones)[0]?.id || "dash";
+    const primerTab = tabsDe(usuario)[0]?.id || "dash";
     setTab(primerTab);
     const o = obras.find(x=>x.id===id);
     setAuditObra(id, o?.contrato || o?.nombre || "");
@@ -18323,7 +18406,8 @@ export default function App(){
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
   };
-  const TABS=TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones;
+  const TABS=tabsDe(usuario);
+  const dep=esDependencia(usuario);
 
   // ── PENDIENTES DE CAPTURA EN OPERACIÓN ──
   // Cuenta:
@@ -18448,7 +18532,10 @@ export default function App(){
           fontWeight:tab===t.id?500:400,letterSpacing:"0.01em",transition:"all .15s",
           display:"inline-flex",alignItems:"center",gap:6}}>
           <span>{t.label}</span>
-          {t.id==="operacion" && pendientesOp > 0 && (
+          {/* El contador cuelga de la pestaña donde se captura, que en
+              dependencia se llama "avance" y no "operacion". Sin esto el
+              aviso de cierre pendiente no aparecía en ningún lado. */}
+          {(t.id==="operacion" || t.id==="avance") && pendientesOp > 0 && (
             <span title="Capturas pendientes esta semana"
               style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
                 borderRadius:99,minWidth:16,height:16,padding:"0 5px",
@@ -18484,6 +18571,39 @@ export default function App(){
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
+      )}
+
+      {/* AVANCE / CONTRATO: las mismas pantallas, con la barra de sub-pestañas
+          recortada (P5). No son wrappers nuevos: son `Operacion` y `Planeacion`
+          con otra lista de sub-tabs. Lo que sobra no se esconde con CSS, no se
+          le pasa — y el guardia que vive dentro de cada wrapper impide que un
+          `subTab` viejo siga pintando la sección que la barra ya no ofrece. */}
+      {screen==="obra"&&tab==="avance"&&obra&&(
+        <Operacion
+          subTabs={SUBTABS_OPERACION_DEPENDENCIA}
+          subTab={subTabOper} setSubTab={setSubTabOper}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
+          subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
+          maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          subcontratos={subcontratos} setSubcontratos={setSubcontratos}
+          historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
+          setCambiosPendientes={setCambiosPendientes}
+          onNavTab={navTab}/>
+      )}
+
+      {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
+          fotos, las revisa — y lo que necesita es exactamente eso. */}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+
+      {screen==="obra"&&tab==="contrato"&&obra&&(
+        <Planeacion
+          subTabs={SUBTABS_PLANEACION_DEPENDENCIA}
+          subTab={subTabPlan} setSubTab={setSubTabPlan}
+          obra={obra} setObra={setObra} rol={usuario.rol}
+          setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 
       {/* GASTOS GP */}
