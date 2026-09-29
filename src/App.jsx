@@ -4527,7 +4527,18 @@ const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
 // permanente.
 const CLAVES_BULK = ['info','subs','maquinaria','materiales','estimaciones',
                      'otrosGastos','nominaSemanas','historialAvanceSemanas'];
-const datosObraCompletos = d => !!d && CLAVES_BULK.every(k => d._listos?.[k]);
+
+// En dependencia cinco de esos oyentes no se levantan (P5), así que esas cinco
+// claves NUNCA van a marcarse listas. Exigirlas dejaría el consolidado
+// esperando hasta el tope de 12 s y después se pintaría con el aviso de
+// "consolidado parcial" en todas las obras, siempre: un dato que no se pidió
+// no es un dato que no llegó.
+const CLAVES_BULK_DEPENDENCIA = ['info','subs','estimaciones','historialAvanceSemanas'];
+
+const datosObraCompletos = (d, soloContrato = false) => {
+  const claves = soloContrato ? CLAVES_BULK_DEPENDENCIA : CLAVES_BULK;
+  return !!d && claves.every(k => d._listos?.[k]);
+};
 
 // Tope de espera antes de pintar con datos incompletos. Ni el guard de datos
 // ni el de GP pueden bloquear la pantalla indefinidamente: si a los 12 s no
@@ -5198,7 +5209,21 @@ function parsearGPConstruct(csvText) {
 }
 
 // Hook para cargar datos de GP Construct
-function useGPConstruct() {
+// `activo` = ¿esta organización tiene por qué leer el Sheet de FOSMON?
+//
+// En una dependencia la respuesta es no (P5), y el corte va AQUÍ y no en quien
+// consume el dato, por tres razones:
+//
+//   1. `global/gp_construct` es la contabilidad de FOSMON, no una ruta de la
+//      organización. Ni siquiera lleva prefijo de org. Pedirla desde la sesión
+//      de un municipio es una lectura que las reglas van a negar, y con razón.
+//   2. La lectura arranca al montar, antes de entrar a cualquier pantalla. Si
+//      el corte viviera en los componentes, la petición ya habría salido.
+//   3. Con el corte, `gpUltActualiz` nunca se llena y `gpDisponible` es false
+//      — que es exactamente el estado que pinta el chip ámbar "GP Sheet · no
+//      disponible". `'inactivo'` existe para poder distinguir "no aplica" de
+//      "falló", que es la misma distinción del P4 en otro plano.
+function useGPConstruct(activo = true) {
   // gpData ahora es el RESUMEN (~50KB): obras con totales pero sin rubros ni proveedores.
   // Para análisis detallado de una obra (rubros + proveedores), cargarDetalleGP(obraId).
   const [gpData, setGpData] = useState(null);
@@ -5217,6 +5242,7 @@ function useGPConstruct() {
   //   sin_sincronizar  → el Sheet nunca se sincronizó; sólo lo arregla Refrescar
   //   version_vieja    → hay caché pero de otro parser; sólo lo arregla Refrescar
   //   error            → falla transitoria agotados los reintentos
+  //   inactivo         → esta organización no lee GP; no se pidió nada
   // Los dos primeros terminales NO se reintentan: reintentar una lectura que
   // devuelve lo mismo sólo gasta cuota. Sólo se reintenta la falla transitoria.
   const [gpEstado, setGpEstado] = useState('cargando');
@@ -5243,6 +5269,9 @@ function useGPConstruct() {
   };
 
   const cargarGP = useCallback(async (forzar = false) => {
+    // El corte también aquí y no sólo en el efecto de montaje: `cargarGP` y
+    // `reintentarGP` salen del hook y cualquier pantalla puede llamarlas.
+    if (!activo) { setGpEstado('inactivo'); return; }
     setGpLoading(true); setGpError('');
     let mensajeError = '';
     try {
@@ -5306,7 +5335,7 @@ function useGPConstruct() {
       setGpError(`Error al leer caché de GP (${e?.code || 'desconocido'}): ${e?.message || e}`);
     }
     setGpLoading(false);
-  }, []);
+  }, [activo]);
 
   // Vigilante de reintentos: sólo actúa sobre la falla transitoria y sólo
   // GP_REINTENTOS_MS.length veces. Agotados, el estado queda en 'error' —
@@ -5338,6 +5367,7 @@ function useGPConstruct() {
   // Carga el detalle completo (rubros + proveedores) de UNA obra específica
   // Se invoca solo cuando se necesita (ej: al entrar al tab Gastos)
   const cargarDetalleObra = useCallback(async (obraIdGP) => {
+    if (!activo) return null;
     if (!obraIdGP) return null;
     if (gpDetalles[obraIdGP]) return gpDetalles[obraIdGP]; // ya está en cache
     try {
@@ -5350,9 +5380,16 @@ function useGPConstruct() {
       console.warn('cargarDetalleObra error:', e);
     }
     return null;
-  }, [gpDetalles]);
+  }, [gpDetalles, activo]);
 
-  useEffect(() => { cargarGP(); }, []);
+  // Se rearma cuando cambia `activo`: al montar no hay sesión todavía, así que
+  // el tipo de organización no se conoce hasta que el login resuelve los
+  // claims. Sin esta dependencia, un usuario de constructora que entra en una
+  // sesión nueva se quedaría sin GP hasta recargar.
+  useEffect(() => {
+    if (!activo) { setGpEstado('inactivo'); return; }
+    cargarGP();
+  }, [activo, cargarGP]);
 
   // Reintento manual: devuelve el presupuesto de reintentos automáticos, que
   // si no quedaría gastado para siempre tras la primera racha de fallos.
@@ -17572,7 +17609,9 @@ export default function App(){
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
-  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
+  // El Sheet de GP es la contabilidad de FOSMON: no se lee desde la sesión de
+  // una dependencia (P5). Se pregunta por el tipo, no por el rol.
+  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct(!esDependencia(usuario));
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -17734,6 +17773,7 @@ export default function App(){
   // los componentes muestran "vacío" hasta que el usuario capture.
   useEffect(()=>{
     if(!obraId) return;
+    const pideObra = ruta => seSuscribe(ruta, usuario?.tipo);
     // Reset inmediato para evitar mostrar datos de la obra anterior
     setSubs([]);
     setSubsCargados(false);
@@ -17795,15 +17835,20 @@ export default function App(){
       }
       setSubsCargados(true);
     });
-    fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
+    // Maquinaria, almacén y subcontratos son economía interna del contratista:
+    // en una dependencia no se piden (P5, vía `seSuscribe`). Los estados quedan
+    // en `[]`, que es su valor inicial, y ninguna pantalla de dependencia los
+    // consulta — la barra de sub-pestañas no ofrece esas secciones y el tablero
+    // recortado no suma gasto. La lectura tampoco pasaría las reglas.
+    if (pideObra('avance/maquinaria')) fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
       if(d?.fecha) setFechasModulos(f => ({...f, maquinaria: d.fecha}));
     });
-    fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
+    if (pideObra('avance/materiales')) fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
       if(d?.fecha) setFechasModulos(f => ({...f, materiales: d.fecha}));
     });
-    fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
+    if (pideObra('subcontratos/lista')) fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
     });
     // Cargar historial de nómina — solo para roles con acceso.
@@ -17814,7 +17859,7 @@ export default function App(){
     // fix/kpis-en-cero (2026-09-17): además de setFechasModulos (comportamiento
     // previo), ahora POBLA setNominaHistorial para alimentar KPIs de Dashboard,
     // MiniDashNomina, motor detectarRiesgos y PDF.
-    if (usuario?.rol !== 'cliente') {
+    if (usuario?.rol !== 'cliente' && pideObra('nomina/historial')) {
       leerHistorialNomina(obraId).then(({registros})=>{
         // Calendario, no orden de carga: ver `semanasDeNomina`. De aquí comen
         // el PDF, los tres avisos de nómina y el KPI de personal del tablero.
@@ -17849,7 +17894,7 @@ export default function App(){
         setNominaHistorial([]);
       });
     }
-  },[obraId, usuario?.rol]);
+  },[obraId, usuario?.rol, usuario?.tipo]);
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
   // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
   const[subs,setSubs]=useState([]);
@@ -17893,10 +17938,11 @@ export default function App(){
   // pueda incluirlos en las tendencias y el resumen de gasto total.
   useEffect(() => {
     if (!obraId) return;
+    if (!seSuscribe('config/otros_gastos', usuario?.tipo)) return;   // P5
     fsGet(`obras/${obraId}/config/otros_gastos`).then(d => {
       setOtrosGastos(Array.isArray(d?.items) ? d.items : []);
     });
-  }, [obraId]);
+  }, [obraId, usuario?.tipo]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   // onSnapshot en vez de fsGet — así cuando otro usuario (ej. Aldo en obra)
@@ -18090,6 +18136,15 @@ export default function App(){
       patch(id, { [clave]: vacio });
     };
 
+    // Cinco de los nueve oyentes de abajo traen economía interna del
+    // contratista y en una dependencia no se suscriben — quién decide eso es
+    // `seSuscribe`, con el inventario a la vista junto a `esDependencia`.
+    //
+    // `datosObraCompletos(d, true)` sabe de este recorte y no espera las cinco
+    // claves que nunca van a llegar.
+    const pide = ruta => seSuscribe(ruta, usuario?.tipo);
+    const soloContrato = esDependencia(usuario);
+
     // Un listener por documento por obra. Se limpian todos al cambiar obras
     // activas o al salir de la pantalla.
     const unsubs = [];
@@ -18106,22 +18161,24 @@ export default function App(){
         patch(o.id, { subs: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'subs', [], 'subs')));
       // maquinaria
-      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'maquinaria'), snap => {
+      if (pide('avance/maquinaria')) unsubs.push(onSnapshot(docObra(o.id, 'avance', 'maquinaria'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { maquinaria: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'maquinaria', [], 'maq')));
       // materiales
-      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'materiales'), snap => {
+      if (pide('avance/materiales')) unsubs.push(onSnapshot(docObra(o.id, 'avance', 'materiales'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { materiales: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'materiales', [], 'mat')));
-      // estimaciones — LO QUE FALTABA para el dashboard portafolio
+      // estimaciones — LO QUE FALTABA para el dashboard portafolio.
+      // Ésta SÍ va en dependencia: son las que el municipio le paga a su
+      // contratista, o sea su propio dinero saliendo.
       unsubs.push(onSnapshot(docObra(o.id, 'config', 'estimaciones'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { estimaciones: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'estimaciones', [], 'est')));
       // otros gastos
-      unsubs.push(onSnapshot(docObra(o.id, 'config', 'otros_gastos'), snap => {
+      if (pide('config/otros_gastos')) unsubs.push(onSnapshot(docObra(o.id, 'config', 'otros_gastos'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
@@ -18138,11 +18195,11 @@ export default function App(){
       // más por obra —cinco hoy— y a cambio un cambio de bandera se ve sin
       // recargar, que es justo lo que hay que poder comprobar el día de la
       // migración.
-      unsubs.push(onSnapshot(docObra(o.id, 'nomina', 'historial'), snap => {
+      if (pide('nomina/historial')) unsubs.push(onSnapshot(docObra(o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { _nomDoc: (d && Array.isArray(d.semanas)) ? d.semanas : [] });
       }, alFallar(o.id, '_nomDoc', [], 'nomina doc')));
-      unsubs.push(onSnapshot(collObra(o.id, 'nomina_historial'), snap => {
+      if (pide('nomina_historial')) unsubs.push(onSnapshot(collObra(o.id, 'nomina_historial'), snap => {
         const registros = [];
         snap.forEach(dd => { const p = dd.data()?.partes; if (Array.isArray(p)) registros.push(...p); });
         patch(o.id, { _nomSub: registros });
