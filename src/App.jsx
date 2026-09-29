@@ -5913,7 +5913,7 @@ function GestionUsuarios({usuario, obras, onClose}){
     </Card>
 
     {/* MODAL NUEVO */}
-    {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras}
+    {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras} tipoOrg={usuario?.tipo}
       onCancel={()=>setModalNuevo(false)} pedirPassword={true}
       onConfirm={async (form)=>{
         setBusy(true);
@@ -5929,7 +5929,10 @@ function GestionUsuarios({usuario, obras, onClose}){
           mensaje: `Tu cuenta fue creada con rol ${ROL_LABEL[form.rol]||form.rol}. Cambia tu contraseña al ingresar.`,
           creadaPor: usuario?.correo || 'sistema',
         });
-        await notifARoles(['director_general'], {
+        // El aviso va a la cabeza de la organización, que no se llama igual en
+        // las dos: en una dependencia no existe `director_general` y este
+        // `notifARoles` no le llegaba a nadie — un alta sin testigos.
+        await notifARoles([usuario?.tipo === 'dependencia' ? 'director_obras' : 'director_general'], {
           categoria: 'gestion', tipo: 'usuario_creado',
           titulo: `Nuevo usuario en CAMPO`,
           mensaje: `${form.nombre} (${form.email}) · ${ROL_LABEL[form.rol]||form.rol}`,
@@ -5939,7 +5942,7 @@ function GestionUsuarios({usuario, obras, onClose}){
 
     {/* MODAL EDITAR */}
     {modalEditar && <ModalUsuario titulo="Editar usuario" obras={obras} usuario={modalEditar}
-      onCancel={()=>setModalEditar(null)}
+      tipoOrg={usuario?.tipo} onCancel={()=>setModalEditar(null)}
       onConfirm={async (form)=>{
         setBusy(true);
         const cambios = {nombre:form.nombre, rol:form.rol, obras_asignadas:form.obras_asignadas, activo:form.activo};
@@ -6023,19 +6026,23 @@ function GestionUsuarios({usuario, obras, onClose}){
 }
 
 // ── MODAL FORMULARIO USUARIO (nuevo o editar) ──
-function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword}){
-  const[form,setForm]=useState({
-    email: usuario?.email||"",
-    nombre: usuario?.nombre||"",
-    rol: usuario?.rol||"administrador_obra",
-    obras_asignadas: usuario?.obras_asignadas||[],
-    activo: usuario?.activo!==false,
-    password: "",
-  });
+// `tipoOrg` es el tipo de la organización donde se está dando de alta, no el
+// del usuario que se edita: un alta siempre cae en la org de quien la hace.
+function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword, tipoOrg}){
+  const esDep = tipoOrg === "dependencia";
 
-  // Roles agrupados por tipo. Los ejecutivos ven todas las obras; los "de Obra"
-  // deben asignarse explícitamente a las obras que van a ver/editar.
-  const ROLES = [
+  // Roles agrupados por jerarquía. Los ejecutivos ven todas las obras; los que
+  // van a una obra concreta deben asignarse explícitamente.
+  //
+  // Las dos listas son excluyentes y no se mezclan: un rol de constructora en
+  // una dependencia —o al revés— es un usuario cuyos claims las reglas de
+  // Firestore no van a reconocer. Antes este selector ofrecía sólo la lista de
+  // constructora, así que dar de alta al director de Obras Públicas de un
+  // municipio era imposible desde la interfaz.
+  //
+  // `soporte` no está en ninguna de las dos a propósito: es el rol que cruza
+  // organizaciones y se otorga fuera de esta pantalla.
+  const ROLES_CONSTRUCTORA = [
     // Ejecutivos (acceso a todas las obras, con edición completa)
     ["director_general",    "Director General"],
     ["director_operaciones","Director de Operaciones"],
@@ -6049,6 +6056,32 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     // Externo
     ["cliente",             "Cliente"],
   ];
+  const ROLES_DEPENDENCIA = [
+    // Mando (ven todas las obras contratadas por la dependencia)
+    ["director_obras",      "Director de Obras Públicas"],
+    ["subdirector",         "Subdirector"],
+    ["jefe_supervision",    "Jefe de Supervisión"],
+    ["administrativo",      "Administrativo"],
+    ["contralor",           "Contralor"],
+    // De obra (se asigna a las que supervisa)
+    ["supervisor_obra",     "Supervisor de Obra"],
+    // Externo: la constructora que ejecuta
+    ["contratista",         "Contratista"],
+  ];
+  const ROLES = esDep ? ROLES_DEPENDENCIA : ROLES_CONSTRUCTORA;
+
+  const[form,setForm]=useState({
+    email: usuario?.email||"",
+    nombre: usuario?.nombre||"",
+    // El rol por omisión tiene que existir en la lista que se está mostrando.
+    // Con `administrador_obra` fijo, un alta en dependencia arrancaba con un
+    // rol que el `<select>` no ofrecía: el campo salía en blanco y, si nadie
+    // lo tocaba, se guardaba un rol de constructora.
+    rol: usuario?.rol || (esDep ? "supervisor_obra" : "administrador_obra"),
+    obras_asignadas: usuario?.obras_asignadas||[],
+    activo: usuario?.activo!==false,
+    password: "",
+  });
 
   const toggleObra = (id) => setForm(f=>{
     const a = new Set(f.obras_asignadas);
@@ -6070,7 +6103,7 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
       <div style={{marginBottom:10}}>
         <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Correo</div>
         <Inp type="email" value={form.email} disabled={!!usuario}
-          placeholder="usuario@fosmon.com.mx"
+          placeholder={esDep ? "usuario@dependencia.gob.mx" : "usuario@fosmon.com.mx"}
           onChange={e=>setForm({...form, email:e.target.value})}/>
       </div>
 
