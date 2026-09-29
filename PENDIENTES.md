@@ -205,6 +205,77 @@ sirve.
 
 ---
 
+## P5. Una dependencia ve su contrato y su avance, nunca la economía interna del contratista
+
+**Adoptado**: 2026-09-24, rama `feature/ui-dependencia`.
+
+CAMPO sirve a dos tipos de organización y no son el mismo producto con
+distinto logo. Una **constructora** ejecuta obra y su pregunta es si
+gana dinero: cuánto gastó contra cuánto ejecutó. Una **dependencia de
+gobierno** contrata obra y su pregunta es otra: en qué va su dinero y
+en qué va la obra.
+
+Lo que una dependencia mira es su propio contrato:
+
+- cuánto contrató,
+- cuánto se ha ejecutado (avance físico),
+- cuánto se ha estimado,
+- cuánto ha pagado,
+- cuánto falta por ejercer.
+
+Nómina, almacén, maquinaria, gasto y margen **no existen** para una
+organización de tipo `dependencia`. No en la lista de obras, no en el
+dashboard de obra, no en las alertas, no en el informe.
+
+**Por qué.** Dos razones, y conviene no confundirlas porque se arreglan
+distinto:
+
+1. **Es la frontera que ya sostienen las reglas.** Desde
+   `feature/prefijo-organizacion` las obras de cada organización
+   cuelgan de su propio prefijo y Firestore niega el cruce. Hasta hoy
+   la interfaz no decía lo mismo: `TABS_POR_ROL` no conocía los roles
+   de dependencia y `director_obras` caía al respaldo de constructora,
+   con Gastos incluido. Una interfaz que ofrece lo que las reglas
+   niegan produce pantallas vacías en el mejor caso y, en el peor,
+   cifras a medias.
+2. **La cifra sería falsa, no confidencial.** El margen se calcula
+   contra el gasto, y el gasto de CAMPO viene del Sheet de GP, que es
+   de FOSMON. Para una dependencia ese gasto es cero, así que
+   "ejecutado − 0" daría 100% de margen en todas sus obras y la tabla
+   del portafolio las ordenaría por una columna sin significado. Eso
+   es el P2: una cifra que no se pudo calcular no se sustituye por
+   cero. La diferencia con el P2 es que aquí la respuesta correcta no
+   es escribir "no disponible" — es **no preguntar la ruta**, porque
+   la cifra no le corresponde a esa organización aunque se pudiera
+   calcular.
+
+**Cómo se aplica:**
+
+1. **El discriminante es `tipo`, no el rol ni la presencia de
+   `orgId`.** Viene de los claims del token, que son el mismo dato que
+   evalúan las reglas. Decidir la interfaz con un dato distinto del
+   que juzgan las reglas es como nacieron el #31 y el #35.
+2. **No se esconde: no se pide.** Una suscripción a una ruta que la
+   organización no debe ver falla, `alFallar` deja `[]`, y los KPIs
+   suman ese `[]` como cero — un número falso sin aviso. Los oyentes
+   del margen y la carga del Sheet de GP quedan fuera cuando el tipo
+   es dependencia.
+3. **Componentes aparte, no condicionales sembrados.** El dashboard y
+   el portafolio de dependencia son componentes propios que nunca
+   calculan gasto ni margen, en vez de los de constructora con
+   banderas. Un condicional que se olvida filtra; una cifra que no se
+   calcula no puede filtrarse. Es el mismo criterio con el que se
+   separaron las vistas de rol `cliente`.
+4. **La puerta de atrás también se cierra.** Esconder la pestaña no
+   basta si `PERMISOS[rol].gastos` sigue diciendo "editar", si
+   `ROLES_PANEL_EJECUTIVO` incluye al rol, o si la biblioteca de
+   riesgos emite `margen_bajo`. El margen vuelve por la alerta.
+
+Si la interfaz ofrece lo que las reglas niegan, alguien va a creerle a
+la interfaz.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por

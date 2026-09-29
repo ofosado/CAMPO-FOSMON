@@ -4365,6 +4365,47 @@ const MODULOS_POR_TIPO = {
   dependencia: ["contratistas","supervisores","comparativo","programa","SIMVER"],
 };
 
+// ── ¿Esta sesión es de una dependencia de gobierno? ───────────────────────
+// FUENTE ÚNICA de la pregunta que gobierna toda la interfaz por tipo (P5).
+// El `tipo` llega en los claims del token —el mismo dato que evalúan las
+// reglas de Firestore— y el login no deja entrar sin él, así que aquí no
+// hay caso "no se sabe": o es dependencia, o se trata como constructora y
+// la UI queda exactamente como estaba.
+//
+// Se pregunta por el TIPO y no por el rol: los roles de dependencia ya
+// existían declarados desde antes de que hubiera interfaz para ellos, y
+// atarse a la lista de roles significaría tocar dos sitios cada vez que se
+// agregue uno.
+const esDependencia = usuario => usuario?.tipo === "dependencia";
+
+// ── ¿Se pide esta ruta de obra, o no se pide? ───────────────────────────────
+// El inventario de las rutas que llevan economía interna del contratista. Son
+// las MISMAS SEIS que `firestore.rules` deja deliberadamente sin declarar del
+// lado dependencia (ver PENDIENTES, «Qué NO se agrega, a propósito»): entre
+// ellas está el margen, y dejarlas fuera hace que la frontera sea estructura y
+// no disciplina. Aquí la interfaz dice lo mismo que las reglas.
+//
+// El corte es NO PEDIR, no pedir-y-no-pintar (P5). Si se pidieran, las reglas
+// las negarían, el manejador de fallo resolvería la clave con `[]`, y un `[]`
+// sumado vale CERO — indistinguible de "no hubo gasto". La pantalla no diría
+// "no disponible": diría "$0" y "margen 100%".
+//
+// Se declara aquí, a la vista, y no como condición suelta en cada oyente,
+// porque la lista es lo que hay que poder auditar de un golpe contra las
+// reglas. Son rutas lógicas, sin el prefijo de organización: el prefijo lo
+// pone `conOrg` más tarde y no cambia de qué documento se habla.
+const RUTAS_SOLO_CONSTRUCTORA = new Set([
+  'avance/maquinaria',      // equipo propio: costo
+  'avance/materiales',      // almacén: costo
+  'config/otros_gastos',    // gasto manual
+  'nomina/historial',       // personal (formato viejo)
+  'nomina_historial',       // personal (subcolección)
+  'subcontratos/lista',     // a quién le paga el contratista y cuánto
+]);
+
+const seSuscribe = (ruta, tipo) =>
+  !(tipo === 'dependencia' && RUTAS_SOLO_CONSTRUCTORA.has(ruta));
+
 const ROL_LABEL = {
   // Constructora
   director_general:    "Director General",
@@ -4416,15 +4457,27 @@ const PERMISOS = {
   // auditando una obra que FOSMON ejecuta en conjunto con esas empresas.
   auditor:             { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
   cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
-  // ── Dependencia (declarados; UI se implementa cuando toque) ──
-  director_obras:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
-  subdirector:         { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
-  jefe_supervision:    { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:true  },
-  supervisor_obra:     { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:false },
-  administrativo:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  // ── Dependencia ──
+  // `gastos: null` en los seis, sin excepción. No es una restricción de
+  // confidencialidad: el módulo Gastos son los gastos de GP, que es el Sheet
+  // de FOSMON. Una dependencia no tiene nada ahí (P5).
+  //
+  // Esconder la pestaña en TABS_POR_ROL no bastaba: `can(rol,'gastos')` se
+  // consulta también desde la matriz de Planeación → Permisos, que la pintaba
+  // como editable. Tres de estos roles decían "editar" hasta hoy.
+  //
+  // `riesgo` baja a "ver" en todos: la biblioteca de riesgos emite
+  // `margen_bajo`, así que dejar que alguien de dependencia configure riesgos
+  // es la puerta por la que el margen vuelve a entrar. La emisión misma se
+  // corta en `detectarRiesgos`; esto es el segundo cerrojo.
+  director_obras:      { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  subdirector:         { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  jefe_supervision:    { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  supervisor_obra:     { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
+  administrativo:      { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
   // Contralor: lectura amplia sin edición. NO ve comparativo (queda restringido
   // a director_obras y subdirector).
-  contralor:           { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  contralor:           { dash:"ver", captura:"ver",     gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
   contratista:         { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
   // ── Cross-tipo ──
   // Soporte: NO puede ver operación (avances/montos/evidencia/comparativos).
@@ -4448,6 +4501,14 @@ const ROLES_PANEL_EJECUTIVO = new Set([
   "auditor",            // solo sus obras asignadas (ya filtradas antes de pintar)
   // Dependencia: son mandos que necesitan el consolidado; sin él el
   // producto no cumple lo que se les ofrece.
+  //
+  // Este conjunto contesta "¿ve UN consolidado?", no "¿ve el de
+  // constructora?". Cuál se pinta lo decide el tipo: `DashboardPrincipal`
+  // para constructora, `PortafolioDependencia` para dependencia. Sacarlos de
+  // aquí no habría quitado el margen de su pantalla — habría quitado la
+  // pantalla entera, porque este mismo conjunto es el que autoriza la carga
+  // de datos de las obras del portafolio. El margen se quita donde se
+  // calcula, que es el componente, y donde se pide, que son los oyentes.
   "director_obras", "subdirector", "jefe_supervision",
 ]);
 const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
@@ -4789,9 +4850,18 @@ function Login({onLogin}){
       // Si no se puede decidir, NO se entra. La alternativa —entrar y que
       // cada lectura caiga a la raíz— es cómo un cliente termina viendo o
       // pisando los datos de otro sin que nada falle a la vista.
+      //
+      // El `tipo` que sale de aquí viaja además en el objeto `usuario`, que es
+      // lo que React vuelve a pintar. No es una segunda copia del criterio: es
+      // el mismo valor de la misma lectura, una línea más abajo. La interfaz
+      // tiene que decidirse con el dato que evalúan las reglas (P5), y el
+      // prefijo vive en un módulo, fuera del árbol de React, así que no
+      // dispara un re-render por sí solo.
+      let tipoOrg = null, orgIdUsuario = null;
       try {
         const { claims } = await getIdTokenResult(cred.user);
         fijarPrefijoOrg(claims.tipo, claims.orgId);
+        tipoOrg = claims.tipo; orgIdUsuario = claims.orgId || null;
       } catch (e) {
         limpiarPrefijoOrg();
         setError(`${e.message || 'No se pudo determinar tu organización.'} Contacta al administrador.`);
@@ -4811,6 +4881,8 @@ function Login({onLogin}){
         obras_asignadas: Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [],
         bienvenidaVista: perfil.bienvenidaVista === true,
         emailId,
+        tipo: tipoOrg,
+        orgId: orgIdUsuario,
       });
     } catch(e) {
       const msgs = {
