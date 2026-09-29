@@ -7846,7 +7846,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
     {/* Header */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingBottom:6}}>
-      <div>
+      {/* El logo del cliente va junto al saludo, no en la barra de arriba: esa
+          barra es del producto y dice lo mismo para todos. Sólo aparece si
+          alguien capturó la marca — un hueco con el logo de otra organización
+          sería peor que un hueco sin logo. */}
+      <div style={{display:"flex",alignItems:"flex-start",gap:11,minWidth:0}}>
+      {(marca?.logoBlanco || marca?.logoNegro) && (
+        <img src={marca.logoBlanco || marca.logoNegro}
+          alt={marca.empresa ? `Logotipo de ${marca.empresa}` : 'Logotipo del cliente'}
+          style={{height:34,width:"auto",maxWidth:110,objectFit:"contain",flexShrink:0,marginTop:1}}/>
+      )}
+      <div style={{minWidth:0}}>
         <div style={{fontSize:15,fontWeight:700,color:C.textPri,marginBottom:3}}>
           Hola, {(() => {
             const n = usuario.nombre || '';
@@ -7858,7 +7868,14 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           })()}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
-          {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
+          {/* El nombre de la organización sale de `config/branding`. El
+              respaldo "FOSMON Construcciones" sólo vale del lado
+              constructora; en una dependencia sin marca capturada se omite el
+              segmento entero antes que afirmar de quién es la obra. */}
+          {ROL_LABEL[usuario.rol]}
+          {(marca?.empresa || (!dep && 'FOSMON Construcciones')) &&
+            ` · ${marca?.empresa || 'FOSMON Construcciones'}`}
+          {' · '}{activas.length} obra(s) activa(s)
         </div>
         {/* Chip de estado del Sheet GP. UNA sola píldora con dos variantes:
             frescura cuando hay dato (verde/amarillo/rojo por antigüedad) y
@@ -7911,6 +7928,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             </button>}
           </div>;
         })()}
+      </div>
       </div>
       {puedeGestionar&&<button onClick={()=>setModalNueva(true)}
         style={{background:C.caliza,border:"none",borderRadius:8,padding:"7px 14px",
@@ -18350,6 +18368,31 @@ export default function App(){
   // Guardarraíl anti-bucle: la primera pasada (mount) captura claimsVersion
   // inicial en versionRef.current y NO refresca. Solo refrescamos si la nueva
   // versión es ESTRICTAMENTE MAYOR a la que ya vimos.
+  // ── MARCA DEL CLIENTE ──────────────────────────────────────────────────────
+  // `orgs/{oid}/config/branding`. Es la marca de QUIEN USA la app, no la del
+  // producto: la app se llama igual para todos y eso vive en el manifest. Aquí
+  // sólo va el logo y el nombre que el cliente reconoce como suyo, junto al
+  // saludo.
+  //
+  // Sin documento no hay respaldo inventado: la línea del saludo enseña el
+  // nombre de la organización nada más cuando alguien lo capturó. Un municipio
+  // con la leyenda "FOSMON Construcciones" debajo de su nombre es peor que un
+  // municipio sin leyenda.
+  //
+  // La ruta se arma con `orgId` y no con `conOrg`, que sólo prefija rutas de
+  // obra. Y con `getDoc` en vez de `fsGet` a propósito: `fsGet` devuelve `null`
+  // igual para "no existe" y para "no hay permiso", y aquí importa poder ver la
+  // diferencia en consola el día que la marca no aparezca.
+  const [marca, setMarca] = useState(null);
+  useEffect(() => {
+    if (!usuario?.orgId) return;
+    let cancelado = false;
+    getDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`))
+      .then(s => { if (!cancelado && s.exists()) setMarca(s.data()); })
+      .catch(e => console.warn('branding no legible:', usuario.orgId, e?.code || e?.message));
+    return () => { cancelado = true; };
+  }, [usuario?.orgId]);
+
   const versionRef = useRef(null);
   useEffect(() => {
     if (!usuario?.emailId) return;
@@ -19055,8 +19098,8 @@ export default function App(){
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="salud"&&<PantallaSalud/>}
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount} soloContrato={dep}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra} marca={marca}/>}
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
