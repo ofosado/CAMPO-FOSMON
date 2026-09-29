@@ -3553,10 +3553,37 @@ const BIBLIOTECA_RIESGOS = [
   },
 ];
 
-// Motor de detección: evalúa todas las plantillas y devuelve las que disparen
+// ── Riesgos que no aplican a una dependencia de gobierno (P5) ─────────────
+// Los que se calculan con gasto de GP, margen, nómina, almacén, maquinaria o
+// subcontratos: economía interna del contratista. La lista va por id y no por
+// categoría porque `categoria: 'financiero'` mezcla las dos cosas — `fin_005`
+// es el anticipo contractual, que la dependencia sí paga y sí le importa,
+// mientras que `fin_002` es la brecha contra el gasto, que no.
+//
+// Varios de éstos ya devolverían `null` por su cuenta al no llegarles
+// `gpData`. No alcanza: un riesgo que se calla porque le faltó el dato es
+// indistinguible de uno que se calló porque no hay riesgo, y `ctr_002` de
+// hecho pediría capturar un `gpId` que en dependencia no significa nada.
+const RIESGOS_SOLO_CONSTRUCTORA = new Set([
+  'fin_001',                                          // margen bruto
+  'fin_002',                                          // brecha gasto vs avance
+  'fin_006',                                          // velocidad de quema del presupuesto
+  'nom_001', 'nom_002', 'nom_003',                    // nómina
+  'mat_001', 'mat_002',                               // almacén
+  'maq_001',                                          // maquinaria
+  'sub_001', 'sub_002', 'sub_003',                    // subcontratos
+  'gst_001', 'gst_002', 'gst_003', 'gst_004', 'gst_005',  // gasto de GP por proveedor
+  'ctr_002',                                          // vinculación con GP
+]);
+
+// Motor de detección: evalúa todas las plantillas y devuelve las que disparen.
+// `contexto.tipo` es el tipo de organización; ausente o "constructora" evalúa
+// la biblioteca completa, o sea la conducta de siempre.
 const detectarRiesgos = (contexto) => {
   const detectados = [];
+  const soloContrato = contexto?.tipo === 'dependencia';
   for (const plantilla of BIBLIOTECA_RIESGOS) {
+    if (soloContrato && RIESGOS_SOLO_CONSTRUCTORA.has(plantilla.id)) continue;
     try {
       const r = plantilla.detect(contexto);
       if (r) {
@@ -16782,6 +16809,12 @@ const ALERTA_REGLAS = [
     id: "gasto_90pct",
     titulo: "Gasto al 90% o más del presupuesto",
     severidad: "critico",
+    // El "gasto" de esta regla es el de GP más maquinaria más otros gastos:
+    // dinero que sale del contratista, no de quien contrató (P5). Para una
+    // dependencia esos tres no se leen, así que la regla no diría "no hay
+    // dato" — diría 0%, y callaría para siempre. Una alerta que nunca puede
+    // dispararse es peor que ninguna: ocupa el lugar de la que sí importaba.
+    soloConstructora: true,
     evaluar: (obra, datos, hoy) => {
       const presup = obra.presupuesto || 0;
       if (presup <= 0) return null;
@@ -16832,7 +16865,10 @@ function alertaId(obraId, reglaId, fecha) {
   return `${obraId}__${reglaId}__${año}W${String(semana).padStart(2,'0')}`;
 }
 
-function PanelAlertas({obras, gpData, onCountChange}){
+// Este panel tiene su PROPIO motor de reglas (`ALERTA_REGLAS`), aparte de
+// `BIBLIOTECA_RIESGOS`. Son dos y hay que recortar los dos: el margen vuelve
+// por donde se le deje una puerta.
+function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
   const [alertas, setAlertas] = useState([]);
   const [leidas, setLeidas] = useState({}); // { alertaId: { leidaEn, leidaPor } }
   const [cargando, setCargando] = useState(true);
@@ -16854,10 +16890,14 @@ function PanelAlertas({obras, gpData, onCountChange}){
       const resultado = [];
       for (const obra of activas) {
         // Cargar datos necesarios por obra
+        // Maquinaria y otros gastos sólo se piden cuando hay alguna regla que
+        // los use. En dependencia no hay ninguna, y pedir una ruta que no se
+        // va a mirar es exactamente lo que el P5 prohíbe: la lectura falla,
+        // deja vacío, y el vacío se suma como cero.
         const [subsD, maqD, otrosD, histD, infoD] = await Promise.all([
           fsGet(`obras/${obra.id}/avance/subs`),
-          fsGet(`obras/${obra.id}/avance/maquinaria`),
-          fsGet(`obras/${obra.id}/config/otros_gastos`),
+          soloContrato ? null : fsGet(`obras/${obra.id}/avance/maquinaria`),
+          soloContrato ? null : fsGet(`obras/${obra.id}/config/otros_gastos`),
           fsGet(`obras/${obra.id}/avance/historial`),
           fsGet(`obras/${obra.id}/config/info`),
         ]);
@@ -16899,6 +16939,7 @@ function PanelAlertas({obras, gpData, onCountChange}){
           ejecutado, ejecCatalogo, ejecExcedente };
 
         for (const regla of ALERTA_REGLAS) {
+          if (soloContrato && regla.soloConstructora) continue;
           const r = regla.evaluar(obra, datosObra, hoy);
           if (!r) continue;
           const id = alertaId(obra.id, regla.id, new Date());
