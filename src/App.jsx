@@ -4472,6 +4472,25 @@ const nombreOrg = (marca, usuario) =>
 const vaElEmblema = usuario => !esDependencia(usuario);
 
 /**
+ * ¿Va el descriptor —el desarrollo de la sigla— junto al nombre del producto?
+ *
+ * No en una dependencia. «Control de Avance, Maquinaria, Personal y Obra» es
+ * lo que quiere decir CAMPO, y es verdad del producto; el problema es que en
+ * la sesión del municipio nombra dos módulos que su menú NO tiene. Maquinaria
+ * y Personal son del contratista (P5): no se le piden esas rutas y no hay
+ * pestaña que las abra.
+ *
+ * Es el mismo daño que un texto que dicta una ruta inexistente —el usuario la
+ * busca, no la encuentra, y reporta como defecto algo que funciona—, sólo que
+ * aquí lo dice el pie de página en vez de una tarjeta.
+ *
+ * Se omite el descriptor y se queda el nombre, no se escribe otro: inventarle
+ * un desarrollo distinto a la sigla por tipo de organización es dos cadenas
+ * que se desincronizan. El hueco es correcto, igual que con el emblema.
+ */
+const vaElDescriptor = usuario => !esDependencia(usuario);
+
+/**
  * ¿Se le ofrece a esta sesión el botón de «Reporte ejecutivo» (PDF)?
  *
  * No a una dependencia. `generarPDFObra` es el reporte de la constructora
@@ -5126,7 +5145,7 @@ function Login({onLogin}){
         </button>
       </form>
       <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
-        Control de Avance, Maquinaria, Personal y Obra
+        {PRODUCTO.descriptor}
       </div>
       {/* Versión del build visible desde el Login — sirve para que un usuario
           que no puede entrar todavía pueda reportar qué versión ve.
@@ -19685,7 +19704,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"center",gap:7}}>
         {vaElEmblema(usuario) && <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>}
         <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
-          {PRODUCTO.nombre} — {PRODUCTO.descriptor}
+          {PRODUCTO.nombre}{vaElDescriptor(usuario) && ` — ${PRODUCTO.descriptor}`}
         </span>
       </div>
       {/* Versión real del build (fix/actualizacion-pwa). Formato:
