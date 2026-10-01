@@ -2628,6 +2628,151 @@ const leyendaSemanaSubida = (clave) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// EL ESTADO DE LA OBRA EN UNA SEMANA — UNA SOLA CUENTA
+// ════════════════════════════════════════════════════════════════════════════
+// Todo lo que la pantalla afirma sobre "la semana N" sale de aquí: los KPIs,
+// la curva, los deltas, la proyección y —cuando exista— el riel de la línea de
+// tiempo y el informe.
+//
+// Por qué una sola: en septiembre la gráfica y el KPI de dinero ejecutado
+// leían dos cuentas distintas del mismo número y se contradecían en la misma
+// pantalla (commit 078585e). El defecto no fue aritmético, fue que había dos
+// cuentas. Si el riel de semanas se escribe aparte de estos KPIs, nace la
+// segunda y el defecto vuelve con otro nombre.
+//
+// Reglas que esta función hace cumplir, para que nadie tenga que recordarlas:
+//   · La semana se identifica SIEMPRE por (año, semana), nunca por el número
+//     solo. Una obra de noviembre a marzo cruza el año: ordenada por número,
+//     marzo cae antes de noviembre.
+//   · Un delta entre cierres no comparables es `null`, no 0 (P2). Y dice POR
+//     QUÉ no lo hay, para que la pantalla pueda decirlo en palabras en lugar
+//     de pintar un guion que lo mismo significa "falta dato" que "no cambió".
+//   · El dinero sale del snapshot, nunca reconstruido (P1).
+
+// El fin de plazo contra el que se mide hoy. `finAmpliado` lo mantiene al día
+// quien registra o borra una ampliación (ver GestionPlazos), así que ésta es
+// la autoridad; la lista de ampliaciones es el detalle, no la fuente.
+const finVigenteDe = (obra) => obra?.finAmpliado || obra?.fin || null;
+
+// "3 de mar de 2027". El año va SIEMPRE: estas frases comparan fechas que en
+// una obra multianual caen en años distintos, y "3 de mar" no dice cuál.
+const fechaEnPalabras = (d) => d instanceof Date && !isNaN(d)
+  ? `${d.getDate()} de ${MESES_CORTO[d.getMonth()]} de ${d.getFullYear()}`
+  : null;
+
+// Por qué no hay delta en una semana. Son estados distintos y la pantalla los
+// tiene que distinguir: "es el primer cierre" no es lo mismo que "los dos
+// cierres se calcularon con definiciones distintas del avance".
+const SIN_DELTA_PRIMER_CIERRE = 'primerCierre';
+const SIN_DELTA_NO_COMPARABLES = 'noComparables';
+
+// Los cierres oficiales, semana por semana, en orden cronológico real.
+//
+// Devuelve un arreglo de estados. Cada uno es todo lo que se sabe de esa
+// semana y nada más: si el dato no está, el campo es `null`.
+const estadoPorSemana = (historialAvance = []) => {
+  const oficiales = (historialAvance || [])
+    .filter(s => s && s.tipo === 'oficial' && Number.isFinite(s.semana) && Number.isFinite(s.año))
+    .sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
+
+  return oficiales.map((snap, i) => {
+    const previo = i > 0 ? oficiales[i - 1] : null;
+    const comparable = previo ? sonComparables(snap, previo, 'avance') : false;
+    const avance = typeof snap.avancePonderado === 'number' ? snap.avancePonderado : null;
+    const avancePrevio = previo && typeof previo.avancePonderado === 'number'
+      ? previo.avancePonderado : null;
+    const hayDelta = comparable && avance !== null && avancePrevio !== null;
+    return {
+      clave: snapshotId(snap.semana, snap.año),
+      semana: snap.semana,
+      año: snap.año,
+      cierre: snap,
+      avance,
+      // P1: el dinero se lee, no se reconstruye desde el avance.
+      dinero: montoEjecutadoSnap(snap),
+      cerradoPor: snap.capturadoPor || null,
+      fechaCierre: snap.fechaCierre || snap.fechaCaptura || null,
+      delta: hayDelta ? avance - avancePrevio : null,
+      deltaDe: previo ? snapshotId(previo.semana, previo.año) : null,
+      sinDelta: hayDelta ? null : (previo ? SIN_DELTA_NO_COMPARABLES : SIN_DELTA_PRIMER_CIERRE),
+    };
+  });
+};
+
+// ¿La serie de cierres cruza más de un año? De eso depende si la etiqueta de
+// una semana necesita decir el año. Una obra que vive dentro de un año no
+// necesita repetirlo en cada marca; una multianual sí, o "S10" y "S48" en el
+// mismo riel no dicen de qué año son.
+const cruzaAños = (estados = []) => new Set(estados.map(e => e.año)).size > 1;
+
+// La etiqueta de una semana: "S40" o "S40 · 2026".
+const etiquetaSemanaRiel = (estado, conAño) =>
+  `S${String(estado.semana).padStart(2, '0')}${conAño ? ` · ${estado.año}` : ''}`;
+
+// Por qué no hay proyección de término. Cada una se dice con palabras
+// distintas porque son situaciones distintas, y la peor de las tres —la obra
+// detenida o en retroceso— es justo la que el guion escondía.
+const SIN_PROY_POCOS_CIERRES = 'pocosCierres';
+const SIN_PROY_NO_COMPARABLES = 'noComparables';
+const SIN_PROY_SIN_AVANCE = 'sinAvance';
+
+// La proyección de término al ritmo de las últimas semanas cerradas.
+//
+// `avanceActual` es el avance EN VIVO sobre contrato (lo que se ve hoy en la
+// captura), no el del último cierre: la proyección es hacia adelante desde
+// donde está la obra ahora.
+//
+// `ahora` entra como parámetro para que la cuenta se pueda probar sin esperar
+// a que pase el tiempo.
+const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()) => {
+  const finVigente = finVigenteDe(obra);
+  const ampliado = !!obra?.finAmpliado;
+  const vacia = {
+    velocidad: null, semanasBase: 0, semanasAFin: null, fechaFin: null,
+    desviacionDias: null, finVigente, ampliado, razon: SIN_PROY_POCOS_CIERRES,
+  };
+  if (estados.length === 0) return vacia;
+
+  const ultimo = estados[estados.length - 1];
+  // Solo cierres comparables en avance con el último: restar a través de un
+  // cambio de definición fabrica un salto que no ocurrió.
+  const base = estados.filter(e => sonComparables(e.cierre, ultimo.cierre, 'avance')
+    && e.avance !== null).slice(-4);
+  if (base.length < 2) {
+    // Dos situaciones que el guion mezclaba: o no hay dos cierres, o hay dos
+    // pero no se pueden restar entre sí.
+    return { ...vacia, semanasBase: base.length,
+      razon: estados.length >= 2 ? SIN_PROY_NO_COMPARABLES : SIN_PROY_POCOS_CIERRES };
+  }
+
+  // Semanas REALES entre el primero y el último de la base, no `length-1`:
+  // si hay semanas sin cierre en medio, contar puntos infla la velocidad.
+  //
+  // Y se cuentan por el calendario, no restando números de semana: un año ISO
+  // tiene 52 o 53 semanas, así que `(añoB-añoA)*52` se equivoca una semana
+  // entera cada vez que cruza un año de 53 —2020, 2026, 2032—. Los lunes de
+  // las dos claves están a un múltiplo exacto de siete días de distancia.
+  const lunA = lunesDeClaveSemana(base[0].clave);
+  const lunB = lunesDeClaveSemana(base[base.length - 1].clave);
+  const tramos = Math.max(Math.round((lunB - lunA) / (7 * 86400000)), 1);
+  const velocidad = (base[base.length - 1].avance - base[0].avance) / tramos;
+  if (!(velocidad > 0)) {
+    return { ...vacia, velocidad, semanasBase: base.length, razon: SIN_PROY_SIN_AVANCE };
+  }
+
+  const pendiente = Math.max(100 - (Number(avanceActual) || 0), 0);
+  const semanasAFin = Math.ceil(pendiente / velocidad);
+  const fechaFin = new Date(ahora + semanasAFin * 7 * 86400000);
+  // (c) El plazo se mide por fechas reales, no contando semanas.
+  const fVig = fechaLocalDeISO(finVigente);
+  const desviacionDias = fVig
+    ? Math.round((fechaFin - fVig) / 86400000)
+    : null;
+  return { velocidad, semanasBase: base.length, semanasAFin, fechaFin,
+    desviacionDias, finVigente, ampliado, razon: null };
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
 // A diferencia del snapshot de avance, un registro de nómina NO guarda el año:
@@ -3277,20 +3422,26 @@ const BIBLIOTECA_RIESGOS = [
     titulo: 'No terminará en plazo a ritmo actual',
     descripcion: 'Proyección con velocidad histórica no alcanza el 100% en fecha fin',
     tab: 'operacion', subTab: 'avance',
+    // Esta regla tenía su PROPIA cuenta de la proyección: ordenaba sin mirar
+    // el año —`filter` sin `sort`, así que en una obra multianual `slice(-4)`
+    // tomaba cuatro semanas cualesquiera—, dividía entre `length-1` en lugar
+    // de entre las semanas realmente transcurridas, y no respetaba
+    // `sonComparables`, de modo que restaba a través de un cambio de
+    // definición del avance. Podía contradecir al KPI de la misma obra.
+    // Ahora lee la misma `proyeccionDeAvance` que la pantalla.
     detect: ({obra, historialAvance}) => {
-      if (!historialAvance?.length || !obra.fin) return null;
-      const oficiales = historialAvance.filter(s => s.tipo === 'oficial');
-      if (oficiales.length < 2) return null;
-      const ult4 = oficiales.slice(-4);
-      const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
-      const velocidad = (ult4.length-1) > 0 ? totalDelta/(ult4.length-1) : 0;
-      if (velocidad <= 0) return null;
-      const ultimo = oficiales[oficiales.length-1];
-      const pendientes = Math.max(100 - ultimo.avancePonderado, 0);
-      const semsNecesarias = pendientes/velocidad;
-      const semsPlazo = Math.max(Math.floor((new Date(obra.finAmpliado||obra.fin) - Date.now())/(86400000*7)), 0);
-      if (semsNecesarias > semsPlazo * 1.3) return {severidad:'critico', valor:`${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Terminará muy tarde a ritmo actual', extra:`Velocidad: ${velocidad.toFixed(2)}pp/sem`};
-      if (semsNecesarias > semsPlazo) return {severidad:'alto', valor:`+${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Necesita acelerar para terminar en plazo'};
+      if (!historialAvance?.length || !finVigenteDe(obra)) return null;
+      const estados = estadoPorSemana(historialAvance);
+      const ultimo = estados[estados.length-1];
+      if (!ultimo || ultimo.avance === null) return null;
+      const proy = proyeccionDeAvance(estados, ultimo.avance, obra);
+      if (proy.razon !== null) return null;   // sin velocidad medible no hay nada que afirmar
+      if (proy.desviacionDias === null) return null;
+      // El atraso se mide en DÍAS reales contra el fin vigente, no contando
+      // semanas: un año ISO tiene 52 o 53 y el conteo se corre.
+      const d = proy.desviacionDias;
+      if (d > 30) return {severidad:'critico', valor:`${d}d`, detalle:'Terminará muy tarde a ritmo actual', extra:`Velocidad: ${proy.velocidad.toFixed(2)}pp/sem`};
+      if (d > 0) return {severidad:'alto', valor:`+${d}d`, detalle:'Necesita acelerar para terminar en plazo', extra:`Velocidad: ${proy.velocidad.toFixed(2)}pp/sem`};
       return null;
     },
   },
@@ -10941,39 +11092,74 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   const avanceActual = avanceFisicoPonderado(subs, contratoObra, modoVol);
   const compensacion = compensacionVolumenes(subs, modoVol);
 
-  // Snapshots oficiales ordenados (los intermedios solo para auditoría)
-  const oficiales = (historialAvance||[])
-    .filter(s => s.tipo === 'oficial')
-    .sort((a,b) => (a.año-b.año)||(a.semana-b.semana));
+  // El estado semana por semana sale de `estadoPorSemana`, que es la única
+  // cuenta del repositorio. Estos KPIs no vuelven a derivar nada de los
+  // snapshots: leen de ahí, igual que leerá el riel de la línea de tiempo.
+  const estados = estadoPorSemana(historialAvance);
+  const conAño = cruzaAños(estados);
+  const ultimoEstado = estados[estados.length-1] || null;
+  const penultimoEstado = estados[estados.length-2] || null;
+  const oficiales = estados.map(e => e.cierre);
 
-  const ultimoOf = oficiales[oficiales.length-1] || null;
-  const penultimoOf = oficiales[oficiales.length-2] || null;
+  const ultimoOf = ultimoEstado?.cierre || null;
+  const penultimoOf = penultimoEstado?.cierre || null;
   // fix/ejecutado-sin-recorte: los snapshots del esquema 1 traen el avance
   // calculado con `a` recortado. Restar uno de cada esquema produce un salto
   // artificial que dispararía alertas falsas, así que el delta simplemente no
-  // se calcula cuando los puntos no son comparables.
-  const deltaComparable = ultimoOf && penultimoOf && sonComparables(ultimoOf, penultimoOf);
-  const deltaSemana = deltaComparable ? ultimoOf.avancePonderado - penultimoOf.avancePonderado : null;
+  // se calcula cuando los puntos no son comparables. Esa decisión vive dentro
+  // de `estadoPorSemana`, que además dice POR QUÉ no hay delta.
+  const deltaSemana = ultimoEstado ? ultimoEstado.delta : null;
 
-  // Velocidad promedio últimas 4 semanas oficiales (pp/semana).
-  // Solo entre snapshots comparables en AVANCE con el último.
-  const ult4 = oficiales.filter(s => sonComparables(s, ultimoOf, 'avance')).slice(-4);
-  let velocidadProm = 0;
-  if (ult4.length >= 2) {
-    const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
-    const totalSems = ult4.length - 1;
-    velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
-  }
-  // Proyección de fin a ritmo actual (semanas hasta 100%)
-  const pendientes = Math.max(100 - avanceActual, 0);
-  const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
-  const fechaProyFin = semsParaFin ? new Date(Date.now() + semsParaFin*7*86400000) : null;
-  // Desviación vs plazo contratado
-  const finContrato = obra.finAmpliado || obra.fin;
-  let desvDias = null;
-  if (fechaProyFin && finContrato) {
-    desvDias = Math.round((fechaProyFin - new Date(finContrato))/86400000);
-  }
+  // Proyección de término: velocidad, fecha y desviación contra el plazo
+  // VIGENTE, en una sola cuenta que también devuelve por qué no hay
+  // proyección cuando no la hay.
+  const proy = proyeccionDeAvance(estados, avanceActual, obra);
+  const velocidadProm = proy.velocidad;
+  const fechaProyFin = proy.fechaFin;
+  const desvDias = proy.desviacionDias;
+  const finContrato = proy.finVigente;
+
+  // La frase de la proyección, en palabras y sin guiones ambiguos. El guion
+  // anterior significaba tres cosas distintas a la vez —no hay dos cierres,
+  // los cierres no se pueden restar, la obra no avanza— y la peor de las tres
+  // era la que quedaba escondida.
+  const frasePlazo = (() => {
+    const vig = fechaEnPalabras(fechaLocalDeISO(finContrato));
+    const orig = fechaEnPalabras(fechaLocalDeISO(obra.fin));
+    // Qué fecha es el plazo vigente, y si no es la original, cuál era. Esto es
+    // lo que hacía falta decir en voz alta: la proyección NUNCA se compara
+    // contra el plazo del contrato firmado, sino contra el que está vigente
+    // después de las ampliaciones, y eso cambia quién está en atraso.
+    const elPlazo = !vig
+      ? 'el plazo vigente, que esta obra no tiene capturado'
+      : proy.ampliado
+        ? `el plazo VIGENTE, ${vig} — ampliado; el original era el ${orig || 'que no está capturado'}`
+        : `el plazo vigente, ${vig}, que sigue siendo el original`;
+    if (proy.razon === null) {
+      const d = proy.desviacionDias;
+      const cuando = d === null
+        ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}, pero no hay contra qué compararlo`
+        : d > 0
+          ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${d} días DESPUÉS del plazo`
+          : d < 0
+            ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${Math.abs(d)} días antes del plazo`
+            : `terminaría justo en el plazo`;
+      return `Al ritmo de los últimos ${proy.semanasBase} cierres, la obra ${cuando}. Se compara contra ${elPlazo}.`;
+    }
+    if (proy.razon === SIN_PROY_SIN_AVANCE) {
+      return `No hay proyección de término, y la razón es la grave: en los últimos ${proy.semanasBase} cierres `
+        + (proy.velocidad < 0
+          ? `el avance RETROCEDIÓ ${NUM(Math.abs(proy.velocidad),2)} pp por semana.`
+          : `el avance no se movió.`)
+        + ` A esa velocidad la obra no llega nunca, así que no hay fecha que proyectar. Se compara contra ${elPlazo}.`;
+    }
+    if (proy.razon === SIN_PROY_NO_COMPARABLES) {
+      return `No hay proyección de término: hay ${estados.length} cierres, pero se calcularon con definiciones `
+        + `distintas del avance y restarlos inventaría un salto que no ocurrió. Se compara contra ${elPlazo}.`;
+    }
+    return `No hay proyección de término: hacen falta dos cierres semanales para medir una velocidad y hay `
+      + `${estados.length}. Se compara contra ${elPlazo}.`;
+  })();
 
   // ── DETECTORES ──
   // Todos comparan AVANCE FÍSICO, así que ambos lados se topan al 100%:
@@ -11017,24 +11203,31 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
 
   // ── GRÁFICA: Curva S — avance acumulado real vs programado ──
   // Por cada snapshot oficial calculamos qué % deberíamos tener en esa fecha (lineal del 0 al 100% sobre el plazo)
-  const inicio = obra.inicio ? new Date(obra.inicio) : null;
-  const fin = finContrato ? new Date(finContrato) : null;
+  // Las fechas se arman en LOCAL (`fechaLocalDeISO`): `new Date("2026-03-01")`
+  // es UTC, y aquí se restan contra `Date.now()`, que es local. El error de
+  // seis horas no se ve en un plazo de meses, pero es el mismo patrón que
+  // adelantaba un día la fecha de una foto, y no se deja sembrado.
+  const inicio = fechaLocalDeISO(obra.inicio);
+  const fin = fechaLocalDeISO(finContrato);
   const plazoTotalDias = (inicio && fin) ? (fin - inicio) / 86400000 : null;
   const programadoEnFecha = (fechaISO) => {
     if (!plazoTotalDias || plazoTotalDias <= 0) return null;
-    const trans = (new Date(fechaISO) - inicio) / 86400000;
+    const f = fechaLocalDeISO(fechaISO);
+    if (!f) return null;
+    const trans = (f - inicio) / 86400000;
     return Math.min(Math.max((trans / plazoTotalDias) * 100, 0), 100);
   };
-  const puntos = oficiales.length > 0
-    ? oficiales.map(s => ({
-        x: `S${s.semana}`,
-        real: s.avancePonderado,
-        programado: programadoEnFecha(s.fechaCierre || s.fechaCaptura),
-        sem: s.semana, año: s.año,
-        // Los puntos anteriores al arreglo se calcularon con `a` recortado.
-        esquema: s.esquema || 1,
-      }))
-    : [];
+  // El eje X lleva el año cuando la obra cruza de año. Sin él, una obra de
+  // noviembre a marzo pinta dos marcas "S48" —una de cada año— y la gráfica
+  // deja de decir cuándo pasó cada cosa.
+  const puntos = estados.map(e => ({
+    x: etiquetaSemanaRiel(e, conAño),
+    real: e.avance,
+    programado: programadoEnFecha(e.fechaCierre),
+    sem: e.semana, año: e.año,
+    // Los puntos anteriores al arreglo se calcularon con `a` recortado.
+    esquema: e.cierre.esquema || 1,
+  }));
   // Frontera de la curva S: índice del primer punto ya calculado con la
   // definición vigente del avance. El tramo anterior se dibuja punteado, no se
   // corta — obras como la 0112 se quedarían con un solo punto.
@@ -11055,17 +11248,26 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     {/* KPIs principales */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
       <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
-        sub={oficiales.length>0?`Última semana cerrada: S${ultimoOf.semana}`:"Sin cierres oficiales"}
+        sub={ultimoEstado?`Última semana cerrada: ${etiquetaSemanaRiel(ultimoEstado, conAño)}`:"Sin cierres oficiales"}
         color={semA(avanceActual)} size={14}/>
       <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
-        sub={deltaSemana!==null?`vs S${penultimoOf.semana}`
-          : oficiales.length>=2?"semanas no comparables":"requiere 2 cierres"}
+        sub={deltaSemana!==null?`vs ${etiquetaSemanaRiel(penultimoEstado, conAño)}`
+          : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables":"requiere 2 cierres"}
         color={deltaSemana===null?C.textMut:deltaSemana>=0?C.greenDk:C.red} size={12}/>
-      <Kpi label="Velocidad prom." value={ult4.length>=2?`${NUM(velocidadProm,2)} pp/sem`:"—"}
-        sub={`últimas ${ult4.length} sem.`} color={C.blueDk} size={12}/>
-      <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"2-digit"}):"—"}
-        sub={desvDias!==null?(desvDias>0?`+${desvDias}d vs contrato`:desvDias<0?`${desvDias}d antes`:"en plazo"):"—"}
-        color={desvDias===null?C.textMut:desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
+      <Kpi label="Velocidad prom." value={velocidadProm!==null?`${NUM(velocidadProm,2)} pp/sem`:"—"}
+        sub={velocidadProm!==null?`últimos ${proy.semanasBase} cierres`:"sin velocidad medible"}
+        color={velocidadProm===null?C.textMut:velocidadProm>0?C.blueDk:C.red} size={12}/>
+      <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"numeric"}):"—"}
+        sub={desvDias!==null
+          ? (desvDias>0?`${desvDias} días después del plazo vigente`
+            :desvDias<0?`${Math.abs(desvDias)} días antes del plazo vigente`
+            :"justo en el plazo vigente")
+          : proy.razon===SIN_PROY_SIN_AVANCE?(proy.velocidad<0?"la obra retrocede":"la obra no avanza")
+          : proy.razon===SIN_PROY_NO_COMPARABLES?"cierres no comparables"
+          : "requiere 2 cierres"}
+        color={desvDias===null
+          ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
+          : desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
       {idealActual!==null && (
         <Kpi label="Avance ideal" value={`${NUM(idealActual,1)}%`}
           sub={desvIdeal!==null?(desvIdeal<0?`${NUM(desvIdeal,1)}pp atrasado`:`+${NUM(desvIdeal,1)}pp adelantado`):"—"}
@@ -11073,10 +11275,20 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       )}
     </div>
 
+    {/* La proyección, en una frase. El KPI de arriba cabe en tres palabras y
+        por eso cabía también el guion que significaba tres cosas; aquí se dice
+        cuál de las tres es, y contra qué fecha se está comparando. */}
+    <div style={{fontSize:10,lineHeight:1.5,
+      color: proy.razon===SIN_PROY_SIN_AVANCE ? C.red
+        : (desvDias!==null && desvDias>0) ? C.yellow : C.textSec,
+      background:C.bg, borderRadius:8, padding:"8px 11px"}}>
+      {frasePlazo}
+    </div>
+
     {/* Se quitó el párrafo de frontera de definición. El comportamiento no
         cambia: quien impide que los deltas crucen la frontera es
-        `sonComparables`, en `deltaComparable` y en el filtro de `ult4` que
-        alimenta la velocidad. Ese aviso tenía su propia bandera `serieMixta`,
+        `sonComparables`, dentro de `estadoPorSemana` y de
+        `proyeccionDeAvance`. Ese aviso tenía su propia bandera `serieMixta`,
         que no gobernaba nada más y se fue con él. */}
 
     {/* Compensación de volúmenes — por qué el avance de la obra no es el
@@ -15982,10 +16194,22 @@ function PlazosCliente({obra}){
     return Math.round((new Date(fin) - new Date(ini))/(1000*60*60*24));
   };
 
-  const hoy = new Date();
-  const finVigente = ampliaciones.length>0 ? ampliaciones[ampliaciones.length-1].fecha : obra.fin;
+  // El fin vigente sale de `finVigenteDe`, igual que la proyección de los
+  // KPIs. Antes esta pantalla lo derivaba de la última ampliación de
+  // `contrato/plazos` y el mini-dashboard de `obra.finAmpliado`: dos cuentas
+  // del mismo dato, que es exactamente cómo nació el defecto de 078585e —la
+  // gráfica y el KPI leyendo dinero distinto en la misma pantalla—. La lista
+  // de ampliaciones se sigue mostrando, pero como detalle, no como fuente.
+  const finVigente = finVigenteDe(obra);
+  // "Ampliado" se decide por el dato, no por si la lista de ampliaciones llegó:
+  // el fin vigente se puede capturar también desde la ficha de la obra, sin
+  // registrar la ampliación, y ese caso también mueve el plazo.
+  const ampliado = !!finVigente && !!obra.fin && finVigente !== obra.fin;
   const totalDias = diasPlazo(obra.inicio, finVigente);
-  const transcurridos = obra.inicio ? Math.max(diasPlazo(obra.inicio, hoy.toISOString().slice(0,10))||0, 0) : 0;
+  // `new Date().toISOString().slice(0,10)` es UTC: desde las 18:00 en México
+  // devolvía la fecha de MAÑANA, y este número es el que dispara las penas
+  // convencionales por día de atraso. El último sitio del patrón.
+  const transcurridos = obra.inicio ? Math.max(diasPlazo(obra.inicio, hoyLocalISO())||0, 0) : 0;
   const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo = totalDias && totalDias > 0 ? Math.min((transcurridos/totalDias)*100, 100) : 0;
 
@@ -15999,7 +16223,12 @@ function PlazosCliente({obra}){
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
-          <div style={{fontSize:13,fontWeight:600,color:ampliaciones.length>0?C.yellow:C.green}}>{finVigente||"—"}</div>
+          <div style={{fontSize:13,fontWeight:600,color:ampliado?C.yellow:C.green}}>{finVigente||"—"}</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            {ampliado
+              ? `ampliado${ampliaciones.length>0?` ${ampliaciones.length} ${ampliaciones.length===1?"vez":"veces"}`:""}; el original era ${obra.fin||"—"}`
+              : "sin ampliaciones: es el plazo original"}
+          </div>
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración total</div>
@@ -16016,8 +16245,8 @@ function PlazosCliente({obra}){
       </div>}
     </Card>
 
-    {/* Plazo original (si hay ampliaciones, mostrarlo aparte) */}
-    {ampliaciones.length > 0 && <Card>
+    {/* Plazo original (si el vigente ya no es el original, mostrarlo aparte) */}
+    {ampliado && <Card>
       <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:6}}>Plazo original</div>
       <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textSec}}>
         <div>Inicio: <b>{obra.inicio||"—"}</b></div>
