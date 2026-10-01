@@ -40,6 +40,8 @@
 //        → 2 rojas: la pantalla espera para siempre las cinco que no pidió.
 //   · borrar `'fin_001'` de RIESGOS_SOLO_CONSTRUCTORA
 //        → 2 rojas: el riesgo de margen se cuela.
+//   · quitar del `logout` el vaciado de obras y de datos por obra
+//        → 2 rojas: el municipio hereda las obras de FOSMON.
 //
 // Esa última mutación es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
@@ -458,6 +460,53 @@ const montarGP = () => {
   check(!espera.CLAVES_BULK_DEPENDENCIA.some(k => PROHIBIDAS.test(k)),
     'y ninguna de ellas es de economía interna',
     espera.CLAVES_BULK.filter(k => !soloDep.has(k)).join(' ') + ' quedaron fuera');
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Todo lo de arriba decide A DÓNDE se pregunta. Esto decide QUÉ SE HEREDA.
+  //
+  // Visto en el emulador con las dos organizaciones sembradas: entrando como
+  // FOSMON, saliendo y entrando como el municipio en la misma pestaña, el
+  // panel del municipio decía "5 obras activas" y sumaba el monto contratado
+  // de las dos obras del contratista. No lo evita ninguna regla —esas
+  // lecturas ya se hicieron, con la sesión anterior y con todo el derecho— ni
+  // el prefijo de ruta, que sólo elige dónde preguntar. Sobrevivían en el
+  // estado de React, y la carga de obras MEZCLA lo que trae Firestore con lo
+  // que ya hay.
+  //
+  // Se ejecuta el `logout` de producción con dobles en lugar de los setters,
+  // y se le pregunta con qué valor llamó a cada uno. No se afirma que exista
+  // ninguna línea ni ningún nombre (P3): se afirma qué hereda la sesión
+  // siguiente.
+  seccion('Lo que hereda la sesión siguiente');
+
+  const herencia = await new Function(`"use strict";
+    const visto = { obras: 'no se tocó', datos: 'no se tocó',
+                    usuario: 'no se tocó', prefijo: 'no se limpió' };
+    const usuario = { correo: 'demo@fosmon.com.mx' };
+    const fbAuth = {};
+    const fsAudit = () => {};
+    const signOut = async () => {};
+    const limpiarPrefijoOrg = () => { visto.prefijo = 'limpio'; };
+    const setObras = v => { visto.obras = v; };
+    const setDatosPorObra = v => { visto.datos = v; };
+    const setUsuario = v => { visto.usuario = v; };
+    const setAuditCtx = () => {}; const setPermisosObraOverride = () => {};
+    const setScreen = () => {}; const setObraId = () => {};
+    const logout = ${decl['logout']};
+    return logout().then(() => visto);`)();
+
+  check(Array.isArray(herencia.obras) && herencia.obras.length === 0,
+    'al cerrar sesión la lista de obras queda vacía',
+    Array.isArray(herencia.obras) ? `${herencia.obras.length} obra(s)` : String(herencia.obras));
+  check(herencia.datos && typeof herencia.datos === 'object'
+        && Object.keys(herencia.datos).length === 0,
+    'y el catálogo, las estimaciones y la nómina cargadas también',
+    typeof herencia.datos === 'object' && herencia.datos !== null
+      ? `${Object.keys(herencia.datos).length} obra(s) con datos`
+      : String(herencia.datos));
+  check(herencia.prefijo === 'limpio' && herencia.usuario === null,
+    'junto con el prefijo de organización y el usuario',
+    `prefijo ${herencia.prefijo} · usuario ${JSON.stringify(herencia.usuario)}`);
 
   console.log(fallas === 0
     ? '\nTodas las comprobaciones en verde.'

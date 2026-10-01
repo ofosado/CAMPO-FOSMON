@@ -18949,6 +18949,21 @@ export default function App(){
     // El prefijo es estado de módulo, no de React: si no se borra aquí, la
     // siguiente sesión arrancaría apuntando a la organización de la anterior.
     limpiarPrefijoOrg();
+    // Y las obras, que son estado de React y sobrevivían al cierre de sesión.
+    //
+    // Mientras todos los usuarios eran de FOSMON esto no se notaba: la lista
+    // que quedaba en memoria era la misma que iba a cargar el siguiente. Con
+    // dos organizaciones deja de ser inofensivo. La carga de obras MEZCLA lo
+    // que trae Firestore con lo que ya hay en el estado, así que al entrar un
+    // municipio sobre la sesión de FOSMON su panel sumaba las obras del
+    // contratista: montos contratados, avance y "5 obras activas" donde tiene
+    // 3. No lo tapan las reglas —esas lecturas ya se hicieron, y fueron
+    // legítimas— ni el prefijo de ruta, que sólo decide a dónde se pregunta.
+    //
+    // `datosPorObra` va junto y no por simetría: es lo pesado —catálogo,
+    // estimaciones, nómina, maquinaria— y lo que alimenta el consolidado.
+    setObras([]);
+    setDatosPorObra({});
     setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
