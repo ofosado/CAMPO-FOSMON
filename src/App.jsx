@@ -19184,10 +19184,31 @@ export default function App(){
   // diferencia en consola el día que la marca no aparezca.
   const [marca, setMarca] = useState(null);
   useEffect(() => {
+    // Vaciar ANTES de preguntar, y vaciar también cuando la organización nueva
+    // no tiene documento de marca.
+    //
+    // Como estaba, este efecto sólo sabía asignar: si `s.exists()` era falso se
+    // quedaba pintada la marca de la organización anterior, y para siempre.
+    // Visto en el emulador: entrando como el municipio, saliendo y entrando
+    // como FOSMON en la misma pestaña, el encabezado del contratista seguía
+    // diciendo «H. AYUNTAMIENTO DE COATZACOALCOS» sobre sus propias obras.
+    // La organización `fosmon` no tiene `branding` sembrado, así que nada lo
+    // corregía después.
+    //
+    // Es el mismo defecto que las obras heredadas: estado de React que
+    // sobrevive al cambio de sesión. Allá se vació en `logout`; aquí hace falta
+    // además vaciarlo aquí, porque la marca puede cambiar sin pasar por
+    // `logout` —basta que cambie `orgId`— y porque es este efecto el que decide
+    // qué significa "esta organización no tiene marca".
+    //
+    // Durante la petición no hay marca que pintar. Eso es correcto y no una
+    // molestia: el encabezado se queda sin línea, igual que el `null` de
+    // `nombreOrg`. En blanco es verdad; la marca de otro, no.
+    setMarca(null);
     if (!usuario?.orgId) return;
     let cancelado = false;
     getDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`))
-      .then(s => { if (!cancelado && s.exists()) setMarca(s.data()); })
+      .then(s => { if (!cancelado) setMarca(s.exists() ? s.data() : null); })
       .catch(e => console.warn('branding no legible:', usuario.orgId, e?.code || e?.message));
     return () => { cancelado = true; };
   }, [usuario?.orgId]);
@@ -19763,6 +19784,10 @@ export default function App(){
     // estimaciones, nómina, maquinaria— y lo que alimenta el consolidado.
     setObras([]);
     setDatosPorObra({});
+    // Y la marca, por la misma razón: es lo que el encabezado afirma sobre de
+    // quién es la app. Heredada, le presenta la sesión siguiente como si fuera
+    // de la organización anterior.
+    setMarca(null);
     setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);

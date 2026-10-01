@@ -196,6 +196,21 @@ traverse(ast, {
   ClassDeclaration(p) { decl[p.node.id.name] = src.slice(p.node.start, p.node.end); },
 });
 
+// El efecto que carga la marca no es una declaración: es la flecha que va
+// dentro de un `useEffect`, y por eso no cae en el `decl` de arriba. Se busca
+// por lo que HACE —preguntar por `config/branding`— y no por el nombre de
+// ninguna variable, que no tiene.
+let efectoMarca = null;
+traverse(ast, {
+  CallExpression(p) {
+    if (p.node.callee.name !== 'useEffect') return;
+    const cuerpo = p.node.arguments[0];
+    if (!cuerpo) return;
+    const texto = src.slice(cuerpo.start, cuerpo.end);
+    if (/config\/branding/.test(texto)) efectoMarca ||= texto;
+  },
+});
+
 const NECESARIOS = [
   'TABS_POR_ROL', 'TABS_DEPENDENCIA', 'tabsDe', 'esDependencia',
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
@@ -213,6 +228,7 @@ const NECESARIOS = [
   'MXN', 'avanceFisicoPonderado', 'heImporte',
 ];
 const faltan = NECESARIOS.filter(n => !decl[n]);
+if (efectoMarca === null) faltan.push('el efecto que carga orgs/{orgId}/config/branding');
 if (faltan.length) noArranco(faltan, archivo);
 
 let fallas = 0;
@@ -1259,7 +1275,8 @@ const montarGP = () => {
 
   const herencia = await new Function(`"use strict";
     const visto = { obras: 'no se tocó', datos: 'no se tocó',
-                    usuario: 'no se tocó', prefijo: 'no se limpió' };
+                    usuario: 'no se tocó', prefijo: 'no se limpió',
+                    marca: 'no se tocó' };
     const usuario = { correo: 'demo@fosmon.com.mx' };
     const fbAuth = {};
     const fsAudit = () => {};
@@ -1268,6 +1285,7 @@ const montarGP = () => {
     const setObras = v => { visto.obras = v; };
     const setDatosPorObra = v => { visto.datos = v; };
     const setUsuario = v => { visto.usuario = v; };
+    const setMarca = v => { visto.marca = v; };
     const setAuditCtx = () => {}; const setPermisosObraOverride = () => {};
     const setScreen = () => {}; const setObraId = () => {};
     const logout = ${decl['logout']};
@@ -1285,6 +1303,79 @@ const montarGP = () => {
   check(herencia.prefijo === 'limpio' && herencia.usuario === null,
     'junto con el prefijo de organización y el usuario',
     `prefijo ${herencia.prefijo} · usuario ${JSON.stringify(herencia.usuario)}`);
+  check(herencia.marca === null,
+    'y la marca, que es lo que el encabezado afirma sobre de quién es la app',
+    JSON.stringify(herencia.marca));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // El `logout` no alcanza. La marca también cambia sin pasar por él —basta
+  // que cambie `orgId`— y, sobre todo, es el efecto el que decide qué
+  // significa "esta organización no tiene marca". Como estaba, sólo sabía
+  // asignar: si el documento no existía, se quedaba la marca anterior y nada
+  // la corregía después.
+  //
+  // Visto en el emulador: entrando como el municipio, saliendo y entrando como
+  // FOSMON en la misma pestaña, el encabezado del contratista seguía diciendo
+  // «H. AYUNTAMIENTO DE COATZACOALCOS» sobre sus propias obras. La
+  // organización `fosmon` no tiene `branding` sembrado.
+  //
+  // Es el mismo defecto que las obras heredadas, en un estado que aquel
+  // barrido no tocó.
+  //
+  // Se ejecuta el efecto de producción con un `getDoc` doble y se recoge cada
+  // valor que le pasa al encabezado, en orden. Y no se afirma sobre el objeto
+  // `marca`, que es andamiaje: se le pregunta a `nombreOrg` —la misma función
+  // que pinta la línea— QUÉ NOMBRE SALDRÍA EN PANTALLA (P3).
+  seccion('La marca que se queda pintada cuando la siguiente no tiene');
+
+  const nombreOrgF = new Function(`"use strict";
+    const esDependencia = ${decl['esDependencia']};
+    return ${decl['nombreOrg']};`)();
+
+  const correrEfecto = async (existe, datos) => new Function(`"use strict";
+    const recibidos = [];
+    const usuario = { orgId: 'fosmon', correo: 'demo@fosmon.com.mx' };
+    const fbDb = {};
+    const doc = (db, ruta) => ruta;
+    const getDoc = async () => ({
+      exists: () => ${JSON.stringify(existe)},
+      data: () => (${JSON.stringify(datos)}),
+    });
+    const setMarca = v => { recibidos.push(v); };
+    const efecto = ${efectoMarca};
+    const limpiar = efecto();
+    // Dos vueltas: el \`getDoc\` doble resuelve ya, pero el \`.then\` corre en
+    // la microcola.
+    return Promise.resolve().then(() => Promise.resolve()).then(() => {
+      if (typeof limpiar === 'function') limpiar();
+      return recibidos;
+    });`)();
+
+  const MUNICIPIO = { empresa: 'H. Ayuntamiento de Coatzacoalcos' };
+
+  // La sesión anterior dejó pintada la marca del municipio. Entra FOSMON, cuya
+  // organización no tiene documento de marca.
+  const sinDoc = await correrEfecto(false, null);
+  const ultimoSinDoc = sinDoc.length ? sinDoc[sinDoc.length - 1] : MUNICIPIO;
+  const salenSinDoc = nombreOrgF(ultimoSinDoc, { correo: 'demo@fosmon.com.mx' });
+  check(salenSinDoc === 'FOSMON Construcciones',
+    'entrando sobre la sesión de un municipio, el contratista lee su propio nombre',
+    `el encabezado diría «${salenSinDoc}»`);
+
+  // Y no sólo al final: durante la petición tampoco puede quedar la anterior.
+  const primeroSinDoc = sinDoc.length ? sinDoc[0] : MUNICIPIO;
+  check(nombreOrgF(primeroSinDoc, { correo: 'demo@fosmon.com.mx' }) !== MUNICIPIO.empresa,
+    'y mientras Firestore contesta tampoco se queda la marca de la anterior',
+    `primer valor: «${nombreOrgF(primeroSinDoc, { correo: 'demo@fosmon.com.mx' })}»`);
+
+  // La contraparte: cuando la organización SÍ tiene marca, se pinta. Sin esto,
+  // lo de arriba lo cumpliría un efecto que nunca asigna nada.
+  const conDoc = await correrEfecto(true, MUNICIPIO);
+  const ultimoConDoc = conDoc.length ? conDoc[conDoc.length - 1] : null;
+  check(nombreOrgF(ultimoConDoc, { correo: 'oscar@cotea.com.mx', tipo: 'dependencia' })
+        === MUNICIPIO.empresa,
+    'y la organización que sí tiene marca la sigue viendo',
+    `el encabezado diría «${nombreOrgF(ultimoConDoc, { correo: 'oscar@cotea.com.mx', tipo: 'dependencia' })}»`);
 
   console.log(fallas === 0
     ? '\nTodas las comprobaciones en verde.'

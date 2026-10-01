@@ -3696,7 +3696,7 @@ cierran, gobiernan.
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo | | **arreglado 2026-09-23** — partía caracteres UTF-8 en la frontera de los paquetes; hacía que la migración fallara y pasara con los mismos datos, y podía dejar nombres mutilados que cuadraban contra sí mismos. Arreglado en los 8 guiones + paso 4c que coteja contra el origen releído |
 
-**Esta tabla llega al #34 y el documento llega al #45.** Del 35 al 45 los
+**Esta tabla llega al #34 y el documento llega al #46.** Del 35 al 46 los
 pendientes viven sólo en su sección, más abajo. Se deja dicho en voz alta
 porque una tabla de resumen que se quedó corta se lee como la lista completa, y
 entonces lo que falta en ella parece que no existe — que es la forma más
@@ -4225,3 +4225,36 @@ fecha de ejecución — y eso es un cambio de captura, no de reporte.
 **Relación con el #12** (exportación del expediente, art. 74): son parientes y
 conviene decidirlos juntos; el 74 es el expediente completo y el 73 es el
 reporte periódico que vive dentro de él.
+
+---
+
+## 46. Sospecha: el aviso de «tu rol cambió» puede dispararse al cambiar de sesión
+
+**No lo vi pasar. Está aquí para que alguien lo mire, no como defecto afirmado.**
+
+Lo encontré barriendo el patrón —estado de React que sobrevive al cambio de
+sesión— después de que la marca de una organización se quedara pintada sobre la
+sesión de la otra, y de que antes pasara lo mismo con las obras.
+
+`versionRef` (src/App.jsx, junto al vigilante de `claimsVersion`) es un `useRef`.
+Un `useRef` no se vacía cuando cambia el usuario: el efecto se vuelve a montar
+porque depende de `usuario?.emailId`, pero `versionRef.current` sigue trayendo el
+número de la sesión anterior.
+
+El efecto usa `versionRef.current === null` para reconocer la primera lectura y
+**no** avisar. Si el ref llega con el número de otro usuario, esa primera lectura
+deja de parecer primera. Con que el usuario nuevo tenga un `claimsVersion` más
+alto que el anterior, el vigilante lo leería como un ascenso y refrescaría el
+token enseñando el aviso de que cambiaron sus permisos — a alguien a quien no le
+cambió nada.
+
+**Por qué no lo arreglé en la rama donde lo encontré.** Porque no lo reproduje.
+La semilla del emulador no mueve `claimsVersion`, así que afirmarlo sería
+inventar un comportamiento a partir de leer el código, que es justo lo que no se
+hace. El arreglo probablemente es una línea —vaciar el ref al montar el
+efecto—, pero primero hay que verlo: sembrar dos usuarios con `claimsVersion`
+distintos y cambiar de sesión sin recargar.
+
+**Si resulta cierto, es cosmético pero mentiroso**, que es la categoría que más
+cuesta después: un aviso que afirma un cambio de permisos que no ocurrió enseña
+a la gente a ignorar los avisos de permisos.
