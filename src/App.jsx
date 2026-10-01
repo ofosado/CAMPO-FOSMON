@@ -2191,10 +2191,18 @@ async function fsAudit(tipo, opciones = {}) {
 // sirve para guardados de fondo, pero no para uno que el usuario acaba de pedir
 // —ahí hay que poder decirle QUÉ pasó, no solo que algo pasó—. Esta versión
 // conserva el error original para que el llamador arme el mensaje.
+//
+// `conOrg` fuera del try y ANTES de la lectura previa, por lo mismo que en
+// `fsSet`. Y la asimetría que hizo esto invisible hasta el 2026-10-01: la
+// lectura previa pasa por `fsGet`, que sí anteponía el prefijo, mientras la
+// escritura iba a la raíz. La bitácora quedaba con el "antes" correcto y el
+// dato en otra parte — o, en una dependencia, en ninguna: las reglas niegan la
+// raíz, `fsSetA` se traga el rechazo y el supervisor no ve nada en pantalla.
 const fsSetAEstricto = async (path, data, ctx) => {
+  const r = conOrg(path);
   let antes = null;
   if (ctx) { try { antes = await fsGet(path); } catch {} }
-  await setDoc(doc(fbDb, ...path.split('/')), data, { merge: true });
+  await setDoc(doc(fbDb, ...r.split('/')), data, { merge: true });
   if (ctx) {
     fsAudit(antes ? "editar" : "crear", {
       path, modulo: ctx.modulo, entidad: ctx.entidad,
@@ -3875,9 +3883,16 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
 // pueda hacer deleteObject(ref) si el commit posterior a Firestore falla
 // (ej. el usuario perdió acceso a la obra justo después de subir la foto).
 // Sin ese rescate quedan objetos huérfanos en Storage.
+//
+// El prefijo de organización también aplica a Storage: `storage.rules` tiene el
+// mismo esquema que Firestore (`/obras/…` para constructora, `/orgs/{oid}/obras/…`
+// para dependencia) y la rama de constructora exige `tipo == 'constructora'`. Sin
+// `conOrg` la foto de un supervisor de dependencia se va a una ruta que las
+// reglas niegan — mismo defecto que en `fsSetAEstricto`, sólo que aquí sí se ve
+// porque este helper lanza.
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   try {
-    const r = storageRef(fbStor, `obras/${obraId}/fotos/${conceptoId}/${fotoId}`);
+    const r = storageRef(fbStor, conOrg(`obras/${obraId}/fotos/${conceptoId}/${fotoId}`));
     await uploadString(r, base64url, 'data_url');
     const url = await getDownloadURL(r);
     return { url, ref: r };
@@ -10483,12 +10498,22 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
         { modulo:"avance_fisico", entidad:`captura ${tipoSnapshot}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
           meta:{ tipo: tipoSnapshot, nSubs: subs.length, avancePromedio: subs.reduce((s,x)=>s+(x.a||0),0)/(subs.length||1) } });
-      await fsSetA(`obras/${obra.id}/avance/maquinaria`,
-        { data: maquinaria, fecha: new Date().toISOString() },
-        { modulo:"maquinaria", entidad:`${maquinaria.length} equipos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-      await fsSetA(`obras/${obra.id}/avance/materiales`,
-        { data: materiales, fecha: new Date().toISOString() },
-        { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      // Maquinaria y almacén son costo del contratista: están en
+      // `RUTAS_SOLO_CONSTRUCTORA` y las reglas no las declaran del lado
+      // dependencia. El mismo inventario que decide qué se PIDE decide qué se
+      // ESCRIBE, por la misma razón (P5) y porque si no, cada guardado de un
+      // supervisor deja dos `permission-denied` que `fsSetA` se traga: ruido
+      // que entrena a ignorar la consola donde algún día habrá un fallo real.
+      if (seSuscribe('avance/maquinaria', usuario?.tipo)) {
+        await fsSetA(`obras/${obra.id}/avance/maquinaria`,
+          { data: maquinaria, fecha: new Date().toISOString() },
+          { modulo:"maquinaria", entidad:`${maquinaria.length} equipos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      }
+      if (seSuscribe('avance/materiales', usuario?.tipo)) {
+        await fsSetA(`obras/${obra.id}/avance/materiales`,
+          { data: materiales, fecha: new Date().toISOString() },
+          { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      }
       // Crear snapshot del avance para histórico semanal
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
         obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0);

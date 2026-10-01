@@ -12,6 +12,18 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { conOrg } from "./rutas-org";
+
+// Las rutas de arriba son LÓGICAS. Quien decide dónde viven de verdad es
+// `conOrg` (src/rutas-org.js): raíz para una constructora, `orgs/{oid}/` para
+// una dependencia. Este módulo armaba las referencias por segmentos —
+// `doc(fbDb, "obras", id, …)`— y así se saltaba esa decisión: escribía siempre
+// en la raíz. Hoy el módulo sólo se enciende en constructora (la bandera
+// `cargaOT` dejó de ofrecerse en dependencia), pero una ruta sin prefijo es una
+// escritura que se evapora el día que alguien la enciende, así que se resuelve
+// aquí y no se deja depender de que nadie prenda el interruptor.
+const refOT  = (fbDb, ...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+const collOT = (fbDb, ...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
 
 // ── PDFJS (lazy-load) ───────────────────────────────────────────────────────
 // Vite necesita el worker por URL. Usamos import.meta.url para que la ruta
@@ -310,7 +322,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
     if (!obra?.id) return;
     (async () => {
       try {
-        const snap = await getDoc(doc(fbDb, "obras", obra.id, "config", "ot_dict"));
+        const snap = await getDoc(refOT(fbDb, obra.id, "config", "ot_dict"));
         if (snap.exists()) setDict(snap.data().mapa || {});
       } catch (e) { console.warn("ot_dict load fail", e); }
     })();
@@ -330,7 +342,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
       if (lineas.length === 0) throw new Error("No detecté líneas de servicio en el PDF");
 
       // Duplicado?
-      const dupSnap = await getDoc(doc(fbDb, "obras", obra.id, "ordenes_trabajo", meta.numero));
+      const dupSnap = await getDoc(refOT(fbDb, obra.id, "ordenes_trabajo", meta.numero));
       if (dupSnap.exists()) {
         const d = dupSnap.data();
         const cuando = d.subidoEn ? new Date(d.subidoEn).toLocaleString("es-MX") : "fecha desconocida";
@@ -372,7 +384,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
       // 1) Subir PDF a Storage
       let pdfUrl = "";
       try {
-        const r = storageRef(fbStor, `obras/${obra.id}/ot/${ot.meta.numero}.pdf`);
+        const r = storageRef(fbStor, conOrg(`obras/${obra.id}/ot/${ot.meta.numero}.pdf`));
         await uploadBytes(r, pdfFile);
         pdfUrl = await getDownloadURL(r);
       } catch (e) {
@@ -400,7 +412,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
       setSubs(subsActualizadas);
 
       // 3) Guardar OT en Firestore
-      await setDoc(doc(fbDb, "obras", obra.id, "ordenes_trabajo", ot.meta.numero), {
+      await setDoc(refOT(fbDb, obra.id, "ordenes_trabajo", ot.meta.numero), {
         numero: ot.meta.numero,
         fecha: ot.meta.fecha,
         semanaISO: semanaISO(ot.meta.fecha),
@@ -424,7 +436,7 @@ export function CargarOT({ obra, subs, setSubs, fbDb, fbStor, usuario, onCargada
           dictNuevo[key] = m.conceptoIdSeleccionado;
         }
       });
-      await setDoc(doc(fbDb, "obras", obra.id, "config", "ot_dict"), { mapa: dictNuevo });
+      await setDoc(refOT(fbDb, obra.id, "config", "ot_dict"), { mapa: dictNuevo });
       setDict(dictNuevo);
 
       setEstado("ok");
@@ -574,7 +586,7 @@ export function HistoricoOT({ obra, subs, setSubs, fbDb }) {
     (async () => {
       setCargando(true);
       try {
-        const snap = await getDocs(collection(fbDb, "obras", obra.id, "ordenes_trabajo"));
+        const snap = await getDocs(collOT(fbDb, obra.id, "ordenes_trabajo"));
         const arr = snap.docs.map(d => d.data());
         arr.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
         setOts(arr);
@@ -652,7 +664,7 @@ export function HistoricoOT({ obra, subs, setSubs, fbDb }) {
         }));
       }
       // 2) Borrar el documento de la OT
-      await deleteDoc(doc(fbDb, "obras", obra.id, "ordenes_trabajo", ot.numero));
+      await deleteDoc(refOT(fbDb, obra.id, "ordenes_trabajo", ot.numero));
       // 3) Quitarla del estado local
       setOts(prev => prev.filter(o => o.numero !== ot.numero));
     } catch (e) {
