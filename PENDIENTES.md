@@ -3696,6 +3696,13 @@ cierran, gobiernan.
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo | | **arreglado 2026-09-23** — partía caracteres UTF-8 en la frontera de los paquetes; hacía que la migración fallara y pasara con los mismos datos, y podía dejar nombres mutilados que cuadraban contra sí mismos. Arreglado en los 8 guiones + paso 4c que coteja contra el origen releído |
 
+**Esta tabla llega al #34 y el documento llega al #45.** Del 35 al 45 los
+pendientes viven sólo en su sección, más abajo. Se deja dicho en voz alta
+porque una tabla de resumen que se quedó corta se lee como la lista completa, y
+entonces lo que falta en ella parece que no existe — que es la forma más
+barata de perder un pendiente. Quien agregue el #46 puede cerrar el hueco de
+paso; mientras no esté cerrado, la tabla **no** es el índice.
+
 ---
 
 # CERRADOS
@@ -3910,6 +3917,16 @@ soltarlo. El `id` del manifiesto es el que decide si iOS lo trata como la misma
 app o como otra; hay que fijarlo explícitamente en ese cambio y no dejarlo al
 valor por omisión.
 
+**Al día 2026-10-01, con el renombre a cotea ya hecho.** Lo que cambió fueron
+las cadenas visibles —`<title>`, la descripción, `PRODUCTO.nombre` y el
+emblema—. Lo que sigue diciendo CAMPO a propósito, y entra con este pendiente,
+son exactamente tres cosas: `apple-mobile-web-app-title` en `index.html`, el
+`name`/`short_name` del manifiesto en `vite.config.js`, y los íconos
+(`icon-192.png`, `icon-512.png`, `apple-touch-icon`). Están comentados en
+`index.html` nombrando este riesgo, para que nadie los «termine de renombrar»
+creyendo que fue un olvido. **No lo fue.** Son la identidad de la app ya
+instalada en los teléfonos de FOSMON.
+
 ---
 
 ## 38. El login inventaba el perfil que no encontraba — ARREGLADO 2026-09-24
@@ -4060,3 +4077,151 @@ Sería dar por buena la normalización que precisamente falta.
 **Dónde está anotado en el código:** el comentario de `CAMPOS_CONTRATO`
 (`src/App.jsx`) nombra este pendiente por número. Si se renumera, se renumera
 en los dos lados.
+
+---
+
+## 42. cotea no tiene eslogan, y el campo está esperando uno
+
+**Decisión del usuario el 2026-10-01, al renombrar el producto.**
+
+El producto se llama **cotea** y nada más. El descriptor que acompañaba al
+nombre —«Control de Avance, Maquinaria, Personal y Obra»— era el desarrollo de
+la sigla CAMPO y dejó de significar nada en cuanto el nombre cambió, así que
+se quitó.
+
+`PRODUCTO.descriptor` (`src/App.jsx`) quedó como **cadena vacía, preparada y
+pintada en ningún sitio**: los tres lugares donde la marca aparece
+—acceso, encabezado y pie— preguntan por él antes de pintarlo, igual que
+preguntan por `nombreOrg`. El día que haya eslogan, se escribe en ese campo y
+aparece en los tres. No hace falta tocar JSX.
+
+**Lo que falta:** decidir el eslogan. No hay fecha y no bloquea nada.
+
+**Por qué quedó así y no con uno provisional.** Un eslogan provisional se
+queda. Es la primera línea que el cliente lee en la pantalla de acceso y lo que
+va a repetir cuando le cuente a alguien qué es esto; si dice algo tibio, eso es
+lo que el producto significa. Mejor sin descriptor que con uno malo —palabras
+del usuario— y el campo vacío es honesto: dice que no hay, no inventa uno.
+
+**La regla que protege el hueco.** `prueba-ui-dependencia.cjs` afirma que el
+descriptor es una cadena —aunque hoy esté vacía— y que sólo se pinta donde
+alguien preguntó por él. Cuando se llene, esas dos comprobaciones siguen
+valiendo tal cual: el banco no comprueba el texto, comprueba que no se pinte
+un hueco.
+
+---
+
+## 43. El correo del resumen semanal sigue firmando como CAMPO · FOSMON
+
+**Anotado el 2026-10-01. Va en la rama del resumen semanal, por decisión
+explícita del usuario — NO en `feature/ui-dependencia`.**
+
+El renombre a cotea cambió las cadenas del front. El correo semanal que manda
+`functions/index.js` **no**, y es el único sitio donde la marca sale del
+navegador y llega a la bandeja de alguien.
+
+**Los seis sitios, verificados en el archivo el 2026-10-01:**
+
+| línea | qué dice | qué es |
+|---|---|---|
+| `functions/index.js:800` | `CAMPO <campo@fosmon.com.mx>` | el remitente — lo que se ve sin abrir el correo |
+| `functions/index.js:981` | `<title>Resumen semanal CAMPO</title>` | el título del HTML |
+| `functions/index.js:988` | `CAMPO · FOSMON CONSTRUCCIONES` | el encabezado, el que el usuario señaló |
+| `functions/index.js:1021` | `Abrir CAMPO` | el botón |
+| `functions/index.js:1026` | `CAMPO — FOSMON Construcciones · campo-fosmon.netlify.app` | el pie |
+| `functions/index.js:1100` | `CAMPO · Resumen semanal · N obras activas` | el asunto |
+
+**Por qué los seis y no sólo el 988.** Arreglar el encabezado y dejar el
+remitente y el asunto diciendo CAMPO deja el correo peor que antes:
+inconsistente en vez de viejo. Y el remitente y el asunto son justo los dos que
+se leen sin abrir nada.
+
+**Por qué no en esta rama.** Cambiar `functions/index.js` obliga a
+redesplegar funciones, y hay un despliegue de funciones ya pendiente —la rama
+del resumen semanal, que además toca este mismo archivo—. Dos despliegues de
+funciones por un cambio de cadenas es gasto de riesgo sin motivo.
+
+**Cuidado al hacerlo:** `FROM_EMAIL` lleva la dirección `campo@fosmon.com.mx`
+pegada al nombre. El nombre que se enseña se puede cambiar solo; **la dirección
+no se toca aquí** — es un remitente verificado y cambiarla es un trámite de
+dominio, no una edición de cadena. Si se cambian las dos de un tirón, el correo
+deja de salir y el síntoma es silencio, que es el peor síntoma posible para un
+aviso semanal.
+
+---
+
+## 44. Un banco apuntado a un puerto muerto se cuelga en vez de fallar
+
+**Anotado el 2026-10-01 por decisión del usuario. No va en
+`feature/ui-dependencia`.**
+
+Los bancos que hablan con el emulador —`prueba-reglas-*`, `prueba-cierre-*`,
+`prueba-escritura-en-su-organizacion`— abren una conexión y esperan. Si el
+emulador no está, o está en otro puerto, **no fallan: se quedan colgados**. La
+suite no dice verde ni rojo; se queda quieta hasta que alguien la interrumpe.
+
+**Por qué importa más de lo que parece.** El repo ya tiene tres estados con
+significado y están cuidados a propósito: verde (0), **ROJO** (1) y **NO
+ARRANCÓ** (2), este último justo para que «no se comprobó» no se pueda
+confundir con «se comprobó y está bien». Colgarse es un cuarto estado que no
+cabe en el esquema, y es el peor de los cuatro: un rojo se atiende y un
+NO ARRANCÓ se atiende, pero algo que no termina se interpreta como «se está
+tardando» y acaba en que alguien mata la suite y la da por corrida.
+
+Un estado que no grita es peor que uno que falla. Son palabras del usuario, y
+es exactamente el P2 aplicado a la herramienta en vez de al producto: la misma
+clase de defecto que ya mordió dos veces este mes —el medidor de fotos que
+contestó «0 fotos» con la mayor convicción, y el `timeout` que no existe en
+macOS y convirtió 31 bancos verdes en 31 ROJOs falsos del 127—.
+
+**Qué hay que hacer.**
+
+- Un **plazo** por banco que hable con el emulador. Al vencerse: salir con 2,
+  NO ARRANCÓ, diciendo qué puerto se intentó. Nunca con 1: no se comprobó
+  nada, y decir ROJO sería inventar un resultado.
+- Una **comprobación previa** de que el puerto contesta, antes de abrir la
+  conexión larga. `sembrar-preview-emulador.cjs` ya lo hace, y es el modelo:
+  pregunta, y si no hay nadie dice qué comando levantarlo.
+- El corredor de la suite **no puede** depender del binario `timeout`: en macOS
+  no existe. Si el plazo se implementa fuera del banco, hay que detectar
+  `gtimeout`/`timeout` **y funcionar sin ninguno**. La primera versión del
+  barrido de esta rama hacía `$TO 60 node …` con `$TO` vacío, lo que ejecuta
+  `60 node …` → 127, «comando no encontrado», leído como NO ARRANCÓ en los 31
+  bancos a la vez. Creíble y falso.
+
+**Cómo comprobar que quedó.** Apagar el emulador y correr la suite completa:
+tiene que terminar, y los bancos que lo necesitan tienen que salir en 2
+nombrando el puerto. Hoy, sin emulador, no termina.
+
+---
+
+## 45. El PDF ejecutivo no es el documento que una dependencia necesita
+
+**Anotado el 2026-10-01.**
+
+El PDF ejecutivo (`generarPDFObra`) está hecho para una constructora: lleva
+margen, gasto, nómina y subcontratos. Del lado dependencia esa pantalla no
+tiene razón de existir —es justo la economía interna que no le toca ver (P5)—,
+y lo que una dependencia sí tiene que producir es otra cosa: el **informe
+semanal de avance** que la ley de obra pública le obliga a tener en el
+expediente.
+
+**Qué falta, en una línea:** decidir y construir el informe del **Art. 73** —
+el reporte periódico de avance físico y financiero— como el documento del lado
+dependencia, en el lugar donde hoy está el PDF ejecutivo.
+
+**Lo que ya existe y sirve de materia prima.** El historial semanal de avance
+(`avance/historial`), las estimaciones, el avance físico contra el contrato
+ejercido, y —desde esta rama— la evidencia fotográfica fechada por semana, que
+es precisamente lo que un informe de avance semanal necesita adjuntar.
+
+**La trampa a evitar, y es la misma de siempre.** La foto trae la fecha en que
+se **subió**, no la de ejecución. Un informe oficial que ponga una foto bajo el
+rótulo «avance de la semana N» está afirmando algo que nadie capturó, y en un
+expediente que se archiva eso dura años. Si el informe va a adjuntar evidencia,
+o dice «subidas en» como dice la pantalla, o hace falta capturar de verdad la
+fecha de ejecución — y eso es un cambio de captura, no de reporte.
+
+**Relación con el #12** (exportación del expediente, art. 74): son parientes y
+conviene decidirlos juntos; el 74 es el expediente completo y el 73 es el
+reporte periódico que vive dentro de él.
