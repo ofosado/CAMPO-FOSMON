@@ -3540,12 +3540,18 @@ const BIBLIOTECA_RIESGOS = [
   // ── COMPLIANCE ──
   {
     id: 'cmp_001', categoria: 'compliance',
-    titulo: 'Sin presupuesto cargado',
-    descripcion: 'No hay catálogo de presupuesto detallado para esta obra',
+    // Las plantillas de riesgo son datos puros: no tienen `usuario` en alcance
+    // y pasárselo sería atravesar el motor de riesgos entero. La salida es no
+    // nombrar la ruta del menú. «Sube el Excel en Presupuesto» nombraba una
+    // pestaña que una dependencia no tiene; esto dice QUÉ falta y el clic de la
+    // tarjeta ya sabe a dónde ir —lo traduce `destinoNav`—. Una leyenda que no
+    // nombra una ruta no la puede nombrar mal.
+    titulo: 'Sin catálogo de conceptos',
+    descripcion: 'No hay catálogo de conceptos cargado para esta obra',
     tab: 'planeacion', subTab: 'presupuesto',
     detect: ({subs}) => {
       if (subs?.length > 0) return null;
-      return {severidad:'medio', valor: '—', detalle: 'Sin catálogo no se puede medir avance', extra: 'Sube el Excel en Presupuesto'};
+      return {severidad:'medio', valor: '—', detalle: 'Sin catálogo no se puede medir avance', extra: 'Sube el Excel del catálogo'};
     },
   },
   {
@@ -4507,6 +4513,39 @@ const vaElReporteEjecutivo = usuario => !esDependencia(usuario);
 const vanLasOT = (usuario, obra) => !esDependencia(usuario) && !!obra?.cargaOT;
 const vaElInterruptorOT = usuario => !esDependencia(usuario);
 
+// ── CÓMO SE LLAMA LA MISMA PANTALLA EN CADA ORGANIZACIÓN ───────────────────
+// Hay una palabra que significa dos cosas distintas, y es la que más aparece:
+// **presupuesto**.
+//
+// En una constructora, el «presupuesto» de una obra es el catálogo de
+// conceptos con precios unitarios: lo que presupuestó para ganar el contrato.
+// En un ayuntamiento, «presupuesto» es el presupuesto de egresos —la partida
+// autorizada del año—, que es otra cosa y vive en otra oficina. Lo que hay en
+// esa pantalla, para una dependencia, es el **catálogo de conceptos**: el
+// término de la Ley de Obras Públicas, el que aparece en su propio contrato.
+// Su dinero ya se llama por su nombre en el formulario del contrato: «Monto
+// contratado» y «Origen de los recursos».
+//
+// No es purismo. Un director de obras que ve una pestaña «Presupuesto» espera
+// encontrar ahí de qué partida sale el dinero, no un Excel de volúmenes.
+//
+// Esto es un léxico, no un diccionario de cadenas. La diferencia importa: un
+// mapa de texto a texto se aplica donde alguien se acordó de aplicarlo y
+// silenciosamente no donde no. Estas son CLAVES: si falta una traducción, no
+// compila el acceso, y la prueba afirma que las dos tablas tienen las mismas.
+const LEXICO = {
+  constructora: {
+    catalogo:     "Presupuesto",
+    rutaCatalogo: "Planeación → Presupuesto",
+  },
+  dependencia: {
+    catalogo:     "Catálogo de conceptos",
+    rutaCatalogo: "Contrato → Catálogo de conceptos",
+  },
+};
+
+const lexico = usuario => LEXICO[esDependencia(usuario) ? "dependencia" : "constructora"];
+
 // ── ¿Se pide esta ruta de obra, o no se pide? ───────────────────────────────
 // El inventario de las rutas que llevan economía interna del contratista. Son
 // las MISMAS SEIS que `firestore.rules` deja deliberadamente sin declarar del
@@ -4546,7 +4585,7 @@ const ROL_LABEL = {
   auditor:             "Auditor Interno",   // antes "Supervisor de Obra" — 3 usuarios externos (hytorc/noleaks)
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
-  // Dependencia (declarados, sin UI aún)
+  // Dependencia
   director_obras:      "Director de Obras",
   subdirector:         "Subdirector",
   jefe_supervision:    "Jefe de Supervisión",
@@ -4570,8 +4609,10 @@ const ROL_LABEL = {
 //   OBRA (todas_obras:false, editan): superintendente, residente, administrador_obra.
 //   AUDITOR (todas_obras:false, solo lectura): auditor.
 //   EXTERNO: cliente (solo ve avance/fotos/estimaciones de sus obras).
-// Dependencia y soporte: declarados en PERMISOS abajo pero SIN UI implementada
-// en esta etapa. La UI seguirá viéndose exactamente igual para constructora.
+// Dependencia: los seis roles operativos tienen su propio menú (ver
+// `TABS_DEPENDENCIA`) y su propia frontera de datos (P5). Para constructora la
+// UI se ve exactamente igual que antes.
+// Soporte: declarado en PERMISOS abajo, todavía sin UI propia.
 const PERMISOS = {
   // ── Constructora ──
   director_general:    { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
@@ -11453,16 +11494,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
     </div>}
 
+    {/* La ruta que se nombra aquí tiene que ser la del menú de ESTA sesión. El
+        clic ya llegaba bien —`onNavTab` traduce el destino—, pero el texto
+        mandaba a «Planeación», que una dependencia no tiene en su menú. Un
+        instructivo que nombra una pestaña inexistente es peor que no tenerlo:
+        el usuario la busca, no la encuentra y reporta un defecto que no es. */}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length === 0 && (
       <EmptyState
-        titulo="Aún no hay catálogo de presupuesto"
+        titulo={`Aún no hay ${lexico(usuario).catalogo.toLowerCase()}`}
         mensaje="Antes de capturar avance físico necesitas cargar el catálogo de conceptos de esta obra. Es lo que define qué subsecciones hay y cuánto pesa cada una."
         cta={onNavTab ? {
-          label: "Ir a Planeación → Presupuesto",
+          label: `Ir a ${lexico(usuario).rutaCatalogo}`,
           onClick: () => onNavTab("planeacion", "presupuesto"),
         } : null}
         pasos={[
-          "Ve a la pestaña Planeación → Presupuesto.",
+          `Ve a la pestaña ${lexico(usuario).rutaCatalogo}.`,
           "Sube tu archivo Excel o CSV con el catálogo de conceptos.",
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
@@ -13632,7 +13678,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 
       <Card>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-          <Tit> Catálogo de presupuesto — {obra.nombre}</Tit>
+          <Tit> Catálogo de conceptos — {obra.nombre}</Tit>
           {catalogoGuardado && fase==='inicio' && (
             <Bdg color={C.green}>Cargado el {catalogoGuardado.fechaCarga}</Bdg>
           )}
@@ -13672,7 +13718,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             onClick={e=>e.stopPropagation()}>
             <div style={{background:C.yellow,color:C.caliza,padding:'14px 18px',
               borderRadius:'12px 12px 0 0',fontSize:13,fontWeight:700}}>
-              Reemplazar catálogo de presupuesto
+              Reemplazar catálogo de conceptos
             </div>
             <div style={{padding:'16px 18px',fontSize:11,color:C.textPri,lineHeight:1.5}}>
               <p style={{margin:'0 0 10px'}}>Vas a cargar un catálogo nuevo que sustituirá al actual (<b>{catalogoGuardado?.conceptos?.length||0} partidas</b>).</p>
@@ -13724,7 +13770,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             </div>
           </div>
           <div style={{fontSize:10,color:C.textMut,marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>
-            2. Archivo del presupuesto
+            2. Archivo del catálogo
           </div>
           <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:10,padding:24,textAlign:'center',
             cursor:'pointer',transition:'all .2s'}}
@@ -13737,7 +13783,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
               : <>
                   <div style={{fontSize:28,marginBottom:8}}></div>
                   <div style={{fontSize:13,fontWeight:600,color:C.textSec,marginBottom:4}}>
-                    Arrastra el Excel del presupuesto aquí
+                    Arrastra el Excel del catálogo aquí
                   </div>
                   <div style={{fontSize:10,color:C.textMut}}>
                     Formatos soportados: .xlsx, .xls, .csv · Cualquier estructura
@@ -17494,9 +17540,12 @@ const SUBTABS_OPERACION_DEPENDENCIA = [
   {id:"avance", label:"Avance físico"},
 ];
 
+// El `id` sigue siendo `presupuesto` —es la misma pantalla y el mismo dato—,
+// pero la etiqueta es la del léxico. Ver `LEXICO`: a un ayuntamiento
+// «Presupuesto» le suena a su presupuesto de egresos.
 const SUBTABS_PLANEACION_DEPENDENCIA = [
   {id:"contrato", label:"Contrato"},
-  {id:"presupuesto", label:"Presupuesto"},
+  {id:"presupuesto", label:LEXICO.dependencia.catalogo},
 ];
 
 // Sin estimaciones de muestra. Cada obra comienza en blanco.
@@ -17505,6 +17554,19 @@ const EST_DEFAULT = [];
 // ── WELCOME BANNER ────────────────────────────────────────────────────────
 // Pasos personalizados por rol, basados en el manual operativo. Solo
 // aparece la primera vez que el usuario entra a CAMPO.
+
+// El respaldo de dependencia tiene nombre propio, igual que `TABS_DEPENDENCIA`,
+// y no es una clave de la tabla. Si fuera `PASOS_BIENVENIDA.director_obras`,
+// borrar o renombrar ese rol dejaría el respaldo en `undefined` y la bienvenida
+// —la PRIMERA pantalla de un usuario nuevo— quedaría en blanco. Así el respaldo
+// no depende de que un rol siga existiendo.
+const PASOS_DEPENDENCIA_BASE = [
+  { t:"Tus obras", d:"En la pantalla de Obras ves todas las obras que la dependencia tiene contratadas, con su avance y su semáforo." },
+  { t:"Entra a una obra", d:"El Dashboard de cada obra te da el estado de un vistazo: avance, lo estimado y lo que requiere atención." },
+  { t:"Registra el contrato", d:"En Contrato capturas a qué empresa se adjudicó, bajo qué modalidad, el monto y el origen de los recursos." },
+  { t:"Carga el catálogo", d:"En Contrato → Catálogo de conceptos sube el archivo de conceptos y precios. Sin él no se puede capturar avance." },
+];
+
 const PASOS_BIENVENIDA = {
   director_general: [
     { t:"Visión global", d:"Desde la pantalla de Obras ves el portafolio completo: avance, gasto y riesgo de cada obra activa." },
@@ -17557,10 +17619,65 @@ const PASOS_BIENVENIDA = {
     { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
     { t:"Avance y fotos", d:"En las pestañas Avance y Fotos sigues el progreso semana por semana." },
   ],
+
+  // ── Dependencia (P5) ──
+  // Esta es la PRIMERA pantalla que ve un usuario nuevo, y hasta hoy a los seis
+  // roles de dependencia les salían los pasos de `administrador_obra`: «En
+  // Operación → Estimaciones registra cada cobro al cliente con su factura»,
+  // «Lleva el control de gastos en Gastos». Tres de las cuatro cosas que ahí se
+  // le pedían hacer están en pestañas que su menú no tiene, y la cuarta lo
+  // trataba como si él fuera el contratista cobrándose a sí mismo.
+  //
+  // Los pasos nombran sólo lo que existe en su menú —Dashboard, Avance,
+  // Evidencia, Contrato— y no prometen el informe del Art. 73, que todavía no
+  // está. Un tutorial que manda a una pantalla inexistente enseña que el
+  // tutorial no sirve.
+  director_obras: PASOS_DEPENDENCIA_BASE,
+  subdirector: [
+    { t:"Tus obras", d:"En Obras ves el conjunto de obras contratadas con su avance y su semáforo." },
+    { t:"Revisa lo que requiere atención", d:"El Dashboard de cada obra señala en rojo lo que se atrasó o no se ha capturado." },
+    { t:"Contrato y catálogo", d:"En Contrato quedan los datos del contrato y, en Catálogo de conceptos, aquello contra lo que se mide el avance." },
+  ],
+  jefe_supervision: [
+    { t:"Las obras que supervisas", d:"En Obras ves cada obra con su avance acumulado y su semáforo." },
+    { t:"Lo que capturaron los supervisores", d:"En Avance revisas el avance por concepto, semana por semana, con las fotos que se subieron." },
+    { t:"Evidencia", d:"En Evidencia ves juntas las fotos de la obra, para cotejar lo capturado contra lo que se ve." },
+  ],
+  supervisor_obra: [
+    { t:"Tu obra", d:"Entras a las obras que tienes asignadas. El Dashboard te muestra el avance acumulado." },
+    { t:"Captura el avance", d:"En Avance actualizas lo ejecutado de cada concepto del catálogo. Es la captura que alimenta todo lo demás." },
+    { t:"Sube fotos al capturar", d:"Cada concepto acepta fotos. Súbelas en el momento de capturar: es el respaldo de lo que reportas." },
+    { t:"Semáforo", d:"El Dashboard usa colores: verde si va bien, amarillo y rojo si hay que atender algo." },
+  ],
+  administrativo: [
+    { t:"Tus obras", d:"En Obras ves las obras que tienes asignadas con su avance y su semáforo." },
+    { t:"Contrato", d:"En Contrato consultas los datos del contrato, los plazos con sus ampliaciones y el repositorio de documentos." },
+    { t:"Avance y evidencia", d:"En Avance ves lo capturado por concepto y en Evidencia las fotos de la obra." },
+  ],
+  contralor: [
+    { t:"Acceso de consulta", d:"Ves todas las obras de la dependencia en solo lectura. Puedes revisar todo sin modificar nada." },
+    { t:"Avance y evidencia", d:"En Avance consultas lo capturado concepto por concepto y en Evidencia las fotos que lo respaldan." },
+    { t:"Contrato y plazos", d:"En Contrato están los datos del contrato, las ampliaciones autorizadas y los documentos cargados." },
+  ],
+  // Contratista: el equivalente a `cliente` del lado de dependencia.
+  contratista: [
+    { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de la obra que ejecutas." },
+    { t:"Avance y fotos", d:"En las pestañas Avance y Fotos sigues el progreso semana por semana." },
+  ],
 };
 
+// Los pasos de un usuario, con el respaldo del lado correcto.
+//
+// El respaldo era `|| PASOS_BIENVENIDA.administrador_obra`, y ese "||" es el
+// mismo defecto que tenía `tabsDe`: un rol que la tabla no conoce cae del lado
+// constructora. Aquí pregunta por el tipo, que es lo que juzgan las reglas (P5).
+const pasosDe = usuario =>
+  PASOS_BIENVENIDA[usuario?.rol] ||
+  (esDependencia(usuario) ? PASOS_DEPENDENCIA_BASE
+                          : PASOS_BIENVENIDA.administrador_obra);
+
 function WelcomeBanner({usuario, onCerrar}){
-  const pasos = PASOS_BIENVENIDA[usuario.rol] || PASOS_BIENVENIDA.administrador_obra;
+  const pasos = pasosDe(usuario);
   const rolLabel = ROL_LABEL[usuario.rol] || "Usuario";
   const primerNombre = (usuario.nombre || "").split(" ")[0] || usuario.nombre || "";
   const [guardando, setGuardando] = useState(false);

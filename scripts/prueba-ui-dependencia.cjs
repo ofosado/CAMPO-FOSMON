@@ -87,6 +87,38 @@
 //   · `puedeEditarContrato` sin el corte, cayendo a `can(rol, "captura", …)`
 //        → 2 rojas aquí y 1 en la de escritura: al supervisor y al
 //          administrativo se les ofrece un botón que guarda la mitad.
+//   · la etiqueta del sub-tab vuelve a ser `"Presupuesto"` a secas
+//        → 3 rojas: al ayuntamiento se le vuelve a llamar «Presupuesto» a lo
+//          que no es su presupuesto, y la ruta que se le dicta deja de cuadrar
+//          con su propio menú.
+//   · borrar `rutaCatalogo` de la columna de dependencia del léxico
+//        → 2 rojas: las dos columnas dejan de traducir las mismas claves y la
+//          ruta sale `undefined`. Es la razón de que el léxico sean CLAVES.
+//   · `pasosDe` sin el corte: `PASOS_BIENVENIDA[rol] || …administrador_obra`
+//        → 2 rojas: a los seis roles de dependencia les sale, en su PRIMERA
+//          pantalla, un tutorial que los manda a Estimaciones y a Gastos.
+//   · el EmptyState de captura vuelve a dictar «Planeación → Presupuesto»
+//        → 1 roja. El clic siempre llegó bien —lo traduce `destinoNav`—; lo
+//          que estaba mal era el texto, y eso es peor: el usuario busca una
+//          pestaña que no existe y reporta como defecto algo que funciona.
+//   · devolver «Sube el Excel en Planeación → Presupuesto» a `cmp_001`
+//        → 1 roja, y hubo que escribir la comprobación para que la hubiera.
+//          Salía VERDE: las plantillas de riesgo no viven dentro de ningún
+//          componente y `extra` se arma dentro de `detect`, que para esa sólo
+//          dispara sin catálogo. Dos puntos ciegos sumados.
+//
+// ── Y DOS SOBRE LA PRUEBA MISMA (P4) ───────────────────────────────────────
+// Las dos salieron de contraprobar lo de arriba, y las dos eran el banco
+// mintiendo, no el producto:
+//
+//   · renombrar `PASOS_DEPENDENCIA_BASE`
+//        → salida 2. Lo atrapa `NECESARIOS`, como debe ser.
+//   · romper la FORMA de `LEXICO` sin tocar su nombre (`dependencia` →
+//     `dependenciaX`)
+//        → salida 2 gracias a `vigilarExcepciones`. ANTES salía 1 con cero
+//          FALLA: el banco reventaba al construir el sandbox de la §1 y Node
+//          devolvía el mismo código que un rojo. Un `.catch` al final no
+//          alcanzaba — esos sandboxes se arman en el ámbito del módulo.
 //
 // La mutación del `logout` es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
@@ -109,6 +141,8 @@ const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).defaul
 const noArranco = require('./no-arranco.cjs');
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
+// Antes de leer nada: si esto revienta, es NO ARRANCÓ (2) y no rojo (1).
+noArranco.vigilarExcepciones(archivo);
 const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, {
   sourceType: 'module',
@@ -138,6 +172,7 @@ const NECESARIOS = [
   'vanLasOT', 'vaElInterruptorOT',
   'CAMPOS_CONTRATO', 'camposContrato', 'ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato',
   'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
+  'LEXICO', 'lexico', 'PASOS_DEPENDENCIA_BASE', 'PASOS_BIENVENIDA', 'pasosDe',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
@@ -162,6 +197,7 @@ const menus = new Function(`"use strict";
   const TABS_DEPENDENCIA = ${decl['TABS_DEPENDENCIA']};
   const TABS_POR_ROL = ${decl['TABS_POR_ROL']};
   const tabsDe = ${decl['tabsDe']};
+  const LEXICO = ${decl['LEXICO']};
   return { tabsDe, TABS_POR_ROL,
            SUBTABS_OPERACION_DEPENDENCIA: ${decl['SUBTABS_OPERACION_DEPENDENCIA']},
            SUBTABS_PLANEACION_DEPENDENCIA: ${decl['SUBTABS_PLANEACION_DEPENDENCIA']} };`)();
@@ -830,6 +866,196 @@ const montarGP = () => {
     'y un cliente sigue sin poder editarlo');
 
   // ══════════════════════════════════════════════════════════════════════════
+  // 4quinquies) LAS PALABRAS QUE AHÍ SIGNIFICAN OTRA COSA
+  // ══════════════════════════════════════════════════════════════════════════
+  // El formulario del contrato se quedó sin traducir porque se recortó el menú
+  // y nadie leyó lo que quedaba dentro. Este barrido es el guard contra el
+  // siguiente caso igual. Dos clases de defecto, distintas:
+  //
+  //   1. La palabra que significa otra cosa. «Presupuesto», para un
+  //      ayuntamiento, es su presupuesto de egresos; lo que hay en esa pantalla
+  //      es el catálogo de conceptos. Lo resuelve `LEXICO`.
+  //   2. El instructivo que nombra una pestaña inexistente. «Ve a Planeación →
+  //      Presupuesto» en una sesión sin pestaña Planeación. El clic llegaba
+  //      bien —`destinoNav` lo traduce— y el texto mandaba al vacío.
+  //
+  // La segunda es la peor de las dos, aunque parezca cosmética: el usuario
+  // busca la pestaña, no la encuentra, y reporta como defecto algo que
+  // funciona. Se gasta la confianza en la herramienta.
+  seccion('Las palabras que ahí significan otra cosa');
+
+  const lex = new Function(`"use strict";
+      const esDependencia = ${decl['esDependencia']};
+      const LEXICO = ${decl['LEXICO']};
+      const lexico = ${decl['lexico']};
+      return { LEXICO, lexico };`)();
+
+  // Un léxico al que le falta una clave de un lado traduce a `undefined`, que
+  // se pinta como "undefined" en pantalla. Que las dos tablas tengan las
+  // mismas claves es la condición para que eso no pueda pasar.
+  const kC = Object.keys(lex.LEXICO.constructora).sort().join(',');
+  const kD = Object.keys(lex.LEXICO.dependencia).sort().join(',');
+  check(kC === kD && kC.length > 0,
+    'las dos columnas del léxico traducen exactamente las mismas claves',
+    kC === kD ? kC : `constructora: ${kC}  ·  dependencia: ${kD}`);
+  for (const [lado, u] of [['dependencia', DEP], ['constructora', CONS]])
+    check(Object.values(lex.lexico(u)).every(v => typeof v === 'string' && v.length > 0),
+      `del lado ${lado} ninguna traducción sale vacía`);
+
+  // La pestaña. Lo que el usuario lee antes de hacer clic.
+  const subPpto = menus.SUBTABS_PLANEACION_DEPENDENCIA.find(s => s.id === 'presupuesto');
+  check(subPpto && !/presupuesto/i.test(subPpto.label),
+    'a una dependencia la pestaña del catálogo no se le llama «Presupuesto»',
+    subPpto?.label || 'NO EXISTE');
+  check(subPpto?.label === lex.lexico(DEP).catalogo,
+    'y se llama como dice el léxico, no como se acordó alguien aquí',
+    subPpto?.label);
+  check(lex.lexico(CONS).catalogo === 'Presupuesto',
+    'mientras en constructora sigue llamándose Presupuesto, como siempre');
+
+  // La ruta que se le dicta al usuario sólo puede nombrar pestañas que su
+  // menú tiene. Esto se comprueba CONTRA EL MENÚ, no contra una lista escrita
+  // a mano: si mañana cambia una etiqueta del menú y no la ruta, sale rojo.
+  const etiquetasDep = [
+    ...menus.tabsDe(DEP).map(t => t.label),
+    ...menus.SUBTABS_OPERACION_DEPENDENCIA.map(s => s.label),
+    ...menus.SUBTABS_PLANEACION_DEPENDENCIA.map(s => s.label),
+  ];
+  // Se parte de la cadena vacía, no de `undefined`: si falta la traducción, los
+  // tramos salen vacíos y eso es rojo —la ruta que se le dicta no nombra
+  // ninguna pestaña—, no una excepción. Un `.split` sobre `undefined` reventaría
+  // el banco y lo convertiría en NO ARRANCÓ, que diría «no pude mirar» cuando sí
+  // miró: el léxico incompleto es el defecto que se está buscando.
+  const rutaDep = lex.lexico(DEP).rutaCatalogo;
+  const tramosRuta = String(rutaDep ?? '').split('→').map(t => t.trim()).filter(Boolean);
+  const huerfanos = tramosRuta.filter(t => !etiquetasDep.includes(t));
+  check(tramosRuta.length > 0 && huerfanos.length === 0,
+    'la ruta que se le dicta nombra sólo pestañas que su menú tiene',
+    !tramosRuta.length ? `NO HAY RUTA: ${JSON.stringify(rutaDep)}`
+      : huerfanos.length ? `NO EXISTEN: ${huerfanos.join(', ')}  ·  menú: ${etiquetasDep.join(' | ')}`
+                         : rutaDep);
+
+  // ── Lo primero que ve un usuario nuevo ──
+  // Hasta hoy a los seis roles de dependencia les salían los pasos de
+  // `administrador_obra`, que les pedían registrar cobros al cliente con su
+  // factura y llevar el control de gastos. Es la PRIMERA pantalla.
+  const bien = new Function(`"use strict";
+      const esDependencia = ${decl['esDependencia']};
+      const PASOS_DEPENDENCIA_BASE = ${decl['PASOS_DEPENDENCIA_BASE']};
+      const PASOS_BIENVENIDA = ${decl['PASOS_BIENVENIDA']};
+      const pasosDe = ${decl['pasosDe']};
+      return { PASOS_BIENVENIDA, pasosDe };`)();
+
+  const PALABRAS_AJENAS = /estimaci|n[óo]mina|subcontrat|almac[eé]n|maquinaria|gastos|planeaci[óo]n|operaci[óo]n|factura|margen|presupuesto|destajo|opus/i;
+
+  // Antes de mirar QUÉ dicen los pasos hay que afirmar que SALEN pasos. No es
+  // andamiaje: `pasosDe` devolviendo `undefined` es una pantalla de bienvenida
+  // en blanco, y es la primera que ve un usuario nuevo. Y si no se afirma aquí,
+  // el `.map` de abajo revienta y el banco entero sale por el camino del
+  // NO ARRANCÓ, que diría «no pude mirar» cuando sí miró y lo que vio es rojo.
+  const texto = pasos => (pasos || []).map(p => `${p.t} ${p.d}`).join(' ');
+  const hayPasos = (pasos, quien) =>
+    check(Array.isArray(pasos) && pasos.length > 0 && pasos.every(p => p && p.t && p.d),
+      `${quien} recibe una bienvenida con pasos, no una pantalla en blanco`,
+      Array.isArray(pasos) ? `${pasos.length} paso(s)` : String(pasos));
+
+  for (const rolD of ROLES_DEP) {
+    const pasos = bien.pasosDe({ rol: rolD, tipo: 'dependencia' });
+    hayPasos(pasos, rolD);
+    check(pasos !== bien.PASOS_BIENVENIDA.administrador_obra,
+      `${rolD} no recibe el tutorial de un administrador de obra`);
+    const halladas = texto(pasos).match(PALABRAS_AJENAS);
+    check(!halladas,
+      `y su tutorial no lo manda a pantallas que no tiene`,
+      halladas ? `DICE «${halladas[0]}»: ${texto(pasos).slice(0, 90)}…` : `${(pasos||[]).length} pasos`);
+  }
+  // El respaldo. Un rol de dependencia que esta tabla no conozca —y van a
+  // llegar— no puede caer del lado constructora: es el mismo "||" que le sacaba
+  // Gastos a `director_obras`. Y tiene que seguir en pie aunque los roles de la
+  // tabla cambien de nombre: por eso se le pregunta con un rol inventado.
+  const pasosDesconocido = bien.pasosDe({ rol: 'titular_oic', tipo: 'dependencia' });
+  hayPasos(pasosDesconocido, 'un rol de dependencia que la tabla no conoce');
+  check(pasosDesconocido !== bien.PASOS_BIENVENIDA.administrador_obra,
+    'un rol de dependencia que la tabla no conoce tampoco cae del lado constructora');
+  check(!PALABRAS_AJENAS.test(texto(pasosDesconocido)),
+    'y lo que le sale por respaldo tampoco nombra pantallas que no tiene');
+  check(bien.pasosDe({ rol: 'superintendente', tipo: 'constructora' })
+        === bien.PASOS_BIENVENIDA.superintendente,
+    'en constructora cada rol sigue recibiendo sus mismos pasos');
+
+  // ── Barrido: ningún texto alcanzable dicta una ruta del otro menú ──
+  // Lo de arriba afirma sobre los sitios ya arreglados. Esto es el guard
+  // contra el próximo. Se recorre el ÁRBOL de los componentes que una
+  // dependencia alcanza —no el archivo entero— buscando cadenas que nombren
+  // una ruta de menú con la flecha. Si aparece una nueva escrita a mano, sale
+  // en rojo y hay que pasarla por `LEXICO`.
+  const ALCANZABLES = ['PantallaObras', 'DashboardDependencia', 'Captura',
+                       'FotosCliente', 'Contrato', 'Presupuesto', 'WelcomeBanner'];
+  const rutasEscritasAMano = [];
+  traverse(ast, {
+    Function(p) {
+      const nombre = p.node.id?.name || p.parent?.id?.name;
+      if (!ALCANZABLES.includes(nombre)) return;
+      p.traverse({
+        StringLiteral(q) {
+          if (!/(Planeaci[óo]n|Operaci[óo]n)\s*→/.test(q.node.value)) return;
+          rutasEscritasAMano.push(`${nombre}:${q.node.loc.start.line}  ${q.node.value.slice(0, 60)}`);
+        },
+        JSXText(q) {
+          if (!/(Planeaci[óo]n|Operaci[óo]n)\s*→/.test(q.node.value)) return;
+          rutasEscritasAMano.push(`${nombre}:${q.node.loc.start.line}  ${q.node.value.trim().slice(0, 60)}`);
+        },
+      });
+    },
+  });
+  check(rutasEscritasAMano.length === 0,
+    'ninguna pantalla que la dependencia alcanza dicta una ruta escrita a mano',
+    rutasEscritasAMano.length ? '\n        ' + rutasEscritasAMano.join('\n        ') : 'ninguna');
+
+  // Las tarjetas de riesgo necesitan su propio barrido, y esto lo descubrió una
+  // contraprueba: devolver «Sube el Excel en Planeación → Presupuesto» a la
+  // plantilla `cmp_001` salía VERDE con todo lo de arriba. Por dos razones que
+  // se suman. Una, las plantillas son datos en el ámbito del módulo, no viven
+  // dentro de ningún componente, así que el recorrido de `ALCANZABLES` no las
+  // mira. Dos, `extra` y `detalle` se arman DENTRO de `detect`, y `cmp_001` sólo
+  // dispara cuando la obra no tiene catálogo: el contexto con el que se ejercita
+  // el motor arriba sí lo tiene, así que ese texto nunca se producía.
+  //
+  // De ahí que esto se haga sobre la FUENTE de cada plantilla y no sobre su
+  // salida: una leyenda que la dependencia puede llegar a leer no se puede
+  // dejar sin vigilar porque haga falta un contexto raro para sacarla.
+  const biblio = new Function(`"use strict";
+      const MXN = ${decl['MXN']};
+      const heImporte = ${decl['heImporte']};
+      const BIBLIOTECA_RIESGOS = ${decl['BIBLIOTECA_RIESGOS']};
+      const RIESGOS_SOLO_CONSTRUCTORA = ${decl['RIESGOS_SOLO_CONSTRUCTORA']};
+      return { BIBLIOTECA_RIESGOS, RIESGOS_SOLO_CONSTRUCTORA };`)();
+  const vedados = new Set(biblio.RIESGOS_SOLO_CONSTRUCTORA);
+
+  const rutasEnRiesgos = [];
+  traverse(ast, {
+    VariableDeclarator(p) {
+      if (p.node.id.name !== 'BIBLIOTECA_RIESGOS') return;
+      p.traverse({
+        ObjectExpression(q) {
+          const propId = q.node.properties.find(
+            r => r.key && (r.key.name === 'id' || r.key.value === 'id'));
+          if (!propId || propId.value.type !== 'StringLiteral') return;
+          const id = propId.value.value;
+          if (vedados.has(id)) return;   // ésa no le llega nunca
+          const fuente = src.slice(q.node.start, q.node.end);
+          const hallada = fuente.match(/["'`][^"'`]*(Planeaci[óo]n|Operaci[óo]n)\s*→[^"'`]*["'`]/);
+          if (hallada) rutasEnRiesgos.push(`${id}: ${hallada[0].slice(0, 60)}`);
+        },
+      });
+    },
+  });
+  check(rutasEnRiesgos.length === 0,
+    'ni una tarjeta de riesgo que la dependencia puede recibir dicta una ruta',
+    rutasEnRiesgos.length ? '\n        ' + rutasEnRiesgos.join('\n        ')
+                          : `${biblio.BIBLIOTECA_RIESGOS.length - vedados.size} plantillas revisadas`);
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 5) LA ESPERA DE DATOS: no esperar lo que no se pidió
   // ══════════════════════════════════════════════════════════════════════════
   // Consecuencia directa de no suscribir: si la pantalla siguiera esperando las
@@ -909,3 +1135,6 @@ const montarGP = () => {
     : `\n${fallas} comprobación(es) en rojo.`);
   process.exit(fallas > 0 ? 1 : 0);
 })();
+// Lo que pasa si esto revienta lo decide `vigilarExcepciones`, instalado arriba
+// antes de leer el archivo. Un `.catch` aquí no serviría: los sandboxes de las
+// §1 y §4 se construyen en el ámbito del módulo, antes de que esto empiece.
