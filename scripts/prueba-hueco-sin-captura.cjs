@@ -16,6 +16,10 @@
 const fs = require('fs');
 const path = require('path');
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const raiz = path.resolve(__dirname, '..');
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');

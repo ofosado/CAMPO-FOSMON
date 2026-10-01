@@ -37,6 +37,9 @@ const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc } =
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
 const noArranco = require('./no-arranco.cjs');
 
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const VOLCADO = process.argv[2] || '/tmp/0114-produccion.json';
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);

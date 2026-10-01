@@ -30,6 +30,10 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const ARCHIVO = process.argv[2]
   ? path.resolve(process.argv[2])
   : path.join(raiz, 'src/App.jsx');

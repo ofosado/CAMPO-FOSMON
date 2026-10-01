@@ -30,6 +30,10 @@ const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc,
         addDoc, collection, getDocs } = require('firebase/firestore');
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);

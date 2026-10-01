@@ -27,6 +27,10 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const RAIZ = path.resolve(__dirname, '..');
 
 // ── El patrón de oro: la paleta antes del puente ────────────────────────────

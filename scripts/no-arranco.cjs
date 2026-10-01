@@ -50,17 +50,19 @@ module.exports.NO_ARRANCO = NO_ARRANCO;
 // banco de dependencia salió 1 con 0 FALLA. Un `.catch` al final del IIFE no
 // alcanza: estos bancos construyen sandboxes en el ámbito del módulo, antes de
 // que el IIFE empiece. Hay que vigilar el proceso, no una promesa.
-module.exports.vigilarExcepciones = function vigilarExcepciones(archivo = 'src/App.jsx') {
+module.exports.vigilarExcepciones = function vigilarExcepciones(archivo) {
+  const donde = archivo ? ' mientras leía ' + archivo : '';
   const salir = (etiqueta, e) => {
     console.log('');
-    console.log('NO ARRANCÓ — la prueba reventó mientras leía ' + archivo + ':');
+    console.log('NO ARRANCÓ — la prueba reventó' + donde + ':');
     console.log('');
     console.log('  ' + etiqueta + ': ' + (e && e.stack ? e.stack : e));
     console.log('');
-    console.log('Esto NO es un rojo. La conducta se quedó SIN COMPROBAR: lo más');
-    console.log('probable es que una declaración haya cambiado de forma y el');
-    console.log('andamiaje que la extrae ya no sirva. Arreglar la extracción y');
-    console.log('volver a correr para saber si además hay regresión.');
+    console.log('Esto NO es un rojo. La conducta se quedó SIN COMPROBAR. Suele ser');
+    console.log('que una declaración cambió de forma —no de nombre, de forma— y el');
+    console.log('andamiaje que la extrae ya no sirve; en los bancos que usan el');
+    console.log('emulador, que el emulador no está. Arreglar eso y volver a correr');
+    console.log('para saber si además hay regresión.');
     process.exit(NO_ARRANCO);
   };
   process.on('uncaughtException', e => salir('excepción sin atrapar', e));

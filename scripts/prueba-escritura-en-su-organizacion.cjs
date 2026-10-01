@@ -67,6 +67,11 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
+// Este banco tiene su propio `noArranco` más abajo —con pista de emulador—,
+// así que el ayudante compartido entra con otro nombre.
+// Si revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+require('./no-arranco.cjs').vigilarExcepciones();
+
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
