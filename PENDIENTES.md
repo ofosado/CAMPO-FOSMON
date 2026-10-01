@@ -3900,3 +3900,36 @@ Cuando se haga, el filtro tiene que ser por `orgId` **y** la obtención de obras
 tiene que respetar el prefijo de la organización. Y hace falta una prueba que
 afirme que un usuario de otra organización **no** aparece entre los
 destinatarios.
+
+## 40. La lectura del GP Sheet arranca antes de que haya sesión
+
+Visto en el emulador el 2026-10-01, entrando desde el formulario de login como
+`director_general`: el saludo sale con el chip **ámbar "GP Sheet · no
+disponible"**, y con él `GASTADO` y `MARGEN` en "no disponible". Al recargar la
+página —ya con sesión— el chip sale verde y las dos cifras aparecen.
+
+La causa es el momento, no el permiso. `useGPConstruct` pide
+`global/gp_construct` al montar el componente, y al montar todavía no hay
+usuario. La regla `allow read: if esConstructora() && !esCliente()` evalúa un
+token que no existe y niega, con razón. `permission-denied` está clasificado
+como **terminal** —y está bien que lo esté: reintentar la misma lectura sin
+sesión da exactamente lo mismo—, así que no hay reintento. Nada vuelve a
+disparar la carga cuando el login termina.
+
+**No lo introdujo `feature/ui-dependencia`.** En main el efecto es
+`useEffect(() => { cargarGP(); }, [])` (App.jsx:5258) y corre en el mismo
+instante. La rama lo dejó como `[activo, cargarGP]`, y `activo` ya es `true`
+antes del login porque `esDependencia(null)` es `false`. Mismo momento, mismo
+resultado.
+
+**Por qué casi no se ve en producción.** Firebase persiste la sesión: el camino
+normal de un usuario de FOSMON es abrir la app con sesión viva, y entonces al
+montar ya hay token. Se manifiesta en el primer login después de cerrar sesión,
+en una ventana de incógnito, y tras `?_reset=1`.
+
+El arreglo es volver a cargar cuando aparece la sesión, no relajar la
+clasificación de `permission-denied`. Lo natural es que `activo` conteste
+"¿esta sesión lee GP?" en vez de "¿esta organización lo leería?" —hoy contesta
+lo segundo y por eso no cambia con el login—. Hace falta una prueba que afirme
+que, con el usuario llegando después del montaje, el estado de GP termina en
+`listo` y no en `error`.
