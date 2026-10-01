@@ -4484,6 +4484,29 @@ const vaElEmblema = usuario => !esDependencia(usuario);
  */
 const vaElReporteEjecutivo = usuario => !esDependencia(usuario);
 
+/**
+ * ¿Va el bloque de Órdenes de Trabajo en Avance físico?
+ *
+ * La OT es un documento INTERNO del contratista: la orden que su cliente
+ * industrial le gira por SAP, con su folio y sus partidas. Se construyó para
+ * TAMSA y para obras como TAMSA. Un municipio no gira órdenes de trabajo: gira
+ * un contrato, y de ahí en adelante estima. Así que en una dependencia el
+ * bloque no va — ni «Cargar Orden de Trabajo» ni el histórico.
+ *
+ * El corte NO puede ser sólo esconder el interruptor del formulario de
+ * Contrato: la bandera ya viene puesta en los datos. OBRA DEMO 3 se sembró con
+ * `cargaOT: true`, así que quitar la casilla y dejar el render colgando de la
+ * bandera habría seguido pintando el bloque. Se pregunta por los dos.
+ *
+ * El interruptor va aparte porque responde otra cosa —si se puede PRENDER—, y
+ * en constructora se queda: el bloque ya está escondido para quien no lo usa
+ * (es lo que hace la bandera), y esconder también la casilla dejaría la
+ * función sin manera de encenderse. Un interruptor invisible es una función
+ * que no existe.
+ */
+const vanLasOT = (usuario, obra) => !esDependencia(usuario) && !!obra?.cargaOT;
+const vaElInterruptorOT = usuario => !esDependencia(usuario);
+
 // ── ¿Se pide esta ruta de obra, o no se pide? ───────────────────────────────
 // El inventario de las rutas que llevan economía interna del contratista. Son
 // las MISMAS SEIS que `firestore.rules` deja deliberadamente sin declarar del
@@ -11261,8 +11284,9 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
     {subTab==="avance" && (
       <>
         <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
-        {/* Órdenes de Trabajo — solo si la obra tiene la bandera cargaOT (TAMSA) */}
-        {obra?.cargaOT && (
+        {/* Órdenes de Trabajo — ver `vanLasOT`: la bandera de la obra Y que la
+            sesión sea de una constructora. La OT es documento interno suyo. */}
+        {vanLasOT(usuario, obra) && (
           <>
             <CargarOT obra={obra} subs={subs} setSubs={setSubs} fbDb={fbDb} fbStor={fbStor}
               usuario={usuario} onCargada={()=>setCambiosPendientes&&setCambiosPendientes(true)}/>
@@ -11331,7 +11355,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
 // `subTabs` como parámetro y acotado adentro, por lo mismo que en `Operacion`.
-function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados,
+function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setSubsGlobal,subs,subsCargados,
                      subTabs=SUBTABS_PLANEACION}){
   const subTab = subTabs.some(t => t.id === subTabPedido) ? subTabPedido : subTabs[0].id;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -11348,7 +11372,7 @@ function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,setSubsGloba
         </button>
       ))}
     </div>}
-    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} subs={subs} subsCargados={subsCargados}/>}
+    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} usuario={usuario} subs={subs} subsCargados={subsCargados}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
     {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
   </div>;
@@ -16592,7 +16616,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
 }
 
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
-function Contrato({obra, setObra, rol, subs, subsCargados}) {
+function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -16869,7 +16893,11 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
             )}
           </div>
 
-          {/* Carga de Órdenes de Trabajo (PDF) — solo para obras TAMSA-like */}
+          {/* Carga de Órdenes de Trabajo (PDF) — ver `vaElInterruptorOT`.
+              En constructora se queda, también en las obras que no la usan: la
+              bandera ya esconde el bloque de Avance físico, y esconder además
+              la casilla dejaría la función sin manera de encenderse. */}
+          {vaElInterruptorOT(usuario) && (
           <div style={{marginTop:14,paddingTop:12,borderTop:`0.5px solid ${C.border}`}}>
             <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
               Órdenes de Trabajo (PDF)
@@ -16896,6 +16924,7 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
               </div>
             )}
           </div>
+          )}
         </Card>
       )}
 
@@ -19339,7 +19368,7 @@ export default function App(){
         <Planeacion
           subTabs={SUBTABS_PLANEACION_DEPENDENCIA}
           subTab={subTabPlan} setSubTab={setSubTabPlan}
-          obra={obra} setObra={setObra} rol={usuario.rol}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
           setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 
@@ -19350,7 +19379,7 @@ export default function App(){
       {screen==="obra"&&tab==="planeacion"&&obra&&(
         <Planeacion
           subTab={subTabPlan} setSubTab={setSubTabPlan}
-          obra={obra} setObra={setObra} rol={usuario.rol}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
           setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 

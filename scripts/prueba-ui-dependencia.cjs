@@ -61,6 +61,13 @@
 //   · volver a escribir «FOSMON CONSTRUCCIONES» a mano en el encabezado
 //        → 1 roja, la del barrido. El defecto original eran DOS sitios con la
 //          misma cadena literal; arreglar uno dejaba el otro.
+//   · `vanLasOT = (usuario, obra) => !!obra?.cargaOT`, como estaba
+//        → 1 roja: con la bandera prendida —así está sembrada OBRA DEMO 3—
+//          el municipio vuelve a ver «Cargar Orden de Trabajo».
+//   · `vaElInterruptorOT = () => false`, escondiéndola "por limpieza"
+//        → 1 roja: la constructora se queda sin manera de prender la función.
+//   · `vanLasOT = usuario => !esDependencia(usuario)`, ignorando la bandera
+//        → 2 rojas: el bloque le aparece a toda obra de constructora.
 //
 // La mutación del `logout` es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
@@ -109,6 +116,7 @@ const NECESARIOS = [
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
   'PRODUCTO', 'nombreOrg', 'vaElEmblema', 'vaElReporteEjecutivo',
+  'vanLasOT', 'vaElInterruptorOT',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
@@ -598,7 +606,10 @@ const montarGP = () => {
       const nombreOrg = ${decl['nombreOrg']};
       const vaElEmblema = ${decl['vaElEmblema']};
       const vaElReporteEjecutivo = ${decl['vaElReporteEjecutivo']};
-      return { PRODUCTO, nombreOrg, vaElEmblema, vaElReporteEjecutivo };`)();
+      const vanLasOT = ${decl['vanLasOT']};
+      const vaElInterruptorOT = ${decl['vaElInterruptorOT']};
+      return { PRODUCTO, nombreOrg, vaElEmblema, vaElReporteEjecutivo,
+               vanLasOT, vaElInterruptorOT };`)();
 
   const DEP  = { rol: 'supervisor_obra', tipo: 'dependencia',  orgId: 'coatzacoalcos' };
   const CONS = { rol: 'director_general', tipo: 'constructora', orgId: 'fosmon' };
@@ -668,6 +679,33 @@ const montarGP = () => {
   check(literalesJSX.length === 0,
     'ninguna pantalla trae el nombre de la organización escrito a mano',
     literalesJSX.length ? literalesJSX.join(' | ') : 'ninguna');
+
+  // ── Órdenes de Trabajo ─────────────────────────────────────────────────────
+  // La OT es la orden que el cliente industrial le gira al contratista por
+  // SAP. Un municipio no gira órdenes de trabajo: gira un contrato y estima.
+  //
+  // El caso que importa es con la bandera PRENDIDA, porque así está sembrada
+  // OBRA DEMO 3: esconder la casilla del formulario y dejar el render colgando
+  // de `obra.cargaOT` habría seguido pintando el bloque en la demo.
+  const OBRA_CON = { id: 'OP-2026-001', cargaOT: true };
+  const OBRA_SIN = { id: 'OP-2026-002' };
+
+  check(bar.vanLasOT(DEP, OBRA_CON) === false,
+    'una dependencia no ve el bloque de OT ni con la bandera prendida en la obra',
+    'cargaOT: true');
+  check(bar.vanLasOT(DEP, OBRA_SIN) === false, 'y menos sin bandera');
+  check(bar.vaElInterruptorOT(DEP) === false,
+    'ni la casilla para prenderla en Información del contrato');
+
+  check(bar.vanLasOT(CONS, OBRA_CON) === true,
+    'una constructora con la bandera prendida sigue viendo el bloque  ·  TAMSA');
+  check(bar.vanLasOT(CONS, OBRA_SIN) === false,
+    'y sin bandera no lo ve: eso ya lo hacía la bandera y sigue haciéndolo');
+  check(bar.vaElInterruptorOT(CONS) === true,
+    'pero la casilla se queda en constructora, también en las obras que no la usan',
+    'un interruptor invisible es una función que no existe');
+  check(bar.vanLasOT(CONS, null) === false && bar.vanLasOT(CONS, undefined) === false,
+    'sin obra cargada todavía tampoco se pinta');
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5) LA ESPERA DE DATOS: no esperar lo que no se pidió
