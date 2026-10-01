@@ -7,6 +7,13 @@ import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObje
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
 import { subscribeToPWAUpdates } from "./pwa-update.js";
+// La marca del producto. Los maestros vienen del paquete de marca (`paquete/`,
+// Manual v1.0) y se copiaron a `src/assets/brand` para que el bundler los
+// versione y el service worker los precachee: la app corre en obra con señal
+// mala y el logo no se pide a nadie.
+import coteaHorizontal from "./assets/brand/cotea-horizontal.svg";
+import coteaIcono from "./assets/brand/cotea-icono.svg";
+import coteaIconoSolido from "./assets/brand/cotea-icono-solido.svg";
 
 // fix/actualizacion-pwa (2026-09-16): versión del build inyectada por Vite
 // (ver vite.config.js `define`). Formato mostrado al usuario: "v2026-09-16 · 34f4c3f".
@@ -167,7 +174,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     } catch(e){}
     // Textos header
     st(K.wh); fs(9); fw('bold');
-    T('CAMPO', ML+10, 5);
+    T("cotea", ML+10, 5);
     fs(6.5); fw('normal');
     T(`Reporte ejecutivo · ${B.empresa}`, ML+10, 9.5);
     fs(8); fw('bold');
@@ -182,7 +189,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     sf([232,234,240]); R(0,PH-FTR,PW,FTR);
     sf(K.ng); R(0,PH-FTR,PW,0.6);
     st(K.gmu); fs(6); fw('normal');
-    T(`CAMPO — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
+    T(`cotea — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
     T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
     T(B.dominio, PW-MR, PH-3.5, {align:'right'});
   }
@@ -272,7 +279,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   } catch(e){}
 
   // Textos izquierda
-  st(K.wh); fs(26); fw('bold'); T('CAMPO', ML, 58);
+  st(K.wh); fs(26); fw('bold'); T("cotea", ML, 58);
   fs(7.5); fw('normal'); T('REPORTE DE AVANCE DE OBRA', ML, 64);
   sd(K.wh); lw(0.4); L(ML, 66.5, ML+55, 66.5);
   fs(13); fw('bold');
@@ -320,7 +327,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   sf([232,234,240]); R(0,PH-FTR,PW,FTR);
   sf(K.ng); R(0,PH-FTR,PW,0.6);
   st(K.gmu); fs(6); fw('normal');
-  T('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones', ML, PH-3.5);
+  T("cotea · FOSMON Construcciones", ML, PH-3.5);
   T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
 
   // ════════════════════════════════════════════════════════════════════════
@@ -755,7 +762,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     st(K.gmu); fs(12); fw('bold');
     T('Detalle GP no disponible', ML + CW/2, y + 14, {align:'center'});
     st(K.gmu); fs(8); fw('normal');
-    T('Abre la pestaña Gastos de esta obra en CAMPO al menos una vez antes',
+    T('Abre la pestaña Gastos de esta obra en cotea al menos una vez antes',
       ML + CW/2, y + 20, {align:'center'});
     T('de generar el PDF, para que se cargue el detalle GP del Sheet.',
       ML + CW/2, y + 25, {align:'center'});
@@ -1916,7 +1923,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   }
 
   // ── GUARDAR ──────────────────────────────────────────────────────────────
-  const nombre=`Reporte_CAMPO_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
+  const nombre=`Reporte_cotea_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
 
   } catch(e) {
@@ -1933,7 +1940,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{padding:24,background:"#0D1619",minHeight:"100vh",color:"#fff",fontFamily:"monospace"}}>
           <div style={{background:"#DC2626",borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:14,fontWeight:700}}>
-             Error en CAMPO
+             Error en cotea
           </div>
           <div style={{background:"#141E22",borderRadius:8,padding:16,fontSize:12,lineHeight:1.6,wordBreak:"break-all"}}>
             <b>{this.state.error.toString()}</b>
@@ -4374,11 +4381,47 @@ const EMB_NEGRO = "data:image/png;base64,"
   + "2BI4tUkQm4GvEgPck8C5wHRgjAM4lXdJXQXiVAvifQ7gwiA2gq8SA+6TwEzgg8B4AScJxOEgjgK2"
   + "B84GHnaA2BcDn6ue8kXg4hjgegScJMWDOBrYzu7JHowsH8PwhW9lPAtcCHwEWFbASVJzIPY4QBwL"
   + "7A78DHNDYCf7+mrAE5iytwMYfidOV3Q81X8Am092y8SMvd4AAAAASUVORK5CYII=";
-function EmblemaFOSMON({ size=22, dark=false, opacity=1 }) {
-  const h = Math.round(size * 516/447);
-  return <img src={dark?EMB_NEGRO:EMB_WHITE} alt="FOSMON"
-    style={{display:"block",flexShrink:0,opacity,imageRendering:"crisp-edges",
-      width:size,height:h,objectFit:"contain"}}/>;
+// Aquí estaba `EmblemaFOSMON`, el componente que pintaba el emblema del
+// contratista en pantalla. Se va con el renombre: los tres sitios que lo
+// usaban —acceso, barra y pie— son del PRODUCTO y ahora llevan `MarcaCotea`.
+//
+// Se borra en vez de dejarlo sin usar porque un componente muerto que pinta el
+// logo de FOSMON es un arma cargada: el día que alguien quiera «un logo aquí»
+// lo encuentra con autocompletar y lo pone sin pensarlo. Que haya que
+// escribirlo de nuevo es justamente el costo que se quiere cobrar.
+//
+// `EMB_NEGRO` y `EMB_WHITE` se quedan: los usa `generarPDFObra`, que es el
+// reporte de FOSMON y lleva su emblema con toda razón. Ése no se le ofrece a
+// una dependencia (`vaElReporteEjecutivo`).
+
+/**
+ * La marca del PRODUCTO.
+ *
+ * Hasta hoy el producto no tenía marca propia y la barra llevaba el emblema de
+ * FOSMON, que es del contratista. Por eso existía `vaElEmblema`: en la sesión
+ * de un municipio se dejaba el hueco, porque un hueco era correcto y el logo
+ * de otro no. Con marca propia el hueco ya no hace falta y la guardia tampoco:
+ * cotea es el mismo producto para los dos, igual que `PRODUCTO.nombre`.
+ *
+ * El emblema del contratista no desaparece del mundo: sigue en la portada del
+ * reporte ejecutivo, que es el documento de FOSMON y que a una dependencia no
+ * se le ofrece (`vaElReporteEjecutivo`).
+ *
+ * `variante` y `tamano` como en el `Logo.jsx` del paquete, con las dos reglas
+ * del manual que siempre se rompen aplicadas solas: por debajo de 32 px la
+ * «c» partida se cierra —a ese tamaño el corte se lee como un defecto de
+ * impresión— y el aire obligatorio de un cuarto del cuerpo va como padding,
+ * sin prop que lo apague.
+ */
+function MarcaCotea({ variante="icono", tamano=22, opacity=1, style }) {
+  const src = variante === "horizontal" ? coteaHorizontal
+            : tamano < 32              ? coteaIconoSolido
+                                       : coteaIcono;
+  return <img src={src} alt="cotea"
+    style={{display:"block",flexShrink:0,opacity,
+      height: variante === "horizontal" ? tamano * 1.35 : tamano,
+      width:"auto", padding: Math.round(tamano * 0.25),
+      boxSizing:"content-box", ...style}}/>;
 }
 
 // ── ROLES Y USUARIOS ───────────────────────────────────────────────────────
@@ -4433,10 +4476,21 @@ const esDependencia = usuario => usuario?.tipo === "dependencia";
 //
 // El nombre del producto, en un solo sitio. Estaba escrito literal en el
 // encabezado, en el pie y en la pantalla de acceso; el día del cambio de
-// nombre se iban a cambiar dos de los tres. El descriptor es el del manifest.
+// nombre se iban a cambiar dos de los tres. Ese día llegó —2026-10-01, CAMPO
+// pasa a ser cotea— y fue un renglón, que era justamente el punto.
+//
+// El descriptor se queda VACÍO a propósito, no borrado. «Control de Avance,
+// Maquinaria, Personal y Obra» era el desarrollo de la sigla CAMPO y con el
+// nombre nuevo no quiere decir nada; de paso nombraba dos módulos que la
+// sesión de un municipio no tiene. El eslogan definitivo está por decidirse y
+// queda anotado como pendiente: mejor sin descriptor que con uno malo.
+//
+// Vacío tiene que significar NO PINTAR NADA, igual que el `null` de
+// `nombreOrg`. Si alguien lo pinta sin preguntar, el pie dice «cotea — » con
+// la raya colgando.
 const PRODUCTO = {
-  nombre: "CAMPO",
-  descriptor: "Control de Avance, Maquinaria, Personal y Obra",
+  nombre: "cotea",
+  descriptor: "",
 };
 
 /**
@@ -4457,44 +4511,28 @@ const PRODUCTO = {
 const nombreOrg = (marca, usuario) =>
   marca?.empresa || (esDependencia(usuario) ? null : "FOSMON Construcciones");
 
-/**
- * ¿Va el emblema de FOSMON en esta sesión?
- *
- * El emblema es de FOSMON, no del producto, y hasta que el producto tenga
- * marca propia (el paquete está hecho, el manifest no se ha cambiado) pintarlo
- * en la sesión de una dependencia es poner el logo del contratista en la barra
- * del municipio.
- *
- * No se sustituye por el logo del cliente: ése ya va junto al saludo, y la
- * barra de arriba es del producto. Sin emblema de producto todavía, se omite.
- * Un hueco es correcto; el logo de otro, no.
- */
-const vaElEmblema = usuario => !esDependencia(usuario);
-
-/**
- * ¿Va el descriptor —el desarrollo de la sigla— junto al nombre del producto?
- *
- * No en una dependencia. «Control de Avance, Maquinaria, Personal y Obra» es
- * lo que quiere decir CAMPO, y es verdad del producto; el problema es que en
- * la sesión del municipio nombra dos módulos que su menú NO tiene. Maquinaria
- * y Personal son del contratista (P5): no se le piden esas rutas y no hay
- * pestaña que las abra.
- *
- * Es el mismo daño que un texto que dicta una ruta inexistente —el usuario la
- * busca, no la encuentra, y reporta como defecto algo que funciona—, sólo que
- * aquí lo dice el pie de página en vez de una tarjeta.
- *
- * Se omite el descriptor y se queda el nombre, no se escribe otro: inventarle
- * un desarrollo distinto a la sigla por tipo de organización es dos cadenas
- * que se desincronizan. El hueco es correcto, igual que con el emblema.
- */
-const vaElDescriptor = usuario => !esDependencia(usuario);
+// `vaElEmblema` y `vaElDescriptor` vivían aquí y se fueron el mismo día, las
+// dos por la misma razón: eran parches de «no tenemos marca propia».
+//
+//   · `vaElEmblema` escondía el emblema de FOSMON en la sesión de un
+//     municipio, porque el logo del contratista en la barra del cliente es
+//     peor que un hueco. Ahora la barra lleva `MarcaCotea`, que es del
+//     producto y es la misma para los dos: no hay nada que esconder.
+//   · `vaElDescriptor` escondía «Control de Avance, Maquinaria, Personal y
+//     Obra», que nombraba dos módulos que ese menú no tiene. El descriptor
+//     quedó vacío, así que tampoco hay nada que esconder.
+//
+// Lo que NO se fue es la regla que las dos protegían, y por eso se dice aquí:
+// en la sesión de una dependencia no se pinta marca del contratista. Hoy se
+// cumple por construcción —ya no hay dónde— y lo que se cumple por
+// construcción se rompe callado, así que lo vigila la prueba de dependencia
+// barriendo el armazón en busca de `EmblemaFOSMON`.
 
 /**
  * ¿Se le ofrece a esta sesión el botón de «Reporte ejecutivo» (PDF)?
  *
  * No a una dependencia. `generarPDFObra` es el reporte de la constructora
- * completo: portada con el emblema de FOSMON y pie «CAMPO · FOSMON
+ * completo: portada con el emblema de FOSMON y pie «cotea · FOSMON
  * Construcciones», y adentro RESUMEN FINANCIERO con margen bruto, DESGLOSE DE
  * GASTO POR RUBRO, ALMACÉN y PERSONAL · NÓMINA · TOP PROVEEDORES.
  *
@@ -5107,23 +5145,25 @@ function Login({onLogin}){
           abriera la liga, municipio incluido. La línea se va: el nombre del
           producto basta, y no saber de quién es la instancia es la verdad
           mientras nadie se identifica.
-          El emblema se queda, con reservas: hoy es lo único que hace de marca
-          del producto. El arreglo de fondo es que el producto tenga la suya
-          —el paquete de marca ya está hecho, el manifest no se ha cambiado— y
-          hasta entonces la pantalla de acceso lleva el emblema del
-          contratista. Anotado como pendiente. */}
+          Y el emblema del contratista se fue de aquí, que era el pendiente
+          anotado: ésta es literalmente la primera pantalla que abre el
+          cliente, y la abría el logo de FOSMON. Va el lockup horizontal de
+          cotea, que ya trae la palabra dibujada en trazos —no depende de que
+          cargue la tipografía—, así que `PRODUCTO.nombre` NO se repite
+          debajo: decirlo dos veces es decirlo mal una. */}
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:32,gap:12}}>
-        <EmblemaFOSMON size={48} dark={true}/>
-        <div style={{textAlign:"center"}}>
-          <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>{PRODUCTO.nombre}</div>
-        </div>
+        <MarcaCotea variante="horizontal" tamano={40}/>
       </div>
       {/* Form */}
       <form onSubmit={handleLogin} style={{display:"flex",flexDirection:"column",gap:12}}>
         <div>
           <div style={{fontSize:10,color:C.textMut,marginBottom:5,letterSpacing:"0.04em"}}>CORREO CORPORATIVO</div>
+          {/* El dominio del contratista no va de ejemplo: ésta es la pantalla
+              que abre cualquiera con la liga, municipio incluido, y
+              «@fosmon.com.mx» le dice de quién es la app antes de que se
+              identifique. Es el mismo caso que el emblema, en letra chica. */}
           <input type="email" value={correo} onChange={e=>setCorreo(e.target.value)}
-            placeholder="usuario@fosmon.com.mx"
+            placeholder="tu.correo@organizacion.mx"
             style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:8,
               padding:"12px 14px",color:C.textPri,fontSize:13,width:"100%",outline:"none"}}/>
         </div>
@@ -5141,12 +5181,14 @@ function Login({onLogin}){
             border:"none",borderRadius:8,padding:13,color:(!correo||!pass||loading)?C.textMut:C.bg,
             fontSize:13,fontWeight:700,cursor:(!correo||!pass||loading)?"not-allowed":"pointer",
             letterSpacing:"0.04em",marginTop:4,transition:"all .2s"}}>
-          {loading?"Verificando...":"Entrar a CAMPO"}
+          {loading?"Verificando...":"Entrar a cotea"}
         </button>
       </form>
-      <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
+      {/* Vacío significa no pintar nada: hoy no hay eslogan decidido y una
+          línea en blanco con su margen se ve como un defecto de maquetado. */}
+      {PRODUCTO.descriptor && <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
         {PRODUCTO.descriptor}
-      </div>
+      </div>}
       {/* Versión del build visible desde el Login — sirve para que un usuario
           que no puede entrar todavía pueda reportar qué versión ve.
           fix/actualizacion-pwa (2026-09-16) */}
@@ -5836,7 +5878,7 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
               style={{flex:2,background:valid?C.caliza:"rgba(255,254,249,0.2)",border:"none",borderRadius:6,
                 padding:"9px 0",fontSize:12,fontWeight:700,color:valid?C.bg:C.textMut,
                 cursor:valid?"pointer":"not-allowed"}}>
-              Activar en CAMPO
+              Activar en cotea
             </button>
           </div>
         </>
@@ -6035,7 +6077,7 @@ function GestionUsuarios({usuario, obras, onClose}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div>
           <Tit>Gestión de usuarios</Tit>
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Crear, editar y eliminar accesos a CAMPO</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Crear, editar y eliminar accesos a cotea</div>
         </div>
         <div style={{display:"flex",gap:6}}>
           <SecBtn onClick={recargar}>Recargar</SecBtn>
@@ -6097,7 +6139,7 @@ function GestionUsuarios({usuario, obras, onClose}){
         // Notif al usuario nuevo y a directivos
         await notifAEmail(form.email, {
           categoria: 'gestion', tipo: 'bienvenida',
-          titulo: `Bienvenido a CAMPO`,
+          titulo: `Bienvenido a cotea`,
           mensaje: `Tu cuenta fue creada con rol ${ROL_LABEL[form.rol]||form.rol}. Cambia tu contraseña al ingresar.`,
           creadaPor: usuario?.correo || 'sistema',
         });
@@ -6106,7 +6148,7 @@ function GestionUsuarios({usuario, obras, onClose}){
         // `notifARoles` no le llegaba a nadie — un alta sin testigos.
         await notifARoles([usuario?.tipo === 'dependencia' ? 'director_obras' : 'director_general'], {
           categoria: 'gestion', tipo: 'usuario_creado',
-          titulo: `Nuevo usuario en CAMPO`,
+          titulo: `Nuevo usuario en cotea`,
           mensaje: `${form.nombre} (${form.email}) · ${ROL_LABEL[form.rol]||form.rol}`,
           creadaPor: usuario?.correo || 'sistema',
         });
@@ -12683,7 +12725,7 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
               Match con obra actual
             </div>
             <div style={{fontSize:10,color:C.textSec}}>
-              <div>Obra CAMPO: <b>{obra.id} · {obra.nombre}</b></div>
+              <div>Obra en cotea: <b>{obra.id} · {obra.nombre}</b></div>
               <div>Encontrada en GP: <b style={{color:C.greenDk}}>{datosObra.id} · {datosObra.nombre}</b></div>
               <div style={{marginTop:4}}>
                 Grand Total: <b>{MXN(datosObra.grandTotal||0)}</b> · Rubros: <b>{Object.keys(datosObra.rubros||{}).length}</b> · Proveedores: <b>{(datosObra.proveedores||[]).length}</b>
@@ -17717,7 +17759,7 @@ function WelcomeBanner({usuario, onCerrar}){
       maxHeight:"90vh",overflow:"auto",boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
       <div style={{background:C.caliza,color:"#fff",padding:"18px 22px",borderRadius:"14px 14px 0 0"}}>
         <div style={{fontSize:11,opacity:0.7,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>
-          Bienvenido a CAMPO
+          Bienvenido a cotea
         </div>
         <div style={{fontSize:20,fontWeight:600,lineHeight:1.3}}>
           Hola {primerNombre}
@@ -19472,7 +19514,7 @@ export default function App(){
             saludo. `textTransform` en vez de escribir el nombre en
             mayúsculas, para que el estilo de la barra no dependa de cómo
             capturaron la razón social. */}
-        {vaElEmblema(usuario) && <EmblemaFOSMON size={22} dark={true}/>}
+        <MarcaCotea tamano={20}/>
         <div>
           <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>{PRODUCTO.nombre}</div>
           {nombreOrg(marca, usuario) && (
@@ -19702,9 +19744,9 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
-        {vaElEmblema(usuario) && <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>}
+        <MarcaCotea tamano={11} opacity={0.5}/>
         <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
-          {PRODUCTO.nombre}{vaElDescriptor(usuario) && ` — ${PRODUCTO.descriptor}`}
+          {PRODUCTO.nombre}{PRODUCTO.descriptor && ` — ${PRODUCTO.descriptor}`}
         </span>
       </div>
       {/* Versión real del build (fix/actualizacion-pwa). Formato:

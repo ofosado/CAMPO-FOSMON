@@ -54,8 +54,28 @@
 //   · `nombreOrg` con el respaldo sin condición: `marca?.empresa ||
 //     "FOSMON Construcciones"`
 //        → 6 rojas: la barra del municipio vuelve a nombrar al contratista.
-//   · `vaElEmblema = () => true`
-//        → 1 roja: el emblema de FOSMON en la sesión del municipio.
+//   · volver a pintar el emblema de FOSMON en la barra
+//        → 1 roja. Antes esto lo cuidaba `vaElEmblema`, una guardia que
+//          escondía la marca del contratista en la sesión del municipio. Con
+//          el renombre a cotea el producto ya tiene marca propia y la guardia
+//          sobra, pero la REGLA no: se afirma barriendo el JSX, porque lo que
+//          se cumple «por construcción» se rompe callado.
+//   · borrar `EMB_WHITE`/`EMB_NEGRO` del archivo
+//        → 1 roja, y ésta va en la otra dirección. El emblema del contratista
+//          sigue siendo correcto en la portada de SU reporte; lo que no puede
+//          es llegar a pantalla. Una prueba que sólo empuja hacia un lado
+//          acaba pidiendo que se borre lo que no estorba.
+//   · el pie pinta `PRODUCTO.descriptor` sin preguntar si hay
+//        → 1 roja. Hoy está vacío —no hay eslogan decidido— y sin preguntar
+//          el pie dice «cotea — » con la raya colgando.
+//   · el pie del reporte ejecutivo vuelve a la sigla vieja
+//        → 2 rojas, y hubo que ensanchar el barrido para que las hubiera:
+//          miraba sólo JSX y eso es un `T(…)` de jsPDF. Un PDF que el cliente
+//          descarga y archiva es donde una marca vieja dura más.
+//   · devolver `usuario@fosmon.com.mx` al marcador de la casilla de correo
+//        → 1 roja. Lo encontró la captura del preview, no la prueba: la
+//          pantalla de acceso le decía al municipio de quién es la app antes
+//          de que nadie se identificara, en letra chica.
 //   · `vaElReporteEjecutivo = () => true`
 //        → 1 roja: se le ofrece el PDF con margen, gasto, almacén y nómina.
 //   · volver a escribir «FOSMON CONSTRUCCIONES» a mano en el encabezado
@@ -106,25 +126,19 @@
 //          Salía VERDE: las plantillas de riesgo no viven dentro de ningún
 //          componente y `extra` se arma dentro de `detect`, que para esa sólo
 //          dispara sin catálogo. Dos puntos ciegos sumados.
-//   · el pie vuelve a pintar `{PRODUCTO.nombre} — {PRODUCTO.descriptor}` sin
-//     guardia
-//        → 1 roja. Éste fue el defecto de verdad y lo encontró el NAVEGADOR,
-//          no esta prueba: el barrido de rutas recorre los componentes
-//          alcanzables y el pie vive en el armazón, así que el municipio leía
-//          «Maquinaria, Personal» en una sesión sin esas dos pestañas. Y la
-//          guardia hermana —`vaElEmblema`— estaba declarada DOS RENGLONES
-//          arriba, en la misma fila del pie.
-//   · `vaElDescriptor` devolviendo `true` a todos
-//        → 1 roja. Es la mitad que falta: la de arriba vigila que la guardia
-//          esté puesta, ésta que conteste.
-//   · recortar el descriptor a «Control de Obra» para poder enseñárselo a los
-//     dos
-//        → 1 roja. El arreglo es ESCONDER el desarrollo de la sigla, no
-//          mentir sobre lo que la sigla dice.
 //   · devolver la copia a mano del descriptor a la pantalla de acceso
 //        → 1 roja. Ahí estaba, literal, aunque `PRODUCTO` existía desde antes
 //          justamente para que no estuviera: el mismo «dos sitios, se arregla
 //          uno» del nombre de la organización.
+//
+// El pie que dictaba «Maquinaria, Personal» al municipio se arregló primero
+// con una guardia, `vaElDescriptor`, y horas después el renombre a cotea dejó
+// el descriptor vacío y la guardia sin objeto. Las contrapruebas de aquella
+// tarde —la guardia puesta, la guardia contestando, el descriptor recortado—
+// se fueron con ella; las que quedaron son las de arriba, que afirman la misma
+// regla sin depender de que exista tal predicado. Vale la pena el registro:
+// una guardia que dura medio día no significa que el arreglo estuviera mal,
+// significa que el arreglo de fondo llegó después.
 //
 // ── Y DOS SOBRE LA PRUEBA MISMA (P4) ───────────────────────────────────────
 // Las dos salieron de contraprobar lo de arriba, y las dos eran el banco
@@ -187,7 +201,7 @@ const NECESARIOS = [
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
-  'PRODUCTO', 'nombreOrg', 'vaElEmblema', 'vaElDescriptor', 'vaElReporteEjecutivo',
+  'PRODUCTO', 'nombreOrg', 'vaElReporteEjecutivo',
   'vanLasOT', 'vaElInterruptorOT',
   'CAMPOS_CONTRATO', 'camposContrato', 'ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato',
   'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
@@ -680,12 +694,10 @@ const montarGP = () => {
       const esDependencia = ${decl['esDependencia']};
       const PRODUCTO = ${decl['PRODUCTO']};
       const nombreOrg = ${decl['nombreOrg']};
-      const vaElEmblema = ${decl['vaElEmblema']};
-      const vaElDescriptor = ${decl['vaElDescriptor']};
       const vaElReporteEjecutivo = ${decl['vaElReporteEjecutivo']};
       const vanLasOT = ${decl['vanLasOT']};
       const vaElInterruptorOT = ${decl['vaElInterruptorOT']};
-      return { PRODUCTO, nombreOrg, vaElEmblema, vaElDescriptor, vaElReporteEjecutivo,
+      return { PRODUCTO, nombreOrg, vaElReporteEjecutivo,
                vanLasOT, vaElInterruptorOT };`)();
 
   const DEP  = { rol: 'supervisor_obra', tipo: 'dependencia',  orgId: 'coatzacoalcos' };
@@ -725,93 +737,133 @@ const montarGP = () => {
   check(bar.nombreOrg({ empresa: 'Constructora Ajena SA' }, CONS) === 'Constructora Ajena SA',
     'y si capturó otra marca, manda la capturada: el respaldo es respaldo, no regla');
 
-  // El emblema es de FOSMON, no del producto.
-  check(bar.vaElEmblema(DEP) === false, 'el emblema de FOSMON no va en la sesión del municipio');
-  check(bar.vaElEmblema(CONS) === true, 'y sí va en la de FOSMON, que es suyo');
-
-  // ── El descriptor ──────────────────────────────────────────────────────────
-  // El pie decía «CAMPO — Control de Avance, Maquinaria, Personal y Obra» en la
-  // sesión del municipio. Es el desarrollo de la sigla, así que es verdad del
-  // producto; el daño es que nombra DOS módulos que ese menú no tiene, y el
-  // usuario los busca, no los encuentra, y reporta como defecto algo que
-  // funciona.
+  // ── La marca del producto ──────────────────────────────────────────────────
+  // Aquí vivían las comprobaciones de `vaElEmblema` y `vaElDescriptor`. Las dos
+  // guardias se fueron con el renombre a cotea porque eran parches de «el
+  // producto no tiene marca propia»: una escondía el emblema de FOSMON y la
+  // otra el desarrollo de la sigla CAMPO. Ahora hay marca y el descriptor está
+  // vacío, así que no hay nada que esconder.
   //
-  // Lo encontró el navegador, no esta prueba: el barrido de etiquetas recorre
-  // los componentes alcanzables y el pie vive en el armazón. De ahí las dos
-  // afirmaciones de abajo, que no miran pantallas sino el dato y su guardia.
-  check(bar.vaElDescriptor(DEP) === false,
-    'el desarrollo de la sigla no se le dicta a una dependencia  ·  Maquinaria y Personal no están en su menú');
-  check(bar.vaElDescriptor(CONS) === true,
-    'y a una constructora sí: los cinco módulos que nombra son suyos');
-
-  // Que el descriptor siga siendo el del producto —no uno reescrito por tipo de
-  // organización— y que nombre de verdad lo que la sigla dice. Si alguien lo
-  // "arregla" acortándolo a «Control de Obra» para poder enseñárselo a los dos,
-  // esto se pone rojo: el arreglo es esconderlo, no mentir sobre la sigla.
-  check(typeof bar.PRODUCTO.descriptor === 'string'
-     && /maquinaria/i.test(bar.PRODUCTO.descriptor)
-     && /personal/i.test(bar.PRODUCTO.descriptor),
-    'el descriptor sigue desarrollando la sigla completa, sin recortes por tenant',
-    bar.PRODUCTO.descriptor);
-
-  // Y el barrido que faltaba: ninguna copia del descriptor escrita a mano. Es
-  // el mismo defecto que el de FOSMON de aquí abajo —dos sitios con la misma
-  // cadena, se arregla uno y queda el otro— y ya había pasado: la pantalla de
-  // acceso tenía el texto literal aunque `PRODUCTO` existía desde entonces
-  // justamente para que no lo tuviera.
-  //
-  // El sitio donde el pie SÍ lo pinta pasa el barrido porque pinta
-  // `PRODUCTO.descriptor`, no la cadena; que además esté bajo `vaElDescriptor`
-  // lo afirman las dos comprobaciones de arriba.
-  const copiasDescriptor = [];
-  const esCopia = v => v && v.includes(bar.PRODUCTO.descriptor);
+  // Lo que NO se puede ir con ellas es la REGLA: en la sesión de un municipio
+  // no se pinta marca del contratista. Hoy se cumple por construcción —no
+  // queda dónde pintarla— y lo que se cumple por construcción se rompe
+  // callado, que es exactamente cómo apareció «CAMPO / FOSMON CONSTRUCCIONES»
+  // en la barra del cliente. Así que se afirma sobre la fuente.
+  const marcaAjena = [];
   traverse(ast, {
-    JSXText(p) { if (esCopia(p.node.value)) copiasDescriptor.push(p.node.value.trim()); },
-    JSXExpressionContainer(p) {
-      const e = p.node.expression;
-      const v = e.type === 'StringLiteral' ? e.value
-              : e.type === 'TemplateLiteral' ? src.slice(e.start, e.end) : null;
-      if (esCopia(v)) copiasDescriptor.push(v.slice(0, 70));
+    JSXIdentifier(p) {
+      if (!/^Emblema|FOSMON$/i.test(p.node.name)) return;
+      if (!p.parentPath.isJSXOpeningElement()) return;
+      marcaAjena.push(`<${p.node.name}> en ${src.slice(p.node.start - 60, p.node.start).trim().slice(-50)}`);
     },
   });
-  check(copiasDescriptor.length === 0,
-    'ninguna pantalla trae el descriptor escrito a mano: sale de `PRODUCTO` o no sale',
-    copiasDescriptor.length ? copiasDescriptor.join(' | ') : 'ninguna');
+  check(marcaAjena.length === 0,
+    'ninguna pantalla pinta el emblema del contratista: la marca en pantalla es la del producto',
+    marcaAjena.length ? '\n        ' + marcaAjena.join('\n        ') : 'ninguna');
 
-  // Y que esté PUESTA la guardia donde se pinta, que es otra cosa que tenerla.
-  // Preguntarle a `vaElDescriptor` qué contesta no dice nada de si el pie lo
-  // llama: el defecto que se acaba de arreglar era justamente una línea que
-  // ignoraba un predicado hermano declarado dos renglones más arriba
-  // —`vaElEmblema`— en la MISMA fila del pie.
-  //
-  // La regla no es "siempre con guardia": la pantalla de acceso lo pinta a
-  // secas y está bien, porque ahí no hay sesión y no hay a quién mentirle. La
-  // regla es que donde SE SABE de quién es la sesión, se decida. O sea: si
-  // `usuario` está en alcance, el descriptor va con guardia.
-  //
-  // «En alcance» se le pregunta al alcance de Babel, no al texto. La primera
-  // versión buscaba `/\busuario\b/` en la fuente de la función y señaló la
-  // pantalla de acceso, que no tiene sesión ninguna: lo que casó fue el
-  // `placeholder="usuario@fosmon.com.mx"` de la casilla del correo. Un barrido
-  // que señala un sitio correcto se desactiva solo —se lee una vez, se decide
-  // que exagera, y la siguiente ya nadie lo lee.
-  const sitiosDescriptor = [];
+  // El emblema de FOSMON sigue existiendo donde SÍ es suyo —la portada del
+  // reporte ejecutivo— y eso no es un descuido. Por eso la comprobación de
+  // arriba mira el JSX y no la fuente entera: el PDF no es JSX, lo arma
+  // `generarPDFObra` con jsPDF, y a una dependencia no se le ofrece.
+  check(/EMB_(WHITE|NEGRO)/.test(src),
+    'y el emblema del contratista no se borró del mundo: sigue en su propio reporte',
+    'EMB_WHITE / EMB_NEGRO, que usa `generarPDFObra`');
+
+  // ── El descriptor ──────────────────────────────────────────────────────────
+  // Vacío a propósito mientras no haya eslogan decidido. Lo que se afirma no es
+  // que esté vacío —eso lo cambia quien decida el eslogan— sino que VACÍO
+  // signifique no pintar nada. Si alguien lo pinta sin preguntar, el pie dice
+  // «cotea — » con la raya colgando, y eso se ve en la demo.
+  check(typeof bar.PRODUCTO.descriptor === 'string',
+    'el descriptor es una cadena, aunque hoy esté vacía: el campo queda preparado',
+    JSON.stringify(bar.PRODUCTO.descriptor));
+
+  const descriptorSinPreguntar = [];
   traverse(ast, {
     MemberExpression(p) {
       if (!(p.node.object.name === 'PRODUCTO' && p.node.property.name === 'descriptor')) return;
       if (!p.findParent(q => q.isJSXElement() || q.isJSXFragment())) return;
-      if (!p.scope.hasBinding('usuario')) return;   // sin sesión no hay a quién mentirle
-      const fn = p.findParent(q => q.isFunctionDeclaration() || q.isArrowFunctionExpression()
-                                || q.isFunctionExpression());
-      const fuente = fn ? src.slice(fn.node.start, fn.node.end) : src;
-      if (!/\bvaElDescriptor\b/.test(fuente))
-        sitiosDescriptor.push(src.slice(p.node.start - 40, p.node.end + 20).replace(/\s+/g, ' '));
+      // Pintarlo es correcto SI algo preguntó antes si hay. La pregunta vive en
+      // el `&&` de arriba —`{PRODUCTO.descriptor && …}`— o en el `if` que
+      // envuelve. Basta con que el sitio esté dentro de una condición cuyo
+      // examen sea el propio descriptor.
+      const guardado = p.findParent(q =>
+        (q.isLogicalExpression() && q.node.operator === '&&'
+         && /PRODUCTO\s*\.\s*descriptor/.test(src.slice(q.node.left.start, q.node.left.end)))
+        || (q.isConditionalExpression()
+            && /PRODUCTO\s*\.\s*descriptor/.test(src.slice(q.node.test.start, q.node.test.end))));
+      if (!guardado)
+        descriptorSinPreguntar.push(src.slice(p.node.start - 45, p.node.end + 15).replace(/\s+/g, ' '));
     },
   });
-  check(sitiosDescriptor.length === 0,
-    'donde se sabe de quién es la sesión, el descriptor se pinta bajo su guardia',
-    sitiosDescriptor.length ? '\n        SIN GUARDIA: ' + sitiosDescriptor.join('\n        SIN GUARDIA: ')
-                            : 'todos los sitios con `usuario` en alcance la llaman');
+  check(descriptorSinPreguntar.length === 0,
+    'el descriptor sólo se pinta donde alguien preguntó si hay descriptor',
+    descriptorSinPreguntar.length
+      ? '\n        SIN PREGUNTAR: ' + descriptorSinPreguntar.join('\n        SIN PREGUNTAR: ')
+      : 'los sitios que lo pintan preguntan antes');
+
+  // Y el barrido de siempre: ninguna copia a mano del desarrollo de la sigla
+  // vieja. La pantalla de acceso lo tenía literal aunque `PRODUCTO` existía
+  // desde antes justamente para que no lo tuviera.
+  //
+  // Barre TODA cadena del archivo, no sólo el JSX. La primera versión miraba
+  // JSX y habría dejado pasar el pie de la portada del reporte ejecutivo, que
+  // es un `T('CAMPO — Control de Avance, …')` de jsPDF: un PDF que el cliente
+  // descarga y archiva, o sea el sitio donde una marca vieja dura más. Las
+  // cadenas son nodos, así que los comentarios que cuentan esta historia —y
+  // que nombran la sigla— no cuentan como copias.
+  const copiasViejas = [];
+  const SIGLA_VIEJA = /Control de Avance,\s*Maquinaria/i;
+  traverse(ast, {
+    StringLiteral(p) { if (SIGLA_VIEJA.test(p.node.value)) copiasViejas.push(p.node.value.slice(0, 70)); },
+    TemplateLiteral(p) {
+      const v = src.slice(p.node.start, p.node.end);
+      if (SIGLA_VIEJA.test(v)) copiasViejas.push(v.slice(0, 70));
+    },
+    JSXText(p) { if (SIGLA_VIEJA.test(p.node.value)) copiasViejas.push(p.node.value.trim()); },
+  });
+  check(copiasViejas.length === 0,
+    'el desarrollo de la sigla vieja no quedó escrito a mano en ninguna cadena  ·  PDF incluido',
+    copiasViejas.length ? copiasViejas.join(' | ') : 'ninguna');
+
+  // Y el nombre viejo tampoco, donde el cliente lo lee. `CAMPO` en mayúsculas
+  // es también una palabra común —«personal en campo», `CAMPOS_CONTRATO`— así
+  // que no se puede barrer el archivo entero a ciegas: se barren las cadenas
+  // que terminan en pantalla o en papel, y se pide la palabra suelta.
+  const nombreViejo = [];
+  const NOMBRE_VIEJO = /(^|[^A-Za-z_])CAMPO([^A-Za-z_]|$)/;
+  const EXCEPCIONES = /PERSONAL EN CAMPO|En CAMPO/;   // «personal en campo», y una etiqueta de consola
+  traverse(ast, {
+    StringLiteral(p) {
+      const v = p.node.value;
+      if (NOMBRE_VIEJO.test(v) && !EXCEPCIONES.test(v)) nombreViejo.push(v.slice(0, 60));
+    },
+    JSXText(p) {
+      const v = p.node.value;
+      if (NOMBRE_VIEJO.test(v) && !EXCEPCIONES.test(v)) nombreViejo.push(v.trim().slice(0, 60));
+    },
+  });
+  check(nombreViejo.length === 0,
+    'ninguna cadena visible sigue llamándole CAMPO al producto',
+    nombreViejo.length ? nombreViejo.join(' | ') : `se llama ${bar.PRODUCTO.nombre}`);
+
+  // Y el dominio del contratista tampoco se usa de ejemplo en pantalla. Lo
+  // encontró la captura del preview: la casilla de correo de la pantalla de
+  // acceso traía `usuario@fosmon.com.mx` de marcador. Es el mismo defecto que
+  // el emblema —la app se presenta como del contratista antes de que nadie se
+  // identifique— sólo que en letra chica, que es donde nadie lo busca.
+  const dominioAjeno = [];
+  traverse(ast, {
+    JSXAttribute(p) {
+      const v = p.node.value;
+      if (!v || v.type !== 'StringLiteral') return;
+      if (/@fosmon\.com/i.test(v.value))
+        dominioAjeno.push(`${p.node.name.name}="${v.value}"`);
+    },
+  });
+  check(dominioAjeno.length === 0,
+    'ninguna casilla usa el dominio del contratista de ejemplo',
+    dominioAjeno.length ? dominioAjeno.join(' | ') : 'ninguna');
 
   // El PDF.
   check(bar.vaElReporteEjecutivo(DEP) === false,
