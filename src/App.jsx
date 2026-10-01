@@ -2526,6 +2526,94 @@ const semanaISO = (fecha) => {
 const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}`;
 
 // ════════════════════════════════════════════════════════════════════════════
+// LA SEMANA A LA QUE PERTENECE UNA FOTO DE EVIDENCIA
+// ════════════════════════════════════════════════════════════════════════════
+// `fecha`, en una foto, es la fecha en que la foto se SUBIÓ: la pone `addFoto`
+// con `new Date()` en el momento de la carga. NO es la fecha en que se ejecutó
+// el trabajo, ni la fecha en que se tomó la foto —el EXIF no se lee.
+//
+// De ahí sale la única leyenda que la pantalla puede firmar: «subidas en la
+// semana del…». Decir «así se veía la obra esa semana» sería inventar un dato
+// que nadie capturó (P2): una foto de un muro que se levantó en agosto y se
+// subió en septiembre aparece en septiembre, y está bien que aparezca ahí
+// siempre que la pantalla diga SUBIDA y no EJECUTADA.
+//
+// La semana se saca con `semanaISO`, el mismo convenio que el snapshot de
+// avance y que `claveSemanaNomina`. No hay cuarta copia de la cuenta de
+// semanas a propósito: si el convenio cambiara, tiene que cambiar en un solo
+// sitio.
+
+// "2026-09-21" → Date del 21 de septiembre a medianoche LOCAL.
+//
+// `new Date("2026-09-21")` NO sirve aquí: el estándar manda interpretar la
+// forma corta como UTC, así que en México (UTC-6) eso es el 20 a las 18:00
+// local, y `semanaISO` —que trabaja en local— lo mete en la semana anterior.
+// Un lunes se contaba como domingo y se iba a la semana de antes. Por eso la
+// fecha se arma por partes.
+const fechaLocalDeISO = (txt) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(txt || ''));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1) return null;
+  return d;
+};
+
+// La clave de semana de una foto, o `null` si no se puede saber.
+//
+// `null` es una respuesta legítima y la pantalla tiene que pintarla: el
+// esquema de fotos es mixto —hay cadenas sueltas de antes de que existiera
+// `fecha`— y una foto sin semana no es una foto que no exista. Esconderla
+// sería contar menos evidencia de la que hay.
+const semanaDeFoto = (foto) => {
+  if (!foto || typeof foto === 'string') return null;
+  const d = fechaLocalDeISO(foto.fecha);
+  if (!d) return null;
+  const { semana, año } = semanaISO(d);
+  return snapshotId(semana, año);
+};
+
+// El lunes de una clave "S38-2026", para poder fechar la semana en palabras.
+const lunesDeClaveSemana = (clave) => {
+  const m = /^S(\d{2})-(\d{4})$/.exec(String(clave || ''));
+  if (!m) return null;
+  const sem = Number(m[1]), año = Number(m[2]);
+  // El 4 de enero cae siempre en la semana ISO 1; desde su lunes se cuentan
+  // las semanas completas.
+  const ene4 = new Date(año, 0, 4);
+  const lunesS1 = new Date(ene4);
+  lunesS1.setDate(ene4.getDate() - ((ene4.getDay() + 6) % 7));
+  const l = new Date(lunesS1);
+  l.setDate(lunesS1.getDate() + (sem - 1) * 7);
+  return l;
+};
+
+const MESES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+// Etiqueta corta para un selector: "S38 · 21 sep".
+const etiquetaSemanaCorta = (clave) => {
+  const l = lunesDeClaveSemana(clave);
+  if (!l) return 'Sin fecha';
+  return `${String(clave).slice(0, 3)} · ${l.getDate()} ${MESES_CORTO[l.getMonth()]}`;
+};
+
+// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
+// y una afirmación sobre el estado de la obra.
+const leyendaSemanaSubida = (clave) => {
+  const l = lunesDeClaveSemana(clave);
+  if (!l) return 'Fotos sin fecha de subida registrada';
+  const f = new Date(l); f.setDate(l.getDate() + 6);
+  // La semana 53 cruza el año (del 28 de dic de 2026 al 3 de ene de 2027). Con
+  // un solo año al final, una de las dos puntas queda mal fechada, así que
+  // cuando cruza se escriben los dos.
+  const rango = l.getFullYear() !== f.getFullYear()
+    ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${l.getFullYear()} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
+    : f.getMonth() !== l.getMonth()
+      ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
+      : `${l.getDate()} al ${f.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${f.getFullYear()}`;
+  return `Subidas en la semana del ${rango}`;
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
 // A diferencia del snapshot de avance, un registro de nómina NO guarda el año:
@@ -4969,18 +5057,41 @@ function FotoUploader({fotos,onAdd,onDel}){
   <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
   <Lightbox url={lb} onClose={()=>setLb(null)}/></>;
 }
+// La captura de fotos de una partida.
+//
+// Captura IGUAL que siempre: el mismo cuadro, el mismo botón, el mismo borrar.
+// Lo único nuevo es que las fotos de semanas anteriores no se vuelcan todas de
+// golpe: una partida con 43 fotos llenaba la fila de la captura con el
+// histórico entero y la foto de hoy se perdía entre las de agosto. Quedan
+// detrás de «ver anteriores», con la cuenta a la vista para que nadie crea que
+// se borraron.
+//
+// Una foto SIN fecha se queda a la vista. No se sabe que sea vieja, y suponerlo
+// para esconderla sería afirmar algo que nadie capturó.
 function ConceptoFotos({fotos,onAdd,onDel}){
-  const ref=useRef();const[lb,setLb]=useState(null);
+  const ref=useRef();const[lb,setLb]=useState(null);const[verViejas,setVerViejas]=useState(false);
   const leer=useCallback(files=>{
     Array.from(files).filter(f=>f.type.startsWith("image/")).forEach(f=>{
       const r=new FileReader();r.onload=e=>onAdd({id:Math.random().toString(36).slice(2),url:e.target.result});r.readAsDataURL(f);
     });
   },[onAdd]);
-  return <div>{fotos.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:5}}>
-    {fotos.map(f=><div key={f.id} className="fotothumb" onClick={()=>setLb(f.url)}>
-      <img src={f.url} alt=""/><button className="fotodel" onClick={e=>{e.stopPropagation();onDel(f.id);}}>×</button>
-    </div>)}
+  const semanaHoy = useMemo(() => {
+    const {semana, año} = semanaISO(new Date());
+    return snapshotId(semana, año);
+  }, []);
+  const viejas  = fotos.filter(f => { const w = semanaDeFoto(f); return w && w !== semanaHoy; });
+  const ahora   = fotos.filter(f => !viejas.includes(f));
+  const visibles = verViejas ? [...ahora, ...viejas] : ahora;
+  const miniatura = f => <div key={f.id} className="fotothumb" onClick={()=>setLb(f.url)}>
+    <img src={f.url} alt=""/><button className="fotodel" onClick={e=>{e.stopPropagation();onDel(f.id);}}>×</button>
+  </div>;
+  return <div>{visibles.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:5}}>
+    {visibles.map(miniatura)}
   </div>}
+  {viejas.length>0&&<button onClick={()=>setVerViejas(v=>!v)}
+    style={{background:"none",border:"none",color:C.blue,fontSize:9,padding:"0 0 4px",cursor:"pointer"}}>
+    {verViejas ? `ocultar anteriores (${viejas.length})` : `ver anteriores (${viejas.length})`}
+  </button>}
   <div className="fotodrop" style={{fontSize:9,padding:"5px 8px"}} onClick={()=>ref.current?.click()}>
      {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
   </div>
@@ -15530,61 +15641,245 @@ function AvanceCliente({obra, subs}){
   </div>;
 }
 
-// ── FOTOS (CLIENTE): galería de fotos por subsección ────────────────────────
+// ── FOTOS (CLIENTE): la evidencia por semana y por partida ──────────────────
+//
+// Dos ejes, porque son dos preguntas distintas y ninguna contesta la otra:
+//
+//   · POR SEMANA — «qué se subió la semana pasada». Es la pregunta del que
+//     revisa el avance y quiere ver el trabajo reciente sin bucear.
+//   · POR PARTIDA — «cómo ha ido esta partida». Es el eje de verdad para
+//     seguir una obra: el residente honesto fotografía cada semana OTRA cosa,
+//     así que dos semanas puestas una al lado de la otra salen casi todas en
+//     hueco. Medido con `scripts/medir-semanas-evidencia.cjs`: en la 0114 son
+//     muchas más las partidas con foto en varias semanas que las partidas en
+//     común entre dos semanas concretas. Por eso NO hay vista de «compara la
+//     semana A con la B»: se vería vacía y la culpa parecería de los datos.
+//
+// La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
+// de `semanaDeFoto`.
 function FotosCliente({obra, subs}){
   const[lightbox,setLightbox]=useState(null);
-  // subsecciones con al menos 1 foto
+  const[vista,setVista]=useState("semana");     // "semana" | "partida"
+  const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
+  const[partidaSel,setPartidaSel]=useState(null);
+
+  // Todas las fotos de la obra, aplanadas, cada una con su partida y su semana.
   //
   // El mapa de una partida es `{ idPartida: [foto, foto, …] }`, así que
   // `Object.values` devuelve un arreglo DE ARREGLOS. Sin `.flat()` cada
   // elemento era un grupo: la insignia contaba grupos —una partida con 43
   // fotos anunciaba "1 foto"— y al pintar, un arreglo no tiene `.url` ni
-  // `.src`, así que el `if(!url) return null` de abajo se las saltaba todas.
-  // La galería anunciaba fotos y dejaba la rejilla en blanco. Las 475 fotos
-  // que hay hoy en producción eran invisibles en la pantalla que se le
-  // enseña al cliente (PENDIENTES #32).
+  // `.src`, así que las fotos se saltaban todas. La galería anunciaba fotos y
+  // dejaba la rejilla en blanco. Las 475 fotos que hay hoy en producción eran
+  // invisibles en la pantalla que se le enseña al cliente (PENDIENTES #32).
   //
   // El `.filter(Boolean)` tira los huecos sin tirar las fotos que son una
-  // cadena suelta: el esquema es mixto y abajo se contempla ese caso.
-  const conFotos = subs.map(s => {
-    const fotos = (Array.isArray(s.fotos)
-      ? s.fotos
-      : Object.values(s.fotos||{}).flat()).filter(Boolean);
-    return {...s, _fotos: fotos};
-  }).filter(s => s._fotos.length > 0);
+  // cadena suelta: el esquema es mixto y aquí se contempla ese caso.
+  const todas = useMemo(() => {
+    const out = [];
+    (subs||[]).forEach((s,is) => {
+      const lista = (Array.isArray(s.fotos)
+        ? s.fotos
+        : Object.values(s.fotos||{}).flat()).filter(Boolean);
+      lista.forEach((foto,i) => {
+        const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
+        if (!url) return;
+        out.push({
+          url,
+          k: `${s.id||s.sec||is}-${i}`,
+          partidaId: s.id || s.sec || `#${is}`,
+          sec: s.sec || "",
+          sub: s.sub || "(sin descripción)",
+          semana: semanaDeFoto(foto),
+        });
+      });
+    });
+    return out;
+  }, [subs]);
+
+  // Las semanas con evidencia, de la más reciente a la más vieja. La clave
+  // "S38-2026" NO se puede ordenar como texto —"S05-2027" iría antes que
+  // "S38-2026"—, así que se ordena por (año, semana).
+  const semanas = useMemo(() => {
+    const vistas = [...new Set(todas.map(f => f.semana).filter(Boolean))];
+    return vistas.sort((a,b) => (a.slice(4) + a.slice(1,3)) < (b.slice(4) + b.slice(1,3)) ? 1 : -1);
+  }, [todas]);
+
+  const sinSemana = todas.filter(f => !f.semana);
+
+  // Las partidas con evidencia, con en cuántas semanas distintas tienen foto.
+  const partidas = useMemo(() => {
+    const m = new Map();
+    todas.forEach(f => {
+      if (!m.has(f.partidaId)) m.set(f.partidaId, {id:f.partidaId, sec:f.sec, sub:f.sub, fotos:[], semanas:new Set()});
+      const p = m.get(f.partidaId);
+      p.fotos.push(f);
+      if (f.semana) p.semanas.add(f.semana);
+    });
+    return [...m.values()].sort((a,b) => String(a.sec).localeCompare(String(b.sec), 'es', {numeric:true}));
+  }, [todas]);
+
+  // La semana que se está mirando. Por omisión, la más reciente con evidencia;
+  // si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
+  const semActiva = (semanaSel && (semanaSel === "__sin__" || semanas.includes(semanaSel)))
+    ? semanaSel
+    : (semanas[0] || (sinSemana.length ? "__sin__" : null));
+
+  const deSemana = semActiva === "__sin__" ? sinSemana : todas.filter(f => f.semana === semActiva);
+
+  const pActiva = partidas.find(p => p.id === partidaSel) || null;
+
+  // Rejilla de miniaturas. Una foto sin fecha lo dice encima, no se disfraza.
+  const rejilla = (fotos, conSello) => (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
+      {fotos.map(f => (
+        <div key={f.k} onClick={()=>setLightbox(f.url)}
+          style={{background:C.bg,borderRadius:6,overflow:"hidden",cursor:"pointer",
+            aspectRatio:"4/3",position:"relative"}}>
+          <img src={f.url} alt={f.sub}
+            style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+          {conSello && !f.semana && (
+            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.6)",
+              color:"#fff",fontSize:8,padding:"2px 4px",textAlign:"center"}}>sin fecha</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Grupos por partida dentro de una semana.
+  const porPartida = (fotos) => {
+    const m = new Map();
+    fotos.forEach(f => {
+      if (!m.has(f.partidaId)) m.set(f.partidaId, {sec:f.sec, sub:f.sub, fotos:[]});
+      m.get(f.partidaId).fotos.push(f);
+    });
+    return [...m.entries()].sort((a,b) =>
+      String(a[1].sec).localeCompare(String(b[1].sec), 'es', {numeric:true}));
+  };
+
+  const chip = (activo) => ({
+    background: activo ? C.caliza : C.surface,
+    color: activo ? "#fff" : C.textSec,
+    border: `0.5px solid ${activo ? C.caliza : C.borderM}`,
+    borderRadius: 99, padding: "4px 10px", fontSize: 10, fontWeight: activo ? 700 : 500,
+    cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+  });
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <Card>
       <Tit>Evidencia fotográfica</Tit>
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        Fotos cargadas en campo, organizadas por partida
+        {todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
+        {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
+        {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
       </div>
-      {conFotos.length === 0 && (
+
+      {todas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
           Aún no se han cargado fotos de esta obra.
         </div>
-      )}
-      {conFotos.map((s,i) => (
-        <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:14}}>
-          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
-            borderBottom:`0.5px solid ${C.border}`}}>
-            <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{s.sec}</span>
-            <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{s.sub}</span>
-            <Bdg color={C.blue} small>{s._fotos.length} foto{s._fotos.length>1?"s":""}</Bdg>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
-            {s._fotos.map((foto,i)=>{
-              const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
-              if(!url) return null;
-              return <div key={i} onClick={()=>setLightbox(url)}
-                style={{background:C.bg,borderRadius:6,overflow:"hidden",cursor:"pointer",aspectRatio:"4/3"}}>
-                <img src={url} alt={`${s.sub} ${i+1}`}
-                  style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
-              </div>;
-            })}
-          </div>
+      ) : (
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          <button onClick={()=>setVista("semana")}  style={chip(vista==="semana")}>Por semana</button>
+          <button onClick={()=>setVista("partida")} style={chip(vista==="partida")}>Por partida</button>
         </div>
-      ))}
+      )}
+
+      {/* ── VISTA 1: una semana ─────────────────────────────────────────── */}
+      {todas.length > 0 && vista === "semana" && <>
+        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:6,marginBottom:8}}>
+          {semanas.map(w => (
+            <button key={w} onClick={()=>setSemanaSel(w)} style={chip(semActiva===w)}>
+              {etiquetaSemanaCorta(w)}
+            </button>
+          ))}
+          {sinSemana.length > 0 && (
+            <button onClick={()=>setSemanaSel("__sin__")} style={chip(semActiva==="__sin__")}>
+              Sin fecha ({sinSemana.length})
+            </button>
+          )}
+        </div>
+        <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+          {semActiva === "__sin__"
+            ? "Fotos sin fecha de subida registrada"
+            : leyendaSemanaSubida(semActiva)}
+        </div>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
+          {semActiva === "__sin__"
+            ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
+            : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
+        </div>
+        {deSemana.length === 0 && (
+          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+            No se subieron fotos en esta semana.
+          </div>
+        )}
+        {porPartida(deSemana).map(([id,g]) => (
+          <div key={id} style={{marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
+              borderBottom:`0.5px solid ${C.border}`}}>
+              <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{g.sec}</span>
+              <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{g.sub}</span>
+              <Bdg color={C.blue} small>{g.fotos.length} foto{g.fotos.length>1?"s":""}</Bdg>
+            </div>
+            {rejilla(g.fotos, false)}
+          </div>
+        ))}
+      </>}
+
+      {/* ── VISTA 2: una partida a lo largo de sus semanas ──────────────── */}
+      {todas.length > 0 && vista === "partida" && !pActiva && <>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
+          Elige una partida para ver su evidencia semana por semana.
+        </div>
+        {partidas.map(p => (
+          <div key={p.id} onClick={()=>setPartidaSel(p.id)}
+            style={{display:"flex",alignItems:"center",gap:6,padding:"8px 0",cursor:"pointer",
+              borderBottom:`0.5px solid ${C.border}`}}>
+            <span style={{fontSize:9,color:C.textMut,fontWeight:600,flexShrink:0}}>{p.sec}</span>
+            <span style={{fontSize:11,fontWeight:600,color:C.caliza,flex:1,minWidth:0,
+              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.sub}</span>
+            <Bdg color={C.blue} small>{p.fotos.length}</Bdg>
+            <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>
+              {p.semanas.size} sem{p.semanas.size===1?"":"s"}
+            </span>
+            <span style={{fontSize:12,color:C.textMut,flexShrink:0}}>›</span>
+          </div>
+        ))}
+      </>}
+
+      {todas.length > 0 && vista === "partida" && pActiva && <>
+        <button onClick={()=>setPartidaSel(null)}
+          style={{background:"none",border:"none",color:C.blue,fontSize:10,padding:0,
+            cursor:"pointer",marginBottom:8}}>‹ todas las partidas</button>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10,paddingBottom:6,
+          borderBottom:`0.5px solid ${C.border}`}}>
+          <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{pActiva.sec}</span>
+          <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{pActiva.sub}</span>
+        </div>
+        {/* De la semana más reciente a la más vieja, y el grupo sin fecha al
+            final: va al final porque no se sabe dónde va, no porque sea viejo. */}
+        {semanas.filter(w => pActiva.fotos.some(f => f.semana === w)).map(w => (
+          <div key={w} style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:6}}>
+              {leyendaSemanaSubida(w)}
+            </div>
+            {rejilla(pActiva.fotos.filter(f => f.semana === w), false)}
+          </div>
+        ))}
+        {pActiva.fotos.some(f => !f.semana) && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+              Fotos sin fecha de subida registrada
+            </div>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
+              No se puede saber de qué semana son.
+            </div>
+            {rejilla(pActiva.fotos.filter(f => !f.semana), false)}
+          </div>
+        )}
+      </>}
     </Card>
 
     {/* Lightbox simple */}

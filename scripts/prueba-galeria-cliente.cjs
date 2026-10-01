@@ -10,16 +10,32 @@
 // rejilla vacía. Las 475 fotos de producción eran invisibles justo en la
 // pantalla que se le enseña al cliente (PENDIENTES #32).
 //
-// No comprueba que el código diga `.flat()`. Ejecuta las dos expresiones
-// reales extraídas de `FotosCliente` —la que arma la lista y la que resuelve
-// la URL de cada foto— y afirma dos números que son lo que el cliente ve:
-// cuántas fotos ANUNCIA la insignia y cuántas imágenes PINTA la rejilla. El
-// defecto de fondo era que esos dos números no coincidían.
+// REHECHA (#30, la mitad de lectura): la pantalla se reescribió entera para
+// consultar la evidencia por semana y por partida. La versión anterior de
+// este banco extraía `conFotos` y la expresión `url` de la rejilla, y las dos
+// desaparecieron; cuando eso pasó, el banco salió en ROJO diciendo
+// exactamente eso —«hay que rehacerla contra la pantalla nueva, no borrarla»—
+// y es lo que se hizo. Lo que afirma no cambió.
+//
+// La pantalla nueva resuelve la URL al aplanar, así que anunciar y pintar
+// coinciden POR CONSTRUCCIÓN. Esa es justo la razón de seguir comprobándolo:
+// lo que se cumple por construcción se rompe callado el día que alguien
+// vuelve a meter una foto a la lista sin url.
+//
+// No comprueba que el código diga `.flat()`. Ejecuta los trozos reales
+// extraídos de `FotosCliente` y afirma dos números que son lo que el cliente
+// ve: cuántas fotos ANUNCIA la insignia de cada partida y cuántas imágenes
+// PINTA su rejilla. El defecto de fondo era que esos dos números no
+// coincidían.
 //
 // Uso:  node scripts/prueba-galeria-cliente.cjs [archivo]
 //
 // El argumento opcional sirve para correrla contra una copia del archivo con
-// el estado anterior y comprobar que de verdad se pone en rojo.
+// el estado anterior y comprobar que de verdad se pone en rojo. Comprobado
+// sobre la pantalla nueva; las dos salen en ROJO (1), no en NO ARRANCÓ (2):
+//
+//   · el aplanado pierde el `.flat()` otra vez (el defecto del #32) → 7 rojas
+//   · la lista a pintar admite entradas sin url                     → 3 rojas
 
 const path = require('path');
 const fs = require('fs');
@@ -40,44 +56,63 @@ const ast = parse(src, {
 });
 
 // ── Extracción ──────────────────────────────────────────────────────────────
-// Las dos expresiones viven dentro de `FotosCliente`, no en el módulo, así
-// que se buscan por su función contenedora.
-let conFotosSrc = null;   // arma la lista de partidas con sus fotos
-let urlSrc = null;        // resuelve la URL de UNA foto al pintarla
-
+// Todo lo que hace falta vive dentro de `FotosCliente`, no en el módulo, más
+// las cuatro piezas de módulo de las que depende el aplanado.
+const modulo = {}, dentro = {};
 traverse(ast, {
   VariableDeclarator(p) {
     if (p.node.id.type !== 'Identifier' || !p.node.init) return;
-    // `url` se declara dentro del `.map` de la rejilla, así que el padre
-    // inmediato es una flecha anónima: hay que subir hasta la función con
-    // nombre para saber en qué componente estamos.
+    const nombre = p.node.id.name;
+    const código = src.slice(p.node.init.start, p.node.init.end);
     let fn = p.getFunctionParent();
     while (fn && !fn.node.id) fn = fn.getFunctionParent();
-    if (fn?.node?.id?.name !== 'FotosCliente') return;
-    const código = src.slice(p.node.init.start, p.node.init.end);
-    if (p.node.id.name === 'conFotos') conFotosSrc = código;
-    if (p.node.id.name === 'url' && !urlSrc) urlSrc = código;
+    if (!fn) { if (!(nombre in modulo)) modulo[nombre] = código; return; }
+    if (fn.node.id.name !== 'FotosCliente') return;
+    if (!(nombre in dentro)) dentro[nombre] = código;
   },
 });
 
-if (!conFotosSrc || !urlSrc) {
-  console.error('No se encontró `conFotos` y/o `url` dentro de `FotosCliente` en ' + archivo);
-  console.error('Si la pantalla se reescribió (el #30 la reescribe entera), esta prueba');
-  console.error('hay que rehacerla contra la pantalla nueva, no borrarla.');
+const falta = [];
+const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto'];
+const PIEZAS_PANTALLA = ['todas', 'partidas', 'porPartida'];
+for (const n of PIEZAS_MODULO) if (!(n in modulo)) falta.push(n);
+for (const n of PIEZAS_PANTALLA) if (!(n in dentro)) falta.push(`FotosCliente.${n}`);
+
+if (falta.length) {
+  console.error('No se encontraron estas piezas en ' + archivo + ':');
+  for (const f of falta) console.error('  · ' + f);
+  console.error('\nSi la pantalla se reescribió otra vez, esta prueba hay que rehacerla');
+  console.error('contra la pantalla nueva, no borrarla: anunciar y pintar siguen teniendo');
+  console.error('que ser el mismo número.');
   process.exit(1);
 }
 
-const galeria = new Function('subs', `"use strict"; return ${conFotosSrc};`);
-const urlDe = new Function('foto', `"use strict"; return ${urlSrc};`);
+const cuerpoModulo = PIEZAS_MODULO.map(n => `const ${n} = ${modulo[n]};`).join('\n');
+const desenvolverMemo = (código) => {
+  const m = /^useMemo\s*\(([\s\S]*),\s*\[[^\]]*\]\s*\)$/.exec(código.trim());
+  return m ? m[1].trim() : código;
+};
+
+// `galeria(subs)` devuelve lo que la pantalla tiene en la mano para pintar.
+const galeria = new Function('subs', `"use strict";
+${cuerpoModulo}
+const useMemo = (fn) => fn();
+const todas = (${desenvolverMemo(dentro.todas)})();
+const partidas = (${desenvolverMemo(dentro.partidas)})();
+const porPartida = ${dentro.porPartida};
+return { todas, partidas, porPartida };`);
 
 // ── Lo que el cliente ve de una partida ─────────────────────────────────────
 // `anuncia` es el texto exacto de la insignia; `pinta` es cuántas imágenes
-// sobreviven al `if(!url) return null` de la rejilla.
-const loQueSeVe = (subs) => galeria(subs).map(s => ({
-  sec: s.sec,
-  anuncia: `${s._fotos.length} foto${s._fotos.length > 1 ? 's' : ''}`,
-  pinta: s._fotos.filter(f => urlDe(f)).length,
-}));
+// sobreviven hasta la rejilla, que sólo pinta las que traen url.
+const loQueSeVe = (subs) => {
+  const { todas, porPartida } = galeria(subs);
+  return porPartida(todas).map(([, g]) => ({
+    sec: g.sec,
+    anuncia: `${g.fotos.length} foto${g.fotos.length > 1 ? 's' : ''}`,
+    pinta: g.fotos.filter(f => f.url).length,
+  }));
+};
 
 let fallas = 0;
 const check = (ok, titulo, detalle = '') => {
@@ -126,11 +161,20 @@ const vacías = [
   { sec: '2.1', sub: 'Mapa vacío', id: 'v1', fotos: { v1: [] } },
   { sec: '2.2', sub: 'Sin campo', id: 'v2' },
   { sec: '2.3', sub: 'Mapa nulo', id: 'v3', fotos: null },
+  { sec: '2.4', sub: 'Objeto sin url', id: 'v4', fotos: { v4: [{ id: 'z', fecha: '2026-07-24' }] } },
 ];
 const verVacías = loQueSeVe(vacías);
 check(verVacías.length === 0,
-  'ninguna de las tres aparece con encabezado',
+  'ninguna de las cuatro aparece con encabezado',
   verVacías.length ? `aparecen: ${verVacías.map(v => `${v.sec} anuncia ${v.anuncia} y pinta ${v.pinta}`).join('; ')}` : 'ninguna');
+// La lista que la pantalla pinta no lleva ni una entrada sin url: es lo que
+// hace que anunciar y pintar coincidan por construcción.
+check(galeria([...varias, ...vacías]).todas.every(f => f.url),
+  'ninguna entrada de la lista a pintar llega sin url', 'todas con url');
+// Y una partida sin fotos tampoco aparece en el eje «por partida».
+check(galeria(vacías).partidas.length === 0,
+  'ni aparece en la lista de partidas con evidencia',
+  `${galeria(vacías).partidas.length} partida(s)`);
 
 console.log('\n5. Los esquemas viejos siguen viéndose');
 // El esquema es mixto: hay partidas con arreglo directo y fotos guardadas
