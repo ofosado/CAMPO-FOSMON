@@ -2558,6 +2558,20 @@ const fechaLocalDeISO = (txt) => {
   return d;
 };
 
+// La fecha de HOY como "YYYY-MM-DD", en el calendario de quien la captura.
+//
+// Lo que había era el ISO completo recortado a diez letras, y en México eso
+// adelanta la fecha un día desde las 18:00, porque es UTC. Una foto subida el
+// domingo a las siete de la tarde se guardaba con la fecha del lunes, o sea
+// archivada en la semana SIGUIENTE, en el único día de la semana en que eso
+// se nota. El mismo error estaba en la fecha por omisión de un gasto manual
+// —que alimenta la serie semanal de gasto—, en la de una estimación nueva, en
+// la de un adjunto y en los días transcurridos de plazo.
+const hoyLocalISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
 // La clave de semana de una foto, o `null` si no se puede saber.
 //
 // `null` es una respuesta legítima y la pantalla tiene que pintarla: el
@@ -10622,7 +10636,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
     ? ampliaciones[ampliaciones.length - 1].fecha : obra?.fin;
   const totalDias    = dias(obra?.inicio, finVigente);
   const transcurridos = obra?.inicio
-    ? Math.max(dias(obra.inicio, new Date().toISOString().slice(0,10)) || 0, 0) : 0;
+    ? Math.max(dias(obra.inicio, hoyLocalISO()) || 0, 0) : 0;
   const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo     = (totalDias && totalDias > 0)
     ? Math.min((transcurridos / totalDias) * 100, 100) : null;
@@ -11631,7 +11645,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           if (s.id !== subId) return s;
           const fotosObj = s.fotos || {};
           // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
-          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
+          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: hoyLocalISO()}]}};
         }));
       } catch (commitErr) {
         // El commit al estado local nunca debería fallar, pero si algún día
@@ -12086,7 +12100,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
   }
   function agregarOtroGasto() {
     guardarOtros([...otrosGastos, {
-      id: Date.now(), concepto: "", importe: 0, fecha: new Date().toISOString().slice(0,10), notas: ""
+      id: Date.now(), concepto: "", importe: 0, fecha: hoyLocalISO(), notas: ""
     }]);
   }
   function actualizarOtroGasto(id, campo, valor) {
@@ -16276,7 +16290,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     const nueva = {
       id: Date.now(),
       no: nextNo,
-      fecha: new Date().toISOString().slice(0,10),
+      fecha: hoyLocalISO(),
       periodo: "",
       monto: 0,
       estatus: "En proceso",
@@ -16410,7 +16424,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         const ext = file.name.split('.').pop().toLowerCase();
         const fileId = `cotizacion_${Date.now()}`;
         const { url } = await uploadFoto(obra.id, `subdoc_${sub.id}`, fileId, e.target.result);
-        onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: new Date().toISOString().slice(0,10) } });
+        onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: hoyLocalISO() } });
       } catch (err) {
         console.error(err);
         alert("Error al subir documento: " + err.message);
@@ -16454,7 +16468,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       try {
         const { url } = await uploadFoto(obra.id, `sub_${sub.id}_${conceptoIdx}`, Date.now().toString(), e.target.result);
         const concepto = sub.conceptos[conceptoIdx];
-        const fotos = [...(concepto.fotos||[]), {url, fecha: new Date().toISOString().slice(0,10)}];
+        const fotos = [...(concepto.fotos||[]), {url, fecha: hoyLocalISO()}];
         actualizarConcepto(conceptoIdx, {fotos});
       } catch(err){ console.error(err); alert(err.message || "Error al subir foto"); }
     };

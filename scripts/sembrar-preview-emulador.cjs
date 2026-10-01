@@ -133,6 +133,101 @@ function partidas(semilla, n, contratado) {
   return filas;
 }
 
+// ── Las fotos de evidencia ──────────────────────────────────────────────────
+// Sin esto la pestaña de evidencia sale en blanco, y en blanco no se puede
+// demostrar nada: la pantalla nueva consulta la evidencia POR SEMANA y POR
+// PARTIDA, así que la semilla tiene que tener varias semanas y partidas que
+// repitan en más de una. Con una sola semana, el selector sale con un solo
+// chip y el eje de la partida no se distingue del de la semana.
+//
+// Cada foto es un SVG embebido —el sembrador no depende de ningún archivo
+// suelto, igual que el logo del municipio— y lleva escrito encima la partida
+// y la fecha en que se subió. Eso es lo que hace comprobable el cambio de
+// semana: al cambiar de chip, la imagen dice otra fecha. Si dijera lo mismo
+// en todas, un selector roto se vería idéntico a uno que funciona.
+//
+// `fecha` es la fecha de SUBIDA, que es lo que la app guarda y lo único que la
+// pantalla afirma. Las fotos se reparten hacia atrás desde hoy, de semana en
+// semana, para que el chip de la más reciente no salga vacío.
+const COLORES = ['#3E5C76', '#5C7A5E', '#8A6E3E', '#6E4F6B', '#3E6C76', '#76503E'];
+
+const fotoSVG = (texto, fecha, color) =>
+  'data:image/svg+xml;utf8,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120">
+       <rect width="160" height="120" fill="${color}"/>
+       <rect x="0" y="92" width="160" height="28" fill="rgba(0,0,0,0.35)"/>
+       <text x="80" y="50" font-family="Helvetica,Arial" font-size="11" font-weight="700"
+             text-anchor="middle" fill="#fff">${texto}</text>
+       <text x="80" y="66" font-family="Helvetica,Arial" font-size="8"
+             text-anchor="middle" fill="rgba(255,255,255,0.75)">evidencia de muestra</text>
+       <text x="80" y="110" font-family="Helvetica,Arial" font-size="9"
+             text-anchor="middle" fill="#fff">subida ${fecha}</text>
+     </svg>`);
+
+// La fecha local de hace `k` semanas y `d` días, con el formato que guarda la
+// app. Local y no UTC a propósito: ver `hoyLocalISO` en App.jsx.
+const fechaAtras = (semanas, dias = 0) => {
+  const f = new Date();
+  f.setDate(f.getDate() - semanas * 7 - dias);
+  return `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}-${String(f.getDate()).padStart(2,'0')}`;
+};
+
+// La semana de una foto, con el MISMO convenio que `semanaDeFoto` en App.jsx
+// (ISO 8601, en local). Está aquí sólo para que el sembrador pueda decir
+// cuántas semanas distintas sembró en vez de prometerlo: un sembrador que
+// anuncia cinco semanas y escribe una deja la demo en blanco y la culpa
+// parece del producto.
+const claveSemana = (foto) => {
+  const txt = typeof foto === 'string' ? '' : (foto.fecha || '');
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(txt);
+  if (!m) return 'sin fecha';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const sem = Math.ceil(((d - new Date(d.getFullYear(), 0, 1)) / 86400000 + 1) / 7);
+  return `S${String(sem).padStart(2, '0')}-${d.getFullYear()}`;
+};
+
+// Reparte fotos sobre las partidas de una obra.
+//
+//   · `semanas`  cuántas semanas hacia atrás llegan las cargas.
+//   · `sinFecha` si mete además una foto sin `fecha` y una guardada como
+//     cadena suelta. Son las dos formas que el esquema MIXTO de producción
+//     tiene de no poder fechar una foto, y la pantalla las enseña en su
+//     propio grupo. Se siembran en una sola obra para poder ver esa conducta
+//     sin que domine la demo.
+function fotosDe(filas, semilla, { semanas = 4, sinFecha = false } = {}) {
+  const az = azarDe(semilla + 977);
+  const mapa = {};
+  const mete = (fila, foto) => {
+    const k = fila.sec;
+    (mapa[k] = mapa[k] || []).push(foto);
+  };
+  let n = 0;
+  for (let k = 0; k < semanas; k++) {
+    // Cada semana se fotografía OTRA cosa, con unas pocas partidas que
+    // repiten: es lo que hace un residente de verdad, y es la razón de que el
+    // eje de la consulta sea la partida y no el par de semanas.
+    const cuantas = 2 + Math.floor(az() * 3);
+    for (let i = 0; i < cuantas; i++) {
+      // Las primeras dos partidas repiten semana a semana —son las que dan
+      // material al eje «una partida a lo largo de sus semanas»—; el resto
+      // van rotando.
+      const idx = i < 2 ? i : (2 + Math.floor(az() * Math.max(filas.length - 2, 1))) % filas.length;
+      const fila = filas[idx];
+      const fecha = fechaAtras(k, Math.floor(az() * 5));
+      mete(fila, { id: `fx${semilla}-${++n}`, fecha,
+        url: fotoSVG(`${fila.cat} ${fila.sec}`, fecha, COLORES[(idx + k) % COLORES.length]) });
+    }
+  }
+  if (sinFecha) {
+    mete(filas[0], { id: `fx${semilla}-sf`,
+      url: fotoSVG(`${filas[0].cat} ${filas[0].sec}`, 'sin fecha', '#4A5560') });
+    mete(filas[1], fotoSVG(`${filas[1].cat} ${filas[1].sec}`, 'sin fecha', '#4A5560'));
+  }
+  return mapa;
+}
+
 // La forma del snapshot NO se inventa aquí: es la que escribe
 // `crearSnapshotAvance` en App.jsx, campo por campo. En la primera versión de
 // este guion la fecha se llamaba `fecha` y el resultado fue que las tres obras
@@ -163,6 +258,20 @@ const semanasDe = (filas, contratado, cuantas) => {
 
 async function sembrarObra(prefijo, id, obra, opciones = {}) {
   const filas = partidas(obra.semilla, obra.nPartidas, obra.contratado);
+  // Las fotos cuelgan de la partida, bajo la llave de su `subId` —que para
+  // estas partidas sembradas es `sec`, porque no traen `id`—. Es la misma
+  // forma mixta `{ llave: [foto, …] }` que tiene producción, y es la que leen
+  // tanto la captura como la pestaña de evidencia.
+  let nFotos = 0, semanasConFoto = new Set();
+  if (obra.fotosSemanas) {
+    const mapa = fotosDe(filas, obra.semilla,
+      { semanas: obra.fotosSemanas, sinFecha: !!obra.fotosSinFecha });
+    for (const f of filas) if (mapa[f.sec]) f.fotos = { [f.sec]: mapa[f.sec] };
+    for (const lista of Object.values(mapa)) for (const foto of lista) {
+      nFotos++;
+      semanasConFoto.add(claveSemana(foto));
+    }
+  }
   await escribir(`${prefijo}obras/${id}`, {
     nombre: obra.nombre, contrato: obra.contrato, presupuesto: obra.contratado,
     estado: 'activa', cliente: obra.cliente, ubicacion: obra.ubicacion,
@@ -208,6 +317,12 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
                   totalHEImp: 41000, totalHE: 41000, nPersonas: 34 }],
     });
   }
+
+  // Lo que se sembró de verdad, no lo que se pidió sembrar.
+  const conFoto = filas.filter(f => f.fotos).length;
+  if (obra.fotosSemanas) console.log(
+    `  ${id}: ${nFotos} foto(s) en ${conFoto} partida(s), ` +
+    `${[...semanasConFoto].sort().reverse().join(' ')}`);
 }
 
 (async () => {
@@ -271,13 +386,13 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     nombre: 'Oaxaca Parque Lineal', contrato: 'LO-920-2026-0114', contratado: 38500000,
     cliente: 'Gobierno de Oaxaca', ubicacion: 'Oaxaca de Juárez, Oax.',
     inicio: '2026-03-01', fin: '2026-12-15', semilla: 11, nPartidas: 14,
-    estimaciones: EST_C, semanas: 4, diasSinCaptura: 2,
+    estimaciones: EST_C, semanas: 4, diasSinCaptura: 2, fotosSemanas: 5,
   }, { conEconomia: true, gpId: '0114' });
   await sembrarObra('', '0121', {
     nombre: 'SIOP Coatza Rehab. Av. Universidad', contrato: 'SIOP-2026-0121', contratado: 24800000,
     cliente: 'SIOP Veracruz', ubicacion: 'Coatzacoalcos, Ver.',
     inicio: '2026-05-01', fin: '2026-11-30', semilla: 29, nPartidas: 11,
-    estimaciones: EST_C.slice(0, 2), semanas: 3, diasSinCaptura: 12,
+    estimaciones: EST_C.slice(0, 2), semanas: 3, diasSinCaptura: 12, fotosSemanas: 3,
   }, { conEconomia: true, gpId: '0121' });
 
   // El Sheet de GP: es lo que alimenta el chip y el margen del lado
@@ -307,7 +422,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       { num: 2, monto: 3100000, estatus: 'pagada',    fecha: '2026-07-25' },
       { num: 3, monto: 2400000, estatus: 'facturada', fecha: '2026-09-05' },
     ],
-    semanas: 4, diasSinCaptura: 3,
+    semanas: 4, diasSinCaptura: 3, fotosSemanas: 5,
   });
   await sembrarObra(P, 'OP-2026-002', {
     nombre: 'OBRA DEMO 2 — Drenaje sanitario', contrato: 'MC-OP-2026-002',
@@ -317,14 +432,17 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     estimaciones: [{ num: 1, monto: 1900000, estatus: 'pagada', fecha: '2026-08-12' }],
     // Sin captura en 19 días: dispara la alerta que SÍ le sirve a una
     // dependencia, y así se ve que el recorte no la dejó ciega.
-    semanas: 2, diasSinCaptura: 19,
+    // Ésta lleva además una foto sin `fecha` y otra guardada como cadena
+    // suelta: las dos formas que tiene producción de no poder fechar una
+    // foto. Van en una sola obra para poder ver ese grupo sin que domine.
+    semanas: 2, diasSinCaptura: 19, fotosSemanas: 3, fotosSinFecha: true,
   });
   await sembrarObra(P, 'OP-2026-003', {
     nombre: 'OBRA DEMO 3 — Alumbrado público', contrato: 'MC-OP-2026-003',
     contratado: 5600000, cliente: 'H. Ayuntamiento de Coatzacoalcos',
     ubicacion: 'Av. Universidad, Coatzacoalcos, Ver.',
     inicio: '2026-09-01', fin: '2027-02-28', semilla: 61, nPartidas: 7,
-    estimaciones: [], semanas: 1, diasSinCaptura: 4,
+    estimaciones: [], semanas: 1, diasSinCaptura: 4, fotosSemanas: 1,
   });
   console.log('obras de dependencia: OP-2026-001/002/003 (bajo orgs/coatzacoalcos)');
 
