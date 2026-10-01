@@ -3933,3 +3933,44 @@ clasificación de `permission-denied`. Lo natural es que `activo` conteste
 lo segundo y por eso no cambia con el login—. Hace falta una prueba que afirme
 que, con el usuario llegando después del montaje, el estado de GP termina en
 `listo` y no en `error`.
+
+## 41. Los datos de la empresa ejecutante se teclean, y ya existe de dónde traerlos
+
+**Anotado el 2026-10-01, con la dependencia explícita pedida por el usuario.**
+
+El formulario de contrato del lado dependencia pide **razón social y RFC de la
+empresa ejecutante** como texto libre
+(`CAMPOS_CONTRATO.dependencia`, marcados `fuente: "padron"`). Para la demo está
+bien y así quedó decidido. Lo que no está bien es que se quede así.
+
+**De qué depende, por nombre.** De la pantalla del **padrón de contratistas**.
+La colección ya está declarada en las reglas —`orgs/{oid}/contratistas/{cid}`,
+`firestore.rules:383`— y no existe nada que la escriba ni que la lea. Mientras
+eso no exista, este pendiente no se puede cerrar: no hay de dónde elegir.
+
+**Por qué importa, y no es comodidad de captura.** Un RFC teclado por tres
+personas distintas en tres obras de la misma empresa da tres empresas. El día
+que la dependencia quiera preguntar *«¿cuántos contratos tiene adjudicados esta
+constructora y cómo va cada uno?»* —que es la pregunta que justifica tener el
+sistema— la respuesta va a depender de que nadie haya puesto un espacio de más.
+El texto libre no se puede agrupar, y es el tipo de daño que no se nota hasta
+que ya hay dos años de datos.
+
+**Qué hay que hacer cuando entre.**
+
+- Pantalla de padrón: alta, baja y búsqueda de contratistas de la organización,
+  con el RFC como identidad y validación de forma.
+- En el formulario del contrato, cambiar los dos campos de texto por un
+  selector que llene `empresaEjecutante` y `empresaRFC` al elegir. El marcador
+  `fuente: "padron"` existe para que ese cambio sea en un solo lugar: la tabla.
+- Decidir qué pasa con lo ya capturado a mano. Lo más probable es una
+  conciliación asistida, no una migración automática: dos razones sociales
+  parecidas pueden ser dos empresas de verdad.
+- Quitar la leyenda «Se captura a mano…» que hoy va junto al campo.
+
+**Lo que NO hay que hacer:** inventar el padrón a partir de lo capturado.
+Sería dar por buena la normalización que precisamente falta.
+
+**Dónde está anotado en el código:** el comentario de `CAMPOS_CONTRATO`
+(`src/App.jsx`) nombra este pendiente por número. Si se renumera, se renumera
+en los dos lados.

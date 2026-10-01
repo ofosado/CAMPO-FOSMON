@@ -68,6 +68,25 @@
 //        → 1 roja: la constructora se queda sin manera de prender la función.
 //   · `vanLasOT = usuario => !esDependencia(usuario)`, ignorando la bandera
 //        → 2 rojas: el bloque le aparece a toda obra de constructora.
+//   · `camposContrato = () => CAMPOS_CONTRATO.constructora`, dejando el
+//     formulario como estaba
+//        → 13 rojas: no se pregunta la empresa ejecutante, ni su RFC, ni el
+//          supervisor, ni el origen de los recursos, y en cambio se le pide al
+//          municipio su propio nombre en «Cliente».
+//   · devolver `cliente` a la tabla de dependencia
+//        → 1 roja. Vale la pena anotar que la de escritura NO se puso roja:
+//          la obra de prueba no trae `cliente`, así que la clave se omite y
+//          nada aterriza. El tamaño del formulario lo cuida esta prueba; la
+//          otra cuida lo que se escribe.
+//   · quitar `fuente:"padron"` de los dos campos de la empresa
+//        → 1 roja: la leyenda se deja de pintar y el capturista no sabe por
+//          qué escribe a mano un dato que la dependencia ya tiene.
+//   · dejar la marca pero recortar la leyenda a «Se captura a mano.»
+//        → 1 roja. Es la pareja de la anterior: la marca sin texto en
+//          pantalla es una nota para programadores, no una explicación.
+//   · `puedeEditarContrato` sin el corte, cayendo a `can(rol, "captura", …)`
+//        → 2 rojas aquí y 1 en la de escritura: al supervisor y al
+//          administrativo se les ofrece un botón que guarda la mitad.
 //
 // La mutación del `logout` es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
@@ -117,6 +136,8 @@ const NECESARIOS = [
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
   'PRODUCTO', 'nombreOrg', 'vaElEmblema', 'vaElReporteEjecutivo',
   'vanLasOT', 'vaElInterruptorOT',
+  'CAMPOS_CONTRATO', 'camposContrato', 'ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato',
+  'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
@@ -706,6 +727,107 @@ const montarGP = () => {
     'un interruptor invisible es una función que no existe');
   check(bar.vanLasOT(CONS, null) === false && bar.vanLasOT(CONS, undefined) === false,
     'sin obra cargada todavía tampoco se pinta');
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 4quater) EL FORMULARIO DEL CONTRATO
+  // ══════════════════════════════════════════════════════════════════════════
+  // Era el de la constructora y no se tocó: al municipio le preguntaba su
+  // «Cliente / Dependencia» —que es él mismo— y le pedía el «Residente de
+  // obra» y el «Administrador de obra», que son personal del contratista.
+  //
+  // Se le pregunta a `camposContrato` qué etiquetas entrega la pantalla, no si
+  // existe tal o cual nombre (P3).
+  seccion('El formulario del contrato');
+
+  const form = new Function(`"use strict";
+      const esDependencia = ${decl['esDependencia']};
+      const PERMISOS = ${decl['PERMISOS']};
+      let _permisosObraOverride = null;
+      ${decl['can']}
+      const MODALIDADES_ADJUDICACION = ${decl['MODALIDADES_ADJUDICACION']};
+      const CAMPOS_CONTRATO = ${decl['CAMPOS_CONTRATO']};
+      const camposContrato = ${decl['camposContrato']};
+      const ROLES_EDITAN_CONTRATO_D = ${decl['ROLES_EDITAN_CONTRATO_D']};
+      const puedeEditarContrato = ${decl['puedeEditarContrato']};
+      return { camposContrato, puedeEditarContrato, MODALIDADES_ADJUDICACION };`)();
+
+  const etiquetasD = form.camposContrato(DEP).map(c => c.lbl);
+  const clavesD    = form.camposContrato(DEP).map(c => c.key);
+  const clavesC    = form.camposContrato(CONS).map(c => c.key);
+
+  // Lo que el municipio pidió, campo por campo.
+  const PEDIDOS = [
+    [/empresa ejecutante/i,                          'la empresa ejecutante, por razón social'],
+    [/rfc/i,                                         'su RFC'],
+    [/supervisor por parte de la dependencia/i,      'el supervisor por parte de la dependencia'],
+    [/superintendente por parte de la constructora/i,'el superintendente por parte de la constructora'],
+    [/número de contrato/i,                          'el número de contrato'],
+    [/modalidad de adjudicación/i,                   'la modalidad de adjudicación'],
+    [/monto contratado/i,                            'el monto contratado'],
+    [/origen de los recursos/i,                      'el origen de los recursos'],
+  ];
+  for (const [re, qué] of PEDIDOS)
+    check(etiquetasD.some(l => re.test(l)), `el formulario de dependencia pregunta ${qué}`,
+      etiquetasD.find(l => re.test(l)) || 'NO ESTÁ');
+
+  // Y lo que no es suyo.
+  for (const [clave, porqué] of [
+    ['cliente',   'el municipio es el cliente: preguntárselo es preguntarle su propio nombre'],
+    ['residente', 'el residente es personal del contratista'],
+    ['admin',     'el administrador de obra también'],
+    ['diasPago',  'los días de pago son el flujo del contratista'],
+  ]) check(!clavesD.includes(clave),
+      `el formulario de dependencia no pide \`${clave}\``, porqué);
+
+  // Ningún campo pregunta dos veces lo mismo, y los dos lados comparten los
+  // tres que significan lo mismo en vez de duplicarlos con otro nombre.
+  check(new Set(clavesD).size === clavesD.length, 'ningún campo aparece dos veces',
+    `${clavesD.length} campos`);
+  for (const k of ['contrato', 'presupuesto', 'superintendente'])
+    check(clavesD.includes(k) && clavesC.includes(k),
+      `\`${k}\` es el mismo campo de los dos lados, no dos campos para un hecho`);
+
+  // Las fechas NO se repiten aquí: viven en «Plazos y ampliaciones», que usa
+  // este mismo guardado. Dos pantallas editando el mismo dato es el defecto.
+  check(!clavesD.includes('inicio') && !clavesD.includes('fin'),
+    'las fechas no se duplican en este formulario', 'están en Plazos y ampliaciones');
+
+  // La constructora no perdió ni cambió nada.
+  check(clavesC.join(',') === 'contrato,cliente,superintendente,residente,admin,presupuesto,diasPago',
+    'el formulario de constructora quedó igual', clavesC.join(' · '));
+
+  // La modalidad es una lista cerrada, no texto libre: con texto libre el
+  // mismo concepto se captura de cuatro maneras y luego no se puede agrupar.
+  const modal = form.camposContrato(DEP).find(c => /modalidad/i.test(c.lbl));
+  check(modal?.tipo === 'opciones' && Array.isArray(modal.opciones) && modal.opciones.length >= 3,
+    'la modalidad se elige de una lista, no se escribe a mano',
+    (modal?.opciones || []).join(' · '));
+
+  // El campo que algún día trae el padrón queda marcado desde ahora.
+  const delPadron = form.camposContrato(DEP).filter(c => c.fuente === 'padron').map(c => c.key);
+  check(delPadron.includes('empresaEjecutante') && delPadron.includes('empresaRFC'),
+    'los datos de la empresa quedan marcados como futuros del padrón de contratistas',
+    delPadron.join(' · '));
+  // La marca sola es una nota para programadores. Lo que importa es que el
+  // capturista lea en pantalla por qué está escribiendo a mano algo que la
+  // dependencia ya tiene en otro sistema; si no, lo reporta como defecto.
+  check(/fuente\s*===\s*["']padron["'][\s\S]{0,400}?padrón de contratistas/.test(src),
+    'y junto al campo se explica, en pantalla, que algún día lo traerá el padrón');
+
+  // Quién puede guardar. La intersección de las dos reglas que toca
+  // `guardarDatos`: `config/info` (puedeEditarObraD) y el documento de la obra
+  // (esDirectivoD). Ofrecerle el botón a un supervisor sería guardar la mitad.
+  for (const rolD of ['director_obras', 'subdirector', 'jefe_supervision'])
+    check(form.puedeEditarContrato(DEP, rolD) === true,
+      `${rolD} puede asentar los datos del contrato`);
+  for (const rolD of ['supervisor_obra', 'administrativo', 'contralor', 'contratista'])
+    check(form.puedeEditarContrato(DEP, rolD) === false,
+      `${rolD} lo ve pero no lo edita`,
+      rolD === 'supervisor_obra' ? 'las reglas le niegan el documento de la obra' : '');
+  check(form.puedeEditarContrato(CONS, 'director_operaciones') === true,
+    'en constructora decide el mismo permiso de siempre');
+  check(form.puedeEditarContrato(CONS, 'cliente') === false,
+    'y un cliente sigue sin poder editarlo');
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5) LA ESPERA DE DATOS: no esperar lo que no se pidió

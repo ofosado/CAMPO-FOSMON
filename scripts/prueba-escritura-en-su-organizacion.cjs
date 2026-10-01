@@ -42,6 +42,14 @@
 //   5. `rutas-org.js`: que `prefijoOrg()` devuelva '' en vez de lanzar
 //        → 3 rojas en §3, incluida «LO PISÓ LA ESCRITURA HUÉRFANA»: el
 //          documento de FOSMON sobrescrito por una sesión sin organización.
+//   6. `guardarDatos`: volver a la lista de campos escrita a mano
+//        → 10 rojas en §8. Las dos que dicen lo que vio el usuario:
+//          «el cliente capturado en el alta queda guardado · NO SE GUARDÓ
+//          NADA» y «al releer … · LEYÓ LO VIEJO». Las dos escrituras
+//          devuelven `false` y el botón seguía diciendo «Guardado».
+//   7. `puedeEditarContrato` sin el corte de dependencia
+//        → 1 roja en §8bis: se le ofrece el botón a quien las reglas sólo le
+//          dejan escribir uno de los dos documentos.
 //
 // Uso:
 //   export PATH="/opt/homebrew/bin:/opt/homebrew/opt/openjdk/bin:$PATH"
@@ -422,12 +430,201 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
         'ninguna referencia nombra `obras` sin resolver la organización',
         sospechosos.length ? '\n        ' + sospechosos.join('\n        ') : 'ninguna');
 
+  // ── §8 El contrato se guarda de verdad cuando dice «Guardado» ───────────
+  // Mismo defecto que el §1, por otro camino. `guardarDatos` armaba su
+  // documento con una lista escrita a mano —`residente: obra.residente`— y un
+  // campo que nadie capturó vale `undefined`. Firestore no acepta `undefined`:
+  // rechaza el documento ENTERO, `fsSetA` se traga el rechazo devolviendo
+  // `false`, y el botón decía «Guardado» con nada guardado. Del lado
+  // constructora pasaba en cualquier obra nueva; del lado dependencia habría
+  // pasado SIEMPRE, porque `residente` y `admin` no están en su formulario y
+  // por tanto nunca tendrían valor.
+  //
+  // Esta sección no inspecciona el objeto y se da por satisfecha: escribe con
+  // los helpers reales contra el emulador y vuelve a leer. La afirmación es la
+  // del usuario: lo que capturé, al releer, está.
+  console.log('\n§8 · el contrato que dice «Guardado» quedó guardado');
+  archivo0 = path.join(raiz, 'src/App.jsx');
+  const fuenteCampos = declaraciones(modApp,
+    ['esDependencia', 'MODALIDADES_ADJUDICACION', 'CAMPOS_CONTRATO', 'camposContrato']);
+  const { camposContrato } = new Function(
+    `"use strict";${fuenteCampos}; return { camposContrato };`)();
+  const fuenteGuardarDatos = declaracionInterna(modApp, 'Contrato', 'guardarDatos');
+
+  // Corre el `guardarDatos` REAL. Los helpers son los de App.jsx, también
+  // reales, envueltos sólo para poder mirar qué se mandó.
+  const correrGuardarDatos = async (usuario, obra) => {
+    const enviados = [];
+    const LIBRES_D = ['setSaving', 'setSaved', 'obra', 'campos', 'fsSetA', 'fsSet'];
+    const args = {
+      setSaving: () => {}, setSaved: () => {},
+      obra,
+      campos: camposContrato(usuario),
+      fsSetA: async (p, d, c) => { const ok = await helpers.fsSetA(p, d, c); enviados.push({ p, d, ok }); return ok; },
+      fsSet:  async (p, d)    => { const ok = await helpers.fsSet(p, d);     enviados.push({ p, d, ok }); return ok; },
+    };
+    const fabrica = new Function(...LIBRES_D, `${fuenteGuardarDatos}; return guardarDatos;`);
+    await fabrica(...LIBRES_D.map(k => args[k]))();
+    return enviados;
+  };
+
+  const clavesUndefined = enviados => enviados.flatMap(({ p, d }) =>
+    Object.entries(d).filter(([, v]) => v === undefined).map(([k]) => `${p}·${k}`));
+
+  // ── Una dependencia captura el contrato que adjudicó ──
+  await entrarComo('u-dir-obras', {
+    rol: 'director_obras', orgId: ORG_DEP, tipo: 'dependencia', todas: true, obras: [],
+  });
+  limpiarPrefijoOrg();
+  fijarPrefijoOrg('dependencia', ORG_DEP);
+
+  const USUARIO_DEP = { rol: 'director_obras', tipo: 'dependencia', orgId: ORG_DEP };
+  const origenDep = `FISM 2026 · ${Date.now()}`;
+  // La obra como la ve el formulario de una dependencia: SIN `residente` ni
+  // `admin`, que es la condición que reventaba el guardado.
+  const obraDep = {
+    id: OBRA_DEP, nombre: 'OBRA DEMO 1', estado: 'activa',
+    contrato: 'MC-OP-2026-001', modalidad: 'Licitación pública',
+    empresaEjecutante: 'Constructora del Golfo, S.A. de C.V.',
+    empresaRFC: 'CGO180423J19',
+    supervisorDependencia: 'Ing. Laura Méndez',
+    superintendente: 'Ing. Ramón Cruz',
+    presupuesto: 4820000, origenRecursos: origenDep,
+    inicio: '2026-03-02', fin: '2026-08-28',
+  };
+  check(obraDep.residente === undefined && obraDep.admin === undefined,
+        'la obra de prueba no tiene residente ni administrador — es el caso que fallaba');
+
+  let envDep;
+  try { envDep = await correrGuardarDatos(USUARIO_DEP, obraDep); }
+  catch (e) { noArranco(`\`guardarDatos\` no se pudo correr en el sandbox — ${e.message}`); }
+
+  const undefDep = clavesUndefined(envDep);
+  check(undefDep.length === 0,
+        'ningún campo se manda como `undefined`, que tira el documento entero',
+        undefDep.length ? 'VAN EN UNDEFINED: ' + undefDep.join(', ') : 'ninguno');
+
+  check(envDep.length === 2 && envDep.every(e => e.ok === true),
+        'las dos escrituras reportan éxito, no un `false` que nadie mira',
+        envDep.map(e => `${e.p}=${e.ok}`).join('  '));
+
+  // La afirmación del usuario: vuelvo a abrir la pantalla y mi captura está.
+  const infoDep = await fsGet(`obras/${OBRA_DEP}/config/info`);
+  check(infoDep?.origenRecursos === origenDep,
+        'y al releer, el origen de los recursos que capturó está ahí',
+        infoDep?.origenRecursos === undefined ? 'NO SE GUARDÓ NADA'
+          : infoDep.origenRecursos === origenDep ? 'está'
+          : `LEYÓ LO VIEJO: ${infoDep.origenRecursos}`);
+  check(infoDep?.empresaEjecutante === obraDep.empresaEjecutante
+        && infoDep?.empresaRFC === obraDep.empresaRFC
+        && infoDep?.supervisorDependencia === obraDep.supervisorDependencia
+        && infoDep?.modalidad === obraDep.modalidad,
+        'junto con la empresa ejecutante, su RFC, el supervisor y la modalidad',
+        [infoDep?.empresaEjecutante, infoDep?.empresaRFC,
+         infoDep?.supervisorDependencia, infoDep?.modalidad].join(' | '));
+
+  // Y quedó bajo su organización, no en la raíz con las obras de FOSMON.
+  const infoCrudoDep = await leerCrudo(`orgs/${ORG_DEP}/obras/${OBRA_DEP}/config/info`);
+  check(infoCrudoDep?.origenRecursos === origenDep,
+        'el documento está bajo su organización',
+        `orgs/${ORG_DEP}/obras/${OBRA_DEP}/config/info`);
+
+  // ── Lo que no se le pregunta, no se le escribe ──
+  // No es cosmético: `cliente` y `residente` son vocabulario de constructora.
+  // Si el guardado los mandara vacíos, borraría con merge lo que otra pantalla
+  // hubiera capturado y además los dejaría dentro del documento del municipio.
+  const clavesDep = Object.keys(envDep[0].d);
+  const ajenas = ['cliente', 'residente', 'admin', 'diasPago'].filter(k => clavesDep.includes(k));
+  check(ajenas.length === 0,
+        'no se escriben campos que su formulario no pregunta',
+        ajenas.length ? 'ESCRIBIÓ: ' + ajenas.join(', ') : 'ninguno');
+
+  // ── Una constructora con obra nueva: el mismo defecto, su lado ──
+  await entrarComo('u-fosmon', {
+    rol: 'director_general', orgId: 'fosmon', tipo: 'constructora', todas: true, obras: [],
+  });
+  limpiarPrefijoOrg();
+  fijarPrefijoOrg('constructora', 'fosmon');
+
+  const USUARIO_CONS = { rol: 'director_general', tipo: 'constructora', orgId: 'fosmon' };
+  const OBRA_NUEVA = 'PRUEBA-CONTRATO-NUEVA';
+  const clienteCons = `Cliente ${Date.now()}`;
+  // Obra recién dada de alta: nombre y cliente, nada más. `residente`, `admin`
+  // y `diasPago` todavía no existen — así nace toda obra.
+  const obraCons = { id: OBRA_NUEVA, nombre: 'Obra recién creada', cliente: clienteCons };
+
+  const envCons = await correrGuardarDatos(USUARIO_CONS, obraCons);
+  const undefCons = clavesUndefined(envCons);
+  check(undefCons.length === 0,
+        'en una obra nueva de constructora tampoco va ningún `undefined`',
+        undefCons.length ? 'VAN EN UNDEFINED: ' + undefCons.join(', ') : 'ninguno');
+  check(envCons.every(e => e.ok === true),
+        'y las dos escrituras de la obra nueva reportan éxito',
+        envCons.map(e => `${e.p}=${e.ok}`).join('  '));
+  const infoCons = await fsGet(`obras/${OBRA_NUEVA}/config/info`);
+  check(infoCons?.cliente === clienteCons,
+        'el cliente capturado en el alta queda guardado',
+        infoCons?.cliente === undefined ? 'NO SE GUARDÓ NADA' : 'está');
+  // El campo que nadie capturó no se inventa vacío: con merge, un `""` borra.
+  check(!('residente' in (infoCons || {})),
+        'y el residente que nadie capturó no se guarda vacío',
+        'residente' in (infoCons || {}) ? `ESCRIBIÓ ${JSON.stringify(infoCons.residente)}` : 'ausente');
+
+  // ── §8bis Por qué el botón no se le ofrece al supervisor ────────────────
+  // `guardarDatos` escribe DOS documentos con reglas distintas: `config/info`
+  // lo puede escribir `puedeEditarObraD` —que incluye supervisor_obra y
+  // administrativo— y el documento de la obra sólo `esDirectivoD`, que no. Un
+  // supervisor guardaría la mitad y la pantalla diría «Guardado». De ahí
+  // `puedeEditarContrato`, que no le ofrece el botón.
+  console.log('\n§8bis · un supervisor guardaría el contrato a medias (por eso no se le ofrece)');
+  await entrarComo('u-sup', {
+    rol: 'supervisor_obra', orgId: ORG_DEP, tipo: 'dependencia',
+    todas: false, obras: [OBRA_DEP],
+  });
+  limpiarPrefijoOrg();
+  fijarPrefijoOrg('dependencia', ORG_DEP);
+
+  const envSup = await correrGuardarDatos(
+    { rol: 'supervisor_obra', tipo: 'dependencia', orgId: ORG_DEP },
+    { ...obraDep, origenRecursos: `intento-supervisor-${Date.now()}` });
+  const escrituraObra = envSup.find(e => e.p === `obras/${OBRA_DEP}`);
+  check(escrituraObra?.ok === false,
+        'la escritura del documento de la obra le es negada',
+        escrituraObra ? `ok=${escrituraObra.ok}` : 'NO INTENTÓ ESCRIBIRLA');
+  check(envSup.some(e => e.ok === true) && envSup.some(e => e.ok === false),
+        'una sí y la otra no: guardado a medias, y la pantalla diría «Guardado»',
+        envSup.map(e => `${e.p}=${e.ok}`).join('  '));
+
+  const sandbox = new Function(`"use strict";
+      ${declaraciones(modApp, ['esDependencia', 'PERMISOS'])}
+      let _permisosObraOverride = null;
+      ${declaraciones(modApp, ['can'])}
+      ${declaraciones(modApp, ['ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato'])}
+      return { puedeEditarContrato };`)();
+  check(sandbox.puedeEditarContrato({ tipo: 'dependencia' }, 'supervisor_obra') === false,
+        'y por eso no se le ofrece el botón de editar');
+  check(sandbox.puedeEditarContrato({ tipo: 'dependencia' }, 'director_obras') === true,
+        'mientras el director de obras, que sí puede escribir los dos, lo tiene');
+
+  // El medio guardado de arriba es real: dejó el intento del supervisor en
+  // `config/info`. Se deshace, para que la obra demo no quede con la marca de
+  // la prueba si alguien abre el emulador a mirar.
+  await entrarComo('u-dir-obras', {
+    rol: 'director_obras', orgId: ORG_DEP, tipo: 'dependencia', todas: true, obras: [],
+  });
+  limpiarPrefijoOrg();
+  fijarPrefijoOrg('dependencia', ORG_DEP);
+  await correrGuardarDatos(USUARIO_DEP, obraDep);
+
   // ── Limpieza del rastro de la prueba ────────────────────────────────────
   try {
     await entrarComo('u-fosmon', {
       rol: 'director_general', orgId: 'fosmon', tipo: 'constructora', todas: true, obras: [],
     });
     await deleteDoc(doc(db, 'obras', OBRA_CONS, 'avance', 'subs'));
+    // La obra inventada del §8 no debe quedar en la lista de obras.
+    await deleteDoc(doc(db, 'obras', OBRA_NUEVA, 'config', 'info'));
+    await deleteDoc(doc(db, 'obras', OBRA_NUEVA));
   } catch { /* el emulador se vuelve a sembrar; no es motivo de rojo */ }
 
   console.log(`\n${fallas === 0 ? 'VERDE' : 'ROJO'} — ${fallas === 0 ? 'cada escritura en su organización' : `${fallas} falla(s)`}\n`);

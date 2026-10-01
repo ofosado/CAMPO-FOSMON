@@ -16615,6 +16615,96 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   </div>;
 }
 
+// ── LOS CAMPOS DE «INFORMACIÓN DEL CONTRATO» ───────────────────────────────
+// Dos tablas, una por tipo de organización, porque no es el mismo contrato
+// visto de los dos lados. El formulario era el de la constructora y se quedó
+// sin traducir: a un municipio le preguntaba su «Cliente / Dependencia» —que
+// es él mismo— y le pedía el «Residente de obra» y el «Administrador de obra»,
+// que son personal del contratista. Y lo que de verdad necesita —a quién se le
+// adjudicó, con qué RFC, por qué modalidad y de dónde salió el dinero— no
+// estaba en ningún campo.
+//
+// Lo que se reutiliza y lo que es nuevo, a propósito:
+//
+//   · `contrato`, `presupuesto` y `superintendente` ya existían y significan
+//     lo mismo de los dos lados; sólo cambia la etiqueta. Duplicarlos con otro
+//     nombre sería tener dos campos para un solo hecho.
+//   · `cliente`, `residente`, `admin` y `diasPago` NO van del lado
+//     dependencia: el primero es ella misma y los otros tres son de la
+//     organización interna del contratista.
+//   · las fechas de inicio y término NO se repiten aquí, aunque vengan en la
+//     misma frase del pedido. Ya están en la sub-pestaña «Plazos y
+//     ampliaciones», con la duración calculada y los convenios modificatorios
+//     al lado, que es donde una dependencia las va a buscar. Ponerlas también
+//     en este formulario —los dos llaman al mismo `guardarDatos`— sería dos
+//     pantallas editando el mismo dato.
+//
+// `fuente: "padron"` marca los campos que hoy se capturan a mano y que algún
+// día debe llenar el padrón de contratistas. La colección ya existe en las
+// reglas (`orgs/{oid}/contratistas/{cid}`); lo que falta es la pantalla. Ver
+// PENDIENTES #41, que nombra esa dependencia explícitamente.
+const MODALIDADES_ADJUDICACION = [
+  "Licitación pública",
+  "Invitación a cuando menos tres personas",
+  "Adjudicación directa",
+];
+
+const CAMPOS_CONTRATO = {
+  constructora: [
+    { lbl:"Número de contrato",            key:"contrato",        tipo:"text" },
+    { lbl:"Cliente / Dependencia",         key:"cliente",         tipo:"text" },
+    { lbl:"Superintendente de obra",       key:"superintendente", tipo:"text" },
+    { lbl:"Residente de obra",             key:"residente",       tipo:"text" },
+    { lbl:"Administrador de obra",         key:"admin",           tipo:"text" },
+    { lbl:"Presupuesto total (SIN IVA)",   key:"presupuesto",     tipo:"number" },
+    { lbl:"Días de pago según contrato",   key:"diasPago",        tipo:"number" },
+  ],
+  dependencia: [
+    { lbl:"Número de contrato",            key:"contrato",        tipo:"text" },
+    { lbl:"Modalidad de adjudicación",     key:"modalidad",       tipo:"opciones",
+      opciones: MODALIDADES_ADJUDICACION },
+    { lbl:"Empresa ejecutante (razón social)",            key:"empresaEjecutante",     tipo:"text", fuente:"padron" },
+    { lbl:"RFC de la empresa ejecutante",                 key:"empresaRFC",            tipo:"text", fuente:"padron" },
+    { lbl:"Supervisor por parte de la dependencia",       key:"supervisorDependencia", tipo:"text" },
+    { lbl:"Superintendente por parte de la constructora", key:"superintendente",       tipo:"text" },
+    { lbl:"Monto contratado (SIN IVA)",    key:"presupuesto",     tipo:"number" },
+    { lbl:"Origen de los recursos",        key:"origenRecursos",  tipo:"text" },
+  ],
+};
+
+const camposContrato = usuario =>
+  CAMPOS_CONTRATO[esDependencia(usuario) ? "dependencia" : "constructora"];
+
+/**
+ * ¿Puede esta sesión EDITAR «Información del contrato», o sólo leerla?
+ *
+ * Del lado constructora, lo de siempre: quien captura o estima.
+ *
+ * Del lado dependencia hay que preguntarle a `firestore.rules`, porque
+ * `guardarDatos` escribe en DOS sitios y los dos tienen reglas distintas:
+ *
+ *   · `orgs/{oid}/obras/{obraId}/config/info` → `puedeEditarObraD`, que sí
+ *     incluye a supervisor_obra y a administrativo en sus obras asignadas.
+ *   · `orgs/{oid}/obras/{obraId}` (el documento de la obra, para que sea
+ *     listable) → `esDirectivoD()`, que NO los incluye.
+ *
+ * La intersección —los que pueden escribir en los dos— es director_obras,
+ * subdirector y jefe_supervision. Si se le ofreciera el botón a un supervisor,
+ * la primera escritura pasaría, la segunda la negarían las reglas, `fsSet` se
+ * tragaría el rechazo y el botón diría «Guardado» con la mitad guardada: el
+ * contrato bien en `config/info` y la obra listada con los datos viejos. Ese
+ * medio guardado es peor que no poder guardar.
+ *
+ * Y coincide con quién captura qué: el supervisor levanta avance en campo; los
+ * datos del contrato los asienta quien lo adjudicó.
+ */
+const ROLES_EDITAN_CONTRATO_D = ["director_obras", "subdirector", "jefe_supervision"];
+
+const puedeEditarContrato = (usuario, rol) =>
+  esDependencia(usuario)
+    ? ROLES_EDITAN_CONTRATO_D.includes(rol)
+    : (can(rol, "captura", "editar") || can(rol, "estimaciones", "editar"));
+
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
 function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
@@ -16630,10 +16720,11 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   const [bloqueoModo, setBloqueoModo] = useState(null); // #21 guarda 1
   const [guardandoModo, setGuardandoModo] = useState(false);
   const fileRef = useRef();
-  const editar = can(rol, "captura", "editar") || can(rol, "estimaciones", "editar");
+  const editar = puedeEditarContrato(usuario, rol);
   const puedeSubir = ["director_operaciones","gerente_construccion","administrador_obra"].includes(rol) ||
                      rol==="superintendente_obra";
   const puedeElimDoc = ["director_operaciones","gerente_construccion"].includes(rol);
+  const campos = camposContrato(usuario);
 
   // Cargar ampliaciones y documentos desde Firestore
   useEffect(()=>{
@@ -16646,23 +16737,44 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
     });
   },[obra.id]);
 
-  // Guardar datos del contrato
+  // Guardar datos del contrato.
+  //
+  // Los campos que se escriben son los del formulario de ESTA sesión, no la
+  // unión de las dos tablas, y eso importa por una razón que no se ve: la
+  // lista anterior estaba escrita a mano con `residente:obra.residente`, y un
+  // campo que nadie capturó vale `undefined`. Firestore no acepta `undefined`
+  // y rechaza el documento ENTERO; `fsSetA` se traga el rechazo devolviendo
+  // `false`, así que el botón decía «Guardado» y no se había guardado nada.
+  // Pasaba ya del lado constructora en cualquier obra nueva, y del lado
+  // dependencia habría pasado siempre: `residente` y `admin` no están en su
+  // formulario, así que jamás tendrían valor.
+  //
+  // La clave ausente se OMITE en vez de mandarse vacía. Las dos escrituras van
+  // con merge, así que omitir deja el valor que ya había; mandar `""` borraría
+  // un dato que otra pantalla sí capturó.
   async function guardarDatos() {
     setSaving(true);
     const datos = {
-      nombre:obra.nombre, contrato:obra.contrato, cliente:obra.cliente,
-      superintendente:obra.superintendente, residente:obra.residente,
-      admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
-      finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
-      diasPago: obra.diasPago||30,
+      finAmpliado: obra.finAmpliado || "",
       // Modo de captura de avance: "porcentaje" (default) o "volumen"
       // Obras tipo TAMSA donde el catálogo es referencia y se captura volumen
       // ejecutado real → modo "volumen"
       modoAvance: obra.modoAvance || "porcentaje",
       // Carga de Órdenes de Trabajo por PDF (TAMSA). Habilita el módulo OT
-      // dentro de Avance físico que parsea la OT SAP y matchea partidas.
+      // dentro de Avance físico que parsea la OT SAP y matchea partidas. Se
+      // conserva tal cual venga: del lado dependencia no hay casilla para
+      // cambiarla y este guardado no debe apagar lo que alguien más prendió.
       cargaOT: !!obra.cargaOT,
     };
+    // Los del formulario, más los tres que no están en ninguna tabla porque no
+    // se editan ahí: el nombre viene del alta de la obra y las dos fechas, de
+    // la sub-pestaña de plazos, que usa este mismo guardado.
+    for (const {key, tipo} of [...campos,
+         {key:"nombre",tipo:"text"}, {key:"inicio",tipo:"text"}, {key:"fin",tipo:"text"}]) {
+      const v = obra[key];
+      if (v === undefined || v === null) continue;
+      datos[key] = tipo === "number" ? (parseFloat(v) || 0) : v;
+    }
     await fsSetA(`obras/${obra.id}/config/info`, datos,
       { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // También escribir top-level para que la obra sea listable en getDocs(collection('obras'))
@@ -16825,21 +16937,29 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
             </button>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            {[
-              ["Número de contrato","contrato","text"],
-              ["Cliente / Dependencia","cliente","text"],
-              ["Superintendente de obra","superintendente","text"],
-              ["Residente de obra","residente","text"],
-              ["Administrador de obra","admin","text"],
-              ["Presupuesto total (SIN IVA)","presupuesto","number"],
-              ["Días de pago según contrato","diasPago","number"],
-            ].map(([lbl,key,type])=>(
+            {campos.map(({lbl,key,tipo,opciones,fuente})=>(
               <div key={key}>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
-                {editar
-                  ? <Inp type={type} value={obra[key]||""} onChange={e=>f(key,type==="number"?parseFloat(e.target.value)||0:e.target.value)}/>
-                  : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{obra[key]||"—"}</div>
-                }
+                {editar ? (
+                  tipo==="opciones"
+                    ? <Sel value={obra[key]||""} onChange={e=>f(key,e.target.value)} style={{width:"100%"}}>
+                        <option value="">— Seleccionar —</option>
+                        {opciones.map(o=><option key={o} value={o}>{o}</option>)}
+                      </Sel>
+                    : <Inp type={tipo} value={obra[key]||""}
+                        onChange={e=>f(key,tipo==="number"?parseFloat(e.target.value)||0:e.target.value)}/>
+                ) : (
+                  <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{obra[key]||"—"}</div>
+                )}
+                {/* La nota va en el campo y no en un pie de página: quien lo
+                    captura necesita saber ahí mismo que el dato es suyo por
+                    ahora y de dónde va a venir después. */}
+                {fuente==="padron" && editar && (
+                  <div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.35}}>
+                    Se captura a mano. Cuando exista el padrón de contratistas
+                    se llenará al elegir la empresa.
+                  </div>
+                )}
               </div>
             ))}
           </div>
