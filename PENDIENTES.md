@@ -2405,6 +2405,79 @@ original y `fsSetA` lo sigue envolviendo devolviendo `false`. Ningún
 llamador existente cambia de conducta; el que necesita explicar el fallo
 ahora tiene con qué.
 
+### El recorte a 52 semanas sube de prioridad: con obras multianuales deja de ser un caso extremo (2026-10-01)
+
+**Lo que cambió no es el código, es el supuesto.** El tope de
+`semanas.slice(-52)` se escribió pensando en obras de un año o menos, donde
+perder la semana 53 es perder algo que no ha pasado. Con obras **multianuales**
+—un contrato de noviembre a marzo, o de dos años— el tope ya no recorta el
+futuro: **recorta el arranque**. Un contrato de dos años pierde su primer año
+completo, que es justo donde está la cimentación, el trazo y las
+preliminares: lo que una controversia mira primero.
+
+Y lo hace **callando**. Ahí está la parte que no se puede dejar así: un
+expediente al que le falta el principio y no lo declara miente por omisión.
+Alguien abre la línea de tiempo, ve que empieza en la semana 30 del segundo
+año, y concluye que la obra empezó ahí.
+
+**Requisito, independiente de cuándo se migre:** la línea de tiempo tiene que
+**decir en pantalla** que la obra perdió su arranque, con cuántas semanas
+faltan y desde cuándo. No es una nota al pie: es la diferencia entre un
+expediente incompleto y un expediente que se presenta como completo.
+
+#### ¿Hay que adelantar la subcolección antes de la demo? Medido el 2026-10-01
+
+Con `scripts/medir-cierres-demo.cjs`, contra el emulador sembrado:
+
+| obra demo | cierres | documento | % de 1 MiB | último cierre | caben más |
+|---|---:|---:|---:|---:|---:|
+| 0114 | 4 | 5.1 KB | 0.5% | 1,278 B | 816 |
+| 0121 | 3 | 3.2 KB | 0.3% | 1,068 B | 978 |
+
+**Para la demo aguanta de sobra, y por un margen que no es discutible.** Los
+cierres de la demo pesan ~1.2 KB porque el catálogo sembrado tiene pocas
+partidas; el peso de un cierre lo manda el número de partidas, no el número de
+semanas. A ese ritmo caben más de 800 cierres antes del límite, y lo que topa
+primero es el recorte a 52 — no el megabyte.
+
+**Conclusión: no conviene adelantar la migración antes de la demo.** La
+migración tiene la parte delicada de la convivencia de dos formatos (arriba),
+y meterla en la semana de la demo cambia un riesgo medido y nulo por un riesgo
+real. Lo que **sí** conviene adelantar es la declaración en pantalla del
+arranque perdido, que es barata y es la que evita la mentira.
+
+Para que quede dicho: en **producción** la cuenta es la contraria. La 0114 va
+al 93.8% con cierres de 140 KB, y ahí el peso topa mucho antes que las 52
+semanas. La demo no se parece a producción en esto, y la medición de la demo
+no autoriza nada sobre producción.
+
+#### Cuánto crece el cierre con el corte de estimaciones (2026-10-01)
+
+Los cuatro números del corte —`estEstimadoAcum`, `estAprobadoAcum`,
+`estPagadoAcum`, `estPorCobrarAcum`— pesan **95 B por cierre** medidos con
+`tamañoFirestore`, la misma regla que cobra Firestore (el nombre del campo
+cuenta tanto como el valor: 4 números son 32 B, los nombres son los otros 63).
+
+Qué tanto acerca el límite:
+
+| documento | último cierre | con el corte | crecimiento |
+|---|---:|---:|---:|
+| `0114/avance/historial` (prod) | 140,392 B | 140,487 B | **+0.07%** |
+| `0125/avance/historial` (prod) | 36,502 B | 36,597 B | **+0.26%** |
+| cierre de la demo | 1,278 B | 1,373 B | +7.4% |
+
+Sobre 52 semanas el corte suma 4,940 B: **0.47% de 1 MiB**. En la 0114, la
+obra que ya reventó, adelanta el desbordamiento en **menos de un cierre**.
+
+**No acerca el límite de forma significativa. Se puede escribir.** Lo que
+mueve la aguja en ese documento son las partidas de cada cierre, no cuatro
+números; el arreglo que bajó la 0114 de 140 KB a 29 KB fue dejar de copiar la
+descripción de la partida, y ése es el orden de magnitud que importa.
+
+Y el fallo sigue siendo ruidoso: `crearSnapshotAvance` escribe con `setDoc`
+directo para que el error llegue vivo al llamador, y
+`scripts/prueba-cierre-no-falla-callado.cjs` está en verde.
+
 ### El año de las semanas de nómina va escrito, no deducido (2026-09-22)
 
 Un registro de nómina **no guarda el año**: trae `semana` como texto y
@@ -3696,11 +3769,11 @@ cierran, gobiernan.
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo | | **arreglado 2026-09-23** — partía caracteres UTF-8 en la frontera de los paquetes; hacía que la migración fallara y pasara con los mismos datos, y podía dejar nombres mutilados que cuadraban contra sí mismos. Arreglado en los 8 guiones + paso 4c que coteja contra el origen releído |
 
-**Esta tabla llega al #34 y el documento llega al #46.** Del 35 al 46 los
+**Esta tabla llega al #34 y el documento llega al #47.** Del 35 al 47 los
 pendientes viven sólo en su sección, más abajo. Se deja dicho en voz alta
 porque una tabla de resumen que se quedó corta se lee como la lista completa, y
 entonces lo que falta en ella parece que no existe — que es la forma más
-barata de perder un pendiente. Quien agregue el #46 puede cerrar el hueco de
+barata de perder un pendiente. Quien agregue el #48 puede cerrar el hueco de
 paso; mientras no esté cerrado, la tabla **no** es el índice.
 
 ---
@@ -4258,3 +4331,84 @@ distintos y cambiar de sesión sin recargar.
 **Si resulta cierto, es cosmético pero mentiroso**, que es la categoría que más
 cuesta después: un aviso que afirma un cambio de permisos que no ocurrió enseña
 a la gente a ignorar los avisos de permisos.
+
+---
+
+## 47. Dónde se pierde el año de la semana — barrido del 2026-10-01
+
+Barrido pedido al abrir `feature/plazo-dependencia`, porque **las obras pueden
+ser multianuales**: un contrato de noviembre a marzo cruza el cambio de año y
+la semana ISO reinicia cada enero. Todo lo que ORDENA, AGRUPA o COMPARA por
+semana tiene que usar el par (año, semana). Si usa el número solo, marzo se
+mezcla con noviembre.
+
+Lo que se arregló en esa rama está en su commit. Esto es lo que **queda**.
+
+### Lo que se comprobó que está bien
+
+- **`semanaISO`** es el algoritmo ISO 8601 correcto: toma el jueves de la
+  semana y cuenta desde el 1 de enero **del año de ese jueves**. Por eso una
+  fecha del 29 de diciembre cuyo jueves cae en enero sale como semana 1 del año
+  siguiente, y el 1 de enero cuyo jueves cae en diciembre sale como 52 o 53 del
+  anterior. **Los años de 53 semanas no se pierden** — 2026 es uno (el 1 de
+  enero de 2026 es jueves).
+- **`lunesDeClaveSemana`** cuenta desde el lunes de la semana que contiene el 4
+  de enero, que es la definición ISO. Resuelve bien la 53.
+- **`leyendaSemanaSubida`** escribe los dos años cuando la semana cruza
+  («del 28 de dic de 2026 al 3 de ene de 2027»).
+- **El eje de semanas de la galería de evidencia** ordena por año primero
+  (`a.slice(4) + a.slice(1,3)`), no por el número.
+- **`alertaId`** y el detector de «¿hay cierre oficial esta semana?» comparan
+  año y semana.
+- **Las claves `Y2026-S37` y `2026-W37`** se pueden ordenar como texto porque
+  llevan el año delante. Las `S37-2026` **no**, y donde se usan se ordena por
+  el par.
+
+### Lo que SÍ pierde el año, y queda pendiente
+
+**a) El gasto semanal del GP Sheet se re-sella con el año en curso.**
+`src/App.jsx` (el parser del Sheet) y `functions/index.js` guardan el gasto
+semanal con la clave `S${numero}`, **sin año**, y las tres series que lo
+consumen le vuelven a poner `new Date().getFullYear()`. Además el parser **solo
+conserva las columnas de semana del año más reciente** del Sheet: los años
+anteriores sobreviven únicamente como total anual, que se aplana en una base.
+
+Consecuencia en una obra multianual: la curva de gasto **no tiene puntos
+semanales de su primer año** y pega un escalón vertical en la primera semana
+del año en curso. Y si el Sheet se lee en enero, las semanas de noviembre y
+diciembre del año anterior se pintan como si fueran de enero.
+
+**Por qué no se arregló aquí:** es economía interna del contratista (P5). Una
+dependencia no lee el GP, así que esto no toca la demo ni la vista de cliente.
+Pero es el sitio donde el año se pierde de forma más completa, y el arreglo
+tiene dos mitades: conservar las columnas de todos los años en el parser (y en
+la función, que es la que escribe el documento) y dejar de re-sellar el año en
+las tres series. Las dos mitades hay que hacerlas juntas.
+
+**b) `semanasDisponibles` y `ultimaSemana` ordenan por número de semana.**
+`parseInt(a.slice(1)) - parseInt(b.slice(1))`, en el cliente y en la función.
+Hoy **no detona** porque el parser ya dejó un solo año en `colMap`, así que no
+hay dos años que mezclar. Es latente: en el momento en que (a) se arregle
+conservando varios años, esto empieza a dar «última semana = S48» en enero.
+**Arreglar (a) obliga a arreglar (b) en el mismo movimiento.**
+
+**c) El respaldo de fecha de inicio aproxima con el año actual.**
+Cuando una obra no tiene `inicio` capturado, se deduce de la primera semana con
+gasto del GP como «1 de enero del año actual + (semana−1)×7 días». Eso ni
+respeta ISO ni el año real: en una obra que arrancó en noviembre del año
+anterior, la gráfica cree que empezó en enero de este año. Mismo origen que
+(a) y se cae con él.
+
+**d) La semana de un registro de nómina no trae año.**
+`semanaDeNomina` devuelve el número solo, y cuando el texto del Excel no dice
+el año se usa el actual. Ya está documentado en el #28 («El año de las semanas
+de nómina va escrito, no deducido»); se anota aquí para que el barrido quede
+completo. En una obra multianual, un Excel de diciembre subido en enero se
+archiva en el año equivocado.
+
+### Lo que no se pudo auditar
+
+**El informe semanal.** Vive en `feature/resumen-semanal`, que no está mezclada.
+Hay que repetir este barrido sobre esa rama antes de mezclarla: si el informe
+agrupa o compara por número de semana, una obra multianual le va a salir al
+revés, y el informe es lo que se manda por correo.
