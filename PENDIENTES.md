@@ -3255,6 +3255,92 @@ línea y hoy deja la galería del cliente en blanco.
 
 ---
 
+### Medido otra vez el 2026-10-01: la mitad barata ya se puede, y la cara apuntaba al traslape equivocado
+
+Al revisar la vista de dependencia salió la pregunta de si conviene adelantar
+parte de esto para la demo. Se volvió a medir producción —solo lectura, el
+guion es `scripts/medir-semanas-evidencia.cjs`— y hay dos hallazgos que cambian
+el plan de arriba sin invalidarlo.
+
+**1. Agrupar por semana NO necesita migración. Se puede hoy, al leer.**
+
+| | |
+|---|---:|
+| fotos de avance referenciadas en el catálogo | **541** |
+| con `fecha` usable, o sea con semana deducible | **541 (100%)** |
+| cadena suelta, sin ningún campo de fecha | 0 |
+| objeto sin `fecha`, o con `fecha` ilegible | 0 |
+
+Eran 475 el 2026-09-22; siguen entrando. El esquema mixto que `FotosCliente`
+contempla —la foto como cadena suelta— **no aparece ni una vez en producción**.
+O sea que el convenio `Y2026-S38` se puede calcular al pintar, y la pantalla de
+"ver una semana" **no depende de la subcolección, ni de soltar la URL, ni de la
+migración de nómina**. Esa parte del #30 es peso; esta es consulta. Son
+separables y el orden natural es el inverso al que dice el punto 4.
+
+Semanas con evidencia, las cinco obras juntas: **S30 a S40, ocho semanas
+distintas.** La 0114 tiene las ocho; la 0126 dos; la 0127 una; la 0125 ninguna.
+
+**2. Pero «comparar dos semanas alineando las partidas en común» se apoya en un
+traslape que los datos no tienen.** Partidas en común entre cada par de semanas
+en la 0114 (la diagonal es cuántas partidas tuvieron foto esa semana):
+
+```
+        S30  S32  S33  S36  S37  S38  S39  S40
+S30       2    2    0    0    0    1    0    0
+S32       2   23    9    3    0    4    0    3
+S33       0    9   30   12    2   10    4    2
+S36       0    3   12   27    7   14    7    4
+S37       0    0    2    7   19    8    5    3
+S38       1    4   10   14    8   25   10    5
+S39       0    0    4    7    5   10   17    4
+S40       0    3    2    4    3    5    4   16
+```
+
+Entre semanas **vecinas** hay material: S36↔S38 traslapan 14 partidas, S33↔S36
+doce, S38↔S39 diez. Entre semanas **lejanas** se desploma: el ejemplo que se usó
+para pedir esto —«la obra de hace tres semanas contra hoy», o sea S37 contra
+S40— traslapa **3 partidas de 19 y 16**. Dos columnas alineadas por partida
+darían tres renglones alineados y veintinueve huecos.
+
+Y no es un defecto de captura: es lo que hace un residente. Fotografía lo que
+avanzó esa semana, y cada semana avanza otra cosa. De las 83 partidas de la 0114
+que alguna vez tuvieron foto, **40 (48%) tienen foto en una sola semana**:
+
+| foto en … | partidas |
+|---|---:|
+| 1 semana | **40** |
+| 2 semanas | 19 |
+| 3 semanas | 16 |
+| 4 semanas | 7 |
+| 5 semanas | 1 |
+
+**La unidad de comparación no es «dos semanas», es «una partida a lo largo de
+sus semanas».** Hay **43 partidas** con foto en dos semanas o más —contra las 3
+del par S37/S40—, y ahí sí está la pregunta que se le hace al producto: *cómo
+cambió ESTO*. El eje correcto es el concepto, y la semana es la columna.
+
+Eso **no tira** el punto 3 de arriba: "ver una semana" sigue siendo la pantalla
+de entrada. Lo que se reemplaza es el "comparar dos semanas, dos columnas" por
+**la tira de una partida**: elegida una partida, sus fotos en fila ordenadas por
+semana, con los huecos dichos como huecos. Comparar dos semanas enteras se
+queda, pero como lo que es —qué se documentó cada semana—, no como el momento
+de la demo.
+
+**3. Lo que la pantalla NO puede decir.** `fecha` es la de **subida**, y eso ya
+estaba comprobado contra el `timeCreated` de Storage. Así que se dice "subidas
+en la semana del 22 de septiembre" y nunca "así se veía la obra en la S38"
+(P2). El caso 0112 lo obliga: sus 255 fotos caen todas en S30 porque fueron un
+volcado histórico de un día. Una pantalla que las presente como "el trabajo de
+la semana 30" miente, y encima es la obra donde más falta hace ver el cambio.
+
+**4. Para la demo, la evidencia no existe en los datos sembrados.**
+`scripts/sembrar-preview-emulador.cjs` no escribe ni una foto. Las tres OBRA
+DEMO entran a Evidencia y leen "Aún no se han cargado fotos de esta obra". O
+sea que hoy la pestaña no es redundante en la demo: está **vacía**.
+
+---
+
 ---
 
 ## 31. El histórico semanal de subcontratos nunca existió — retirado 2026-09-22
