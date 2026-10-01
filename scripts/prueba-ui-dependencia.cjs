@@ -42,8 +42,17 @@
 //        → 2 rojas: el riesgo de margen se cuela.
 //   · quitar del `logout` el vaciado de obras y de datos por obra
 //        → 2 rojas: el municipio hereda las obras de FOSMON.
+//   · `destinoNav` sin el corte: `return { tab: tabId, subTab: subTabId }`
+//        → 13 rojas: un clic en «Requiere atención» abre la Operación entera.
+//   · borrar `'operacion/avance'` del mapa `DESTINOS_DEPENDENCIA`
+//        → 1 roja: la tarjeta queda muerta. El recorte no puede ser "nada
+//          lleva a ningún lado"; lo que tiene equivalente tiene que llevar.
+//   · en `navTab`, `destinoNav(...) || { tab: tabId, subTab: subTabId }`
+//        → 9 rojas. Es la mutación que más tienta —un respaldo "por si
+//          acaso"— y es justamente el defecto: caer al destino original es
+//          llegar a la pestaña que el menú no ofrece.
 //
-// Esa última mutación es la que enseñó algo. Con la primera versión de esta
+// La mutación del `logout` es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
 // detectores comparaban contra `undefined` y devolvían null solos. La prueba
 // estaba pasando por falta de dato y no por recorte. De ahí el bloque que le
@@ -88,6 +97,7 @@ const NECESARIOS = [
   'TABS_POR_ROL', 'TABS_DEPENDENCIA', 'tabsDe', 'esDependencia',
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
+  'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
@@ -432,6 +442,130 @@ const montarGP = () => {
   const datosC = { ...datosDep, totGasto: 9500000 };
   check(!!reglaGasto && reglaGasto.evaluar(obra, datosC, hoy) !== null,
     'y en una constructora, con gasto real, sí dispara');
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 4bis) A DÓNDE LLEVAN LOS ENLACES
+  // ══════════════════════════════════════════════════════════════════════════
+  // Lo de arriba prueba QUÉ riesgos le llegan. Esto prueba A DÓNDE llevan al
+  // picarlos, que resultó ser otro agujero entero.
+  //
+  // Medido en el emulador el 2026-10-01, con OBRA DEMO 3 y el plazo vencido:
+  // la tarjeta «Avance vs plazo desbalanceado» del tablero de dependencia
+  // abría la Operación COMPLETA de constructora —Avance físico · Estimaciones ·
+  // Nómina · Subcontratos · Maquinaria · Almacén— y desde ahí Nómina pintaba
+  // «Cargar nómina». Un clic deshacía el recorte entero.
+  //
+  // La causa no estaba en el menú ni en el filtro de riesgos, los dos
+  // correctos: las plantillas que SÍ le llegan traen destinos escritos del
+  // lado constructora (`tab:'operacion'`, `subTab:'avance'`), `setTab` pintaba
+  // cualquier id que se le diera, y el sitio de render le pasaba la lista de
+  // sub-pestañas POR OMISIÓN en vez de la recortada.
+  //
+  // Se corre el `navTab` de producción con dobles en lugar de los setters y se
+  // le pregunta qué pestaña activó. No se afirma que exista ningún nombre (P3).
+  seccion('A dónde llevan los enlaces');
+
+  const nav = new Function('tipo', `"use strict";
+    const esDependencia = ${decl['esDependencia']};
+    const DESTINOS_DEPENDENCIA = ${decl['DESTINOS_DEPENDENCIA']};
+    const destinoNav = ${decl['destinoNav']};
+    return (tabPedido, subTabPedido) => {
+      const visto = { tab: 'no se movió', subOper: 'no se movió', subPlan: 'no se movió' };
+      const usuario = { rol: 'supervisor_obra', tipo };
+      const setTab = v => { visto.tab = v; };
+      const setSubTabOper = v => { visto.subOper = v; };
+      const setSubTabPlan = v => { visto.subPlan = v; };
+      const navTab = ${decl['navTab']};
+      navTab(tabPedido, subTabPedido);
+      return visto;
+    };`);
+  const navDep  = nav('dependencia');
+  const navCons = nav('constructora');
+
+  const IDS_DEP = new Set(menus.TABS_DEPENDENCIA
+    ? menus.TABS_DEPENDENCIA.map(t => t.id)
+    : menus.tabsDe({ rol: 'supervisor_obra', tipo: 'dependencia' }).map(t => t.id));
+  const SUB_DEP = new Set([
+    ...menus.SUBTABS_OPERACION_DEPENDENCIA.map(t => t.id),
+    ...menus.SUBTABS_PLANEACION_DEPENDENCIA.map(t => t.id),
+  ]);
+
+  // LO QUE IMPORTA: ningún destino de la biblioteca de riesgos puede sacar a
+  // una dependencia de sus cuatro pestañas. Se recorren TODOS los destinos que
+  // existen en las plantillas, no una muestra, porque el que se cuele va a ser
+  // justo el que no se le ocurrió a nadie.
+  const destinosBiblioteca = [...new Set(
+    motor.detectarRiesgos({ ...ctxBase, kpis: kpisC })
+      .concat(riesgosD)
+      .map(r => JSON.stringify([r.tab, r.subTab || null])))].map(JSON.parse);
+  const fugas = [];
+  for (const [t, st] of destinosBiblioteca) {
+    const v = navDep(t, st);
+    const destino = st ? `${t}/${st}` : t;
+    if (v.tab === 'no se movió') continue;            // no navegó: correcto
+    if (!IDS_DEP.has(v.tab)) { fugas.push(`${destino} → pestaña ${v.tab}`); continue; }
+    const sub = v.subOper !== 'no se movió' ? v.subOper
+              : v.subPlan !== 'no se movió' ? v.subPlan : null;
+    if (sub && !SUB_DEP.has(sub)) fugas.push(`${destino} → sub-pestaña ${sub}`);
+  }
+  check(fugas.length === 0,
+    'ningún destino de la biblioteca de riesgos saca a una dependencia de sus pestañas',
+    fugas.length ? fugas.join(' | ') : `${destinosBiblioteca.length} destinos revisados`);
+
+  // Los destinos nombrados, uno por uno. Los de economía interna no navegan:
+  // `null` quiere decir que la tarjeta no se puede ni picar. El corte es NO
+  // LLEVAR, no llevar-y-esconder — igual que con las rutas.
+  const NO_LLEVAN = [
+    ['operacion', 'nomina',       'la nómina del contratista'],
+    ['operacion', 'almacen',      'el almacén del contratista'],
+    ['operacion', 'maquinaria',   'su equipo propio'],
+    ['operacion', 'subcontratos', 'a quién le paga'],
+    ['gastos',     null,          'la contabilidad de FOSMON'],
+    ['planeacion', 'permisos',    'administración del sistema'],
+    ['operacion',  null,          'la Operación entera'],
+    ['planeacion', null,          'la Planeación entera'],
+  ];
+  for (const [t, st, porque] of NO_LLEVAN) {
+    const v = navDep(t, st);
+    check(v.tab === 'no se movió',
+      `una dependencia no llega a ${st ? `${t}/${st}` : t}`,
+      v.tab === 'no se movió' ? porque : `ABRIÓ ${v.tab}`);
+  }
+
+  // Y los que sí tienen equivalente llevan a donde corresponde. Un recorte que
+  // deja «Requiere atención» muerto no es un recorte: es una tarjeta inerte.
+  const LLEVAN = [
+    [['operacion', 'avance'],       { tab: 'avance',   subOper: 'avance' }],
+    [['planeacion', 'contrato'],    { tab: 'contrato', subPlan: 'contrato' }],
+    [['planeacion', 'presupuesto'], { tab: 'contrato', subPlan: 'presupuesto' }],
+    [['avance', null],              { tab: 'avance',   subOper: 'avance' }],
+  ];
+  for (const [[t, st], esperado] of LLEVAN) {
+    const v = navDep(t, st);
+    const ok = v.tab === esperado.tab
+      && (!esperado.subOper || v.subOper === esperado.subOper)
+      && (!esperado.subPlan || v.subPlan === esperado.subPlan);
+    check(ok, `${st ? `${t}/${st}` : t} lleva a ${esperado.tab}`,
+      `tab=${v.tab} subOper=${v.subOper} subPlan=${v.subPlan}`);
+  }
+
+  // Al menos una de las tarjetas que esta obra dispara tiene que ser clicable.
+  // Si no, la prueba de arriba estaría pasando porque no lleva a ningún lado
+  // nunca, que es el otro modo de fallar.
+  const vivas = riesgosD.filter(r => navDep(r.tab, r.subTab).tab !== 'no se movió');
+  check(vivas.length > 0,
+    'y las tarjetas que sí tienen equivalente siguen llevando a su pantalla',
+    vivas.map(r => r.id).join(' ') || 'NINGUNA — "Requiere atención" quedó muerto');
+
+  // La otra mitad: en una constructora NADA cambió. Un recorte que también
+  // recorta al que sí debe navegar no es un recorte.
+  for (const [t, st] of [['operacion', 'nomina'], ['gastos', null], ['planeacion', 'permisos']]) {
+    const v = navCons(t, st);
+    check(v.tab === t, `una constructora sigue llegando a ${st ? `${t}/${st}` : t}`,
+      `tab=${v.tab} subOper=${v.subOper} subPlan=${v.subPlan}`);
+  }
+  check(navCons('operacion', 'nomina').subOper === 'nomina',
+    'y con su sub-pestaña puesta, como siempre');
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5) LA ESPERA DE DATOS: no esperar lo que no se pidió

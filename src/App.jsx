@@ -10332,7 +10332,14 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const pctEjec  = contrato > 0 ? (ejecutado / contrato) * 100 : null;
   const pctEstim = contrato > 0 ? (estimado  / contrato) * 100 : null;
   const pctPag   = contrato > 0 ? (pagado    / contrato) * 100 : null;
-  const irA = (tabId, subTabId) => onNavTab ? () => onNavTab(tabId, subTabId) : undefined;
+  // Las plantillas de riesgo traen destinos de constructora. `destinoNav` dice
+  // cuál tiene equivalente aquí; los que no, no se pueden picar — en vez de
+  // picarse y no pasar nada, o peor, llevar a una pestaña que el menú no
+  // ofrece (que es lo que hacían).
+  const irA = (tabId, subTabId) =>
+    (onNavTab && destinoNav(tabId, subTabId, { tipo: 'dependencia' }))
+      ? () => onNavTab(tabId, subTabId)
+      : undefined;
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {/* ── El dinero del contrato ── */}
@@ -10372,7 +10379,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
     </Card>
 
     {/* ── La obra ── */}
-    <Card accent={C.blue} style={onNavTab?{cursor:"pointer"}:undefined}>
+    <Card accent={C.blue} style={irA("avance")?{cursor:"pointer"}:undefined}>
       <div onClick={irA("avance")}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
@@ -10451,7 +10458,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
           <div key={r.id} onClick={irA(r.tab, r.subTab)}
             style={{background:C.bg,borderRadius:8,padding:"9px 11px",
               borderLeft:`3px solid ${r.severidad==='critico'?C.red:C.yellow}`,
-              cursor:onNavTab?"pointer":"default"}}>
+              cursor:irA(r.tab, r.subTab)?"pointer":"default"}}>
             <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
               <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{r.titulo}</div>
               <div style={{fontSize:12,fontWeight:700,flexShrink:0,
@@ -17182,6 +17189,57 @@ const tabsDe = usuario =>
   TABS_POR_ROL[usuario?.rol] ||
   (esDependencia(usuario) ? TABS_DEPENDENCIA : TABS_POR_ROL.director_operaciones);
 
+// ── A DÓNDE SE PUEDE NAVEGAR ───────────────────────────────────────────────
+// Todo enlace interno de la app —las tarjetas de "Requiere atención", las
+// notificaciones, los "ver detalle ›" del Dashboard, el CTA de «falta el
+// catálogo»— lleva un destino redactado del lado constructora:
+// `operacion/nomina`, `planeacion/presupuesto`, `gastos`. Están escritos en
+// las plantillas de riesgo y en los `link` de las notificaciones, y recortar
+// el menú no los recorta.
+//
+// Medido el 2026-10-01 en el emulador: desde el tablero de dependencia de
+// OBRA DEMO 3, un clic en «Avance vs plazo desbalanceado» pintaba la
+// Operación COMPLETA —Avance físico · Estimaciones · Nómina · Subcontratos ·
+// Maquinaria · Almacén— y desde ahí Nómina abría «Cargar nómina». Un clic
+// deshacía toda la frontera del P5 sin tocar el menú, porque `setTab` pinta
+// cualquier id que se le dé y los sitios de render pasan la lista de
+// sub-pestañas POR OMISIÓN, no la recortada.
+//
+// El arreglo es un único cuello de botella —`destinoNav`— y no un parche por
+// llamador: los llamadores son siete y van a llegar más.
+//
+// La equivalencia, cuando existe. `operacion/estimaciones` NO está a
+// propósito: en dependencia el estimado no es una pantalla, es una de las
+// cifras del propio Dashboard, así que mandar ahí a quien ya está en el
+// Dashboard es un clic que no hace nada. Mejor que la tarjeta no sea
+// clicable: una tarjeta que se puede picar y no lleva a ningún lado enseña
+// que picar no sirve.
+const DESTINOS_DEPENDENCIA = new Map([
+  ['operacion/avance',       { tab: 'avance',    subTab: 'avance' }],
+  ['planeacion/contrato',    { tab: 'contrato',  subTab: 'contrato' }],
+  ['planeacion/presupuesto', { tab: 'contrato',  subTab: 'presupuesto' }],
+  // Los ids propios del menú de dependencia, para los enlaces que ya están
+  // escritos en su idioma.
+  ['dash',                   { tab: 'dash' }],
+  ['avance',                 { tab: 'avance',    subTab: 'avance' }],
+  ['evidencia',              { tab: 'evidencia' }],
+  ['contrato',               { tab: 'contrato',  subTab: 'contrato' }],
+]);
+
+/**
+ * Traduce un destino al menú de la sesión, o devuelve `null` si ahí no existe.
+ *
+ * `null` significa NO NAVEGAR. No cae al destino original "por si acaso":
+ * caer es exactamente el defecto que esto arregla.
+ */
+const destinoNav = (tabId, subTabId, usuario) => {
+  if (!tabId) return null;
+  if (!esDependencia(usuario)) return { tab: tabId, subTab: subTabId };
+  return DESTINOS_DEPENDENCIA.get(subTabId ? `${tabId}/${subTabId}` : tabId)
+      ?? DESTINOS_DEPENDENCIA.get(tabId)
+      ?? null;
+};
+
 // SUB-TABS dentro de cada sección principal
 // (El sub-tab "resumen" se removió — duplicaba info del Dashboard y solo
 // generaba fricción. Los KPIs consolidados viven ahora solo en Dashboard.)
@@ -18305,11 +18363,19 @@ export default function App(){
   // Sub-tabs activos dentro de Operación y Planeación
   const[subTabOper,setSubTabOper]=useState("avance");
   const[subTabPlan,setSubTabPlan]=useState("contrato");
-  // Helper: navegación desde Dashboard. Si pasa subTab, lo activa también.
+  // Helper: navegación desde Dashboard, notificaciones y tarjetas de riesgo.
+  // El destino se traduce al menú de ESTA sesión (ver `destinoNav`); si ahí no
+  // existe, no se navega. Antes `setTab` pintaba cualquier id, y por ahí una
+  // dependencia llegaba a Nómina.
   const navTab = (tabId, subTabId) => {
-    setTab(tabId);
-    if (tabId === "operacion" && subTabId) setSubTabOper(subTabId);
-    if (tabId === "planeacion" && subTabId) setSubTabPlan(subTabId);
+    const d = destinoNav(tabId, subTabId, usuario);
+    if (!d) return;
+    setTab(d.tab);
+    // Las dos pantallas con barra de sub-pestañas son `Operacion` y
+    // `Planeacion`; en dependencia se montan bajo los ids `avance` y
+    // `contrato` pero son las mismas y leen los mismos estados.
+    if ((d.tab === "operacion" || d.tab === "avance") && d.subTab) setSubTabOper(d.subTab);
+    if ((d.tab === "planeacion" || d.tab === "contrato") && d.subTab) setSubTabPlan(d.subTab);
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
