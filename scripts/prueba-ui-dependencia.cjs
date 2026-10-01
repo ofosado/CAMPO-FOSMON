@@ -51,6 +51,16 @@
 //        → 9 rojas. Es la mutación que más tienta —un respaldo "por si
 //          acaso"— y es justamente el defecto: caer al destino original es
 //          llegar a la pestaña que el menú no ofrece.
+//   · `nombreOrg` con el respaldo sin condición: `marca?.empresa ||
+//     "FOSMON Construcciones"`
+//        → 6 rojas: la barra del municipio vuelve a nombrar al contratista.
+//   · `vaElEmblema = () => true`
+//        → 1 roja: el emblema de FOSMON en la sesión del municipio.
+//   · `vaElReporteEjecutivo = () => true`
+//        → 1 roja: se le ofrece el PDF con margen, gasto, almacén y nómina.
+//   · volver a escribir «FOSMON CONSTRUCCIONES» a mano en el encabezado
+//        → 1 roja, la del barrido. El defecto original eran DOS sitios con la
+//          misma cadena literal; arreglar uno dejaba el otro.
 //
 // La mutación del `logout` es la que enseñó algo. Con la primera versión de esta
 // prueba salía VERDE: el contexto de dependencia no lleva `kpis.mpct`, los
@@ -98,6 +108,7 @@ const NECESARIOS = [
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
+  'PRODUCTO', 'nombreOrg', 'vaElEmblema', 'vaElReporteEjecutivo',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
@@ -566,6 +577,97 @@ const montarGP = () => {
   }
   check(navCons('operacion', 'nomina').subOper === 'nomina',
     'y con su sub-pestaña puesta, como siempre');
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 4ter) QUÉ DICE LA BARRA DE ARRIBA, Y QUÉ SE PUEDE DESCARGAR
+  // ══════════════════════════════════════════════════════════════════════════
+  // Lo primero que ve el cliente. En la sesión del municipio el encabezado
+  // decía «CAMPO / FOSMON CONSTRUCCIONES»: la app se presentaba como si fuera
+  // de su contratista. Y el botón de «Reporte ejecutivo» seguía ahí, con un
+  // PDF que lleva margen bruto, desglose de gasto, almacén y nómina —rutas
+  // que en dependencia no se piden, así que habría impreso Gasto $0 y Margen
+  // 100% con el logo de FOSMON en la portada.
+  //
+  // No se afirma que exista ningún nombre (P3): se le pregunta a `nombreOrg`
+  // qué cadena entrega la pantalla y a los dos predicados qué se ofrece.
+  seccion('La barra de arriba');
+
+  const bar = new Function(`"use strict";
+      const esDependencia = ${decl['esDependencia']};
+      const PRODUCTO = ${decl['PRODUCTO']};
+      const nombreOrg = ${decl['nombreOrg']};
+      const vaElEmblema = ${decl['vaElEmblema']};
+      const vaElReporteEjecutivo = ${decl['vaElReporteEjecutivo']};
+      return { PRODUCTO, nombreOrg, vaElEmblema, vaElReporteEjecutivo };`)();
+
+  const DEP  = { rol: 'supervisor_obra', tipo: 'dependencia',  orgId: 'coatzacoalcos' };
+  const CONS = { rol: 'director_general', tipo: 'constructora', orgId: 'fosmon' };
+  const MUNI = { empresa: 'H. Ayuntamiento de Coatzacoalcos' };
+
+  // Sin marca capturada, la línea no se pinta. `null` es la única respuesta
+  // honesta: no se sabe de quién es la organización, y adivinar es cómo
+  // apareció FOSMON ahí.
+  check(bar.nombreOrg(null, DEP) === null,
+    'en una dependencia sin marca capturada el encabezado no nombra a nadie',
+    JSON.stringify(bar.nombreOrg(null, DEP)));
+  check(bar.nombreOrg(undefined, DEP) === null,
+    'y tampoco mientras la marca va cargando');
+
+  // Con marca, dice la del municipio — y en ningún caso la del contratista.
+  check(bar.nombreOrg(MUNI, DEP) === MUNI.empresa,
+    'con marca capturada dice el nombre del municipio', bar.nombreOrg(MUNI, DEP));
+  for (const m of [null, undefined, {}, MUNI, { empresa: '' }]) {
+    const v = bar.nombreOrg(m, DEP) || '';
+    check(!/fosmon/i.test(v),
+      `ninguna variante de marca le nombra FOSMON a una dependencia  (${JSON.stringify(m)})`,
+      v || 'sin línea');
+  }
+
+  // El nombre del producto es del producto: el mismo para los dos y sin
+  // nombre de organización adentro. Si algún día se escribe «CAMPO FOSMON»
+  // ahí, esto se pone rojo.
+  check(typeof bar.PRODUCTO.nombre === 'string' && bar.PRODUCTO.nombre.length > 0
+     && !/fosmon|ayuntamiento/i.test(bar.PRODUCTO.nombre),
+    'el nombre del producto no nombra a ninguna organización', bar.PRODUCTO.nombre);
+
+  // La constructora no pierde nada: es su app y su nombre.
+  check(bar.nombreOrg(null, CONS) === 'FOSMON Construcciones',
+    'una constructora sin marca capturada sigue diciendo FOSMON Construcciones',
+    bar.nombreOrg(null, CONS));
+  check(bar.nombreOrg({ empresa: 'Constructora Ajena SA' }, CONS) === 'Constructora Ajena SA',
+    'y si capturó otra marca, manda la capturada: el respaldo es respaldo, no regla');
+
+  // El emblema es de FOSMON, no del producto.
+  check(bar.vaElEmblema(DEP) === false, 'el emblema de FOSMON no va en la sesión del municipio');
+  check(bar.vaElEmblema(CONS) === true, 'y sí va en la de FOSMON, que es suyo');
+
+  // El PDF.
+  check(bar.vaElReporteEjecutivo(DEP) === false,
+    'a una dependencia no se le ofrece el reporte ejecutivo  ·  margen, gasto, almacén y nómina');
+  check(bar.vaElReporteEjecutivo(CONS) === true,
+    'y a una constructora sí: es su reporte');
+
+  // Y el barrido: que no haya quedado otra copia escrita a mano del nombre de
+  // la organización en el JSX. Ésta es la que atrapa la pantalla siguiente:
+  // el defecto original eran DOS sitios con la misma cadena literal y arreglar
+  // uno dejaba el otro.
+  const literalesJSX = [];
+  traverse(ast, {
+    JSXText(p) { if (/FOSMON/i.test(p.node.value)) literalesJSX.push(p.node.value.trim()); },
+    // Sólo el contenedor cuya expresión ES la cadena —`{'FOSMON …'}`—, no
+    // cualquier subárbol que la contenga en algún rincón. Si no, el barrido
+    // señala bloques enteros por un `placeholder` de correo adentro y nadie
+    // vuelve a leerlo.
+    JSXExpressionContainer(p) {
+      const e = p.node.expression;
+      const v = e.type === 'StringLiteral' ? e.value
+              : e.type === 'TemplateLiteral' ? src.slice(e.start, e.end) : null;
+      if (v && /FOSMON/i.test(v)) literalesJSX.push(v.slice(0, 70));
+    },
+  });
+  check(literalesJSX.length === 0,
+    'ninguna pantalla trae el nombre de la organización escrito a mano',
+    literalesJSX.length ? literalesJSX.join(' | ') : 'ninguna');
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5) LA ESPERA DE DATOS: no esperar lo que no se pidió

@@ -4420,6 +4420,70 @@ const MODULOS_POR_TIPO = {
 // agregue uno.
 const esDependencia = usuario => usuario?.tipo === "dependencia";
 
+// ── QUIÉN DICE SER LA APP ──────────────────────────────────────────────────
+// Dos cosas distintas que la barra de arriba enseñaba pegadas y las dos a
+// mano: el nombre del PRODUCTO, que es el mismo para todos, y el nombre de la
+// ORGANIZACIÓN que lo usa, que no.
+//
+// El nombre del producto, en un solo sitio. Estaba escrito literal en el
+// encabezado, en el pie y en la pantalla de acceso; el día del cambio de
+// nombre se iban a cambiar dos de los tres. El descriptor es el del manifest.
+const PRODUCTO = {
+  nombre: "CAMPO",
+  descriptor: "Control de Avance, Maquinaria, Personal y Obra",
+};
+
+/**
+ * El nombre de la organización que usa la app, o `null` si no se sabe.
+ *
+ * Mismo origen y mismo criterio que el saludo de `PantallaObras`
+ * —`orgs/{orgId}/config/branding`, cargado en `marca`—, porque es la misma
+ * afirmación hecha dos veces en la misma pantalla y no puede salir distinta
+ * en cada una.
+ *
+ * `null` significa NO PINTAR LA LÍNEA. El respaldo "FOSMON Construcciones"
+ * vale sólo del lado constructora; en una dependencia sin marca capturada no
+ * hay nada honesto que poner ahí. Y poner lo que había —la barra decía
+ * «CAMPO / FOSMON CONSTRUCCIONES» en la sesión del municipio— es lo primero
+ * que vio el cliente el 2026-10-01: el encabezado le presentaba la app como
+ * si fuera de su contratista.
+ */
+const nombreOrg = (marca, usuario) =>
+  marca?.empresa || (esDependencia(usuario) ? null : "FOSMON Construcciones");
+
+/**
+ * ¿Va el emblema de FOSMON en esta sesión?
+ *
+ * El emblema es de FOSMON, no del producto, y hasta que el producto tenga
+ * marca propia (el paquete está hecho, el manifest no se ha cambiado) pintarlo
+ * en la sesión de una dependencia es poner el logo del contratista en la barra
+ * del municipio.
+ *
+ * No se sustituye por el logo del cliente: ése ya va junto al saludo, y la
+ * barra de arriba es del producto. Sin emblema de producto todavía, se omite.
+ * Un hueco es correcto; el logo de otro, no.
+ */
+const vaElEmblema = usuario => !esDependencia(usuario);
+
+/**
+ * ¿Se le ofrece a esta sesión el botón de «Reporte ejecutivo» (PDF)?
+ *
+ * No a una dependencia. `generarPDFObra` es el reporte de la constructora
+ * completo: portada con el emblema de FOSMON y pie «CAMPO · FOSMON
+ * Construcciones», y adentro RESUMEN FINANCIERO con margen bruto, DESGLOSE DE
+ * GASTO POR RUBRO, ALMACÉN y PERSONAL · NÓMINA · TOP PROVEEDORES.
+ *
+ * Y el problema no es sólo que enseñe lo ajeno: en una dependencia esas rutas
+ * no se piden (P5), así que los arreglos llegan vacíos y el PDF no diría «no
+ * disponible» — imprimiría Gasto $0 y Margen 100%. Un número falso, con el
+ * logo del contratista, firmado y descargado por el municipio.
+ *
+ * El corte es no ofrecer el botón, por lo mismo que no se pide la ruta. El
+ * reporte que la dependencia sí necesita es el semanal del Art. 73, que se
+ * construye aparte y queda anotado como pendiente.
+ */
+const vaElReporteEjecutivo = usuario => !esDependencia(usuario);
+
 // ── ¿Se pide esta ruta de obra, o no se pide? ───────────────────────────────
 // El inventario de las rutas que llevan economía interna del contratista. Son
 // las MISMAS SEIS que `firestore.rules` deja deliberadamente sin declarar del
@@ -4953,12 +5017,22 @@ function Login({onLogin}){
   return <div style={{minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column",
     alignItems:"center",justifyContent:"center",padding:24}}>
     <div style={{width:"100%",maxWidth:380}}>
-      {/* Logo */}
+      {/* Logo.
+          Aquí no se puede nombrar a la organización: antes de autenticar no
+          hay `orgId`, así que no hay de dónde leer `marca` —y ésta es la
+          pantalla donde la app decía «FOSMON CONSTRUCCIONES» a cualquiera que
+          abriera la liga, municipio incluido. La línea se va: el nombre del
+          producto basta, y no saber de quién es la instancia es la verdad
+          mientras nadie se identifica.
+          El emblema se queda, con reservas: hoy es lo único que hace de marca
+          del producto. El arreglo de fondo es que el producto tenga la suya
+          —el paquete de marca ya está hecho, el manifest no se ha cambiado— y
+          hasta entonces la pantalla de acceso lleva el emblema del
+          contratista. Anotado como pendiente. */}
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:32,gap:12}}>
         <EmblemaFOSMON size={48} dark={true}/>
         <div style={{textAlign:"center"}}>
-          <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>CAMPO</div>
-          <div style={{fontSize:9,color:C.textMut,letterSpacing:"0.08em",marginTop:2}}>FOSMON CONSTRUCCIONES</div>
+          <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>{PRODUCTO.nombre}</div>
         </div>
       </div>
       {/* Form */}
@@ -7883,13 +7957,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           })()}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
-          {/* El nombre de la organización sale de `config/branding`. El
-              respaldo "FOSMON Construcciones" sólo vale del lado
-              constructora; en una dependencia sin marca capturada se omite el
-              segmento entero antes que afirmar de quién es la obra. */}
+          {/* El nombre de la organización lo resuelve `nombreOrg`, el mismo
+              que usa la barra de arriba: esta línea y el encabezado dicen lo
+              mismo en la misma pantalla y salían de dos reglas distintas. */}
           {ROL_LABEL[usuario.rol]}
-          {(marca?.empresa || (!dep && 'FOSMON Construcciones')) &&
-            ` · ${marca?.empresa || 'FOSMON Construcciones'}`}
+          {nombreOrg(marca, usuario) && ` · ${nombreOrg(marca, usuario)}`}
           {' · '}{activas.length} obra(s) activa(s)
         </div>
         {/* Chip de estado del Sheet GP. UNA sola píldora con dos variantes:
@@ -19110,10 +19182,19 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
       position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <EmblemaFOSMON size={22} dark={true}/>
+        {/* El producto arriba, la organización abajo, y las dos leídas de un
+            solo sitio: `PRODUCTO` y `nombreOrg`, que es el mismo `marca` del
+            saludo. `textTransform` en vez de escribir el nombre en
+            mayúsculas, para que el estilo de la barra no dependa de cómo
+            capturaron la razón social. */}
+        {vaElEmblema(usuario) && <EmblemaFOSMON size={22} dark={true}/>}
         <div>
-          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>CAMPO</div>
-          <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1}}>FOSMON CONSTRUCCIONES</div>
+          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>{PRODUCTO.nombre}</div>
+          {nombreOrg(marca, usuario) && (
+            <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1,textTransform:"uppercase"}}>
+              {nombreOrg(marca, usuario)}
+            </div>
+          )}
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -19149,7 +19230,8 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {obra&&<button onClick={async ()=>{
+      {/* Por qué una dependencia no ve este botón: ver `vaElReporteEjecutivo`. */}
+      {obra&&vaElReporteEjecutivo(usuario)&&<button onClick={async ()=>{
           // Cargar el detalle GP de esta obra para tener rubros reales en el PDF
           let detalle = null;
           try {
@@ -19335,9 +19417,9 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
-        <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>
+        {vaElEmblema(usuario) && <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>}
         <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
-          CAMPO — Control de Avance, Maquinaria, Personal y Obra
+          {PRODUCTO.nombre} — {PRODUCTO.descriptor}
         </span>
       </div>
       {/* Versión real del build (fix/actualizacion-pwa). Formato:
