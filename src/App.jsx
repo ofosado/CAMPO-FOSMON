@@ -3505,8 +3505,8 @@ const BIBLIOTECA_RIESGOS = [
     descripcion: 'El % de plazo transcurrido supera mucho al % de avance',
     tab: 'operacion', subTab: 'avance',
     detect: ({obra, kpis}) => {
-      if (!obra.inicio || !obra.fin || !kpis) return null;
-      const finVigente = obra.finAmpliado || obra.fin;
+      const finVigente = finVigenteDe(obra);
+      if (!obra.inicio || !finVigente || !kpis) return null;
       const total = (new Date(finVigente) - new Date(obra.inicio))/86400000;
       const trans = Math.max((Date.now() - new Date(obra.inicio))/86400000, 0);
       const pctPlazo = Math.min(trans/total*100, 100);
@@ -10770,9 +10770,11 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const diasSinCaptura = fechaUltima
     ? Math.floor((Date.now() - new Date(fechaUltima).getTime()) / 86400000) : null;
 
-  // Plazo. `finVigente` sale de las ampliaciones si las hay, igual que en
-  // PlazosCliente: el plazo que importa es el vigente, no el del contrato
-  // original.
+  // Plazo. El fin vigente sale de `finVigenteDe`, la misma cuenta que usan la
+  // proyección y la pantalla de plazos. Derivarlo aquí de la lista de
+  // ampliaciones abría una segunda cuenta: quien captura el fin ampliado en la
+  // ficha de la obra sin registrar la ampliación movía la proyección pero no
+  // esta tarjeta, y las dos cifras se contradecían en la misma pantalla.
   const [ampliaciones, setAmpliaciones] = useState([]);
   useEffect(() => {
     let cancel = false;
@@ -10783,8 +10785,8 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   }, [obra.id]);
   const dias = (ini, fin) => (!ini || !fin) ? null
     : Math.round((new Date(fin) - new Date(ini)) / 86400000);
-  const finVigente   = ampliaciones.length > 0
-    ? ampliaciones[ampliaciones.length - 1].fecha : obra?.fin;
+  const finVigente   = finVigenteDe(obra);
+  const ampliado     = !!finVigente && !!obra?.fin && finVigente !== obra.fin;
   const totalDias    = dias(obra?.inicio, finVigente);
   const transcurridos = obra?.inicio
     ? Math.max(dias(obra.inicio, hoyLocalISO()) || 0, 0) : 0;
@@ -10895,10 +10897,14 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
-          <div style={{fontSize:13,fontWeight:600,color:ampliaciones.length>0?C.yellow:C.green}}>{finVigente || "—"}</div>
-          {ampliaciones.length > 0 && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
-            {ampliaciones.length} ampliación{ampliaciones.length===1?'':'es'}
-          </div>}
+          <div style={{fontSize:13,fontWeight:600,color:ampliado?C.yellow:C.green}}>{finVigente || "—"}</div>
+          {/* Contra qué fecha se mide, dicho siempre: si no se declara, un
+              plazo ampliado se lee como si fuera el del contrato firmado. */}
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            {ampliado
+              ? `ampliado${ampliaciones.length>0?` ${ampliaciones.length} ${ampliaciones.length===1?"vez":"veces"}`:""}; el original era ${obra?.fin||"—"}`
+              : "sin ampliaciones: es el plazo original"}
+          </div>
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración</div>

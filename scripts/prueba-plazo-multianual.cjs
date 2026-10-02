@@ -84,13 +84,18 @@ const RAIZ_NOMBRES = [
 // Dentro de qué componente buscar cada declarador anidado. El nombre solo no
 // basta: `transcurridos` existe en dos componentes distintos y el de más
 // arriba calcula otra cosa.
-const ANIDADOS = {
-  frasePlazo: 'MiniDashAvance',
-  finVigente: 'PlazosCliente',
-  ampliado: 'PlazosCliente',
-  transcurridos: 'PlazosCliente',
-  diasPlazo: 'PlazosCliente',
-};
+// Se guarda bajo `Componente.nombre` porque el mismo nombre se calcula en
+// varias pantallas y cada una es una cuenta distinta hasta que se demuestre
+// lo contrario: eso es justo lo que se mide.
+const ANIDADOS = [
+  'MiniDashAvance.frasePlazo',
+  'PlazosCliente.finVigente',
+  'PlazosCliente.ampliado',
+  'PlazosCliente.transcurridos',
+  'PlazosCliente.diasPlazo',
+  'DashboardDependencia.finVigente',
+  'DashboardDependencia.ampliado',
+];
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
 const ast = parse(src, OPTS);
@@ -115,12 +120,13 @@ traverse(ast, {
   },
   VariableDeclarator(p) {
     const n = p.node.id?.name;
-    if (!n || !ANIDADOS[n] || !p.node.init) return;
+    if (!n || !p.node.init) return;
     // Tiene que estar DENTRO del componente que le corresponde.
     const dueño = p.getFunctionParent()?.node?.id?.name
       || p.findParent(q => q.isFunctionDeclaration())?.node?.id?.name;
-    if (dueño !== ANIDADOS[n]) return;
-    if (anidados[n] === undefined) anidados[n] = src.slice(p.node.init.start, p.node.init.end);
+    const clave = `${dueño}.${n}`;
+    if (!ANIDADOS.includes(clave)) return;
+    if (anidados[clave] === undefined) anidados[clave] = src.slice(p.node.init.start, p.node.init.end);
   },
 });
 
@@ -240,14 +246,14 @@ if (hayCuentaUnica) {
 // Esto es lo que se ve en pantalla. La frase se extrae del componente y se
 // ejecuta con cada una de las cuatro situaciones.
 console.log('\n5. Las cuatro situaciones sin proyección se dicen con palabras distintas');
-if (!anidados.frasePlazo || !hayCuentaUnica) {
+if (!anidados["MiniDashAvance.frasePlazo"] || !hayCuentaUnica) {
   fallos.push('la pantalla no dice en palabras por qué no hay proyección: solo pinta un guion');
   console.log('   ✗ la pantalla no dice en palabras por qué no hay proyección: solo pinta un guion');
 } else {
   const frase = (estados, proy, obra) => new Function(
     'estados', 'proy', 'obra', 'NUM', 'fechaEnPalabras', 'fechaLocalDeISO',
     'SIN_PROY_SIN_AVANCE', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_POCOS_CIERRES',
-    `"use strict"; const finContrato = proy.finVigente; return ${anidados.frasePlazo};`
+    `"use strict"; const finContrato = proy.finVigente; return ${anidados["MiniDashAvance.frasePlazo"]};`
   )(estados, proy, obra, NUM, fechaEnPalabras, fechaLocalDeISO,
     SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES, SIN_PROY_POCOS_CIERRES);
 
@@ -303,13 +309,13 @@ if (!anidados.frasePlazo || !hayCuentaUnica) {
 // `contrato/plazos`, y el mini-dashboard de `obra.finAmpliado`. Dos cuentas
 // del mismo dato en la misma pantalla: así nació el defecto de 078585e.
 console.log('\n6. La pantalla de plazos no tiene su propia cuenta del fin vigente');
-if (!anidados.finVigente) {
+if (!anidados["PlazosCliente.finVigente"]) {
   fallos.push('la pantalla de plazos no calcula ningún fin vigente');
   console.log('   ✗ la pantalla de plazos no calcula ningún fin vigente');
 } else {
   const vigenteEnPantalla = (obra, ampliaciones) => new Function(
     'obra', 'ampliaciones', 'finVigenteDe',
-    `"use strict"; return ${anidados.finVigente};`)(obra, ampliaciones, finVigenteDe);
+    `"use strict"; return ${anidados["PlazosCliente.finVigente"]};`)(obra, ampliaciones, finVigenteDe);
   // Los dos datos se contradicen a propósito: la obra dice diciembre, la lista
   // de ampliaciones dice junio. La pantalla tiene que dar la misma respuesta
   // que la proyección, no inventar una tercera.
@@ -333,7 +339,7 @@ if (!anidados.finVigente) {
 // devuelve la fecha de MAÑANA. Este número es el que multiplica la pena
 // convencional por día de atraso.
 console.log('\n7. Los días transcurridos del plazo no se adelantan al anochecer');
-if (!anidados.transcurridos || !anidados.diasPlazo) {
+if (!anidados["PlazosCliente.transcurridos"] || !anidados["PlazosCliente.diasPlazo"]) {
   fallos.push('la pantalla de plazos no calcula días transcurridos');
   console.log('   ✗ la pantalla de plazos no calcula días transcurridos');
 } else {
@@ -349,8 +355,8 @@ if (!anidados.transcurridos || !anidados.diasPlazo) {
   // número y no en un nombre que falta.
   const dias = new Function('obra', 'Date', 'hoy', 'hoyLocalISO',
     `"use strict";
-     const diasPlazo = ${anidados.diasPlazo};
-     return ${anidados.transcurridos};`
+     const diasPlazo = ${anidados["PlazosCliente.diasPlazo"]};
+     return ${anidados["PlazosCliente.transcurridos"]};`
   )({ inicio: '2026-09-01' }, RelojFijo, new RelojFijo(), () => {
     const d = new RelojFijo();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -361,6 +367,53 @@ if (!anidados.transcurridos || !anidados.diasPlazo) {
   // Y la función que da la fecha de hoy sigue siendo la local.
   check(typeof hoyLocalISO === 'function' && /^\d{4}-\d{2}-\d{2}$/.test(hoyLocalISO()),
     'la fecha de hoy se arma por partes y tiene forma de fecha');
+}
+
+// ── 8. El tablero de la dependencia tampoco tiene cuenta propia ─────────
+// Es la pantalla de la demo, y era la TERCERA cuenta del mismo dato: tomaba la
+// última ampliación de `contrato/plazos` como autoridad. Quien captura el fin
+// ampliado en la ficha de la obra sin registrar la ampliación movía la
+// proyección y no esta tarjeta, y las dos cifras se contradecían.
+//
+// Y además callaba: sin ampliaciones no escribía nada bajo la fecha, así que
+// un plazo ampliado se leía como si fuera el que se firmó.
+console.log('\n8. El tablero de la dependencia mide contra el mismo fin vigente, y lo dice');
+if (!anidados["DashboardDependencia.finVigente"]) {
+  fallos.push('el tablero de la dependencia no calcula ningún fin vigente');
+  console.log('   ✗ el tablero de la dependencia no calcula ningún fin vigente');
+} else {
+  const enTablero = (obra, ampliaciones) => new Function(
+    'obra', 'ampliaciones', 'finVigenteDe',
+    `"use strict"; return ${anidados["DashboardDependencia.finVigente"]};`)(obra, ampliaciones, finVigenteDe);
+  const obraDisc = { fin: '2026-04-14', finAmpliado: '2026-12-01' };
+  const dio = enTablero(obraDisc, [{ fecha: '2026-06-01' }]);
+  check(dio === '2026-12-01',
+    `el tablero da el 1 de diciembre, el fin vigente de la obra (dio ${dio})`);
+  check(typeof finVigenteDe === 'function' && dio === finVigenteDe(obraDisc),
+    `el tablero y la proyección dan la misma fecha (tablero ${dio}, proyección ${typeof finVigenteDe === 'function' ? finVigenteDe(obraDisc) : 'no existe'})`);
+
+  // La leyenda que va debajo de la fecha. Se mide la frase, no la variable:
+  // lo que importa es lo que alcanza a leer quien abre la pantalla.
+  if (!anidados["DashboardDependencia.ampliado"]) {
+    fallos.push('el tablero no distingue un plazo ampliado de uno original');
+    console.log('   ✗ el tablero no distingue un plazo ampliado de uno original');
+  } else {
+    const leyenda = (obra, ampliaciones) => {
+      const amp = new Function('obra', 'finVigente', 'finVigenteDe',
+        `"use strict"; return ${anidados["DashboardDependencia.ampliado"]};`
+      )(obra, finVigenteDe(obra), finVigenteDe);
+      return amp
+        ? `ampliado${ampliaciones.length > 0 ? ` ${ampliaciones.length} ${ampliaciones.length === 1 ? 'vez' : 'veces'}` : ''}; el original era ${obra?.fin || '—'}`
+        : 'sin ampliaciones: es el plazo original';
+    };
+    const sinAmp = leyenda({ inicio: '2026-06-15', fin: '2026-10-30' }, []);
+    check(/sin ampliaciones/.test(sinAmp) && /plazo original/.test(sinAmp),
+      `una obra sin ampliar declara que la fecha es la original (dijo: "${sinAmp}")`);
+    const conAmp = leyenda(obraDisc, [{ fecha: '2026-06-01' }]);
+    check(/ampliado/.test(conAmp) && /2026-04-14/.test(conAmp),
+      `una obra ampliada lo declara Y dice cuál era el original (dijo: "${conAmp}")`);
+    check(sinAmp !== conAmp, 'las dos situaciones no se dicen con la misma frase');
+  }
 }
 
 // ── Resultado ──────────────────────────────────────────────────────────
