@@ -4147,6 +4147,24 @@ que ya hay dos años de datos.
 **Lo que NO hay que hacer:** inventar el padrón a partir de lo capturado.
 Sería dar por buena la normalización que precisamente falta.
 
+### Ya hay una pantalla que lo sufre: la tabla de obras (2026-10-02)
+
+La tabla ordenable del tablero de dependencia tiene columna **Contratista**, y
+se puede ordenar por ella. Eso convierte el texto libre de un problema futuro
+en uno **visible hoy**: ordenar agrupa por cadena, así que
+«Constructora del Golfo, S.A. de C.V.» y «Constructora del Golfo SA de CV»
+quedan separadas por todo el alfabeto, y el director que ordena por
+contratista para ver cuánto le tiene adjudicado a una empresa ve dos bloques
+y suma uno solo.
+
+La tabla **no espera** al padrón —el dato existe y es el que hay—, pero este
+pendiente deja de ser higiene de datos y pasa a ser una pantalla que puede dar
+una respuesta incompleta sin avisar. Cuando entre el padrón, el orden de esa
+columna pasa a ser por identidad, no por cadena.
+
+Mientras tanto, la celda dice **«sin capturar»** cuando la obra no tiene
+empresa, para no confundir «no hay dato» con «no hay contratista».
+
 **Dónde está anotado en el código:** el comentario de `CAMPOS_CONTRATO`
 (`src/App.jsx`) nombra este pendiente por número. Si se renumera, se renumera
 en los dos lados.
@@ -4406,9 +4424,47 @@ de nómina va escrito, no deducido»); se anota aquí para que el barrido quede
 completo. En una obra multianual, un Excel de diciembre subido en enero se
 archiva en el año equivocado.
 
+### (a) y (b) se arreglan JUNTOS, nunca uno solo
+
+**Decisión del usuario el 2026-10-02, y la razón por la que se escribe aquí en
+lugar de dejarlo al criterio de quien lo toque.**
+
+Hoy (b) no detona porque (a) ya dejó un solo año en `colMap`: no hay dos años
+que mezclar, así que ordenar por número de semana da el orden correcto por
+accidente. **Esa protección desaparece en el momento exacto en que se arregla
+(a).** Conservar las columnas de todos los años sin tocar el orden deja
+`ultimaSemana` eligiendo el número más alto, así que en enero la «última
+semana» pasa a ser la S52 del año anterior y la curva de gasto se lee al
+revés justo cuando se cierra el ejercicio.
+
+Arreglar (a) sin (b) es **peor que no arreglar ninguno**: hoy el defecto es
+que faltan datos —visible, la curva no tiene puntos—, y después sería que los
+datos están pero ordenados al revés —invisible—. Quien toque el parser toca
+también `semanasDisponibles` y `ultimaSemana`, en el cliente y en la función,
+en el mismo movimiento o no lo toca.
+
 ### Lo que no se pudo auditar
 
 **El informe semanal.** Vive en `feature/resumen-semanal`, que no está mezclada.
 Hay que repetir este barrido sobre esa rama antes de mezclarla: si el informe
 agrupa o compara por número de semana, una obra multianual le va a salir al
 revés, y el informe es lo que se manda por correo.
+
+**Es REQUISITO DE MEZCLA de esa rama, no una sugerencia** (decisión del
+usuario, 2026-10-02). La diferencia con una pantalla: una pantalla mal
+ordenada se corrige y se vuelve a mirar; **el informe sale por correo y
+queda**. Un documento con el periodo equivocado ya se mandó, y si alguien lo
+imprime o lo adjunta a una estimación, el año perdido viaja con él y lleva
+fecha de envío.
+
+Qué revisar en esa rama antes de mezclarla, al menos:
+
+- Cómo arma el periodo que encabeza el correo, y si lo escribe con año.
+- Si agrupa cierres por semana usando la clave con año o el número solo.
+- Si compara «esta semana contra la anterior» restando números de semana: en
+  la primera semana de enero eso resta contra una semana del mismo año que no
+  existe, y en un año ISO de 53 se salta una.
+- Si el asunto del correo lleva el año. «Resumen semana 1» no dice de cuál.
+
+El barrido se repite **sobre esa rama**, no sobre main: el código del informe
+no existe aquí, y que main esté limpio no dice nada sobre él.
