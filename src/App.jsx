@@ -2709,6 +2709,80 @@ const cruzaAños = (estados = []) => new Set(estados.map(e => e.año)).size > 1;
 const etiquetaSemanaRiel = (estado, conAño) =>
   `S${String(estado.semana).padStart(2, '0')}${conAño ? ` · ${estado.año}` : ''}`;
 
+// ════════════════════════════════════════════════════════════════════════════
+// EL ARRANQUE QUE LE FALTA AL EXPEDIENTE
+// ════════════════════════════════════════════════════════════════════════════
+// `crearSnapshotAvance` recorta el historial a las últimas 52 semanas porque el
+// documento de Firestore tiene un límite de 1 MiB y la 0114 ya lo reventó una
+// vez. El recorte quita por el PRINCIPIO.
+//
+// Mientras las obras duraban un año o menos, eso quitaba algo que no había
+// pasado. Con obras MULTIANUALES quita la cimentación, el trazo y las
+// preliminares: justo lo que una controversia mira primero. Y lo hacía
+// callando: alguien abre la línea de tiempo, ve que empieza en la semana 30 del
+// segundo año, y concluye que la obra empezó ahí.
+//
+// Un expediente al que le falta el principio y no lo declara miente por
+// omisión. Esto es lo que lo declara.
+//
+// LO QUE SE AFIRMA Y LO QUE NO. El hueco se mide contra la fecha de INICIO de
+// la obra, que es un dato capturado, no contra una suposición sobre el recorte:
+// «el expediente empieza en la S12 de 2027 y la obra arrancó el 1 de noviembre
+// de 2025» es cierto sin importar por qué faltan. La CAUSA sí se distingue, y
+// sólo se nombra el recorte cuando quedó registrado que ocurrió (`recorte`, que
+// escribe la propia función al recortar). Si no hay registro, la pantalla dice
+// que no hay cierres de ese periodo, que es lo único que consta: pudo ser que
+// nadie capturara. Nunca se deduce el recorte de que haya 52 semanas justas —
+// una obra puede tener 52 cierres sin haber perdido ninguno.
+const HUECO_POR_RECORTE = 'recorte';
+const HUECO_SIN_CIERRES = 'sinCierres';
+
+const huecoDeArranque = (estados = [], obra, recorte = null) => {
+  if (!estados.length || !obra?.inicio) return null;
+  const inicio = fechaLocalDeISO(obra.inicio);
+  if (!inicio) return null;
+
+  const { semana, año } = semanaISO(inicio);
+  const claveInicio = snapshotId(semana, año);
+  const primera = estados[0].clave;
+
+  const lunIni = lunesDeClaveSemana(claveInicio);
+  const lunPri = lunesDeClaveSemana(primera);
+  if (!lunIni || !lunPri) return null;
+
+  // Semanas de calendario entre el arranque de la obra y el primer cierre que
+  // conserva el expediente. Por el calendario, no restando números de semana:
+  // un año ISO tiene 52 o 53.
+  const faltan = Math.round((lunPri - lunIni) / (7 * 86400000));
+  if (faltan <= 0) return null;
+
+  const perdidasRegistradas = Number(recorte?.perdidas) || 0;
+  return {
+    faltan,
+    claveInicio,
+    primera,
+    inicioObra: obra.inicio,
+    // La causa sólo se nombra cuando consta.
+    causa: perdidasRegistradas > 0 ? HUECO_POR_RECORTE : HUECO_SIN_CIERRES,
+    perdidasRegistradas,
+    recortadoEn: recorte?.en || null,
+  };
+};
+
+// La frase que se enseña. Se escribe aquí, junto a la cuenta, para que las dos
+// pantallas que la muestran digan lo mismo.
+const fraseHuecoDeArranque = (hueco) => {
+  if (!hueco) return null;
+  const sem = `${hueco.faltan} semana${hueco.faltan === 1 ? '' : 's'}`;
+  const desde = fechaEnPalabras(fechaLocalDeISO(hueco.inicioObra));
+  const base = `A este expediente le faltan las primeras ${sem}: empieza en `
+    + `${hueco.primera.replace('-', ' de ')} y la obra arrancó el ${desde}.`;
+  return hueco.causa === HUECO_POR_RECORTE
+    ? `${base} Los cierres más antiguos se borraron al llegar el historial al `
+      + `tope de 52 semanas, así que ese periodo ya no se puede consultar aquí.`
+    : `${base} No hay cierres registrados de ese periodo.`;
+};
+
 // Por qué no hay proyección de término. Cada una se dice con palabras
 // distintas porque son situaciones distintas, y la peor de las tres —la obra
 // detenida o en retroceso— es justo la que el guion escondía.
@@ -3222,6 +3296,29 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // Mantener máximo 52 semanas (1 año)
     semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
     const recortadas = semanas.slice(-52);
+
+    // El recorte quita por el PRINCIPIO, y antes lo hacía sin dejar rastro:
+    // una vez borradas las semanas viejas no queda nada que diga que existieron,
+    // así que la pantalla no podía distinguir «a esta obra le recortamos el
+    // arranque» de «a esta obra nadie le capturó el arranque». Son cosas
+    // distintas y el expediente tiene que poder decir cuál.
+    //
+    // Se acumula, porque se recorta de una en una: cada cierre nuevo por encima
+    // del tope tira el más viejo. `perdidas` es el total desde que esto se
+    // registra; las obras recortadas ANTES de esta línea no tienen el dato y la
+    // pantalla no se lo inventa.
+    const cuantasSeFueron = semanas.length - recortadas.length;
+    const recortePrevio = hist.recorte || null;
+    const recorte = cuantasSeFueron > 0
+      ? {
+          perdidas: (Number(recortePrevio?.perdidas) || 0) + cuantasSeFueron,
+          // La última que se tiró y la primera que sobrevive: entre las dos
+          // queda dicha la frontera del expediente.
+          ultimaPerdida: semanas[cuantasSeFueron - 1]?.id || null,
+          primeraConservada: recortadas[0]?.id || null,
+          en: new Date().toISOString(),
+        }
+      : recortePrevio;
     // NO se usa `fsSet`: devuelve `false` en silencio y este `await` ignoraba
     // el resultado, así que la función seguía y devolvía `snap` — el llamador
     // creía que había guardado. La 0114 acumuló SIETE cierres semanales
@@ -3234,7 +3331,8 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // pueda enseñárselo a quien acaba de cerrar la semana.
     try {
       await setDoc(docObra(obraId, 'avance', 'historial'),
-        { semanas: recortadas }, { merge: true });
+        recorte ? { semanas: recortadas, recorte } : { semanas: recortadas },
+        { merge: true });
     } catch (err) {
       throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
     }
@@ -10738,7 +10836,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // cada organización ya están aisladas por las reglas— sino porque esas cifras
 // no existen del lado de quien contrata.
 // ════════════════════════════════════════════════════════════════════════════
-function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], onNavTab}){
+function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], recorteHistorial = null, onNavTab}){
   const contrato = parseFloat(obra?.presupuesto) || 0;
   const modoVol  = obra?.modoAvance === "volumen";
 
@@ -10793,6 +10891,11 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo     = (totalDias && totalDias > 0)
     ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+
+  // El arranque que le falta al expediente, con la misma cuenta que la
+  // pantalla de avance. Aquí importa más que allá: ésta es la pantalla desde
+  // la que se revisa un expediente, y es donde se decidiría darlo por completo.
+  const hueco = huecoDeArranque(estadoPorSemana(historialAvance), obra, recorteHistorial);
 
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
@@ -10886,6 +10989,20 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
         </div>
       </div>
     </Card>
+
+    {/* ── El arranque que le falta al expediente ──
+        Arriba de todo lo demás a propósito: es cómo hay que leer lo que sigue.
+        Si falta el principio, la última captura, el avance y el plazo siguen
+        siendo ciertos, pero el EXPEDIENTE no está completo, y esta pantalla es
+        desde la que alguien lo daría por bueno. */}
+    {hueco && <Card accent={C.yellow}>
+      <div style={{fontSize:11,fontWeight:700,color:C.textPri,marginBottom:4}}>
+        Al expediente le falta su arranque
+      </div>
+      <div style={{fontSize:10,lineHeight:1.5,color:C.textSec}}>
+        {fraseHuecoDeArranque(hueco)}
+      </div>
+    </Card>}
 
     {/* ── Plazo ── */}
     <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
@@ -11091,7 +11208,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
 // Detectores: partidas más calientes, estancadas (≥2 sem sin movimiento),
 // retroceso, a ritmo crítico.
 // Gráfica: línea acumulada vs ideal lineal.
-function MiniDashAvance({obra, subs, historialAvance=[]}){
+function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null}){
   // Avance actual ponderado — FÍSICO sobre CONTRATO, compensado.
   const modoVol = (obra?.modoAvance === "volumen");
   const contratoObra = parseFloat(obra?.presupuesto) || 0;
@@ -11106,6 +11223,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   const ultimoEstado = estados[estados.length-1] || null;
   const penultimoEstado = estados[estados.length-2] || null;
   const oficiales = estados.map(e => e.cierre);
+  // Si al expediente le falta el principio, se dice. Ver `huecoDeArranque`.
+  const hueco = huecoDeArranque(estados, obra, recorteHistorial);
 
   const ultimoOf = ultimoEstado?.cierre || null;
   const penultimoOf = penultimoEstado?.cierre || null;
@@ -11290,6 +11409,18 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       background:C.bg, borderRadius:8, padding:"8px 11px"}}>
       {frasePlazo}
     </div>
+
+    {/* EL ARRANQUE QUE FALTA. Va pegado a la serie porque es la advertencia de
+        cómo leerla: todo lo que está debajo —la curva, la velocidad, la
+        proyección— se calcula sobre las semanas que quedaron, y si falta el
+        principio eso no es "el avance de la obra", es "el avance desde que
+        empieza el expediente". Un expediente incompleto que no lo declara se
+        presenta como completo. */}
+    {hueco && <div style={{fontSize:10,lineHeight:1.5,color:C.textPri,
+      background:C.yellowBg, border:`0.5px solid ${C.yellow}`,
+      borderRadius:8, padding:"8px 11px"}}>
+      <b>Al expediente le falta su arranque. </b>{fraseHuecoDeArranque(hueco)}
+    </div>}
 
     {/* Se quitó el párrafo de frontera de definición. El comportamiento no
         cambia: quien impide que los deltas crucen la frontera es
@@ -11698,7 +11829,7 @@ function MiniDashSubcontratos({obra, subcontratos}){
 function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
-                   historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,
+                   historialAvance,setHistorialAvance,recorteHistorial=null,setCambiosPendientes,onNavTab,
                    nominaHistorial=[], setNominaHistorial,
                    subTabs=SUBTABS_OPERACION}){
   // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
@@ -11728,7 +11859,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
       <>
-        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
+        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance} recorteHistorial={recorteHistorial}/>
         {/* Órdenes de Trabajo — ver `vanLasOT`: la bandera de la obra Y que la
             sesión sea de una constructora. La OT es documento interno suyo. */}
         {vanLasOT(usuario, obra) && (
@@ -19542,6 +19673,7 @@ export default function App(){
     setEstCargadas(false);
     setSubcontratos([]);
     setHistorialAvance([]);
+    setRecorteHistorial(null);
     setHistorialCargado(false);
     setOtrosGastos([]);
     setFechasModulos({});
@@ -19673,6 +19805,11 @@ export default function App(){
   // fetch condicional al rol en el useEffect(obraId) de abajo.
   const[nominaHistorial,setNominaHistorial]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
+  // Lo que el historial PERDIÓ al llegar al tope de 52 semanas. Va aparte de
+  // `semanas` porque es un hermano suyo en el documento, y sin él la pantalla
+  // no puede distinguir un expediente al que le recortaron el arranque de uno
+  // al que nadie se lo capturó.
+  const[recorteHistorial,setRecorteHistorial]=useState(null);
   const[historialCargado,setHistorialCargado]=useState(false);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
   // Fechas de última actualización por módulo, para detectar pendientes de captura
@@ -19688,6 +19825,7 @@ export default function App(){
     if (necesario) {
       fsGet(`obras/${obraId}/avance/historial`).then(d=>{
         if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
+        setRecorteHistorial(d?.recorte || null);
         setHistorialCargado(true);
       });
     }
@@ -20187,7 +20325,7 @@ export default function App(){
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
-        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} onNavTab={navTab}/>
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} onNavTab={navTab}/>
         : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
@@ -20201,6 +20339,7 @@ export default function App(){
           estimaciones={estimaciones} setEstimaciones={setEstimaciones}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          recorteHistorial={recorteHistorial}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
@@ -20222,6 +20361,7 @@ export default function App(){
           estimaciones={estimaciones} setEstimaciones={setEstimaciones}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          recorteHistorial={recorteHistorial}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
