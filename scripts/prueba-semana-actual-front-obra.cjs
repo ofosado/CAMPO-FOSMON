@@ -34,6 +34,9 @@ const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
 
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const archivo = process.argv.find(a => a.endsWith('.jsx')) || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });

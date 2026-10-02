@@ -205,6 +205,77 @@ sirve.
 
 ---
 
+## P5. Una dependencia ve su contrato y su avance, nunca la economía interna del contratista
+
+**Adoptado**: 2026-09-24, rama `feature/ui-dependencia`.
+
+CAMPO sirve a dos tipos de organización y no son el mismo producto con
+distinto logo. Una **constructora** ejecuta obra y su pregunta es si
+gana dinero: cuánto gastó contra cuánto ejecutó. Una **dependencia de
+gobierno** contrata obra y su pregunta es otra: en qué va su dinero y
+en qué va la obra.
+
+Lo que una dependencia mira es su propio contrato:
+
+- cuánto contrató,
+- cuánto se ha ejecutado (avance físico),
+- cuánto se ha estimado,
+- cuánto ha pagado,
+- cuánto falta por ejercer.
+
+Nómina, almacén, maquinaria, gasto y margen **no existen** para una
+organización de tipo `dependencia`. No en la lista de obras, no en el
+dashboard de obra, no en las alertas, no en el informe.
+
+**Por qué.** Dos razones, y conviene no confundirlas porque se arreglan
+distinto:
+
+1. **Es la frontera que ya sostienen las reglas.** Desde
+   `feature/prefijo-organizacion` las obras de cada organización
+   cuelgan de su propio prefijo y Firestore niega el cruce. Hasta hoy
+   la interfaz no decía lo mismo: `TABS_POR_ROL` no conocía los roles
+   de dependencia y `director_obras` caía al respaldo de constructora,
+   con Gastos incluido. Una interfaz que ofrece lo que las reglas
+   niegan produce pantallas vacías en el mejor caso y, en el peor,
+   cifras a medias.
+2. **La cifra sería falsa, no confidencial.** El margen se calcula
+   contra el gasto, y el gasto de CAMPO viene del Sheet de GP, que es
+   de FOSMON. Para una dependencia ese gasto es cero, así que
+   "ejecutado − 0" daría 100% de margen en todas sus obras y la tabla
+   del portafolio las ordenaría por una columna sin significado. Eso
+   es el P2: una cifra que no se pudo calcular no se sustituye por
+   cero. La diferencia con el P2 es que aquí la respuesta correcta no
+   es escribir "no disponible" — es **no preguntar la ruta**, porque
+   la cifra no le corresponde a esa organización aunque se pudiera
+   calcular.
+
+**Cómo se aplica:**
+
+1. **El discriminante es `tipo`, no el rol ni la presencia de
+   `orgId`.** Viene de los claims del token, que son el mismo dato que
+   evalúan las reglas. Decidir la interfaz con un dato distinto del
+   que juzgan las reglas es como nacieron el #31 y el #35.
+2. **No se esconde: no se pide.** Una suscripción a una ruta que la
+   organización no debe ver falla, `alFallar` deja `[]`, y los KPIs
+   suman ese `[]` como cero — un número falso sin aviso. Los oyentes
+   del margen y la carga del Sheet de GP quedan fuera cuando el tipo
+   es dependencia.
+3. **Componentes aparte, no condicionales sembrados.** El dashboard y
+   el portafolio de dependencia son componentes propios que nunca
+   calculan gasto ni margen, en vez de los de constructora con
+   banderas. Un condicional que se olvida filtra; una cifra que no se
+   calcula no puede filtrarse. Es el mismo criterio con el que se
+   separaron las vistas de rol `cliente`.
+4. **La puerta de atrás también se cierra.** Esconder la pestaña no
+   basta si `PERMISOS[rol].gastos` sigue diciendo "editar", si
+   `ROLES_PANEL_EJECUTIVO` incluye al rol, o si la biblioteca de
+   riesgos emite `margen_bajo`. El margen vuelve por la alerta.
+
+Si la interfaz ofrece lo que las reglas niegan, alguien va a creerle a
+la interfaz.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
@@ -2334,6 +2405,79 @@ original y `fsSetA` lo sigue envolviendo devolviendo `false`. Ningún
 llamador existente cambia de conducta; el que necesita explicar el fallo
 ahora tiene con qué.
 
+### El recorte a 52 semanas sube de prioridad: con obras multianuales deja de ser un caso extremo (2026-10-01)
+
+**Lo que cambió no es el código, es el supuesto.** El tope de
+`semanas.slice(-52)` se escribió pensando en obras de un año o menos, donde
+perder la semana 53 es perder algo que no ha pasado. Con obras **multianuales**
+—un contrato de noviembre a marzo, o de dos años— el tope ya no recorta el
+futuro: **recorta el arranque**. Un contrato de dos años pierde su primer año
+completo, que es justo donde está la cimentación, el trazo y las
+preliminares: lo que una controversia mira primero.
+
+Y lo hace **callando**. Ahí está la parte que no se puede dejar así: un
+expediente al que le falta el principio y no lo declara miente por omisión.
+Alguien abre la línea de tiempo, ve que empieza en la semana 30 del segundo
+año, y concluye que la obra empezó ahí.
+
+**Requisito, independiente de cuándo se migre:** la línea de tiempo tiene que
+**decir en pantalla** que la obra perdió su arranque, con cuántas semanas
+faltan y desde cuándo. No es una nota al pie: es la diferencia entre un
+expediente incompleto y un expediente que se presenta como completo.
+
+#### ¿Hay que adelantar la subcolección antes de la demo? Medido el 2026-10-01
+
+Con `scripts/medir-cierres-demo.cjs`, contra el emulador sembrado:
+
+| obra demo | cierres | documento | % de 1 MiB | último cierre | caben más |
+|---|---:|---:|---:|---:|---:|
+| 0114 | 4 | 5.1 KB | 0.5% | 1,278 B | 816 |
+| 0121 | 3 | 3.2 KB | 0.3% | 1,068 B | 978 |
+
+**Para la demo aguanta de sobra, y por un margen que no es discutible.** Los
+cierres de la demo pesan ~1.2 KB porque el catálogo sembrado tiene pocas
+partidas; el peso de un cierre lo manda el número de partidas, no el número de
+semanas. A ese ritmo caben más de 800 cierres antes del límite, y lo que topa
+primero es el recorte a 52 — no el megabyte.
+
+**Conclusión: no conviene adelantar la migración antes de la demo.** La
+migración tiene la parte delicada de la convivencia de dos formatos (arriba),
+y meterla en la semana de la demo cambia un riesgo medido y nulo por un riesgo
+real. Lo que **sí** conviene adelantar es la declaración en pantalla del
+arranque perdido, que es barata y es la que evita la mentira.
+
+Para que quede dicho: en **producción** la cuenta es la contraria. La 0114 va
+al 93.8% con cierres de 140 KB, y ahí el peso topa mucho antes que las 52
+semanas. La demo no se parece a producción en esto, y la medición de la demo
+no autoriza nada sobre producción.
+
+#### Cuánto crece el cierre con el corte de estimaciones (2026-10-01)
+
+Los cuatro números del corte —`estEstimadoAcum`, `estAprobadoAcum`,
+`estPagadoAcum`, `estPorCobrarAcum`— pesan **95 B por cierre** medidos con
+`tamañoFirestore`, la misma regla que cobra Firestore (el nombre del campo
+cuenta tanto como el valor: 4 números son 32 B, los nombres son los otros 63).
+
+Qué tanto acerca el límite:
+
+| documento | último cierre | con el corte | crecimiento |
+|---|---:|---:|---:|
+| `0114/avance/historial` (prod) | 140,392 B | 140,487 B | **+0.07%** |
+| `0125/avance/historial` (prod) | 36,502 B | 36,597 B | **+0.26%** |
+| cierre de la demo | 1,278 B | 1,373 B | +7.4% |
+
+Sobre 52 semanas el corte suma 4,940 B: **0.47% de 1 MiB**. En la 0114, la
+obra que ya reventó, adelanta el desbordamiento en **menos de un cierre**.
+
+**No acerca el límite de forma significativa. Se puede escribir.** Lo que
+mueve la aguja en ese documento son las partidas de cada cierre, no cuatro
+números; el arreglo que bajó la 0114 de 140 KB a 29 KB fue dejar de copiar la
+descripción de la partida, y ése es el orden de magnitud que importa.
+
+Y el fallo sigue siendo ruidoso: `crearSnapshotAvance` escribe con `setDoc`
+directo para que el error llegue vivo al llamador, y
+`scripts/prueba-cierre-no-falla-callado.cjs` está en verde.
+
 ### El año de las semanas de nómina va escrito, no deducido (2026-09-22)
 
 Un registro de nómina **no guarda el año**: trae `semana` como texto y
@@ -3184,6 +3328,92 @@ línea y hoy deja la galería del cliente en blanco.
 
 ---
 
+### Medido otra vez el 2026-10-01: la mitad barata ya se puede, y la cara apuntaba al traslape equivocado
+
+Al revisar la vista de dependencia salió la pregunta de si conviene adelantar
+parte de esto para la demo. Se volvió a medir producción —solo lectura, el
+guion es `scripts/medir-semanas-evidencia.cjs`— y hay dos hallazgos que cambian
+el plan de arriba sin invalidarlo.
+
+**1. Agrupar por semana NO necesita migración. Se puede hoy, al leer.**
+
+| | |
+|---|---:|
+| fotos de avance referenciadas en el catálogo | **541** |
+| con `fecha` usable, o sea con semana deducible | **541 (100%)** |
+| cadena suelta, sin ningún campo de fecha | 0 |
+| objeto sin `fecha`, o con `fecha` ilegible | 0 |
+
+Eran 475 el 2026-09-22; siguen entrando. El esquema mixto que `FotosCliente`
+contempla —la foto como cadena suelta— **no aparece ni una vez en producción**.
+O sea que el convenio `Y2026-S38` se puede calcular al pintar, y la pantalla de
+"ver una semana" **no depende de la subcolección, ni de soltar la URL, ni de la
+migración de nómina**. Esa parte del #30 es peso; esta es consulta. Son
+separables y el orden natural es el inverso al que dice el punto 4.
+
+Semanas con evidencia, las cinco obras juntas: **S30 a S40, ocho semanas
+distintas.** La 0114 tiene las ocho; la 0126 dos; la 0127 una; la 0125 ninguna.
+
+**2. Pero «comparar dos semanas alineando las partidas en común» se apoya en un
+traslape que los datos no tienen.** Partidas en común entre cada par de semanas
+en la 0114 (la diagonal es cuántas partidas tuvieron foto esa semana):
+
+```
+        S30  S32  S33  S36  S37  S38  S39  S40
+S30       2    2    0    0    0    1    0    0
+S32       2   23    9    3    0    4    0    3
+S33       0    9   30   12    2   10    4    2
+S36       0    3   12   27    7   14    7    4
+S37       0    0    2    7   19    8    5    3
+S38       1    4   10   14    8   25   10    5
+S39       0    0    4    7    5   10   17    4
+S40       0    3    2    4    3    5    4   16
+```
+
+Entre semanas **vecinas** hay material: S36↔S38 traslapan 14 partidas, S33↔S36
+doce, S38↔S39 diez. Entre semanas **lejanas** se desploma: el ejemplo que se usó
+para pedir esto —«la obra de hace tres semanas contra hoy», o sea S37 contra
+S40— traslapa **3 partidas de 19 y 16**. Dos columnas alineadas por partida
+darían tres renglones alineados y veintinueve huecos.
+
+Y no es un defecto de captura: es lo que hace un residente. Fotografía lo que
+avanzó esa semana, y cada semana avanza otra cosa. De las 83 partidas de la 0114
+que alguna vez tuvieron foto, **40 (48%) tienen foto en una sola semana**:
+
+| foto en … | partidas |
+|---|---:|
+| 1 semana | **40** |
+| 2 semanas | 19 |
+| 3 semanas | 16 |
+| 4 semanas | 7 |
+| 5 semanas | 1 |
+
+**La unidad de comparación no es «dos semanas», es «una partida a lo largo de
+sus semanas».** Hay **43 partidas** con foto en dos semanas o más —contra las 3
+del par S37/S40—, y ahí sí está la pregunta que se le hace al producto: *cómo
+cambió ESTO*. El eje correcto es el concepto, y la semana es la columna.
+
+Eso **no tira** el punto 3 de arriba: "ver una semana" sigue siendo la pantalla
+de entrada. Lo que se reemplaza es el "comparar dos semanas, dos columnas" por
+**la tira de una partida**: elegida una partida, sus fotos en fila ordenadas por
+semana, con los huecos dichos como huecos. Comparar dos semanas enteras se
+queda, pero como lo que es —qué se documentó cada semana—, no como el momento
+de la demo.
+
+**3. Lo que la pantalla NO puede decir.** `fecha` es la de **subida**, y eso ya
+estaba comprobado contra el `timeCreated` de Storage. Así que se dice "subidas
+en la semana del 22 de septiembre" y nunca "así se veía la obra en la S38"
+(P2). El caso 0112 lo obliga: sus 255 fotos caen todas en S30 porque fueron un
+volcado histórico de un día. Una pantalla que las presente como "el trabajo de
+la semana 30" miente, y encima es la obra donde más falta hace ver el cambio.
+
+**4. Para la demo, la evidencia no existe en los datos sembrados.**
+`scripts/sembrar-preview-emulador.cjs` no escribe ni una foto. Las tres OBRA
+DEMO entran a Evidencia y leen "Aún no se han cargado fotos de esta obra". O
+sea que hoy la pestaña no es redundante en la demo: está **vacía**.
+
+---
+
 ---
 
 ## 31. El histórico semanal de subcontratos nunca existió — retirado 2026-09-22
@@ -3539,6 +3769,13 @@ cierran, gobiernan.
 | 33 | `PanelEjecutivo` sigue en el archivo sin renderizarse | | baja de producto, **media de riesgo** — ya se editó por error una vez; si nadie lo reactiva, se borra |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo | | **arreglado 2026-09-23** — partía caracteres UTF-8 en la frontera de los paquetes; hacía que la migración fallara y pasara con los mismos datos, y podía dejar nombres mutilados que cuadraban contra sí mismos. Arreglado en los 8 guiones + paso 4c que coteja contra el origen releído |
 
+**Esta tabla llega al #34 y el documento llega al #47.** Del 35 al 47 los
+pendientes viven sólo en su sección, más abajo. Se deja dicho en voz alta
+porque una tabla de resumen que se quedó corta se lee como la lista completa, y
+entonces lo que falta en ella parece que no existe — que es la forma más
+barata de perder un pendiente. Quien agregue el #48 puede cerrar el hueco de
+paso; mientras no esté cerrado, la tabla **no** es el índice.
+
 ---
 
 # CERRADOS
@@ -3752,3 +3989,426 @@ quien tenga la app instalada y con un canario en un teléfono iOS real antes de
 soltarlo. El `id` del manifiesto es el que decide si iOS lo trata como la misma
 app o como otra; hay que fijarlo explícitamente en ese cambio y no dejarlo al
 valor por omisión.
+
+**Al día 2026-10-01, con el renombre a cotea ya hecho.** Lo que cambió fueron
+las cadenas visibles —`<title>`, la descripción, `PRODUCTO.nombre` y el
+emblema—. Lo que sigue diciendo CAMPO a propósito, y entra con este pendiente,
+son exactamente tres cosas: `apple-mobile-web-app-title` en `index.html`, el
+`name`/`short_name` del manifiesto en `vite.config.js`, y los íconos
+(`icon-192.png`, `icon-512.png`, `apple-touch-icon`). Están comentados en
+`index.html` nombrando este riesgo, para que nadie los «termine de renombrar»
+creyendo que fue un olvido. **No lo fue.** Son la identidad de la app ya
+instalada en los teléfonos de FOSMON.
+
+---
+
+## 38. El login inventaba el perfil que no encontraba — ARREGLADO 2026-09-24
+
+`Login.handleLogin` hacía esto: si `usuarios/{emailId}` no existía, tomaba un
+mapa `ROLES_DEFAULT` cableado en el código, y si el correo tampoco estaba ahí
+**se autoasignaba `administrador_obra`** y lo **escribía** en Firestore.
+
+```js
+perfil = ROLES_DEFAULT[email] || { rol:"administrador_obra", nombre:email };
+await fsSet(`usuarios/${emailId}`, { ..., creadoPor: "auto-sync-from-login" });
+```
+
+**Por qué es grave más allá de la rama en la que se encontró.** Son tres cosas
+a la vez:
+
+1. **Un usuario autenticado se concede permisos a sí mismo.** El único
+   requisito es pasar Auth y que el perfil no cargue. `administrador_obra`
+   escribe avance, nómina y estimaciones.
+2. **Deja rastro escrito.** No es un rol en memoria que se pierde al recargar:
+   el documento queda creado, así que el permiso es permanente y el siguiente
+   que lo mire creerá que alguien lo dio de alta a propósito. El único indicio
+   es `creadoPor: "auto-sync-from-login"`.
+3. **Le basta que la LECTURA falle, no que el perfil falte.** `fsGet` se traga
+   el error y devuelve `null` (es el patrón de #31 y #35). Un `permission-denied`
+   transitorio o una red mala son indistinguibles de "no existe". Y el mapa ya
+   mentía: le daba `admin_sistema` a un usuario que en producción es
+   `director_operaciones`.
+
+Con organizaciones el daño crece: una cuenta de dependencia cuyo perfil no
+cargue entra como constructora y escribe en la raíz, o sea en el espacio de
+FOSMON.
+
+**Cómo quedó.** Sin perfil no se entra: mensaje claro, `signOut`, y ni una
+escritura. Un huérfano de verdad lo repara un administrador —`crearUsuario` ya
+contempla ese caso, ver `functions/index.js:157`—, no el propio login.
+`ROLES_DEFAULT` se borró: era su único lector.
+
+**Costo comprobado: ninguno.** Medido contra producción el 2026-09-24 con ADC
+en sólo lectura: 14 usuarios en Auth, 14 perfiles, los 14 con `orgId`. Nadie
+dependía de esta rama para entrar.
+
+---
+
+## 39. El resumen semanal por correo no mira la organización
+
+`enviarResumenSemanal` arma sus destinatarios así (`functions/index.js:1078`):
+
+```js
+const usuariosSnap = await db.collection("usuarios").get();
+const destinatarios = usuariosSnap.docs.map(d => d.data())
+  .filter(u => u.activo !== false && ROLES_RESUMEN_SEMANAL.includes(u.rol))
+```
+
+Lee la colección **raíz** de usuarios y filtra **sólo por rol**. No mira
+`orgId`. Hoy no hace daño porque `ROLES_RESUMEN_SEMANAL` son tres roles de
+constructora (`director_general`, `director_operaciones`,
+`gerente_construccion`) y sólo existe una organización.
+
+**El día que deje de ser inofensivo** es el día que un rol de dependencia entre
+a esa lista —o que se agregue una segunda constructora—. Entonces el correo,
+que lleva **margen bruto por obra**, sale a gente de otra organización. Es la
+misma frontera del margen que las reglas sí defienden (#35), abierta por un
+camino que las reglas no tocan: Cloud Functions corre con privilegios de
+administrador y las reglas no se le aplican.
+
+Y el cuerpo del correo tiene el mismo problema por otro lado: `calcularKpisObra`
+lee `obras/*` de la raíz, así que aunque los destinatarios se filtraran bien,
+las cifras seguirían siendo las de FOSMON.
+
+**Va con la rama del resumen semanal** (`feature/resumen-semanal`, pendiente de
+rebase y canario), no antes: es el mismo archivo y conviene un solo canario.
+Cuando se haga, el filtro tiene que ser por `orgId` **y** la obtención de obras
+tiene que respetar el prefijo de la organización. Y hace falta una prueba que
+afirme que un usuario de otra organización **no** aparece entre los
+destinatarios.
+
+## 40. La lectura del GP Sheet arranca antes de que haya sesión
+
+Visto en el emulador el 2026-10-01, entrando desde el formulario de login como
+`director_general`: el saludo sale con el chip **ámbar "GP Sheet · no
+disponible"**, y con él `GASTADO` y `MARGEN` en "no disponible". Al recargar la
+página —ya con sesión— el chip sale verde y las dos cifras aparecen.
+
+La causa es el momento, no el permiso. `useGPConstruct` pide
+`global/gp_construct` al montar el componente, y al montar todavía no hay
+usuario. La regla `allow read: if esConstructora() && !esCliente()` evalúa un
+token que no existe y niega, con razón. `permission-denied` está clasificado
+como **terminal** —y está bien que lo esté: reintentar la misma lectura sin
+sesión da exactamente lo mismo—, así que no hay reintento. Nada vuelve a
+disparar la carga cuando el login termina.
+
+**No lo introdujo `feature/ui-dependencia`.** En main el efecto es
+`useEffect(() => { cargarGP(); }, [])` (App.jsx:5258) y corre en el mismo
+instante. La rama lo dejó como `[activo, cargarGP]`, y `activo` ya es `true`
+antes del login porque `esDependencia(null)` es `false`. Mismo momento, mismo
+resultado.
+
+**Por qué casi no se ve en producción.** Firebase persiste la sesión: el camino
+normal de un usuario de FOSMON es abrir la app con sesión viva, y entonces al
+montar ya hay token. Se manifiesta en el primer login después de cerrar sesión,
+en una ventana de incógnito, y tras `?_reset=1`.
+
+El arreglo es volver a cargar cuando aparece la sesión, no relajar la
+clasificación de `permission-denied`. Lo natural es que `activo` conteste
+"¿esta sesión lee GP?" en vez de "¿esta organización lo leería?" —hoy contesta
+lo segundo y por eso no cambia con el login—. Hace falta una prueba que afirme
+que, con el usuario llegando después del montaje, el estado de GP termina en
+`listo` y no en `error`.
+
+## 41. Los datos de la empresa ejecutante se teclean, y ya existe de dónde traerlos
+
+**Anotado el 2026-10-01, con la dependencia explícita pedida por el usuario.**
+
+El formulario de contrato del lado dependencia pide **razón social y RFC de la
+empresa ejecutante** como texto libre
+(`CAMPOS_CONTRATO.dependencia`, marcados `fuente: "padron"`). Para la demo está
+bien y así quedó decidido. Lo que no está bien es que se quede así.
+
+**De qué depende, por nombre.** De la pantalla del **padrón de contratistas**.
+La colección ya está declarada en las reglas —`orgs/{oid}/contratistas/{cid}`,
+`firestore.rules:383`— y no existe nada que la escriba ni que la lea. Mientras
+eso no exista, este pendiente no se puede cerrar: no hay de dónde elegir.
+
+**Por qué importa, y no es comodidad de captura.** Un RFC teclado por tres
+personas distintas en tres obras de la misma empresa da tres empresas. El día
+que la dependencia quiera preguntar *«¿cuántos contratos tiene adjudicados esta
+constructora y cómo va cada uno?»* —que es la pregunta que justifica tener el
+sistema— la respuesta va a depender de que nadie haya puesto un espacio de más.
+El texto libre no se puede agrupar, y es el tipo de daño que no se nota hasta
+que ya hay dos años de datos.
+
+**Qué hay que hacer cuando entre.**
+
+- Pantalla de padrón: alta, baja y búsqueda de contratistas de la organización,
+  con el RFC como identidad y validación de forma.
+- En el formulario del contrato, cambiar los dos campos de texto por un
+  selector que llene `empresaEjecutante` y `empresaRFC` al elegir. El marcador
+  `fuente: "padron"` existe para que ese cambio sea en un solo lugar: la tabla.
+- Decidir qué pasa con lo ya capturado a mano. Lo más probable es una
+  conciliación asistida, no una migración automática: dos razones sociales
+  parecidas pueden ser dos empresas de verdad.
+- Quitar la leyenda «Se captura a mano…» que hoy va junto al campo.
+
+**Lo que NO hay que hacer:** inventar el padrón a partir de lo capturado.
+Sería dar por buena la normalización que precisamente falta.
+
+**Dónde está anotado en el código:** el comentario de `CAMPOS_CONTRATO`
+(`src/App.jsx`) nombra este pendiente por número. Si se renumera, se renumera
+en los dos lados.
+
+---
+
+## 42. cotea no tiene eslogan, y el campo está esperando uno
+
+**Decisión del usuario el 2026-10-01, al renombrar el producto.**
+
+El producto se llama **cotea** y nada más. El descriptor que acompañaba al
+nombre —«Control de Avance, Maquinaria, Personal y Obra»— era el desarrollo de
+la sigla CAMPO y dejó de significar nada en cuanto el nombre cambió, así que
+se quitó.
+
+`PRODUCTO.descriptor` (`src/App.jsx`) quedó como **cadena vacía, preparada y
+pintada en ningún sitio**: los tres lugares donde la marca aparece
+—acceso, encabezado y pie— preguntan por él antes de pintarlo, igual que
+preguntan por `nombreOrg`. El día que haya eslogan, se escribe en ese campo y
+aparece en los tres. No hace falta tocar JSX.
+
+**Lo que falta:** decidir el eslogan. No hay fecha y no bloquea nada.
+
+**Por qué quedó así y no con uno provisional.** Un eslogan provisional se
+queda. Es la primera línea que el cliente lee en la pantalla de acceso y lo que
+va a repetir cuando le cuente a alguien qué es esto; si dice algo tibio, eso es
+lo que el producto significa. Mejor sin descriptor que con uno malo —palabras
+del usuario— y el campo vacío es honesto: dice que no hay, no inventa uno.
+
+**La regla que protege el hueco.** `prueba-ui-dependencia.cjs` afirma que el
+descriptor es una cadena —aunque hoy esté vacía— y que sólo se pinta donde
+alguien preguntó por él. Cuando se llene, esas dos comprobaciones siguen
+valiendo tal cual: el banco no comprueba el texto, comprueba que no se pinte
+un hueco.
+
+---
+
+## 43. El correo del resumen semanal sigue firmando como CAMPO · FOSMON
+
+**Anotado el 2026-10-01. Va en la rama del resumen semanal, por decisión
+explícita del usuario — NO en `feature/ui-dependencia`.**
+
+El renombre a cotea cambió las cadenas del front. El correo semanal que manda
+`functions/index.js` **no**, y es el único sitio donde la marca sale del
+navegador y llega a la bandeja de alguien.
+
+**Los seis sitios, verificados en el archivo el 2026-10-01:**
+
+| línea | qué dice | qué es |
+|---|---|---|
+| `functions/index.js:800` | `CAMPO <campo@fosmon.com.mx>` | el remitente — lo que se ve sin abrir el correo |
+| `functions/index.js:981` | `<title>Resumen semanal CAMPO</title>` | el título del HTML |
+| `functions/index.js:988` | `CAMPO · FOSMON CONSTRUCCIONES` | el encabezado, el que el usuario señaló |
+| `functions/index.js:1021` | `Abrir CAMPO` | el botón |
+| `functions/index.js:1026` | `CAMPO — FOSMON Construcciones · campo-fosmon.netlify.app` | el pie |
+| `functions/index.js:1100` | `CAMPO · Resumen semanal · N obras activas` | el asunto |
+
+**Por qué los seis y no sólo el 988.** Arreglar el encabezado y dejar el
+remitente y el asunto diciendo CAMPO deja el correo peor que antes:
+inconsistente en vez de viejo. Y el remitente y el asunto son justo los dos que
+se leen sin abrir nada.
+
+**Por qué no en esta rama.** Cambiar `functions/index.js` obliga a
+redesplegar funciones, y hay un despliegue de funciones ya pendiente —la rama
+del resumen semanal, que además toca este mismo archivo—. Dos despliegues de
+funciones por un cambio de cadenas es gasto de riesgo sin motivo.
+
+**Cuidado al hacerlo:** `FROM_EMAIL` lleva la dirección `campo@fosmon.com.mx`
+pegada al nombre. El nombre que se enseña se puede cambiar solo; **la dirección
+no se toca aquí** — es un remitente verificado y cambiarla es un trámite de
+dominio, no una edición de cadena. Si se cambian las dos de un tirón, el correo
+deja de salir y el síntoma es silencio, que es el peor síntoma posible para un
+aviso semanal.
+
+---
+
+## 44. Un banco apuntado a un puerto muerto se cuelga en vez de fallar
+
+**Anotado el 2026-10-01 por decisión del usuario. No va en
+`feature/ui-dependencia`.**
+
+Los bancos que hablan con el emulador —`prueba-reglas-*`, `prueba-cierre-*`,
+`prueba-escritura-en-su-organizacion`— abren una conexión y esperan. Si el
+emulador no está, o está en otro puerto, **no fallan: se quedan colgados**. La
+suite no dice verde ni rojo; se queda quieta hasta que alguien la interrumpe.
+
+**Por qué importa más de lo que parece.** El repo ya tiene tres estados con
+significado y están cuidados a propósito: verde (0), **ROJO** (1) y **NO
+ARRANCÓ** (2), este último justo para que «no se comprobó» no se pueda
+confundir con «se comprobó y está bien». Colgarse es un cuarto estado que no
+cabe en el esquema, y es el peor de los cuatro: un rojo se atiende y un
+NO ARRANCÓ se atiende, pero algo que no termina se interpreta como «se está
+tardando» y acaba en que alguien mata la suite y la da por corrida.
+
+Un estado que no grita es peor que uno que falla. Son palabras del usuario, y
+es exactamente el P2 aplicado a la herramienta en vez de al producto: la misma
+clase de defecto que ya mordió dos veces este mes —el medidor de fotos que
+contestó «0 fotos» con la mayor convicción, y el `timeout` que no existe en
+macOS y convirtió 31 bancos verdes en 31 ROJOs falsos del 127—.
+
+**Qué hay que hacer.**
+
+- Un **plazo** por banco que hable con el emulador. Al vencerse: salir con 2,
+  NO ARRANCÓ, diciendo qué puerto se intentó. Nunca con 1: no se comprobó
+  nada, y decir ROJO sería inventar un resultado.
+- Una **comprobación previa** de que el puerto contesta, antes de abrir la
+  conexión larga. `sembrar-preview-emulador.cjs` ya lo hace, y es el modelo:
+  pregunta, y si no hay nadie dice qué comando levantarlo.
+- El corredor de la suite **no puede** depender del binario `timeout`: en macOS
+  no existe. Si el plazo se implementa fuera del banco, hay que detectar
+  `gtimeout`/`timeout` **y funcionar sin ninguno**. La primera versión del
+  barrido de esta rama hacía `$TO 60 node …` con `$TO` vacío, lo que ejecuta
+  `60 node …` → 127, «comando no encontrado», leído como NO ARRANCÓ en los 31
+  bancos a la vez. Creíble y falso.
+
+**Cómo comprobar que quedó.** Apagar el emulador y correr la suite completa:
+tiene que terminar, y los bancos que lo necesitan tienen que salir en 2
+nombrando el puerto. Hoy, sin emulador, no termina.
+
+---
+
+## 45. El PDF ejecutivo no es el documento que una dependencia necesita
+
+**Anotado el 2026-10-01.**
+
+El PDF ejecutivo (`generarPDFObra`) está hecho para una constructora: lleva
+margen, gasto, nómina y subcontratos. Del lado dependencia esa pantalla no
+tiene razón de existir —es justo la economía interna que no le toca ver (P5)—,
+y lo que una dependencia sí tiene que producir es otra cosa: el **informe
+semanal de avance** que la ley de obra pública le obliga a tener en el
+expediente.
+
+**Qué falta, en una línea:** decidir y construir el informe del **Art. 73** —
+el reporte periódico de avance físico y financiero— como el documento del lado
+dependencia, en el lugar donde hoy está el PDF ejecutivo.
+
+**Lo que ya existe y sirve de materia prima.** El historial semanal de avance
+(`avance/historial`), las estimaciones, el avance físico contra el contrato
+ejercido, y —desde esta rama— la evidencia fotográfica fechada por semana, que
+es precisamente lo que un informe de avance semanal necesita adjuntar.
+
+**La trampa a evitar, y es la misma de siempre.** La foto trae la fecha en que
+se **subió**, no la de ejecución. Un informe oficial que ponga una foto bajo el
+rótulo «avance de la semana N» está afirmando algo que nadie capturó, y en un
+expediente que se archiva eso dura años. Si el informe va a adjuntar evidencia,
+o dice «subidas en» como dice la pantalla, o hace falta capturar de verdad la
+fecha de ejecución — y eso es un cambio de captura, no de reporte.
+
+**Relación con el #12** (exportación del expediente, art. 74): son parientes y
+conviene decidirlos juntos; el 74 es el expediente completo y el 73 es el
+reporte periódico que vive dentro de él.
+
+---
+
+## 46. Sospecha: el aviso de «tu rol cambió» puede dispararse al cambiar de sesión
+
+**No lo vi pasar. Está aquí para que alguien lo mire, no como defecto afirmado.**
+
+Lo encontré barriendo el patrón —estado de React que sobrevive al cambio de
+sesión— después de que la marca de una organización se quedara pintada sobre la
+sesión de la otra, y de que antes pasara lo mismo con las obras.
+
+`versionRef` (src/App.jsx, junto al vigilante de `claimsVersion`) es un `useRef`.
+Un `useRef` no se vacía cuando cambia el usuario: el efecto se vuelve a montar
+porque depende de `usuario?.emailId`, pero `versionRef.current` sigue trayendo el
+número de la sesión anterior.
+
+El efecto usa `versionRef.current === null` para reconocer la primera lectura y
+**no** avisar. Si el ref llega con el número de otro usuario, esa primera lectura
+deja de parecer primera. Con que el usuario nuevo tenga un `claimsVersion` más
+alto que el anterior, el vigilante lo leería como un ascenso y refrescaría el
+token enseñando el aviso de que cambiaron sus permisos — a alguien a quien no le
+cambió nada.
+
+**Por qué no lo arreglé en la rama donde lo encontré.** Porque no lo reproduje.
+La semilla del emulador no mueve `claimsVersion`, así que afirmarlo sería
+inventar un comportamiento a partir de leer el código, que es justo lo que no se
+hace. El arreglo probablemente es una línea —vaciar el ref al montar el
+efecto—, pero primero hay que verlo: sembrar dos usuarios con `claimsVersion`
+distintos y cambiar de sesión sin recargar.
+
+**Si resulta cierto, es cosmético pero mentiroso**, que es la categoría que más
+cuesta después: un aviso que afirma un cambio de permisos que no ocurrió enseña
+a la gente a ignorar los avisos de permisos.
+
+---
+
+## 47. Dónde se pierde el año de la semana — barrido del 2026-10-01
+
+Barrido pedido al abrir `feature/plazo-dependencia`, porque **las obras pueden
+ser multianuales**: un contrato de noviembre a marzo cruza el cambio de año y
+la semana ISO reinicia cada enero. Todo lo que ORDENA, AGRUPA o COMPARA por
+semana tiene que usar el par (año, semana). Si usa el número solo, marzo se
+mezcla con noviembre.
+
+Lo que se arregló en esa rama está en su commit. Esto es lo que **queda**.
+
+### Lo que se comprobó que está bien
+
+- **`semanaISO`** es el algoritmo ISO 8601 correcto: toma el jueves de la
+  semana y cuenta desde el 1 de enero **del año de ese jueves**. Por eso una
+  fecha del 29 de diciembre cuyo jueves cae en enero sale como semana 1 del año
+  siguiente, y el 1 de enero cuyo jueves cae en diciembre sale como 52 o 53 del
+  anterior. **Los años de 53 semanas no se pierden** — 2026 es uno (el 1 de
+  enero de 2026 es jueves).
+- **`lunesDeClaveSemana`** cuenta desde el lunes de la semana que contiene el 4
+  de enero, que es la definición ISO. Resuelve bien la 53.
+- **`leyendaSemanaSubida`** escribe los dos años cuando la semana cruza
+  («del 28 de dic de 2026 al 3 de ene de 2027»).
+- **El eje de semanas de la galería de evidencia** ordena por año primero
+  (`a.slice(4) + a.slice(1,3)`), no por el número.
+- **`alertaId`** y el detector de «¿hay cierre oficial esta semana?» comparan
+  año y semana.
+- **Las claves `Y2026-S37` y `2026-W37`** se pueden ordenar como texto porque
+  llevan el año delante. Las `S37-2026` **no**, y donde se usan se ordena por
+  el par.
+
+### Lo que SÍ pierde el año, y queda pendiente
+
+**a) El gasto semanal del GP Sheet se re-sella con el año en curso.**
+`src/App.jsx` (el parser del Sheet) y `functions/index.js` guardan el gasto
+semanal con la clave `S${numero}`, **sin año**, y las tres series que lo
+consumen le vuelven a poner `new Date().getFullYear()`. Además el parser **solo
+conserva las columnas de semana del año más reciente** del Sheet: los años
+anteriores sobreviven únicamente como total anual, que se aplana en una base.
+
+Consecuencia en una obra multianual: la curva de gasto **no tiene puntos
+semanales de su primer año** y pega un escalón vertical en la primera semana
+del año en curso. Y si el Sheet se lee en enero, las semanas de noviembre y
+diciembre del año anterior se pintan como si fueran de enero.
+
+**Por qué no se arregló aquí:** es economía interna del contratista (P5). Una
+dependencia no lee el GP, así que esto no toca la demo ni la vista de cliente.
+Pero es el sitio donde el año se pierde de forma más completa, y el arreglo
+tiene dos mitades: conservar las columnas de todos los años en el parser (y en
+la función, que es la que escribe el documento) y dejar de re-sellar el año en
+las tres series. Las dos mitades hay que hacerlas juntas.
+
+**b) `semanasDisponibles` y `ultimaSemana` ordenan por número de semana.**
+`parseInt(a.slice(1)) - parseInt(b.slice(1))`, en el cliente y en la función.
+Hoy **no detona** porque el parser ya dejó un solo año en `colMap`, así que no
+hay dos años que mezclar. Es latente: en el momento en que (a) se arregle
+conservando varios años, esto empieza a dar «última semana = S48» en enero.
+**Arreglar (a) obliga a arreglar (b) en el mismo movimiento.**
+
+**c) El respaldo de fecha de inicio aproxima con el año actual.**
+Cuando una obra no tiene `inicio` capturado, se deduce de la primera semana con
+gasto del GP como «1 de enero del año actual + (semana−1)×7 días». Eso ni
+respeta ISO ni el año real: en una obra que arrancó en noviembre del año
+anterior, la gráfica cree que empezó en enero de este año. Mismo origen que
+(a) y se cae con él.
+
+**d) La semana de un registro de nómina no trae año.**
+`semanaDeNomina` devuelve el número solo, y cuando el texto del Excel no dice
+el año se usa el actual. Ya está documentado en el #28 («El año de las semanas
+de nómina va escrito, no deducido»); se anota aquí para que el barrido quede
+completo. En una obra multianual, un Excel de diciembre subido en enero se
+archiva en el año equivocado.
+
+### Lo que no se pudo auditar
+
+**El informe semanal.** Vive en `feature/resumen-semanal`, que no está mezclada.
+Hay que repetir este barrido sobre esa rama antes de mezclarla: si el informe
+agrupa o compara por número de semana, una obra multianual le va a salir al
+revés, y el informe es lo que se manda por correo.

@@ -33,6 +33,10 @@ const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const contraprueba = process.argv.includes('--contraprueba');
 const archivo = process.argv.find(a => a.endsWith('.jsx')) || path.join(raiz, 'src/App.jsx');
 let src = fs.readFileSync(archivo, 'utf8');

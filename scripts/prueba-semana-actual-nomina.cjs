@@ -33,6 +33,9 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const archivo = process.argv.find(a => a.endsWith('.jsx')) || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });

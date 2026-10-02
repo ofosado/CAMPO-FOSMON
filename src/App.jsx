@@ -1,11 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { conOrg, fijarPrefijoOrg, limpiarPrefijoOrg } from "./rutas-org.js";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithEmailAndPassword, signOut, getIdToken } from "firebase/auth";
+import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
 import { subscribeToPWAUpdates } from "./pwa-update.js";
+// La marca del producto. Los maestros vienen del paquete de marca (`paquete/`,
+// Manual v1.0) y se copiaron a `src/assets/brand` para que el bundler los
+// versione y el service worker los precachee: la app corre en obra con señal
+// mala y el logo no se pide a nadie.
+import coteaHorizontal from "./assets/brand/cotea-horizontal.svg";
+import coteaIcono from "./assets/brand/cotea-icono.svg";
+import coteaIconoSolido from "./assets/brand/cotea-icono-solido.svg";
 
 // fix/actualizacion-pwa (2026-09-16): versión del build inyectada por Vite
 // (ver vite.config.js `define`). Formato mostrado al usuario: "v2026-09-16 · 34f4c3f".
@@ -166,7 +174,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     } catch(e){}
     // Textos header
     st(K.wh); fs(9); fw('bold');
-    T('CAMPO', ML+10, 5);
+    T("cotea", ML+10, 5);
     fs(6.5); fw('normal');
     T(`Reporte ejecutivo · ${B.empresa}`, ML+10, 9.5);
     fs(8); fw('bold');
@@ -181,7 +189,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     sf([232,234,240]); R(0,PH-FTR,PW,FTR);
     sf(K.ng); R(0,PH-FTR,PW,0.6);
     st(K.gmu); fs(6); fw('normal');
-    T(`CAMPO — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
+    T(`cotea — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
     T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
     T(B.dominio, PW-MR, PH-3.5, {align:'right'});
   }
@@ -271,7 +279,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   } catch(e){}
 
   // Textos izquierda
-  st(K.wh); fs(26); fw('bold'); T('CAMPO', ML, 58);
+  st(K.wh); fs(26); fw('bold'); T("cotea", ML, 58);
   fs(7.5); fw('normal'); T('REPORTE DE AVANCE DE OBRA', ML, 64);
   sd(K.wh); lw(0.4); L(ML, 66.5, ML+55, 66.5);
   fs(13); fw('bold');
@@ -319,7 +327,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   sf([232,234,240]); R(0,PH-FTR,PW,FTR);
   sf(K.ng); R(0,PH-FTR,PW,0.6);
   st(K.gmu); fs(6); fw('normal');
-  T('CAMPO — Control de Avance, Maquinaria, Personal y Obra · FOSMON Construcciones', ML, PH-3.5);
+  T("cotea · FOSMON Construcciones", ML, PH-3.5);
   T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
 
   // ════════════════════════════════════════════════════════════════════════
@@ -754,7 +762,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     st(K.gmu); fs(12); fw('bold');
     T('Detalle GP no disponible', ML + CW/2, y + 14, {align:'center'});
     st(K.gmu); fs(8); fw('normal');
-    T('Abre la pestaña Gastos de esta obra en CAMPO al menos una vez antes',
+    T('Abre la pestaña Gastos de esta obra en cotea al menos una vez antes',
       ML + CW/2, y + 20, {align:'center'});
     T('de generar el PDF, para que se cargue el detalle GP del Sheet.',
       ML + CW/2, y + 25, {align:'center'});
@@ -1915,7 +1923,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   }
 
   // ── GUARDAR ──────────────────────────────────────────────────────────────
-  const nombre=`Reporte_CAMPO_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
+  const nombre=`Reporte_cotea_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
   doc.save(nombre);
 
   } catch(e) {
@@ -1932,7 +1940,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div style={{padding:24,background:"#0D1619",minHeight:"100vh",color:"#fff",fontFamily:"monospace"}}>
           <div style={{background:"#DC2626",borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:14,fontWeight:700}}>
-             Error en CAMPO
+             Error en cotea
           </div>
           <div style={{background:"#141E22",borderRadius:8,padding:16,fontSize:12,lineHeight:1.6,wordBreak:"break-all"}}>
             <b>{this.state.error.toString()}</b>
@@ -2064,7 +2072,7 @@ if (typeof window !== 'undefined') {
       const gp = gpSnap.data();
       const rx = new RegExp(filtroNombre, 'i');
       const obraGP = Object.values(gp?.obras || {}).find(o => rx.test(o.nombre));
-      const obrasSnap = await getDocs(collection(fbDb, 'obras'));
+      const obrasSnap = await getDocs(collObra());
       const obraCAMPO = obrasSnap.docs.map(d => d.data()).find(o => rx.test(o.nombre || ''));
       const info = {
         sheet: obraGP ? {
@@ -2101,11 +2109,23 @@ const callFn = async (name, data) => {
   }
 };
 
+// Referencias de obra para los sitios que arman la ruta por segmentos y no
+// pasan por los helpers de abajo. `conOrg` vive en src/rutas-org.js: ahí está
+// explicado por qué el discriminante es `tipo` y no la presencia de `orgId`.
+const docObra  = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+const collObra = (...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+
 // Helpers Firestore
-const fsGet  = async (path) => { try { const d = await getDoc(doc(fbDb, ...path.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
-const fsSet  = async (path, data) => { try { await setDoc(doc(fbDb, ...path.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
-const fsDel  = async (path) => { try { await deleteDoc(doc(fbDb, ...path.split('/'))); return true; } catch { return false; } };
-const fsColl = async (path) => { try { const s = await getDocs(collection(fbDb, ...path.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
+//
+// OJO CON LOS `catch`: se tragan el error y devuelven un valor neutro. Eso es
+// deliberado para fallos de red —una lectura que no llega no debe tumbar la
+// pantalla— pero es también el mecanismo exacto de PENDIENTES #31 y #35. Por
+// eso `conOrg()` se evalúa FUERA del try: si el prefijo no resuelve, la
+// excepción sale a la superficie en vez de convertirse en `null`/`false`.
+const fsGet  = async (path) => { const r = conOrg(path); try { const d = await getDoc(doc(fbDb, ...r.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
+const fsSet  = async (path, data) => { const r = conOrg(path); try { await setDoc(doc(fbDb, ...r.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
+const fsDel  = async (path) => { const r = conOrg(path); try { await deleteDoc(doc(fbDb, ...r.split('/'))); return true; } catch { return false; } };
+const fsColl = async (path) => { const r = conOrg(path); try { const s = await getDocs(collection(fbDb, ...r.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 
 // ── Horas extra de una semana de nómina ──────────────────────────────────
 // Existe como función, y una sola, porque el snapshot guarda el importe con
@@ -2178,10 +2198,18 @@ async function fsAudit(tipo, opciones = {}) {
 // sirve para guardados de fondo, pero no para uno que el usuario acaba de pedir
 // —ahí hay que poder decirle QUÉ pasó, no solo que algo pasó—. Esta versión
 // conserva el error original para que el llamador arme el mensaje.
+//
+// `conOrg` fuera del try y ANTES de la lectura previa, por lo mismo que en
+// `fsSet`. Y la asimetría que hizo esto invisible hasta el 2026-10-01: la
+// lectura previa pasa por `fsGet`, que sí anteponía el prefijo, mientras la
+// escritura iba a la raíz. La bitácora quedaba con el "antes" correcto y el
+// dato en otra parte — o, en una dependencia, en ninguna: las reglas niegan la
+// raíz, `fsSetA` se traga el rechazo y el supervisor no ve nada en pantalla.
 const fsSetAEstricto = async (path, data, ctx) => {
+  const r = conOrg(path);
   let antes = null;
   if (ctx) { try { antes = await fsGet(path); } catch {} }
-  await setDoc(doc(fbDb, ...path.split('/')), data, { merge: true });
+  await setDoc(doc(fbDb, ...r.split('/')), data, { merge: true });
   if (ctx) {
     fsAudit(antes ? "editar" : "crear", {
       path, modulo: ctx.modulo, entidad: ctx.entidad,
@@ -2498,6 +2526,253 @@ const semanaISO = (fecha) => {
 const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}`;
 
 // ════════════════════════════════════════════════════════════════════════════
+// LA SEMANA A LA QUE PERTENECE UNA FOTO DE EVIDENCIA
+// ════════════════════════════════════════════════════════════════════════════
+// `fecha`, en una foto, es la fecha en que la foto se SUBIÓ: la pone `addFoto`
+// con `new Date()` en el momento de la carga. NO es la fecha en que se ejecutó
+// el trabajo, ni la fecha en que se tomó la foto —el EXIF no se lee.
+//
+// De ahí sale la única leyenda que la pantalla puede firmar: «subidas en la
+// semana del…». Decir «así se veía la obra esa semana» sería inventar un dato
+// que nadie capturó (P2): una foto de un muro que se levantó en agosto y se
+// subió en septiembre aparece en septiembre, y está bien que aparezca ahí
+// siempre que la pantalla diga SUBIDA y no EJECUTADA.
+//
+// La semana se saca con `semanaISO`, el mismo convenio que el snapshot de
+// avance y que `claveSemanaNomina`. No hay cuarta copia de la cuenta de
+// semanas a propósito: si el convenio cambiara, tiene que cambiar en un solo
+// sitio.
+
+// "2026-09-21" → Date del 21 de septiembre a medianoche LOCAL.
+//
+// `new Date("2026-09-21")` NO sirve aquí: el estándar manda interpretar la
+// forma corta como UTC, así que en México (UTC-6) eso es el 20 a las 18:00
+// local, y `semanaISO` —que trabaja en local— lo mete en la semana anterior.
+// Un lunes se contaba como domingo y se iba a la semana de antes. Por eso la
+// fecha se arma por partes.
+const fechaLocalDeISO = (txt) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(txt || ''));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1) return null;
+  return d;
+};
+
+// La fecha de HOY como "YYYY-MM-DD", en el calendario de quien la captura.
+//
+// Lo que había era el ISO completo recortado a diez letras, y en México eso
+// adelanta la fecha un día desde las 18:00, porque es UTC. Una foto subida el
+// domingo a las siete de la tarde se guardaba con la fecha del lunes, o sea
+// archivada en la semana SIGUIENTE, en el único día de la semana en que eso
+// se nota. El mismo error estaba en la fecha por omisión de un gasto manual
+// —que alimenta la serie semanal de gasto—, en la de una estimación nueva, en
+// la de un adjunto y en los días transcurridos de plazo.
+const hoyLocalISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+// La clave de semana de una foto, o `null` si no se puede saber.
+//
+// `null` es una respuesta legítima y la pantalla tiene que pintarla: el
+// esquema de fotos es mixto —hay cadenas sueltas de antes de que existiera
+// `fecha`— y una foto sin semana no es una foto que no exista. Esconderla
+// sería contar menos evidencia de la que hay.
+const semanaDeFoto = (foto) => {
+  if (!foto || typeof foto === 'string') return null;
+  const d = fechaLocalDeISO(foto.fecha);
+  if (!d) return null;
+  const { semana, año } = semanaISO(d);
+  return snapshotId(semana, año);
+};
+
+// El lunes de una clave "S38-2026", para poder fechar la semana en palabras.
+const lunesDeClaveSemana = (clave) => {
+  const m = /^S(\d{2})-(\d{4})$/.exec(String(clave || ''));
+  if (!m) return null;
+  const sem = Number(m[1]), año = Number(m[2]);
+  // El 4 de enero cae siempre en la semana ISO 1; desde su lunes se cuentan
+  // las semanas completas.
+  const ene4 = new Date(año, 0, 4);
+  const lunesS1 = new Date(ene4);
+  lunesS1.setDate(ene4.getDate() - ((ene4.getDay() + 6) % 7));
+  const l = new Date(lunesS1);
+  l.setDate(lunesS1.getDate() + (sem - 1) * 7);
+  return l;
+};
+
+const MESES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+// Etiqueta corta para un selector: "S38 · 21 sep".
+const etiquetaSemanaCorta = (clave) => {
+  const l = lunesDeClaveSemana(clave);
+  if (!l) return 'Sin fecha';
+  return `${String(clave).slice(0, 3)} · ${l.getDate()} ${MESES_CORTO[l.getMonth()]}`;
+};
+
+// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
+// y una afirmación sobre el estado de la obra.
+const leyendaSemanaSubida = (clave) => {
+  const l = lunesDeClaveSemana(clave);
+  if (!l) return 'Fotos sin fecha de subida registrada';
+  const f = new Date(l); f.setDate(l.getDate() + 6);
+  // La semana 53 cruza el año (del 28 de dic de 2026 al 3 de ene de 2027). Con
+  // un solo año al final, una de las dos puntas queda mal fechada, así que
+  // cuando cruza se escriben los dos.
+  const rango = l.getFullYear() !== f.getFullYear()
+    ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${l.getFullYear()} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
+    : f.getMonth() !== l.getMonth()
+      ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
+      : `${l.getDate()} al ${f.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${f.getFullYear()}`;
+  return `Subidas en la semana del ${rango}`;
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// EL ESTADO DE LA OBRA EN UNA SEMANA — UNA SOLA CUENTA
+// ════════════════════════════════════════════════════════════════════════════
+// Todo lo que la pantalla afirma sobre "la semana N" sale de aquí: los KPIs,
+// la curva, los deltas, la proyección y —cuando exista— el riel de la línea de
+// tiempo y el informe.
+//
+// Por qué una sola: en septiembre la gráfica y el KPI de dinero ejecutado
+// leían dos cuentas distintas del mismo número y se contradecían en la misma
+// pantalla (commit 078585e). El defecto no fue aritmético, fue que había dos
+// cuentas. Si el riel de semanas se escribe aparte de estos KPIs, nace la
+// segunda y el defecto vuelve con otro nombre.
+//
+// Reglas que esta función hace cumplir, para que nadie tenga que recordarlas:
+//   · La semana se identifica SIEMPRE por (año, semana), nunca por el número
+//     solo. Una obra de noviembre a marzo cruza el año: ordenada por número,
+//     marzo cae antes de noviembre.
+//   · Un delta entre cierres no comparables es `null`, no 0 (P2). Y dice POR
+//     QUÉ no lo hay, para que la pantalla pueda decirlo en palabras en lugar
+//     de pintar un guion que lo mismo significa "falta dato" que "no cambió".
+//   · El dinero sale del snapshot, nunca reconstruido (P1).
+
+// El fin de plazo contra el que se mide hoy. `finAmpliado` lo mantiene al día
+// quien registra o borra una ampliación (ver GestionPlazos), así que ésta es
+// la autoridad; la lista de ampliaciones es el detalle, no la fuente.
+const finVigenteDe = (obra) => obra?.finAmpliado || obra?.fin || null;
+
+// "3 de mar de 2027". El año va SIEMPRE: estas frases comparan fechas que en
+// una obra multianual caen en años distintos, y "3 de mar" no dice cuál.
+const fechaEnPalabras = (d) => d instanceof Date && !isNaN(d)
+  ? `${d.getDate()} de ${MESES_CORTO[d.getMonth()]} de ${d.getFullYear()}`
+  : null;
+
+// Por qué no hay delta en una semana. Son estados distintos y la pantalla los
+// tiene que distinguir: "es el primer cierre" no es lo mismo que "los dos
+// cierres se calcularon con definiciones distintas del avance".
+const SIN_DELTA_PRIMER_CIERRE = 'primerCierre';
+const SIN_DELTA_NO_COMPARABLES = 'noComparables';
+
+// Los cierres oficiales, semana por semana, en orden cronológico real.
+//
+// Devuelve un arreglo de estados. Cada uno es todo lo que se sabe de esa
+// semana y nada más: si el dato no está, el campo es `null`.
+const estadoPorSemana = (historialAvance = []) => {
+  const oficiales = (historialAvance || [])
+    .filter(s => s && s.tipo === 'oficial' && Number.isFinite(s.semana) && Number.isFinite(s.año))
+    .sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
+
+  return oficiales.map((snap, i) => {
+    const previo = i > 0 ? oficiales[i - 1] : null;
+    const comparable = previo ? sonComparables(snap, previo, 'avance') : false;
+    const avance = typeof snap.avancePonderado === 'number' ? snap.avancePonderado : null;
+    const avancePrevio = previo && typeof previo.avancePonderado === 'number'
+      ? previo.avancePonderado : null;
+    const hayDelta = comparable && avance !== null && avancePrevio !== null;
+    return {
+      clave: snapshotId(snap.semana, snap.año),
+      semana: snap.semana,
+      año: snap.año,
+      cierre: snap,
+      avance,
+      // P1: el dinero se lee, no se reconstruye desde el avance.
+      dinero: montoEjecutadoSnap(snap),
+      cerradoPor: snap.capturadoPor || null,
+      fechaCierre: snap.fechaCierre || snap.fechaCaptura || null,
+      delta: hayDelta ? avance - avancePrevio : null,
+      deltaDe: previo ? snapshotId(previo.semana, previo.año) : null,
+      sinDelta: hayDelta ? null : (previo ? SIN_DELTA_NO_COMPARABLES : SIN_DELTA_PRIMER_CIERRE),
+    };
+  });
+};
+
+// ¿La serie de cierres cruza más de un año? De eso depende si la etiqueta de
+// una semana necesita decir el año. Una obra que vive dentro de un año no
+// necesita repetirlo en cada marca; una multianual sí, o "S10" y "S48" en el
+// mismo riel no dicen de qué año son.
+const cruzaAños = (estados = []) => new Set(estados.map(e => e.año)).size > 1;
+
+// La etiqueta de una semana: "S40" o "S40 · 2026".
+const etiquetaSemanaRiel = (estado, conAño) =>
+  `S${String(estado.semana).padStart(2, '0')}${conAño ? ` · ${estado.año}` : ''}`;
+
+// Por qué no hay proyección de término. Cada una se dice con palabras
+// distintas porque son situaciones distintas, y la peor de las tres —la obra
+// detenida o en retroceso— es justo la que el guion escondía.
+const SIN_PROY_POCOS_CIERRES = 'pocosCierres';
+const SIN_PROY_NO_COMPARABLES = 'noComparables';
+const SIN_PROY_SIN_AVANCE = 'sinAvance';
+
+// La proyección de término al ritmo de las últimas semanas cerradas.
+//
+// `avanceActual` es el avance EN VIVO sobre contrato (lo que se ve hoy en la
+// captura), no el del último cierre: la proyección es hacia adelante desde
+// donde está la obra ahora.
+//
+// `ahora` entra como parámetro para que la cuenta se pueda probar sin esperar
+// a que pase el tiempo.
+const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()) => {
+  const finVigente = finVigenteDe(obra);
+  const ampliado = !!obra?.finAmpliado;
+  const vacia = {
+    velocidad: null, semanasBase: 0, semanasAFin: null, fechaFin: null,
+    desviacionDias: null, finVigente, ampliado, razon: SIN_PROY_POCOS_CIERRES,
+  };
+  if (estados.length === 0) return vacia;
+
+  const ultimo = estados[estados.length - 1];
+  // Solo cierres comparables en avance con el último: restar a través de un
+  // cambio de definición fabrica un salto que no ocurrió.
+  const base = estados.filter(e => sonComparables(e.cierre, ultimo.cierre, 'avance')
+    && e.avance !== null).slice(-4);
+  if (base.length < 2) {
+    // Dos situaciones que el guion mezclaba: o no hay dos cierres, o hay dos
+    // pero no se pueden restar entre sí.
+    return { ...vacia, semanasBase: base.length,
+      razon: estados.length >= 2 ? SIN_PROY_NO_COMPARABLES : SIN_PROY_POCOS_CIERRES };
+  }
+
+  // Semanas REALES entre el primero y el último de la base, no `length-1`:
+  // si hay semanas sin cierre en medio, contar puntos infla la velocidad.
+  //
+  // Y se cuentan por el calendario, no restando números de semana: un año ISO
+  // tiene 52 o 53 semanas, así que `(añoB-añoA)*52` se equivoca una semana
+  // entera cada vez que cruza un año de 53 —2020, 2026, 2032—. Los lunes de
+  // las dos claves están a un múltiplo exacto de siete días de distancia.
+  const lunA = lunesDeClaveSemana(base[0].clave);
+  const lunB = lunesDeClaveSemana(base[base.length - 1].clave);
+  const tramos = Math.max(Math.round((lunB - lunA) / (7 * 86400000)), 1);
+  const velocidad = (base[base.length - 1].avance - base[0].avance) / tramos;
+  if (!(velocidad > 0)) {
+    return { ...vacia, velocidad, semanasBase: base.length, razon: SIN_PROY_SIN_AVANCE };
+  }
+
+  const pendiente = Math.max(100 - (Number(avanceActual) || 0), 0);
+  const semanasAFin = Math.ceil(pendiente / velocidad);
+  const fechaFin = new Date(ahora + semanasAFin * 7 * 86400000);
+  // (c) El plazo se mide por fechas reales, no contando semanas.
+  const fVig = fechaLocalDeISO(finVigente);
+  const desviacionDias = fVig
+    ? Math.round((fechaFin - fVig) / 86400000)
+    : null;
+  return { velocidad, semanasBase: base.length, semanasAFin, fechaFin,
+    desviacionDias, finVigente, ampliado, razon: null };
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
 // A diferencia del snapshot de avance, un registro de nómina NO guarda el año:
@@ -2676,7 +2951,7 @@ const leerHistorialNomina = async (obraId) => {
   // Formato 2. `fsGet` se traga los fallos, así que aquí se lee en crudo para
   // poder distinguir "no hay semanas" de "no se pudo preguntar".
   let snap;
-  try { snap = await getDocs(collection(fbDb, 'obras', obraId, 'nomina_historial')); }
+  try { snap = await getDocs(collObra(obraId, 'nomina_historial')); }
   catch (e) {
     throw new ErrorHistorialNomina(
       `La obra ${obraId} tiene el historial de nómina en subcolección, pero no ` +
@@ -2766,7 +3041,7 @@ const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx)
       // tienen que verse igual al leer, o `avisarSiFaltanSemanas` empieza a
       // contar semanas que ya no están.
       const antes = await fsGet(ruta);
-      await deleteDoc(doc(fbDb, ...ruta.split('/')));
+      await deleteDoc(doc(fbDb, ...conOrg(ruta).split('/')));
       if (ctx) fsAudit('borrar', { path: ruta, modulo: ctx.modulo, entidad: ctx.entidad,
         obraId: ctx.obraId, obraNombre: ctx.obraNombre, antes, meta: ctx.meta });
       continue;
@@ -2775,7 +3050,7 @@ const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx)
     // merge, borrar una de dos partes dejaría la vieja dentro del arreglo.
     const datos = { clave, partes, actualizado: new Date().toISOString() };
     const antes = ctx ? await fsGet(ruta) : null;
-    await setDoc(doc(fbDb, ...ruta.split('/')), datos);
+    await setDoc(doc(fbDb, ...conOrg(ruta).split('/')), datos);
     if (ctx) fsAudit(antes ? 'editar' : 'crear', { path: ruta, modulo: ctx.modulo,
       entidad: ctx.entidad, obraId: ctx.obraId, obraNombre: ctx.obraNombre,
       antes, despues: datos, meta: ctx.meta });
@@ -2958,7 +3233,7 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // Aquí se escribe directo para que el error llegue vivo y el llamador
     // pueda enseñárselo a quien acaba de cerrar la semana.
     try {
-      await setDoc(doc(fbDb, 'obras', obraId, 'avance', 'historial'),
+      await setDoc(docObra(obraId, 'avance', 'historial'),
         { semanas: recortadas }, { merge: true });
     } catch (err) {
       throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
@@ -3147,20 +3422,26 @@ const BIBLIOTECA_RIESGOS = [
     titulo: 'No terminará en plazo a ritmo actual',
     descripcion: 'Proyección con velocidad histórica no alcanza el 100% en fecha fin',
     tab: 'operacion', subTab: 'avance',
+    // Esta regla tenía su PROPIA cuenta de la proyección: ordenaba sin mirar
+    // el año —`filter` sin `sort`, así que en una obra multianual `slice(-4)`
+    // tomaba cuatro semanas cualesquiera—, dividía entre `length-1` en lugar
+    // de entre las semanas realmente transcurridas, y no respetaba
+    // `sonComparables`, de modo que restaba a través de un cambio de
+    // definición del avance. Podía contradecir al KPI de la misma obra.
+    // Ahora lee la misma `proyeccionDeAvance` que la pantalla.
     detect: ({obra, historialAvance}) => {
-      if (!historialAvance?.length || !obra.fin) return null;
-      const oficiales = historialAvance.filter(s => s.tipo === 'oficial');
-      if (oficiales.length < 2) return null;
-      const ult4 = oficiales.slice(-4);
-      const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
-      const velocidad = (ult4.length-1) > 0 ? totalDelta/(ult4.length-1) : 0;
-      if (velocidad <= 0) return null;
-      const ultimo = oficiales[oficiales.length-1];
-      const pendientes = Math.max(100 - ultimo.avancePonderado, 0);
-      const semsNecesarias = pendientes/velocidad;
-      const semsPlazo = Math.max(Math.floor((new Date(obra.finAmpliado||obra.fin) - Date.now())/(86400000*7)), 0);
-      if (semsNecesarias > semsPlazo * 1.3) return {severidad:'critico', valor:`${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Terminará muy tarde a ritmo actual', extra:`Velocidad: ${velocidad.toFixed(2)}pp/sem`};
-      if (semsNecesarias > semsPlazo) return {severidad:'alto', valor:`+${(semsNecesarias-semsPlazo).toFixed(0)}sem`, detalle:'Necesita acelerar para terminar en plazo'};
+      if (!historialAvance?.length || !finVigenteDe(obra)) return null;
+      const estados = estadoPorSemana(historialAvance);
+      const ultimo = estados[estados.length-1];
+      if (!ultimo || ultimo.avance === null) return null;
+      const proy = proyeccionDeAvance(estados, ultimo.avance, obra);
+      if (proy.razon !== null) return null;   // sin velocidad medible no hay nada que afirmar
+      if (proy.desviacionDias === null) return null;
+      // El atraso se mide en DÍAS reales contra el fin vigente, no contando
+      // semanas: un año ISO tiene 52 o 53 y el conteo se corre.
+      const d = proy.desviacionDias;
+      if (d > 30) return {severidad:'critico', valor:`${d}d`, detalle:'Terminará muy tarde a ritmo actual', extra:`Velocidad: ${proy.velocidad.toFixed(2)}pp/sem`};
+      if (d > 0) return {severidad:'alto', valor:`+${d}d`, detalle:'Necesita acelerar para terminar en plazo', extra:`Velocidad: ${proy.velocidad.toFixed(2)}pp/sem`};
       return null;
     },
   },
@@ -3224,8 +3505,8 @@ const BIBLIOTECA_RIESGOS = [
     descripcion: 'El % de plazo transcurrido supera mucho al % de avance',
     tab: 'operacion', subTab: 'avance',
     detect: ({obra, kpis}) => {
-      if (!obra.inicio || !obra.fin || !kpis) return null;
-      const finVigente = obra.finAmpliado || obra.fin;
+      const finVigente = finVigenteDe(obra);
+      if (!obra.inicio || !finVigente || !kpis) return null;
       const total = (new Date(finVigente) - new Date(obra.inicio))/86400000;
       const trans = Math.max((Date.now() - new Date(obra.inicio))/86400000, 0);
       const pctPlazo = Math.min(trans/total*100, 100);
@@ -3519,12 +3800,18 @@ const BIBLIOTECA_RIESGOS = [
   // ── COMPLIANCE ──
   {
     id: 'cmp_001', categoria: 'compliance',
-    titulo: 'Sin presupuesto cargado',
-    descripcion: 'No hay catálogo de presupuesto detallado para esta obra',
+    // Las plantillas de riesgo son datos puros: no tienen `usuario` en alcance
+    // y pasárselo sería atravesar el motor de riesgos entero. La salida es no
+    // nombrar la ruta del menú. «Sube el Excel en Presupuesto» nombraba una
+    // pestaña que una dependencia no tiene; esto dice QUÉ falta y el clic de la
+    // tarjeta ya sabe a dónde ir —lo traduce `destinoNav`—. Una leyenda que no
+    // nombra una ruta no la puede nombrar mal.
+    titulo: 'Sin catálogo de conceptos',
+    descripcion: 'No hay catálogo de conceptos cargado para esta obra',
     tab: 'planeacion', subTab: 'presupuesto',
     detect: ({subs}) => {
       if (subs?.length > 0) return null;
-      return {severidad:'medio', valor: '—', detalle: 'Sin catálogo no se puede medir avance', extra: 'Sube el Excel en Presupuesto'};
+      return {severidad:'medio', valor: '—', detalle: 'Sin catálogo no se puede medir avance', extra: 'Sube el Excel del catálogo'};
     },
   },
   {
@@ -3540,10 +3827,37 @@ const BIBLIOTECA_RIESGOS = [
   },
 ];
 
-// Motor de detección: evalúa todas las plantillas y devuelve las que disparen
+// ── Riesgos que no aplican a una dependencia de gobierno (P5) ─────────────
+// Los que se calculan con gasto de GP, margen, nómina, almacén, maquinaria o
+// subcontratos: economía interna del contratista. La lista va por id y no por
+// categoría porque `categoria: 'financiero'` mezcla las dos cosas — `fin_005`
+// es el anticipo contractual, que la dependencia sí paga y sí le importa,
+// mientras que `fin_002` es la brecha contra el gasto, que no.
+//
+// Varios de éstos ya devolverían `null` por su cuenta al no llegarles
+// `gpData`. No alcanza: un riesgo que se calla porque le faltó el dato es
+// indistinguible de uno que se calló porque no hay riesgo, y `ctr_002` de
+// hecho pediría capturar un `gpId` que en dependencia no significa nada.
+const RIESGOS_SOLO_CONSTRUCTORA = new Set([
+  'fin_001',                                          // margen bruto
+  'fin_002',                                          // brecha gasto vs avance
+  'fin_006',                                          // velocidad de quema del presupuesto
+  'nom_001', 'nom_002', 'nom_003',                    // nómina
+  'mat_001', 'mat_002',                               // almacén
+  'maq_001',                                          // maquinaria
+  'sub_001', 'sub_002', 'sub_003',                    // subcontratos
+  'gst_001', 'gst_002', 'gst_003', 'gst_004', 'gst_005',  // gasto de GP por proveedor
+  'ctr_002',                                          // vinculación con GP
+]);
+
+// Motor de detección: evalúa todas las plantillas y devuelve las que disparen.
+// `contexto.tipo` es el tipo de organización; ausente o "constructora" evalúa
+// la biblioteca completa, o sea la conducta de siempre.
 const detectarRiesgos = (contexto) => {
   const detectados = [];
+  const soloContrato = contexto?.tipo === 'dependencia';
   for (const plantilla of BIBLIOTECA_RIESGOS) {
+    if (soloContrato && RIESGOS_SOLO_CONSTRUCTORA.has(plantilla.id)) continue;
     try {
       const r = plantilla.detect(contexto);
       if (r) {
@@ -3835,9 +4149,16 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
 // pueda hacer deleteObject(ref) si el commit posterior a Firestore falla
 // (ej. el usuario perdió acceso a la obra justo después de subir la foto).
 // Sin ese rescate quedan objetos huérfanos en Storage.
+//
+// El prefijo de organización también aplica a Storage: `storage.rules` tiene el
+// mismo esquema que Firestore (`/obras/…` para constructora, `/orgs/{oid}/obras/…`
+// para dependencia) y la rama de constructora exige `tipo == 'constructora'`. Sin
+// `conOrg` la foto de un supervisor de dependencia se va a una ruta que las
+// reglas niegan — mismo defecto que en `fsSetAEstricto`, sólo que aquí sí se ve
+// porque este helper lanza.
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
   try {
-    const r = storageRef(fbStor, `obras/${obraId}/fotos/${conceptoId}/${fotoId}`);
+    const r = storageRef(fbStor, conOrg(`obras/${obraId}/fotos/${conceptoId}/${fotoId}`));
     await uploadString(r, base64url, 'data_url');
     const url = await getDownloadURL(r);
     return { url, ref: r };
@@ -3917,15 +4238,10 @@ const ensureXLSX = () => {
   return _xlsxPromise;
 };
 
-// Mapa de roles por correo — se carga desde Firestore
-// Si no existe en Firestore, usa este default
-const ROLES_DEFAULT = {
-  "ofosado@fosmon.com.mx":   { rol:"director_general",    nombre:"Oscar Fosado Monsalvo" },
-  "ofosadog@fosmon.com.mx":  { rol:"director_operaciones", nombre:"Oscar Fosado Galland" },
-  "aoliva@fosmon.com.mx":    { rol:"gerente_construccion", nombre:"Alejandro Noe Oliva Somellera" },
-  "pcastillo@fosmon.com.mx": { rol:"administrador_obra",   nombre:"Pablo Castillo Villalobos" },
-  "lmayo@fosmon.com.mx":     { rol:"admin_sistema",        nombre:"Luis Mayo" },
-};
+// Aquí vivía ROLES_DEFAULT, un mapa de correo→rol que sólo usaba la rama del
+// login que inventaba perfiles. Muerta esa rama, queda sin lectores — y ya
+// estaba desactualizado: daba `admin_sistema` a un usuario que en producción
+// es `director_operaciones`. Un default que miente es peor que ninguno.
 
 
 // ── EMBLEMA FOSMON ─────────────────────────────────────────────────────────
@@ -4318,11 +4634,47 @@ const EMB_NEGRO = "data:image/png;base64,"
   + "2BI4tUkQm4GvEgPck8C5wHRgjAM4lXdJXQXiVAvifQ7gwiA2gq8SA+6TwEzgg8B4AScJxOEgjgK2"
   + "B84GHnaA2BcDn6ue8kXg4hjgegScJMWDOBrYzu7JHowsH8PwhW9lPAtcCHwEWFbASVJzIPY4QBwL"
   + "7A78DHNDYCf7+mrAE5iytwMYfidOV3Q81X8Am092y8SMvd4AAAAASUVORK5CYII=";
-function EmblemaFOSMON({ size=22, dark=false, opacity=1 }) {
-  const h = Math.round(size * 516/447);
-  return <img src={dark?EMB_NEGRO:EMB_WHITE} alt="FOSMON"
-    style={{display:"block",flexShrink:0,opacity,imageRendering:"crisp-edges",
-      width:size,height:h,objectFit:"contain"}}/>;
+// Aquí estaba `EmblemaFOSMON`, el componente que pintaba el emblema del
+// contratista en pantalla. Se va con el renombre: los tres sitios que lo
+// usaban —acceso, barra y pie— son del PRODUCTO y ahora llevan `MarcaCotea`.
+//
+// Se borra en vez de dejarlo sin usar porque un componente muerto que pinta el
+// logo de FOSMON es un arma cargada: el día que alguien quiera «un logo aquí»
+// lo encuentra con autocompletar y lo pone sin pensarlo. Que haya que
+// escribirlo de nuevo es justamente el costo que se quiere cobrar.
+//
+// `EMB_NEGRO` y `EMB_WHITE` se quedan: los usa `generarPDFObra`, que es el
+// reporte de FOSMON y lleva su emblema con toda razón. Ése no se le ofrece a
+// una dependencia (`vaElReporteEjecutivo`).
+
+/**
+ * La marca del PRODUCTO.
+ *
+ * Hasta hoy el producto no tenía marca propia y la barra llevaba el emblema de
+ * FOSMON, que es del contratista. Por eso existía `vaElEmblema`: en la sesión
+ * de un municipio se dejaba el hueco, porque un hueco era correcto y el logo
+ * de otro no. Con marca propia el hueco ya no hace falta y la guardia tampoco:
+ * cotea es el mismo producto para los dos, igual que `PRODUCTO.nombre`.
+ *
+ * El emblema del contratista no desaparece del mundo: sigue en la portada del
+ * reporte ejecutivo, que es el documento de FOSMON y que a una dependencia no
+ * se le ofrece (`vaElReporteEjecutivo`).
+ *
+ * `variante` y `tamano` como en el `Logo.jsx` del paquete, con las dos reglas
+ * del manual que siempre se rompen aplicadas solas: por debajo de 32 px la
+ * «c» partida se cierra —a ese tamaño el corte se lee como un defecto de
+ * impresión— y el aire obligatorio de un cuarto del cuerpo va como padding,
+ * sin prop que lo apague.
+ */
+function MarcaCotea({ variante="icono", tamano=22, opacity=1, style }) {
+  const src = variante === "horizontal" ? coteaHorizontal
+            : tamano < 32              ? coteaIconoSolido
+                                       : coteaIcono;
+  return <img src={src} alt="cotea"
+    style={{display:"block",flexShrink:0,opacity,
+      height: variante === "horizontal" ? tamano * 1.35 : tamano,
+      width:"auto", padding: Math.round(tamano * 0.25),
+      boxSizing:"content-box", ...style}}/>;
 }
 
 // ── ROLES Y USUARIOS ───────────────────────────────────────────────────────
@@ -4357,6 +4709,181 @@ const MODULOS_POR_TIPO = {
   dependencia: ["contratistas","supervisores","comparativo","programa","SIMVER"],
 };
 
+// ── ¿Esta sesión es de una dependencia de gobierno? ───────────────────────
+// FUENTE ÚNICA de la pregunta que gobierna toda la interfaz por tipo (P5).
+// El `tipo` llega en los claims del token —el mismo dato que evalúan las
+// reglas de Firestore— y el login no deja entrar sin él, así que aquí no
+// hay caso "no se sabe": o es dependencia, o se trata como constructora y
+// la UI queda exactamente como estaba.
+//
+// Se pregunta por el TIPO y no por el rol: los roles de dependencia ya
+// existían declarados desde antes de que hubiera interfaz para ellos, y
+// atarse a la lista de roles significaría tocar dos sitios cada vez que se
+// agregue uno.
+const esDependencia = usuario => usuario?.tipo === "dependencia";
+
+// ── QUIÉN DICE SER LA APP ──────────────────────────────────────────────────
+// Dos cosas distintas que la barra de arriba enseñaba pegadas y las dos a
+// mano: el nombre del PRODUCTO, que es el mismo para todos, y el nombre de la
+// ORGANIZACIÓN que lo usa, que no.
+//
+// El nombre del producto, en un solo sitio. Estaba escrito literal en el
+// encabezado, en el pie y en la pantalla de acceso; el día del cambio de
+// nombre se iban a cambiar dos de los tres. Ese día llegó —2026-10-01, CAMPO
+// pasa a ser cotea— y fue un renglón, que era justamente el punto.
+//
+// El descriptor se queda VACÍO a propósito, no borrado. «Control de Avance,
+// Maquinaria, Personal y Obra» era el desarrollo de la sigla CAMPO y con el
+// nombre nuevo no quiere decir nada; de paso nombraba dos módulos que la
+// sesión de un municipio no tiene. El eslogan definitivo está por decidirse y
+// queda anotado como pendiente: mejor sin descriptor que con uno malo.
+//
+// Vacío tiene que significar NO PINTAR NADA, igual que el `null` de
+// `nombreOrg`. Si alguien lo pinta sin preguntar, el pie dice «cotea — » con
+// la raya colgando.
+const PRODUCTO = {
+  nombre: "cotea",
+  descriptor: "",
+};
+
+/**
+ * El nombre de la organización que usa la app, o `null` si no se sabe.
+ *
+ * Mismo origen y mismo criterio que el saludo de `PantallaObras`
+ * —`orgs/{orgId}/config/branding`, cargado en `marca`—, porque es la misma
+ * afirmación hecha dos veces en la misma pantalla y no puede salir distinta
+ * en cada una.
+ *
+ * `null` significa NO PINTAR LA LÍNEA. El respaldo "FOSMON Construcciones"
+ * vale sólo del lado constructora; en una dependencia sin marca capturada no
+ * hay nada honesto que poner ahí. Y poner lo que había —la barra decía
+ * «CAMPO / FOSMON CONSTRUCCIONES» en la sesión del municipio— es lo primero
+ * que vio el cliente el 2026-10-01: el encabezado le presentaba la app como
+ * si fuera de su contratista.
+ */
+const nombreOrg = (marca, usuario) =>
+  marca?.empresa || (esDependencia(usuario) ? null : "FOSMON Construcciones");
+
+// `vaElEmblema` y `vaElDescriptor` vivían aquí y se fueron el mismo día, las
+// dos por la misma razón: eran parches de «no tenemos marca propia».
+//
+//   · `vaElEmblema` escondía el emblema de FOSMON en la sesión de un
+//     municipio, porque el logo del contratista en la barra del cliente es
+//     peor que un hueco. Ahora la barra lleva `MarcaCotea`, que es del
+//     producto y es la misma para los dos: no hay nada que esconder.
+//   · `vaElDescriptor` escondía «Control de Avance, Maquinaria, Personal y
+//     Obra», que nombraba dos módulos que ese menú no tiene. El descriptor
+//     quedó vacío, así que tampoco hay nada que esconder.
+//
+// Lo que NO se fue es la regla que las dos protegían, y por eso se dice aquí:
+// en la sesión de una dependencia no se pinta marca del contratista. Hoy se
+// cumple por construcción —ya no hay dónde— y lo que se cumple por
+// construcción se rompe callado, así que lo vigila la prueba de dependencia
+// barriendo el armazón en busca de `EmblemaFOSMON`.
+
+/**
+ * ¿Se le ofrece a esta sesión el botón de «Reporte ejecutivo» (PDF)?
+ *
+ * No a una dependencia. `generarPDFObra` es el reporte de la constructora
+ * completo: portada con el emblema de FOSMON y pie «cotea · FOSMON
+ * Construcciones», y adentro RESUMEN FINANCIERO con margen bruto, DESGLOSE DE
+ * GASTO POR RUBRO, ALMACÉN y PERSONAL · NÓMINA · TOP PROVEEDORES.
+ *
+ * Y el problema no es sólo que enseñe lo ajeno: en una dependencia esas rutas
+ * no se piden (P5), así que los arreglos llegan vacíos y el PDF no diría «no
+ * disponible» — imprimiría Gasto $0 y Margen 100%. Un número falso, con el
+ * logo del contratista, firmado y descargado por el municipio.
+ *
+ * El corte es no ofrecer el botón, por lo mismo que no se pide la ruta. El
+ * reporte que la dependencia sí necesita es el semanal del Art. 73, que se
+ * construye aparte y queda anotado como pendiente.
+ */
+const vaElReporteEjecutivo = usuario => !esDependencia(usuario);
+
+/**
+ * ¿Va el bloque de Órdenes de Trabajo en Avance físico?
+ *
+ * La OT es un documento INTERNO del contratista: la orden que su cliente
+ * industrial le gira por SAP, con su folio y sus partidas. Se construyó para
+ * TAMSA y para obras como TAMSA. Un municipio no gira órdenes de trabajo: gira
+ * un contrato, y de ahí en adelante estima. Así que en una dependencia el
+ * bloque no va — ni «Cargar Orden de Trabajo» ni el histórico.
+ *
+ * El corte NO puede ser sólo esconder el interruptor del formulario de
+ * Contrato: la bandera ya viene puesta en los datos. OBRA DEMO 3 se sembró con
+ * `cargaOT: true`, así que quitar la casilla y dejar el render colgando de la
+ * bandera habría seguido pintando el bloque. Se pregunta por los dos.
+ *
+ * El interruptor va aparte porque responde otra cosa —si se puede PRENDER—, y
+ * en constructora se queda: el bloque ya está escondido para quien no lo usa
+ * (es lo que hace la bandera), y esconder también la casilla dejaría la
+ * función sin manera de encenderse. Un interruptor invisible es una función
+ * que no existe.
+ */
+const vanLasOT = (usuario, obra) => !esDependencia(usuario) && !!obra?.cargaOT;
+const vaElInterruptorOT = usuario => !esDependencia(usuario);
+
+// ── CÓMO SE LLAMA LA MISMA PANTALLA EN CADA ORGANIZACIÓN ───────────────────
+// Hay una palabra que significa dos cosas distintas, y es la que más aparece:
+// **presupuesto**.
+//
+// En una constructora, el «presupuesto» de una obra es el catálogo de
+// conceptos con precios unitarios: lo que presupuestó para ganar el contrato.
+// En un ayuntamiento, «presupuesto» es el presupuesto de egresos —la partida
+// autorizada del año—, que es otra cosa y vive en otra oficina. Lo que hay en
+// esa pantalla, para una dependencia, es el **catálogo de conceptos**: el
+// término de la Ley de Obras Públicas, el que aparece en su propio contrato.
+// Su dinero ya se llama por su nombre en el formulario del contrato: «Monto
+// contratado» y «Origen de los recursos».
+//
+// No es purismo. Un director de obras que ve una pestaña «Presupuesto» espera
+// encontrar ahí de qué partida sale el dinero, no un Excel de volúmenes.
+//
+// Esto es un léxico, no un diccionario de cadenas. La diferencia importa: un
+// mapa de texto a texto se aplica donde alguien se acordó de aplicarlo y
+// silenciosamente no donde no. Estas son CLAVES: si falta una traducción, no
+// compila el acceso, y la prueba afirma que las dos tablas tienen las mismas.
+const LEXICO = {
+  constructora: {
+    catalogo:     "Presupuesto",
+    rutaCatalogo: "Planeación → Presupuesto",
+  },
+  dependencia: {
+    catalogo:     "Catálogo de conceptos",
+    rutaCatalogo: "Contrato → Catálogo de conceptos",
+  },
+};
+
+const lexico = usuario => LEXICO[esDependencia(usuario) ? "dependencia" : "constructora"];
+
+// ── ¿Se pide esta ruta de obra, o no se pide? ───────────────────────────────
+// El inventario de las rutas que llevan economía interna del contratista. Son
+// las MISMAS SEIS que `firestore.rules` deja deliberadamente sin declarar del
+// lado dependencia (ver PENDIENTES, «Qué NO se agrega, a propósito»): entre
+// ellas está el margen, y dejarlas fuera hace que la frontera sea estructura y
+// no disciplina. Aquí la interfaz dice lo mismo que las reglas.
+//
+// El corte es NO PEDIR, no pedir-y-no-pintar (P5). Si se pidieran, las reglas
+// las negarían, el manejador de fallo resolvería la clave con `[]`, y un `[]`
+// sumado vale CERO — indistinguible de "no hubo gasto". La pantalla no diría
+// "no disponible": diría "$0" y "margen 100%".
+//
+// Se declara aquí, a la vista, y no como condición suelta en cada oyente,
+// porque la lista es lo que hay que poder auditar de un golpe contra las
+// reglas. Son rutas lógicas, sin el prefijo de organización: el prefijo lo
+// pone `conOrg` más tarde y no cambia de qué documento se habla.
+const RUTAS_SOLO_CONSTRUCTORA = new Set([
+  'avance/maquinaria',      // equipo propio: costo
+  'avance/materiales',      // almacén: costo
+  'config/otros_gastos',    // gasto manual
+  'nomina/historial',       // personal (formato viejo)
+  'nomina_historial',       // personal (subcolección)
+  'subcontratos/lista',     // a quién le paga el contratista y cuánto
+]);
+
+const seSuscribe = (ruta, tipo) =>
+  !(tipo === 'dependencia' && RUTAS_SOLO_CONSTRUCTORA.has(ruta));
+
 const ROL_LABEL = {
   // Constructora
   director_general:    "Director General",
@@ -4368,7 +4895,7 @@ const ROL_LABEL = {
   auditor:             "Auditor Interno",   // antes "Supervisor de Obra" — 3 usuarios externos (hytorc/noleaks)
   admin_sistema:       "Administrador de Sistema",
   cliente:             "Cliente",
-  // Dependencia (declarados, sin UI aún)
+  // Dependencia
   director_obras:      "Director de Obras",
   subdirector:         "Subdirector",
   jefe_supervision:    "Jefe de Supervisión",
@@ -4392,8 +4919,10 @@ const ROL_LABEL = {
 //   OBRA (todas_obras:false, editan): superintendente, residente, administrador_obra.
 //   AUDITOR (todas_obras:false, solo lectura): auditor.
 //   EXTERNO: cliente (solo ve avance/fotos/estimaciones de sus obras).
-// Dependencia y soporte: declarados en PERMISOS abajo pero SIN UI implementada
-// en esta etapa. La UI seguirá viéndose exactamente igual para constructora.
+// Dependencia: los seis roles operativos tienen su propio menú (ver
+// `TABS_DEPENDENCIA`) y su propia frontera de datos (P5). Para constructora la
+// UI se ve exactamente igual que antes.
+// Soporte: declarado en PERMISOS abajo, todavía sin UI propia.
 const PERMISOS = {
   // ── Constructora ──
   director_general:    { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
@@ -4408,15 +4937,27 @@ const PERMISOS = {
   // auditando una obra que FOSMON ejecuta en conjunto con esas empresas.
   auditor:             { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
   cliente:             { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
-  // ── Dependencia (declarados; UI se implementa cuando toque) ──
-  director_obras:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
-  subdirector:         { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"editar", todas_obras:true  },
-  jefe_supervision:    { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:true  },
-  supervisor_obra:     { dash:"ver", captura:"editar",  gastos:"ver",    estimaciones:"ver",    riesgo:"editar", todas_obras:false },
-  administrativo:      { dash:"ver", captura:"editar",  gastos:"editar", estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  // ── Dependencia ──
+  // `gastos: null` en los seis, sin excepción. No es una restricción de
+  // confidencialidad: el módulo Gastos son los gastos de GP, que es el Sheet
+  // de FOSMON. Una dependencia no tiene nada ahí (P5).
+  //
+  // Esconder la pestaña en TABS_POR_ROL no bastaba: `can(rol,'gastos')` se
+  // consulta también desde la matriz de Planeación → Permisos, que la pintaba
+  // como editable. Tres de estos roles decían "editar" hasta hoy.
+  //
+  // `riesgo` baja a "ver" en todos: la biblioteca de riesgos emite
+  // `margen_bajo`, así que dejar que alguien de dependencia configure riesgos
+  // es la puerta por la que el margen vuelve a entrar. La emisión misma se
+  // corta en `detectarRiesgos`; esto es el segundo cerrojo.
+  director_obras:      { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  subdirector:         { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
+  jefe_supervision:    { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  supervisor_obra:     { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:false },
+  administrativo:      { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
   // Contralor: lectura amplia sin edición. NO ve comparativo (queda restringido
   // a director_obras y subdirector).
-  contralor:           { dash:"ver", captura:"ver",     gastos:"ver",    estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
+  contralor:           { dash:"ver", captura:"ver",     gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
   contratista:         { dash:null,  captura:null,      gastos:null,     estimaciones:null,     riesgo:null,    todas_obras:false },
   // ── Cross-tipo ──
   // Soporte: NO puede ver operación (avances/montos/evidencia/comparativos).
@@ -4440,6 +4981,14 @@ const ROLES_PANEL_EJECUTIVO = new Set([
   "auditor",            // solo sus obras asignadas (ya filtradas antes de pintar)
   // Dependencia: son mandos que necesitan el consolidado; sin él el
   // producto no cumple lo que se les ofrece.
+  //
+  // Este conjunto contesta "¿ve UN consolidado?", no "¿ve el de
+  // constructora?". Cuál se pinta lo decide el tipo: `DashboardPrincipal`
+  // para constructora, `PortafolioDependencia` para dependencia. Sacarlos de
+  // aquí no habría quitado el margen de su pantalla — habría quitado la
+  // pantalla entera, porque este mismo conjunto es el que autoriza la carga
+  // de datos de las obras del portafolio. El margen se quita donde se
+  // calcula, que es el componente, y donde se pide, que son los oyentes.
   "director_obras", "subdirector", "jefe_supervision",
 ]);
 const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
@@ -4458,7 +5007,18 @@ const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
 // permanente.
 const CLAVES_BULK = ['info','subs','maquinaria','materiales','estimaciones',
                      'otrosGastos','nominaSemanas','historialAvanceSemanas'];
-const datosObraCompletos = d => !!d && CLAVES_BULK.every(k => d._listos?.[k]);
+
+// En dependencia cinco de esos oyentes no se levantan (P5), así que esas cinco
+// claves NUNCA van a marcarse listas. Exigirlas dejaría el consolidado
+// esperando hasta el tope de 12 s y después se pintaría con el aviso de
+// "consolidado parcial" en todas las obras, siempre: un dato que no se pidió
+// no es un dato que no llegó.
+const CLAVES_BULK_DEPENDENCIA = ['info','subs','estimaciones','historialAvanceSemanas'];
+
+const datosObraCompletos = (d, soloContrato = false) => {
+  const claves = soloContrato ? CLAVES_BULK_DEPENDENCIA : CLAVES_BULK;
+  return !!d && claves.every(k => d._listos?.[k]);
+};
 
 // Tope de espera antes de pintar con datos incompletos. Ni el guard de datos
 // ni el de GP pueden bloquear la pantalla indefinidamente: si a los 12 s no
@@ -4662,18 +5222,41 @@ function FotoUploader({fotos,onAdd,onDel}){
   <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
   <Lightbox url={lb} onClose={()=>setLb(null)}/></>;
 }
+// La captura de fotos de una partida.
+//
+// Captura IGUAL que siempre: el mismo cuadro, el mismo botón, el mismo borrar.
+// Lo único nuevo es que las fotos de semanas anteriores no se vuelcan todas de
+// golpe: una partida con 43 fotos llenaba la fila de la captura con el
+// histórico entero y la foto de hoy se perdía entre las de agosto. Quedan
+// detrás de «ver anteriores», con la cuenta a la vista para que nadie crea que
+// se borraron.
+//
+// Una foto SIN fecha se queda a la vista. No se sabe que sea vieja, y suponerlo
+// para esconderla sería afirmar algo que nadie capturó.
 function ConceptoFotos({fotos,onAdd,onDel}){
-  const ref=useRef();const[lb,setLb]=useState(null);
+  const ref=useRef();const[lb,setLb]=useState(null);const[verViejas,setVerViejas]=useState(false);
   const leer=useCallback(files=>{
     Array.from(files).filter(f=>f.type.startsWith("image/")).forEach(f=>{
       const r=new FileReader();r.onload=e=>onAdd({id:Math.random().toString(36).slice(2),url:e.target.result});r.readAsDataURL(f);
     });
   },[onAdd]);
-  return <div>{fotos.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:5}}>
-    {fotos.map(f=><div key={f.id} className="fotothumb" onClick={()=>setLb(f.url)}>
-      <img src={f.url} alt=""/><button className="fotodel" onClick={e=>{e.stopPropagation();onDel(f.id);}}>×</button>
-    </div>)}
+  const semanaHoy = useMemo(() => {
+    const {semana, año} = semanaISO(new Date());
+    return snapshotId(semana, año);
+  }, []);
+  const viejas  = fotos.filter(f => { const w = semanaDeFoto(f); return w && w !== semanaHoy; });
+  const ahora   = fotos.filter(f => !viejas.includes(f));
+  const visibles = verViejas ? [...ahora, ...viejas] : ahora;
+  const miniatura = f => <div key={f.id} className="fotothumb" onClick={()=>setLb(f.url)}>
+    <img src={f.url} alt=""/><button className="fotodel" onClick={e=>{e.stopPropagation();onDel(f.id);}}>×</button>
+  </div>;
+  return <div>{visibles.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:5}}>
+    {visibles.map(miniatura)}
   </div>}
+  {viejas.length>0&&<button onClick={()=>setVerViejas(v=>!v)}
+    style={{background:"none",border:"none",color:C.blue,fontSize:9,padding:"0 0 4px",cursor:"pointer"}}>
+    {verViejas ? `ocultar anteriores (${viejas.length})` : `ver anteriores (${viejas.length})`}
+  </button>}
   <div className="fotodrop" style={{fontSize:9,padding:"5px 8px"}} onClick={()=>ref.current?.click()}>
      {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
   </div>
@@ -4752,24 +5335,50 @@ function Login({onLogin}){
         console.warn('refresh inicial de token falló, continuando con token de signIn:', e?.code || e?.message);
       }
       // Buscar perfil en Firestore (para roles dinámicos)
-      let perfil = await fsGet(`usuarios/${emailId}`);
+      const perfil = await fsGet(`usuarios/${emailId}`);
       if (!perfil) {
-        // Si no existe en Firestore: usar default hardcodeado y crear el documento
-        // (necesario para que Cloud Functions puedan verificar el rol del usuario)
-        perfil = ROLES_DEFAULT[email] || { rol:"administrador_obra", nombre:email };
-        await fsSet(`usuarios/${emailId}`, {
-          email,
-          nombre: perfil.nombre,
-          rol: perfil.rol,
-          obras_asignadas: [],
-          activo: true,
-          uid: cred.user.uid,
-          creadoEn: new Date().toISOString(),
-          creadoPor: "auto-sync-from-login",
-        });
+        // ANTES esta rama INVENTABA el perfil: si no lo encontraba, se
+        // autoasignaba `administrador_obra` —un rol de constructora— y lo
+        // ESCRIBÍA en `usuarios/{id}`. Una cuenta huérfana entraba con
+        // permisos que nadie le dio, y una cuenta de dependencia cuyo perfil
+        // no cargara se volvía constructora en la raíz, en silencio y
+        // dejando rastro escrito. Medido el 2026-09-24: los 14 usuarios de
+        // producción tienen perfil, así que cerrar esta rama no le quita el
+        // acceso a nadie. Un huérfano real lo repara un administrador
+        // —`crearUsuario` ya contempla ese caso—, no el propio login.
+        setError("Tu cuenta no tiene perfil en el sistema. Contacta al administrador.");
+        try { await signOut(fbAuth); } catch {}
+        setLoading(false);
+        return;
       }
       if (perfil.activo === false) {
         setError("Tu usuario está desactivado. Contacta al administrador.");
+        try { await signOut(fbAuth); } catch {}
+        setLoading(false);
+        return;
+      }
+      // Resolver de qué organización cuelgan las obras de este usuario. Se
+      // decide con los claims del token —el mismo dato que evalúan las reglas
+      // de Firestore— y no con el perfil, que no guarda `tipo`.
+      //
+      // Si no se puede decidir, NO se entra. La alternativa —entrar y que
+      // cada lectura caiga a la raíz— es cómo un cliente termina viendo o
+      // pisando los datos de otro sin que nada falle a la vista.
+      //
+      // El `tipo` que sale de aquí viaja además en el objeto `usuario`, que es
+      // lo que React vuelve a pintar. No es una segunda copia del criterio: es
+      // el mismo valor de la misma lectura, una línea más abajo. La interfaz
+      // tiene que decidirse con el dato que evalúan las reglas (P5), y el
+      // prefijo vive en un módulo, fuera del árbol de React, así que no
+      // dispara un re-render por sí solo.
+      let tipoOrg = null, orgIdUsuario = null;
+      try {
+        const { claims } = await getIdTokenResult(cred.user);
+        fijarPrefijoOrg(claims.tipo, claims.orgId);
+        tipoOrg = claims.tipo; orgIdUsuario = claims.orgId || null;
+      } catch (e) {
+        limpiarPrefijoOrg();
+        setError(`${e.message || 'No se pudo determinar tu organización.'} Contacta al administrador.`);
         try { await signOut(fbAuth); } catch {}
         setLoading(false);
         return;
@@ -4786,6 +5395,8 @@ function Login({onLogin}){
         obras_asignadas: Array.isArray(perfil.obras_asignadas) ? perfil.obras_asignadas : [],
         bienvenidaVista: perfil.bienvenidaVista === true,
         emailId,
+        tipo: tipoOrg,
+        orgId: orgIdUsuario,
       });
     } catch(e) {
       const msgs = {
@@ -4803,20 +5414,32 @@ function Login({onLogin}){
   return <div style={{minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column",
     alignItems:"center",justifyContent:"center",padding:24}}>
     <div style={{width:"100%",maxWidth:380}}>
-      {/* Logo */}
+      {/* Logo.
+          Aquí no se puede nombrar a la organización: antes de autenticar no
+          hay `orgId`, así que no hay de dónde leer `marca` —y ésta es la
+          pantalla donde la app decía «FOSMON CONSTRUCCIONES» a cualquiera que
+          abriera la liga, municipio incluido. La línea se va: el nombre del
+          producto basta, y no saber de quién es la instancia es la verdad
+          mientras nadie se identifica.
+          Y el emblema del contratista se fue de aquí, que era el pendiente
+          anotado: ésta es literalmente la primera pantalla que abre el
+          cliente, y la abría el logo de FOSMON. Va el lockup horizontal de
+          cotea, que ya trae la palabra dibujada en trazos —no depende de que
+          cargue la tipografía—, así que `PRODUCTO.nombre` NO se repite
+          debajo: decirlo dos veces es decirlo mal una. */}
       <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:32,gap:12}}>
-        <EmblemaFOSMON size={48} dark={true}/>
-        <div style={{textAlign:"center"}}>
-          <div style={{fontSize:22,fontWeight:800,letterSpacing:"0.14em",color:C.caliza}}>CAMPO</div>
-          <div style={{fontSize:9,color:C.textMut,letterSpacing:"0.08em",marginTop:2}}>FOSMON CONSTRUCCIONES</div>
-        </div>
+        <MarcaCotea variante="horizontal" tamano={40}/>
       </div>
       {/* Form */}
       <form onSubmit={handleLogin} style={{display:"flex",flexDirection:"column",gap:12}}>
         <div>
           <div style={{fontSize:10,color:C.textMut,marginBottom:5,letterSpacing:"0.04em"}}>CORREO CORPORATIVO</div>
+          {/* El dominio del contratista no va de ejemplo: ésta es la pantalla
+              que abre cualquiera con la liga, municipio incluido, y
+              «@fosmon.com.mx» le dice de quién es la app antes de que se
+              identifique. Es el mismo caso que el emblema, en letra chica. */}
           <input type="email" value={correo} onChange={e=>setCorreo(e.target.value)}
-            placeholder="usuario@fosmon.com.mx"
+            placeholder="tu.correo@organizacion.mx"
             style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:8,
               padding:"12px 14px",color:C.textPri,fontSize:13,width:"100%",outline:"none"}}/>
         </div>
@@ -4834,12 +5457,14 @@ function Login({onLogin}){
             border:"none",borderRadius:8,padding:13,color:(!correo||!pass||loading)?C.textMut:C.bg,
             fontSize:13,fontWeight:700,cursor:(!correo||!pass||loading)?"not-allowed":"pointer",
             letterSpacing:"0.04em",marginTop:4,transition:"all .2s"}}>
-          {loading?"Verificando...":"Entrar a CAMPO"}
+          {loading?"Verificando...":"Entrar a cotea"}
         </button>
       </form>
-      <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
-        Control de Avance, Maquinaria, Personal y Obra
-      </div>
+      {/* Vacío significa no pintar nada: hoy no hay eslogan decidido y una
+          línea en blanco con su margen se ve como un defecto de maquetado. */}
+      {PRODUCTO.descriptor && <div style={{textAlign:"center",marginTop:20,fontSize:10,color:C.textMut}}>
+        {PRODUCTO.descriptor}
+      </div>}
       {/* Versión del build visible desde el Login — sirve para que un usuario
           que no puede entrar todavía pueda reportar qué versión ve.
           fix/actualizacion-pwa (2026-09-16) */}
@@ -5101,7 +5726,21 @@ function parsearGPConstruct(csvText) {
 }
 
 // Hook para cargar datos de GP Construct
-function useGPConstruct() {
+// `activo` = ¿esta organización tiene por qué leer el Sheet de FOSMON?
+//
+// En una dependencia la respuesta es no (P5), y el corte va AQUÍ y no en quien
+// consume el dato, por tres razones:
+//
+//   1. `global/gp_construct` es la contabilidad de FOSMON, no una ruta de la
+//      organización. Ni siquiera lleva prefijo de org. Pedirla desde la sesión
+//      de un municipio es una lectura que las reglas van a negar, y con razón.
+//   2. La lectura arranca al montar, antes de entrar a cualquier pantalla. Si
+//      el corte viviera en los componentes, la petición ya habría salido.
+//   3. Con el corte, `gpUltActualiz` nunca se llena y `gpDisponible` es false
+//      — que es exactamente el estado que pinta el chip ámbar "GP Sheet · no
+//      disponible". `'inactivo'` existe para poder distinguir "no aplica" de
+//      "falló", que es la misma distinción del P4 en otro plano.
+function useGPConstruct(activo = true) {
   // gpData ahora es el RESUMEN (~50KB): obras con totales pero sin rubros ni proveedores.
   // Para análisis detallado de una obra (rubros + proveedores), cargarDetalleGP(obraId).
   const [gpData, setGpData] = useState(null);
@@ -5120,6 +5759,7 @@ function useGPConstruct() {
   //   sin_sincronizar  → el Sheet nunca se sincronizó; sólo lo arregla Refrescar
   //   version_vieja    → hay caché pero de otro parser; sólo lo arregla Refrescar
   //   error            → falla transitoria agotados los reintentos
+  //   inactivo         → esta organización no lee GP; no se pidió nada
   // Los dos primeros terminales NO se reintentan: reintentar una lectura que
   // devuelve lo mismo sólo gasta cuota. Sólo se reintenta la falla transitoria.
   const [gpEstado, setGpEstado] = useState('cargando');
@@ -5146,6 +5786,9 @@ function useGPConstruct() {
   };
 
   const cargarGP = useCallback(async (forzar = false) => {
+    // El corte también aquí y no sólo en el efecto de montaje: `cargarGP` y
+    // `reintentarGP` salen del hook y cualquier pantalla puede llamarlas.
+    if (!activo) { setGpEstado('inactivo'); return; }
     setGpLoading(true); setGpError('');
     let mensajeError = '';
     try {
@@ -5209,7 +5852,7 @@ function useGPConstruct() {
       setGpError(`Error al leer caché de GP (${e?.code || 'desconocido'}): ${e?.message || e}`);
     }
     setGpLoading(false);
-  }, []);
+  }, [activo]);
 
   // Vigilante de reintentos: sólo actúa sobre la falla transitoria y sólo
   // GP_REINTENTOS_MS.length veces. Agotados, el estado queda en 'error' —
@@ -5241,6 +5884,7 @@ function useGPConstruct() {
   // Carga el detalle completo (rubros + proveedores) de UNA obra específica
   // Se invoca solo cuando se necesita (ej: al entrar al tab Gastos)
   const cargarDetalleObra = useCallback(async (obraIdGP) => {
+    if (!activo) return null;
     if (!obraIdGP) return null;
     if (gpDetalles[obraIdGP]) return gpDetalles[obraIdGP]; // ya está en cache
     try {
@@ -5253,9 +5897,16 @@ function useGPConstruct() {
       console.warn('cargarDetalleObra error:', e);
     }
     return null;
-  }, [gpDetalles]);
+  }, [gpDetalles, activo]);
 
-  useEffect(() => { cargarGP(); }, []);
+  // Se rearma cuando cambia `activo`: al montar no hay sesión todavía, así que
+  // el tipo de organización no se conoce hasta que el login resuelve los
+  // claims. Sin esta dependencia, un usuario de constructora que entra en una
+  // sesión nueva se quedaría sin GP hasta recargar.
+  useEffect(() => {
+    if (!activo) { setGpEstado('inactivo'); return; }
+    cargarGP();
+  }, [activo, cargarGP]);
 
   // Reintento manual: devuelve el presupuesto de reintentos automáticos, que
   // si no quedaría gastado para siempre tras la primera racha de fallos.
@@ -5503,7 +6154,7 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
               style={{flex:2,background:valid?C.caliza:"rgba(255,254,249,0.2)",border:"none",borderRadius:6,
                 padding:"9px 0",fontSize:12,fontWeight:700,color:valid?C.bg:C.textMut,
                 cursor:valid?"pointer":"not-allowed"}}>
-              Activar en CAMPO
+              Activar en cotea
             </button>
           </div>
         </>
@@ -5702,7 +6353,7 @@ function GestionUsuarios({usuario, obras, onClose}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div>
           <Tit>Gestión de usuarios</Tit>
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Crear, editar y eliminar accesos a CAMPO</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Crear, editar y eliminar accesos a cotea</div>
         </div>
         <div style={{display:"flex",gap:6}}>
           <SecBtn onClick={recargar}>Recargar</SecBtn>
@@ -5752,7 +6403,7 @@ function GestionUsuarios({usuario, obras, onClose}){
     </Card>
 
     {/* MODAL NUEVO */}
-    {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras}
+    {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras} tipoOrg={usuario?.tipo}
       onCancel={()=>setModalNuevo(false)} pedirPassword={true}
       onConfirm={async (form)=>{
         setBusy(true);
@@ -5764,13 +6415,16 @@ function GestionUsuarios({usuario, obras, onClose}){
         // Notif al usuario nuevo y a directivos
         await notifAEmail(form.email, {
           categoria: 'gestion', tipo: 'bienvenida',
-          titulo: `Bienvenido a CAMPO`,
+          titulo: `Bienvenido a cotea`,
           mensaje: `Tu cuenta fue creada con rol ${ROL_LABEL[form.rol]||form.rol}. Cambia tu contraseña al ingresar.`,
           creadaPor: usuario?.correo || 'sistema',
         });
-        await notifARoles(['director_general'], {
+        // El aviso va a la cabeza de la organización, que no se llama igual en
+        // las dos: en una dependencia no existe `director_general` y este
+        // `notifARoles` no le llegaba a nadie — un alta sin testigos.
+        await notifARoles([usuario?.tipo === 'dependencia' ? 'director_obras' : 'director_general'], {
           categoria: 'gestion', tipo: 'usuario_creado',
-          titulo: `Nuevo usuario en CAMPO`,
+          titulo: `Nuevo usuario en cotea`,
           mensaje: `${form.nombre} (${form.email}) · ${ROL_LABEL[form.rol]||form.rol}`,
           creadaPor: usuario?.correo || 'sistema',
         });
@@ -5778,7 +6432,7 @@ function GestionUsuarios({usuario, obras, onClose}){
 
     {/* MODAL EDITAR */}
     {modalEditar && <ModalUsuario titulo="Editar usuario" obras={obras} usuario={modalEditar}
-      onCancel={()=>setModalEditar(null)}
+      tipoOrg={usuario?.tipo} onCancel={()=>setModalEditar(null)}
       onConfirm={async (form)=>{
         setBusy(true);
         const cambios = {nombre:form.nombre, rol:form.rol, obras_asignadas:form.obras_asignadas, activo:form.activo};
@@ -5862,19 +6516,23 @@ function GestionUsuarios({usuario, obras, onClose}){
 }
 
 // ── MODAL FORMULARIO USUARIO (nuevo o editar) ──
-function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword}){
-  const[form,setForm]=useState({
-    email: usuario?.email||"",
-    nombre: usuario?.nombre||"",
-    rol: usuario?.rol||"administrador_obra",
-    obras_asignadas: usuario?.obras_asignadas||[],
-    activo: usuario?.activo!==false,
-    password: "",
-  });
+// `tipoOrg` es el tipo de la organización donde se está dando de alta, no el
+// del usuario que se edita: un alta siempre cae en la org de quien la hace.
+function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword, tipoOrg}){
+  const esDep = tipoOrg === "dependencia";
 
-  // Roles agrupados por tipo. Los ejecutivos ven todas las obras; los "de Obra"
-  // deben asignarse explícitamente a las obras que van a ver/editar.
-  const ROLES = [
+  // Roles agrupados por jerarquía. Los ejecutivos ven todas las obras; los que
+  // van a una obra concreta deben asignarse explícitamente.
+  //
+  // Las dos listas son excluyentes y no se mezclan: un rol de constructora en
+  // una dependencia —o al revés— es un usuario cuyos claims las reglas de
+  // Firestore no van a reconocer. Antes este selector ofrecía sólo la lista de
+  // constructora, así que dar de alta al director de Obras Públicas de un
+  // municipio era imposible desde la interfaz.
+  //
+  // `soporte` no está en ninguna de las dos a propósito: es el rol que cruza
+  // organizaciones y se otorga fuera de esta pantalla.
+  const ROLES_CONSTRUCTORA = [
     // Ejecutivos (acceso a todas las obras, con edición completa)
     ["director_general",    "Director General"],
     ["director_operaciones","Director de Operaciones"],
@@ -5888,6 +6546,32 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     // Externo
     ["cliente",             "Cliente"],
   ];
+  const ROLES_DEPENDENCIA = [
+    // Mando (ven todas las obras contratadas por la dependencia)
+    ["director_obras",      "Director de Obras Públicas"],
+    ["subdirector",         "Subdirector"],
+    ["jefe_supervision",    "Jefe de Supervisión"],
+    ["administrativo",      "Administrativo"],
+    ["contralor",           "Contralor"],
+    // De obra (se asigna a las que supervisa)
+    ["supervisor_obra",     "Supervisor de Obra"],
+    // Externo: la constructora que ejecuta
+    ["contratista",         "Contratista"],
+  ];
+  const ROLES = esDep ? ROLES_DEPENDENCIA : ROLES_CONSTRUCTORA;
+
+  const[form,setForm]=useState({
+    email: usuario?.email||"",
+    nombre: usuario?.nombre||"",
+    // El rol por omisión tiene que existir en la lista que se está mostrando.
+    // Con `administrador_obra` fijo, un alta en dependencia arrancaba con un
+    // rol que el `<select>` no ofrecía: el campo salía en blanco y, si nadie
+    // lo tocaba, se guardaba un rol de constructora.
+    rol: usuario?.rol || (esDep ? "supervisor_obra" : "administrador_obra"),
+    obras_asignadas: usuario?.obras_asignadas||[],
+    activo: usuario?.activo!==false,
+    password: "",
+  });
 
   const toggleObra = (id) => setForm(f=>{
     const a = new Set(f.obras_asignadas);
@@ -5909,7 +6593,7 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
       <div style={{marginBottom:10}}>
         <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Correo</div>
         <Inp type="email" value={form.email} disabled={!!usuario}
-          placeholder="usuario@fosmon.com.mx"
+          placeholder={esDep ? "usuario@dependencia.gob.mx" : "usuario@fosmon.com.mx"}
           onChange={e=>setForm({...form, email:e.target.value})}/>
       </div>
 
@@ -7232,12 +7916,236 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   );
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={}}){
+// ════════════════════════════════════════════════════════════════════════════
+// PORTAFOLIO — ORGANIZACIÓN DE TIPO DEPENDENCIA
+//
+// El equivalente de `DashboardPrincipal` para quien contrata obra. Componente
+// aparte por la misma razón que `DashboardDependencia` (P5): aquí no se llama
+// a `calcularKPIsObra`, que es donde nace `gt` y con él el margen, así que no
+// hay cifra de gasto que pueda filtrarse ni columna que ordenar por ella.
+//
+// Las cinco cifras del contrato, más avance y última captura. Ni margen, ni
+// gasto, ni personal, ni horas extra.
+//
+// ORDEN POR DEFECTO: avance físico ascendente, y a igual avance la de mayor
+// monto contratado primero. Es la única cifra que sale de lo que la propia
+// dependencia capturó y contesta "cuál me preocupa" sin necesitar el programa
+// de ejecución convenido. Lo estrictamente correcto sería ordenar por
+// desviación contra ese programa — pero el programa no está cargado, y
+// ordenar por una desviación calculada contra un plazo lineal supuesto sería
+// inventar la cifra que el P2 prohíbe. Cuando el programa exista, este orden
+// es lo que hay que cambiar.
+// ════════════════════════════════════════════════════════════════════════════
+function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
+  const [orden, setOrden] = useState('avance|asc');
+  const HOY = Date.now();
+
+  const activas = obras.filter(o => (o.estado || 'activa') !== 'archivada');
+
+  // Mismo guard de completud que el panel de constructora, con la lista de
+  // claves recortada: las cinco que no se suscriben nunca van a llegar, y
+  // exigirlas dejaría el consolidado esperando para siempre.
+  const incompletas = activas.filter(o => !datosObraCompletos(datosPorObra[o.id], true));
+  const listas = activas.filter(o => datosObraCompletos(datosPorObra[o.id], true));
+
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+  const filas = listas.map(o => {
+    const d = datosPorObra[o.id] || {};
+    const info = d.info || {};
+    const contratado = parseFloat(info.presupuesto ?? o.presupuesto) || 0;
+    const modoVol = (info.modoAvance ?? o.modoAvance) === 'volumen';
+    const subs = d.subs || [];
+    const ests = d.estimaciones || [];
+
+    const ejecutado = desgloseEjecutado(subs, modoVol).total;
+    const af        = avanceFisicoPonderado(subs, contratado, modoVol);
+    const estimado  = ests.reduce((t,e) => t + (e.monto||0), 0);
+    const pagado    = ests.filter(e => _ne(e.estatus) === 'pagada')
+                          .reduce((t,e) => t + (e.monto||0), 0);
+    const porEjercer = Math.max(contratado - pagado, 0);
+
+    const avSemanas = d.historialAvanceSemanas || [];
+    const ultAv = avSemanas[avSemanas.length - 1];
+    const diasSinCaptura = ultAv?.fechaCaptura
+      ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / 86400000) : null;
+
+    return {
+      obra: o,
+      nombre: info.contrato || info.nombre || o.contrato || o.nombre || o.id,
+      contratado, ejecutado, estimado, pagado, porEjercer, af, diasSinCaptura,
+    };
+  });
+
+  // ── Consolidado ──
+  // Los cinco montos se suman; el avance NO se promedia a secas sino
+  // ponderado por monto contratado, porque una obra de 40 millones al 10% y
+  // una de 2 al 90% no pesan igual en la pregunta "cómo va mi programa".
+  const totContratado = filas.reduce((t,f) => t + f.contratado, 0);
+  const totEjecutado  = filas.reduce((t,f) => t + f.ejecutado, 0);
+  const totEstimado   = filas.reduce((t,f) => t + f.estimado, 0);
+  const totPagado     = filas.reduce((t,f) => t + f.pagado, 0);
+  const totPorEjercer = filas.reduce((t,f) => t + f.porEjercer, 0);
+  const totAf = totContratado > 0
+    ? filas.reduce((t,f) => t + f.af * f.contratado, 0) / totContratado : null;
+
+  // ── Excepciones ──
+  // Sólo la de captura. Las otras dos del panel de constructora —margen bajo
+  // y horas extra— son economía interna del contratista.
+  const excepciones = filas
+    .filter(f => f.diasSinCaptura === null || f.diasSinCaptura >= 7)
+    .map(f => ({
+      obraId: f.obra.id,
+      texto: f.diasSinCaptura === null
+        ? `${f.nombre} — sin captura de avance registrada`
+        : `${f.nombre} — ${f.diasSinCaptura} días sin captura de avance`,
+    }));
+
+  const OPCIONES_ORDEN = [
+    { val:'avance|asc',     lbl:'Avance: menor primero' },
+    { val:'avance|desc',    lbl:'Avance: mayor primero' },
+    { val:'contratado|desc',lbl:'Contratado: mayor primero' },
+    { val:'porEjercer|desc',lbl:'Por ejercer: mayor primero' },
+    { val:'captura|desc',   lbl:'Última captura: más antigua' },
+    { val:'nombre|asc',     lbl:'Nombre: A → Z' },
+  ];
+  const [col, dir] = orden.split('|');
+  const signo = dir === 'asc' ? 1 : -1;
+  const ordenadas = [...filas].sort((a,b) => {
+    if (col === 'nombre')
+      return signo * (a.nombre||'').localeCompare(b.nombre||'', 'es', {sensitivity:'base'});
+    let va, vb;
+    if (col === 'captura') { va = a.diasSinCaptura; vb = b.diasSinCaptura; }
+    else                   { va = a[col];           vb = b[col]; }
+    // Dato ausente al final siempre, sin importar la dirección: una obra sin
+    // captura no es "la que menos avanzó", es la que no se sabe.
+    const aN = va === null || va === undefined, bN = vb === null || vb === undefined;
+    if (aN && bN) return 0;
+    if (aN) return 1;
+    if (bN) return -1;
+    if (va !== vb) return signo * (va - vb);
+    // Desempate: la de mayor monto contratado primero.
+    return b.contratado - a.contratado;
+  });
+
+  if (activas.length === 0) return null;
+
+  return (
+    <Card accent={C.caliza} style={{marginBottom:10}}>
+      <div style={{marginBottom:12}}>
+        <Tit>Panel principal — {activas.length} obra{activas.length!==1?'s':''} activa{activas.length!==1?'s':''}</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+          Contrato, avance y pendientes de captura
+        </div>
+      </div>
+
+      {incompletas.length > 0 && (
+        <div style={{background:C.yellowBg,border:`1px solid ${C.yellow}`,
+                     borderRadius:6,padding:"6px 9px",marginBottom:8,fontSize:10,color:C.textSec}}>
+          <b>Consolidado parcial.</b> {incompletas.length} obra
+          {incompletas.length !== 1 ? 's' : ''} no terminó de cargar y no está
+          incluida en las cifras de abajo:{' '}
+          {incompletas.map(o => o.id).join(' · ')}. Recarga la página para reintentar.
+        </div>
+      )}
+
+      {/* ── Consolidado ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <Kpi label="Contratado" value={MXN(totContratado)}
+          sub={`${filas.length} obra${filas.length!==1?'s':''}`} color={C.caliza} size={12}/>
+        <Kpi label="Ejecutado" value={MXN(totEjecutado)}
+          sub={totContratado>0?`${NUM(totEjecutado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.blueDk} size={12}/>
+        <Kpi label="Estimado" value={MXN(totEstimado)}
+          sub={totContratado>0?`${NUM(totEstimado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado" value={MXN(totPagado)}
+          sub={totContratado>0?`${NUM(totPagado/totContratado*100,1)}% de lo contratado`:'—'}
+          color={C.greenDk} size={12}/>
+        <Kpi label="Por ejercer" value={MXN(totPorEjercer)}
+          sub="contratado menos pagado" color={C.textPri} size={12}/>
+        {/* Sin obras con contrato capturado el promedio ponderado no tiene
+            denominador. Se dice, no se pone 0% (P2). */}
+        <Kpi label="Avance físico"
+          value={totAf != null ? `${NUM(totAf,1)}%` : 'no disponible'}
+          sub={totAf != null ? 'ponderado por monto contratado' : 'falta capturar montos de contrato'}
+          color={totAf != null ? C.blueDk : C.textMut} size={12}/>
+      </div>
+
+      {/* ── Requiere atención ── */}
+      {excepciones.length > 0 && <>
+        <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                     textTransform:"uppercase",margin:"14px 0 6px"}}>
+          Requiere atención
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+          {excepciones.map(e => (
+            <div key={e.obraId} onClick={() => onSelectObra && onSelectObra(e.obraId)}
+              style={{background:C.bg,borderRadius:8,padding:"8px 11px",display:"flex",
+                justifyContent:"space-between",alignItems:"center",gap:8,
+                cursor:onSelectObra?"pointer":"default",borderLeft:`3px solid ${C.yellow}`}}>
+              <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
+              <span style={{fontSize:11,color:C.textMut}}>›</span>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      {/* ── Obras ── */}
+      <div style={{display:"flex",alignItems:"center",gap:6,margin:"14px 0 6px"}}>
+        <span style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                      textTransform:"uppercase"}}>Obras · ordenar</span>
+        <Sel value={orden} onChange={e => setOrden(e.target.value)}
+             style={{fontSize:10,padding:'4px 8px',flex:1,maxWidth:260}}>
+          {OPCIONES_ORDEN.map(o => <option key={o.val} value={o.val}>{o.lbl}</option>)}
+        </Sel>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {ordenadas.map(f => {
+          const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
+          return (
+            <div key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+              style={{background:C.bg,borderRadius:8,padding:"10px 12px",
+                cursor:onSelectObra?"pointer":"default",
+                borderLeft:`3px solid ${capAlerta?C.yellow:C.blueDk}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",
+                           gap:8,marginBottom:5}}>
+                <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
+                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
+                <span style={{fontSize:14,fontWeight:700,color:C.blueDk,flexShrink:0}}>
+                  {NUM(f.af,1)}%
+                </span>
+              </div>
+              <Bar pct={f.af} color={C.blueDk}/>
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginTop:5}}>
+                Contratado {MXN(f.contratado)}{' · '}Ejecutado {MXN(f.ejecutado)}
+              </div>
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6}}>
+                Estimado {MXN(f.estimado)}{' · '}Pagado {MXN(f.pagado)}
+                {' · '}Por ejercer {MXN(f.porEjercer)}
+              </div>
+              <div style={{fontSize:10,color:capAlerta?C.yellowDk:C.textMut,lineHeight:1.6}}>
+                {f.diasSinCaptura === null ? 'Sin captura registrada'
+                  : f.diasSinCaptura === 0 ? 'Capturada hoy'
+                  : `Última captura hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={},marca=null}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
+  // P5: de este lado de la pantalla el dinero del contratista no existe.
+  const dep=esDependencia(usuario);
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const[orden,setOrden]=useState("nombre"); // nombre|importe_asc|importe_desc|avance_asc|avance_desc
   const[verHistorial,setVerHistorial]=useState(false);
   const[modalNueva,setModalNueva]=useState(false);
@@ -7311,7 +8219,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     // Firestore no borra hijos al borrar el padre, y esos huérfanos no se ven
     // desde ninguna pantalla.
     try {
-      const semanas = await getDocs(collection(fbDb, 'obras', id, 'nomina_historial'));
+      const semanas = await getDocs(collObra(id, 'nomina_historial'));
       await Promise.all(semanas.docs.map(d => deleteDoc(d.ref)));
     } catch (e) {
       console.error('borrar nomina_historial', id, e);
@@ -7428,7 +8336,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
     {/* Header */}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingBottom:6}}>
-      <div>
+      {/* El logo del cliente va junto al saludo, no en la barra de arriba: esa
+          barra es del producto y dice lo mismo para todos. Sólo aparece si
+          alguien capturó la marca — un hueco con el logo de otra organización
+          sería peor que un hueco sin logo. */}
+      <div style={{display:"flex",alignItems:"flex-start",gap:11,minWidth:0}}>
+      {(marca?.logoBlanco || marca?.logoNegro) && (
+        <img src={marca.logoBlanco || marca.logoNegro}
+          alt={marca.empresa ? `Logotipo de ${marca.empresa}` : 'Logotipo del cliente'}
+          style={{height:34,width:"auto",maxWidth:110,objectFit:"contain",flexShrink:0,marginTop:1}}/>
+      )}
+      <div style={{minWidth:0}}>
         <div style={{fontSize:15,fontWeight:700,color:C.textPri,marginBottom:3}}>
           Hola, {(() => {
             const n = usuario.nombre || '';
@@ -7440,7 +8358,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           })()}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
-          {ROL_LABEL[usuario.rol]} · FOSMON Construcciones · {activas.length} obra(s) activa(s)
+          {/* El nombre de la organización lo resuelve `nombreOrg`, el mismo
+              que usa la barra de arriba: esta línea y el encabezado dicen lo
+              mismo en la misma pantalla y salían de dos reglas distintas. */}
+          {ROL_LABEL[usuario.rol]}
+          {nombreOrg(marca, usuario) && ` · ${nombreOrg(marca, usuario)}`}
+          {' · '}{activas.length} obra(s) activa(s)
         </div>
         {/* Chip de estado del Sheet GP. UNA sola píldora con dos variantes:
             frescura cuando hay dato (verde/amarillo/rojo por antigüedad) y
@@ -7448,6 +8371,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             el tooltip, no en pantalla: en el chip sólo cabe el hecho, y
             "el Sheet nunca se sincronizó" asusta sin ayudar a nadie. */}
         {(() => {
+          // En una dependencia el chip no se pinta, y no por pudor: el Sheet
+          // GP no se consulta (P5), así que `gpUltActualiz` nunca llega y
+          // `gpDisponible` es false para siempre. Sin este corte el chip
+          // saldría en ámbar "GP Sheet · no disponible" en la primera
+          // pantalla que ve el cliente, anunciando una integración con la
+          // contabilidad de FOSMON que a él no le corresponde ni le sirve.
+          if (dep) return null;
           // Sólo los estados TERMINALES de fallo pintan ámbar. Mientras
           // carga o reintenta no se muestra nada: un chip de alarma en cada
           // arranque normal sería ruido, no información.
@@ -7487,6 +8417,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           </div>;
         })()}
       </div>
+      </div>
       {puedeGestionar&&<button onClick={()=>setModalNueva(true)}
         style={{background:C.caliza,border:"none",borderRadius:8,padding:"7px 14px",
           fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",flexShrink:0}}>
@@ -7501,8 +8432,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         <option value="nombre">Ordenar: A → Z</option>
         <option value="importe_desc">Importe: Mayor → Menor</option>
         <option value="importe_asc">Importe: Menor → Mayor</option>
-        <option value="avance_desc">Avance: Mayor → Menor</option>
-        <option value="avance_asc">Avance: Menor → Mayor</option>
+        {/* Estas dos dicen "Avance" y ordenan por gasto/presupuesto — es el
+            nombre viejo de la cifra, y en dependencia el gasto es cero, así
+            que las dos opciones ordenarían por nada. El orden por avance
+            físico de verdad vive en el panel de arriba. */}
+        {!dep && <option value="avance_desc">Avance: Mayor → Menor</option>}
+        {!dep && <option value="avance_asc">Avance: Menor → Mayor</option>}
       </Sel>
       {puedeGestionar&&archivadas.length>0&&<button onClick={()=>setVerHistorial(v=>!v)}
         style={{background:verHistorial?C.caliza:C.card,border:`0.5px solid ${C.borderM}`,
@@ -7516,9 +8451,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         Reemplaza el PanelEjecutivo. Se muestra a directivos y a auditor
         (auditor con sus obras asignadas, filtradas ya por todasObras arriba).
         Cliente sigue sin panel (mantiene solo su lista simplificada). */}
-    {!verHistorial && vePanelEjecutivo(usuario.rol) && (
-      <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
-        gpDisponible={gpDisponible} onSelectObra={onSelect}/>
+    {/* Dos paneles, no uno con condicionales (P5). `vePanelEjecutivo` contesta
+        "¿este rol ve UN consolidado?"; cuál se pinta lo decide el tipo. */}
+    {!verHistorial && vePanelEjecutivo(usuario.rol) && (dep
+      ? <PortafolioDependencia obras={todasObras} datosPorObra={datosPorObra}
+          onSelectObra={onSelect}/>
+      : <DashboardPrincipal obras={todasObras} datosPorObra={datosPorObra} gpData={gpData}
+          gpDisponible={gpDisponible} onSelectObra={onSelect}/>
     )}
 
     {/* Lista de obras */}
@@ -7528,17 +8467,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     </div>}
 
     {listaActual.map(o=>{
-      // Gasto TOTAL en VIVO: GP del Sheet + maquinaria propia + otros gastos
-      // IMPORTANTE: el ALMACÉN NO se suma al gasto. Almacén son insumos ya
-      // reportados en GP que están en tránsito/bodega esperando ser instalados
-      // para poder cobrarse al cliente — por eso suman al EJECUTADO (meO), no
-      // al gasto. (Aclaración del usuario ago-2026.)
-      const gastoGPLive=resolverGastoGP(o, gpData);
       const d = datosPorObra[o.id] || {};
-      const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-      const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-      const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
-      const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
       // Avance físico ponderado
       const subsO = d.subs || [];
       const modoVolO = (o?.modoAvance === "volumen");
@@ -7547,15 +8476,41 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         : 0;
       // Estimado total (todas las estimaciones sin importar estatus)
       const estTotalO = (d.estimaciones || []).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-      // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
-      // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
-      // autorizado como convenio.
       const amO  = desgloseEjecutado(subsO, modoVolO).total;
-      const meO  = amO + matTotal;
-      // Margen bruto (mismo criterio Dashboard/PDF)
-      const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
-      const mNiv = nivelMargen(margenPct);
-      const pg = o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0;
+
+      // ── Economía interna del contratista: no se calcula en dependencia ──
+      // No es que se pinte y se esconda: si `eco` fuera un objeto de ceros,
+      // la tarjeta diría "Gasto acumulado $0" y "Margen 100%", que son las
+      // dos cifras falsas del P5. En dependencia ni `gpData` ni maquinaria ni
+      // otros gastos se suscriben, así que no hay nada que sumar.
+      //
+      // IMPORTANTE (constructora): el ALMACÉN NO se suma al gasto. Almacén son
+      // insumos ya reportados en GP que están en tránsito/bodega esperando ser
+      // instalados para poder cobrarse al cliente — por eso suman al EJECUTADO
+      // (meO), no al gasto. (Aclaración del usuario ago-2026.)
+      const eco = dep ? null : (() => {
+        const gastoGPLive = resolverGastoGP(o, gpData);
+        const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+        const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
+        const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
+        const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
+        // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
+        // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
+        // autorizado como convenio.
+        const meO = amO + matTotal;
+        const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
+        return {
+          gastoTotalLive, meO, margenPct,
+          mNiv: nivelMargen(margenPct),
+          pg: o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0,
+        };
+      })();
+
+      // Lo que sí es de la dependencia: lo que ya pagó de su propio dinero.
+      const pagadoO = dep
+        ? (d.estimaciones || []).filter(e => _ne(e.estatus) === 'pagada')
+            .reduce((t,e) => t + (parseFloat(e.monto)||0), 0)
+        : 0;
       // Nombre corto (mismo formato que el PDF y el header de obra)
       const nombreShort = resolverNombreCortoObra(o, gpData);
       const col=ec[o.estado]||C.caliza;
@@ -7589,6 +8544,35 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               <div key={l}><div style={{fontSize:9,color:C.textMut,marginBottom:1}}>{l}</div>
                 <div style={{fontSize:12,fontWeight:500,color:c}}>{v}</div></div>)}
           </div>
+        ) : dep ? (
+          /* Dependencia (P5): su contrato y su avance. Las cuatro cifras son
+             las mismas que el panel de arriba consolida, para que la tarjeta y
+             el consolidado no se contradigan. La barra mide avance FÍSICO —en
+             constructora mide gasto sobre presupuesto, que es otra cosa con la
+             misma forma. */
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:8,marginBottom:9}}>
+              {[["Contratado",MXN(o.presupuesto),C.textPri,null],
+                ["Ejecutado",MXN(amO),C.blueDk,
+                  o.presupuesto>0?`${NUM(amO/o.presupuesto*100,1)}% del contrato`:null],
+                ["Estimado",MXN(estTotalO),C.purpleDk,
+                  o.presupuesto>0?`${NUM(estTotalO/o.presupuesto*100,1)}% del contrato`:null],
+                ["Pagado",MXN(pagadoO),C.greenDk,
+                  `Por ejercer ${MXN(Math.max(o.presupuesto-pagadoO,0))}`],
+              ].map(([l,v,c,s])=>(
+                <div key={l}>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>{l}</div>
+                  <div style={{fontSize:12,fontWeight:600,color:c}}>{v}</div>
+                  {s&&<div style={{fontSize:9,color:C.textMut,marginTop:1}}>{s}</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
+              title={`Avance físico ${NUM(avanceFisico,1)}%`}>
+              <div style={{width:`${Math.min(avanceFisico,100).toFixed(1)}%`,height:"100%",
+                background:C.blueDk,borderRadius:99}}/>
+            </div>
+          </>
         ) : (
           <>
             {/* KPIs por obra — MISMOS 4 que el Panel Ejecutivo del portafolio:
@@ -7602,25 +8586,25 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               </div>
               <div>
                 <div title="GP + Maquinaria + Otros gastos (el Almacén ya está incluido en el GP y suma al Ejecutado, no al Gasto)" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
-                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && pg>90?C.red:o.presupuesto>0 && pg>75?C.yellowDk:C.textPri}}>{MXN(gastoTotalLive)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(pg,1)}% del contrato</div>}
+                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && eco.pg>90?C.red:o.presupuesto>0 && eco.pg>75?C.yellowDk:C.textPri}}>{MXN(eco.gastoTotalLive)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.pg,1)}% del contrato</div>}
               </div>
               <div>
                 <div title="Avance físico ponderado por importe + almacén" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Ejecutado</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(meO)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(meO/o.presupuesto*100,1)}% del contrato</div>}
+                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(eco.meO)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.meO/o.presupuesto*100,1)}% del contrato</div>}
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Margen bruto</div>
-                <div style={{fontSize:12,fontWeight:700,color:mNiv.color}}>
-                  {meO>0 ? `${margenPct>=0?'':'-'}${MXN(Math.abs(meO-gastoTotalLive))}` : '—'}
+                <div style={{fontSize:12,fontWeight:700,color:eco.mNiv.color}}>
+                  {eco.meO>0 ? `${eco.margenPct>=0?'':'-'}${MXN(Math.abs(eco.meO-eco.gastoTotalLive))}` : '—'}
                 </div>
-                {meO>0 && <div style={{fontSize:9,color:mNiv.color,marginTop:1,fontWeight:600}}>{NUM(margenPct,1)}% ejec. vs gastado</div>}
+                {eco.meO>0 && <div style={{fontSize:9,color:eco.mNiv.color,marginTop:1,fontWeight:600}}>{NUM(eco.margenPct,1)}% ejec. vs gastado</div>}
               </div>
             </div>
             <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
-              title={`Gasto total ${NUM(pg,1)}% del presupuesto`}>
-              <div style={{width:`${Math.min(pg,100).toFixed(1)}%`,height:"100%",
+              title={`Gasto total ${NUM(eco.pg,1)}% del presupuesto`}>
+              <div style={{width:`${Math.min(eco.pg,100).toFixed(1)}%`,height:"100%",
                 background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
             </div>
           </>
@@ -9735,6 +10719,239 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   </div>;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// DASHBOARD DE OBRA — ORGANIZACIÓN DE TIPO DEPENDENCIA
+//
+// Componente aparte, no el `Dashboard` de arriba con banderas. La razón está
+// en el P5: `Dashboard` calcula `gt` (gasto de GP + maquinaria + otros) en su
+// quinta línea y de ahí cuelgan el bloque de KPIs, la proyección de gasto, el
+// motor de riesgos y tres tarjetas. Sembrarlo de condicionales son unos diez
+// puntos de toque y basta olvidar uno para filtrar. Aquí el gasto no se
+// calcula, así que no puede filtrarse. Es el mismo criterio con el que se
+// separaron las vistas de rol `cliente`.
+//
+// Lo que una dependencia pregunta de su obra son ocho cosas:
+//   Contratado · Ejecutado · Estimado · Pagado · Por ejercer
+//   Avance físico · Última captura · Plazo
+//
+// Sin margen, sin gasto, sin personal. No por confidencialidad —las obras de
+// cada organización ya están aisladas por las reglas— sino porque esas cifras
+// no existen del lado de quien contrata.
+// ════════════════════════════════════════════════════════════════════════════
+function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], onNavTab}){
+  const contrato = parseFloat(obra?.presupuesto) || 0;
+  const modoVol  = obra?.modoAvance === "volumen";
+
+  // Mismas dos funciones que usa el resto de la app: el dinero ejecutado no se
+  // topa y el avance físico sí (P1). Tener aquí una tercera fórmula de
+  // "ejecutado" es exactamente el pendiente #8.
+  const ejecutado = desgloseEjecutado(subs, modoVol).total;
+  const avance    = avanceFisicoPonderado(subs, contrato, modoVol);
+
+  // Normalizador de estatus igual al de `Dashboard`: los estatus se capturaron
+  // a mano durante meses y conviven "Pagada", "pagada" y "PAGADA".
+  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const estimado = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
+  const pagado   = estimaciones.filter(e => _ne(e.estatus) === 'pagada')
+                               .reduce((t,e) => t + (e.monto||0), 0);
+
+  // "Por ejercer" es contra el CONTRATO y contra lo PAGADO, no contra lo
+  // ejecutado: es dinero del municipio que todavía no salió de su cuenta. Se
+  // topa en cero porque un contrato sobreejercido no deja un saldo negativo
+  // por ejercer — deja un convenio modificatorio, que es otra conversación.
+  const porEjercer = Math.max(contrato - pagado, 0);
+
+  // Última captura: la más reciente del historial semanal. Si no hay historial
+  // la cifra no se puede calcular, y entonces se dice (P2) — no se pone "hace
+  // 0 días", que se leería como "capturaron hoy".
+  const ultima = historialAvance.length > 0
+    ? historialAvance[historialAvance.length - 1] : null;
+  const fechaUltima = ultima?.fechaCierre || ultima?.fechaCaptura || null;
+  const diasSinCaptura = fechaUltima
+    ? Math.floor((Date.now() - new Date(fechaUltima).getTime()) / 86400000) : null;
+
+  // Plazo. El fin vigente sale de `finVigenteDe`, la misma cuenta que usan la
+  // proyección y la pantalla de plazos. Derivarlo aquí de la lista de
+  // ampliaciones abría una segunda cuenta: quien captura el fin ampliado en la
+  // ficha de la obra sin registrar la ampliación movía la proyección pero no
+  // esta tarjeta, y las dos cifras se contradecían en la misma pantalla.
+  const [ampliaciones, setAmpliaciones] = useState([]);
+  useEffect(() => {
+    let cancel = false;
+    fsGet(`obras/${obra.id}/contrato/plazos`).then(d => {
+      if (!cancel && d && Array.isArray(d.ampliaciones)) setAmpliaciones(d.ampliaciones);
+    });
+    return () => { cancel = true; };
+  }, [obra.id]);
+  const dias = (ini, fin) => (!ini || !fin) ? null
+    : Math.round((new Date(fin) - new Date(ini)) / 86400000);
+  const finVigente   = finVigenteDe(obra);
+  const ampliado     = !!finVigente && !!obra?.fin && finVigente !== obra.fin;
+  const totalDias    = dias(obra?.inicio, finVigente);
+  const transcurridos = obra?.inicio
+    ? Math.max(dias(obra.inicio, hoyLocalISO()) || 0, 0) : 0;
+  const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
+  const pctPlazo     = (totalDias && totalDias > 0)
+    ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+
+  // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
+  // las reglas que los necesitan están fuera de la lista para dependencia, y
+  // pasarle un gasto en cero haría que las de brecha dispararan solas.
+  const riesgos = detectarRiesgos({
+    tipo: 'dependencia',
+    obra, subs, estimaciones, historialAvance,
+    kpis: { af: avance, me: ejecutado },
+  });
+  const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
+
+  const pctEjec  = contrato > 0 ? (ejecutado / contrato) * 100 : null;
+  const pctEstim = contrato > 0 ? (estimado  / contrato) * 100 : null;
+  const pctPag   = contrato > 0 ? (pagado    / contrato) * 100 : null;
+  // Las plantillas de riesgo traen destinos de constructora. `destinoNav` dice
+  // cuál tiene equivalente aquí; los que no, no se pueden picar — en vez de
+  // picarse y no pasar nada, o peor, llevar a una pestaña que el menú no
+  // ofrece (que es lo que hacían).
+  const irA = (tabId, subTabId) =>
+    (onNavTab && destinoNav(tabId, subTabId, { tipo: 'dependencia' }))
+      ? () => onNavTab(tabId, subTabId)
+      : undefined;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {/* ── El dinero del contrato ── */}
+    <Card accent={C.caliza}>
+      <Tit>El contrato</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+        <Kpi label="Contratado" value={MXN(contrato)}
+          sub="monto del contrato" color={C.caliza} size={12}/>
+        <Kpi label="Ejecutado" value={MXN(ejecutado)}
+          sub={pctEjec != null ? `${NUM(pctEjec,1)}% del contrato` : "sin contrato capturado"}
+          color={C.blueDk} size={12}/>
+        <Kpi label="Estimado" value={MXN(estimado)}
+          sub={pctEstim != null ? `${NUM(pctEstim,1)}% del contrato` : "—"}
+          color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado" value={MXN(pagado)}
+          sub={pctPag != null ? `${NUM(pctPag,1)}% del contrato` : "—"}
+          color={C.greenDk} size={12}/>
+        <Kpi label="Por ejercer" value={MXN(porEjercer)}
+          sub="contratado menos pagado" color={C.textPri} size={12}/>
+      </div>
+      {/* Ejecutado y pagado sobre la misma escala: la distancia entre las dos
+          barras es lo que la obra ya hizo y todavía no le pagan. */}
+      {contrato > 0 && <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:7}}>
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+            <span>Ejecutado</span><span>{NUM(pctEjec,1)}%</span>
+          </div>
+          <Bar pct={pctEjec} color={C.blueDk}/>
+        </div>
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+            <span>Pagado</span><span>{NUM(pctPag,1)}%</span>
+          </div>
+          <Bar pct={pctPag} color={C.greenDk}/>
+        </div>
+      </div>}
+    </Card>
+
+    {/* ── La obra ── */}
+    <Card accent={C.blue} style={irA("avance")?{cursor:"pointer"}:undefined}>
+      <div onClick={irA("avance")}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div>
+            <Tit>La obra</Tit>
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
+              Avance ponderado por el importe contratado de cada partida
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:24,fontWeight:700,color:C.blueDk,lineHeight:1}}>{NUM(avance,1)}%</div>
+            <div style={{fontSize:9,color:C.textMut,marginTop:2}}>de avance físico</div>
+          </div>
+        </div>
+        <Bar pct={avance} color={C.blueDk}/>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginTop:14}}>
+          <Kpi label="Partidas" value={String(subs.length)}
+            sub={`${subs.filter(s=>(s.a||0)>=100).length} al 100%`} color={C.textPri} size={12}/>
+          {/* Cuando no hay historial la cifra NO se inventa: se dice que no
+              hay captura registrada. "hace 0 días" sería un cero falso. */}
+          <Kpi label="Última captura"
+            value={diasSinCaptura == null ? "sin captura"
+                 : diasSinCaptura === 0 ? "hoy"
+                 : `hace ${diasSinCaptura} día${diasSinCaptura===1?'':'s'}`}
+            sub={fechaUltima ? new Date(fechaUltima).toLocaleDateString("es-MX",
+                  {day:"numeric",month:"short",year:"2-digit"})
+                : "no hay semanas registradas"}
+            color={diasSinCaptura == null ? C.textMut
+                 : diasSinCaptura > 7 ? C.red : C.greenDk} size={12}/>
+        </div>
+      </div>
+    </Card>
+
+    {/* ── Plazo ── */}
+    <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
+      <Tit>Plazo</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Inicio</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.green}}>{obra?.inicio || "—"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
+          <div style={{fontSize:13,fontWeight:600,color:ampliado?C.yellow:C.green}}>{finVigente || "—"}</div>
+          {/* Contra qué fecha se mide, dicho siempre: si no se declara, un
+              plazo ampliado se lee como si fuera el del contrato firmado. */}
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            {ampliado
+              ? `ampliado${ampliaciones.length>0?` ${ampliaciones.length} ${ampliaciones.length===1?"vez":"veces"}`:""}; el original era ${obra?.fin||"—"}`
+              : "sin ampliaciones: es el plazo original"}
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.caliza}}>
+            {totalDias != null ? `${totalDias} días` : "no disponible"}
+          </div>
+          {totalDias == null && <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            falta capturar inicio o fin
+          </div>}
+        </div>
+      </div>
+      {pctPlazo != null && <div style={{marginTop:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:4}}>
+          <span>Transcurridos: <b style={{color:C.textSec}}>{transcurridos} días</b></span>
+          <span>Restantes: <b style={{color:C.textSec}}>{restantes} días</b></span>
+        </div>
+        <Bar pct={pctPlazo} color={pctPlazo>=100?C.red:pctPlazo>=75?C.yellow:C.green}/>
+        <div style={{fontSize:9,color:C.textMut,marginTop:3,textAlign:"right"}}>{NUM(pctPlazo,1)}% del plazo</div>
+      </div>}
+    </Card>
+
+    {/* ── Requiere atención ──
+        Sólo críticos y altos, igual que en el banner de constructora. Si no
+        hay ninguno no se pinta la tarjeta: un "todo en orden" permanente
+        enseña a ignorar el sitio donde después aparece lo importante. */}
+    {riesgosTop.length > 0 && <Card accent={C.red}>
+      <Tit>Requiere atención</Tit>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {riesgosTop.map(r => (
+          <div key={r.id} onClick={irA(r.tab, r.subTab)}
+            style={{background:C.bg,borderRadius:8,padding:"9px 11px",
+              borderLeft:`3px solid ${r.severidad==='critico'?C.red:C.yellow}`,
+              cursor:irA(r.tab, r.subTab)?"pointer":"default"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{r.titulo}</div>
+              <div style={{fontSize:12,fontWeight:700,flexShrink:0,
+                color:r.severidad==='critico'?C.red:C.yellowDk}}>{r.valor}</div>
+            </div>
+            {r.detalle && <div style={{fontSize:10,color:C.textSec,marginTop:2}}>{r.detalle}</div>}
+            {r.extra && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{r.extra}</div>}
+          </div>
+        ))}
+      </div>
+    </Card>}
+  </div>;
+}
+
 
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
 function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo}) {
@@ -9767,12 +10984,22 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
         { modulo:"avance_fisico", entidad:`captura ${tipoSnapshot}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
           meta:{ tipo: tipoSnapshot, nSubs: subs.length, avancePromedio: subs.reduce((s,x)=>s+(x.a||0),0)/(subs.length||1) } });
-      await fsSetA(`obras/${obra.id}/avance/maquinaria`,
-        { data: maquinaria, fecha: new Date().toISOString() },
-        { modulo:"maquinaria", entidad:`${maquinaria.length} equipos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-      await fsSetA(`obras/${obra.id}/avance/materiales`,
-        { data: materiales, fecha: new Date().toISOString() },
-        { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      // Maquinaria y almacén son costo del contratista: están en
+      // `RUTAS_SOLO_CONSTRUCTORA` y las reglas no las declaran del lado
+      // dependencia. El mismo inventario que decide qué se PIDE decide qué se
+      // ESCRIBE, por la misma razón (P5) y porque si no, cada guardado de un
+      // supervisor deja dos `permission-denied` que `fsSetA` se traga: ruido
+      // que entrena a ignorar la consola donde algún día habrá un fallo real.
+      if (seSuscribe('avance/maquinaria', usuario?.tipo)) {
+        await fsSetA(`obras/${obra.id}/avance/maquinaria`,
+          { data: maquinaria, fecha: new Date().toISOString() },
+          { modulo:"maquinaria", entidad:`${maquinaria.length} equipos`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      }
+      if (seSuscribe('avance/materiales', usuario?.tipo)) {
+        await fsSetA(`obras/${obra.id}/avance/materiales`,
+          { data: materiales, fecha: new Date().toISOString() },
+          { modulo:"almacen", entidad:`${materiales.length} materiales`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+      }
       // Crear snapshot del avance para histórico semanal
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
         obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0);
@@ -9871,39 +11098,74 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   const avanceActual = avanceFisicoPonderado(subs, contratoObra, modoVol);
   const compensacion = compensacionVolumenes(subs, modoVol);
 
-  // Snapshots oficiales ordenados (los intermedios solo para auditoría)
-  const oficiales = (historialAvance||[])
-    .filter(s => s.tipo === 'oficial')
-    .sort((a,b) => (a.año-b.año)||(a.semana-b.semana));
+  // El estado semana por semana sale de `estadoPorSemana`, que es la única
+  // cuenta del repositorio. Estos KPIs no vuelven a derivar nada de los
+  // snapshots: leen de ahí, igual que leerá el riel de la línea de tiempo.
+  const estados = estadoPorSemana(historialAvance);
+  const conAño = cruzaAños(estados);
+  const ultimoEstado = estados[estados.length-1] || null;
+  const penultimoEstado = estados[estados.length-2] || null;
+  const oficiales = estados.map(e => e.cierre);
 
-  const ultimoOf = oficiales[oficiales.length-1] || null;
-  const penultimoOf = oficiales[oficiales.length-2] || null;
+  const ultimoOf = ultimoEstado?.cierre || null;
+  const penultimoOf = penultimoEstado?.cierre || null;
   // fix/ejecutado-sin-recorte: los snapshots del esquema 1 traen el avance
   // calculado con `a` recortado. Restar uno de cada esquema produce un salto
   // artificial que dispararía alertas falsas, así que el delta simplemente no
-  // se calcula cuando los puntos no son comparables.
-  const deltaComparable = ultimoOf && penultimoOf && sonComparables(ultimoOf, penultimoOf);
-  const deltaSemana = deltaComparable ? ultimoOf.avancePonderado - penultimoOf.avancePonderado : null;
+  // se calcula cuando los puntos no son comparables. Esa decisión vive dentro
+  // de `estadoPorSemana`, que además dice POR QUÉ no hay delta.
+  const deltaSemana = ultimoEstado ? ultimoEstado.delta : null;
 
-  // Velocidad promedio últimas 4 semanas oficiales (pp/semana).
-  // Solo entre snapshots comparables en AVANCE con el último.
-  const ult4 = oficiales.filter(s => sonComparables(s, ultimoOf, 'avance')).slice(-4);
-  let velocidadProm = 0;
-  if (ult4.length >= 2) {
-    const totalDelta = ult4[ult4.length-1].avancePonderado - ult4[0].avancePonderado;
-    const totalSems = ult4.length - 1;
-    velocidadProm = totalSems > 0 ? totalDelta/totalSems : 0;
-  }
-  // Proyección de fin a ritmo actual (semanas hasta 100%)
-  const pendientes = Math.max(100 - avanceActual, 0);
-  const semsParaFin = velocidadProm > 0 ? Math.ceil(pendientes/velocidadProm) : null;
-  const fechaProyFin = semsParaFin ? new Date(Date.now() + semsParaFin*7*86400000) : null;
-  // Desviación vs plazo contratado
-  const finContrato = obra.finAmpliado || obra.fin;
-  let desvDias = null;
-  if (fechaProyFin && finContrato) {
-    desvDias = Math.round((fechaProyFin - new Date(finContrato))/86400000);
-  }
+  // Proyección de término: velocidad, fecha y desviación contra el plazo
+  // VIGENTE, en una sola cuenta que también devuelve por qué no hay
+  // proyección cuando no la hay.
+  const proy = proyeccionDeAvance(estados, avanceActual, obra);
+  const velocidadProm = proy.velocidad;
+  const fechaProyFin = proy.fechaFin;
+  const desvDias = proy.desviacionDias;
+  const finContrato = proy.finVigente;
+
+  // La frase de la proyección, en palabras y sin guiones ambiguos. El guion
+  // anterior significaba tres cosas distintas a la vez —no hay dos cierres,
+  // los cierres no se pueden restar, la obra no avanza— y la peor de las tres
+  // era la que quedaba escondida.
+  const frasePlazo = (() => {
+    const vig = fechaEnPalabras(fechaLocalDeISO(finContrato));
+    const orig = fechaEnPalabras(fechaLocalDeISO(obra.fin));
+    // Qué fecha es el plazo vigente, y si no es la original, cuál era. Esto es
+    // lo que hacía falta decir en voz alta: la proyección NUNCA se compara
+    // contra el plazo del contrato firmado, sino contra el que está vigente
+    // después de las ampliaciones, y eso cambia quién está en atraso.
+    const elPlazo = !vig
+      ? 'el plazo vigente, que esta obra no tiene capturado'
+      : proy.ampliado
+        ? `el plazo VIGENTE, ${vig} — ampliado; el original era el ${orig || 'que no está capturado'}`
+        : `el plazo vigente, ${vig}, que sigue siendo el original`;
+    if (proy.razon === null) {
+      const d = proy.desviacionDias;
+      const cuando = d === null
+        ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}, pero no hay contra qué compararlo`
+        : d > 0
+          ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${d} días DESPUÉS del plazo`
+          : d < 0
+            ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${Math.abs(d)} días antes del plazo`
+            : `terminaría justo en el plazo`;
+      return `Al ritmo de los últimos ${proy.semanasBase} cierres, la obra ${cuando}. Se compara contra ${elPlazo}.`;
+    }
+    if (proy.razon === SIN_PROY_SIN_AVANCE) {
+      return `No hay proyección de término, y la razón es la grave: en los últimos ${proy.semanasBase} cierres `
+        + (proy.velocidad < 0
+          ? `el avance RETROCEDIÓ ${NUM(Math.abs(proy.velocidad),2)} pp por semana.`
+          : `el avance no se movió.`)
+        + ` A esa velocidad la obra no llega nunca, así que no hay fecha que proyectar. Se compara contra ${elPlazo}.`;
+    }
+    if (proy.razon === SIN_PROY_NO_COMPARABLES) {
+      return `No hay proyección de término: hay ${estados.length} cierres, pero se calcularon con definiciones `
+        + `distintas del avance y restarlos inventaría un salto que no ocurrió. Se compara contra ${elPlazo}.`;
+    }
+    return `No hay proyección de término: hacen falta dos cierres semanales para medir una velocidad y hay `
+      + `${estados.length}. Se compara contra ${elPlazo}.`;
+  })();
 
   // ── DETECTORES ──
   // Todos comparan AVANCE FÍSICO, así que ambos lados se topan al 100%:
@@ -9947,24 +11209,31 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
 
   // ── GRÁFICA: Curva S — avance acumulado real vs programado ──
   // Por cada snapshot oficial calculamos qué % deberíamos tener en esa fecha (lineal del 0 al 100% sobre el plazo)
-  const inicio = obra.inicio ? new Date(obra.inicio) : null;
-  const fin = finContrato ? new Date(finContrato) : null;
+  // Las fechas se arman en LOCAL (`fechaLocalDeISO`): `new Date("2026-03-01")`
+  // es UTC, y aquí se restan contra `Date.now()`, que es local. El error de
+  // seis horas no se ve en un plazo de meses, pero es el mismo patrón que
+  // adelantaba un día la fecha de una foto, y no se deja sembrado.
+  const inicio = fechaLocalDeISO(obra.inicio);
+  const fin = fechaLocalDeISO(finContrato);
   const plazoTotalDias = (inicio && fin) ? (fin - inicio) / 86400000 : null;
   const programadoEnFecha = (fechaISO) => {
     if (!plazoTotalDias || plazoTotalDias <= 0) return null;
-    const trans = (new Date(fechaISO) - inicio) / 86400000;
+    const f = fechaLocalDeISO(fechaISO);
+    if (!f) return null;
+    const trans = (f - inicio) / 86400000;
     return Math.min(Math.max((trans / plazoTotalDias) * 100, 0), 100);
   };
-  const puntos = oficiales.length > 0
-    ? oficiales.map(s => ({
-        x: `S${s.semana}`,
-        real: s.avancePonderado,
-        programado: programadoEnFecha(s.fechaCierre || s.fechaCaptura),
-        sem: s.semana, año: s.año,
-        // Los puntos anteriores al arreglo se calcularon con `a` recortado.
-        esquema: s.esquema || 1,
-      }))
-    : [];
+  // El eje X lleva el año cuando la obra cruza de año. Sin él, una obra de
+  // noviembre a marzo pinta dos marcas "S48" —una de cada año— y la gráfica
+  // deja de decir cuándo pasó cada cosa.
+  const puntos = estados.map(e => ({
+    x: etiquetaSemanaRiel(e, conAño),
+    real: e.avance,
+    programado: programadoEnFecha(e.fechaCierre),
+    sem: e.semana, año: e.año,
+    // Los puntos anteriores al arreglo se calcularon con `a` recortado.
+    esquema: e.cierre.esquema || 1,
+  }));
   // Frontera de la curva S: índice del primer punto ya calculado con la
   // definición vigente del avance. El tramo anterior se dibuja punteado, no se
   // corta — obras como la 0112 se quedarían con un solo punto.
@@ -9985,17 +11254,26 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
     {/* KPIs principales */}
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
       <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
-        sub={oficiales.length>0?`Última semana cerrada: S${ultimoOf.semana}`:"Sin cierres oficiales"}
+        sub={ultimoEstado?`Última semana cerrada: ${etiquetaSemanaRiel(ultimoEstado, conAño)}`:"Sin cierres oficiales"}
         color={semA(avanceActual)} size={14}/>
       <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
-        sub={deltaSemana!==null?`vs S${penultimoOf.semana}`
-          : oficiales.length>=2?"semanas no comparables":"requiere 2 cierres"}
+        sub={deltaSemana!==null?`vs ${etiquetaSemanaRiel(penultimoEstado, conAño)}`
+          : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables":"requiere 2 cierres"}
         color={deltaSemana===null?C.textMut:deltaSemana>=0?C.greenDk:C.red} size={12}/>
-      <Kpi label="Velocidad prom." value={ult4.length>=2?`${NUM(velocidadProm,2)} pp/sem`:"—"}
-        sub={`últimas ${ult4.length} sem.`} color={C.blueDk} size={12}/>
-      <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"2-digit"}):"—"}
-        sub={desvDias!==null?(desvDias>0?`+${desvDias}d vs contrato`:desvDias<0?`${desvDias}d antes`:"en plazo"):"—"}
-        color={desvDias===null?C.textMut:desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
+      <Kpi label="Velocidad prom." value={velocidadProm!==null?`${NUM(velocidadProm,2)} pp/sem`:"—"}
+        sub={velocidadProm!==null?`últimos ${proy.semanasBase} cierres`:"sin velocidad medible"}
+        color={velocidadProm===null?C.textMut:velocidadProm>0?C.blueDk:C.red} size={12}/>
+      <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"numeric"}):"—"}
+        sub={desvDias!==null
+          ? (desvDias>0?`${desvDias} días después del plazo vigente`
+            :desvDias<0?`${Math.abs(desvDias)} días antes del plazo vigente`
+            :"justo en el plazo vigente")
+          : proy.razon===SIN_PROY_SIN_AVANCE?(proy.velocidad<0?"la obra retrocede":"la obra no avanza")
+          : proy.razon===SIN_PROY_NO_COMPARABLES?"cierres no comparables"
+          : "requiere 2 cierres"}
+        color={desvDias===null
+          ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
+          : desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
       {idealActual!==null && (
         <Kpi label="Avance ideal" value={`${NUM(idealActual,1)}%`}
           sub={desvIdeal!==null?(desvIdeal<0?`${NUM(desvIdeal,1)}pp atrasado`:`+${NUM(desvIdeal,1)}pp adelantado`):"—"}
@@ -10003,10 +11281,20 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       )}
     </div>
 
+    {/* La proyección, en una frase. El KPI de arriba cabe en tres palabras y
+        por eso cabía también el guion que significaba tres cosas; aquí se dice
+        cuál de las tres es, y contra qué fecha se está comparando. */}
+    <div style={{fontSize:10,lineHeight:1.5,
+      color: proy.razon===SIN_PROY_SIN_AVANCE ? C.red
+        : (desvDias!==null && desvDias>0) ? C.yellow : C.textSec,
+      background:C.bg, borderRadius:8, padding:"8px 11px"}}>
+      {frasePlazo}
+    </div>
+
     {/* Se quitó el párrafo de frontera de definición. El comportamiento no
         cambia: quien impide que los deltas crucen la frontera es
-        `sonComparables`, en `deltaComparable` y en el filtro de `ult4` que
-        alimenta la velocidad. Ese aviso tenía su propia bandera `serieMixta`,
+        `sonComparables`, dentro de `estadoPorSemana` y de
+        `proyeccionDeAvance`. Ese aviso tenía su propia bandera `serieMixta`,
         que no gobernaba nada más y se fue con él. */}
 
     {/* Compensación de volúmenes — por qué el avance de la obra no es el
@@ -10400,16 +11688,32 @@ function MiniDashSubcontratos({obra, subcontratos}){
 // (Avance · Almacén · Maquinaria · Nómina · Estimaciones · Subcontratos)
 // Cada sub-tab tiene su propio mini-dashboard arriba (Sprint B).
 // ════════════════════════════════════════════════════════════════════════════
-function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
+// `subTabs` llega como parámetro en vez de leerse de la constante de módulo:
+// una dependencia sólo debe ver la captura de avance (P5), y el filtro tiene
+// que decidirse donde se conoce el tipo de organización. Leerla aquí adentro
+// era la razón por la que dar la pestaña de Operación entregaba de pasada
+// nómina, subcontratos y maquinaria.
+//
+// El default deja la interfaz de constructora exactamente como estaba.
+function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
                    historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,
-                   nominaHistorial=[], setNominaHistorial}){
+                   nominaHistorial=[], setNominaHistorial,
+                   subTabs=SUBTABS_OPERACION}){
+  // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
+  // `subTabOper` es estado que sobrevive al cambio de obra y lo mueve también
+  // `onNavTab`, así que un valor viejo —"nomina", por ejemplo— podría seguir
+  // en pie cuando la barra ya no lo ofrece. Esconder el botón no basta si el
+  // cuerpo de abajo sigue dispuesto a pintar la sección.
+  const subTab = subTabs.some(t => t.id === subTabPedido) ? subTabPedido : subTabs[0].id;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {/* Sub-tabs */}
-    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+    {/* Sub-tabs — con una sola no hay nada que elegir, así que no se pinta
+        la barra: un selector de un elemento es ruido que además insinúa que
+        hay más detrás. */}
+    {subTabs.length > 1 && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
-      {SUBTABS_OPERACION.map(t => (
+      {subTabs.map(t => (
         <button key={t.id} onClick={()=>setSubTab(t.id)}
           style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
             background: subTab===t.id ? C.caliza : "transparent",
@@ -10419,14 +11723,15 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
           {t.label}
         </button>
       ))}
-    </div>
+    </div>}
 
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
       <>
         <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
-        {/* Órdenes de Trabajo — solo si la obra tiene la bandera cargaOT (TAMSA) */}
-        {obra?.cargaOT && (
+        {/* Órdenes de Trabajo — ver `vanLasOT`: la bandera de la obra Y que la
+            sesión sea de una constructora. La OT es documento interno suyo. */}
+        {vanLasOT(usuario, obra) && (
           <>
             <CargarOT obra={obra} subs={subs} setSubs={setSubs} fbDb={fbDb} fbStor={fbStor}
               usuario={usuario} onCargada={()=>setCambiosPendientes&&setCambiosPendientes(true)}/>
@@ -10494,11 +11799,14 @@ function Operacion({subTab,setSubTab,obra,setObra,rol,usuario,
 // ════════════════════════════════════════════════════════════════════════════
 // PLANEACIÓN — Wrapper con sub-tabs: lo que define la obra (Contrato · Presupuesto)
 // ════════════════════════════════════════════════════════════════════════════
-function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCargados}){
+// `subTabs` como parámetro y acotado adentro, por lo mismo que en `Operacion`.
+function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setSubsGlobal,subs,subsCargados,
+                     subTabs=SUBTABS_PLANEACION}){
+  const subTab = subTabs.some(t => t.id === subTabPedido) ? subTabPedido : subTabs[0].id;
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
+    {subTabs.length > 1 && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,
       background:C.surface,padding:"6px 4px",borderRadius:8,border:`0.5px solid ${C.border}`,marginBottom:2}}>
-      {SUBTABS_PLANEACION.map(t => (
+      {subTabs.map(t => (
         <button key={t.id} onClick={()=>setSubTab(t.id)}
           style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:6,
             background: subTab===t.id ? C.caliza : "transparent",
@@ -10508,8 +11816,8 @@ function Planeacion({subTab,setSubTab,obra,setObra,rol,setSubsGlobal,subs,subsCa
           {t.label}
         </button>
       ))}
-    </div>
-    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} subs={subs} subsCargados={subsCargados}/>}
+    </div>}
+    {subTab==="contrato" && <Contrato obra={obra} setObra={setObra} rol={rol} usuario={usuario} subs={subs} subsCargados={subsCargados}/>}
     {subTab==="presupuesto" && <Presupuesto obra={obra} setObra={setObra} rol={rol} setSubsGlobal={setSubsGlobal}/>}
     {subTab==="permisos" && <PermisosObra obra={obra} rol={rol}/>}
   </div>;
@@ -10555,7 +11863,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           if (s.id !== subId) return s;
           const fotosObj = s.fotos || {};
           // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
-          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: new Date().toISOString().slice(0,10)}]}};
+          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: hoyLocalISO()}]}};
         }));
       } catch (commitErr) {
         // El commit al estado local nunca debería fallar, pero si algún día
@@ -10590,16 +11898,21 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           color:tab===id?C.bg:C.textSec,fontWeight:tab===id?700:400,whiteSpace:"nowrap"}}>{lbl}</button>)}
     </div>}
 
+    {/* La ruta que se nombra aquí tiene que ser la del menú de ESTA sesión. El
+        clic ya llegaba bien —`onNavTab` traduce el destino—, pero el texto
+        mandaba a «Planeación», que una dependencia no tiene en su menú. Un
+        instructivo que nombra una pestaña inexistente es peor que no tenerlo:
+        el usuario la busca, no la encuentra y reporta un defecto que no es. */}
     {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length === 0 && (
       <EmptyState
-        titulo="Aún no hay catálogo de presupuesto"
+        titulo={`Aún no hay ${lexico(usuario).catalogo.toLowerCase()}`}
         mensaje="Antes de capturar avance físico necesitas cargar el catálogo de conceptos de esta obra. Es lo que define qué subsecciones hay y cuánto pesa cada una."
         cta={onNavTab ? {
-          label: "Ir a Planeación → Presupuesto",
+          label: `Ir a ${lexico(usuario).rutaCatalogo}`,
           onClick: () => onNavTab("planeacion", "presupuesto"),
         } : null}
         pasos={[
-          "Ve a la pestaña Planeación → Presupuesto.",
+          `Ve a la pestaña ${lexico(usuario).rutaCatalogo}.`,
           "Sube tu archivo Excel o CSV con el catálogo de conceptos.",
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
@@ -11005,7 +12318,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
   }
   function agregarOtroGasto() {
     guardarOtros([...otrosGastos, {
-      id: Date.now(), concepto: "", importe: 0, fecha: new Date().toISOString().slice(0,10), notas: ""
+      id: Date.now(), concepto: "", importe: 0, fecha: hoyLocalISO(), notas: ""
     }]);
   }
   function actualizarOtroGasto(id, campo, valor) {
@@ -11755,7 +13068,7 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
               Match con obra actual
             </div>
             <div style={{fontSize:10,color:C.textSec}}>
-              <div>Obra CAMPO: <b>{obra.id} · {obra.nombre}</b></div>
+              <div>Obra en cotea: <b>{obra.id} · {obra.nombre}</b></div>
               <div>Encontrada en GP: <b style={{color:C.greenDk}}>{datosObra.id} · {datosObra.nombre}</b></div>
               <div style={{marginTop:4}}>
                 Grand Total: <b>{MXN(datosObra.grandTotal||0)}</b> · Rubros: <b>{Object.keys(datosObra.rubros||{}).length}</b> · Proveedores: <b>{(datosObra.proveedores||[]).length}</b>
@@ -12624,7 +13937,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
     if (catalogoGuardado) {
       let snapPrev;
       try {
-        snapPrev = await getDocFromServer(doc(fbDb, 'obras', obra.id, 'avance', 'subs'));
+        snapPrev = await getDocFromServer(docObra(obra.id, 'avance', 'subs'));
       } catch (e) {
         // No sabemos si hay avance que preservar. Escribir aquí es destructivo
         // e irreversible, así que no se escribe.
@@ -12769,7 +14082,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
 
       <Card>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-          <Tit> Catálogo de presupuesto — {obra.nombre}</Tit>
+          <Tit> Catálogo de conceptos — {obra.nombre}</Tit>
           {catalogoGuardado && fase==='inicio' && (
             <Bdg color={C.green}>Cargado el {catalogoGuardado.fechaCarga}</Bdg>
           )}
@@ -12809,7 +14122,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             onClick={e=>e.stopPropagation()}>
             <div style={{background:C.yellow,color:C.caliza,padding:'14px 18px',
               borderRadius:'12px 12px 0 0',fontSize:13,fontWeight:700}}>
-              Reemplazar catálogo de presupuesto
+              Reemplazar catálogo de conceptos
             </div>
             <div style={{padding:'16px 18px',fontSize:11,color:C.textPri,lineHeight:1.5}}>
               <p style={{margin:'0 0 10px'}}>Vas a cargar un catálogo nuevo que sustituirá al actual (<b>{catalogoGuardado?.conceptos?.length||0} partidas</b>).</p>
@@ -12861,7 +14174,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             </div>
           </div>
           <div style={{fontSize:10,color:C.textMut,marginBottom:5,textTransform:'uppercase',letterSpacing:'0.04em'}}>
-            2. Archivo del presupuesto
+            2. Archivo del catálogo
           </div>
           <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:10,padding:24,textAlign:'center',
             cursor:'pointer',transition:'all .2s'}}
@@ -12874,7 +14187,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
               : <>
                   <div style={{fontSize:28,marginBottom:8}}></div>
                   <div style={{fontSize:13,fontWeight:600,color:C.textSec,marginBottom:4}}>
-                    Arrastra el Excel del presupuesto aquí
+                    Arrastra el Excel del catálogo aquí
                   </div>
                   <div style={{fontSize:10,color:C.textMut}}>
                     Formatos soportados: .xlsx, .xls, .csv · Cualquier estructura
@@ -14560,61 +15873,245 @@ function AvanceCliente({obra, subs}){
   </div>;
 }
 
-// ── FOTOS (CLIENTE): galería de fotos por subsección ────────────────────────
+// ── FOTOS (CLIENTE): la evidencia por semana y por partida ──────────────────
+//
+// Dos ejes, porque son dos preguntas distintas y ninguna contesta la otra:
+//
+//   · POR SEMANA — «qué se subió la semana pasada». Es la pregunta del que
+//     revisa el avance y quiere ver el trabajo reciente sin bucear.
+//   · POR PARTIDA — «cómo ha ido esta partida». Es el eje de verdad para
+//     seguir una obra: el residente honesto fotografía cada semana OTRA cosa,
+//     así que dos semanas puestas una al lado de la otra salen casi todas en
+//     hueco. Medido con `scripts/medir-semanas-evidencia.cjs`: en la 0114 son
+//     muchas más las partidas con foto en varias semanas que las partidas en
+//     común entre dos semanas concretas. Por eso NO hay vista de «compara la
+//     semana A con la B»: se vería vacía y la culpa parecería de los datos.
+//
+// La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
+// de `semanaDeFoto`.
 function FotosCliente({obra, subs}){
   const[lightbox,setLightbox]=useState(null);
-  // subsecciones con al menos 1 foto
+  const[vista,setVista]=useState("semana");     // "semana" | "partida"
+  const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
+  const[partidaSel,setPartidaSel]=useState(null);
+
+  // Todas las fotos de la obra, aplanadas, cada una con su partida y su semana.
   //
   // El mapa de una partida es `{ idPartida: [foto, foto, …] }`, así que
   // `Object.values` devuelve un arreglo DE ARREGLOS. Sin `.flat()` cada
   // elemento era un grupo: la insignia contaba grupos —una partida con 43
   // fotos anunciaba "1 foto"— y al pintar, un arreglo no tiene `.url` ni
-  // `.src`, así que el `if(!url) return null` de abajo se las saltaba todas.
-  // La galería anunciaba fotos y dejaba la rejilla en blanco. Las 475 fotos
-  // que hay hoy en producción eran invisibles en la pantalla que se le
-  // enseña al cliente (PENDIENTES #32).
+  // `.src`, así que las fotos se saltaban todas. La galería anunciaba fotos y
+  // dejaba la rejilla en blanco. Las 475 fotos que hay hoy en producción eran
+  // invisibles en la pantalla que se le enseña al cliente (PENDIENTES #32).
   //
   // El `.filter(Boolean)` tira los huecos sin tirar las fotos que son una
-  // cadena suelta: el esquema es mixto y abajo se contempla ese caso.
-  const conFotos = subs.map(s => {
-    const fotos = (Array.isArray(s.fotos)
-      ? s.fotos
-      : Object.values(s.fotos||{}).flat()).filter(Boolean);
-    return {...s, _fotos: fotos};
-  }).filter(s => s._fotos.length > 0);
+  // cadena suelta: el esquema es mixto y aquí se contempla ese caso.
+  const todas = useMemo(() => {
+    const out = [];
+    (subs||[]).forEach((s,is) => {
+      const lista = (Array.isArray(s.fotos)
+        ? s.fotos
+        : Object.values(s.fotos||{}).flat()).filter(Boolean);
+      lista.forEach((foto,i) => {
+        const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
+        if (!url) return;
+        out.push({
+          url,
+          k: `${s.id||s.sec||is}-${i}`,
+          partidaId: s.id || s.sec || `#${is}`,
+          sec: s.sec || "",
+          sub: s.sub || "(sin descripción)",
+          semana: semanaDeFoto(foto),
+        });
+      });
+    });
+    return out;
+  }, [subs]);
+
+  // Las semanas con evidencia, de la más reciente a la más vieja. La clave
+  // "S38-2026" NO se puede ordenar como texto —"S05-2027" iría antes que
+  // "S38-2026"—, así que se ordena por (año, semana).
+  const semanas = useMemo(() => {
+    const vistas = [...new Set(todas.map(f => f.semana).filter(Boolean))];
+    return vistas.sort((a,b) => (a.slice(4) + a.slice(1,3)) < (b.slice(4) + b.slice(1,3)) ? 1 : -1);
+  }, [todas]);
+
+  const sinSemana = todas.filter(f => !f.semana);
+
+  // Las partidas con evidencia, con en cuántas semanas distintas tienen foto.
+  const partidas = useMemo(() => {
+    const m = new Map();
+    todas.forEach(f => {
+      if (!m.has(f.partidaId)) m.set(f.partidaId, {id:f.partidaId, sec:f.sec, sub:f.sub, fotos:[], semanas:new Set()});
+      const p = m.get(f.partidaId);
+      p.fotos.push(f);
+      if (f.semana) p.semanas.add(f.semana);
+    });
+    return [...m.values()].sort((a,b) => String(a.sec).localeCompare(String(b.sec), 'es', {numeric:true}));
+  }, [todas]);
+
+  // La semana que se está mirando. Por omisión, la más reciente con evidencia;
+  // si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
+  const semActiva = (semanaSel && (semanaSel === "__sin__" || semanas.includes(semanaSel)))
+    ? semanaSel
+    : (semanas[0] || (sinSemana.length ? "__sin__" : null));
+
+  const deSemana = semActiva === "__sin__" ? sinSemana : todas.filter(f => f.semana === semActiva);
+
+  const pActiva = partidas.find(p => p.id === partidaSel) || null;
+
+  // Rejilla de miniaturas. Una foto sin fecha lo dice encima, no se disfraza.
+  const rejilla = (fotos, conSello) => (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
+      {fotos.map(f => (
+        <div key={f.k} onClick={()=>setLightbox(f.url)}
+          style={{background:C.bg,borderRadius:6,overflow:"hidden",cursor:"pointer",
+            aspectRatio:"4/3",position:"relative"}}>
+          <img src={f.url} alt={f.sub}
+            style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+          {conSello && !f.semana && (
+            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.6)",
+              color:"#fff",fontSize:8,padding:"2px 4px",textAlign:"center"}}>sin fecha</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Grupos por partida dentro de una semana.
+  const porPartida = (fotos) => {
+    const m = new Map();
+    fotos.forEach(f => {
+      if (!m.has(f.partidaId)) m.set(f.partidaId, {sec:f.sec, sub:f.sub, fotos:[]});
+      m.get(f.partidaId).fotos.push(f);
+    });
+    return [...m.entries()].sort((a,b) =>
+      String(a[1].sec).localeCompare(String(b[1].sec), 'es', {numeric:true}));
+  };
+
+  const chip = (activo) => ({
+    background: activo ? C.caliza : C.surface,
+    color: activo ? "#fff" : C.textSec,
+    border: `0.5px solid ${activo ? C.caliza : C.borderM}`,
+    borderRadius: 99, padding: "4px 10px", fontSize: 10, fontWeight: activo ? 700 : 500,
+    cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+  });
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <Card>
       <Tit>Evidencia fotográfica</Tit>
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        Fotos cargadas en campo, organizadas por partida
+        {todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
+        {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
+        {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
       </div>
-      {conFotos.length === 0 && (
+
+      {todas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
           Aún no se han cargado fotos de esta obra.
         </div>
-      )}
-      {conFotos.map((s,i) => (
-        <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:14}}>
-          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
-            borderBottom:`0.5px solid ${C.border}`}}>
-            <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{s.sec}</span>
-            <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{s.sub}</span>
-            <Bdg color={C.blue} small>{s._fotos.length} foto{s._fotos.length>1?"s":""}</Bdg>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
-            {s._fotos.map((foto,i)=>{
-              const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
-              if(!url) return null;
-              return <div key={i} onClick={()=>setLightbox(url)}
-                style={{background:C.bg,borderRadius:6,overflow:"hidden",cursor:"pointer",aspectRatio:"4/3"}}>
-                <img src={url} alt={`${s.sub} ${i+1}`}
-                  style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
-              </div>;
-            })}
-          </div>
+      ) : (
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          <button onClick={()=>setVista("semana")}  style={chip(vista==="semana")}>Por semana</button>
+          <button onClick={()=>setVista("partida")} style={chip(vista==="partida")}>Por partida</button>
         </div>
-      ))}
+      )}
+
+      {/* ── VISTA 1: una semana ─────────────────────────────────────────── */}
+      {todas.length > 0 && vista === "semana" && <>
+        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:6,marginBottom:8}}>
+          {semanas.map(w => (
+            <button key={w} onClick={()=>setSemanaSel(w)} style={chip(semActiva===w)}>
+              {etiquetaSemanaCorta(w)}
+            </button>
+          ))}
+          {sinSemana.length > 0 && (
+            <button onClick={()=>setSemanaSel("__sin__")} style={chip(semActiva==="__sin__")}>
+              Sin fecha ({sinSemana.length})
+            </button>
+          )}
+        </div>
+        <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+          {semActiva === "__sin__"
+            ? "Fotos sin fecha de subida registrada"
+            : leyendaSemanaSubida(semActiva)}
+        </div>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
+          {semActiva === "__sin__"
+            ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
+            : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
+        </div>
+        {deSemana.length === 0 && (
+          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+            No se subieron fotos en esta semana.
+          </div>
+        )}
+        {porPartida(deSemana).map(([id,g]) => (
+          <div key={id} style={{marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,paddingBottom:5,
+              borderBottom:`0.5px solid ${C.border}`}}>
+              <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{g.sec}</span>
+              <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{g.sub}</span>
+              <Bdg color={C.blue} small>{g.fotos.length} foto{g.fotos.length>1?"s":""}</Bdg>
+            </div>
+            {rejilla(g.fotos, false)}
+          </div>
+        ))}
+      </>}
+
+      {/* ── VISTA 2: una partida a lo largo de sus semanas ──────────────── */}
+      {todas.length > 0 && vista === "partida" && !pActiva && <>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
+          Elige una partida para ver su evidencia semana por semana.
+        </div>
+        {partidas.map(p => (
+          <div key={p.id} onClick={()=>setPartidaSel(p.id)}
+            style={{display:"flex",alignItems:"center",gap:6,padding:"8px 0",cursor:"pointer",
+              borderBottom:`0.5px solid ${C.border}`}}>
+            <span style={{fontSize:9,color:C.textMut,fontWeight:600,flexShrink:0}}>{p.sec}</span>
+            <span style={{fontSize:11,fontWeight:600,color:C.caliza,flex:1,minWidth:0,
+              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.sub}</span>
+            <Bdg color={C.blue} small>{p.fotos.length}</Bdg>
+            <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>
+              {p.semanas.size} sem{p.semanas.size===1?"":"s"}
+            </span>
+            <span style={{fontSize:12,color:C.textMut,flexShrink:0}}>›</span>
+          </div>
+        ))}
+      </>}
+
+      {todas.length > 0 && vista === "partida" && pActiva && <>
+        <button onClick={()=>setPartidaSel(null)}
+          style={{background:"none",border:"none",color:C.blue,fontSize:10,padding:0,
+            cursor:"pointer",marginBottom:8}}>‹ todas las partidas</button>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10,paddingBottom:6,
+          borderBottom:`0.5px solid ${C.border}`}}>
+          <span style={{fontSize:9,color:C.textMut,fontWeight:600}}>{pActiva.sec}</span>
+          <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{pActiva.sub}</span>
+        </div>
+        {/* De la semana más reciente a la más vieja, y el grupo sin fecha al
+            final: va al final porque no se sabe dónde va, no porque sea viejo. */}
+        {semanas.filter(w => pActiva.fotos.some(f => f.semana === w)).map(w => (
+          <div key={w} style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:6}}>
+              {leyendaSemanaSubida(w)}
+            </div>
+            {rejilla(pActiva.fotos.filter(f => f.semana === w), false)}
+          </div>
+        ))}
+        {pActiva.fotos.some(f => !f.semana) && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+              Fotos sin fecha de subida registrada
+            </div>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
+              No se puede saber de qué semana son.
+            </div>
+            {rejilla(pActiva.fotos.filter(f => !f.semana), false)}
+          </div>
+        )}
+      </>}
     </Card>
 
     {/* Lightbox simple */}
@@ -14703,10 +16200,22 @@ function PlazosCliente({obra}){
     return Math.round((new Date(fin) - new Date(ini))/(1000*60*60*24));
   };
 
-  const hoy = new Date();
-  const finVigente = ampliaciones.length>0 ? ampliaciones[ampliaciones.length-1].fecha : obra.fin;
+  // El fin vigente sale de `finVigenteDe`, igual que la proyección de los
+  // KPIs. Antes esta pantalla lo derivaba de la última ampliación de
+  // `contrato/plazos` y el mini-dashboard de `obra.finAmpliado`: dos cuentas
+  // del mismo dato, que es exactamente cómo nació el defecto de 078585e —la
+  // gráfica y el KPI leyendo dinero distinto en la misma pantalla—. La lista
+  // de ampliaciones se sigue mostrando, pero como detalle, no como fuente.
+  const finVigente = finVigenteDe(obra);
+  // "Ampliado" se decide por el dato, no por si la lista de ampliaciones llegó:
+  // el fin vigente se puede capturar también desde la ficha de la obra, sin
+  // registrar la ampliación, y ese caso también mueve el plazo.
+  const ampliado = !!finVigente && !!obra.fin && finVigente !== obra.fin;
   const totalDias = diasPlazo(obra.inicio, finVigente);
-  const transcurridos = obra.inicio ? Math.max(diasPlazo(obra.inicio, hoy.toISOString().slice(0,10))||0, 0) : 0;
+  // `new Date().toISOString().slice(0,10)` es UTC: desde las 18:00 en México
+  // devolvía la fecha de MAÑANA, y este número es el que dispara las penas
+  // convencionales por día de atraso. El último sitio del patrón.
+  const transcurridos = obra.inicio ? Math.max(diasPlazo(obra.inicio, hoyLocalISO())||0, 0) : 0;
   const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo = totalDias && totalDias > 0 ? Math.min((transcurridos/totalDias)*100, 100) : 0;
 
@@ -14720,7 +16229,12 @@ function PlazosCliente({obra}){
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Fin vigente</div>
-          <div style={{fontSize:13,fontWeight:600,color:ampliaciones.length>0?C.yellow:C.green}}>{finVigente||"—"}</div>
+          <div style={{fontSize:13,fontWeight:600,color:ampliado?C.yellow:C.green}}>{finVigente||"—"}</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            {ampliado
+              ? `ampliado${ampliaciones.length>0?` ${ampliaciones.length} ${ampliaciones.length===1?"vez":"veces"}`:""}; el original era ${obra.fin||"—"}`
+              : "sin ampliaciones: es el plazo original"}
+          </div>
         </div>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Duración total</div>
@@ -14737,8 +16251,8 @@ function PlazosCliente({obra}){
       </div>}
     </Card>
 
-    {/* Plazo original (si hay ampliaciones, mostrarlo aparte) */}
-    {ampliaciones.length > 0 && <Card>
+    {/* Plazo original (si el vigente ya no es el original, mostrarlo aparte) */}
+    {ampliado && <Card>
       <div style={{fontSize:11,fontWeight:600,color:C.textPri,marginBottom:6}}>Plazo original</div>
       <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textSec}}>
         <div>Inicio: <b>{obra.inicio||"—"}</b></div>
@@ -15011,7 +16525,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     const nueva = {
       id: Date.now(),
       no: nextNo,
-      fecha: new Date().toISOString().slice(0,10),
+      fecha: hoyLocalISO(),
       periodo: "",
       monto: 0,
       estatus: "En proceso",
@@ -15145,7 +16659,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
         const ext = file.name.split('.').pop().toLowerCase();
         const fileId = `cotizacion_${Date.now()}`;
         const { url } = await uploadFoto(obra.id, `subdoc_${sub.id}`, fileId, e.target.result);
-        onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: new Date().toISOString().slice(0,10) } });
+        onUpdate({ adjunto: { url, nombre: file.name, ext, tamano: file.size, fecha: hoyLocalISO() } });
       } catch (err) {
         console.error(err);
         alert("Error al subir documento: " + err.message);
@@ -15189,7 +16703,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       try {
         const { url } = await uploadFoto(obra.id, `sub_${sub.id}_${conceptoIdx}`, Date.now().toString(), e.target.result);
         const concepto = sub.conceptos[conceptoIdx];
-        const fotos = [...(concepto.fotos||[]), {url, fecha: new Date().toISOString().slice(0,10)}];
+        const fotos = [...(concepto.fotos||[]), {url, fecha: hoyLocalISO()}];
         actualizarConcepto(conceptoIdx, {fotos});
       } catch(err){ console.error(err); alert(err.message || "Error al subir foto"); }
     };
@@ -15752,8 +17266,98 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   </div>;
 }
 
+// ── LOS CAMPOS DE «INFORMACIÓN DEL CONTRATO» ───────────────────────────────
+// Dos tablas, una por tipo de organización, porque no es el mismo contrato
+// visto de los dos lados. El formulario era el de la constructora y se quedó
+// sin traducir: a un municipio le preguntaba su «Cliente / Dependencia» —que
+// es él mismo— y le pedía el «Residente de obra» y el «Administrador de obra»,
+// que son personal del contratista. Y lo que de verdad necesita —a quién se le
+// adjudicó, con qué RFC, por qué modalidad y de dónde salió el dinero— no
+// estaba en ningún campo.
+//
+// Lo que se reutiliza y lo que es nuevo, a propósito:
+//
+//   · `contrato`, `presupuesto` y `superintendente` ya existían y significan
+//     lo mismo de los dos lados; sólo cambia la etiqueta. Duplicarlos con otro
+//     nombre sería tener dos campos para un solo hecho.
+//   · `cliente`, `residente`, `admin` y `diasPago` NO van del lado
+//     dependencia: el primero es ella misma y los otros tres son de la
+//     organización interna del contratista.
+//   · las fechas de inicio y término NO se repiten aquí, aunque vengan en la
+//     misma frase del pedido. Ya están en la sub-pestaña «Plazos y
+//     ampliaciones», con la duración calculada y los convenios modificatorios
+//     al lado, que es donde una dependencia las va a buscar. Ponerlas también
+//     en este formulario —los dos llaman al mismo `guardarDatos`— sería dos
+//     pantallas editando el mismo dato.
+//
+// `fuente: "padron"` marca los campos que hoy se capturan a mano y que algún
+// día debe llenar el padrón de contratistas. La colección ya existe en las
+// reglas (`orgs/{oid}/contratistas/{cid}`); lo que falta es la pantalla. Ver
+// PENDIENTES #41, que nombra esa dependencia explícitamente.
+const MODALIDADES_ADJUDICACION = [
+  "Licitación pública",
+  "Invitación a cuando menos tres personas",
+  "Adjudicación directa",
+];
+
+const CAMPOS_CONTRATO = {
+  constructora: [
+    { lbl:"Número de contrato",            key:"contrato",        tipo:"text" },
+    { lbl:"Cliente / Dependencia",         key:"cliente",         tipo:"text" },
+    { lbl:"Superintendente de obra",       key:"superintendente", tipo:"text" },
+    { lbl:"Residente de obra",             key:"residente",       tipo:"text" },
+    { lbl:"Administrador de obra",         key:"admin",           tipo:"text" },
+    { lbl:"Presupuesto total (SIN IVA)",   key:"presupuesto",     tipo:"number" },
+    { lbl:"Días de pago según contrato",   key:"diasPago",        tipo:"number" },
+  ],
+  dependencia: [
+    { lbl:"Número de contrato",            key:"contrato",        tipo:"text" },
+    { lbl:"Modalidad de adjudicación",     key:"modalidad",       tipo:"opciones",
+      opciones: MODALIDADES_ADJUDICACION },
+    { lbl:"Empresa ejecutante (razón social)",            key:"empresaEjecutante",     tipo:"text", fuente:"padron" },
+    { lbl:"RFC de la empresa ejecutante",                 key:"empresaRFC",            tipo:"text", fuente:"padron" },
+    { lbl:"Supervisor por parte de la dependencia",       key:"supervisorDependencia", tipo:"text" },
+    { lbl:"Superintendente por parte de la constructora", key:"superintendente",       tipo:"text" },
+    { lbl:"Monto contratado (SIN IVA)",    key:"presupuesto",     tipo:"number" },
+    { lbl:"Origen de los recursos",        key:"origenRecursos",  tipo:"text" },
+  ],
+};
+
+const camposContrato = usuario =>
+  CAMPOS_CONTRATO[esDependencia(usuario) ? "dependencia" : "constructora"];
+
+/**
+ * ¿Puede esta sesión EDITAR «Información del contrato», o sólo leerla?
+ *
+ * Del lado constructora, lo de siempre: quien captura o estima.
+ *
+ * Del lado dependencia hay que preguntarle a `firestore.rules`, porque
+ * `guardarDatos` escribe en DOS sitios y los dos tienen reglas distintas:
+ *
+ *   · `orgs/{oid}/obras/{obraId}/config/info` → `puedeEditarObraD`, que sí
+ *     incluye a supervisor_obra y a administrativo en sus obras asignadas.
+ *   · `orgs/{oid}/obras/{obraId}` (el documento de la obra, para que sea
+ *     listable) → `esDirectivoD()`, que NO los incluye.
+ *
+ * La intersección —los que pueden escribir en los dos— es director_obras,
+ * subdirector y jefe_supervision. Si se le ofreciera el botón a un supervisor,
+ * la primera escritura pasaría, la segunda la negarían las reglas, `fsSet` se
+ * tragaría el rechazo y el botón diría «Guardado» con la mitad guardada: el
+ * contrato bien en `config/info` y la obra listada con los datos viejos. Ese
+ * medio guardado es peor que no poder guardar.
+ *
+ * Y coincide con quién captura qué: el supervisor levanta avance en campo; los
+ * datos del contrato los asienta quien lo adjudicó.
+ */
+const ROLES_EDITAN_CONTRATO_D = ["director_obras", "subdirector", "jefe_supervision"];
+
+const puedeEditarContrato = (usuario, rol) =>
+  esDependencia(usuario)
+    ? ROLES_EDITAN_CONTRATO_D.includes(rol)
+    : (can(rol, "captura", "editar") || can(rol, "estimaciones", "editar"));
+
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
-function Contrato({obra, setObra, rol, subs, subsCargados}) {
+function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -15767,10 +17371,11 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
   const [bloqueoModo, setBloqueoModo] = useState(null); // #21 guarda 1
   const [guardandoModo, setGuardandoModo] = useState(false);
   const fileRef = useRef();
-  const editar = can(rol, "captura", "editar") || can(rol, "estimaciones", "editar");
+  const editar = puedeEditarContrato(usuario, rol);
   const puedeSubir = ["director_operaciones","gerente_construccion","administrador_obra"].includes(rol) ||
                      rol==="superintendente_obra";
   const puedeElimDoc = ["director_operaciones","gerente_construccion"].includes(rol);
+  const campos = camposContrato(usuario);
 
   // Cargar ampliaciones y documentos desde Firestore
   useEffect(()=>{
@@ -15783,23 +17388,44 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
     });
   },[obra.id]);
 
-  // Guardar datos del contrato
+  // Guardar datos del contrato.
+  //
+  // Los campos que se escriben son los del formulario de ESTA sesión, no la
+  // unión de las dos tablas, y eso importa por una razón que no se ve: la
+  // lista anterior estaba escrita a mano con `residente:obra.residente`, y un
+  // campo que nadie capturó vale `undefined`. Firestore no acepta `undefined`
+  // y rechaza el documento ENTERO; `fsSetA` se traga el rechazo devolviendo
+  // `false`, así que el botón decía «Guardado» y no se había guardado nada.
+  // Pasaba ya del lado constructora en cualquier obra nueva, y del lado
+  // dependencia habría pasado siempre: `residente` y `admin` no están en su
+  // formulario, así que jamás tendrían valor.
+  //
+  // La clave ausente se OMITE en vez de mandarse vacía. Las dos escrituras van
+  // con merge, así que omitir deja el valor que ya había; mandar `""` borraría
+  // un dato que otra pantalla sí capturó.
   async function guardarDatos() {
     setSaving(true);
     const datos = {
-      nombre:obra.nombre, contrato:obra.contrato, cliente:obra.cliente,
-      superintendente:obra.superintendente, residente:obra.residente,
-      admin:obra.admin, inicio:obra.inicio, fin:obra.fin,
-      finAmpliado:obra.finAmpliado||"", presupuesto:obra.presupuesto,
-      diasPago: obra.diasPago||30,
+      finAmpliado: obra.finAmpliado || "",
       // Modo de captura de avance: "porcentaje" (default) o "volumen"
       // Obras tipo TAMSA donde el catálogo es referencia y se captura volumen
       // ejecutado real → modo "volumen"
       modoAvance: obra.modoAvance || "porcentaje",
       // Carga de Órdenes de Trabajo por PDF (TAMSA). Habilita el módulo OT
-      // dentro de Avance físico que parsea la OT SAP y matchea partidas.
+      // dentro de Avance físico que parsea la OT SAP y matchea partidas. Se
+      // conserva tal cual venga: del lado dependencia no hay casilla para
+      // cambiarla y este guardado no debe apagar lo que alguien más prendió.
       cargaOT: !!obra.cargaOT,
     };
+    // Los del formulario, más los tres que no están en ninguna tabla porque no
+    // se editan ahí: el nombre viene del alta de la obra y las dos fechas, de
+    // la sub-pestaña de plazos, que usa este mismo guardado.
+    for (const {key, tipo} of [...campos,
+         {key:"nombre",tipo:"text"}, {key:"inicio",tipo:"text"}, {key:"fin",tipo:"text"}]) {
+      const v = obra[key];
+      if (v === undefined || v === null) continue;
+      datos[key] = tipo === "number" ? (parseFloat(v) || 0) : v;
+    }
     await fsSetA(`obras/${obra.id}/config/info`, datos,
       { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // También escribir top-level para que la obra sea listable en getDocs(collection('obras'))
@@ -15962,21 +17588,29 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
             </button>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            {[
-              ["Número de contrato","contrato","text"],
-              ["Cliente / Dependencia","cliente","text"],
-              ["Superintendente de obra","superintendente","text"],
-              ["Residente de obra","residente","text"],
-              ["Administrador de obra","admin","text"],
-              ["Presupuesto total (SIN IVA)","presupuesto","number"],
-              ["Días de pago según contrato","diasPago","number"],
-            ].map(([lbl,key,type])=>(
+            {campos.map(({lbl,key,tipo,opciones,fuente})=>(
               <div key={key}>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
-                {editar
-                  ? <Inp type={type} value={obra[key]||""} onChange={e=>f(key,type==="number"?parseFloat(e.target.value)||0:e.target.value)}/>
-                  : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{obra[key]||"—"}</div>
-                }
+                {editar ? (
+                  tipo==="opciones"
+                    ? <Sel value={obra[key]||""} onChange={e=>f(key,e.target.value)} style={{width:"100%"}}>
+                        <option value="">— Seleccionar —</option>
+                        {opciones.map(o=><option key={o} value={o}>{o}</option>)}
+                      </Sel>
+                    : <Inp type={tipo} value={obra[key]||""}
+                        onChange={e=>f(key,tipo==="number"?parseFloat(e.target.value)||0:e.target.value)}/>
+                ) : (
+                  <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{obra[key]||"—"}</div>
+                )}
+                {/* La nota va en el campo y no en un pie de página: quien lo
+                    captura necesita saber ahí mismo que el dato es suyo por
+                    ahora y de dónde va a venir después. */}
+                {fuente==="padron" && editar && (
+                  <div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.35}}>
+                    Se captura a mano. Cuando exista el padrón de contratistas
+                    se llenará al elegir la empresa.
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -16030,7 +17664,11 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
             )}
           </div>
 
-          {/* Carga de Órdenes de Trabajo (PDF) — solo para obras TAMSA-like */}
+          {/* Carga de Órdenes de Trabajo (PDF) — ver `vaElInterruptorOT`.
+              En constructora se queda, también en las obras que no la usan: la
+              bandera ya esconde el bloque de Avance físico, y esconder además
+              la casilla dejaría la función sin manera de encenderse. */}
+          {vaElInterruptorOT(usuario) && (
           <div style={{marginTop:14,paddingTop:12,borderTop:`0.5px solid ${C.border}`}}>
             <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
               Órdenes de Trabajo (PDF)
@@ -16057,6 +17695,7 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
               </div>
             )}
           </div>
+          )}
         </Card>
       )}
 
@@ -16366,6 +18005,15 @@ function Contrato({obra, setObra, rol, subs, subsCargados}) {
 // - Operación: lo que se reporta semana a semana (avance, almacén, maq, nómina, estimaciones, subs)
 // - Planeación: contrato y presupuesto (lo que define la obra)
 // - Gastos GP: datos del Sheet
+//
+// Para dependencia el juego es otro y vive en TABS_DEPENDENCIA (ver P5).
+const TABS_DEPENDENCIA = [
+  {id:"dash",      label:"Dashboard"},
+  {id:"avance",    label:"Avance"},
+  {id:"evidencia", label:"Evidencia"},
+  {id:"contrato",  label:"Contrato"},
+];
+
 const TABS_POR_ROL = {
   director_general:    [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   director_operaciones:[{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
@@ -16376,6 +18024,92 @@ const TABS_POR_ROL = {
   auditor:             [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   admin_sistema:       [{id:"dash",label:"Dashboard"},{id:"operacion",label:"Operación"},{id:"gastos",label:"Gastos"},{id:"planeacion",label:"Planeación"}],
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
+
+  // ── Dependencia (P5) ──
+  // Cuatro pestañas: el estado de la obra de un vistazo, lo que se capturó,
+  // la evidencia y el contrato. No hay Gastos porque no hay economía interna
+  // del contratista que mostrar.
+  //
+  // Es el mismo juego para los seis roles operativos. Quién ESCRIBE no lo
+  // decide el menú sino `can()`: el supervisor captura dentro de Avance y el
+  // contralor ve lo mismo en solo lectura. Dar menús distintos por rol
+  // duplicaría en el menú una decisión que ya vive en PERMISOS, y las dos se
+  // desincronizarían — es lo que pasó con `ROLES_PANEL_EJECUTIVO`.
+  //
+  // El informe todavía no existe; entra como quinta cuando exista. Una
+  // pestaña que anuncia "próximamente" no se le enseña a un cliente.
+  director_obras:      TABS_DEPENDENCIA,
+  subdirector:         TABS_DEPENDENCIA,
+  jefe_supervision:    TABS_DEPENDENCIA,
+  supervisor_obra:     TABS_DEPENDENCIA,
+  administrativo:      TABS_DEPENDENCIA,
+  contralor:           TABS_DEPENDENCIA,
+  // Contratista: el equivalente a `cliente` del lado de dependencia. Ve lo
+  // suyo y nada más.
+  contratista:         [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
+};
+
+// El menú de un usuario, con el respaldo del lado correcto.
+//
+// El respaldo importa más de lo que parece. Hasta hoy era
+// `TABS_POR_ROL[rol] || TABS_POR_ROL.director_operaciones`, y ese "||" es
+// exactamente por donde a `director_obras` le salía Gastos: un rol que la
+// tabla no conocía caía del lado constructora. Un rol nuevo de dependencia
+// —y van a llegar— volvería a caer ahí. Aquí el respaldo pregunta por el
+// tipo, que es lo que las reglas de Firestore juzgan (P5).
+const tabsDe = usuario =>
+  TABS_POR_ROL[usuario?.rol] ||
+  (esDependencia(usuario) ? TABS_DEPENDENCIA : TABS_POR_ROL.director_operaciones);
+
+// ── A DÓNDE SE PUEDE NAVEGAR ───────────────────────────────────────────────
+// Todo enlace interno de la app —las tarjetas de "Requiere atención", las
+// notificaciones, los "ver detalle ›" del Dashboard, el CTA de «falta el
+// catálogo»— lleva un destino redactado del lado constructora:
+// `operacion/nomina`, `planeacion/presupuesto`, `gastos`. Están escritos en
+// las plantillas de riesgo y en los `link` de las notificaciones, y recortar
+// el menú no los recorta.
+//
+// Medido el 2026-10-01 en el emulador: desde el tablero de dependencia de
+// OBRA DEMO 3, un clic en «Avance vs plazo desbalanceado» pintaba la
+// Operación COMPLETA —Avance físico · Estimaciones · Nómina · Subcontratos ·
+// Maquinaria · Almacén— y desde ahí Nómina abría «Cargar nómina». Un clic
+// deshacía toda la frontera del P5 sin tocar el menú, porque `setTab` pinta
+// cualquier id que se le dé y los sitios de render pasan la lista de
+// sub-pestañas POR OMISIÓN, no la recortada.
+//
+// El arreglo es un único cuello de botella —`destinoNav`— y no un parche por
+// llamador: los llamadores son siete y van a llegar más.
+//
+// La equivalencia, cuando existe. `operacion/estimaciones` NO está a
+// propósito: en dependencia el estimado no es una pantalla, es una de las
+// cifras del propio Dashboard, así que mandar ahí a quien ya está en el
+// Dashboard es un clic que no hace nada. Mejor que la tarjeta no sea
+// clicable: una tarjeta que se puede picar y no lleva a ningún lado enseña
+// que picar no sirve.
+const DESTINOS_DEPENDENCIA = new Map([
+  ['operacion/avance',       { tab: 'avance',    subTab: 'avance' }],
+  ['planeacion/contrato',    { tab: 'contrato',  subTab: 'contrato' }],
+  ['planeacion/presupuesto', { tab: 'contrato',  subTab: 'presupuesto' }],
+  // Los ids propios del menú de dependencia, para los enlaces que ya están
+  // escritos en su idioma.
+  ['dash',                   { tab: 'dash' }],
+  ['avance',                 { tab: 'avance',    subTab: 'avance' }],
+  ['evidencia',              { tab: 'evidencia' }],
+  ['contrato',               { tab: 'contrato',  subTab: 'contrato' }],
+]);
+
+/**
+ * Traduce un destino al menú de la sesión, o devuelve `null` si ahí no existe.
+ *
+ * `null` significa NO NAVEGAR. No cae al destino original "por si acaso":
+ * caer es exactamente el defecto que esto arregla.
+ */
+const destinoNav = (tabId, subTabId, usuario) => {
+  if (!tabId) return null;
+  if (!esDependencia(usuario)) return { tab: tabId, subTab: subTabId };
+  return DESTINOS_DEPENDENCIA.get(subTabId ? `${tabId}/${subTabId}` : tabId)
+      ?? DESTINOS_DEPENDENCIA.get(tabId)
+      ?? null;
 };
 
 // SUB-TABS dentro de cada sección principal
@@ -16396,12 +18130,48 @@ const SUBTABS_PLANEACION = [
   {id:"permisos", label:"Permisos"},
 ];
 
+// ── Sub-pestañas cuando la organización es una dependencia (P5) ───────────
+// De Operación sobrevive sólo la captura de avance: nómina, subcontratos,
+// maquinaria y almacén son economía interna del contratista. Estimaciones
+// sale de aquí porque en dependencia no es un sub-tab escondido dentro de
+// Operación — es una de las cifras principales del Dashboard.
+//
+// De Planeación quedan contrato y presupuesto. El presupuesto es el catálogo
+// de conceptos con sus precios unitarios: es lo que la dependencia contrató y
+// contra lo que se mide el avance, así que le pertenece. "Permisos" es la
+// matriz de permisos por rol, administración del sistema, y no entra en esta
+// etapa.
+const SUBTABS_OPERACION_DEPENDENCIA = [
+  {id:"avance", label:"Avance físico"},
+];
+
+// El `id` sigue siendo `presupuesto` —es la misma pantalla y el mismo dato—,
+// pero la etiqueta es la del léxico. Ver `LEXICO`: a un ayuntamiento
+// «Presupuesto» le suena a su presupuesto de egresos.
+const SUBTABS_PLANEACION_DEPENDENCIA = [
+  {id:"contrato", label:"Contrato"},
+  {id:"presupuesto", label:LEXICO.dependencia.catalogo},
+];
+
 // Sin estimaciones de muestra. Cada obra comienza en blanco.
 const EST_DEFAULT = [];
 
 // ── WELCOME BANNER ────────────────────────────────────────────────────────
 // Pasos personalizados por rol, basados en el manual operativo. Solo
 // aparece la primera vez que el usuario entra a CAMPO.
+
+// El respaldo de dependencia tiene nombre propio, igual que `TABS_DEPENDENCIA`,
+// y no es una clave de la tabla. Si fuera `PASOS_BIENVENIDA.director_obras`,
+// borrar o renombrar ese rol dejaría el respaldo en `undefined` y la bienvenida
+// —la PRIMERA pantalla de un usuario nuevo— quedaría en blanco. Así el respaldo
+// no depende de que un rol siga existiendo.
+const PASOS_DEPENDENCIA_BASE = [
+  { t:"Tus obras", d:"En la pantalla de Obras ves todas las obras que la dependencia tiene contratadas, con su avance y su semáforo." },
+  { t:"Entra a una obra", d:"El Dashboard de cada obra te da el estado de un vistazo: avance, lo estimado y lo que requiere atención." },
+  { t:"Registra el contrato", d:"En Contrato capturas a qué empresa se adjudicó, bajo qué modalidad, el monto y el origen de los recursos." },
+  { t:"Carga el catálogo", d:"En Contrato → Catálogo de conceptos sube el archivo de conceptos y precios. Sin él no se puede capturar avance." },
+];
+
 const PASOS_BIENVENIDA = {
   director_general: [
     { t:"Visión global", d:"Desde la pantalla de Obras ves el portafolio completo: avance, gasto y riesgo de cada obra activa." },
@@ -16454,10 +18224,65 @@ const PASOS_BIENVENIDA = {
     { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
     { t:"Avance y fotos", d:"En las pestañas Avance y Fotos sigues el progreso semana por semana." },
   ],
+
+  // ── Dependencia (P5) ──
+  // Esta es la PRIMERA pantalla que ve un usuario nuevo, y hasta hoy a los seis
+  // roles de dependencia les salían los pasos de `administrador_obra`: «En
+  // Operación → Estimaciones registra cada cobro al cliente con su factura»,
+  // «Lleva el control de gastos en Gastos». Tres de las cuatro cosas que ahí se
+  // le pedían hacer están en pestañas que su menú no tiene, y la cuarta lo
+  // trataba como si él fuera el contratista cobrándose a sí mismo.
+  //
+  // Los pasos nombran sólo lo que existe en su menú —Dashboard, Avance,
+  // Evidencia, Contrato— y no prometen el informe del Art. 73, que todavía no
+  // está. Un tutorial que manda a una pantalla inexistente enseña que el
+  // tutorial no sirve.
+  director_obras: PASOS_DEPENDENCIA_BASE,
+  subdirector: [
+    { t:"Tus obras", d:"En Obras ves el conjunto de obras contratadas con su avance y su semáforo." },
+    { t:"Revisa lo que requiere atención", d:"El Dashboard de cada obra señala en rojo lo que se atrasó o no se ha capturado." },
+    { t:"Contrato y catálogo", d:"En Contrato quedan los datos del contrato y, en Catálogo de conceptos, aquello contra lo que se mide el avance." },
+  ],
+  jefe_supervision: [
+    { t:"Las obras que supervisas", d:"En Obras ves cada obra con su avance acumulado y su semáforo." },
+    { t:"Lo que capturaron los supervisores", d:"En Avance revisas el avance por concepto, semana por semana, con las fotos que se subieron." },
+    { t:"Evidencia", d:"En Evidencia ves juntas las fotos de la obra, para cotejar lo capturado contra lo que se ve." },
+  ],
+  supervisor_obra: [
+    { t:"Tu obra", d:"Entras a las obras que tienes asignadas. El Dashboard te muestra el avance acumulado." },
+    { t:"Captura el avance", d:"En Avance actualizas lo ejecutado de cada concepto del catálogo. Es la captura que alimenta todo lo demás." },
+    { t:"Sube fotos al capturar", d:"Cada concepto acepta fotos. Súbelas en el momento de capturar: es el respaldo de lo que reportas." },
+    { t:"Semáforo", d:"El Dashboard usa colores: verde si va bien, amarillo y rojo si hay que atender algo." },
+  ],
+  administrativo: [
+    { t:"Tus obras", d:"En Obras ves las obras que tienes asignadas con su avance y su semáforo." },
+    { t:"Contrato", d:"En Contrato consultas los datos del contrato, los plazos con sus ampliaciones y el repositorio de documentos." },
+    { t:"Avance y evidencia", d:"En Avance ves lo capturado por concepto y en Evidencia las fotos de la obra." },
+  ],
+  contralor: [
+    { t:"Acceso de consulta", d:"Ves todas las obras de la dependencia en solo lectura. Puedes revisar todo sin modificar nada." },
+    { t:"Avance y evidencia", d:"En Avance consultas lo capturado concepto por concepto y en Evidencia las fotos que lo respaldan." },
+    { t:"Contrato y plazos", d:"En Contrato están los datos del contrato, las ampliaciones autorizadas y los documentos cargados." },
+  ],
+  // Contratista: el equivalente a `cliente` del lado de dependencia.
+  contratista: [
+    { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de la obra que ejecutas." },
+    { t:"Avance y fotos", d:"En las pestañas Avance y Fotos sigues el progreso semana por semana." },
+  ],
 };
 
+// Los pasos de un usuario, con el respaldo del lado correcto.
+//
+// El respaldo era `|| PASOS_BIENVENIDA.administrador_obra`, y ese "||" es el
+// mismo defecto que tenía `tabsDe`: un rol que la tabla no conoce cae del lado
+// constructora. Aquí pregunta por el tipo, que es lo que juzgan las reglas (P5).
+const pasosDe = usuario =>
+  PASOS_BIENVENIDA[usuario?.rol] ||
+  (esDependencia(usuario) ? PASOS_DEPENDENCIA_BASE
+                          : PASOS_BIENVENIDA.administrador_obra);
+
 function WelcomeBanner({usuario, onCerrar}){
-  const pasos = PASOS_BIENVENIDA[usuario.rol] || PASOS_BIENVENIDA.administrador_obra;
+  const pasos = pasosDe(usuario);
   const rolLabel = ROL_LABEL[usuario.rol] || "Usuario";
   const primerNombre = (usuario.nombre || "").split(" ")[0] || usuario.nombre || "";
   const [guardando, setGuardando] = useState(false);
@@ -16478,7 +18303,7 @@ function WelcomeBanner({usuario, onCerrar}){
       maxHeight:"90vh",overflow:"auto",boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
       <div style={{background:C.caliza,color:"#fff",padding:"18px 22px",borderRadius:"14px 14px 0 0"}}>
         <div style={{fontSize:11,opacity:0.7,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:4}}>
-          Bienvenido a CAMPO
+          Bienvenido a cotea
         </div>
         <div style={{fontSize:20,fontWeight:600,lineHeight:1.3}}>
           Hola {primerNombre}
@@ -16648,6 +18473,12 @@ const ALERTA_REGLAS = [
     id: "gasto_90pct",
     titulo: "Gasto al 90% o más del presupuesto",
     severidad: "critico",
+    // El "gasto" de esta regla es el de GP más maquinaria más otros gastos:
+    // dinero que sale del contratista, no de quien contrató (P5). Para una
+    // dependencia esos tres no se leen, así que la regla no diría "no hay
+    // dato" — diría 0%, y callaría para siempre. Una alerta que nunca puede
+    // dispararse es peor que ninguna: ocupa el lugar de la que sí importaba.
+    soloConstructora: true,
     evaluar: (obra, datos, hoy) => {
       const presup = obra.presupuesto || 0;
       if (presup <= 0) return null;
@@ -16698,7 +18529,10 @@ function alertaId(obraId, reglaId, fecha) {
   return `${obraId}__${reglaId}__${año}W${String(semana).padStart(2,'0')}`;
 }
 
-function PanelAlertas({obras, gpData, onCountChange}){
+// Este panel tiene su PROPIO motor de reglas (`ALERTA_REGLAS`), aparte de
+// `BIBLIOTECA_RIESGOS`. Son dos y hay que recortar los dos: el margen vuelve
+// por donde se le deje una puerta.
+function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
   const [alertas, setAlertas] = useState([]);
   const [leidas, setLeidas] = useState({}); // { alertaId: { leidaEn, leidaPor } }
   const [cargando, setCargando] = useState(true);
@@ -16720,10 +18554,14 @@ function PanelAlertas({obras, gpData, onCountChange}){
       const resultado = [];
       for (const obra of activas) {
         // Cargar datos necesarios por obra
+        // Maquinaria y otros gastos sólo se piden cuando hay alguna regla que
+        // los use. En dependencia no hay ninguna, y pedir una ruta que no se
+        // va a mirar es exactamente lo que el P5 prohíbe: la lectura falla,
+        // deja vacío, y el vacío se suma como cero.
         const [subsD, maqD, otrosD, histD, infoD] = await Promise.all([
           fsGet(`obras/${obra.id}/avance/subs`),
-          fsGet(`obras/${obra.id}/avance/maquinaria`),
-          fsGet(`obras/${obra.id}/config/otros_gastos`),
+          soloContrato ? null : fsGet(`obras/${obra.id}/avance/maquinaria`),
+          soloContrato ? null : fsGet(`obras/${obra.id}/config/otros_gastos`),
           fsGet(`obras/${obra.id}/avance/historial`),
           fsGet(`obras/${obra.id}/config/info`),
         ]);
@@ -16765,6 +18603,7 @@ function PanelAlertas({obras, gpData, onCountChange}){
           ejecutado, ejecCatalogo, ejecExcedente };
 
         for (const regla of ALERTA_REGLAS) {
+          if (soloContrato && regla.soloConstructora) continue;
           const r = regla.evaluar(obra, datosObra, hoy);
           if (!r) continue;
           const id = alertaId(obra.id, regla.id, new Date());
@@ -17467,15 +19306,25 @@ export default function App(){
   // Sub-tabs activos dentro de Operación y Planeación
   const[subTabOper,setSubTabOper]=useState("avance");
   const[subTabPlan,setSubTabPlan]=useState("contrato");
-  // Helper: navegación desde Dashboard. Si pasa subTab, lo activa también.
+  // Helper: navegación desde Dashboard, notificaciones y tarjetas de riesgo.
+  // El destino se traduce al menú de ESTA sesión (ver `destinoNav`); si ahí no
+  // existe, no se navega. Antes `setTab` pintaba cualquier id, y por ahí una
+  // dependencia llegaba a Nómina.
   const navTab = (tabId, subTabId) => {
-    setTab(tabId);
-    if (tabId === "operacion" && subTabId) setSubTabOper(subTabId);
-    if (tabId === "planeacion" && subTabId) setSubTabPlan(subTabId);
+    const d = destinoNav(tabId, subTabId, usuario);
+    if (!d) return;
+    setTab(d.tab);
+    // Las dos pantallas con barra de sub-pestañas son `Operacion` y
+    // `Planeacion`; en dependencia se montan bajo los ids `avance` y
+    // `contrato` pero son las mismas y leen los mismos estados.
+    if ((d.tab === "operacion" || d.tab === "avance") && d.subTab) setSubTabOper(d.subTab);
+    if ((d.tab === "planeacion" || d.tab === "contrato") && d.subTab) setSubTabPlan(d.subTab);
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
-  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct();
+  // El Sheet de GP es la contabilidad de FOSMON: no se lee desde la sesión de
+  // una dependencia (P5). Se pregunta por el tipo, no por el rol.
+  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct(!esDependencia(usuario));
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -17553,6 +19402,52 @@ export default function App(){
   // Guardarraíl anti-bucle: la primera pasada (mount) captura claimsVersion
   // inicial en versionRef.current y NO refresca. Solo refrescamos si la nueva
   // versión es ESTRICTAMENTE MAYOR a la que ya vimos.
+  // ── MARCA DEL CLIENTE ──────────────────────────────────────────────────────
+  // `orgs/{oid}/config/branding`. Es la marca de QUIEN USA la app, no la del
+  // producto: la app se llama igual para todos y eso vive en el manifest. Aquí
+  // sólo va el logo y el nombre que el cliente reconoce como suyo, junto al
+  // saludo.
+  //
+  // Sin documento no hay respaldo inventado: la línea del saludo enseña el
+  // nombre de la organización nada más cuando alguien lo capturó. Un municipio
+  // con la leyenda "FOSMON Construcciones" debajo de su nombre es peor que un
+  // municipio sin leyenda.
+  //
+  // La ruta se arma con `orgId` y no con `conOrg`, que sólo prefija rutas de
+  // obra. Y con `getDoc` en vez de `fsGet` a propósito: `fsGet` devuelve `null`
+  // igual para "no existe" y para "no hay permiso", y aquí importa poder ver la
+  // diferencia en consola el día que la marca no aparezca.
+  const [marca, setMarca] = useState(null);
+  useEffect(() => {
+    // Vaciar ANTES de preguntar, y vaciar también cuando la organización nueva
+    // no tiene documento de marca.
+    //
+    // Como estaba, este efecto sólo sabía asignar: si `s.exists()` era falso se
+    // quedaba pintada la marca de la organización anterior, y para siempre.
+    // Visto en el emulador: entrando como el municipio, saliendo y entrando
+    // como FOSMON en la misma pestaña, el encabezado del contratista seguía
+    // diciendo «H. AYUNTAMIENTO DE COATZACOALCOS» sobre sus propias obras.
+    // La organización `fosmon` no tiene `branding` sembrado, así que nada lo
+    // corregía después.
+    //
+    // Es el mismo defecto que las obras heredadas: estado de React que
+    // sobrevive al cambio de sesión. Allá se vació en `logout`; aquí hace falta
+    // además vaciarlo aquí, porque la marca puede cambiar sin pasar por
+    // `logout` —basta que cambie `orgId`— y porque es este efecto el que decide
+    // qué significa "esta organización no tiene marca".
+    //
+    // Durante la petición no hay marca que pintar. Eso es correcto y no una
+    // molestia: el encabezado se queda sin línea, igual que el `null` de
+    // `nombreOrg`. En blanco es verdad; la marca de otro, no.
+    setMarca(null);
+    if (!usuario?.orgId) return;
+    let cancelado = false;
+    getDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`))
+      .then(s => { if (!cancelado) setMarca(s.exists() ? s.data() : null); })
+      .catch(e => console.warn('branding no legible:', usuario.orgId, e?.code || e?.message));
+    return () => { cancelado = true; };
+  }, [usuario?.orgId]);
+
   const versionRef = useRef(null);
   useEffect(() => {
     if (!usuario?.emailId) return;
@@ -17637,6 +19532,7 @@ export default function App(){
   // los componentes muestran "vacío" hasta que el usuario capture.
   useEffect(()=>{
     if(!obraId) return;
+    const pideObra = ruta => seSuscribe(ruta, usuario?.tipo);
     // Reset inmediato para evitar mostrar datos de la obra anterior
     setSubs([]);
     setSubsCargados(false);
@@ -17698,15 +19594,20 @@ export default function App(){
       }
       setSubsCargados(true);
     });
-    fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
+    // Maquinaria, almacén y subcontratos son economía interna del contratista:
+    // en una dependencia no se piden (P5, vía `seSuscribe`). Los estados quedan
+    // en `[]`, que es su valor inicial, y ninguna pantalla de dependencia los
+    // consulta — la barra de sub-pestañas no ofrece esas secciones y el tablero
+    // recortado no suma gasto. La lectura tampoco pasaría las reglas.
+    if (pideObra('avance/maquinaria')) fsGet(`obras/${obraId}/avance/maquinaria`).then(d=>{
       if(d&&Array.isArray(d.data)) setMaquinaria(d.data);
       if(d?.fecha) setFechasModulos(f => ({...f, maquinaria: d.fecha}));
     });
-    fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
+    if (pideObra('avance/materiales')) fsGet(`obras/${obraId}/avance/materiales`).then(d=>{
       if(d&&Array.isArray(d.data)) setMateriales(d.data);
       if(d?.fecha) setFechasModulos(f => ({...f, materiales: d.fecha}));
     });
-    fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
+    if (pideObra('subcontratos/lista')) fsGet(`obras/${obraId}/subcontratos/lista`).then(d=>{
       if(d&&Array.isArray(d.items)) setSubcontratos(d.items);
     });
     // Cargar historial de nómina — solo para roles con acceso.
@@ -17717,7 +19618,7 @@ export default function App(){
     // fix/kpis-en-cero (2026-09-17): además de setFechasModulos (comportamiento
     // previo), ahora POBLA setNominaHistorial para alimentar KPIs de Dashboard,
     // MiniDashNomina, motor detectarRiesgos y PDF.
-    if (usuario?.rol !== 'cliente') {
+    if (usuario?.rol !== 'cliente' && pideObra('nomina/historial')) {
       leerHistorialNomina(obraId).then(({registros})=>{
         // Calendario, no orden de carga: ver `semanasDeNomina`. De aquí comen
         // el PDF, los tres avisos de nómina y el KPI de personal del tablero.
@@ -17752,7 +19653,7 @@ export default function App(){
         setNominaHistorial([]);
       });
     }
-  },[obraId, usuario?.rol]);
+  },[obraId, usuario?.rol, usuario?.tipo]);
   // Datos por obra: TODOS vacíos por defecto. Se llenan al cargar Firestore
   // (cuando se entra a una obra) o cuando el usuario captura desde el módulo.
   const[subs,setSubs]=useState([]);
@@ -17796,17 +19697,18 @@ export default function App(){
   // pueda incluirlos en las tendencias y el resumen de gasto total.
   useEffect(() => {
     if (!obraId) return;
+    if (!seSuscribe('config/otros_gastos', usuario?.tipo)) return;   // P5
     fsGet(`obras/${obraId}/config/otros_gastos`).then(d => {
       setOtrosGastos(Array.isArray(d?.items) ? d.items : []);
     });
-  }, [obraId]);
+  }, [obraId, usuario?.tipo]);
 
   // Cargar estimaciones desde Firestore al entrar a una obra
   // onSnapshot en vez de fsGet — así cuando otro usuario (ej. Aldo en obra)
   // sube una estimación, aparece en tiempo real sin reiniciar la app.
   useEffect(()=>{
     if(!obraId) return;
-    const ref = doc(fbDb, 'obras', obraId, 'config', 'estimaciones');
+    const ref = docObra(obraId, 'config', 'estimaciones');
     const unsub = onSnapshot(ref, (snap) => {
       const d = snap.exists() ? snap.data() : null;
       if (d && Array.isArray(d.data)) setEstimaciones(d.data);
@@ -17842,7 +19744,7 @@ export default function App(){
         let obrasFromDB;
         if (esDirectivo) {
           // Directivos: lista completa (mismo comportamiento previo)
-          const snap = await getDocs(collection(fbDb, 'obras'));
+          const snap = await getDocs(collObra());
           obrasFromDB = snap.docs.map(d => ({id: d.id, ...d.data()}));
         } else {
           // No-directivos: solo obras asignadas. Sin asignadas → lista vacía.
@@ -17857,7 +19759,7 @@ export default function App(){
             const resultados = await Promise.all(
               asignadas.map(async (id) => {
                 try {
-                  const d = await getDoc(doc(fbDb, 'obras', id));
+                  const d = await getDoc(docObra(id));
                   if (!d.exists()) return { id, motivo: 'no_existe' };
                   return { id, ok: true, doc: d };
                 } catch (e) {
@@ -17993,38 +19895,49 @@ export default function App(){
       patch(id, { [clave]: vacio });
     };
 
+    // Cinco de los nueve oyentes de abajo traen economía interna del
+    // contratista y en una dependencia no se suscriben — quién decide eso es
+    // `seSuscribe`, con el inventario a la vista junto a `esDependencia`.
+    //
+    // `datosObraCompletos(d, true)` sabe de este recorte y no espera las cinco
+    // claves que nunca van a llegar.
+    const pide = ruta => seSuscribe(ruta, usuario?.tipo);
+    const soloContrato = esDependencia(usuario);
+
     // Un listener por documento por obra. Se limpian todos al cambiar obras
     // activas o al salir de la pantalla.
     const unsubs = [];
     activas.forEach(o => {
       // info general (para enriquecer la obra)
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'info'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'config', 'info'), snap => {
         const info = snap.exists() ? snap.data() : {};
         patch(o.id, { info });
         setObras(oo => oo.map(ob => ob.id === o.id ? { ...ob, ...info } : ob));
       }, alFallar(o.id, 'info', {}, 'info')));
       // subs (avance)
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'subs'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'subs'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { subs: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'subs', [], 'subs')));
       // maquinaria
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'maquinaria'), snap => {
+      if (pide('avance/maquinaria')) unsubs.push(onSnapshot(docObra(o.id, 'avance', 'maquinaria'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { maquinaria: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'maquinaria', [], 'maq')));
       // materiales
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'materiales'), snap => {
+      if (pide('avance/materiales')) unsubs.push(onSnapshot(docObra(o.id, 'avance', 'materiales'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { materiales: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'materiales', [], 'mat')));
-      // estimaciones — LO QUE FALTABA para el dashboard portafolio
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'estimaciones'), snap => {
+      // estimaciones — LO QUE FALTABA para el dashboard portafolio.
+      // Ésta SÍ va en dependencia: son las que el municipio le paga a su
+      // contratista, o sea su propio dinero saliendo.
+      unsubs.push(onSnapshot(docObra(o.id, 'config', 'estimaciones'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { estimaciones: (d && Array.isArray(d.data)) ? d.data : [] });
       }, alFallar(o.id, 'estimaciones', [], 'est')));
       // otros gastos
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'config', 'otros_gastos'), snap => {
+      if (pide('config/otros_gastos')) unsubs.push(onSnapshot(docObra(o.id, 'config', 'otros_gastos'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { otrosGastos: (d && Array.isArray(d.items)) ? d.items : [] });
       }, alFallar(o.id, 'otrosGastos', [], 'otros')));
@@ -18041,11 +19954,11 @@ export default function App(){
       // más por obra —cinco hoy— y a cambio un cambio de bandera se ve sin
       // recargar, que es justo lo que hay que poder comprobar el día de la
       // migración.
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'nomina', 'historial'), snap => {
+      if (pide('nomina/historial')) unsubs.push(onSnapshot(docObra(o.id, 'nomina', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         patch(o.id, { _nomDoc: (d && Array.isArray(d.semanas)) ? d.semanas : [] });
       }, alFallar(o.id, '_nomDoc', [], 'nomina doc')));
-      unsubs.push(onSnapshot(collection(fbDb, 'obras', o.id, 'nomina_historial'), snap => {
+      if (pide('nomina_historial')) unsubs.push(onSnapshot(collObra(o.id, 'nomina_historial'), snap => {
         const registros = [];
         snap.forEach(dd => { const p = dd.data()?.partes; if (Array.isArray(p)) registros.push(...p); });
         patch(o.id, { _nomSub: registros });
@@ -18053,7 +19966,7 @@ export default function App(){
       // Historial de avance semanal — para el bloque 1 y bloque 2 del
       // DashboardPrincipal (delta ejecutado / margen / detección de "sin
       // captura ≥ 7 días"). feature/dashboard-principal 2026-09-18.
-      unsubs.push(onSnapshot(doc(fbDb, 'obras', o.id, 'avance', 'historial'), snap => {
+      unsubs.push(onSnapshot(docObra(o.id, 'avance', 'historial'), snap => {
         const d = snap.exists() ? snap.data() : null;
         const semanas = (d && Array.isArray(d.semanas)) ? d.semanas : [];
         patch(o.id, { historialAvanceSemanas: semanas });
@@ -18073,7 +19986,7 @@ export default function App(){
   const entrar=async id=>{
     setObraId(id);setScreen("obra");
     // Tab inicial = primera tab disponible según rol del usuario
-    const primerTab = (TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones)[0]?.id || "dash";
+    const primerTab = tabsDe(usuario)[0]?.id || "dash";
     setTab(primerTab);
     const o = obras.find(x=>x.id===id);
     setAuditObra(id, o?.contrato || o?.nombre || "");
@@ -18088,11 +20001,34 @@ export default function App(){
   const logout=async()=>{
     try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
     try { await signOut(fbAuth); } catch {}
+    // El prefijo es estado de módulo, no de React: si no se borra aquí, la
+    // siguiente sesión arrancaría apuntando a la organización de la anterior.
+    limpiarPrefijoOrg();
+    // Y las obras, que son estado de React y sobrevivían al cierre de sesión.
+    //
+    // Mientras todos los usuarios eran de FOSMON esto no se notaba: la lista
+    // que quedaba en memoria era la misma que iba a cargar el siguiente. Con
+    // dos organizaciones deja de ser inofensivo. La carga de obras MEZCLA lo
+    // que trae Firestore con lo que ya hay en el estado, así que al entrar un
+    // municipio sobre la sesión de FOSMON su panel sumaba las obras del
+    // contratista: montos contratados, avance y "5 obras activas" donde tiene
+    // 3. No lo tapan las reglas —esas lecturas ya se hicieron, y fueron
+    // legítimas— ni el prefijo de ruta, que sólo decide a dónde se pregunta.
+    //
+    // `datosPorObra` va junto y no por simetría: es lo pesado —catálogo,
+    // estimaciones, nómina, maquinaria— y lo que alimenta el consolidado.
+    setObras([]);
+    setDatosPorObra({});
+    // Y la marca, por la misma razón: es lo que el encabezado afirma sobre de
+    // quién es la app. Heredada, le presenta la sesión siguiente como si fuera
+    // de la organización anterior.
+    setMarca(null);
     setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
   };
-  const TABS=TABS_POR_ROL[usuario.rol]||TABS_POR_ROL.director_operaciones;
+  const TABS=tabsDe(usuario);
+  const dep=esDependencia(usuario);
 
   // ── PENDIENTES DE CAPTURA EN OPERACIÓN ──
   // Cuenta:
@@ -18142,10 +20078,19 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
       position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <EmblemaFOSMON size={22} dark={true}/>
+        {/* El producto arriba, la organización abajo, y las dos leídas de un
+            solo sitio: `PRODUCTO` y `nombreOrg`, que es el mismo `marca` del
+            saludo. `textTransform` en vez de escribir el nombre en
+            mayúsculas, para que el estilo de la barra no dependa de cómo
+            capturaron la razón social. */}
+        <MarcaCotea tamano={20}/>
         <div>
-          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>CAMPO</div>
-          <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1}}>FOSMON CONSTRUCCIONES</div>
+          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>{PRODUCTO.nombre}</div>
+          {nombreOrg(marca, usuario) && (
+            <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1,textTransform:"uppercase"}}>
+              {nombreOrg(marca, usuario)}
+            </div>
+          )}
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -18181,7 +20126,8 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {obra&&<button onClick={async ()=>{
+      {/* Por qué una dependencia no ve este botón: ver `vaElReporteEjecutivo`. */}
+      {obra&&vaElReporteEjecutivo(usuario)&&<button onClick={async ()=>{
           // Cargar el detalle GP de esta obra para tener rubros reales en el PDF
           let detalle = null;
           try {
@@ -18217,7 +20163,10 @@ export default function App(){
           fontWeight:tab===t.id?500:400,letterSpacing:"0.01em",transition:"all .15s",
           display:"inline-flex",alignItems:"center",gap:6}}>
           <span>{t.label}</span>
-          {t.id==="operacion" && pendientesOp > 0 && (
+          {/* El contador cuelga de la pestaña donde se captura, que en
+              dependencia se llama "avance" y no "operacion". Sin esto el
+              aviso de cierre pendiente no aparecía en ningún lado. */}
+          {(t.id==="operacion" || t.id==="avance") && pendientesOp > 0 && (
             <span title="Capturas pendientes esta semana"
               style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
                 borderRadius:99,minWidth:16,height:16,padding:"0 5px",
@@ -18233,11 +20182,13 @@ export default function App(){
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="salud"&&<PantallaSalud/>}
-      {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount}/>}
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra}/>}
+      {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount} soloContrato={dep}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra} marca={marca}/>}
 
-      {/* DASHBOARD ejecutivo */}
-      {screen==="obra"&&tab==="dash"&&obra&&<Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>}
+      {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
+      {screen==="obra"&&tab==="dash"&&obra&&(dep
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} onNavTab={navTab}/>
+        : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
@@ -18255,6 +20206,39 @@ export default function App(){
           onNavTab={navTab}/>
       )}
 
+      {/* AVANCE / CONTRATO: las mismas pantallas, con la barra de sub-pestañas
+          recortada (P5). No son wrappers nuevos: son `Operacion` y `Planeacion`
+          con otra lista de sub-tabs. Lo que sobra no se esconde con CSS, no se
+          le pasa — y el guardia que vive dentro de cada wrapper impide que un
+          `subTab` viejo siga pintando la sección que la barra ya no ofrece. */}
+      {screen==="obra"&&tab==="avance"&&obra&&(
+        <Operacion
+          subTabs={SUBTABS_OPERACION_DEPENDENCIA}
+          subTab={subTabOper} setSubTab={setSubTabOper}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
+          subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
+          maquinaria={maquinaria} setMaquinaria={setMaquinaria}
+          materiales={materiales} setMateriales={setMateriales}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          subcontratos={subcontratos} setSubcontratos={setSubcontratos}
+          historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
+          setCambiosPendientes={setCambiosPendientes}
+          onNavTab={navTab}/>
+      )}
+
+      {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
+          fotos, las revisa — y lo que necesita es exactamente eso. */}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+
+      {screen==="obra"&&tab==="contrato"&&obra&&(
+        <Planeacion
+          subTabs={SUBTABS_PLANEACION_DEPENDENCIA}
+          subTab={subTabPlan} setSubTab={setSubTabPlan}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
+          setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
+      )}
+
       {/* GASTOS GP */}
       {screen==="obra"&&tab==="gastos"&&obra&&<GastosGP obra={obra} setObra={setObra} maquinaria={maquinaria} rol={usuario.rol} gpData={gpData} gpLoading={gpLoading} gpError={gpError} gpUltActualiz={gpUltActualiz} onRefreshGP={cargarGP} cargarDetalleObra={cargarDetalleObra} gpDetalles={gpDetalles}/>}
 
@@ -18262,7 +20246,7 @@ export default function App(){
       {screen==="obra"&&tab==="planeacion"&&obra&&(
         <Planeacion
           subTab={subTabPlan} setSubTab={setSubTabPlan}
-          obra={obra} setObra={setObra} rol={usuario.rol}
+          obra={obra} setObra={setObra} rol={usuario.rol} usuario={usuario}
           setSubsGlobal={setSubs} subs={subs} subsCargados={subsCargados}/>
       )}
 
@@ -18329,9 +20313,9 @@ export default function App(){
       display:"flex",alignItems:"center",justifyContent:"space-between",zIndex:99,
       boxShadow:"0 -1px 4px rgba(0,0,0,0.04)"}}>
       <div style={{display:"flex",alignItems:"center",gap:7}}>
-        <EmblemaFOSMON size={11} dark={true} opacity={0.5}/>
+        <MarcaCotea tamano={11} opacity={0.5}/>
         <span style={{fontSize:9,color:C.textMut,letterSpacing:"0.02em"}}>
-          CAMPO — Control de Avance, Maquinaria, Personal y Obra
+          {PRODUCTO.nombre}{PRODUCTO.descriptor && ` — ${PRODUCTO.descriptor}`}
         </span>
       </div>
       {/* Versión real del build (fix/actualizacion-pwa). Formato:

@@ -37,6 +37,9 @@ const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc } =
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
 const noArranco = require('./no-arranco.cjs');
 
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const VOLCADO = process.argv[2] || '/tmp/0114-produccion.json';
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
@@ -160,9 +163,16 @@ if (faltan.length) noArranco(faltan);
   let escriturasReales = 0;
   const setDocContado = async (...a) => { escriturasReales++; return setDoc(...a); };
 
+  // `conOrg` es la función real de src/rutas-org.js, la misma con la que la
+  // app decide bajo qué organización cuelga cada ruta de obra. Se importa en
+  // vez de copiarse: una copia se desincroniza y esta prueba —que escribe de
+  // verdad contra el emulador— dejaría de comprobar dónde quedó el snapshot.
+  const { conOrg } = await require('./rutas-org-para-pruebas.cjs')();
+
   const montar = new Function(
-    'fbDb', 'doc', 'setDoc', 'fsGet', 'console',
+    'fbDb', 'doc', 'setDoc', 'fsGet', 'console', 'conOrg',
     `"use strict";
+     const docObra = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
      ${decl['ErrorSnapshot']}
      const ESQUEMA_SNAPSHOT = ${decl['ESQUEMA_SNAPSHOT']};
      const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
@@ -176,7 +186,7 @@ if (faltan.length) noArranco(faltan);
      const snapshotId = ${decl['snapshotId']};
      const crearSnapshotAvance = ${decl['crearSnapshotAvance']};
      return { crearSnapshotAvance, ESQUEMA_SNAPSHOT, tamañoFirestore, LIMITE_DOC_FIRESTORE };`
-  )(fbDb, doc, setDocContado, fsGet, console);
+  )(fbDb, doc, setDocContado, fsGet, console, conOrg);
 
   console.log(`\n1. El cierre oficial, por el camino de la app`);
   const devuelto = await montar.crearSnapshotAvance(

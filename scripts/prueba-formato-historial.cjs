@@ -28,6 +28,10 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
+const noArranco = require('./no-arranco.cjs');
+// Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
+noArranco.vigilarExcepciones();
+
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
@@ -86,10 +90,15 @@ const montar = ({ docs = {}, subcol = {} }) => {
     return { size: arr.length, empty: arr.length === 0, docs: arr.map(d => ({ data: () => d })),
              forEach: (f) => arr.forEach(d => f({ data: () => d })) };
   };
-  const mod = new Function('fsGet', 'getDocs', `
+  const mod = new Function('fsGet', 'getDocs', 'conOrg', `
     "use strict";
     const collection = (db, ...p) => ({ ruta: p.join('/') });
     const fbDb = {};
+    // Armado igual que en App.jsx, con el \`collection\` de mentira de arriba.
+    // \`conOrg\` llega por parámetro y es la función real de src/rutas-org.js,
+    // no una copia: una copia se desincroniza y esta prueba dejaría de ver el
+    // día que la app empiece a leer de otra organización.
+    const collObra = (...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
     ${decl['class:ErrorHistorialNomina']}
     const semanaISO = ${decl['semanaISO']};
     const numSemanaNomina = ${decl['numSemanaNomina']};
@@ -103,9 +112,11 @@ const montar = ({ docs = {}, subcol = {} }) => {
     const leerHistorialNomina = ${decl['leerHistorialNomina']};
     return { leerHistorialNomina, formatoHistorial,
              FORMATO_HISTORIAL_ARREGLO, FORMATO_HISTORIAL_SUBCOLECCION };
-  `)(fsGet, getDocs);
+  `)(fsGet, getDocs, conOrgReal);
   return { ...mod, leidas };
 };
+
+let conOrgReal = null;
 
 // Cargas con forma de producción: `semana` como texto y `fecha` de SUBIDA en
 // d/m/aaaa. Son las de la 0126, que rayó su semana 38 en dos archivos.
@@ -122,6 +133,8 @@ const SUBCOL = 'obras/0126/nomina_historial';
 console.log('1. Quién decide de dónde se lee');
 
 (async () => {
+  ({ conOrg: conOrgReal } = await require('./rutas-org-para-pruebas.cjs')());
+
   // Sin bandera: formato viejo. Una obra nueva no tiene bandera y tiene que
   // leer donde de verdad está su nómina.
   {

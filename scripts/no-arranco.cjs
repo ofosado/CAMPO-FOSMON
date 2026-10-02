@@ -37,3 +37,34 @@ module.exports = function noArranco(faltantes, archivo = 'src/App.jsx') {
 };
 
 module.exports.NO_ARRANCO = NO_ARRANCO;
+
+// El mismo principio, para el otro modo de no arrancar.
+//
+// Un símbolo que cambió de nombre lo atrapa `noArranco` arriba. Lo que no
+// atrapaba nadie es una excepción: el banco revienta a media extracción y Node
+// sale con 1 — el MISMO código que un rojo de verdad. La suite entonces dice
+// "falla" cuando lo que pasó es que la prueba no pudo mirar, y se busca una
+// regresión que no existe mientras la que sí existe sigue sin comprobarse.
+//
+// Salió de una contraprueba: al romper la FORMA de `LEXICO` —no su nombre— el
+// banco de dependencia salió 1 con 0 FALLA. Un `.catch` al final del IIFE no
+// alcanza: estos bancos construyen sandboxes en el ámbito del módulo, antes de
+// que el IIFE empiece. Hay que vigilar el proceso, no una promesa.
+module.exports.vigilarExcepciones = function vigilarExcepciones(archivo) {
+  const donde = archivo ? ' mientras leía ' + archivo : '';
+  const salir = (etiqueta, e) => {
+    console.log('');
+    console.log('NO ARRANCÓ — la prueba reventó' + donde + ':');
+    console.log('');
+    console.log('  ' + etiqueta + ': ' + (e && e.stack ? e.stack : e));
+    console.log('');
+    console.log('Esto NO es un rojo. La conducta se quedó SIN COMPROBAR. Suele ser');
+    console.log('que una declaración cambió de forma —no de nombre, de forma— y el');
+    console.log('andamiaje que la extrae ya no sirve; en los bancos que usan el');
+    console.log('emulador, que el emulador no está. Arreglar eso y volver a correr');
+    console.log('para saber si además hay regresión.');
+    process.exit(NO_ARRANCO);
+  };
+  process.on('uncaughtException', e => salir('excepción sin atrapar', e));
+  process.on('unhandledRejection', e => salir('promesa rechazada sin atrapar', e));
+};
