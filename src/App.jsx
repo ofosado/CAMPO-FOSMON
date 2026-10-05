@@ -2783,6 +2783,104 @@ const fraseHuecoDeArranque = (hueco) => {
     : `${base} No hay cierres registrados de ese periodo.`;
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// LA NOTA DE LA SEMANA
+// ════════════════════════════════════════════════════════════════════════════
+// El cierre semanal guarda números: avance, dinero, quién cerró. Lo que no
+// guardaba es POR QUÉ. Un avance de +0.4pp puede ser una semana floja o una
+// semana con el frente inundado y tres días sin acceso, y el expediente no
+// distinguía las dos. Cuando alguien pregunta, meses después, la respuesta
+// vive en la memoria de quien estuvo ahí —o no vive.
+//
+// CUATRO DECISIONES, y las cuatro importan:
+//
+// 1. NO BLOQUEA EL CIERRE. Una nota obligatoria se convierte en un punto o en
+//    "sin novedad" tecleado sin leer, y eso es peor que nada: ensucia el
+//    expediente con constancias falsas. El cierre sin nota se cierra, y el
+//    hueco se ve.
+//
+// 2. "SIN NOVEDAD" ES UNA OPCIÓN EXPLÍCITA, de un clic, DISTINTA de dejarlo
+//    vacío. Son dos hechos diferentes: uno es «el residente declara que no
+//    hubo incidencias», el otro es «nadie dijo nada». Guardarlos con la misma
+//    forma —texto vacío— los vuelve indistinguibles para siempre.
+//
+// 3. SE CONGELA cuando la semana deja de ser la corriente. Una nota que se
+//    puede reescribir un año después no sirve de constancia. Mientras la
+//    semana corre se corrige libremente, porque el viernes a las seis uno se
+//    equivoca; después queda. Si se tocó, `editadaEn` lo dice en pantalla.
+//
+//    El congelamiento es DISCIPLINA DE PANTALLA, no regla de Firestore: las
+//    reglas no pueden calcular en qué semana ISO estamos. Por eso `editadaEn`
+//    no es decorado — es lo único que hace visible una edición tardía.
+//
+// 4. VIVE EN SU PROPIO DOCUMENTO. `avance/historial` se recorta a 52 semanas
+//    (ver arriba), y una nota que desaparece sola es justo lo contrario de una
+//    constancia. En `avance/notas` las notas sobreviven al recorte, y el
+//    expediente puede explicar un periodo del que ya no conserva los números.
+const NOTA_SIN_NOVEDAD = 'sinNovedad';
+const NOTA_ESCRITA     = 'escrita';
+const NOTA_FALTA       = 'falta';
+
+// Lo que cabe en una nota. No es un límite de Firestore —caben 1 MiB— sino de
+// lectura: una nota es el apunte de la semana, no el informe. Con 52 notas de
+// este tamaño el documento ronda los 60 KB al año, muy lejos del techo que
+// obligó al recorte del historial.
+const LIMITE_NOTA_SEMANAL = 1000;
+
+// Qué se sabe de la nota de UNA semana cerrada. Devuelve siempre un estado
+// nombrado: nunca una cadena vacía que la pantalla tenga que interpretar.
+//
+// `estado` es un elemento de `estadoPorSemana`; `notas` es el mapa guardado en
+// `avance/notas`, con la misma clave `S40-2026`.
+const notaDeCierre = (notas, estado) => {
+  if (!estado) return null;
+  const n = (notas || {})[estado.clave];
+  const texto = typeof n?.texto === 'string' ? n.texto.trim() : '';
+
+  // Falta la nota. Se dice CON QUIÉN CERRÓ: el hueco de una semana no es una
+  // propiedad de la semana, es de quien la cerró, y sin nombre no se le puede
+  // preguntar a nadie.
+  if (!n || (!n.sinNovedad && !texto)) {
+    return { estado: NOTA_FALTA, clave: estado.clave, texto: null,
+      cerradoPor: estado.cerradoPor, fechaCierre: estado.fechaCierre,
+      autor: null, escritaEn: null, editadaEn: null };
+  }
+  return {
+    estado: n.sinNovedad && !texto ? NOTA_SIN_NOVEDAD : NOTA_ESCRITA,
+    clave: estado.clave,
+    texto: texto || null,
+    cerradoPor: estado.cerradoPor,
+    fechaCierre: estado.fechaCierre,
+    autor: n.autor || null,
+    autorNombre: n.autorNombre || null,
+    escritaEn: n.escritaEn || null,
+    // Sólo cuenta como editada si de verdad cambió después de escrita.
+    editadaEn: n.editadaEn && n.editadaEn !== n.escritaEn ? n.editadaEn : null,
+  };
+};
+
+// La frase que se enseña, escrita una sola vez para que la línea de tiempo, el
+// tablero de la dependencia y el informe por correo digan lo mismo.
+const fraseNota = (nota) => {
+  if (!nota) return null;
+  if (nota.estado === NOTA_ESCRITA) return nota.texto;
+  if (nota.estado === NOTA_SIN_NOVEDAD)
+    return 'Sin novedad: quien cerró la semana declaró que no hubo incidencias.';
+  // El hueco. No se disfraza de "sin novedad" (P2): decir que no hubo
+  // incidencias cuando nadie lo declaró es inventar una constancia.
+  return nota.cerradoPor
+    ? `Esta semana se cerró sin nota. La cerró ${nota.cerradoPor}.`
+    : 'Esta semana se cerró sin nota, y el cierre no registró quién la cerró.';
+};
+
+// ¿La semana de esta clave es la que corre hoy? Es lo que decide si la nota
+// todavía se puede corregir. Por el calendario —comparando el lunes de la
+// clave con el lunes de hoy—, no restando números de semana.
+const esLaSemanaCorriente = (clave, ahora = Date.now()) => {
+  const { semana, año } = semanaISO(new Date(ahora));
+  return clave === snapshotId(semana, año);
+};
+
 // Por qué no hay proyección de término. Cada una se dice con palabras
 // distintas porque son situaciones distintas, y la peor de las tres —la obra
 // detenida o en retroceso— es justo la que el guion escondía.
@@ -3345,6 +3443,42 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // que ya se persistió antes de llegar a esta línea.
     if (e instanceof ErrorSnapshot) throw e;
     return null;
+  }
+};
+
+// Guardar la nota de una semana. Documento aparte, `avance/notas`, fuera del
+// recorte de 52 (ver `notaDeCierre`).
+//
+// `sinNovedad` y `texto` son excluyentes: o se declara que no hubo nada, o se
+// cuenta qué hubo. Si llegan los dos, manda el texto — alguien que escribió
+// algo tenía algo que decir.
+//
+// NO lanza. El cierre semanal no se cae porque la nota no haya guardado: el
+// cierre ya está escrito para cuando se llama esto. Devuelve si quedó, y la
+// pantalla avisa sin deshacer nada.
+const guardarNotaSemanal = async (obraId, clave, { texto = '', sinNovedad = false,
+    autor = null, autorNombre = null, rol = null } = {}) => {
+  if (!obraId || !clave) return false;
+  const limpio = String(texto || '').trim().slice(0, LIMITE_NOTA_SEMANAL);
+  if (!limpio && !sinNovedad) return false;
+  try {
+    const previo = (await getDoc(docObra(obraId, 'avance', 'notas'))).data()?.notas?.[clave] || null;
+    const ahora = new Date().toISOString();
+    await setDoc(docObra(obraId, 'avance', 'notas'), {
+      notas: { [clave]: {
+        texto: limpio,
+        sinNovedad: !limpio && !!sinNovedad,
+        autor, autorNombre, rol,
+        // La primera vez que se escribió no se pisa nunca: es la mitad de lo
+        // que hace creíble a `editadaEn`.
+        escritaEn: previo?.escritaEn || ahora,
+        editadaEn: ahora,
+      } },
+    }, { merge: true });
+    return true;
+  } catch (err) {
+    console.error('guardarNotaSemanal', err);
+    return false;
   }
 };
 
@@ -5288,9 +5422,11 @@ function PrimaryBtn({children,onClick,disabled}){
       color:disabled?C.textMut:"#fff",fontSize:12,fontWeight:500,width:"100%",marginTop:6,
       letterSpacing:"0.02em",cursor:disabled?"not-allowed":"pointer"}}>{children}</button>;
 }
-function SecBtn({children,onClick,style}){
-  return <button onClick={onClick} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
-    padding:"5px 10px",fontSize:11,color:C.textSec,...style}}>{children}</button>;
+function SecBtn({children,onClick,style,disabled}){
+  return <button onClick={onClick} disabled={disabled}
+    style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
+    padding:"5px 10px",fontSize:11,color:C.textSec,
+    cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.45:1,...style}}>{children}</button>;
 }
 function ReadOnly({children}){
   return <div style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:9,
@@ -10836,7 +10972,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // cada organización ya están aisladas por las reglas— sino porque esas cifras
 // no existen del lado de quien contrata.
 // ════════════════════════════════════════════════════════════════════════════
-function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], recorteHistorial = null, onNavTab}){
+function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], recorteHistorial = null, notasSemana = {}, onNavTab}){
   const contrato = parseFloat(obra?.presupuesto) || 0;
   const modoVol  = obra?.modoAvance === "volumen";
 
@@ -10895,7 +11031,8 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   // El arranque que le falta al expediente, con la misma cuenta que la
   // pantalla de avance. Aquí importa más que allá: ésta es la pantalla desde
   // la que se revisa un expediente, y es donde se decidiría darlo por completo.
-  const hueco = huecoDeArranque(estadoPorSemana(historialAvance), obra, recorteHistorial);
+  const estadosSemana = estadoPorSemana(historialAvance);
+  const hueco = huecoDeArranque(estadosSemana, obra, recorteHistorial);
 
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
@@ -11066,20 +11203,95 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
         ))}
       </div>
     </Card>}
+
+    {/* Lo que dijo quien estuvo ahí. Sin `onGuardar`: la dependencia LEE la
+        nota del cierre, no la escribe — quien cierra la semana es quien
+        ejecuta. El hueco se ve igual que del otro lado, con quién cerró. */}
+    <NotasDeSemanas estados={estadosSemana} notas={notasSemana}
+      titulo="Lo que se reportó cada semana"/>
   </div>;
 }
 
 
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
-function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo}) {
+// El diálogo del cierre semanal. Sustituye al `window.confirm` que sólo pedía
+// confirmar: ahora el mismo momento en que se cierra la semana es donde se
+// cuenta qué pasó, porque es el único momento en que alguien lo tiene fresco.
+//
+// Las tres salidas son tres botones distintos a propósito. "Sin novedad" es un
+// clic y escribe una declaración; "Cerrar sin nota" también es un clic y NO
+// escribe nada. Si fueran el mismo botón con el campo vacío, el expediente no
+// podría distinguir después «no hubo incidencias» de «nadie dijo nada».
+function ModalCierreSemanal({clave, onCancel, onCerrar, busy}){
+  const[texto,setTexto]=useState("");
+  const restantes = LIMITE_NOTA_SEMANAL - texto.length;
+  const hayTexto = texto.trim().length > 0;
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:460}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.caliza,marginBottom:4}}>
+        Cerrar la semana {clave.replace("-", " de ")}
+      </div>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
+        Se guardará el avance actual como reporte semanal y se notificará a los
+        directivos. No podrás sobreescribir esta semana con guardados normales.
+      </div>
+
+      <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+        Nota de la semana
+      </div>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginBottom:6}}>
+        Qué explica el avance de estos días: clima, frentes detenidos, entregas,
+        lo que haya. Dentro de un año esto es lo único que va a quedar.
+      </div>
+      <textarea value={texto} maxLength={LIMITE_NOTA_SEMANAL} rows={5}
+        onChange={e=>setTexto(e.target.value)} disabled={busy}
+        placeholder="Tres días sin acceso al frente 2 por la lluvia del martes…"
+        style={{width:"100%",boxSizing:"border-box",border:`0.5px solid ${C.border}`,
+          borderRadius:8,padding:"9px 10px",fontSize:12,lineHeight:1.5,
+          fontFamily:"inherit",color:C.textPri,resize:"vertical"}}/>
+      <div style={{fontSize:9,color:restantes<80?C.yellow:C.textMut,textAlign:"right",marginTop:3}}>
+        {restantes} caracteres
+      </div>
+      <div style={{fontSize:9,color:C.textMut,lineHeight:1.5,marginTop:6}}>
+        Podrás corregirla mientras esta siga siendo la semana corriente. Después
+        queda fija, y si la tocas quedará dicho cuándo.
+      </div>
+
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",marginTop:16}}>
+        <SecBtn onClick={onCancel} disabled={busy}>Cancelar</SecBtn>
+        {/* Las dos salidas sin texto, separadas. Ver el comentario de arriba. */}
+        <SecBtn disabled={busy||hayTexto} onClick={()=>onCerrar({sinNovedad:true})}>
+          Sin novedad
+        </SecBtn>
+        <SecBtn disabled={busy||hayTexto} onClick={()=>onCerrar({})}>
+          Cerrar sin nota
+        </SecBtn>
+        <button disabled={busy||!hayTexto} onClick={()=>onCerrar({texto})}
+          style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+            fontSize:11,fontWeight:700,color:C.bg,
+            cursor:(busy||!hayTexto)?"not-allowed":"pointer",opacity:(busy||!hayTexto)?0.45:1}}>
+          {busy?"Cerrando…":"Cerrar con nota"}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo, onGuardarNota}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
+  const[cierreAbierto,setCierreAbierto]=useState(false);
+  // La nota se intentó y no quedó. Se avisa SIN deshacer el cierre, que ya está
+  // escrito: decir "error" a secas mandaría a recerrar una semana ya cerrada.
+  const[falloNota,setFalloNota]=useState(false);
   // El fallo del snapshot no puede ser un parpadeo de 3 segundos: es lo que
   // dejó a la 0114 siete semanas sin histórico sin que nadie se enterara. El
   // aviso se queda hasta que el usuario lo cierra.
   const[falloSnapshot,setFalloSnapshot]=useState(null);
-  async function guardar(tipoSnapshot = "intermedio") {
+  async function guardar(tipoSnapshot = "intermedio", nota = null) {
     setEstado("saving");
     setFalloSnapshot(null);
+    setFalloNota(false);
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
@@ -11121,6 +11333,17 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
         obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0);
       if (snap && onHistorialNuevo) onHistorialNuevo(snap);
+      // La nota va DESPUÉS del cierre y no lo condiciona: para cuando se llega
+      // aquí la semana ya está escrita. Si la nota falla, se avisa aparte y el
+      // cierre se queda — tratarlo como un fallo del cierre mandaría a recerrar
+      // una semana que ya cerró.
+      // Va por el mismo manejador que la corrección desde la línea de tiempo,
+      // y no por `guardarNotaSemanal` directo: así la nota aparece en pantalla
+      // en cuanto queda, sin esperar a recargar la obra.
+      if (snap && nota && (nota.texto || nota.sinNovedad) && onGuardarNota) {
+        const ok = await onGuardarNota(snapshotId(snap.semana, snap.año), nota);
+        if (!ok) setFalloNota(true);
+      }
       // Si es oficial, también notif
       if (tipoSnapshot === "oficial" && snap) {
         await notifARoles(['director_general','director_operaciones','gerente_construccion','admin_sistema'], {
@@ -11157,23 +11380,33 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
         {labels_map[estado]}
       </button>
-      {/* Botón "Cerrar semana" — confirma con doble click */}
-      <button onClick={() => {
-          if (window.confirm(
-            "Cerrar la semana:\n\n" +
-            "- Esta guardará el avance actual como reporte semanal.\n" +
-            "- Se notificará a los directivos.\n" +
-            "- No podrás sobreescribir esta semana con guardados normales.\n\n" +
-            "¿Confirmas el cierre semanal?")) {
-            guardar("oficial");
-          }
-        }}
+      {/* Botón "Cerrar semana" — confirma y pide la nota de la semana */}
+      <button onClick={()=>setCierreAbierto(true)}
         disabled={estado==="saving"}
         style={{background:"transparent",border:`0.5px solid ${C.caliza}`,borderRadius:8,
           padding:"8px 0",color:C.caliza,fontSize:11,fontWeight:600,width:"100%",
           cursor:estado==="saving"?"not-allowed":"pointer"}}>
         Cerrar semana
       </button>
+      {cierreAbierto && (() => {
+        const { semana, año } = semanaISO(new Date());
+        return <ModalCierreSemanal clave={snapshotId(semana, año)} busy={estado==="saving"}
+          onCancel={()=>setCierreAbierto(false)}
+          onCerrar={async nota => { setCierreAbierto(false); await guardar("oficial", nota); }}/>;
+      })()}
+
+      {/* El cierre quedó; la nota no. Se dice exactamente eso. */}
+      {falloNota && (
+        <div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,borderRadius:8,
+          padding:"10px 12px",marginTop:4,fontSize:10,lineHeight:1.6,color:C.textPri}}>
+          <b>La semana cerró, pero la nota no se guardó.</b> El cierre sí quedó
+          registrado —no vuelvas a cerrar—. Vuelve a escribir la nota desde la
+          línea de tiempo mientras ésta siga siendo la semana corriente.
+          <div style={{marginTop:8}}>
+            <SecBtn onClick={()=>setFalloNota(false)}>Entendido</SecBtn>
+          </div>
+        </div>
+      )}
 
       {/* El histórico no se guardó. No se va solo: hay que leerlo y cerrarlo. */}
       {falloSnapshot && (
@@ -11208,7 +11441,123 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
 // Detectores: partidas más calientes, estancadas (≥2 sem sin movimiento),
 // retroceso, a ritmo crítico.
 // Gráfica: línea acumulada vs ideal lineal.
-function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null}){
+// Las notas de las últimas semanas cerradas, en una sola lista que usan la
+// constructora y la dependencia. Se escribe una vez para que las dos pantallas
+// —y mañana el informe por correo— cuenten lo mismo.
+//
+// El hueco NO se esconde: una semana sin nota se pinta con el mismo peso que
+// una con nota, y dice quién la cerró. Una lista que sólo enseñara las semanas
+// documentadas daría la impresión de un expediente completo.
+//
+// `onGuardar` sólo llega del lado de quien puede escribir. Aunque llegue, sólo
+// la semana corriente se deja editar: ver la decisión 3 en `notaDeCierre`.
+function NotasDeSemanas({estados = [], notas = {}, cuantas = 6, onGuardar = null, titulo = "Notas de la semana"}){
+  const conAño = cruzaAños(estados);
+  const[editando,setEditando]=useState(null);   // clave en edición
+  const[borrador,setBorrador]=useState("");
+  const[guardando,setGuardando]=useState(false);
+  const[fallo,setFallo]=useState(false);
+  // El #31 en una línea. `guardarNotaSemanal` SÍ devuelve `false` cuando la
+  // escritura rebota —lo comprueba scripts/prueba-nota-no-calla.cjs contra el
+  // emulador—, pero si el editor se cierra igual, el hueco reaparece sin
+  // explicación y quien escribió cree que quedó. Ahí es donde el #31 se cuela:
+  // no en el helper, sino en la pantalla que ignora su respuesta. Si no quedó,
+  // el editor NO se cierra y el texto se conserva para no volver a teclearlo.
+  const intentar = async (clave, nota) => {
+    setGuardando(true); setFallo(false);
+    const ok = await onGuardar(clave, nota);
+    setGuardando(false);
+    if (ok) setEditando(null); else setFallo(true);
+  };
+  const ultimas = estados.slice(-cuantas).reverse();
+  if (ultimas.length === 0) return null;
+
+  const sinNota = ultimas.filter(e => notaDeCierre(notas, e)?.estado === NOTA_FALTA).length;
+
+  return <Card accent={C.caliza} style={{marginTop:10}}>
+    <Tit>{titulo}</Tit>
+    <div style={{fontSize:10,color:C.textMut,marginTop:-4,marginBottom:10}}>
+      {/* El conteo del hueco, dicho de frente y arriba. */}
+      {sinNota === 0
+        ? `Las últimas ${ultimas.length} semanas cerradas están documentadas.`
+        : `${sinNota} de las últimas ${ultimas.length} semanas cerradas no tienen nota.`}
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      {ultimas.map(e => {
+        const nota = notaDeCierre(notas, e);
+        const falta = nota.estado === NOTA_FALTA;
+        const corriente = esLaSemanaCorriente(e.clave);
+        const editable = !!onGuardar && corriente;
+        const enEdicion = editando === e.clave;
+        return <div key={e.clave} style={{border:`0.5px solid ${falta?C.yellow:C.border}`,
+          background:falta?C.yellowBg:C.surface, borderRadius:8, padding:"9px 11px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>
+              {etiquetaSemanaRiel(e, conAño)}
+            </div>
+            <div style={{fontSize:9,color:C.textMut}}>
+              {nota.cerradoPor ? `cerró ${nota.cerradoPor}` : "cierre sin autor registrado"}
+            </div>
+          </div>
+          {enEdicion ? <div style={{marginTop:6}}>
+            <textarea value={borrador} maxLength={LIMITE_NOTA_SEMANAL} rows={4} autoFocus
+              onChange={ev=>setBorrador(ev.target.value)} disabled={guardando}
+              style={{width:"100%",boxSizing:"border-box",border:`0.5px solid ${C.border}`,
+                borderRadius:6,padding:"7px 9px",fontSize:11,lineHeight:1.5,
+                fontFamily:"inherit",color:C.textPri,resize:"vertical"}}/>
+            {fallo && <div style={{marginTop:6,border:`0.5px solid ${C.red}`,
+              background:C.redBg,borderRadius:6,padding:"7px 9px",
+              fontSize:10,lineHeight:1.5,color:C.textPri}}>
+              <b>La nota no se guardó.</b> La escritura fue rechazada, así que
+              {falta ? " esta semana sigue sin nota."
+                     : " la nota de esta semana sigue como estaba."}
+              {" "}Tu texto no se perdió: está aquí abajo. Vuelve a intentarlo
+              y, si se repite, avisa a quien administra el sistema.
+            </div>}
+            <div style={{display:"flex",gap:6,justifyContent:"flex-end",marginTop:6}}>
+              <SecBtn disabled={guardando} onClick={()=>{setEditando(null);setFallo(false);}}>Cancelar</SecBtn>
+              <SecBtn disabled={guardando||borrador.trim().length>0}
+                onClick={()=>intentar(e.clave,{sinNovedad:true})}>
+                Sin novedad
+              </SecBtn>
+              <SecBtn disabled={guardando||borrador.trim().length===0}
+                style={{background:C.caliza,color:C.bg,fontWeight:700,borderColor:C.caliza}}
+                onClick={()=>intentar(e.clave,{texto:borrador})}>
+                {guardando?"Guardando…":fallo?"Reintentar":"Guardar"}
+              </SecBtn>
+            </div>
+          </div> : <>
+            <div style={{fontSize:11,lineHeight:1.55,marginTop:4,
+              color:falta?C.textPri:C.textSec,
+              fontStyle:nota.estado===NOTA_ESCRITA?"normal":"italic"}}>
+              {fraseNota(nota)}
+            </div>
+            {/* Que se tocó después de escrita se dice SIEMPRE: es lo único que
+                hace visible una corrección, porque el congelamiento es
+                disciplina de pantalla y no regla de Firestore. */}
+            {nota.editadaEn && <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
+              editada el {fechaEnPalabras(new Date(nota.editadaEn)) || nota.editadaEn.slice(0,10)}
+            </div>}
+            {editable && <div style={{marginTop:6}}>
+              <SecBtn onClick={()=>{ setBorrador(nota.texto || ""); setFallo(false); setEditando(e.clave); }}>
+                {falta ? "Escribir la nota" : "Corregir"}
+              </SecBtn>
+            </div>}
+            {/* Por qué ya no se puede corregir, dicho donde se intentaría. */}
+            {!!onGuardar && !corriente && falta && (
+              <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+                Esta semana ya pasó: la nota quedó congelada y el hueco es parte
+                del expediente.
+              </div>
+            )}
+          </>}
+        </div>;
+      })}
+    </div>
+  </Card>;
+}
+
+function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, notasSemana={}, onGuardarNota=null}){
   // Avance actual ponderado — FÍSICO sobre CONTRATO, compensado.
   const modoVol = (obra?.modoAvance === "volumen");
   const contratoObra = parseFloat(obra?.presupuesto) || 0;
@@ -11527,6 +11876,10 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null})
           idxFrontera={hayTramoViejoS ? idxFronteraS : -1}/>
       </Card>
     )}
+
+    {/* Qué explica esos números. Va DEBAJO de la gráfica a propósito: la curva
+        plantea la pregunta y la nota la contesta. */}
+    <NotasDeSemanas estados={estados} notas={notasSemana} onGuardar={onGuardarNota}/>
   </div>;
 }
 
@@ -11830,6 +12183,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,subcontratos,setSubcontratos,
                    historialAvance,setHistorialAvance,recorteHistorial=null,setCambiosPendientes,onNavTab,
+                   notasSemana={}, onGuardarNota=null,
                    nominaHistorial=[], setNominaHistorial,
                    subTabs=SUBTABS_OPERACION}){
   // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
@@ -11859,7 +12213,8 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
       <>
-        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance} recorteHistorial={recorteHistorial}/>
+        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance} recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={onGuardarNota}/>
         {/* Órdenes de Trabajo — ver `vanLasOT`: la bandera de la obra Y que la
             sesión sea de una constructora. La OT es documento interno suyo. */}
         {vanLasOT(usuario, obra) && (
@@ -11873,6 +12228,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="volumenes"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          onGuardarNota={onGuardarNota}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -11955,7 +12311,7 @@ function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setS
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,onNominaHistorialCambio}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,onGuardarNota=null,setCambiosPendientes,onNavTab,onNominaHistorialCambio}){
   // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
@@ -12393,6 +12749,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
       onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
+      onGuardarNota={onGuardarNota}
       onHistorialNuevo={(snap)=>{
         if (!setHistorialAvance) return;
         setHistorialAvance(hist => {
@@ -19674,6 +20031,7 @@ export default function App(){
     setSubcontratos([]);
     setHistorialAvance([]);
     setRecorteHistorial(null);
+    setNotasSemana({});
     setHistorialCargado(false);
     setOtrosGastos([]);
     setFechasModulos({});
@@ -19810,6 +20168,9 @@ export default function App(){
   // no puede distinguir un expediente al que le recortaron el arranque de uno
   // al que nadie se lo capturó.
   const[recorteHistorial,setRecorteHistorial]=useState(null);
+  // Las notas de las semanas cerradas. Documento aparte porque sobreviven al
+  // recorte de 52: una constancia que se borra sola no es constancia.
+  const[notasSemana,setNotasSemana]=useState({});
   const[historialCargado,setHistorialCargado]=useState(false);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
   // Fechas de última actualización por módulo, para detectar pendientes de captura
@@ -19828,8 +20189,21 @@ export default function App(){
         setRecorteHistorial(d?.recorte || null);
         setHistorialCargado(true);
       });
+      fsGet(`obras/${obraId}/avance/notas`).then(d=>setNotasSemana(d?.notas || {}));
     }
   }, [obraId, tab, subTabOper, historialCargado]);
+
+  // Escribir o corregir la nota de una semana. La pantalla sólo la enseña si
+  // Firestore la aceptó: pintar el texto antes de saberlo dejaría a quien la
+  // escribió creyendo que la constancia quedó cuando las reglas la rebotaron.
+  const guardarNota = useCallback(async (clave, nota) => {
+    const ok = await guardarNotaSemanal(obraId, clave, {
+      ...nota, autor: usuario?.correo || null,
+      autorNombre: usuario?.nombre || null, rol: usuario?.rol || null,
+    });
+    if (ok) setNotasSemana((await fsGet(`obras/${obraId}/avance/notas`))?.notas || {});
+    return ok;
+  }, [obraId, usuario?.correo, usuario?.nombre, usuario?.rol]);
 
   // Cargar otros gastos (manuales) al entrar a la obra para que el Dashboard
   // pueda incluirlos en las tendencias y el resumen de gasto total.
@@ -20325,7 +20699,7 @@ export default function App(){
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
-        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} onNavTab={navTab}/>
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
         : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
@@ -20340,6 +20714,7 @@ export default function App(){
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
@@ -20362,6 +20737,7 @@ export default function App(){
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>

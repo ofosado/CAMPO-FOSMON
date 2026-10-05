@@ -205,6 +205,13 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow write: if puedeEditarObraC(obraId);
       }
+      // La nota de cada semana cerrada. Mismo permiso que el historial del que
+      // habla; vive aparte sólo porque `avance/historial` se recorta a 52
+      // semanas, y una constancia que se borra sola no es constancia.
+      match /avance/notas {
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow write: if puedeEditarObraC(obraId);
+      }
 
       match /nomina/historial {
         allow read: if puedeVerObraC(obraId) && !esCliente();
@@ -352,6 +359,14 @@ service cloud.firestore {
       // Cortes semanales. De aquí sale el informe del artículo 73.
       // El contratista no los ve, igual que el `cliente` en constructora.
       match /avance/historial {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // La nota de cada semana cerrada. Mismo permiso que el corte del que
+      // habla, incluido el `!esContratista()`: la nota explica el cierre y se
+      // lee junto a él, así que separarlos daría acceso por la puerta de atrás
+      // a lo que la línea de arriba niega.
+      match /avance/notas {
         allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
         allow write: if oid == orgId() && puedeEditarObraD(obraId);
       }
