@@ -2645,20 +2645,30 @@ const etiquetaSemanaCorta = (clave) => {
   return `${String(clave).slice(0, 3)} · ${l.getDate()} ${MESES_CORTO[l.getMonth()]}`;
 };
 
-// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
-// y una afirmación sobre el estado de la obra.
-const leyendaSemanaSubida = (clave) => {
+// Las fechas que abarca una semana, en palabras: "21 al 27 de sep de 2026".
+//
+// Va aparte porque la dicen dos pantallas —la leyenda de las fotos y el panel
+// del riel— y son la MISMA afirmación sobre el calendario. Escrita dos veces,
+// el día que alguien arregle el cruce de año en una, la otra sigue mintiendo.
+const rangoSemanaEnPalabras = (clave) => {
   const l = lunesDeClaveSemana(clave);
-  if (!l) return 'Fotos sin fecha de subida registrada';
+  if (!l) return null;
   const f = new Date(l); f.setDate(l.getDate() + 6);
   // La semana 53 cruza el año (del 28 de dic de 2026 al 3 de ene de 2027). Con
   // un solo año al final, una de las dos puntas queda mal fechada, así que
   // cuando cruza se escriben los dos.
-  const rango = l.getFullYear() !== f.getFullYear()
+  return l.getFullYear() !== f.getFullYear()
     ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${l.getFullYear()} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
     : f.getMonth() !== l.getMonth()
       ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
       : `${l.getDate()} al ${f.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${f.getFullYear()}`;
+};
+
+// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
+// y una afirmación sobre el estado de la obra.
+const leyendaSemanaSubida = (clave) => {
+  const rango = rangoSemanaEnPalabras(clave);
+  if (!rango) return 'Fotos sin fecha de subida registrada';
   return `Subidas en la semana del ${rango}`;
 };
 
@@ -2914,6 +2924,112 @@ const fraseNota = (nota) => {
 const esLaSemanaCorriente = (clave, ahora = Date.now()) => {
   const { semana, año } = semanaISO(new Date(ahora));
   return clave === snapshotId(semana, año);
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// EL RIEL DE LA LÍNEA DE TIEMPO
+// ════════════════════════════════════════════════════════════════════════════
+// Una marca por semana, de la más vieja a la más reciente, con todo lo que se
+// sabe de esa semana. El riel ES el resumen de la obra: se lee de un vistazo,
+// antes de abrir nada.
+//
+// MARCAS Y NO DESLIZADOR. Un `input type=range` interpola: arrastrarlo lo
+// suelta en una posición que no corresponde a ninguna semana y hay que
+// redondear, y en el teléfono de un director no acierta. Una marca por semana
+// no tiene a dónde caerse.
+//
+// POR QUÉ SE PINTAN LOS HUECOS. El eje va semana a semana de CALENDARIO desde
+// la primera hasta la última de las que tienen algo —un cierre o una foto—,
+// sin saltarse las de en medio. Si sólo se pintaran las semanas con dato, una
+// S37 pegada a una S41 se leería como consecutivas y cuatro semanas sin cierre
+// desaparecerían de la vista. El hueco no es ausencia de información: es la
+// información. Es lo que un director reclama.
+//
+// Las PUNTAS sí salen del dato: no se inventan semanas antes de la primera
+// evidencia ni después de la última. Que al expediente le falte su principio
+// lo dice `huecoDeArranque`, que mide contra la fecha de inicio del contrato y
+// no contra el riel — el riel no puede saber lo que nunca se guardó.
+//
+// Se recorre sumando SIETE DÍAS al lunes, no uno al número de semana: un año
+// ISO tiene 52 o 53, y contar de S52 a S01 a mano pierde la 53 (2026 la tiene).
+const MARCA_CERRADA      = 'cerrada';      // cierre con delta comparable
+const MARCA_SIN_COMPARAR = 'sinComparar';  // hay cierre, pero el delta no se puede calcular
+const MARCA_SOLO_FOTOS   = 'soloFotos';    // nadie cerró; lo único que consta son fotos
+const MARCA_SIN_DATO     = 'sinDato';      // ni cierre ni fotos: el hueco
+
+// `clavesConFoto` es UNA CLAVE POR FOTO —no el conjunto— para que la marca
+// pueda decir cuántas hay. Las fotos sin fecha no entran: no se sabe de qué
+// semana son y colgarlas de una sería inventar evidencia fechada.
+const rielDeSemanas = (historialAvance = [], clavesConFoto = [], notas = {}) => {
+  const estados = estadoPorSemana(historialAvance);
+  const porClave = new Map(estados.map(e => [e.clave, e]));
+
+  const fotos = new Map();
+  for (const c of clavesConFoto || []) {
+    if (c) fotos.set(c, (fotos.get(c) || 0) + 1);
+  }
+
+  const lunes = [...new Set([...porClave.keys(), ...fotos.keys()])]
+    .map(lunesDeClaveSemana)
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+  if (!lunes.length) return [];
+
+  const fin = lunes[lunes.length - 1];
+  const marcas = [];
+  for (const d = new Date(lunes[0]); d <= fin; d.setDate(d.getDate() + 7)) {
+    const { semana, año } = semanaISO(d);
+    const clave = snapshotId(semana, año);
+    const cierre = porClave.get(clave) || null;
+    const nFotos = fotos.get(clave) || 0;
+    marcas.push({
+      clave, semana, año,
+      cierre,
+      fotos: nFotos,
+      estado: cierre
+        ? (cierre.sinDelta ? MARCA_SIN_COMPARAR : MARCA_CERRADA)
+        : (nFotos > 0 ? MARCA_SOLO_FOTOS : MARCA_SIN_DATO),
+      // La nota es de quien CERRÓ la semana. Una semana sin cierre no tiene
+      // hueco de nota: no hay a quién reclamárselo.
+      nota: cierre ? notaDeCierre(notas, cierre) : null,
+    });
+  }
+  return marcas;
+};
+
+// En qué semana abre el riel: la ÚLTIMA CON CIERRE, no la de hoy.
+//
+// Abrir en hoy recibe con un panel vacío a quien entra a una obra cuyo último
+// cierre fue hace tres semanas — y el vacío parece de la app, no de la obra.
+// La última cerrada es el último estado que la obra sí afirmó de sí misma.
+// Si no hay ningún cierre, la última semana con evidencia; si tampoco, nada.
+const marcaInicialDelRiel = (marcas = []) => {
+  for (let i = marcas.length - 1; i >= 0; i--) if (marcas[i].cierre) return marcas[i].clave;
+  for (let i = marcas.length - 1; i >= 0; i--) if (marcas[i].fotos > 0) return marcas[i].clave;
+  return null;
+};
+
+// Lo que el panel dice de una semana cuando NO hay números que enseñar.
+// Nunca un guion mudo: un guion significa lo mismo «no pasó nada» que «nadie
+// capturó», y son hechos distintos.
+const frasePanelSinCierre = (marca) => {
+  if (!marca || marca.cierre) return null;
+  if (marca.fotos > 0)
+    return `Esta semana no se cerró. Lo único que consta son ${marca.fotos} `
+      + `foto${marca.fotos === 1 ? '' : 's'} subida${marca.fotos === 1 ? '' : 's'}: `
+      + `no hay avance ni dinero registrados para ella.`;
+  return 'Esta semana no se cerró y no se subió evidencia. No consta nada de ella.';
+};
+
+// Por qué no hay delta en una semana cerrada. Son dos hechos distintos y el
+// guion los confundía con «0».
+const fraseSinDelta = (marca) => {
+  const razon = marca?.cierre?.sinDelta;
+  if (!razon) return null;
+  return razon === SIN_DELTA_PRIMER_CIERRE
+    ? 'Es el primer cierre del expediente: no hay semana anterior contra la cual restar.'
+    : 'No se puede comparar con la semana anterior: los dos cierres se calcularon '
+      + 'con definiciones distintas del avance.';
 };
 
 // Por qué no hay proyección de término. Cada una se dice con palabras
@@ -16432,11 +16548,12 @@ function AvanceCliente({obra, subs}){
 //
 // La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
 // de `semanaDeFoto`.
-function FotosCliente({obra, subs}){
+function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
   const[lightbox,setLightbox]=useState(null);
   const[vista,setVista]=useState("semana");     // "semana" | "partida"
   const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
   const[partidaSel,setPartidaSel]=useState(null);
+  const refMarcas = useRef({});
 
   // Todas las fotos de la obra, aplanadas, cada una con su partida y su semana.
   //
@@ -16494,13 +16611,72 @@ function FotosCliente({obra, subs}){
     return [...m.values()].sort((a,b) => String(a.sec).localeCompare(String(b.sec), 'es', {numeric:true}));
   }, [todas]);
 
-  // La semana que se está mirando. Por omisión, la más reciente con evidencia;
-  // si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
-  const semActiva = (semanaSel && (semanaSel === "__sin__" || semanas.includes(semanaSel)))
-    ? semanaSel
-    : (semanas[0] || (sinSemana.length ? "__sin__" : null));
+  // ── EL RIEL ────────────────────────────────────────────────────────────
+  // El eje de la línea de tiempo sale de `rielDeSemanas`, la misma cuenta que
+  // leen los KPIs: la galería por semana y el expediente por semana son la
+  // misma pantalla, y calcularlas aparte haría nacer la segunda cuenta.
+  const marcas = useMemo(
+    () => rielDeSemanas(historialAvance, todas.map(f => f.semana), notasSemana),
+    [historialAvance, todas, notasSemana]);
+  const conAño   = cruzaAños(marcas);
+  const hueco    = huecoDeArranque(estadoPorSemana(historialAvance), obra, recorteHistorial);
+  const claves   = marcas.map(m => m.clave);
+  const cerradas = marcas.filter(m => m.cierre).length;
 
+  // La semana que se está mirando. Por omisión, la última CON CIERRE —ver
+  // `marcaInicialDelRiel`—; si la obra no tiene ni un cierre, la última con
+  // evidencia, y si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
+  const semActiva = (semanaSel && (semanaSel === "__sin__" || claves.includes(semanaSel)))
+    ? semanaSel
+    : (marcaInicialDelRiel(marcas) || (sinSemana.length ? "__sin__" : null));
+
+  const marcaActiva = marcas.find(m => m.clave === semActiva) || null;
   const deSemana = semActiva === "__sin__" ? sinSemana : todas.filter(f => f.semana === semActiva);
+
+  // Flechas del teclado sobre el riel. Son marcas discretas, así que moverse
+  // es ir a la marca de al lado: no hay posición intermedia a la que llegar.
+  const moverRiel = (paso) => {
+    const i = claves.indexOf(semActiva);
+    const j = i < 0 ? claves.length - 1 : Math.min(claves.length - 1, Math.max(0, i + paso));
+    const c = claves[j];
+    if (!c) return;
+    setSemanaSel(c);
+    refMarcas.current[c]?.focus();
+    refMarcas.current[c]?.scrollIntoView({block:"nearest", inline:"nearest"});
+  };
+  const teclasRiel = (ev) => {
+    const salto = {ArrowLeft:-1, ArrowRight:1, PageUp:-4, PageDown:4,
+                   Home:-claves.length, End:claves.length}[ev.key];
+    if (salto === undefined) return;
+    ev.preventDefault();
+    moverRiel(salto);
+  };
+
+  // El color de cada estado. Son cuatro y se distinguen a simple vista, porque
+  // el riel se lee de un golpe: lo que no se distingue no informa.
+  const COLOR_MARCA = {
+    [MARCA_CERRADA]:      C.green,
+    [MARCA_SIN_COMPARAR]: C.blue,
+    [MARCA_SOLO_FOTOS]:   C.textMut,
+    [MARCA_SIN_DATO]:     C.borderM,
+  };
+  const LEYENDA_MARCA = {
+    [MARCA_CERRADA]:      "semana cerrada",
+    [MARCA_SIN_COMPARAR]: "cerrada, sin comparar",
+    [MARCA_SOLO_FOTOS]:   "sólo fotos, sin cierre",
+    [MARCA_SIN_DATO]:     "sin cierre ni fotos",
+  };
+
+  // Una obra puede tener cierres y ninguna foto: entonces la línea de tiempo
+  // sigue valiendo y "por partida" no tiene nada que enseñar.
+  const vistaEf = todas.length === 0 ? "semana" : vista;
+
+  // El riel abre en la última semana cerrada, que suele estar al final de un
+  // eje de un año: sin esto queda fuera de la ventana y parece que no hay
+  // nada seleccionado.
+  useEffect(() => {
+    refMarcas.current[semActiva]?.scrollIntoView({block:"nearest", inline:"center"});
+  }, [semActiva]);
 
   const pActiva = partidas.find(p => p.id === partidaSel) || null;
 
@@ -16543,50 +16719,198 @@ function FotosCliente({obra, subs}){
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <Card>
-      <Tit>Evidencia fotográfica</Tit>
+      {/* El título dice «la obra» y no «las fotos» porque el panel enseña
+          avance, dinero y la nota de quien cerró, no sólo evidencia. */}
+      <Tit>La obra, semana por semana</Tit>
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        {todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
+        {cerradas} semana{cerradas===1?"":"s"} cerrada{cerradas===1?"":"s"}
+        {" · "}{todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
         {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
         {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
       </div>
 
-      {todas.length === 0 ? (
+      {todas.length === 0 && marcas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
-          Aún no se han cargado fotos de esta obra.
+          Aún no hay cierres ni fotos de esta obra.
         </div>
-      ) : (
+      ) : todas.length > 0 && (
         <div style={{display:"flex",gap:6,marginBottom:10}}>
-          <button onClick={()=>setVista("semana")}  style={chip(vista==="semana")}>Por semana</button>
-          <button onClick={()=>setVista("partida")} style={chip(vista==="partida")}>Por partida</button>
+          <button onClick={()=>setVista("semana")}  style={chip(vistaEf==="semana")}>Por semana</button>
+          <button onClick={()=>setVista("partida")} style={chip(vistaEf==="partida")}>Por partida</button>
         </div>
       )}
 
-      {/* ── VISTA 1: una semana ─────────────────────────────────────────── */}
-      {todas.length > 0 && vista === "semana" && <>
-        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:6,marginBottom:8}}>
-          {semanas.map(w => (
-            <button key={w} onClick={()=>setSemanaSel(w)} style={chip(semActiva===w)}>
-              {etiquetaSemanaCorta(w)}
-            </button>
-          ))}
-          {sinSemana.length > 0 && (
+      {/* ── VISTA 1: la línea de tiempo, semana por semana ──────────────── */}
+      {(marcas.length > 0 || todas.length > 0) && vistaEf === "semana" && <>
+
+        {/* El expediente al que le falta el principio lo dice ANTES del riel.
+            El riel empieza donde empieza el dato, y sin esta línea eso se lee
+            como que la obra empezó ahí. */}
+        {hueco && (
+          <div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,borderRadius:6,
+            padding:"7px 9px",fontSize:9,color:C.yellowDk,lineHeight:1.45,marginBottom:8}}>
+            {fraseHuecoDeArranque(hueco)}
+          </div>
+        )}
+
+        {marcas.length > 0 && <>
+          <div role="tablist" aria-label="Semanas de la obra" onKeyDown={teclasRiel}
+            style={{display:"flex",gap:2,overflowX:"auto",padding:"2px 0 6px",
+              alignItems:"flex-end"}}>
+            {marcas.map(m => {
+              const act = semActiva === m.clave;
+              // El estado de la marca lo lleva el color, y el color no se lee en
+              // voz alta: dentro del botón sólo va el número de semana. Sin
+              // nombre accesible, un lector de pantalla recorrería nueve pestañas
+              // que dicen "32, 33, 34" y ninguna diría qué pasó esa semana.
+              const dice = `${etiquetaSemanaRiel(m, true)} — ${LEYENDA_MARCA[m.estado]}`
+                + (m.fotos > 0 ? ` · ${m.fotos} foto${m.fotos===1?"":"s"}` : "")
+                + (m.nota?.estado === NOTA_FALTA ? " · sin nota" : "");
+              return (
+                <button key={m.clave} role="tab" aria-selected={act}
+                  tabIndex={act ? 0 : -1}
+                  ref={el => { refMarcas.current[m.clave] = el; }}
+                  onClick={()=>setSemanaSel(m.clave)}
+                  aria-label={dice} title={dice}
+                  style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,
+                    background:act?C.surface:"none",borderRadius:5,padding:"3px 2px",
+                    border:`0.5px solid ${act?C.caliza:"transparent"}`,
+                    cursor:"pointer",flexShrink:0,width:conAño?32:24}}>
+                  {/* La foto es un punto aparte del cierre: son dos hechos
+                      distintos y fundirlos en un color los confunde. */}
+                  <span style={{width:4,height:4,borderRadius:99,
+                    background:m.fotos>0?C.blue:"transparent"}}/>
+                  <span style={{width:"100%",height:act?22:14,borderRadius:2,
+                    background:COLOR_MARCA[m.estado]}}/>
+                  {/* El hueco de nota, en ámbar, bajo la marca del cierre. */}
+                  <span style={{width:"100%",height:2,borderRadius:2,
+                    background:m.nota?.estado===NOTA_FALTA?C.yellow:"transparent"}}/>
+                  <span style={{fontSize:7,lineHeight:1,whiteSpace:"nowrap",
+                    color:act?C.caliza:C.textMut,fontWeight:act?700:500}}>
+                    {conAño ? `${m.semana}·${String(m.año).slice(2)}` : m.semana}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"3px 9px",fontSize:8,
+            color:C.textMut,marginBottom:9}}>
+            {[MARCA_CERRADA,MARCA_SIN_COMPARAR,MARCA_SOLO_FOTOS,MARCA_SIN_DATO].map(e => (
+              <span key={e} style={{display:"flex",alignItems:"center",gap:3}}>
+                <span style={{width:7,height:7,borderRadius:2,background:COLOR_MARCA[e]}}/>
+                {LEYENDA_MARCA[e]}
+              </span>
+            ))}
+            <span style={{display:"flex",alignItems:"center",gap:3}}>
+              <span style={{width:6,height:6,borderRadius:99,background:C.blue}}/>con fotos
+            </span>
+            <span style={{display:"flex",alignItems:"center",gap:3}}>
+              <span style={{width:8,height:3,borderRadius:2,background:C.yellow}}/>cerrada sin nota
+            </span>
+          </div>
+        </>}
+
+        {/* Las fotos sin fecha no son una semana, así que no son una marca del
+            riel: colgarlas de una sería inventar evidencia fechada. */}
+        {sinSemana.length > 0 && (
+          <div style={{marginBottom:9}}>
             <button onClick={()=>setSemanaSel("__sin__")} style={chip(semActiva==="__sin__")}>
               Sin fecha ({sinSemana.length})
             </button>
-          )}
-        </div>
-        <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
-          {semActiva === "__sin__"
-            ? "Fotos sin fecha de subida registrada"
-            : leyendaSemanaSubida(semActiva)}
-        </div>
-        <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
-          {semActiva === "__sin__"
-            ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
-            : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
-        </div>
-        {deSemana.length === 0 && (
-          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+          </div>
+        )}
+
+        {/* ── EL PANEL DE LA SEMANA ──────────────────────────────────────
+            Cuando no hay número, dice POR QUÉ no lo hay. Nunca un guion: un
+            guion significa lo mismo «no cambió» que «nadie capturó». */}
+        {semActiva !== "__sin__" && marcaActiva && (
+          <div style={{background:C.surface,border:`0.5px solid ${C.border}`,borderRadius:7,
+            padding:"9px 10px",marginBottom:10}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:7,flexWrap:"wrap"}}>
+              <span style={{fontSize:13,fontWeight:700,color:C.caliza}}>
+                {etiquetaSemanaRiel(marcaActiva, conAño)}
+              </span>
+              <span style={{fontSize:9,color:C.textMut}}>
+                {rangoSemanaEnPalabras(marcaActiva.clave)}
+              </span>
+            </div>
+
+            {marcaActiva.cierre ? <>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(106px,1fr))",
+                gap:7,margin:"9px 0 7px"}}>
+                <Kpi label="Avance acumulado" color={C.caliza}
+                  value={marcaActiva.cierre.avance !== null
+                    ? `${NUM(marcaActiva.cierre.avance,1)}%` : "sin dato"}
+                  size={marcaActiva.cierre.avance !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.avance !== null ? null
+                    : "el cierre de esa semana no registró el avance ponderado"}/>
+                <Kpi label="Avanzó en la semana"
+                  color={marcaActiva.cierre.delta === null ? C.textMut
+                    : marcaActiva.cierre.delta < 0 ? C.red : C.green}
+                  value={marcaActiva.cierre.delta !== null
+                    ? `${marcaActiva.cierre.delta >= 0 ? "+" : ""}${NUM(marcaActiva.cierre.delta,2)} pp`
+                    : "no se puede comparar"}
+                  size={marcaActiva.cierre.delta !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.delta !== null
+                    ? `contra ${String(marcaActiva.cierre.deltaDe).replace("-"," de ")}`
+                    : fraseSinDelta(marcaActiva)}/>
+                <Kpi label="Ejecutado al cierre" color={C.blueDk}
+                  value={marcaActiva.cierre.dinero !== null
+                    ? `$${NUM(marcaActiva.cierre.dinero,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.dinero !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.dinero !== null
+                    ? "lo que el cierre registró como ejecutado"
+                    : "el cierre de esa semana no registró el monto ejecutado"}/>
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
+                {marcaActiva.cierre.cerradoPor
+                  ? `Cerrada por ${marcaActiva.cierre.cerradoPor}`
+                  : "El cierre no registró quién lo hizo"}
+                {marcaActiva.cierre.fechaCierre
+                  && ` · ${fechaEnPalabras(fechaLocalDeISO(String(marcaActiva.cierre.fechaCierre).slice(0,10)))
+                        || String(marcaActiva.cierre.fechaCierre).slice(0,10)}`}
+              </div>
+              {/* La nota de la semana. El hueco se ve y nombra a quien cerró:
+                  un hueco con nombre se le puede reclamar a alguien. */}
+              <div style={{borderTop:`0.5px solid ${C.border}`,paddingTop:7,fontSize:10,
+                lineHeight:1.5,
+                color:marcaActiva.nota?.estado===NOTA_FALTA ? C.yellowDk : C.textSec,
+                fontStyle:marcaActiva.nota?.estado===NOTA_ESCRITA ? "normal" : "italic"}}>
+                {fraseNota(marcaActiva.nota)}
+                {marcaActiva.nota?.editadaEn && (
+                  <span style={{color:C.textMut,fontStyle:"italic"}}>
+                    {" "}— editada el {String(marcaActiva.nota.editadaEn).slice(0,10)}
+                  </span>
+                )}
+              </div>
+            </> : (
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginTop:6}}>
+                {frasePanelSinCierre(marcaActiva)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* La cabecera de la galería sólo cuando hay galería. Encabezar con
+            "Subidas en la semana del 10 al 16 de ago" una semana sin una sola
+            foto anuncia algo que no está y obliga a desmentirlo abajo. */}
+        {deSemana.length > 0 ? <>
+          <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+            {semActiva === "__sin__"
+              ? "Fotos sin fecha de subida registrada"
+              : leyendaSemanaSubida(semActiva)}
+          </div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
+            {semActiva === "__sin__"
+              ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
+              : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
+          </div>
+        </> : marcaActiva?.cierre && (
+          // Sólo cuando la semana SÍ se cerró: ahí el panel habló de avance y
+          // dinero sin mencionar fotos, y el hueco hay que nombrarlo. En una
+          // semana sin cierre ya lo dijo `frasePanelSinCierre`, y repetirlo
+          // haría parecer dos hallazgos donde hay uno.
+          <div style={{padding:"14px 0",textAlign:"center",color:C.textMut,fontSize:10}}>
             No se subieron fotos en esta semana.
           </div>
         )}
@@ -16604,7 +16928,7 @@ function FotosCliente({obra, subs}){
       </>}
 
       {/* ── VISTA 2: una partida a lo largo de sus semanas ──────────────── */}
-      {todas.length > 0 && vista === "partida" && !pActiva && <>
+      {todas.length > 0 && vistaEf === "partida" && !pActiva && <>
         <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
           Elige una partida para ver su evidencia semana por semana.
         </div>
@@ -16624,7 +16948,7 @@ function FotosCliente({obra, subs}){
         ))}
       </>}
 
-      {todas.length > 0 && vista === "partida" && pActiva && <>
+      {todas.length > 0 && vistaEf === "partida" && pActiva && <>
         <button onClick={()=>setPartidaSel(null)}
           style={{background:"none",border:"none",color:C.blue,fontSize:10,padding:0,
             cursor:"pointer",marginBottom:8}}>‹ todas las partidas</button>
@@ -20800,7 +21124,7 @@ export default function App(){
 
       {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
           fotos, las revisa — y lo que necesita es exactamente eso. */}
-      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
 
       {screen==="obra"&&tab==="contrato"&&obra&&(
         <Planeacion
@@ -20823,7 +21147,7 @@ export default function App(){
 
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
-      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
       {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>
