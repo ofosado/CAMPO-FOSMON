@@ -3183,6 +3183,39 @@ const frasePorQueSinDesviacion = (proy) => {
   return 'sin plazo vigente capturado';
 };
 
+// Los días de atraso o de adelanto, como KPI. Sustituye al párrafo de treinta
+// palabras que decía lo mismo debajo del tablero de avance.
+//
+// VIVE AQUÍ Y NO EN CADA PANTALLA porque lo dicen DOS: el tablero de avance y
+// el de plazo de la dependencia. Escrito dos veces, la obra tendría dos cuentas
+// de «días de atraso» que pueden contradecirse en la misma sesión — y la
+// pregunta «¿cuántos días lleva de retraso?» sólo tiene una respuesta buena.
+//
+// EL SIGNO ES LA MITAD DEL DATO. `+55` es atraso y `−27` es adelanto; «55 días»
+// pelado se lee como lo que le convenga al lector. Se escribe con el menos
+// tipográfico (−) y no con el guion de teclado, porque el guion a 12px junto a
+// un número se pierde y entonces el adelanto se lee como atraso.
+//
+// Y NUNCA DEVUELVE UN NÚMERO INVENTADO. Cuando no hay desviación que enseñar
+// devuelve `—` con la razón, que son cinco distintas (ver
+// `frasePorQueSinDesviacion`): un cero ahí diría «justo en el plazo», que es la
+// mentira más cómoda de todas.
+const kpiDesviacionPlazo = (proy) => {
+  const porque = frasePorQueSinDesviacion(proy);
+  if (porque !== null) {
+    return { valor: '—', sub: porque, dias: null,
+      color: proy?.razon === SIN_PROY_SIN_AVANCE ? C.red : C.textMut };
+  }
+  const d = proy.desviacionDias;
+  // Contra QUÉ fecha se mide, dicho siempre. Un plazo ampliado que no se
+  // declara se lee como el del contrato firmado, y eso cambia quién va tarde.
+  const contra = proy.ampliado ? 'del plazo ampliado' : 'del plazo del contrato';
+  if (d === 0) return { valor: 'en el plazo', sub: `justo ${contra}`, dias: 0, color: C.greenDk };
+  if (d > 0) return { valor: `+${d} d`, sub: `de atraso, ${contra}`, dias: d,
+    color: d > 15 ? C.red : C.yellow };
+  return { valor: `−${Math.abs(d)} d`, sub: `de adelanto, ${contra}`, dias: d, color: C.greenDk };
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
@@ -5301,6 +5334,39 @@ const ROLES_POR_TIPO = {
 // Toda su actividad queda registrada en /auditoria.
 const ROLES_CROSS = ["soporte"];
 
+// ── EL MODO DE CAPTURA POR OMISIÓN, Y QUIÉN PUEDE SALIRSE DE ÉL ────────────
+// Las obras NUEVAS nacen en volumen. En un contrato a precio unitario —que es
+// la forma de casi todo lo que se contrata aquí— el catálogo es una referencia
+// y lo que se estima y se paga es el volumen realmente ejecutado. Capturar un
+// porcentaje a ojo sobre una partida y llamarle avance es inventar la cifra con
+// la que después se cobra.
+//
+// ESTE DEFAULT NO ES EL RESPALDO DE `obra.modoAvance || "porcentaje"`, Y LA
+// DISTINCIÓN ES TODA LA CAUTELA DE ESTE CAMBIO. Ese respaldo decide cómo se
+// lee una obra que NUNCA eligió modo, y hay obras así en producción. Moverlo a
+// "volumen" reinterpretaría el dinero ejecutado de todas ellas de golpe, sin
+// que nadie tocara nada y sin quedar en la bitácora — que es exactamente el
+// cambio de definición silencioso que no se hace. El default de abajo se
+// ESCRIBE en el documento de la obra nueva; el respaldo se queda donde está.
+const MODO_AVANCE_NUEVA_OBRA = "volumen";
+
+// Porcentaje sigue existiendo —a tanto alzado se captura así, y hay obras
+// capturadas así desde antes— pero deja de ser una casilla que cualquiera pica
+// y pasa a ser una excepción que autoriza la dirección.
+//
+// «Coordinador» no es un rol de este sistema (ver `ROLES_POR_TIPO`); el
+// equivalente son los dos puestos de dirección de cada tipo, más quien
+// administra el sistema.
+const ROLES_HABILITAN_PORCENTAJE = new Set([
+  "director_general", "director_operaciones", "admin_sistema",  // constructora
+  "director_obras", "subdirector",                             // dependencia
+]);
+// Volver a porcentaje requiere autorización; pasar a volumen no, porque es el
+// modo al que el sistema quiere llegar. El que NO puede elegir porcentaje
+// tampoco deja la obra atorada: si ya está en porcentaje la sigue viendo y la
+// sigue capturando, sólo no puede moverla hacia allá.
+const puedeElegirPorcentaje = rol => ROLES_HABILITAN_PORCENTAJE.has(rol);
+
 const MODULOS_POR_TIPO = {
   constructora: ["nomina","gastos","margen","almacen","maquinaria"],
   dependencia: ["contratistas","supervisores","comparativo","programa","SIMVER"],
@@ -6570,7 +6636,11 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
     residente:"",admin:"",presupuesto:"",gastoGP:0,
     ultimaAct:new Date().toLocaleDateString("es-MX",{day:"2-digit",month:"long",year:"numeric"}),
     estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
-    inicio:"",fin:"",finAmpliado:"",justificacionAmpliacion:""
+    inicio:"",fin:"",finAmpliado:"",justificacionAmpliacion:"",
+    // Se escribe EXPLÍCITO en la obra nueva, no se deja al respaldo. Una obra
+    // con el modo escrito se lee igual hoy y dentro de un año; una que lo deja
+    // implícito cambia de significado el día que alguien mueva el respaldo.
+    modoAvance: MODO_AVANCE_NUEVA_OBRA
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const valid=form.nombre&&form.contrato&&form.cliente&&form.presupuesto&&form.inicio&&form.fin;
@@ -11559,6 +11629,17 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const estadosSemana = estadoPorSemana(historialAvance);
   const hueco = huecoDeArranque(estadosSemana, obra, recorteHistorial);
 
+  // Días de atraso o de adelanto. Es `proyeccionDeAvance` + `kpiDesviacionPlazo`,
+  // las MISMAS dos funciones que usa el tablero de avance, a propósito: la
+  // pregunta «¿cuántos días lleva de retraso?» tiene una sola respuesta buena y
+  // una segunda cuenta aquí acabaría contradiciendo a la de allá.
+  //
+  // Y NO es lo mismo que la barra de abajo. La barra dice cuánto plazo se
+  // consumió —puro calendario, la obra podría estar al 2%—; esto dice si al
+  // ritmo medido la obra llega. Van en la misma tarjeta porque juntas contestan
+  // «¿va a tiempo?», que ninguna de las dos contesta sola.
+  const desvPlazo = kpiDesviacionPlazo(proyeccionDeAvance(estadosSemana, avance, obra));
+
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
   // pasarle un gasto en cero haría que las de brecha dispararan solas.
@@ -11668,7 +11749,17 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
 
     {/* ── Plazo ── */}
     <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
-      <Tit>Plazo</Tit>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+        <Tit>Plazo</Tit>
+        {/* Lo primero que se pregunta quien abre esta tarjeta, arriba y con
+            signo. Las tres fechas y la barra de abajo son el respaldo. */}
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{fontSize:18,fontWeight:700,lineHeight:1,color:desvPlazo.color}}>
+            {desvPlazo.valor}
+          </div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:3}}>{desvPlazo.sub}</div>
+        </div>
+      </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
         <div>
           <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>Inicio</div>
@@ -12117,50 +12208,14 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   const proy = proyeccionDeAvance(estados, avanceActual, obra);
   const velocidadProm = proy.velocidad;
   const fechaProyFin = proy.fechaFin;
-  const desvDias = proy.desviacionDias;
   const finContrato = proy.finVigente;
 
-  // La frase de la proyección, en palabras y sin guiones ambiguos. El guion
-  // anterior significaba tres cosas distintas a la vez —no hay dos cierres,
-  // los cierres no se pueden restar, la obra no avanza— y la peor de las tres
-  // era la que quedaba escondida.
-  const frasePlazo = (() => {
-    const vig = fechaEnPalabras(fechaLocalDeISO(finContrato));
-    const orig = fechaEnPalabras(fechaLocalDeISO(obra.fin));
-    // Qué fecha es el plazo vigente, y si no es la original, cuál era. Esto es
-    // lo que hacía falta decir en voz alta: la proyección NUNCA se compara
-    // contra el plazo del contrato firmado, sino contra el que está vigente
-    // después de las ampliaciones, y eso cambia quién está en atraso.
-    const elPlazo = !vig
-      ? 'el plazo vigente, que esta obra no tiene capturado'
-      : proy.ampliado
-        ? `el plazo VIGENTE, ${vig} — ampliado; el original era el ${orig || 'que no está capturado'}`
-        : `el plazo vigente, ${vig}, que sigue siendo el original`;
-    if (proy.razon === null) {
-      const d = proy.desviacionDias;
-      const cuando = d === null
-        ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}, pero no hay contra qué compararlo`
-        : d > 0
-          ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${d} días DESPUÉS del plazo`
-          : d < 0
-            ? `terminaría el ${fechaEnPalabras(proy.fechaFin)}: ${Math.abs(d)} días antes del plazo`
-            : `terminaría justo en el plazo`;
-      return `Al ritmo de los últimos ${proy.semanasBase} cierres, la obra ${cuando}. Se compara contra ${elPlazo}.`;
-    }
-    if (proy.razon === SIN_PROY_SIN_AVANCE) {
-      return `No hay proyección de término, y la razón es la grave: en los últimos ${proy.semanasBase} cierres `
-        + (proy.velocidad < 0
-          ? `el avance RETROCEDIÓ ${NUM(Math.abs(proy.velocidad),2)} pp por semana.`
-          : `el avance no se movió.`)
-        + ` A esa velocidad la obra no llega nunca, así que no hay fecha que proyectar. Se compara contra ${elPlazo}.`;
-    }
-    if (proy.razon === SIN_PROY_NO_COMPARABLES) {
-      return `No hay proyección de término: hay ${estados.length} cierres, pero se calcularon con definiciones `
-        + `distintas del avance y restarlos inventaría un salto que no ocurrió. Se compara contra ${elPlazo}.`;
-    }
-    return `No hay proyección de término: hacen falta dos cierres semanales para medir una velocidad y hay `
-      + `${estados.length}. Se compara contra ${elPlazo}.`;
-  })();
+  // El párrafo de la proyección se fue: decía en treinta palabras lo que ahora
+  // dice el KPI «Contra el plazo» con un signo y un número. Lo que NO se fue es
+  // ninguna de las cinco razones por las que puede no haber desviación — las
+  // sigue diciendo `kpiDesviacionPlazo` en el renglón de abajo del KPI, que es
+  // el único lugar donde el lector las necesita.
+  const desvPlazo = kpiDesviacionPlazo(proy);
 
   // ── DETECTORES ──
   // Todos comparan AVANCE FÍSICO, así que ambos lados se topan al 100%:
@@ -12259,29 +12314,23 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
         sub={velocidadProm!==null?`últimos ${proy.semanasBase} cierres`:"sin velocidad medible"}
         color={velocidadProm===null?C.textMut:velocidadProm>0?C.blueDk:C.red} size={12}/>
       <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"numeric"}):"—"}
-        sub={desvDias!==null
-          ? (desvDias>0?`${desvDias} días después del plazo vigente`
-            :desvDias<0?`${Math.abs(desvDias)} días antes del plazo vigente`
-            :"justo en el plazo vigente")
+        sub={fechaProyFin
+          ? `al ritmo de los últimos ${proy.semanasBase} cierres`
           : frasePorQueSinDesviacion(proy)}
-        color={desvDias===null
+        color={fechaProyFin===null
           ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
-          : desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
+          : C.textPri} size={12}/>
+      {/* Los días de atraso o de adelanto. Antes esto era un párrafo debajo del
+          tablero; el número cabe en un KPI y el párrafo no se leía. El color y
+          el signo los decide `kpiDesviacionPlazo`, que es la misma cuenta que
+          usa el tablero de plazo de la dependencia. */}
+      <Kpi label="Contra el plazo" value={desvPlazo.valor}
+        sub={desvPlazo.sub} color={desvPlazo.color} size={12}/>
       {idealActual!==null && (
         <Kpi label="Avance ideal" value={`${NUM(idealActual,1)}%`}
           sub={desvIdeal!==null?(desvIdeal<0?`${NUM(desvIdeal,1)}pp atrasado`:`+${NUM(desvIdeal,1)}pp adelantado`):"—"}
           color={desvIdeal===null?C.textMut:desvIdeal<-5?C.red:desvIdeal<0?C.yellow:C.greenDk} size={12}/>
       )}
-    </div>
-
-    {/* La proyección, en una frase. El KPI de arriba cabe en tres palabras y
-        por eso cabía también el guion que significaba tres cosas; aquí se dice
-        cuál de las tres es, y contra qué fecha se está comparando. */}
-    <div style={{fontSize:10,lineHeight:1.5,
-      color: proy.razon===SIN_PROY_SIN_AVANCE ? C.red
-        : (desvDias!==null && desvDias>0) ? C.yellow : C.textSec,
-      background:C.bg, borderRadius:8, padding:"8px 11px"}}>
-      {frasePlazo}
     </div>
 
     {/* EL ARRANQUE QUE FALTA. Va pegado a la serie porque es la advertencia de
@@ -12299,34 +12348,6 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
         `sonComparables`, dentro de `estadoPorSemana` y de
         `proyeccionDeAvance`. Ese aviso tenía su propia bandera `serieMixta`,
         que no gobernaba nada más y se fue con él. */}
-
-    {/* Compensación de volúmenes — por qué el avance de la obra no es el
-        promedio de las partidas. Quien trabaja el catálogo necesita ver
-        cuántas se pasaron y cuántas quedaron cortas. */}
-    {compensacion.partidas > 0 && (
-      <Card>
-        <Tit>Compensación de volúmenes</Tit>
-        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
-          El avance de la obra es lo ejecutado contra el contrato: las partidas
-          que se pasaron compensan a las que quedaron cortas.
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8}}>
-          <Kpi label="Partidas excedidas" value={String(compensacion.excedidas)}
-            sub={compensacion.excedidas>0?`+${MXN(compensacion.montoExcedente)} sobre su catálogo`:"ninguna se pasó"}
-            color={compensacion.excedidas>0?C.yellowDk:C.textMut} size={12}/>
-          <Kpi label="Partidas cortas" value={String(compensacion.cortas)}
-            sub={compensacion.cortas>0?`${MXN(compensacion.montoFaltante)} por ejecutar`:"ninguna pendiente"}
-            color={compensacion.cortas>0?C.blueDk:C.textMut} size={12}/>
-          <Kpi label="Partidas completas" value={String(compensacion.completas)}
-            sub={`de ${compensacion.partidas} en el catálogo`} color={C.greenDk} size={12}/>
-          <Kpi label="Neto" value={`${compensacion.neto>=0?'+':'-'}${MXN(Math.abs(compensacion.neto))}`}
-            sub={Math.abs(compensacion.neto) < 1 ? "la obra se compensó sola"
-              : compensacion.neto > 0 ? "ejecutado por encima del contrato"
-              : "falta por ejecutar para cerrar el contrato"}
-            color={compensacion.neto>0?C.yellowDk:C.textSec} size={12}/>
-        </div>
-      </Card>
-    )}
 
     {/* Sin histórico aún */}
     {oficiales.length === 0 && (
@@ -12403,6 +12424,39 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
     {/* Qué explica esos números. Va DEBAJO de la gráfica a propósito: la curva
         plantea la pregunta y la nota la contesta. */}
     <NotasDeSemanas estados={estados} notas={notasSemana} onGuardar={onGuardarNota}/>
+
+    {/* Compensación de volúmenes — por qué el avance de la obra no es el
+        promedio de las partidas. Quien trabaja el catálogo necesita ver
+        cuántas se pasaron y cuántas quedaron cortas.
+
+        HASTA EL FONDO, y es una decisión, no un descuido: esto no responde
+        «¿cómo va la obra?» sino «¿por qué ese número es ése?». Arriba de la
+        curva le robaba el sitio a lo que sí se consulta todos los días, y quien
+        necesita el desglose del catálogo llega buscándolo. */}
+    {compensacion.partidas > 0 && (
+      <Card>
+        <Tit>Compensación de volúmenes</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+          El avance de la obra es lo ejecutado contra el contrato: las partidas
+          que se pasaron compensan a las que quedaron cortas.
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8}}>
+          <Kpi label="Partidas excedidas" value={String(compensacion.excedidas)}
+            sub={compensacion.excedidas>0?`+${MXN(compensacion.montoExcedente)} sobre su catálogo`:"ninguna se pasó"}
+            color={compensacion.excedidas>0?C.yellowDk:C.textMut} size={12}/>
+          <Kpi label="Partidas cortas" value={String(compensacion.cortas)}
+            sub={compensacion.cortas>0?`${MXN(compensacion.montoFaltante)} por ejecutar`:"ninguna pendiente"}
+            color={compensacion.cortas>0?C.blueDk:C.textMut} size={12}/>
+          <Kpi label="Partidas completas" value={String(compensacion.completas)}
+            sub={`de ${compensacion.partidas} en el catálogo`} color={C.greenDk} size={12}/>
+          <Kpi label="Neto" value={`${compensacion.neto>=0?'+':'-'}${MXN(Math.abs(compensacion.neto))}`}
+            sub={Math.abs(compensacion.neto) < 1 ? "la obra se compensó sola"
+              : compensacion.neto > 0 ? "ejecutado por encima del contrato"
+              : "falta por ejecutar para cerrar el contrato"}
+            color={compensacion.neto>0?C.yellowDk:C.textSec} size={12}/>
+        </div>
+      </Card>
+    )}
   </div>;
 }
 
@@ -19064,9 +19118,15 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   // Guarda 1 — bloqueo duro: a volumen no se pasa sin `cant` y `pu`.
   // Guarda 2 — confirmación explícita, con el ejecutado de antes y de después.
   // Y el cambio se escribe a la bitácora: quién, cuándo, de qué modo a cuál.
+  //
+  // Guarda 3 — porcentaje es excepción autorizada: sólo dirección lo elige.
+  // Se corta AQUÍ y no sólo en el `onClick` de la tarjeta, porque el corte que
+  // vive en el manejador del clic es el que se salta la siguiente pantalla que
+  // llame a esta función.
   function pedirCambioModo(destino) {
     const actual = obra.modoAvance || "porcentaje";
     if (destino === actual || !subsCargados) return;
+    if (destino === "porcentaje" && !puedeElegirPorcentaje(rol)) return;
     const d = diagnosticoCambioModo(subs, actual, destino);
     if (destino === "volumen" && !d.puedeVolumen) { setBloqueoModo(d); return; }
     setCambioModo({ actual, destino, ...d });
@@ -19171,13 +19231,20 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
             {editar ? (
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                 {[
-                  {v:"porcentaje", lbl:"Por porcentaje", desc:"Para obras donde cada partida se mide en % de avance acumulado. Default."},
-                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para contratos a precio unitario donde el catálogo es una referencia y los volúmenes realmente ejecutados pueden variar."},
+                  {v:"volumen", lbl:"Por volumen ejecutado",
+                   desc:"Lo que se estima y se cobra es el volumen realmente ejecutado contra el precio unitario. Es el modo de las obras nuevas."},
+                  {v:"porcentaje", lbl:"Por porcentaje",
+                   desc:"Cada partida se mide en % de avance acumulado. Para obras a tanto alzado y para las que ya se capturaron así."},
                 ].map(opt => {
                   const sel = (obra.modoAvance||"porcentaje") === opt.v;
+                  // La opción existe pero está bajo llave. NO se esconde: quien
+                  // la necesita tiene que poder ver que existe y a quién
+                  // pedírsela; una opción oculta se reporta como un defecto.
+                  const bajoLlave = opt.v === "porcentaje" && !sel && !puedeElegirPorcentaje(rol);
+                  const vivo = subsCargados && !bajoLlave;
                   return <div key={opt.v} onClick={()=>pedirCambioModo(opt.v)}
-                    style={{flex:"1 1 200px",cursor:subsCargados?"pointer":"wait",
-                      opacity:subsCargados?1:0.55,
+                    style={{flex:"1 1 200px",cursor:bajoLlave?"not-allowed":subsCargados?"pointer":"wait",
+                      opacity:vivo?1:0.55,
                       border:`1.5px solid ${sel?C.blueDk:C.border}`,
                       background:sel?C.blueBg:"transparent",
                       borderRadius:8,padding:"10px 12px",transition:"all .15s"}}>
@@ -19190,6 +19257,10 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
                       <span style={{fontSize:12,fontWeight:600,color:sel?C.blueDk:C.textPri}}>{opt.lbl}</span>
                     </div>
                     <div style={{fontSize:10,color:C.textMut,lineHeight:1.4,marginLeft:20}}>{opt.desc}</div>
+                    {bajoLlave && <div style={{fontSize:9,color:C.yellowDk,lineHeight:1.4,marginLeft:20,marginTop:4}}>
+                      Volver a porcentaje lo autoriza la dirección. Pídelo a la
+                      dirección de obra o al administrador del sistema.
+                    </div>}
                   </div>;
                 })}
               </div>
