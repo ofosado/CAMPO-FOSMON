@@ -3095,6 +3095,29 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
     desviacionDias, finVigente, ampliado, razon: null };
 };
 
+// Por qué NO hay días de desviación que enseñar, en tres palabras.
+//
+// Devuelve `null` cuando sí los hay. Vive aparte porque lo dicen dos pantallas
+// —el KPI de proyección de la obra y la columna del portafolio— y son la misma
+// afirmación: escrita dos veces, arreglar una deja mintiendo a la otra.
+//
+// SON CINCO CASOS, NO TRES. La versión que estaba escrita a mano en el KPI
+// encadenaba las dos razones «graves» y caía a «requiere 2 cierres» en todo lo
+// demás. Eso está mal en un caso real: una obra con cierres de sobra y una
+// proyección perfectamente calculada, pero SIN PLAZO VIGENTE CAPTURADO, tiene
+// `desviacionDias === null` con `razon === null` — y el KPI le decía al
+// director «requiere 2 cierres», que es falso y lo manda a buscar el problema
+// donde no está. Lo que falta es la fecha de término, y hay que decir ésa.
+const frasePorQueSinDesviacion = (proy) => {
+  if (!proy) return 'sin datos de la obra';
+  if (proy.desviacionDias !== null && proy.desviacionDias !== undefined) return null;
+  if (proy.razon === SIN_PROY_SIN_AVANCE)
+    return proy.velocidad < 0 ? 'la obra retrocede' : 'la obra no avanza';
+  if (proy.razon === SIN_PROY_NO_COMPARABLES) return 'cierres no comparables';
+  if (proy.razon === SIN_PROY_POCOS_CIERRES) return 'requiere 2 cierres';
+  return 'sin plazo vigente capturado';
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
@@ -8311,20 +8334,29 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
 // a `calcularKPIsObra`, que es donde nace `gt` y con él el margen, así que no
 // hay cifra de gasto que pueda filtrarse ni columna que ordenar por ella.
 //
-// Las cinco cifras del contrato, más avance y última captura. Ni margen, ni
-// gasto, ni personal, ni horas extra.
+// Las cinco cifras del contrato, más contratista, avance, atraso proyectado y
+// última captura. Ni margen, ni gasto, ni personal, ni horas extra.
 //
-// ORDEN POR DEFECTO: avance físico ascendente, y a igual avance la de mayor
-// monto contratado primero. Es la única cifra que sale de lo que la propia
-// dependencia capturó y contesta "cuál me preocupa" sin necesitar el programa
-// de ejecución convenido. Lo estrictamente correcto sería ordenar por
-// desviación contra ese programa — pero el programa no está cargado, y
-// ordenar por una desviación calculada contra un plazo lineal supuesto sería
-// inventar la cifra que el P2 prohíbe. Cuando el programa exista, este orden
-// es lo que hay que cambiar.
+// ORDEN POR DEFECTO: días de atraso proyectados, de mayor a menor; y donde no
+// hay atraso que calcular, avance físico ascendente.
+//
+// Antes era avance ascendente a secas, y la razón estaba escrita aquí: ordenar
+// por desviación contra un programa de ejecución que no está cargado habría
+// significado suponer un avance lineal e inventar la cifra que el P2 prohíbe.
+// Eso sigue siendo cierto de ESE cálculo. El que ordena esta tabla es otro:
+// `proyeccionDeAvance` proyecta con la velocidad REAL de los últimos cierres
+// comparables y la compara contra el plazo VIGENTE capturado. No supone nada;
+// cuando no puede medir, no devuelve un número, devuelve por qué no.
+//
+// Por eso el desempate importa tanto como el orden. Una obra sin atraso
+// calculable no es "una obra sin atraso": es una que no se pudo medir, y
+// mandarla al fondo con las que van bien la escondería. Van al fondo del
+// bloque medible, sí —no se puede afirmar que estén atrasadas—, pero entre
+// ellas se ordenan por avance ascendente y la celda dice en voz alta por qué
+// no hay número.
 // ════════════════════════════════════════════════════════════════════════════
 function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
-  const [orden, setOrden] = useState('avance|asc');
+  const [orden, setOrden] = useState('atraso|desc');
   const HOY = Date.now();
 
   const activas = obras.filter(o => (o.estado || 'activa') !== 'archivada');
@@ -8357,10 +8389,35 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
     const diasSinCaptura = ultAv?.fechaCaptura
       ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / 86400000) : null;
 
+    // El atraso proyectado, con la MISMA cuenta que el detalle de la obra.
+    // `info` manda sobre `o` porque las fechas de plazo —y la ampliación, que
+    // es la que decide contra qué se mide— viven en el documento de contrato.
+    const paraPlazo = { ...o, ...info };
+    const proy = proyeccionDeAvance(estadoPorSemana(avSemanas), af, paraPlazo, HOY);
+
+    // El contratista se captura a mano y es texto libre (#41): hasta que haya
+    // padrón, «ACME S.A.» y «Acme SA de CV» son dos empresas para la máquina.
+    // Eso impide CONTARLAS, no impide ordenarlas: la clave normalizada las
+    // deja juntas en la lista, que es lo único que la columna promete.
+    //
+    // La clave QUITA LA PUNTUACIÓN, y no es un detalle. Medido: ordenando por
+    // el texto tal cual, «Acme, S.A. de C.V.» y «ACME SA DE CV» quedan en los
+    // extremos con «Acme Servicios del Golfo» —otra empresa— en medio, porque
+    // la coma pesa en la comparación. Acentos y mayúsculas ya los perdona
+    // `localeCompare` con sensitivity:'base'; los puntos y las comas no, y son
+    // justo lo que cambia entre dos capturas de la misma razón social.
+    const contratista = String(info.empresaEjecutante ?? o.empresaEjecutante ?? '').trim();
+    const clave = _ne(contratista).replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+
     return {
       obra: o,
       nombre: info.contrato || info.nombre || o.contrato || o.nombre || o.id,
       contratado, ejecutado, estimado, pagado, porEjercer, af, diasSinCaptura,
+      contratista: contratista || null,
+      claveContratista: clave || null,
+      proy,
+      atraso: proy.desviacionDias,
+      sinAtraso: frasePorQueSinDesviacion(proy),
     };
   });
 
@@ -8388,28 +8445,58 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
         : `${f.nombre} — ${f.diasSinCaptura} días sin captura de avance`,
     }));
 
-  const OPCIONES_ORDEN = [
-    { val:'avance|asc',     lbl:'Avance: menor primero' },
-    { val:'avance|desc',    lbl:'Avance: mayor primero' },
-    { val:'contratado|desc',lbl:'Contratado: mayor primero' },
-    { val:'porEjercer|desc',lbl:'Por ejercer: mayor primero' },
-    { val:'captura|desc',   lbl:'Última captura: más antigua' },
-    { val:'nombre|asc',     lbl:'Nombre: A → Z' },
+  // Las diez columnas. `dirIni` es hacia dónde ordena el PRIMER clic, y no es
+  // la misma para todas: en un monto lo que se busca es el más grande, en el
+  // avance la obra más rezagada, y en la última captura la más vieja.
+  const COLUMNAS = [
+    { id:'nombre',      lbl:'Obra',                       dirIni:'asc',  num:false },
+    { id:'contratista', lbl:'Contratista',                dirIni:'asc',  num:false },
+    { id:'contratado',  lbl:'Contratado',                 dirIni:'desc', num:true  },
+    { id:'ejecutado',   lbl:'Ejecutado',                  dirIni:'desc', num:true  },
+    { id:'estimado',    lbl:'Estimado',                   dirIni:'desc', num:true  },
+    { id:'pagado',      lbl:'Pagado',                     dirIni:'desc', num:true  },
+    { id:'porEjercer',  lbl:'Por ejercer',                dirIni:'desc', num:true  },
+    { id:'af',          lbl:'Avance físico',              dirIni:'asc',  num:true  },
+    { id:'atraso',      lbl:'Días de atraso proyectados', dirIni:'desc', num:true  },
+    { id:'captura',     lbl:'Última captura',             dirIni:'desc', num:true  },
   ];
   const [col, dir] = orden.split('|');
   const signo = dir === 'asc' ? 1 : -1;
+  const clicEnCabecera = (id) => {
+    const def = COLUMNAS.find(c => c.id === id);
+    setOrden(id === col ? `${id}|${dir === 'asc' ? 'desc' : 'asc'}`
+                        : `${id}|${def.dirIni}`);
+  };
+
+  const texto = (a,b,k) =>
+    (a[k]||'').localeCompare(b[k]||'', 'es', {sensitivity:'base'});
+
   const ordenadas = [...filas].sort((a,b) => {
-    if (col === 'nombre')
-      return signo * (a.nombre||'').localeCompare(b.nombre||'', 'es', {sensitivity:'base'});
+    if (col === 'nombre') return signo * texto(a,b,'nombre') || b.contratado - a.contratado;
+
+    // Dato ausente al final SIEMPRE, sin importar la dirección: una obra sin
+    // captura no es "la que menos avanzó", es la que no se sabe. Lo mismo el
+    // contratista en blanco y el atraso que no se pudo proyectar.
     let va, vb;
-    if (col === 'captura') { va = a.diasSinCaptura; vb = b.diasSinCaptura; }
-    else                   { va = a[col];           vb = b[col]; }
-    // Dato ausente al final siempre, sin importar la dirección: una obra sin
-    // captura no es "la que menos avanzó", es la que no se sabe.
+    if (col === 'captura')          { va = a.diasSinCaptura;    vb = b.diasSinCaptura; }
+    else if (col === 'contratista') { va = a.claveContratista;  vb = b.claveContratista; }
+    else                            { va = a[col];              vb = b[col]; }
     const aN = va === null || va === undefined, bN = vb === null || vb === undefined;
-    if (aN && bN) return 0;
+
+    if (aN && bN) {
+      // Las dos sin dato. En el atraso ese bloque del fondo NO es un montón
+      // indistinto: son obras que no se pudieron medir, y esconderlas en
+      // cualquier orden sería perderlas. Entre ellas van por avance
+      // ascendente, que es lo que sí se sabe de ellas.
+      if (col === 'atraso') return a.af - b.af || b.contratado - a.contratado;
+      return b.contratado - a.contratado;
+    }
     if (aN) return 1;
     if (bN) return -1;
+
+    if (col === 'contratista')
+      return signo * String(va).localeCompare(String(vb), 'es', {sensitivity:'base'})
+        || b.contratado - a.contratado;
     if (va !== vb) return signo * (va - vb);
     // Desempate: la de mayor monto contratado primero.
     return b.contratado - a.contratado;
@@ -8478,47 +8565,96 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
         </div>
       </>}
 
-      {/* ── Obras ── */}
-      <div style={{display:"flex",alignItems:"center",gap:6,margin:"14px 0 6px"}}>
-        <span style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
-                      textTransform:"uppercase"}}>Obras · ordenar</span>
-        <Sel value={orden} onChange={e => setOrden(e.target.value)}
-             style={{fontSize:10,padding:'4px 8px',flex:1,maxWidth:260}}>
-          {OPCIONES_ORDEN.map(o => <option key={o.val} value={o.val}>{o.lbl}</option>)}
-        </Sel>
+      {/* ── Obras ──
+          Tabla y no tarjetas porque la pregunta de esta pantalla es
+          comparativa: cuál obra está más atrasada que las otras. En tarjetas
+          cada obra se lee sola y hay que recordar la anterior para comparar.
+          Las cabeceras ordenan al hacer clic; la columna activa dice en qué
+          sentido va, para que la flecha no sea el único indicio (es color y
+          forma, y en voz alta no se oye). */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                   textTransform:"uppercase",margin:"14px 0 6px"}}>
+        Obras · clic en una columna para ordenar
       </div>
-      <div style={{display:"flex",flexDirection:"column",gap:6}}>
-        {ordenadas.map(f => {
-          const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
-          return (
-            <div key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
-              style={{background:C.bg,borderRadius:8,padding:"10px 12px",
-                cursor:onSelectObra?"pointer":"default",
-                borderLeft:`3px solid ${capAlerta?C.yellow:C.blueDk}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",
-                           gap:8,marginBottom:5}}>
-                <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
-                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
-                <span style={{fontSize:14,fontWeight:700,color:C.blueDk,flexShrink:0}}>
-                  {NUM(f.af,1)}%
-                </span>
-              </div>
-              <Bar pct={f.af} color={C.blueDk}/>
-              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginTop:5}}>
-                Contratado {MXN(f.contratado)}{' · '}Ejecutado {MXN(f.ejecutado)}
-              </div>
-              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6}}>
-                Estimado {MXN(f.estimado)}{' · '}Pagado {MXN(f.pagado)}
-                {' · '}Por ejercer {MXN(f.porEjercer)}
-              </div>
-              <div style={{fontSize:10,color:capAlerta?C.yellowDk:C.textMut,lineHeight:1.6}}>
-                {f.diasSinCaptura === null ? 'Sin captura registrada'
-                  : f.diasSinCaptura === 0 ? 'Capturada hoy'
-                  : `Última captura hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
-              </div>
-            </div>
-          );
-        })}
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:860}}>
+          <thead>
+            <tr>
+              {COLUMNAS.map(c => {
+                const act = c.id === col;
+                const sent = act ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
+                return (
+                  <th key={c.id} scope="col" aria-sort={sent}
+                      style={{padding:0,borderBottom:`1px solid ${C.border}`,
+                              textAlign:c.num?"right":"left"}}>
+                    <button type="button" onClick={() => clicEnCabecera(c.id)}
+                      aria-label={`Ordenar por ${c.lbl}`
+                        + (act ? ` — ordenada ahora de ${dir==='asc'?'menor a mayor':'mayor a menor'}`
+                               : '')}
+                      style={{width:"100%",background:"none",border:"none",cursor:"pointer",
+                        font:"inherit",padding:"6px 7px",color:act?C.textPri:C.textMut,
+                        fontWeight:act?700:600,letterSpacing:"0.03em",
+                        textAlign:c.num?"right":"left"}}>
+                      {c.lbl}{act ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </button>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {ordenadas.map(f => {
+              const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
+              const td = (extra) => ({padding:"7px",borderBottom:`1px solid ${C.border}`,
+                                      whiteSpace:"nowrap",...extra});
+              return (
+                <tr key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                    style={{cursor:onSelectObra?"pointer":"default"}}>
+                  <th scope="row" style={td({textAlign:"left",fontWeight:600,color:C.textPri,
+                        maxWidth:220,overflow:"hidden",textOverflow:"ellipsis"})}>
+                    {f.nombre}
+                  </th>
+                  {/* El contratista se captura a mano (#41). Cuando no está, se
+                      dice que no está: un guion mudo se lee como "no aplica". */}
+                  <td style={td({color:f.contratista?C.textSec:C.textMut,
+                                 fontStyle:f.contratista?"normal":"italic",
+                                 maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"})}>
+                    {f.contratista || 'sin capturar'}
+                  </td>
+                  <td style={td({textAlign:"right",color:C.textPri})}>{MXN(f.contratado)}</td>
+                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.ejecutado)}</td>
+                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.estimado)}</td>
+                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.pagado)}</td>
+                  <td style={td({textAlign:"right",color:C.textPri})}>{MXN(f.porEjercer)}</td>
+                  <td style={td({textAlign:"right",fontWeight:700,color:C.blueDk})}>
+                    {NUM(f.af,1)}%
+                  </td>
+                  {/* Nunca un guion ni un cero cuando no hay atraso que mostrar:
+                      cero días de atraso es una afirmación —la obra va en
+                      tiempo— y no se puede hacer cuando el cálculo no salió.
+                      La celda dice por qué no, con la misma frase que el KPI
+                      del detalle de la obra. */}
+                  <td style={td({textAlign:"right",
+                        color:f.atraso === null || f.atraso === undefined ? C.textMut
+                              : f.atraso > 0 ? C.redDk : C.greenDk,
+                        fontWeight:f.atraso > 0 ? 700 : 400,
+                        fontStyle:f.atraso === null || f.atraso === undefined ? "italic" : "normal",
+                        whiteSpace:"normal",maxWidth:160})}>
+                    {f.atraso === null || f.atraso === undefined ? f.sinAtraso
+                      : f.atraso > 0 ? `${f.atraso} días tarde`
+                      : f.atraso < 0 ? `${Math.abs(f.atraso)} días antes`
+                      : 'en el plazo'}
+                  </td>
+                  <td style={td({textAlign:"right",color:capAlerta?C.yellowDk:C.textMut})}>
+                    {f.diasSinCaptura === null ? 'sin captura'
+                      : f.diasSinCaptura === 0 ? 'hoy'
+                      : `hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </Card>
   );
@@ -11907,9 +12043,7 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
           ? (desvDias>0?`${desvDias} días después del plazo vigente`
             :desvDias<0?`${Math.abs(desvDias)} días antes del plazo vigente`
             :"justo en el plazo vigente")
-          : proy.razon===SIN_PROY_SIN_AVANCE?(proy.velocidad<0?"la obra retrocede":"la obra no avanza")
-          : proy.razon===SIN_PROY_NO_COMPARABLES?"cierres no comparables"
-          : "requiere 2 cierres"}
+          : frasePorQueSinDesviacion(proy)}
         color={desvDias===null
           ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
           : desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>

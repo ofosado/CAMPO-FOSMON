@@ -4162,6 +4162,26 @@ pendiente deja de ser higiene de datos y pasa a ser una pantalla que puede dar
 una respuesta incompleta sin avisar. Cuando entre el padrón, el orden de esa
 columna pasa a ser por identidad, no por cadena.
 
+**Lo que se hizo mientras tanto (2026-10-05, `feature/seguimiento-semanal`).**
+La columna ordena por una clave normalizada: minúsculas, sin acentos, sin
+puntuación y con los espacios colapsados. Con eso las dos capturas de arriba
+quedan **adyacentes** en la lista. No se cuenta ni se suma nada por empresa, y
+eso es a propósito: la clave es suficiente para poner dos renglones juntos y
+**no** es suficiente para afirmar que son la misma persona moral.
+
+Lo que se midió al escribir la prueba, porque la primera versión de la clave
+no servía: `localeCompare` con `sensitivity:'base'` ya perdona acentos y
+mayúsculas por su cuenta, así que normalizar sólo eso no cambiaba **ningún**
+orden. Lo que sí pesa es la puntuación: con la coma dentro, «Acme, S.A. de
+C.V.» y «ACME SA DE CV» quedaban en los extremos con «Acme Servicios del
+Golfo» —otra empresa— en medio. Quitar la puntuación es lo único de la clave
+que hace trabajo real.
+
+**Lo que la clave sigue sin resolver, y por eso el pendiente no se cierra:**
+abreviaturas («Const.» vs «Constructora»), orden de palabras, errores de
+dedo, y empresas distintas con nombre casi igual. Nada de eso se arregla sin
+identidad, y la identidad es el RFC del padrón.
+
 Mientras tanto, la celda dice **«sin capturar»** cuando la obra no tiene
 empresa, para no confundir «no hay dato» con «no hay contratista».
 

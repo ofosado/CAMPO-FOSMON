@@ -282,6 +282,10 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     nombre: obra.nombre, contrato: obra.contrato, presupuesto: obra.contratado,
     cliente: obra.cliente, ubicacion: obra.ubicacion, modoAvance: 'volumen',
     inicio: obra.inicio, fin: obra.fin, diasPago: 30,
+    // Texto libre hasta que exista el padrón (#41). Se siembra sólo donde se
+    // pasa, para que quede a la vista también el caso de la obra sin empresa
+    // capturada, que es el que la tabla tiene que saber decir.
+    ...(obra.empresa ? { empresaEjecutante: obra.empresa, empresaRFC: obra.rfc } : {}),
     ...(opciones.gpId ? { gpId: opciones.gpId } : {}),
   });
   await escribir(`${prefijo}obras/${id}/avance/subs`, {
@@ -417,6 +421,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     contratado: 12400000, cliente: 'H. Ayuntamiento de Coatzacoalcos',
     ubicacion: 'Col. Centro, Coatzacoalcos, Ver.',
     inicio: '2026-04-01', fin: '2026-11-30', semilla: 7, nPartidas: 12,
+    empresa: 'Constructora del Golfo, S.A. de C.V.', rfc: 'CGO180412QX3',
     estimaciones: [
       { num: 1, monto: 2800000, estatus: 'pagada',    fecha: '2026-06-20' },
       { num: 2, monto: 3100000, estatus: 'pagada',    fecha: '2026-07-25' },
@@ -429,6 +434,9 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     contratado: 8900000, cliente: 'H. Ayuntamiento de Coatzacoalcos',
     ubicacion: 'Col. Benito Juárez, Coatzacoalcos, Ver.',
     inicio: '2026-06-15', fin: '2026-10-30', semilla: 43, nPartidas: 9,
+    // Con acento inicial a propósito: la columna ordena por clave normalizada,
+    // y así se ve que «Áridos» cae junto a la A y no al final de la lista.
+    empresa: 'Áridos y Asfaltos del Istmo, S.A. de C.V.', rfc: 'AAI210930M14',
     estimaciones: [{ num: 1, monto: 1900000, estatus: 'pagada', fecha: '2026-08-12' }],
     // Sin captura en 19 días: dispara la alerta que SÍ le sirve a una
     // dependencia, y así se ve que el recorte no la dejó ciega.
@@ -442,6 +450,8 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     contratado: 5600000, cliente: 'H. Ayuntamiento de Coatzacoalcos',
     ubicacion: 'Av. Universidad, Coatzacoalcos, Ver.',
     inicio: '2026-09-01', fin: '2027-02-28', semilla: 61, nPartidas: 7,
+    // Sin `empresa` A PROPÓSITO: es el tercer estado de la columna, y si todas
+    // las obras sembradas tuvieran contratista nunca se vería «sin capturar».
     estimaciones: [], semanas: 1, diasSinCaptura: 4, fotosSemanas: 1,
   });
   console.log('obras de dependencia: OP-2026-001/002/003 (bajo orgs/coatzacoalcos)');
