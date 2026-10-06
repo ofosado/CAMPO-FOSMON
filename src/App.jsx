@@ -18491,7 +18491,7 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                 {[
                   {v:"porcentaje", lbl:"Por porcentaje", desc:"Para obras donde cada partida se mide en % de avance acumulado. Default."},
-                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para obras tipo precio unitario donde el catálogo es referencia y los volúmenes reales pueden variar (TAMSA, servicios especializados)."},
+                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para contratos a precio unitario donde el catálogo es una referencia y los volúmenes realmente ejecutados pueden variar."},
                 ].map(opt => {
                   const sel = (obra.modoAvance||"porcentaje") === opt.v;
                   return <div key={opt.v} onClick={()=>pedirCambioModo(opt.v)}

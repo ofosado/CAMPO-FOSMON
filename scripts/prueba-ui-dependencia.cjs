@@ -887,13 +887,60 @@ const montarGP = () => {
   check(bar.vaElReporteEjecutivo(CONS) === true,
     'y a una constructora sí: es su reporte');
 
-  // Y el barrido: que no haya quedado otra copia escrita a mano del nombre de
-  // la organización en el JSX. Ésta es la que atrapa la pantalla siguiente:
-  // el defecto original eran DOS sitios con la misma cadena literal y arreglar
-  // uno dejaba el otro.
-  const literalesJSX = [];
+  // ── EL BARRIDO DE NOMBRES PROPIOS ──────────────────────────────────────────
+  // Que no haya quedado una copia escrita a mano del nombre de la organización
+  // —el defecto original eran DOS sitios con la misma cadena y arreglar uno
+  // dejaba el otro— y, más ancho, que ningún texto de pantalla nombre a un
+  // CLIENTE, una OBRA o un dato del contratista.
+  //
+  // POR QUÉ SE ENSANCHÓ. La versión anterior miraba sólo `JSXText` y
+  // contenedores cuya expresión ES la cadena. Por ese hueco pasó, durante
+  // meses, la ayuda del modo de captura:
+  //
+  //     {v:"volumen", lbl:"…", desc:"…pueden variar (TAMSA, servicios
+  //      especializados)."}
+  //
+  // Un director de Obras Públicas del municipio que entrara a editar el
+  // contrato leía ahí el nombre de un cliente industrial del contratista. No
+  // era JSXText: era el valor de una propiedad de un objeto que se pinta más
+  // abajo con `{opt.desc}`. El barrido no podía verlo y nadie más iba a mirar.
+  //
+  // Así que ahora también se miran los valores de las propiedades y los
+  // atributos que LLEVAN TEXTO A PANTALLA, y la lista de nombres ya no es sólo
+  // «FOSMON». Las obras de la constructora se llaman todas «TAMSA …», «PEMEX
+  // …», «SIOP …», así que vigilar los prefijos vigila los nombres de obra.
+  const NOMBRES_PROPIOS = /\b(TAMSA|PEMEX|SIOP|CONALEP)\b|FOSMON|fosmon\.com\.mx/i;
+  const PROPS_QUE_SE_VEN = new Set(['placeholder', 'title', 'mensaje', 'desc',
+    'descripcion', 'label', 'lbl', 'ayuda', 'tooltip', 'aria-label', 'alt',
+    'texto', 'titulo', 'subtitulo', 'leyenda', 'nota', 'etiqueta', 'hint']);
+
+  // Lo que SÍ puede nombrar al contratista, y por qué. Cada excepción nombra
+  // la guardia que la mantiene fuera de la sesión del municipio: sin eso la
+  // lista sería una manera de callar el barrido. Se comparan por FRAGMENTO y
+  // no por línea, que las líneas se mueven.
+  //
+  // Una excepción que ya no corresponde a nada NO se reporta como roja: que
+  // alguien borre una mención a FOSMON es exactamente lo que se quería. Se
+  // anota para que se limpie.
+  const PERMITIDAS = [
+    { frag: 'usuario@fosmon.com.mx',
+      guardia: 'el marcador es un ternario sobre `esDep`; a la dependencia le dice `usuario@dependencia.gob.mx`' },
+    { frag: 'los equipos de FOSMON asignados',
+      guardia: 'sub-pestaña «maquinaria», que no está en SUBTABS_OPERACION_DEPENDENCIA' },
+    { frag: 'Recomendado para TAMSA',
+      guardia: '`vaElInterruptorOT(usuario)`, que es `!esDependencia(usuario)`' },
+  ];
+
+  const nombresEnPantalla = [];
+  const aptar = (donde, nodo, texto) => {
+    if (!NOMBRES_PROPIOS.test(texto)) return;
+    const n = String(texto).trim().replace(/\s+/g, ' ');
+    const linea = src.slice(0, nodo.start).split('\n').length;
+    if (PERMITIDAS.some(e => n.includes(e.frag))) return;
+    nombresEnPantalla.push(`${donde}:${linea} «${n.slice(0, 80)}»`);
+  };
   traverse(ast, {
-    JSXText(p) { if (/FOSMON/i.test(p.node.value)) literalesJSX.push(p.node.value.trim()); },
+    JSXText(p) { aptar('texto', p.node, p.node.value); },
     // Sólo el contenedor cuya expresión ES la cadena —`{'FOSMON …'}`—, no
     // cualquier subárbol que la contenga en algún rincón. Si no, el barrido
     // señala bloques enteros por un `placeholder` de correo adentro y nadie
@@ -902,12 +949,32 @@ const montarGP = () => {
       const e = p.node.expression;
       const v = e.type === 'StringLiteral' ? e.value
               : e.type === 'TemplateLiteral' ? src.slice(e.start, e.end) : null;
-      if (v && /FOSMON/i.test(v)) literalesJSX.push(v.slice(0, 70));
+      if (v) aptar('expr', p.node, v);
+    },
+    // Dentro de un atributo que lleva texto a pantalla sí se baja al subárbol:
+    // ahí vive el ternario `esDep ? … : "usuario@fosmon.com.mx"`, y el ruido
+    // queda acotado porque son atributos de ayuda, no bloques enteros.
+    JSXAttribute(p) {
+      if (!PROPS_QUE_SE_VEN.has(String(p.node.name?.name || ''))) return;
+      p.traverse({ StringLiteral(q) { aptar(`@${p.node.name.name}`, q.node, q.node.value); } });
+    },
+    // Y el hueco por el que entró el defecto: la cadena que vive en un objeto
+    // y se pinta después.
+    ObjectProperty(p) {
+      const k = String(p.node.key?.name ?? p.node.key?.value ?? '');
+      if (!PROPS_QUE_SE_VEN.has(k)) return;
+      if (p.node.value.type === 'StringLiteral') aptar(`.${k}`, p.node.value, p.node.value.value);
     },
   });
-  check(literalesJSX.length === 0,
-    'ninguna pantalla trae el nombre de la organización escrito a mano',
-    literalesJSX.length ? literalesJSX.join(' | ') : 'ninguna');
+  check(nombresEnPantalla.length === 0,
+    'ningún texto de pantalla nombra a un cliente, una obra o un dato del contratista',
+    nombresEnPantalla.length ? nombresEnPantalla.join('  |  ') : 'ninguno');
+
+  const huerfanas = PERMITIDAS.filter(e => !src.includes(e.frag));
+  if (huerfanas.length) {
+    console.log(`   · (nota: ${huerfanas.length} excepción(es) del barrido ya no corresponden a nada `
+      + `y se pueden borrar: ${huerfanas.map(e => `«${e.frag}»`).join(', ')})`);
+  }
 
   // ── Órdenes de Trabajo ─────────────────────────────────────────────────────
   // La OT es la orden que el cliente industrial le gira al contratista por
