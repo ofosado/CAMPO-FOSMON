@@ -256,18 +256,18 @@ seccion('El menú');
 const ROLES_DEP = ['director_obras', 'subdirector', 'jefe_supervision',
                    'supervisor_obra', 'administrativo', 'contralor'];
 
-// Lo que el municipio tiene que ver. Cuatro pestañas, no tres: el Dashboard
-// recortado carga las cifras del contrato y las otras tres son avance,
-// evidencia y contrato.
-const ESPERADAS = ['Dashboard', 'Avance', 'Evidencia', 'Contrato'];
+// Lo que el municipio tiene que ver. Cinco pestañas: el Dashboard recortado
+// carga las cifras del contrato, y las otras cuatro son avance, estimaciones
+// —lo que se recibió en ventanilla—, evidencia y contrato.
+const ESPERADAS = ['Dashboard', 'Avance', 'Estimaciones', 'Evidencia', 'Contrato'];
 
 for (const rol of ROLES_DEP) {
   const labels = menus.tabsDe({ rol, tipo: 'dependencia' }).map(t => t.label);
   check(JSON.stringify(labels) === JSON.stringify(ESPERADAS),
-    `${rol} ve exactamente las cuatro pestañas del contrato`, labels.join(' · '));
+    `${rol} ve exactamente las cinco pestañas del contrato`, labels.join(' · '));
 }
 
-// LO QUE IMPORTA de este bloque: no basta con que salgan las cuatro buenas.
+// LO QUE IMPORTA de este bloque: no basta con que salgan las cinco buenas.
 // Hay que afirmar que NINGUNA de las palabras de la economía interna aparece,
 // porque el defecto original no fue una pestaña de menos sino una de más.
 const PROHIBIDAS = /gasto|n[oó]mina|subcontrat|maquinaria|almac[eé]n|margen|personal/i;
@@ -616,7 +616,7 @@ const montarGP = () => {
   ]);
 
   // LO QUE IMPORTA: ningún destino de la biblioteca de riesgos puede sacar a
-  // una dependencia de sus cuatro pestañas. Se recorren TODOS los destinos que
+  // una dependencia de sus cinco pestañas. Se recorren TODOS los destinos que
   // existen en las plantillas, no una muestra, porque el que se cuele va a ser
   // justo el que no se le ocurrió a nadie.
   const destinosBiblioteca = [...new Set(

@@ -29,6 +29,8 @@ const { initializeApp } = require('firebase/app');
 const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc,
         addDoc, collection, getDocs } = require('firebase/firestore');
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
+const { getStorage, connectStorageEmulator, ref: refStor,
+        uploadString, getDownloadURL } = require('firebase/storage');
 
 const noArranco = require('./no-arranco.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
@@ -37,6 +39,7 @@ noArranco.vigilarExcepciones();
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
+const PUERTO_STOR = Number(process.env.EMU_STOR_PORT || 9199);
 const PROYECTO = 'campo-fosmon-prueba';
 
 const ORG = 'dep-demo';         // la dependencia
@@ -84,15 +87,31 @@ const SUBS = { data: [
     cat: 900, cantEjec: 0, a: 0, imp: 0, fotos: [] },
 ] };
 
+// La app de Firebase detrás de cada sesión, para poder pedirle también el
+// Storage de ese mismo usuario sin volver a autenticar.
+const appsDe = new Map();
+const storsDe = new Map();
+
 (async () => {
   const abrir = async (nombre, uid, claims) => {
-    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, nombre);
+    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador',
+      storageBucket: `${PROYECTO}.appspot.com` }, nombre);
     const auth = getAuth(app);
     connectAuthEmulator(auth, `http://${HOST}:${PUERTO_AUTH}`, { disableWarnings: true });
     await signInWithCustomToken(auth, tokenDe(uid, claims));
     const db = getFirestore(app);
     connectFirestoreEmulator(db, HOST, PUERTO);
+    appsDe.set(db, app);
     return db;
+  };
+  // `connectStorageEmulator` sólo admite una llamada por instancia, así que la
+  // instancia de cada sesión se guarda.
+  const storDe = db => {
+    if (storsDe.has(db)) return storsDe.get(db);
+    const s = getStorage(appsDe.get(db));
+    connectStorageEmulator(s, HOST, PUERTO_STOR);
+    storsDe.set(db, s);
+    return s;
   };
   const sello = Date.now();
   const dep = (nombre, rol, extra = {}) => abrir(`${nombre}-${sello}`, `${nombre}-${sello}`, {
@@ -266,6 +285,109 @@ const SUBS = { data: [
   check(marcaSup2 && denegado(marcaSup2),
     'y un supervisor no le cambia la marca a la organización',
     marcaSup2 ? 'rebotó' : 'ESCRIBIÓ la marca');
+
+  // ── 7. LAS ESTIMACIONES: QUIÉN CAPTURA EL DINERO ────────────────────────
+  // La sección 1 ya comprueba que el supervisor escribe `config/estimaciones`.
+  // Aquí se levanta la MATRIZ COMPLETA, porque este documento no es como los
+  // otros: es el único donde la dependencia teclea pesos, y lo que quede
+  // escrito aquí alimenta el corte semanal del expediente.
+  //
+  // Se afirma lo que las reglas PERMITEN HOY, no lo que la interfaz ofrece.
+  // No son lo mismo y la diferencia importa: `PERMISOS` en App.jsx le da
+  // `estimaciones:"ver"` a jefe_supervision y a supervisor_obra, mientras
+  // `puedeEditarObraD` en firestore.rules los deja escribir. Esa brecha es
+  // una DECISIÓN pendiente y está anotada en PENDIENTES; mientras no se
+  // decida, la prueba la deja escrita para que nadie la descubra en la demo.
+  console.log('\n7. Las estimaciones: quién teclea pesos en el expediente');
+  const administrativo = await dep('administrativo', 'administrativo');
+  const EST = { data: [{ no: 1, periodoIni: '2026-09-01', periodoFin: '2026-09-30',
+                         periodo: '01 sep 2026 – 30 sep 2026', monto: 120000,
+                         estatus: 'Recibida', fechaRecepcion: '2026-10-05',
+                         recibidaPor: 'sup@demo.mx', adjuntos: [] }] };
+  for (const [quien, sesion, puede] of [
+    ['el supervisor de obra asignado', supervisor,      true],
+    ['el administrativo',              administrativo,  true],
+    ['el jefe de supervisión',         jefe,            true],
+    ['el director de Obras Públicas',  director,        true],
+    ['el contralor',                   contralor,       false],
+    ['el contratista',                 contratista,     false],
+    ['un supervisor de otra obra',     ajeno,           false],
+    ['la dependencia vecina',          vecina,          false],
+  ]) {
+    const e = await escribe(sesion, enObra('config', 'estimaciones'), EST);
+    check(puede ? !e : (e && denegado(e)),
+      `${puede ? 'SÍ' : 'NO'} captura estimaciones: ${quien}`,
+      e ? (puede ? `DENEGADA: ${e.message}` : 'rebotó')
+        : (puede ? 'guardado' : 'ESCRIBIÓ — teclearía pesos sin permiso'));
+  }
+
+  // Y que lo escrito se relee con los campos nuevos intactos. El renombre de
+  // `monto` o `estatus` rompería el corte semanal en silencio; el de las
+  // fechas dejaría la pantalla sin el contador de días de recepción.
+  const relEst = await lee(supervisor, enObra('config', 'estimaciones'));
+  const e0 = relEst.dato?.data?.[0];
+  check(e0?.monto === 120000 && e0?.estatus === 'Recibida'
+     && e0?.periodoFin === '2026-09-30' && e0?.fechaRecepcion === '2026-10-05',
+    'y al releerla están el monto, el estatus y las dos fechas',
+    JSON.stringify([e0?.monto, e0?.estatus, e0?.periodoFin, e0?.fechaRecepcion]));
+
+  // ── 8. EL ADJUNTO EN STORAGE ────────────────────────────────────────────
+  // Primera cobertura de `storage.rules` en el repo. Hasta hoy las reglas de
+  // Storage sólo se habían leído, nunca ejercitado — y una regla que nadie
+  // ejecuta es una suposición.
+  //
+  // La carátula firmada y la factura son el respaldo documental del pago.
+  // Van a una ruta propia y NO bajo `fotos/`: la galería la ve todo el que
+  // puede ver la obra, y una factura no es una foto de avance.
+  console.log('\n8. La carátula y la factura en Storage');
+  const RUTA_ADJ = `orgs/${ORG}/obras/${OBRA}/estimaciones/1/caratula-${sello}`;
+  const CONTENIDO = 'data:text/plain;base64,' + Buffer.from('caratula firmada').toString('base64');
+  const sube = async (sesion, ruta) => {
+    try { await uploadString(refStor(storDe(sesion), ruta), CONTENIDO, 'data_url'); return null; }
+    catch (e) { return e; }
+  };
+  const baja = async (sesion, ruta) => {
+    try { return { url: await getDownloadURL(refStor(storDe(sesion), ruta)), err: null }; }
+    catch (e) { return { url: null, err: e }; }
+  };
+  // Storage deniega con `storage/unauthorized`, no con `permission-denied`.
+  const denegadoStor = e => e?.code === 'storage/unauthorized' ||
+    /unauthorized|permission/i.test(e?.message || '');
+
+  let primerAdj;
+  try { primerAdj = await sube(supervisor, RUTA_ADJ); }
+  catch (e) { noArranco(`el emulador de Storage no contesta en ${HOST}:${PUERTO_STOR} — ${e.message}`); }
+  check(!primerAdj, 'el supervisor adjunta la carátula a la estimación',
+    primerAdj ? `DENEGADA: ${primerAdj.code || primerAdj.message}` : RUTA_ADJ);
+  if (primerAdj) {
+    console.log('\n   Si esto está rojo, faltan reglas de Storage para esa ruta:');
+    console.log('   el adjunto se subiría desde la pantalla y rebotaría en la demo.');
+  }
+
+  const vistaCont = await baja(contralor, RUTA_ADJ);
+  check(!vistaCont.err, 'el contralor la descarga (fiscaliza el respaldo del pago)',
+    vistaCont.err ? `denegada: ${vistaCont.err.code}` : 'la ve');
+  const subeCont = await sube(contralor, RUTA_ADJ);
+  check(subeCont && denegadoStor(subeCont),
+    'pero no la reemplaza — fiscalizar no es corregir',
+    subeCont ? 'rebotó' : 'SUBIÓ — el contralor no debería poder');
+
+  const vistaAjena = await baja(vecina, RUTA_ADJ);
+  check(vistaAjena.err && denegadoStor(vistaAjena.err),
+    'la dependencia vecina no descarga la factura de esta obra',
+    vistaAjena.err ? 'rebotó' : 'DESCARGÓ un documento de otra organización');
+
+  const subeAjeno = await sube(ajeno, RUTA_ADJ);
+  check(subeAjeno && denegadoStor(subeAjeno),
+    'y un supervisor de otra obra no adjunta nada aquí',
+    subeAjeno ? 'rebotó' : 'SUBIÓ en una obra que no tiene asignada');
+
+  // Lo que la ruta propia compra: que el adjunto NO quede bajo el permiso de
+  // la galería. Si alguien lo archivara en `fotos/`, esta comprobación sigue
+  // verde pero deja de significar algo — por eso se afirma la ruta real que
+  // la pantalla construye, medida en prueba-estimaciones-dependencia.
+  check(!/\/fotos\//.test(RUTA_ADJ),
+    'el adjunto no cuelga de la ruta de fotos', RUTA_ADJ);
 
   console.log(fallas === 0
     ? '\nLa obra de dependencia captura de verdad, y el costo del contratista no cruza.'
