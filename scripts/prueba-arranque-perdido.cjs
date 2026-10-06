@@ -157,9 +157,21 @@ if (hayCuenta) {
   const fSin = hSin && fraseHuecoDeArranque(hSin);
   check(!!fSin && !/tope de 52|borraron/.test(fSin),
     `no se afirma un recorte que no consta (dijo: "${fSin}")`);
-  check(!!fSin && /No hay cierres registrados de ese periodo/.test(fSin),
+  check(!!fSin && /no hay cierres anteriores/.test(fSin),
     'se dice lo único que consta: que de ese periodo no hay cierres');
   check(fSin !== f, 'las dos situaciones no se cuentan con la misma frase');
+  // El tono es parte del dato. Que a un expediente le falte el principio es lo
+  // NORMAL cuando el municipio da de alta una obra en curso; dicho como alarma
+  // —«le faltan», «no está completo»— salta siempre, y una alarma que salta
+  // siempre deja de leerse, incluida la del caso de arriba, que sí es pérdida.
+  check(!!fSin && !/\ble falta|faltan las primeras|incompleto\b/i.test(fSin),
+    `el caso normal se enuncia, no se denuncia (dijo: "${fSin}")`);
+  check(!!fSin && /^El expediente empieza en/.test(fSin),
+    'abre diciendo dónde empieza el expediente, no lo que le falta');
+  // Y enunciarlo en voz baja no puede costar hechos: los tres siguen ahí.
+  check(!!fSin && /37 semanas/.test(fSin) && /3 de nov de 2025/.test(fSin)
+        && /S30/.test(fSin),
+    'bajar el tono no se llevó ningún dato: sigue diciendo cuántas, desde cuándo y dónde empieza');
 
   // ── 3. Un expediente completo NO inventa un hueco ──────────────────────
   // Y esto es lo que impide que el aviso se vuelva ruido: si el primer cierre

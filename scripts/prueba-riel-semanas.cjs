@@ -79,6 +79,7 @@ const NOMBRES = [
   'notaDeCierre', 'fraseNota',
   'MARCA_CERRADA', 'MARCA_SIN_COMPARAR', 'MARCA_SOLO_FOTOS', 'MARCA_SIN_DATO',
   'rielDeSemanas', 'marcaInicialDelRiel', 'frasePanelSinCierre', 'fraseSinDelta',
+  'marcaCerrada',
 ];
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
@@ -107,7 +108,7 @@ traverse(ast, {
 // falla, que es justo lo que debe pasar contra la versión de antes.
 const app = new Function(`${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
 const {
-  rielDeSemanas, marcaInicialDelRiel, frasePanelSinCierre, fraseSinDelta,
+  rielDeSemanas, marcaInicialDelRiel, frasePanelSinCierre, fraseSinDelta, marcaCerrada,
   estadoPorSemana, cruzaAños, etiquetaSemanaRiel, snapshotId, fraseNota,
   rangoSemanaEnPalabras, leyendaSemanaSubida,
   MARCA_CERRADA, MARCA_SIN_COMPARAR, MARCA_SOLO_FOTOS, MARCA_SIN_DATO,
@@ -315,6 +316,90 @@ const correr = () => {
     'la leyenda de las fotos usa esas mismas fechas, no unas propias');
   check(rangoSemanaEnPalabras(null) === null,
     'y una clave que no es una semana no recibe fechas inventadas');
+
+  // ── 10. El riel pinta DOS estados; los cuatro se dicen con palabras ─────
+  // Cuatro colores obligaban a una leyenda debajo, y una leyenda que hay que
+  // leer para entender el riel es una leyenda que nadie lee. Lo que se mide
+  // aquí es que el colapso sea de PINTURA y no de dato: que las dos semanas
+  // cerradas se vean igual entre sí, las dos sin cerrar también, que esos dos
+  // grupos NO se vean igual entre ellos —si no, el riel dejaría de decir
+  // nada—, y que las cuatro situaciones sigan separándose con palabras.
+  console.log('\n10. El riel pinta cerrada o sin cerrar, y las cuatro se dicen con palabras');
+  const marca = c => riel.find(m => m.clave === c);
+  // Sin la regla del colapso la pregunta tiene respuesta —y es que no está—,
+  // así que es ROJO y no NO ARRANCÓ. Llamar a `undefined` daría lo segundo y
+  // escondería la regresión detrás de un fallo de andamiaje (P4).
+  const hayColapso = typeof marcaCerrada === 'function';
+  check(hayColapso,
+    'existe una regla que diga cuáles de los cuatro estados se pintan igual');
+  if (hayColapso) {
+  check(marcaCerrada(marca('S37-2026')) === true && marcaCerrada(marca('S36-2026')) === true,
+    'la semana cerrada y la cerrada-sin-comparar caen del mismo lado: las dos se cerraron');
+  check(marcaCerrada(marca('S39-2026')) === false && marcaCerrada(marca('S38-2026')) === false,
+    'la de sólo fotos y la vacía caen del otro: a ninguna la cerró nadie');
+  }
+
+  // El color REAL que sale por pantalla, no el que debería salir: se extrae del
+  // JSX la expresión que pinta la barra de la marca —la que crece al
+  // seleccionarla— y se ejecuta. `C` se sustituye por un espejo que devuelve el
+  // nombre del color, para medir igualdad y diferencia sin fijar la paleta.
+  let exprColor = null;
+  traverse(ast, {
+    ObjectExpression(p) {
+      const props = p.node.properties.filter(x => x.type === 'ObjectProperty');
+      const nom = x => x.key?.name || x.key?.value;
+      const alto = props.find(x => nom(x) === 'height');
+      const fondo = props.find(x => nom(x) === 'background');
+      if (!alto || !fondo) return;
+      if (!/\bact\s*\?/.test(src.slice(alto.value.start, alto.value.end))) return;
+      exprColor = src.slice(fondo.value.start, fondo.value.end);
+    },
+  });
+  if (!exprColor) {
+    const m = 'no se pudo leer con qué se pinta la marca del riel';
+    fallos.push(m); console.log(`   ✗ ${m}`);
+  } else {
+    const nombresApp = Object.keys(app);
+    const espejoC = new Proxy({}, { get: (_, k) => String(k) });
+    const pintar = new Function(...nombresApp, 'C', 'm', 'act',
+      `return (${exprColor});`);
+    // Si la expresión depende de algo que vive DENTRO del componente —una tabla
+    // de colores por estado, por ejemplo— aquí revienta. Eso es un ROJO, no un
+    // NO ARRANCÓ: la pregunta «¿cuántos colores pinta el riel?» tiene respuesta,
+    // y una tabla por estado la contesta con cuatro.
+    let cerrada, sinComparar, soloFotos, vacia, murio = null;
+    try {
+      const colorDe = c => pintar(...nombresApp.map(k => app[k]), espejoC, marca(c), false);
+      cerrada = colorDe('S37-2026'); sinComparar = colorDe('S36-2026');
+      soloFotos = colorDe('S39-2026'); vacia = colorDe('S38-2026');
+    } catch (e) { murio = e; }
+    check(murio === null,
+      `el color de la marca sale de la regla del riel y no de una tabla por estado${
+        murio ? ` (al pintarla: ${murio.message})` : ''}`);
+    if (murio === null) {
+    check(cerrada === sinComparar,
+      `las dos cerradas se pintan igual (dio "${cerrada}" y "${sinComparar}")`);
+    check(soloFotos === vacia,
+      `las dos sin cerrar se pintan igual (dio "${soloFotos}" y "${vacia}")`);
+    check(cerrada !== soloFotos,
+      `cerrada y sin cerrar NO se pintan igual: si no, el riel no diría nada (dio "${cerrada}" en ambas)`);
+    check(new Set([cerrada, sinComparar, soloFotos, vacia]).size === 2,
+      `son dos colores en total, no cuatro (dio ${new Set([cerrada, sinComparar, soloFotos, vacia]).size})`);
+    }
+  }
+
+  // Y lo que el color dejó de distinguir lo distinguen las palabras. Si esto
+  // falla, el colapso sí borró información en vez de moverla de sitio.
+  const dichos = [
+    fraseSinDelta(marca('S36-2026')),          // cerrada, sin poder comparar
+    fraseSinDelta(marca('S37-2026')),          // cerrada y comparable: no hay excusa que dar
+    frasePanelSinCierre(marca('S39-2026')),    // sólo fotos
+    frasePanelSinCierre(marca('S38-2026')),    // ni cierre ni fotos
+  ];
+  check(new Set(dichos.map(String)).size === 4,
+    'las cuatro situaciones siguen teniendo cada una su propia frase en el panel');
+  check(dichos[1] === null && dichos.filter(d => typeof d === 'string' && d.length > 20).length === 3,
+    'y las tres que necesitan explicarse la traen entera, no un guion');
 };
 
 if (hayRiel) correr();
