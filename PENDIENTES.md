@@ -379,6 +379,62 @@ primera vez a un cliente externo. El pendiente #1 (iCloud) es
 condición previa para que los otros cuatro se puedan trabajar con
 confianza — sin eso, cada cambio puede desaparecer.
 
+A esos cinco se suma el #6, detectado en la revisión del 2026-10-06: es
+el único que impide **demostrar** algo, no el único que impide
+**trabajar**.
+
+---
+
+## 6. No hay dónde capturar estimaciones en dependencia
+
+**Detectado**: 2026-10-06, recorriendo `feature/seguimiento-semanal` ya
+mezclada. **Riesgo: ALTO.** Rama propia: `feature/estimaciones-dependencia`.
+
+**Qué pasa**: el tablero de dependencia muestra ESTIMADO y PAGADO, y el
+riel semanal guarda el corte de estimaciones al cerrar. Pero esas cifras
+sólo pueden entrar **por siembra**: la pestaña de captura no existe del
+lado dependencia. Es la mitad financiera del expediente y hoy no se puede
+demostrar.
+
+**Lo que SÍ existe ya** (medido, no supuesto): la captura completa del
+lado constructora —`Estimaciones()` en `src/App.jsx`, con botón «+ Nueva
+estimación», edición en línea y guardado—, y `fsSetA` ya antepone el
+prefijo de organización, así que el motor de escritura no hay que
+inventarlo. **Lo que falta es la pestaña de dependencia**, no el motor.
+
+**Alcance acordado**, dentro de la obra:
+
+- Capturar estimación: número, periodo **con fecha de cierre explícita**
+  (no texto libre, que es lo que hoy guarda `periodo`), monto, estatus.
+- La **fecha en que la dependencia recibió** la estimación, registrada por
+  la dependencia — consistente con el #35: la dependencia sí captura.
+- El **contador de días** entre cierre de periodo y recepción.
+- Adjuntar **carátula firmada y/o factura** a Storage, con el mismo
+  esquema de rutas por organización que usan las fotos
+  (`conOrg('obras/{obraId}/fotos/{concepto}/{id}')`).
+
+### Dos amarres que son condición de la rama, no sugerencias
+
+**1. No renombrar `monto` ni `estatus`.** `corteDeEstimaciones` —el que
+congela el corte en el cierre semanal— lee exactamente esos dos nombres,
+y compara el estatus normalizado contra `'pagada'`. Renombrarlos **no
+rompe nada visible**: el corte sigue corriendo y escribe ceros, que es
+justo lo que el P2 prohíbe. Campos nuevos sí; renombrar los dos
+existentes, no, salvo que se migre el corte en el mismo cambio y con su
+contraprueba.
+
+**2. Usar `fsSetAEstricto`, nunca `fsSetA`.** `fsSetA` atrapa el error y
+devuelve `false`: sirve para guardados de fondo, no para uno que el
+usuario acaba de pedir. Un supervisor capturando **dinero** que recibe un
+rechazo de reglas y no ve nada en pantalla cree que guardó. Es el mismo
+defecto del 2026-10-01 que ya está documentado en el propio comentario de
+`fsSetAEstricto`, y aquí reaparecería sobre la cifra que más importa.
+
+**También hace falta un segundo despliegue de reglas** —escritura de
+dependencia sobre `config/estimaciones` y la ruta nueva de Storage—, y por
+eso esto no entró en `feature/seguimiento-semanal`: habría mezclado dos
+despliegues en un solo juicio.
+
 ---
 
 ## 1. Sacar el repositorio de iCloud Drive
