@@ -83,6 +83,7 @@ const ANIDADOS = [
   'PortafolioDependencia.clicEnCabecera',
   'PortafolioDependencia._ne',
   'PortafolioDependencia.clave',
+  'PortafolioDependencia.celdaDe',
 ];
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
@@ -155,6 +156,16 @@ if (anidados['PortafolioDependencia.clave'] && anidados['PortafolioDependencia._
   claveDe = new Function('contratista', `
     const _ne = ${anidados['PortafolioDependencia._ne']};
     return ${anidados['PortafolioDependencia.clave']};`);
+}
+// Qué dice cada celda. Se le inyectan los formateadores y la paleta porque lo
+// que se mide es el TEXTO, no el color.
+let celdaDe = null;
+if (anidados['PortafolioDependencia.celdaDe']) {
+  const MXN = n => `$${Number(n||0).toLocaleString('en-US')}`;
+  const NUM = (n, d) => Number(n||0).toFixed(d);
+  const C = new Proxy({}, { get: () => '#000' });
+  celdaDe = new Function('MXN', 'NUM', 'C',
+    `return (${anidados['PortafolioDependencia.celdaDe']});`)(MXN, NUM, C);
 }
 
 // ── Datos ──────────────────────────────────────────────────────────────────
@@ -342,9 +353,11 @@ if (!ordenarPor) {
 
 // ── 5. Las diez columnas, y que se puedan ordenar con un clic ──────────────
 console.log('\n5. Las diez columnas de la tabla');
-const ESPERADAS = ['Obra', 'Contratista', 'Contratado', 'Ejecutado', 'Estimado',
-  'Pagado', 'Por ejercer', 'Avance físico', 'Días de atraso proyectados',
-  'Última captura'];
+// Los días de atraso van TERCEROS, no al final: son lo que ordena la tabla por
+// omisión, y detrás de las cinco cifras de dinero quedaban fuera de pantalla.
+const ESPERADAS = ['Obra', 'Contratista', 'Días de atraso proyectados',
+  'Contratado', 'Ejecutado', 'Estimado', 'Pagado', 'Por ejercer',
+  'Avance físico', 'Última captura'];
 if (!Array.isArray(COLUMNAS)) {
   const m = 'la tabla enseña las diez columnas acordadas, en orden';
   fallos.push(m);
@@ -354,6 +367,40 @@ if (!Array.isArray(COLUMNAS)) {
   check(JSON.stringify(lbls) === JSON.stringify(ESPERADAS),
     'la tabla enseña las diez columnas acordadas, en orden',
     lbls.join(' | '));
+  check(COLUMNAS.findIndex(c => c.id === 'atraso') <= 2,
+    'los días de atraso se ven sin arrastrar la tabla: son los que la ordenan',
+    `van en la posición ${COLUMNAS.findIndex(c => c.id === 'atraso') + 1} de ${COLUMNAS.length}`);
+
+  // CADA COLUMNA TIENE SU CELDA, y la celda sale del MISMO recorrido que el
+  // encabezado. Mientras fueron dos listas paralelas, mover una columna sin
+  // mover la otra ponía cada cifra bajo el título equivocado y la tabla se
+  // seguía viendo perfecta. Aquí se comprueba que no quede ninguna suelta.
+  if (!celdaDe) {
+    const m = 'cada columna tiene una celda que decir';
+    fallos.push(m);
+    console.log(`   ✗ ${m}  ·  las celdas no se pintan recorriendo las columnas en este archivo`);
+  } else {
+    const ejemplo = { nombre:'MC-OP-2026-001', contratista:'Acme, S.A. de C.V.',
+      contratado:12400000, ejecutado:6933725, estimado:8300000, pagado:5900000,
+      porEjercer:6500000, af:55.9, diasSinCaptura:3, atraso:27, sinAtraso:null };
+    const vacias = COLUMNAS.map(c => [c.lbl, celdaDe(ejemplo, c.id)?.texto])
+      .filter(([, t]) => t === undefined || t === null || String(t).trim() === ''
+                      || /sin celda para/.test(String(t)));
+    check(vacias.length === 0,
+      'cada columna tiene una celda que decir, ninguna sale en blanco',
+      vacias.length ? vacias.map(([l]) => l).join(', ')
+        : COLUMNAS.map(c => celdaDe(ejemplo, c.id).texto).join(' | '));
+
+    // Y las tres que pueden faltar lo DICEN, cada una con su palabra.
+    const sinNada = { ...ejemplo, contratista:null, diasSinCaptura:null,
+      atraso:null, sinAtraso:'sin plazo vigente capturado' };
+    const dichos = ['contratista', 'atraso', 'captura'].map(id => celdaDe(sinNada, id).texto);
+    const mudos = dichos.filter(t => !t || /^[—–\-]$/.test(String(t).trim())
+                                  || /^\$?0( días?)?%?$/.test(String(t).trim()));
+    check(mudos.length === 0,
+      'contratista, atraso y última captura dicen que faltan en vez de salir con un guion o un cero',
+      mudos.length ? `mudas: ${JSON.stringify(mudos)}` : dichos.map(t => `«${t}»`).join(' · '));
+  }
 
   // P5: de este lado de la pantalla la economía del contratista no existe.
   const prohibidas = /margen|utilidad|gasto|costo|n[oó]mina|personal|horas extra|maquinaria/i;

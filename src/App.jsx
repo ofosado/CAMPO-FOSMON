@@ -8448,16 +8448,22 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
   // Las diez columnas. `dirIni` es hacia dónde ordena el PRIMER clic, y no es
   // la misma para todas: en un monto lo que se busca es el más grande, en el
   // avance la obra más rezagada, y en la última captura la más vieja.
+  //
+  // EL ATRASO VA TERCERO, no al final. Medido en pantalla angosta: con las
+  // cinco cifras de dinero delante, la columna que ORDENA la tabla por omisión
+  // quedaba fuera de vista y había que arrastrar para encontrarla. Es la
+  // pregunta que trae al director a esta pantalla; va junto a quién es la obra
+  // y quién la construye, antes que el dinero.
   const COLUMNAS = [
     { id:'nombre',      lbl:'Obra',                       dirIni:'asc',  num:false },
     { id:'contratista', lbl:'Contratista',                dirIni:'asc',  num:false },
+    { id:'atraso',      lbl:'Días de atraso proyectados', dirIni:'desc', num:true  },
     { id:'contratado',  lbl:'Contratado',                 dirIni:'desc', num:true  },
     { id:'ejecutado',   lbl:'Ejecutado',                  dirIni:'desc', num:true  },
     { id:'estimado',    lbl:'Estimado',                   dirIni:'desc', num:true  },
     { id:'pagado',      lbl:'Pagado',                     dirIni:'desc', num:true  },
     { id:'porEjercer',  lbl:'Por ejercer',                dirIni:'desc', num:true  },
     { id:'af',          lbl:'Avance físico',              dirIni:'asc',  num:true  },
-    { id:'atraso',      lbl:'Días de atraso proyectados', dirIni:'desc', num:true  },
     { id:'captura',     lbl:'Última captura',             dirIni:'desc', num:true  },
   ];
   const [col, dir] = orden.split('|');
@@ -8470,6 +8476,52 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
 
   const texto = (a,b,k) =>
     (a[k]||'').localeCompare(b[k]||'', 'es', {sensitivity:'base'});
+
+  // Qué dice cada celda, en un solo lugar y por id de columna. Las tres que
+  // pueden no tener dato dicen en voz alta que no lo tienen: ninguna sale en
+  // blanco, ni con un guion —que se lee «no aplica»— ni con un cero.
+  const celdaDe = (f, id) => {
+    const falta = { est:{color:C.textMut, fontStyle:'italic'} };
+    switch (id) {
+      case 'nombre':
+        return { texto:f.nombre, est:{fontWeight:600, color:C.textPri,
+                 maxWidth:220, overflow:'hidden', textOverflow:'ellipsis'} };
+      // El contratista se captura a mano (#41): hasta que haya padrón puede
+      // sencillamente no estar, y eso no es lo mismo que no tener.
+      case 'contratista':
+        return f.contratista
+          ? { texto:f.contratista, est:{color:C.textSec, maxWidth:180,
+              overflow:'hidden', textOverflow:'ellipsis'} }
+          : { texto:'sin capturar', ...falta };
+      // Cero días de atraso es la AFIRMACIÓN «la obra va en tiempo», y no se
+      // puede hacer cuando la cuenta no salió. Cuando no hay número, la celda
+      // dice por qué no, con la misma frase que el KPI del detalle de la obra.
+      case 'atraso':
+        if (f.atraso === null || f.atraso === undefined)
+          return { texto:f.sinAtraso, est:{...falta.est, whiteSpace:'normal', maxWidth:160} };
+        return { texto: f.atraso > 0 ? `${f.atraso} días tarde`
+                      : f.atraso < 0 ? `${Math.abs(f.atraso)} días antes`
+                      : 'en el plazo',
+                 est:{color:f.atraso > 0 ? C.redDk : C.greenDk,
+                      fontWeight:f.atraso > 0 ? 700 : 400} };
+      case 'contratado':  return { texto:MXN(f.contratado),  est:{color:C.textPri} };
+      case 'ejecutado':   return { texto:MXN(f.ejecutado),   est:{color:C.textSec} };
+      case 'estimado':    return { texto:MXN(f.estimado),    est:{color:C.textSec} };
+      case 'pagado':      return { texto:MXN(f.pagado),      est:{color:C.textSec} };
+      case 'porEjercer':  return { texto:MXN(f.porEjercer),  est:{color:C.textPri} };
+      case 'af':          return { texto:`${NUM(f.af,1)}%`,  est:{fontWeight:700, color:C.blueDk} };
+      case 'captura': {
+        if (f.diasSinCaptura === null) return { texto:'sin captura', ...falta };
+        const alerta = f.diasSinCaptura >= 7;
+        return { texto: f.diasSinCaptura === 0 ? 'hoy'
+                      : `hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`,
+                 est:{color:alerta ? C.yellowDk : C.textMut} };
+      }
+      // Una columna nueva sin celda saldría vacía y nadie lo notaría. Que lo
+      // diga la propia tabla, en vez de dejar un hueco que parece un dato.
+      default: return { texto:`(sin celda para «${id}»)`, ...falta };
+    }
+  };
 
   const ordenadas = [...filas].sort((a,b) => {
     if (col === 'nombre') return signo * texto(a,b,'nombre') || b.contratado - a.contratado;
@@ -8603,56 +8655,28 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
             </tr>
           </thead>
           <tbody>
-            {ordenadas.map(f => {
-              const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
-              const td = (extra) => ({padding:"7px",borderBottom:`1px solid ${C.border}`,
-                                      whiteSpace:"nowrap",...extra});
-              return (
-                <tr key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
-                    style={{cursor:onSelectObra?"pointer":"default"}}>
-                  <th scope="row" style={td({textAlign:"left",fontWeight:600,color:C.textPri,
-                        maxWidth:220,overflow:"hidden",textOverflow:"ellipsis"})}>
-                    {f.nombre}
-                  </th>
-                  {/* El contratista se captura a mano (#41). Cuando no está, se
-                      dice que no está: un guion mudo se lee como "no aplica". */}
-                  <td style={td({color:f.contratista?C.textSec:C.textMut,
-                                 fontStyle:f.contratista?"normal":"italic",
-                                 maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"})}>
-                    {f.contratista || 'sin capturar'}
-                  </td>
-                  <td style={td({textAlign:"right",color:C.textPri})}>{MXN(f.contratado)}</td>
-                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.ejecutado)}</td>
-                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.estimado)}</td>
-                  <td style={td({textAlign:"right",color:C.textSec})}>{MXN(f.pagado)}</td>
-                  <td style={td({textAlign:"right",color:C.textPri})}>{MXN(f.porEjercer)}</td>
-                  <td style={td({textAlign:"right",fontWeight:700,color:C.blueDk})}>
-                    {NUM(f.af,1)}%
-                  </td>
-                  {/* Nunca un guion ni un cero cuando no hay atraso que mostrar:
-                      cero días de atraso es una afirmación —la obra va en
-                      tiempo— y no se puede hacer cuando el cálculo no salió.
-                      La celda dice por qué no, con la misma frase que el KPI
-                      del detalle de la obra. */}
-                  <td style={td({textAlign:"right",
-                        color:f.atraso === null || f.atraso === undefined ? C.textMut
-                              : f.atraso > 0 ? C.redDk : C.greenDk,
-                        fontWeight:f.atraso > 0 ? 700 : 400,
-                        fontStyle:f.atraso === null || f.atraso === undefined ? "italic" : "normal",
-                        whiteSpace:"normal",maxWidth:160})}>
-                    {f.atraso === null || f.atraso === undefined ? f.sinAtraso
-                      : f.atraso > 0 ? `${f.atraso} días tarde`
-                      : f.atraso < 0 ? `${Math.abs(f.atraso)} días antes`
-                      : 'en el plazo'}
-                  </td>
-                  <td style={td({textAlign:"right",color:capAlerta?C.yellowDk:C.textMut})}>
-                    {f.diasSinCaptura === null ? 'sin captura'
-                      : f.diasSinCaptura === 0 ? 'hoy'
-                      : `hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
-                  </td>
-                </tr>
-              );
-            })}
+            {/* Las celdas se pintan RECORRIENDO `COLUMNAS`, no en una segunda
+                lista escrita a mano. Dos listas paralelas que tienen que
+                coincidir en orden fallan de la peor manera posible: mover una
+                columna y olvidar la otra pone todas las cifras bajo el
+                encabezado equivocado, y la tabla sigue viéndose perfecta.
+                Pasó al mover el atraso al tercer lugar. */}
+            {ordenadas.map(f => (
+              <tr key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                  style={{cursor:onSelectObra?"pointer":"default"}}>
+                {COLUMNAS.map((c, i) => {
+                  const { texto: val, est } = celdaDe(f, c.id);
+                  const base = {padding:"7px",borderBottom:`1px solid ${C.border}`,
+                                whiteSpace:"nowrap",textAlign:c.num?"right":"left",...est};
+                  // La primera celda es el encabezado de su renglón: sin esto,
+                  // un lector de pantalla lee «$12,400,000» sin decir de qué
+                  // obra, y la tabla deja de poderse recorrer a ciegas.
+                  return i === 0
+                    ? <th key={c.id} scope="row" style={base}>{val}</th>
+                    : <td key={c.id} style={base}>{val}</td>;
+                })}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
