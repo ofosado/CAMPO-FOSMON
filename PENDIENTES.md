@@ -614,6 +614,39 @@ frente al cliente es un signo de fragilidad.
 
 **Prioridad**: alta. Podría ir en la misma rama que #2 (misma familia).
 
+### Un sitio más, medido el 2026-10-06: «0 semanas cerradas» en Evidencia
+
+El encabezado de Evidencia (`App.jsx:16983`) dice «N semanas cerradas ·
+M fotos en P partidas». `cerradas` sale de `marcas.filter(m => m.cierre)`
+(`:16885`), y `marcas` se deriva de `historialAvance`, que llega vacío y
+se llena cuando contesta Firestore. Durante esa ventana el encabezado
+afirma **«0 semanas cerradas»**.
+
+Medido en el emulador: al entrar a Evidencia de OBRA DEMO 1 el
+encabezado decía «0 semanas cerradas»; al volver a navegar, «4 semanas
+cerradas». El dato nunca cambió — cambió si había llegado.
+
+Es peor que un KPI en cero porque no es una cifra que se vea
+provisional: es una **frase sobre el expediente**, y la frase que dice
+es que no hay cierres. El riel debajo sale vacío al mismo tiempo, así
+que las dos cosas se confirman entre sí. Quien mira un segundo y pasa de
+pantalla se lleva que la obra no tiene un solo cierre registrado. Es P2
+en forma de oración: la cuenta no se pudo hacer todavía y se sustituyó
+por cero en vez de decir que no está.
+
+**El arreglo es casi seguro el mismo patrón de `estCargadas`**, que ya
+existe en el repositorio desde `feature/seguimiento-semanal`: una
+bandera que viaja junto al arreglo diciendo si el listener ya contestó
+(`:20809` el `useState`, `:11711` y `:12745` los componentes que la
+reciben, `:11765` el consumo en `corteDeEstimaciones`). Aquí haría falta
+la gemela para `historialAvance` —`histCargado`— y `FotosCliente`
+(`:16812`) tendría que recibirla y callar el encabezado y el riel
+mientras sea falsa, en vez de contar cero. Conviene revisar de paso qué
+otras pantallas reciben `historialAvance` sin saber si ya llegó.
+
+**Prioridad**: alta, por la misma razón que el resto del #3 — se ve en
+la demo, en la pantalla que el cliente abre para revisar evidencia.
+
 ---
 
 ## 4. Proyecto Firebase de pruebas con copia de datos
