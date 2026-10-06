@@ -2509,9 +2509,27 @@ const montoEjecutadoSnap = (snap) =>
 // Esquema de cálculo de un snapshot (1 = antes del arreglo del recorte).
 const esquemaDe = (snap) => (snap?.esquema || 1);
 
+// Una cadena "YYYY-MM-DD" se arma en LOCAL antes de contar días.
+//
+// `new Date("2026-08-03")` se interpreta como UTC, que en México es el 2 de
+// agosto a las 18:00: domingo. Todo lo que cuente semanas trabaja en local, así
+// que un LUNES acababa en la semana de antes — un día de cada siete, que es
+// justo la frecuencia con la que se le echa la culpa al azar.
+//
+// Sólo se reinterpreta la forma de diez letras. Una marca de tiempo completa
+// ("…T03:40:00Z") sí designa un instante y su día local ya es el correcto;
+// tocarla sería inventar el error en la otra dirección.
+//
+// Va EN LÍNEA y no como helper compartido a propósito: ocho bancos de pruebas
+// extraen `semanaISO` sola del archivo, y un nombre libre aquí los deja a todos
+// sin arrancar. Las otras tres copias de esta regla llevan un puntero a esta
+// nota; si cambia, cambian las cuatro. Hasta el patrón va repetido: sacarlo a
+// una constante lo volvería un nombre libre otra vez.
+
 // Calcula el número ISO de semana ISO 8601 (semana que contiene el primer jueves del año)
 const semanaISO = (fecha) => {
-  const d = new Date(fecha);
+  const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+  const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
   d.setHours(0, 0, 0, 0);
   // Jueves de esta semana (semana ISO está definida por el jueves)
   d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -2520,6 +2538,23 @@ const semanaISO = (fecha) => {
     semana: Math.ceil(((d - inicioAño) / 86400000 + 1) / 7),
     año: d.getFullYear(),
   };
+};
+
+// El inverso de `semanaISO`: el jueves de la semana `sem` del año `año`.
+//
+// Lo que había —1 de enero + (sem−1)×7, y de ahí al jueves— sólo acierta
+// cuando el 1 de enero cae en jueves. En 2027 cae en viernes y la semana 4
+// devolvía el jueves de la 3: la ventana de la gráfica de proyección arrancaba
+// una semana antes del contrato y TODOS los índices se recorrían uno, igual
+// que con el lunes pero durante el año entero, no un día de cada siete.
+//
+// El 4 de enero siempre está en la semana 1 por definición, así que de ahí se
+// parte.
+const jueveDeSemanaISO = (año, sem) => {
+  const d = new Date(año, 0, 4);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));   // jueves de la semana 1
+  d.setDate(d.getDate() + (sem - 1) * 7);
+  return d;
 };
 
 // ID de snapshot: S{semana}-{año} ej. "S22-2026"
@@ -7232,7 +7267,9 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
 
 // Helper local: semana ISO {sem, año} + key string ordenable "Y2026-S37"
 const _semISOKey = (fecha) => {
-  const d = new Date(fecha);
+  // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+  const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+  const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
   if (isNaN(d)) return null;
   d.setHours(0,0,0,0);
   d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -8977,7 +9014,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
   // Helper: semana ISO como {sem, año} y su etiqueta corta
   const semanaISOLocal = (fecha) => {
-    const d = new Date(fecha);
+    // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+    const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+    const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
     if (isNaN(d)) return null;
     d.setHours(0,0,0,0);
     d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -8991,7 +9030,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // y termina hoy. Si el rango pedido (últimas N semanas) es menor al
   // plazo transcurrido, se usa el rango; si es mayor, se recorta al
   // inicio del contrato para no mostrar semanas huecas antes de existir.
-  const fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  // `fechaLocalDeISO` y no `new Date(...)`: la forma corta se interpreta como
+  // UTC, que en México es el día anterior a las 18:00. Para una obra que
+  // arrancó un LUNES eso la mete en la semana de antes, y la gráfica dibuja
+  // una semana entera previa al contrato. Pasa un día de cada siete, que es
+  // justo la frecuencia con la que se culpa al azar.
+  const fechaInicio = fechaLocalDeISO(obra?.inicio);
   const inicioValido = fechaInicio && !isNaN(fechaInicio);
   const semanas = (() => {
     const hoy = new Date();
@@ -9150,15 +9194,26 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       const s = (e.estatus||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
       return s === 'pagada' || s === 'cobrada';
     })
-    .map(e => ({ ...e, _fecha: new Date(e.fechaCobro || e.fecha || e.periodo || 0) }))
+    // La fecha se arma en LOCAL —ver `semanaISO`— porque abajo pasa por
+    // `semanaISOLocal`: con la lectura UTC, una estimación cobrada un lunes se
+    // contabilizaba en la semana que ya había cerrado.
+    .map(e => {
+      const f = e.fechaCobro || e.fecha || e.periodo || 0;
+      const _s = typeof f === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(f.trim()) : null;
+      return { ...e, _fecha: _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(f) };
+    })
     .filter(e => !isNaN(e._fecha))
     .sort((a,b) => a._fecha - b._fecha);
-  // Suma pre-rango
+  // Suma pre-rango: todo lo cobrado ANTES de que empiece la primera semana de
+  // la ventana. El corte es el lunes de esa semana —no un jueves ni el 1 de
+  // enero más tantos días—, porque lo que se pregunta es si el cobro cae fuera
+  // de la ventana, y la ventana empieza el lunes.
   const primeraSemFecha = (() => {
     const s = semanas[0];
     if (!s) return null;
-    const d = new Date(s.año, 0, 1);
-    d.setDate(d.getDate() + (s.sem-1)*7);
+    const d = jueveDeSemanaISO(s.año, s.sem);
+    d.setDate(d.getDate() - 3);
+    d.setHours(0,0,0,0);
     return d;
   })();
   if (primeraSemFecha) {
@@ -9797,7 +9852,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const svgRef = useRef();
 
   const semanaISOLocal = (fecha) => {
-    const d = new Date(fecha);
+    // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+    const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+    const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
     if (isNaN(d)) return null;
     d.setHours(0,0,0,0);
     d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -9805,15 +9862,13 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
   };
   const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
-  const jueveDeSemana = (año, sem) => {
-    const d = new Date(año, 0, 1);
-    d.setDate(d.getDate() + (sem - 1) * 7);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    return d;
-  };
 
   const presupuesto = parseFloat(obra?.presupuesto) || 0;
-  let fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  // `fechaLocalDeISO` y no `new Date(...)`: ver la nota larga en la gráfica de
+  // tendencias. La forma corta se lee como UTC y en México cae el día anterior
+  // a las 18:00, así que una obra que arrancó un LUNES se va a la semana de
+  // antes. El fallback de abajo arma la fecha por partes y ya era local.
+  let fechaInicio = fechaLocalDeISO(obra?.inicio);
   let inicioValido = fechaInicio && !isNaN(fechaInicio);
 
   // Fallback fecha de inicio: si no está en contrato pero hay datos de GP,
@@ -9859,7 +9914,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const isoHoy = semanaISOLocal(hoy);
   const semanasHist = [];
   {
-    let d = jueveDeSemana(isoInicio.año, isoInicio.sem);
+    let d = jueveDeSemanaISO(isoInicio.año, isoInicio.sem);
     while (true) {
       const iso = semanaISOLocal(d);
       const key = skey(iso.sem, iso.año);

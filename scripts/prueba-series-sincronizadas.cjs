@@ -75,7 +75,13 @@ const MXN = v => (typeof v === 'number')
 const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseEjecutado',
                  'avanceFisicoPonderado', 'contratoDeSub', 'compensacionVolumenes',
                  'ESQUEMA_SNAPSHOT', 'ESQUEMA_DINERO', 'ESQUEMA_AVANCE', 'sonComparables',
-                 'montoEjecutadoSnap', 'esquemaDe'];
+                 'montoEjecutadoSnap', 'esquemaDe',
+                 // Las dos conversiones de fecha↔semana entran por aquí a
+                 // propósito. Son las que deciden en qué semana cae el arranque
+                 // de la obra, y si la prueba se las imitara con un `new Date`
+                 // propio dejaría de ver justamente el defecto que encontró: el
+                 // lunes que se iba a la semana de antes.
+                 'fechaLocalDeISO', 'jueveDeSemanaISO', 'semanaISO'];
 const fuentesHelper = [];
 const funcs = {};
 traverse(ast, {
@@ -477,6 +483,101 @@ console.log('\n7. Obra sin excedente — el arreglo no mueve el caso normal');
     'las dos semanas dan lo mismo que antes del arreglo');
   check(t.ejecutadoSeries?.slice(0, idxDe(6)).every(v => v === null),
     'y antes del primer snapshot la serie sigue en "no disponible", no en cero');
+}
+
+console.log('\n8. El LUNES cae en su semana, no en la de antes');
+console.log('   Esta sección existe porque el defecto se descubrió por accidente:');
+console.log('   las secciones de arriba salían rojas los lunes y verdes los demás');
+console.log('   días. Aquí el lunes se fija a propósito para que no dependa de');
+console.log('   qué día se corra la prueba.');
+{
+  // `new Date("2026-08-03")` se interpreta como UTC, que en México es el 2 de
+  // agosto a las 18:00 — domingo, semana anterior. Un gasto capturado el lunes
+  // se contabilizaba en la semana que ya cerró, y el arranque de una obra que
+  // empezó en lunes metía en la gráfica una semana entera previa al contrato.
+  const lunesDe = (d) => {
+    const x = new Date(d); x.setHours(0,0,0,0);
+    x.setDate(x.getDate() - ((x.getDay() || 7) - 1));
+    return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+  };
+  const kDe = (n) => { const { sem, año } = isoDe(haceSemanas(n)); return `${año}-W${String(sem).padStart(2,'0')}`; };
+
+  const lunes4 = lunesDe(haceSemanas(4));
+  check(new Date(lunes4 + 'T12:00:00').getDay() === 1,
+    `la fecha de prueba ${lunes4} es efectivamente un lunes`);
+
+  const props = vacios({
+    obra: obraBase(),
+    historialAvance: [snap(4, { av: 40, me: 4_000_000, esquema: 2 })],
+    otrosGastos: [{ fecha: lunes4, importe: 500_000 }],
+    estimaciones: [{ estatus: 'cobrada', fechaCobro: lunes4, monto: 900_000 }],
+  });
+  const t = correr('TendenciasMensuales', props,
+    [...QUIERO_TEND, 'gastoManualIncrem', 'estPorSem']);
+
+  // a) El arranque de la obra. La ventana no puede tener 11 semanas en lunes.
+  check(t.semanas?.length === 10,
+    `la ventana sigue teniendo las 10 semanas del contrato (${t.semanas?.length})`);
+  check(t.semanas?.[0]?.key === kDe(9),
+    `la primera semana es la del arranque, no la de antes (${t.semanas?.[0]?.key}, esperado ${kDe(9)})`);
+
+  // b) Un gasto manual capturado en lunes.
+  check(t.gastoManualIncrem?.[kDe(4)] === 500_000,
+    `el gasto del lunes se suma a su propia semana ${kDe(4)} (${t.gastoManualIncrem?.[kDe(4)]})`);
+  check(t.gastoManualIncrem?.[kDe(5)] === undefined,
+    `y NO a la semana anterior ${kDe(5)} (${t.gastoManualIncrem?.[kDe(5)]})`);
+
+  // c) Una estimación cobrada en lunes.
+  check(t.estPorSem?.[kDe(4)] === 900_000,
+    `la estimación cobrada el lunes entra en ${kDe(4)} (${t.estPorSem?.[kDe(4)]})`);
+  check((t.estPorSem?.[kDe(5)] || 0) === 0,
+    `y la semana anterior ${kDe(5)} sigue sin cobros (${t.estPorSem?.[kDe(5)]})`);
+
+  // d) Una marca de tiempo CON hora no se toca: designa un instante, y su día
+  //    local ya es el correcto. Arreglarla sería inventar el error al revés.
+  const sabado = new Date(`${lunes4}T12:00:00`); sabado.setDate(sabado.getDate() - 2);
+  const finDeSemana = sabado.toISOString();
+  const props2 = vacios({
+    obra: obraBase(),
+    historialAvance: [snap(4, { av: 40, me: 4_000_000, esquema: 2 })],
+    otrosGastos: [{ fecha: finDeSemana, importe: 700_000 }],
+  });
+  const t2 = correr('TendenciasMensuales', props2,
+    [...QUIERO_TEND, 'gastoManualIncrem']);
+  check(t2.gastoManualIncrem?.[kDe(5)] === 700_000,
+    `un sello de tiempo completo del sábado anterior sigue en ${kDe(5)} (${t2.gastoManualIncrem?.[kDe(5)]})`);
+
+  // e) Y la función de la que cuelga todo lo demás —fotos, nómina, alertas,
+  //    el id del snapshot— con fechas FIJAS, que no dependen de hoy.
+  //    El 3 de agosto de 2026 es lunes y vive en la semana 32; con la lectura
+  //    UTC daba 31. El 28 de enero de 2027 es el jueves de la semana 4, el año
+  //    en que el 1 de enero cae en viernes.
+  const { semanaISO, jueveDeSemanaISO } =
+    new Function(`${PRELUDIO}\n;return { semanaISO, jueveDeSemanaISO };`)();
+
+  const s0803 = semanaISO('2026-08-03');
+  check(s0803.semana === 32 && s0803.año === 2026,
+    `el lunes 2026-08-03 es la semana 32 de 2026 (dio ${s0803.año}-W${s0803.semana})`);
+  const s0802 = semanaISO('2026-08-02');
+  check(s0802.semana === 31,
+    `y el domingo anterior sigue siendo la 31 (dio ${s0802.semana})`);
+  // Una marca de tiempo completa designa un instante: su día local manda.
+  const sInst = semanaISO('2026-08-03T01:00:00Z');   // 2 de agosto, 19:00 en México
+  check(sInst.semana === 31,
+    `un instante que en México cae el domingo se queda en la 31 (dio ${sInst.semana})`);
+
+  // f) El inverso tiene que invertir, también en un año que no empieza en jueves.
+  const pares = [[2026, 1], [2026, 4], [2026, 53], [2027, 1], [2027, 4], [2027, 13], [2028, 9]];
+  const malos = pares.filter(([a, s]) => {
+    const r = semanaISO(jueveDeSemanaISO(a, s));
+    return !(r.semana === s && r.año === a);
+  });
+  check(malos.length === 0,
+    `el jueves de cada semana vuelve a su semana en ${pares.length} pares de año/semana` +
+    (malos.length ? ` — falla en ${malos.map(p => p.join('-W')).join(', ')}` : ''));
+  const jue2027 = jueveDeSemanaISO(2027, 4);
+  check(jue2027.getMonth() === 0 && jue2027.getDate() === 28,
+    `la semana 4 de 2027 es la del jueves 28 de enero (dio ${jue2027.toDateString()})`);
 }
 
 } catch (e) {

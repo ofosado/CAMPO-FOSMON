@@ -91,10 +91,15 @@ const faltan = NECESARIAS.filter(n => !decl[n]);
 if (faltan.length) noArranco(faltan);
 
 (async () => {
+  // Este banco corre contra el historial REAL de la 0114, que no vive en el
+  // repositorio: hay que bajarlo. Sin él no se comprueba nada, así que es
+  // NO ARRANCÓ y no rojo — decirlo al revés deja la suite con un rojo crónico
+  // que enseña a no mirar los rojos.
   if (!fs.existsSync(VOLCADO)) {
-    console.error(`Falta el volcado ${VOLCADO}. Córrelo antes:\n` +
-      `  TOKEN=$(gcloud auth application-default print-access-token) node scripts/volcar-0114.cjs`);
-    process.exit(1);
+    noArranco.sinPrecondicion(
+      `el volcado ${VOLCADO}, que es el historial real de la obra ${OBRA} y no está en el repositorio`,
+      ['TOKEN=$(gcloud auth application-default print-access-token) \\',
+       '  node scripts/volcar-0114.cjs']);
   }
   const prod = JSON.parse(fs.readFileSync(VOLCADO, 'utf8'));
   const semanasPrevias = prod.historial.semanas;
