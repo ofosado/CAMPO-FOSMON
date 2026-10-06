@@ -1,6 +1,6 @@
 # Archivo de pendientes — CAMPO / cotea
 
-> **Esto es el archivo, no la lista.** La lista viva —una línea por tema, con
+> **Esto es el detalle histórico, no la lista.** La lista viva —una línea por tema, con
 > estado, ordenada por daño— está en `PENDIENTES.md`. Aquí vive el detalle: las
 > mediciones contra producción, las causas raíz, los guiones que las midieron y
 > por qué se decidió lo que se decidió. Se consulta por número.

@@ -1,6 +1,6 @@
 # Pendientes — CAMPO / cotea
 
-Una línea por tema. El detalle vive en `PENDIENTES-ARCHIVO.md`, en la sección
+Una línea por tema. El detalle vive en `docs/pendientes-detalle-historico.md`, en la sección
 con el mismo número. **Esta lista no crece con ensayos**: un hallazgo nuevo
 entra en tres líneas y, si alguien lo trabaja, el ensayo se escribe entonces.
 
