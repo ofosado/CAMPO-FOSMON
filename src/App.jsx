@@ -2849,18 +2849,32 @@ const huecoDeArranque = (estados = [], obra, recorte = null) => {
   };
 };
 
-// La frase que se enseña. Se escribe aquí, junto a la cuenta, para que las dos
+// La frase que se enseña. Se escribe aquí, junto a la cuenta, para que las tres
 // pantallas que la muestran digan lo mismo.
+//
+// EL TONO ES PARTE DEL DATO. La versión anterior abría con «A este expediente le
+// faltan las primeras N semanas», dentro de un recuadro ámbar con título propio,
+// y eso se lee como incidente. En la práctica es lo normal: un municipio da de
+// alta una obra en curso y su expediente empieza ahí. Una alarma que salta
+// siempre deja de leerse —y entonces tampoco se lee el caso en que SÍ hubo
+// pérdida, que es el único que la merecía.
+//
+// Por eso las dos causas ya no suenan igual. Sin constancia de recorte se enuncia
+// y punto. Cuando consta que los cierres se BORRARON —eso sí es una pérdida— la
+// frase lo dice completo. Los hechos que se dicen son los mismos en ambas:
+// cuándo empieza el expediente, cuándo arrancó la obra y cuántas semanas median.
+// Lo que cambia es cuál de las dos pide atención.
 const fraseHuecoDeArranque = (hueco) => {
   if (!hueco) return null;
   const sem = `${hueco.faltan} semana${hueco.faltan === 1 ? '' : 's'}`;
   const desde = fechaEnPalabras(fechaLocalDeISO(hueco.inicioObra));
-  const base = `A este expediente le faltan las primeras ${sem}: empieza en `
-    + `${hueco.primera.replace('-', ' de ')} y la obra arrancó el ${desde}.`;
+  const empieza = `El expediente empieza en ${hueco.primera.replace('-', ' de ')}`;
   return hueco.causa === HUECO_POR_RECORTE
-    ? `${base} Los cierres más antiguos se borraron al llegar el historial al `
-      + `tope de 52 semanas, así que ese periodo ya no se puede consultar aquí.`
-    : `${base} No hay cierres registrados de ese periodo.`;
+    ? `${empieza}. La obra arrancó el ${desde}, ${sem} antes: esos cierres se `
+      + `borraron al llegar el historial al tope de 52 semanas, así que ese `
+      + `periodo ya no se puede consultar aquí.`
+    : `${empieza}; no hay cierres anteriores. La obra arrancó el ${desde}, `
+      + `${sem} antes.`;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -11526,19 +11540,19 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
       </div>
     </Card>
 
-    {/* ── El arranque que le falta al expediente ──
+    {/* ── Dónde empieza el expediente ──
         Arriba de todo lo demás a propósito: es cómo hay que leer lo que sigue.
         Si falta el principio, la última captura, el avance y el plazo siguen
         siendo ciertos, pero el EXPEDIENTE no está completo, y esta pantalla es
-        desde la que alguien lo daría por bueno. */}
-    {hueco && <Card accent={C.yellow}>
-      <div style={{fontSize:11,fontWeight:700,color:C.textPri,marginBottom:4}}>
-        Al expediente le falta su arranque
-      </div>
-      <div style={{fontSize:10,lineHeight:1.5,color:C.textSec}}>
-        {fraseHuecoDeArranque(hueco)}
-      </div>
-    </Card>}
+        desde la que alguien lo daría por bueno.
+
+        Sin recuadro y sin título: que un expediente empiece a media obra es lo
+        normal cuando el municipio da de alta algo que ya iba andando. Ver
+        `fraseHuecoDeArranque` para por qué el tono importa. */}
+    {hueco && <div style={{fontSize:10,lineHeight:1.5,color:C.textMut,
+      padding:"0 2px"}}>
+      {fraseHuecoDeArranque(hueco)}
+    </div>}
 
     {/* ── Plazo ── */}
     <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
@@ -12164,10 +12178,8 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
         principio eso no es "el avance de la obra", es "el avance desde que
         empieza el expediente". Un expediente incompleto que no lo declara se
         presenta como completo. */}
-    {hueco && <div style={{fontSize:10,lineHeight:1.5,color:C.textPri,
-      background:C.yellowBg, border:`0.5px solid ${C.yellow}`,
-      borderRadius:8, padding:"8px 11px"}}>
-      <b>Al expediente le falta su arranque. </b>{fraseHuecoDeArranque(hueco)}
+    {hueco && <div style={{fontSize:10,lineHeight:1.5,color:C.textMut}}>
+      {fraseHuecoDeArranque(hueco)}
     </div>}
 
     {/* Se quitó el párrafo de frontera de definición. El comportamiento no
