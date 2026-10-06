@@ -328,6 +328,48 @@ que ambos leían `ESQUEMA_SNAPSHOT`. Se arregló fijando el valor observado en
 producción (`ESQUEMA_EN_PRODUCCION = 3`) como el hecho que es, y no como una
 lectura del código que se está juzgando.
 
+### El mismo defecto, un escalón más arriba: un medidor que hereda el filtro del código que audita no mide, repite
+
+**Agregado el 2026-10-05.** Es la misma familia que el corolario de arriba —la
+prueba contaminada por lo que juzga— pero aplicada a los **guiones de
+medición**, que son los que producen las cifras con las que después se decide.
+Por eso duele más: una prueba contaminada deja pasar un defecto; un medidor
+contaminado **fabrica la evidencia** de que no lo hay.
+
+**El caso.** Al medir si las fotos de producción traían `id`, la primera
+versión de `scripts/medir-fotos-sin-id.py` copió el filtro de `fotosDeSub`
+(`src/App.jsx`), que descarta de la lista todo lo que no sea objeto. Pero las
+fotos guardadas como **cadena suelta** son justamente las que **no pueden
+tener `id`**. El filtro heredado las sacaba del conteo antes de contarlas.
+
+El guion habría reportado **«0 fotos sin id»** — un número correcto, creíble,
+redondo y **vacío de contenido**, porque *la pregunta excluía la respuesta*.
+Y habría cerrado el pendiente dando por bueno justo el caso que lo abrió.
+
+**La regla.** Un medidor y el código que audita **no pueden compartir el
+filtro de entrada**. El código filtra para no romperse; el medidor filtra
+para no contar — y son objetivos opuestos.
+
+**Cómo se aplica:**
+
+1. **Traer TODO y clasificar después.** El medidor recoge la población
+   completa y luego separa en categorías, incluidas las que el código
+   descarta. En el caso de las fotos: objetos con `id`, objetos sin `id`, y
+   «no son objeto» como **tercera columna**, no como ausencia.
+2. **Sospechar de cualquier `filter` copiado del código fuente.** Si el
+   medidor reutiliza un helper de la app para decidir *qué entra*, está
+   heredando una decisión tomada con otro propósito. Reutilizar el helper para
+   **interpretar** lo que ya entró sigue siendo correcto y deseable (es lo que
+   hace `scripts/medir-fotos.cjs` extrayendo `conFotos` por AST).
+3. **Preguntarle al resultado si pudo haber salido distinto.** Si la respuesta
+   «0» era la única posible dada la forma de la consulta, no se midió nada.
+   Es la versión numérica del punto 4 del P6: un cero cómodo merece la misma
+   desconfianza que una contraprueba verde.
+4. **Un fallo de lectura detiene el medidor.** Devolver vacío y seguir
+   convierte un token vencido en «0 en las cinco obras»: el P2 aplicado a las
+   herramientas y no sólo a la pantalla. Ya está escrito así en
+   `medir-fotos.cjs` y en `medir-fotos-sin-id.py`, y pasó de verdad.
+
 ---
 
 # BLOQUEAN LA PRIMERA DEMO
