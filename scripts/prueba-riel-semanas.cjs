@@ -69,7 +69,8 @@ const check = (cond, m) => {
 
 const NOMBRES = [
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'semanaISO', 'snapshotId',
+  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
+  'semanaISO', 'snapshotId',
   'fechaLocalDeISO', 'MESES_CORTO', 'lunesDeClaveSemana',
   'rangoSemanaEnPalabras', 'leyendaSemanaSubida', 'etiquetaSemanaCorta',
   'estadoPorSemana', 'cruzaAños', 'etiquetaSemanaRiel',

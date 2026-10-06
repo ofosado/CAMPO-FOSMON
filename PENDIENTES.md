@@ -2478,6 +2478,80 @@ Y el fallo sigue siendo ruidoso: `crearSnapshotAvance` escribe con `setDoc`
 directo para que el error llegue vivo al llamador, y
 `scripts/prueba-cierre-no-falla-callado.cjs` está en verde.
 
+#### HECHO: el cierre ya guarda el corte (2026-10-05, `feature/seguimiento-semanal`)
+
+Entraron **dos** campos, no los cuatro que se midieron arriba:
+`montoEstimado` y `montoPagado`. Lo aprobado y lo por cobrar se dejaron
+fuera porque hoy no hay ninguna pantalla que los pregunte por semana, y un
+campo que nadie lee se vuelve un campo que nadie mantiene.
+
+**Lo que costó, medido contra producción con
+`scripts/medir-corte-estimaciones.py` (sólo lectura, REST + ADC):**
++1,584 B en total sobre los historiales, **0.14%**. El peor caso es la 0112
+con 0.52%. El historial más pesado —la 0114, 582,729 B— sigue muy por debajo
+del millón. No acerca el límite.
+
+**Lo que se perdió para siempre, y es el número que importa: 33 semanas ya
+cerradas en producción nunca van a poder decir su estimado.** No se
+interpola, ni hacia adelante, ni hacia atrás, ni con el total de hoy. Esas
+tres son la misma mentira con distinta aritmética: pintan una línea plana
+hacia atrás con un valor que nunca ocurrió. El hueco se escribe `null` y el
+riel dice en pantalla *«el cierre de esa semana no registró las
+estimaciones»* — una sola vez en todo el archivo, en `FRASE_SIN_CORTE_EST`.
+
+**Tres estados distinguibles, y la prueba afirma los tres:** una cifra
+registrada, un **cero registrado** (verdadero: las obras 0125 y 0127 no
+tienen estimaciones) y un hueco. Un `0` donde va un hueco se leería «esa
+semana no había nada estimado», que es una afirmación, no una ausencia (P2).
+Por eso el `null` va **explícito** en el documento y no se omite el campo:
+así se distingue «el cierre corrió sin saber» de «este snapshot es anterior
+al corte». Las dos se ven igual en pantalla; sólo una es un defecto
+perseguible.
+
+**El peligro no era la suma, era la ventana de carga.** `estimaciones`
+arranca en `[]` y se llena cuando contesta Firestore. Cerrar ahí dentro
+congelaría **$0** en el expediente de una obra con $109.2M estimados.
+`corteDeEstimaciones(estimaciones, cargadas)` devuelve `null` —no un objeto
+de ceros— si la lista no cargó, y el parámetro omitido (`undefined`) también
+cae del lado seguro. `estCargadas` ya existía en el código y **nunca se
+leía**; ahora es la guarda.
+
+**El esquema NO sube, y es deliberado.** `ESQUEMA_SNAPSHOT` mide la
+definición del avance y del dinero ejecutado, y ninguna cambió: esto agrega
+dos cifras sin tocar las viejas. Subirlo partiría las series en una frontera
+falsa. Al mutar el código para comprobarlo salió algo que no se esperaba:
+subir `ESQUEMA_SNAPSHOT` **solo** no cambia nada observable (el umbral de
+comparabilidad ya está en 3, y 4 ≥ 3). El riesgo real es subirlo **junto con**
+`ESQUEMA_AVANCE`, que es exactamente lo que acaba haciendo un «agregué
+campos, subo el esquema»: ahí los 33 cierres de producción dejan de poder
+compararse y la gráfica pierde la historia. La contraprueba mutante ahora
+sube los dos.
+
+**La prueba:** `scripts/prueba-corte-estimaciones.cjs`, 6 secciones, verde;
+contra `main` sale exit 1 con 28 comprobaciones en rojo. **17 contrapruebas
+semánticas, las 17 en rojo.** Tres se quedaron en verde en la primera
+corrida, y ésas fueron las que valieron: dos demostraron que la prueba
+ejercitaba los dos extremos —el corte y el escritor— pero **nunca el cable
+entre ellos**, que es justo lo que un refactor corta en silencio; se agregó
+la §5, que extrae el 7º argumento de la llamada a `crearSnapshotAvance` y lo
+ejecuta. La tercera era un error de medición mío: la §4 comparaba dos
+snapshots que ambos leían la constante, así que mover la constante movía los
+dos extremos y la comprobación era tautológica.
+
+**`prueba-cierre-emulador.cjs`** se puso roja de verdad al comparar el
+snapshot nuevo contra los rescatados de producción S37/S38-2026. En vez de
+relajarla a «subconjunto» —que dejaría pasar un campo **perdido**— se le
+puso `CAMPOS_AGREGADOS`, una lista con la razón escrita por campo, más una
+comprobación de que cada campo de la lista **sí se escribe**, para que el
+permiso no se pudra en una lista vacía.
+
+**Pendiente menor que esto dejó:** `_ne` subió a ámbito de módulo porque
+`corteDeEstimaciones` lo necesita y la alternativa era una séptima copia de
+la misma línea. Las **5 copias locales siguen ahí** (`src/App.jsx` ~4560,
+8419, 8744, 10917, 11367, y `_neEst` en 17587). Colapsarlas sobre la de
+módulo es limpieza de una línea cada una, pero toca cinco componentes que
+nada tienen que ver con este cambio: va en su propia rama.
+
 ### El año de las semanas de nómina va escrito, no deducido (2026-09-22)
 
 Un registro de nómina **no guarda el año**: trae `semana` como texto y
@@ -3723,6 +3797,31 @@ reemplazo.
 Una comparación sólo vale si sus dos lados vienen de lecturas distintas.
 Verificar lo escrito contra la variable de la que se escribió no verifica
 el transporte: verifica que la memoria no cambió sola.
+
+---
+
+## Las fotos sin `id` hacen que React pierda cuál es cuál (visto 2026-10-05)
+
+**Encontrado mirando la consola del emulador, no buscado. No se arregló en
+`feature/seguimiento-semanal` porque no es de esa rama.**
+
+`ConceptoFotos` (`src/App.jsx:5726`) sí pone `key={f.id}` en cada
+miniatura, pero la consola avisa *«Each child in a list should have a
+unique key prop»* al pintar las fotos del emulador sembrado. La única
+lectura que lo explica es que esas fotos llegan **sin `id`**: `f.id` sale
+`undefined` y todas las miniaturas comparten la misma llave vacía.
+
+**Por qué no es cosmético.** `onDel(f.id)` borra por ese mismo `id`. Una
+foto sin `id` no se puede borrar por identidad, y con las llaves repetidas
+React puede reusar el nodo equivocado al reordenar —y la lista **sí** se
+reordena: `visibles` cambia de orden cuando se pulsa «ver anteriores». El
+riesgo concreto es pulsar la × de una foto y ver desaparecer otra.
+
+**Qué falta antes de tocarlo:** medir si en **producción** las fotos traen
+`id` o no. Sólo se observó en el emulador sembrado, y puede ser defecto de
+la siembra y no del dato real. Si producción también las tiene sin `id`,
+hace falta una llave estable que no sea el índice —el índice vuelve a
+romper al reordenar— y lo más probable es la ruta de Storage.
 
 ---
 

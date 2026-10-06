@@ -68,7 +68,8 @@ const check = (cond, m, detalle) => {
 // otra forma sin reimplementarlos, y reimplementarlos sería probar mi copia.
 const RAIZ_NOMBRES = [
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'semanaISO', 'snapshotId',
+  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
+  'semanaISO', 'snapshotId',
   'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
   'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
   'frasePorQueSinDesviacion',

@@ -240,12 +240,28 @@ if (faltan.length) noArranco(faltan);
   const rescatados = semanasPrevias.filter(s => ['S37-2026', 'S38-2026'].includes(s.id));
   check(rescatados.length === 2, 'los dos rescatados están en el volcado');
 
+  // Los campos que el cierre nuevo SÍ puede traer de más, cada uno con la
+  // razón por la que se agregó. La lista existe para que el resto de la
+  // comparación siga siendo estricta: cualquier otro campo que aparezca —o
+  // cualquiera que desaparezca— sigue saliendo rojo. Sin ella habría que
+  // aflojar la aserción a «subconjunto», y entonces un campo perdido en una
+  // refactorización pasaría de largo.
+  const CAMPOS_AGREGADOS = {
+    montoEstimado: 'el corte de estimaciones (2026-10-05): lo estimado al cerrar '
+      + 'la semana, que antes sólo se podía consultar como total de HOY',
+    montoPagado:   'el corte de estimaciones (2026-10-05): lo pagado al cerrar',
+  };
+
   const clavesDe = o => Object.keys(o).sort().join(',');
+  const SIN_AGREGADOS = o => Object.keys(o)
+    .filter(k => !(k in CAMPOS_AGREGADOS)).sort().join(',');
   for (const r of rescatados) {
-    check(clavesDe(r) === clavesDe(enServidor),
+    // Los rescatados son de antes del corte: no tienen los campos nuevos, y
+    // comparar sin ellos es lo que de verdad dice si el formato se movió.
+    check(clavesDe(r) === SIN_AGREGADOS(enServidor),
       `${r.id}: mismos campos de primer nivel que el snapshot nuevo`,
-      clavesDe(r) === clavesDe(enServidor) ? clavesDe(enServidor)
-        : `rescatado{${clavesDe(r)}} vs nuevo{${clavesDe(enServidor)}}`);
+      clavesDe(r) === SIN_AGREGADOS(enServidor) ? clavesDe(r)
+        : `rescatado{${clavesDe(r)}} vs nuevo sin agregados{${SIN_AGREGADOS(enServidor)}}`);
     const cr = clavesDe(r.subs[0]), cn = clavesDe(enServidor.subs[0]);
     check(cr === cn, `${r.id}: mismos campos por partida`,
       cr === cn ? cn : `rescatado{${cr}} vs nuevo{${cn}}`);
@@ -254,6 +270,12 @@ if (faltan.length) noArranco(faltan);
   }
   check(enServidor.esquema === montar.ESQUEMA_SNAPSHOT,
     `el esquema escrito es el vigente (${montar.ESQUEMA_SNAPSHOT})`);
+  // Y los agregados tienen que estar DE VERDAD. Si alguno deja de escribirse,
+  // la comparación de arriba seguiría pasando —el campo simplemente no está
+  // en ninguno de los dos lados— y la lista se volvería un permiso vacío.
+  for (const [campo, porque] of Object.entries(CAMPOS_AGREGADOS)) {
+    check(campo in enServidor, `el cierre escribe «${campo}»`, porque);
+  }
   const conDesc = (enServidor.subs || []).some(s => 'sub' in s || 'desc' in s);
   check(!conDesc, 'ninguna partida arrastra la descripción del concepto');
 

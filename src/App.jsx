@@ -2441,6 +2441,13 @@ const fmtCant = (cant, pu) => {
     { maximumFractionDigits: Math.max(piso, Math.min(4, decimalesDe(cant))) });
 };
 
+// Texto capturado a mano, listo para comparar: sin mayúsculas y sin acentos.
+// Lo usan los estatus de estimación («Pagada», «pagada», «PAGADA») y los
+// nombres de empresa. Está aquí arriba y no dentro de un componente porque
+// `crearSnapshotAvance` también lo necesita, y la alternativa era una séptima
+// copia de la misma línea.
+const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
 // ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
 // ════════════════════════════════════════════════════════════════════════════
@@ -2448,7 +2455,7 @@ const fmtCant = (cant, pu) => {
 // Cada snapshot: { id, semana, año, fechaCaptura, fechaCierre, tipo (intermedio/oficial),
 //                  capturadoPor, subs: [{sec, a, imp, cant, pu, cantEjec}],
 //                  avancePonderado, montoEjecutado, montoCatalogo, montoExcedente,
-//                  esquema }
+//                  montoEstimado, montoPagado, esquema }
 //
 // ESQUEMA_SNAPSHOT: marca de versión del cálculo.
 //   (ausente) = esquema 1 — `a` recortado a 100, montoEjecutado TOPADO.
@@ -2505,6 +2512,31 @@ const sonComparables = (a, b, metrica = 'avance') => {
 // devuelve null —"no disponible"—, no cero.
 const montoEjecutadoSnap = (snap) =>
   (typeof snap?.montoEjecutado === 'number') ? snap.montoEjecutado : null;
+
+// ── EL CORTE DE ESTIMACIONES ────────────────────────────────────────────────
+// Lo estimado y lo pagado AL MOMENTO DEL CIERRE. Hasta ahora el cierre semanal
+// congelaba el avance físico y el dinero ejecutado, pero no estos dos, así que
+// el expediente no podía decir "en la S32 llevábamos $4.1M estimados": sólo
+// podía decir lo de HOY, que es otra pregunta y además se mueve.
+//
+// Vienen de `montoEstimado`/`montoPagado`, nunca del documento vivo de
+// estimaciones. Cruzar la serie semanal con el total de hoy produciría una
+// línea plana con el valor actual repetido hacia atrás, que es exactamente la
+// interpolación que no se hace.
+//
+// `null` cuando el cierre no lo registró. NO se infiere: no hay forma honesta
+// de saber qué estaba estimado en una semana que no lo anotó, y un 0 ahí se
+// leería como "esa semana no había nada estimado". Medido en producción el
+// 2026-10-05: las 33 semanas ya cerradas quedan en `null` para siempre.
+const montoEstimadoSnap = (snap) =>
+  (typeof snap?.montoEstimado === 'number') ? snap.montoEstimado : null;
+const montoPagadoSnap = (snap) =>
+  (typeof snap?.montoPagado === 'number') ? snap.montoPagado : null;
+
+// Por qué una semana no tiene corte de estimaciones. Una sola cuenta: el riel
+// y cualquier otra pantalla dicen esto mismo o no dicen nada.
+const FRASE_SIN_CORTE_EST =
+  'el cierre de esa semana no registró las estimaciones';
 
 // Esquema de cálculo de un snapshot (1 = antes del arreglo del recorte).
 const esquemaDe = (snap) => (snap?.esquema || 1);
@@ -2735,6 +2767,9 @@ const estadoPorSemana = (historialAvance = []) => {
       avance,
       // P1: el dinero se lee, no se reconstruye desde el avance.
       dinero: montoEjecutadoSnap(snap),
+      // El corte de estimaciones de ESA semana, o null. Nunca el total de hoy.
+      estimado: montoEstimadoSnap(snap),
+      pagado: montoPagadoSnap(snap),
       cerradoPor: snap.capturadoPor || null,
       fechaCierre: snap.fechaCierre || snap.fechaCaptura || null,
       delta: hayDelta ? avance - avancePrevio : null,
@@ -3503,9 +3538,30 @@ const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_AR
     `el archivo.`;
 };
 
+// El corte de estimaciones que se le pasa al cierre, a partir de la lista viva.
+//
+// `cargadas` es la condición y no un detalle: la lista arranca en `[]` y se
+// llena cuando contesta Firestore. Cerrar la semana en esa ventana escribiría
+// un corte de $0 — y $0 se lee «esta semana no había nada estimado», que es
+// una afirmación, no un hueco. Medido en producción: la 0114 lleva $109.2M
+// estimados; un cierre apresurado congelaría un cero en su expediente.
+//
+// Devuelve `null` —no un objeto de ceros— cuando no se puede afirmar nada.
+const corteDeEstimaciones = (estimaciones, cargadas) => {
+  if (!cargadas || !Array.isArray(estimaciones)) return null;
+  const monto = e => parseFloat(e?.monto) || 0;
+  return {
+    estimado: estimaciones.reduce((t, e) => t + monto(e), 0),
+    // La misma lectura de «pagada» que el resto de la app: sin acentos y en
+    // minúsculas, porque el estatus se captura a mano.
+    pagado: estimaciones.filter(e => _ne(e?.estatus) === 'pagada')
+                        .reduce((t, e) => t + monto(e), 0),
+  };
+};
+
 // Crear snapshot del avance actual y guardarlo en el historial
 // tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
-const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0) => {
+const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0, corteEst = null) => {
   if (!obraId || !Array.isArray(subs) || subs.length === 0) return null;
   try {
     const ahora = new Date();
@@ -3549,7 +3605,19 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
       // El denominador con que se calculó `avancePonderado`. Sin él la serie no
       // es reinterpretable si mañana cambia el contrato por un convenio.
       contratoRef,
+      // El corte de estimaciones de ESTA semana. `null` explícito —y no el
+      // campo ausente— cuando no se pudo afirmar: así el documento distingue
+      // «el cierre corrió sin saber las estimaciones» de «este snapshot es
+      // anterior al corte». Las dos se leen igual en pantalla, pero sólo una
+      // es un defecto que se puede perseguir.
+      montoEstimado: corteEst ? corteEst.estimado : null,
+      montoPagado:   corteEst ? corteEst.pagado   : null,
       modoAvance: modoVol ? "volumen" : "porcentaje",
+      // El esquema NO sube. Mide la definición del AVANCE y del DINERO
+      // EJECUTADO, y ninguna cambió: esto agrega dos cifras nuevas sin tocar
+      // las viejas. Subirlo partiría las series en una frontera falsa y
+      // dejaría de graficarse la historia por un campo añadido. La frontera
+      // del corte de estimaciones es el propio `null`, que se explica solo.
       esquema: ESQUEMA_SNAPSHOT,
     };
     // Leer historial actual, hacer upsert por id (semana actual sobrescribe el snapshot intermedio)
@@ -11609,7 +11677,8 @@ function ModalCierreSemanal({clave, onCancel, onCerrar, busy}){
   </div>;
 }
 
-function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo, onGuardarNota}) {
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo, onGuardarNota,
+                           estimaciones=[], estCargadas=false}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
   const[cierreAbierto,setCierreAbierto]=useState(false);
   // La nota se intentó y no quedó. Se avisa SIN deshacer el cierre, que ya está
@@ -11662,7 +11731,8 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       }
       // Crear snapshot del avance para histórico semanal
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
-        obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0);
+        obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0,
+        corteDeEstimaciones(estimaciones, estCargadas));
       if (snap && onHistorialNuevo) onHistorialNuevo(snap);
       // La nota va DESPUÉS del cierre y no lo condiciona: para cuando se llega
       // aquí la semana ya está escrita. Si la nota falla, se avisa aparte y el
@@ -12510,7 +12580,7 @@ function MiniDashSubcontratos({obra, subcontratos}){
 // El default deja la interfaz de constructora exactamente como estaba.
 function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
-                   estimaciones,setEstimaciones,subcontratos,setSubcontratos,
+                   estimaciones,setEstimaciones,estCargadas=false,subcontratos,setSubcontratos,
                    historialAvance,setHistorialAvance,recorteHistorial=null,setCambiosPendientes,onNavTab,
                    notasSemana={}, onGuardarNota=null,
                    nominaHistorial=[], setNominaHistorial,
@@ -12558,6 +12628,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           rol={rol} obra={obra} forceTab="volumenes"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           onGuardarNota={onGuardarNota}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -12568,6 +12639,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="materiales"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -12578,6 +12650,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="maquinaria"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -12640,7 +12713,8 @@ function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setS
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,onGuardarNota=null,setCambiosPendientes,onNavTab,onNominaHistorialCambio}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,onGuardarNota=null,setCambiosPendientes,onNavTab,onNominaHistorialCambio,
+                  estimaciones=[],estCargadas=false}){
   // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
@@ -13079,6 +13153,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
       onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
       onGuardarNota={onGuardarNota}
+      estimaciones={estimaciones} estCargadas={estCargadas}
       onHistorialNuevo={(snap)=>{
         if (!setHistorialAvance) return;
         setHistorialAvance(hist => {
@@ -17019,6 +17094,24 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
                   sub={marcaActiva.cierre.dinero !== null
                     ? "lo que el cierre registró como ejecutado"
                     : "el cierre de esa semana no registró el monto ejecutado"}/>
+                {/* El corte de estimaciones. Dice lo que estaba estimado y
+                    cobrado ESA semana, no hoy: si no se registró, lo dice y
+                    se queda callado. Rellenarlo con el total vigente pintaría
+                    hacia atrás una línea plana que nunca ocurrió. */}
+                <Kpi label="Estimado al cierre" color={C.blueDk}
+                  value={marcaActiva.cierre.estimado !== null
+                    ? `$${NUM(marcaActiva.cierre.estimado,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.estimado !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.estimado !== null
+                    ? "lo estimado acumulado al cerrar"
+                    : FRASE_SIN_CORTE_EST}/>
+                <Kpi label="Pagado al cierre" color={C.greenDk}
+                  value={marcaActiva.cierre.pagado !== null
+                    ? `$${NUM(marcaActiva.cierre.pagado,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.pagado !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.pagado !== null
+                    ? "estimaciones pagadas al cerrar"
+                    : FRASE_SIN_CORTE_EST}/>
               </div>
               <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
                 {marcaActiva.cierre.cerradoPor
@@ -21247,7 +21340,7 @@ export default function App(){
           subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
           maquinaria={maquinaria} setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
           materiales={materiales} setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
-          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones} estCargadas={estCargadas}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           recorteHistorial={recorteHistorial}
@@ -21270,7 +21363,7 @@ export default function App(){
           subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
           maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
-          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones} estCargadas={estCargadas}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           recorteHistorial={recorteHistorial}

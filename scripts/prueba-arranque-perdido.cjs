@@ -62,7 +62,8 @@ const check = (cond, m) => {
 
 const RAIZ_NOMBRES = [
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'semanaISO', 'snapshotId',
+  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
+  'semanaISO', 'snapshotId',
   'fechaLocalDeISO', 'MESES_CORTO', 'lunesDeClaveSemana', 'fechaEnPalabras',
   'finVigenteDe', 'estadoPorSemana',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
