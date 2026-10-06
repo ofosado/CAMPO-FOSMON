@@ -276,6 +276,60 @@ la interfaz.
 
 ---
 
+## P6. Una prueba puede cubrir A y cubrir B sin cubrir A→B
+
+**Adoptado**: 2026-10-05, rama `feature/seguimiento-semanal`. Palabras del
+usuario al verlo: *«esas son las que valen»*.
+
+Probar las dos piezas de un camino no prueba el camino. Si una prueba
+ejercita el productor con sus casos y el consumidor con los suyos, puede
+estar **en verde con el cable cortado entre ellos**, porque nunca pasó un
+valor de uno al otro. Es el hueco que un refactor abre en silencio: cambiar
+el orden de unos argumentos, dejar de pasar un parámetro o pasar una
+constante en lugar de la variable no rompe ninguna de las dos mitades.
+
+Es pariente del P3 pero no es el mismo: el P3 dice que un mecanismo puede
+existir y ser inalcanzable. El P6 dice que **dos mecanismos pueden estar
+ambos vivos y probados, y no estar conectados**.
+
+**Por qué**: el caso de esta rama. `corteDeEstimaciones` tenía 7
+comprobaciones y `crearSnapshotAvance` tenía las suyas; las dos mitades en
+verde. Dos contrapruebas semánticas —«el llamador deja de pasarle el corte al
+cierre» y «el llamador le pasa el corte sin mirar si las estimaciones
+cargaron»— **se quedaron en verde**. La prueba medía los dos extremos y
+nunca el cable. La segunda es la peligrosa: ignorar la bandera de carga no
+rompe ninguna de las dos piezas y congela **$0** en el expediente de una obra
+con $109.2M estimados.
+
+**Cómo se aplica:**
+
+1. **Nombra el cable y pruébalo como tercera cosa.** No basta «probé el
+   productor» y «probé el consumidor». El paso de uno a otro es un sujeto
+   con sus propios casos. Aquí es la §5 de
+   `scripts/prueba-corte-estimaciones.cjs`: extrae por AST el **7º argumento**
+   de la llamada a `crearSnapshotAvance` y lo **ejecuta** con la lista cargada,
+   sin cargar, y con la bandera `undefined`.
+2. **Incluye el caso del argumento OMITIDO.** El `undefined` es el que
+   aparece cuando alguien agrega un parámetro en medio o reordena la firma, y
+   es el único que distingue «cae del lado seguro» de «cae del lado que
+   escribe un cero».
+3. **La contraprueba del cable se escribe cortándolo, no borrándolo.** Las dos
+   mutaciones que lo encontraron no quitan código: una cambia el argumento por
+   `null` y la otra por `true`. Las dos dejan el archivo compilando y las dos
+   mitades en verde — que es exactamente la forma que tiene el defecto real.
+4. **Una contraprueba que se queda VERDE es un hallazgo, no un trámite.** Es
+   el único momento en que la prueba habla de sí misma. Si sale verde, la
+   pregunta no es «¿cómo la pongo roja?» sino «¿qué no estaba mirando?».
+
+**Y el corolario, que costó caro aquí:** si los dos lados de una comparación
+leen la misma constante, mover la constante mueve los dos lados y la
+comprobación es **tautológica** — pasa siempre. La §4 comparaba dos snapshots
+que ambos leían `ESQUEMA_SNAPSHOT`. Se arregló fijando el valor observado en
+producción (`ESQUEMA_EN_PRODUCCION = 3`) como el hecho que es, y no como una
+lectura del código que se está juzgando.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
@@ -1095,6 +1149,34 @@ que se calcularon.
 Tratamiento de la frontera, igual que en la rama anterior: **tramo viejo
 punteado con leyenda, nunca cortar** (la 0112 se quedaría con un solo punto),
 y ningún delta cruza.
+
+### Subir UN esquema no cambia nada observable; el riesgo está en subir los dos juntos (medido 2026-10-05)
+
+Esto salió mutando el código, no leyéndolo, y conviene que quede escrito
+porque es contraintuitivo y porque la intuición equivocada es la peligrosa.
+
+**Subir `ESQUEMA_SNAPSHOT` solo no cambia nada que se vea.** El umbral de
+comparabilidad ya está en 3, y 4 ≥ 3 pasa. Se puede subir esa constante sola,
+correr toda la suite, y no se pone nada en rojo — porque efectivamente no
+rompe nada.
+
+**El riesgo real es subir `ESQUEMA_SNAPSHOT` JUNTO CON `ESQUEMA_AVANCE`**, que
+es exactamente lo que acaba haciendo un *«agregué campos, subo el esquema»*:
+quien toca uno toca el otro por simetría, sin notar que el segundo es el que
+manda. Ahí los **33 cierres de producción dejan de poder compararse** con los
+nuevos, `sonComparables` los corta, y **la gráfica pierde la historia**. Un
+campo añadido —que no cambió ninguna definición— habría partido la serie en
+una frontera falsa.
+
+De ahí la regla: **el esquema mide la DEFINICIÓN de una métrica, no la forma
+del documento.** Agregar campos no es cambiar una definición. El corte de
+estimaciones agregó `montoEstimado` y `montoPagado` y **no** subió nada; su
+frontera es el propio `null`, que se explica solo.
+
+La contraprueba que lo guarda (`/tmp/mut-corte.cjs`, mutación «el esquema sube
+y deja fuera de la gráfica los cierres de producción») sube **las dos**
+constantes, justamente porque subir una sola no se puede detectar: no hay nada
+que detectar.
 
 **Guarda**: `scripts/prueba-avance-sobre-contrato.cjs`. Ejecuta las funciones
 reales de `src/App.jsx` **y** `calcularKpisObra` de `functions/index.js` sobre
@@ -3800,34 +3882,98 @@ el transporte: verifica que la memoria no cambió sola.
 
 ---
 
-## Las fotos sin `id` hacen que React pierda cuál es cuál (visto 2026-10-05)
+## Las fotos sin `id`: MEDIDO en producción, y producción está limpia (2026-10-05)
 
-**Encontrado mirando la consola del emulador, no buscado. No se arregló en
-`feature/seguimiento-semanal` porque no es de esa rama.**
+**Encontrado mirando la consola del emulador, no buscado.** `ConceptoFotos`
+(`src/App.jsx:5726`) pone `key={f.id}` en cada miniatura, pero la consola
+avisaba *«Each child in a list should have a unique key prop»*. Si `f.id`
+sale `undefined`, todas las miniaturas comparten la misma llave vacía,
+`onDel(f.id)` no identifica a ninguna, y React puede reusar el nodo
+equivocado al reordenar — y la lista **sí** se reordena, porque «ver
+anteriores» cambia `visibles`. Eso sería **pérdida de datos a un clic**.
 
-`ConceptoFotos` (`src/App.jsx:5726`) sí pone `key={f.id}` en cada
-miniatura, pero la consola avisa *«Each child in a list should have a
-unique key prop»* al pintar las fotos del emulador sembrado. La única
-lectura que lo explica es que esas fotos llegan **sin `id`**: `f.id` sale
-`undefined` y todas las miniaturas comparten la misma llave vacía.
+**Medido con `scripts/medir-fotos-sin-id.py` (sólo lectura, REST + ADC)
+contra las 5 obras de producción:**
 
-**Por qué no es cosmético.** `onDel(f.id)` borra por ese mismo `id`. Una
-foto sin `id` no se puede borrar por identidad, y con las llaves repetidas
-React puede reusar el nodo equivocado al reordenar —y la lista **sí** se
-reordena: `visibles` cambia de orden cuando se pulsa «ver anteriores». El
-riesgo concreto es pulsar la × de una foto y ver desaparecer otra.
+| | |
+|---|---:|
+| fotos en producción | **631** |
+| objetos sin `id` | **0** |
+| fotos que no son objeto | **0** |
+| `id` repetidos | **0** |
 
-**Qué falta antes de tocarlo:** medir si en **producción** las fotos traen
-`id` o no. Sólo se observó en el emulador sembrado, y puede ser defecto de
-la siembra y no del dato real. Si producción también las tiene sin `id`,
-hace falta una llave estable que no sea el índice —el índice vuelve a
-romper al reordenar— y lo más probable es la ruta de Storage.
+Las 631 traen `url`, `id` y `fecha`, y los 631 `id` son distintos. **En
+producción no hay riesgo.**
+
+**De dónde salía el aviso, entonces:** de la propia siembra.
+`scripts/sembrar-preview-emulador.cjs:226` mete a propósito una foto como
+**cadena suelta** —`mete(filas[1], fotoSVG(...))`, sin envolver en objeto—
+para ejercitar el esquema mixto. Una cadena no tiene `.id`. Es decir: el
+sembrador está sembrando una forma que **hoy no existe en producción**.
+
+**Lo que esto deja pendiente, que es más chico y de otra clase:** decidir si
+esa forma debe seguir sembrándose. Si el esquema mixto ya no llega en el
+dato real, la siembra está ejercitando un caso muerto y a cambio mete ruido
+en la consola. Si se conserva —porque puede volver por una importación
+vieja—, entonces `ConceptoFotos` debería darle una llave estable en vez de
+`undefined`, y el índice **no** sirve: vuelve a romper justo al reordenar.
+
+**Lección de método, que es la parte que vale.** La primera versión del guion
+copió el filtro de `fotosDeSub`, que descarta lo que no es objeto — con lo
+cual las fotos guardadas como cadena, que son **justamente las que no pueden
+tener `id`**, quedaban fuera del conteo. Habría reportado «0 sin id» por
+construcción: *la pregunta excluía la respuesta*. Se corrigió contando todo y
+clasificando después. Un medidor que hereda el filtro del código que audita
+no está midiendo: está repitiendo.
+
+---
+
+## La cuenta de «Última captura» está escrita cuatro veces — y la tabla de la dependencia NO es una de ellas
+
+**Anotado el 2026-10-05. Va en su propia rama, por decisión explícita del
+usuario: colapsarlas toca el tablero de FOSMON y eso merece su ritual.**
+
+**Corrección de una afirmación mía previa, porque estaba mal y es el tipo de
+error que manda a arreglar la pantalla equivocada.** Llegué a reportar que la
+tabla de la dependencia pintaba un guion mudo. **No es cierto.** `celdaDe`
+(`src/App.jsx:8582`) ya dice `'sin captura'`, las mismas palabras que el KPI
+del detalle (`src/App.jsx:11517`), y
+`scripts/prueba-tabla-dependencia.cjs:398` ya lo guarda: afirma que
+contratista, atraso y última captura **dicen que faltan** en vez de salir con
+guion o con cero. La pantalla que esta rama creó nació sin el defecto.
+
+**Dónde sí está el guion mudo:** en el tablero de la **constructora**.
+`ultimaCapturaTxt` arranca en `'—'` (`src/App.jsx:7953`) y se pinta así en la
+tarjeta (`:8251`) y en la tabla (`:8361`). Un `—` se lee «no aplica», no «no
+se sabe»: es el P2.
+
+**Las cuatro copias de la cuenta**, todas `Math.floor((HOY − fecha)/86400000)`:
+
+| dónde | qué hace | caso vacío |
+|---|---|---|
+| `:7851` | alerta «sin captura ≥ 7 días» | no emite |
+| `:7954` | texto de la tarjeta/tabla de constructora | **`—`** |
+| `:7979` | `diasSinCaptura` de la misma fila | `null` |
+| `:8457` | `diasSinCaptura` de la dependencia | `null` |
+
+**Lo que NO es un defecto, aunque lo parezca:** que la constructora lea
+`fechaCaptura` y la dependencia `fechaCierre || fechaCaptura`. Se verificó:
+`fechaCierre` sólo se escribe en cierres oficiales y en ese instante vale lo
+mismo que `fechaCaptura`; si no, es `null` y la expresión cae al mismo campo.
+**Nunca se contradicen en la fecha.** La diferencia real entre las dos
+definiciones es únicamente el caso vacío.
+
+**Qué hacer cuando entre:** una sola función que devuelva `{dias, fecha}` con
+`null` cuando no hay, y que las cuatro la llamen; el texto se decide en un
+solo lugar y dice `'sin captura'` en los cuatro. Es RIESGO ALTO: la columna
+es ordenable, así que el caso vacío no sólo se pinta — también decide en qué
+lugar cae la obra, y hoy el orden ya manda los `null` al final a propósito.
 
 ---
 
 # Referencia rápida — resumen de prioridad
 
-Los principios P1, P2 y P3 (arriba) no están en esta tabla: no se
+Los principios P1 a P6 (arriba) no están en esta tabla: no se
 cierran, gobiernan.
 
 | # | Pendiente | Bloquea demo | Prioridad |
