@@ -81,6 +81,12 @@ const RAIZ_NOMBRES = [
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
   'NUM',
+  // El párrafo que estaba debajo del tablero se fue —decía en treinta palabras
+  // lo que ahora dice un KPI con un signo y un número—, pero NINGUNA de las
+  // razones que cargaba se fue con él: las dicen estas dos, que viven en el
+  // módulo justo porque las comparten varias pantallas. `tok` entra porque la
+  // paleta `C` se arma con él y sin él el color no se puede leer.
+  'tok', 'C', 'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
 ];
 // Dentro de qué componente buscar cada declarador anidado. El nombre solo no
 // basta: `transcurridos` existe en dos componentes distintos y el de más
@@ -89,7 +95,6 @@ const RAIZ_NOMBRES = [
 // varias pantallas y cada una es una cuenta distinta hasta que se demuestre
 // lo contrario: eso es justo lo que se mide.
 const ANIDADOS = [
-  'MiniDashAvance.frasePlazo',
   'PlazosCliente.finVigente',
   'PlazosCliente.ampliado',
   'PlazosCliente.transcurridos',
@@ -243,66 +248,110 @@ if (hayCuentaUnica) {
     'el fin vigente es el ampliado cuando lo hay, y el original cuando no');
 }
 
-// ── 5. El guion dejó de significar tres cosas a la vez ──────────────────
-// Esto es lo que se ve en pantalla. La frase se extrae del componente y se
-// ejecuta con cada una de las cuatro situaciones.
-console.log('\n5. Las cuatro situaciones sin proyección se dicen con palabras distintas');
-if (!anidados["MiniDashAvance.frasePlazo"] || !hayCuentaUnica) {
-  fallos.push('la pantalla no dice en palabras por qué no hay proyección: solo pinta un guion');
-  console.log('   ✗ la pantalla no dice en palabras por qué no hay proyección: solo pinta un guion');
+// ── 5. Las razones sobrevivieron al párrafo ─────────────────────────────
+// Debajo del tablero había un párrafo de treinta palabras. Se quitó: ahora el
+// atraso se dice con un KPI, un signo y un número. ESTA SECCIÓN EXISTE PARA QUE
+// QUITARLO NO HAYA COSTADO INFORMACIÓN. El párrafo cargaba tres cosas que un
+// número pelado pierde —por qué no hay proyección, en qué dirección va la
+// desviación, y contra qué fecha se mide— y las tres se siguen diciendo.
+//
+// Se ejecutan las dos funciones del módulo que hoy las dicen, con las mismas
+// situaciones de obra que se le pasaban al párrafo. El guion del principio
+// significaba tres cosas a la vez; lo que no puede volver a pasar es que dos
+// situaciones distintas se lean igual.
+console.log('\n5. Las razones del párrafo siguen dichas, ahora en el KPI');
+if (!hayCuentaUnica || typeof app.kpiDesviacionPlazo !== 'function'
+    || typeof app.frasePorQueSinDesviacion !== 'function') {
+  const m = 'la pantalla no dice en palabras por qué no hay proyección: solo pinta un guion';
+  fallos.push(m);
+  console.log(`   ✗ ${m}`);
 } else {
-  const frase = (estados, proy, obra) => new Function(
-    'estados', 'proy', 'obra', 'NUM', 'fechaEnPalabras', 'fechaLocalDeISO',
-    'SIN_PROY_SIN_AVANCE', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_POCOS_CIERRES',
-    `"use strict"; const finContrato = proy.finVigente; return ${anidados["MiniDashAvance.frasePlazo"]};`
-  )(estados, proy, obra, NUM, fechaEnPalabras, fechaLocalDeISO,
-    SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES, SIN_PROY_POCOS_CIERRES);
+  const { kpiDesviacionPlazo, C } = app;
+  // El color se lee por nombre y no por su valor: `C.red` es `var(--c-red)` y
+  // comparar contra la cadena no diría nada en el reporte.
+  const nombreColor = v => Object.keys(C).find(k => C[k] === v) || String(v);
 
   const obraNormal = { inicio: '2026-11-01', fin: '2027-03-31' };
-  const di = (estados, obra = obraNormal, avance = 40, ahora = new Date(2027, 0, 4).getTime()) => {
+  // Lo que QUEDA ESCRITO en el KPI: el número grande y el renglón de abajo.
+  // Es exactamente lo que el lector tiene delante, no el objeto intermedio.
+  const kpi = (estados, obra = obraNormal, avance = 40, ahora = new Date(2027, 0, 4).getTime()) => {
     const es = estadoPorSemana(estados);
-    return frase(es, proyeccionDeAvance(es, avance, obra, ahora), obra);
+    return kpiDesviacionPlazo(proyeccionDeAvance(es, avance, obra, ahora));
   };
+  const leido = k => `${k.valor} · ${k.sub}`;
 
   // (a) Un solo cierre: no se puede medir una velocidad.
-  const fUno = di([cierre(48, 2026, 40)]);
-  check(/hacen falta dos cierres/i.test(fUno) && /hay 1\b/.test(fUno),
-    `con un cierre dice que hacen falta dos y cuántos hay (dijo: "${fUno}")`);
+  const kUno = kpi([cierre(48, 2026, 40)]);
+  check(kUno.valor === '—' && /2 cierres/.test(kUno.sub),
+    `con un cierre dice que hacen falta dos (dijo: "${leido(kUno)}")`);
 
   // (b) Dos cierres de esquemas distintos: no se pueden restar.
-  const fMix = di([cierre(48, 2026, 40, { esquema: 1 }), cierre(49, 2026, 45)]);
-  check(/definiciones\s+distintas/i.test(fMix) && /hay 2 cierres/.test(fMix),
-    `con cierres no comparables dice que las definiciones son distintas (dijo: "${fMix}")`);
+  const kMix = kpi([cierre(48, 2026, 40, { esquema: 1 }), cierre(49, 2026, 45)]);
+  check(kMix.valor === '—' && /no comparables/i.test(kMix.sub),
+    `con cierres no comparables lo dice (dijo: "${leido(kMix)}")`);
 
   // (c) La obra detenida. Es el estado más grave que el sistema puede saber, y
-  //     era el que el guion escondía.
-  const fQuieta = di([cierre(48, 2026, 40), cierre(49, 2026, 40)]);
-  check(/no se movió/i.test(fQuieta) && /no llega nunca/i.test(fQuieta),
-    `con avance detenido lo dice y dice que no hay fecha (dijo: "${fQuieta}")`);
-  check(!/RETROCEDIÓ/.test(fQuieta), 'detenida no se confunde con retroceso');
+  //     era el que el guion escondía. Ahora además sale en rojo.
+  const kQuieta = kpi([cierre(48, 2026, 40), cierre(49, 2026, 40)]);
+  check(kQuieta.valor === '—' && /no avanza/i.test(kQuieta.sub),
+    `con avance detenido lo dice (dijo: "${leido(kQuieta)}")`);
+  check(kQuieta.color === C.red,
+    `la obra detenida se pinta en rojo, no en gris (dio ${nombreColor(kQuieta.color)})`);
+  check(!/retroced/i.test(kQuieta.sub), 'detenida no se confunde con retroceso');
 
-  // (d) La obra en retroceso.
-  const fAtras = di([cierre(48, 2026, 45), cierre(49, 2026, 40)]);
-  check(/RETROCEDIÓ/.test(fAtras) && /\b5 pp por semana/.test(fAtras),
-    `con retroceso lo grita y dice cuánto por semana (dijo: "${fAtras}")`);
+  // (d) La obra en retroceso: es otra cosa, y se dice con otras palabras.
+  const kAtras = kpi([cierre(48, 2026, 45), cierre(49, 2026, 40)]);
+  check(kAtras.valor === '—' && /retrocede/i.test(kAtras.sub),
+    `con retroceso lo dice (dijo: "${leido(kAtras)}")`);
 
-  // Las cuatro frases son distintas entre sí: ninguna pareja colapsa en el
-  // mismo texto, que es lo que hacía el guion.
-  check(new Set([fUno, fMix, fQuieta, fAtras]).size === 4,
-    'las cuatro situaciones producen cuatro textos distintos');
+  // (e) El quinto caso, que el párrafo no distinguía: la obra proyecta
+  //     perfectamente pero NADIE CAPTURÓ la fecha de término. Decirle
+  //     «requiere 2 cierres» manda al director a buscar donde no está.
+  const kSinFin = kpi([cierre(51, 2026, 10), cierre(1, 2027, 40)],
+    { inicio: '2026-11-01' });
+  check(kSinFin.valor === '—' && /plazo/i.test(kSinFin.sub) && !/cierres/i.test(kSinFin.sub),
+    `sin fecha de término dice que falta el plazo, no que falten cierres (dijo: "${leido(kSinFin)}")`);
 
-  // (e) Con proyección: dice la fecha, los días y contra QUÉ plazo.
-  const fProy = di([cierre(51, 2026, 10), cierre(1, 2027, 40)]);
-  check(/44 días antes del plazo/.test(fProy) && /15 de feb de 2027/.test(fProy),
-    `con proyección dice la fecha y la desviación en días (dijo: "${fProy}")`);
-  check(/sigue siendo el original/.test(fProy),
-    'sin ampliaciones declara que el plazo vigente es el original');
+  // Las cinco situaciones producen cinco renglones distintos: ninguna pareja
+  // colapsa en el mismo texto, que es lo que hacía el guion.
+  const cinco = [kUno, kMix, kQuieta, kAtras, kSinFin].map(k => k.sub);
+  check(new Set(cinco).size === 5,
+    `las cinco situaciones producen cinco textos distintos (dio ${new Set(cinco).size})`);
 
-  // (f) Con ampliación: declara que compara contra el VIGENTE y dice el original.
-  const fAmp = di([cierre(51, 2026, 10), cierre(1, 2027, 40)],
+  // (f) CON proyección: el signo es la mitad del dato. 44 días ANTES del plazo
+  //     tienen que leerse como adelanto y en verde; «44 días» pelado se lee
+  //     como lo que al lector le convenga.
+  const kProy = kpi([cierre(51, 2026, 10), cierre(1, 2027, 40)]);
+  check(/^−44 d$/.test(kProy.valor) && /adelanto/.test(kProy.sub),
+    `44 días antes del plazo se leen como adelanto y con el signo delante (dijo: "${leido(kProy)}")`);
+  check(kProy.color === C.greenDk,
+    `y en verde, que es lo que un adelanto es (dio ${nombreColor(kProy.color)})`);
+  check(/plazo del contrato/.test(kProy.sub),
+    'sin ampliaciones declara que mide contra el plazo del contrato');
+
+  // (g) Con ampliación: la fecha contra la que se mide CAMBIÓ, y eso cambia
+  //     quién va tarde. Un plazo ampliado que no se declara se lee como el del
+  //     contrato firmado.
+  const kAmp = kpi([cierre(51, 2026, 10), cierre(1, 2027, 40)],
     { inicio: '2026-11-01', fin: '2026-12-15', finAmpliado: '2027-03-31' });
-  check(/VIGENTE/.test(fAmp) && /31 de mar de 2027/.test(fAmp) && /15 de dic de 2026/.test(fAmp),
-    `con ampliación declara el plazo vigente Y el original (dijo: "${fAmp}")`);
+  check(/plazo ampliado/.test(kAmp.sub),
+    `con ampliación declara que mide contra el plazo ampliado (dijo: "${leido(kAmp)}")`);
+  check(kAmp.sub !== kProy.sub,
+    'medir contra el plazo ampliado y contra el original no se dicen igual');
+
+  // (h) Y el atraso sale con el signo contrario. Misma obra, plazo más corto:
+  //     el 15 de febrero contra un fin del 1 de enero son 45 días tarde.
+  const kTarde = kpi([cierre(51, 2026, 10), cierre(1, 2027, 40)],
+    { inicio: '2026-11-01', fin: '2027-01-01' });
+  check(/^\+45 d$/.test(kTarde.valor) && /atraso/.test(kTarde.sub),
+    `45 días después del plazo se leen como atraso y con el más delante (dijo: "${leido(kTarde)}")`);
+  check(kTarde.color === C.red,
+    `y en rojo (dio ${nombreColor(kTarde.color)})`);
+
+  // El párrafo ya no está. Si volviera, habría DOS textos diciendo lo mismo en
+  // la misma pantalla y nada que garantice que coinciden.
+  check(!/Se compara contra el plazo vigente/.test(src),
+    'el párrafo de treinta palabras no volvió al tablero');
 }
 
 // ── 6. Una sola cuenta del fin vigente en la pantalla de plazos ─────────

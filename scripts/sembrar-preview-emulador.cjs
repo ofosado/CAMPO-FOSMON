@@ -234,6 +234,13 @@ function fotosDe(filas, semilla, { semanas = 4, sinFecha = false } = {}) {
 // salían "Sin captura registrada" con el historial lleno — la app lee
 // `fechaCaptura`. Un sembrador con el esquema casi-bien es peor que no tener
 // sembrador: la pantalla miente y la mentira parece un defecto del producto.
+// La clave de una semana, CON el relleno a dos dígitos. Es copia literal de
+// `snapshotId` en App.jsx, y el relleno no es cosmético: la app agrupa por
+// `S05-2026` y este guion escribía `S5-2026`. Mientras se siembra en octubre
+// las dos coinciden por casualidad; en enero, la nota de la semana 3 quedaría
+// guardada bajo una clave que ninguna pantalla busca.
+const claveSnap = (semana, año) => `S${String(semana).padStart(2, '0')}-${año}`;
+
 const semanasDe = (filas, contratado, cuantas) => {
   const hoy = new Date();
   const out = [];
@@ -244,7 +251,7 @@ const semanasDe = (filas, contratado, cuantas) => {
       imp: s.imp, cant: s.cant, pu: s.pu, cantEjec: Math.round(s.cantEjec * factor) }));
     const semana = Math.ceil(((f - new Date(f.getFullYear(), 0, 1)) / 86400000 + 1) / 7);
     const ejecutado = subs.reduce((t, s) => t + (s.cantEjec * s.pu), 0);
-    out.push({ id: `S${semana}-${f.getFullYear()}`, semana, año: f.getFullYear(),
+    out.push({ id: claveSnap(semana, f.getFullYear()), semana, año: f.getFullYear(),
       tipo: 'oficial',
       fechaCaptura: f.toISOString(), fechaCierre: f.toISOString(),
       capturadoPor: 'siembra@local',
@@ -254,6 +261,52 @@ const semanasDe = (filas, contratado, cuantas) => {
       contratoRef: contratado, modoAvance: 'volumen', esquema: 3 });
   }
   return out;
+};
+
+// ── LAS NOTAS DEL CIERRE SEMANAL ───────────────────────────────────────────
+// Texto de ejemplo, para que la pestaña de notas y el riel de la evidencia se
+// vean con algo adentro en vez de con el hueco de siempre.
+//
+// NO DICEN NI UNA CIFRA, y es a propósito. Una nota sembrada que afirmara «se
+// colaron 340 m³» contradiría al catálogo que siembra este mismo guion, y la
+// demo acabaría enseñando una contradicción que el producto no tiene. Lo que
+// una nota aporta de verdad es la causa —lluvia, un poste de CFE, un rechazo de
+// laboratorio—, que es justo lo que la gráfica no puede decir.
+const NOTAS_EJEMPLO = [
+  'Lluvia los dos primeros días. Se recuperó el frente de terracerías el jueves y el viernes trabajando turno corrido.',
+  'Entró el tramo de guarniciones. La cuadrilla de albañilería subió a doce; el residente pidió una más para la semana que entra.',
+  'Se detuvo el colado del muro de contención: el laboratorio rechazó la primera remesa de concreto y se repuso al día siguiente.',
+  'Visita de la supervisión externa el miércoles. Observación sobre el acero de distribución del cabezal; se corrigió en sitio.',
+  'Semana completa sin interferencias. Se liberó el frente de pavimentación y queda listo para base hidráulica.',
+  'La CFE no había retirado el poste del cadenamiento 0+180, así que ese frente no se tocó. Oficio enviado el lunes.',
+  'Se abrió el segundo frente por el lado norte para no depender de la liberación del derecho de vía.',
+  'Pruebas de compactación conformes en los tres cadenamientos muestreados. Los reportes se anexaron al expediente.',
+];
+
+// Una nota por semana, PERO DEJANDO HUECOS. La semana sin nota y la semana
+// declarada «sin novedad» son dos estados distintos que la pantalla sabe
+// separar; si la semilla las tapa todas, nadie ve que las separa — y el hueco
+// es justo el caso que hay que poder reconocer en una demo.
+//
+// `escritaEn` es la fecha del CIERRE, no la de hoy. Fechadas hoy, las cinco
+// semanas saldrían «editada hoy» y la pantalla estaría afirmando algo falso
+// sobre cuándo se escribió cada una.
+const notasDe = (semanas, semilla, autorNombre, rol) => {
+  const notas = {};
+  semanas.forEach((s, i) => {
+    const turno = (semilla + i) % 5;
+    if (turno === 3) return;                       // esta semana se quedó sin nota
+    const texto = turno === 4 ? '' : NOTAS_EJEMPLO[(semilla * 3 + i) % NOTAS_EJEMPLO.length];
+    // Por `claveSnap`, no por `s.id`: son el mismo valor hoy, pero la clave que
+    // la app busca es ésta y es la que tiene que mandar.
+    notas[claveSnap(s.semana, s.año)] = {
+      texto,
+      sinNovedad: texto === '',
+      autor: 'siembra@local', autorNombre, rol,
+      escritaEn: s.fechaCierre, editadaEn: s.fechaCierre,
+    };
+  });
+  return notas;
 };
 
 async function sembrarObra(prefijo, id, obra, opciones = {}) {
@@ -292,8 +345,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     data: filas, fecha: new Date(Date.now() - (obra.diasSinCaptura ?? 2) * 86400000).toISOString(),
     por: 'siembra@local',
   });
-  await escribir(`${prefijo}obras/${id}/avance/historial`, {
-    semanas: semanasDe(filas, obra.contratado, obra.semanas ?? 3),
+  const semanas = semanasDe(filas, obra.contratado, obra.semanas ?? 3);
+  await escribir(`${prefijo}obras/${id}/avance/historial`, { semanas });
+  // Las notas cuelgan de `avance/notas`, con la MISMA clave que el snapshot
+  // (`S40-2026`). Si la clave no coincide, la nota existe en Firestore y la
+  // pantalla sigue diciendo «sin nota» — y eso se lee como defecto del producto.
+  await escribir(`${prefijo}obras/${id}/avance/notas`, {
+    notas: notasDe(semanas, obra.semilla,
+      opciones.conEconomia ? 'Residente de obra' : 'Supervisor de obra',
+      opciones.conEconomia ? 'residente' : 'supervisor_obra'),
   });
   await escribir(`${prefijo}obras/${id}/config/estimaciones`, {
     data: obra.estimaciones || [],
