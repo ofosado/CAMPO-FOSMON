@@ -7,7 +7,7 @@
 | En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15** |
 | Ruleset vivo | `projects/campo-fosmon/rulesets/d29ec434-df74-4542-96c9-9a47f9aa46ce` |
 | Publicado | **2026-09-24 19:32 UTC** — trae las ocho rutas de captura de dependencia |
-| Contra el repo | **idéntico byte a byte** a `firestore.rules` (24 271 bytes), verificado el 2026-09-24 bajando el ruleset del servidor y haciendo `diff` |
+| Contra el repo | **YA NO es idéntico.** Lo fue —byte a byte, 24 271 bytes, verificado el 2026-09-24 bajando el ruleset y haciendo `diff`— y lo sigue siendo contra `main`. Pero `firestore.rules` en la rama de trabajo tiene **25 119 bytes**: le sobran las dos rutas de `avance/notas`. Ver «Lo que está en el archivo y NO en producción» abajo |
 | Comprobado vivo | **34/34** con la API `projects:test` sobre el ruleset bajado del servidor — cero datos tocados. Un caso de control con expectativa falsa lo deja en 34/35, así que la comprobación no es vacía |
 | Desplegado desde | la rama `fix/modelo-dependencia-captura`, **antes de mezclar a `main`**. Mientras no se mezcle, `main` NO describe lo que corre en producción |
 | `orgs/fosmon` | existe desde el **2026-09-16 05:28**, `tipo: constructora`, `activa: true` |
@@ -27,6 +27,37 @@ avisar.
 > Si vuelves a tocar el estado de despliegue, **actualiza esta tabla en el
 > mismo commit**. Un documento maestro que miente es peor que no tenerlo:
 > se le cree.
+
+## Lo que está en el archivo y NO en producción
+
+Esta sección existe porque la de arriba sólo sabía mentir en un sentido:
+decía «no desplegado» de algo que sí lo estaba. El sentido contrario es
+igual de caro — dar por vivo lo que sólo está escrito — y es exactamente
+el PENDIENTES #31: una ruta sin regla, un helper que se traga el fallo, y
+una funcionalidad que lleva meses en el menú sin guardar nada.
+
+| Ruta | En `firestore.rules` | En el ruleset vivo | Desde |
+|---|:-:|:-:|---|
+| `obras/{id}/avance/notas` | **sí** | **NO** | rama `feature/seguimiento-semanal`, 2026-10-05 |
+| `orgs/{oid}/obras/{id}/avance/notas` | **sí** | **NO** | rama `feature/seguimiento-semanal`, 2026-10-05 |
+
+**Qué pasa hoy si alguien intenta escribir una nota.** La escritura cae en
+el `match /{document=**}` final y Firestore la deniega. La diferencia con
+el #31 es que esta vez **se nota**: `guardarNotaSemanal` no usa `fsSet` —usa
+`setDoc` en un `try/catch` y devuelve `false`— y la pantalla no cierra el
+editor cuando ese `false` llega; deja el texto puesto y dice que no quedó.
+Las dos mitades están comprobadas contra el emulador cargado con el ruleset
+de `main`:
+
+- `scripts/prueba-nota-no-calla.cjs` — el helper avisa (con un caso de
+  control que escribe `avance/historial` para que el rojo no pueda ser del
+  token).
+- `scripts/prueba-nota-semanal.cjs`, sección 7 — la pantalla no ignora el
+  aviso.
+
+Así que la funcionalidad **no funciona** hasta que se desplieguen las
+reglas, pero no miente mientras tanto. **Al desplegar: borrar esta sección
+y arreglar el renglón «Contra el repo» en el mismo commit.**
 
 ## Modelo multi-tenant (2026-09, desplegado)
 
@@ -151,6 +182,11 @@ Se replican **sólo** las de avance, con los permisos de dependencia:
       }
     }
 ```
+
+Ese bloque es el registro de lo que se desplegó el 2026-09-23 y se deja tal
+cual. La octava ruta de avance, `avance/notas`, **no** forma parte de él:
+está en `firestore.rules` y no en el ruleset vivo. Vive documentada arriba,
+en «Lo que está en el archivo y NO en producción».
 
 #### Las cinco que NO se replican, y por qué
 
@@ -432,6 +468,7 @@ Referencia rápida por documento típico de una obra:
 | `obras/{id}/avance/maquinaria` | R/W | R/W | R | — |
 | `obras/{id}/avance/materiales` | R/W | R/W | R | — |
 | `obras/{id}/avance/historial` | R/W | R/W | R | — |
+| `obras/{id}/avance/notas` ⚠️ | R/W | R/W | R | — |
 | `obras/{id}/nomina/historial` | R/W | R/W | R | — |
 | `obras/{id}/contrato/plazos` | R/W | R/W | R | R |
 | `obras/{id}/contrato/documentos` | R/W | R/W | R | — |
@@ -440,6 +477,32 @@ Referencia rápida por documento típico de una obra:
 
 - **R** = lectura · **W** = escritura · **C** = crear (append) · **D** = delete
 - `—` = denegado
+- ⚠️ = **está en `firestore.rules` pero NO en el ruleset vivo.** La columna
+  dice el permiso que tendrá al desplegarse; hoy la ruta cae en el deny final
+  y toda escritura rebota. Ver «Lo que está en el archivo y NO en producción»
+
+### Path por path — lado dependencia
+
+Las mismas rutas, bajo `orgs/{oid}/obras/{obraId}/…`, con `oid == orgId()`
+exigido en cada regla. El `contratista` es a la dependencia lo que el
+`cliente` a la constructora: ve la obra, no ve el expediente semanal.
+
+| Path | Dir. D / Admin_sistema D | Supervisor D (asignada) | Contratista (asignada) |
+|---|:-:|:-:|:-:|
+| `orgs/{oid}/obras/{id}/config/info` | R/W | R/W | R |
+| `orgs/{oid}/obras/{id}/config/parametros` | R/W | R/W | R |
+| `orgs/{oid}/obras/{id}/config/catalogo` | R/W | R/W | R |
+| `orgs/{oid}/obras/{id}/config/estimaciones` | R/W | R/W | R |
+| `orgs/{oid}/obras/{id}/config/permisos` | R/W | R (no edita) | R |
+| `orgs/{oid}/obras/{id}/avance/subs` | R/W | R/W | R |
+| `orgs/{oid}/obras/{id}/avance/historial` | R/W | R/W | — |
+| `orgs/{oid}/obras/{id}/avance/notas` ⚠️ | R/W | R/W | — |
+| `orgs/{oid}/obras/{id}/bitacora/{id}` | R/W/C/D | R/C | — |
+
+De este lado **no existen** `nomina/*`, `subcontratos/lista`,
+`avance/maquinaria`, `avance/materiales` ni `config/otros_gastos`. Eso no es
+un hueco de la tabla: es la frontera del margen, y está explicada arriba en
+«Las cinco que NO se replican».
 
 ---
 

@@ -81,7 +81,10 @@ const M = (n) => { if (!(n in modulo)) falta.push(n); return modulo[n] || 'null'
 const D = (n) => { if (!(n in dentro)) falta.push(n); return dentro[n] || 'null'; };
 
 const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto',
-  'lunesDeClaveSemana', 'MESES_CORTO', 'etiquetaSemanaCorta', 'leyendaSemanaSubida'];
+  'lunesDeClaveSemana', 'MESES_CORTO', 'etiquetaSemanaCorta',
+  // El panel del riel y esta leyenda fechan la semana con la misma cuenta, así
+  // que `leyendaSemanaSubida` ya no se sostiene sola.
+  'rangoSemanaEnPalabras', 'leyendaSemanaSubida'];
 const cuerpoModulo = PIEZAS_MODULO.map(n => `const ${n} = ${M(n)};`).join('\n');
 
 // `todas`, `semanas` y `partidas` son `useMemo(() => …, [deps])`: lo que hace

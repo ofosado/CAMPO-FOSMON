@@ -73,7 +73,8 @@ const check = (cond, m) => {
 //     copia en lugar del código.
 const RAIZ_NOMBRES = [
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'semanaISO', 'snapshotId',
+  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
+  'semanaISO', 'snapshotId',
   'fechaLocalDeISO', 'hoyLocalISO', 'MESES_CORTO', 'lunesDeClaveSemana',
   'finVigenteDe', 'fechaEnPalabras', 'estadoPorSemana', 'cruzaAños',
   'etiquetaSemanaRiel', 'proyeccionDeAvance',

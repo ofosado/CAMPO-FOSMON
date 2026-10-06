@@ -2441,6 +2441,13 @@ const fmtCant = (cant, pu) => {
     { maximumFractionDigits: Math.max(piso, Math.min(4, decimalesDe(cant))) });
 };
 
+// Texto capturado a mano, listo para comparar: sin mayúsculas y sin acentos.
+// Lo usan los estatus de estimación («Pagada», «pagada», «PAGADA») y los
+// nombres de empresa. Está aquí arriba y no dentro de un componente porque
+// `crearSnapshotAvance` también lo necesita, y la alternativa era una séptima
+// copia de la misma línea.
+const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
 // ════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO SEMANAL DE AVANCE
 // ════════════════════════════════════════════════════════════════════════════
@@ -2448,7 +2455,7 @@ const fmtCant = (cant, pu) => {
 // Cada snapshot: { id, semana, año, fechaCaptura, fechaCierre, tipo (intermedio/oficial),
 //                  capturadoPor, subs: [{sec, a, imp, cant, pu, cantEjec}],
 //                  avancePonderado, montoEjecutado, montoCatalogo, montoExcedente,
-//                  esquema }
+//                  montoEstimado, montoPagado, esquema }
 //
 // ESQUEMA_SNAPSHOT: marca de versión del cálculo.
 //   (ausente) = esquema 1 — `a` recortado a 100, montoEjecutado TOPADO.
@@ -2506,12 +2513,55 @@ const sonComparables = (a, b, metrica = 'avance') => {
 const montoEjecutadoSnap = (snap) =>
   (typeof snap?.montoEjecutado === 'number') ? snap.montoEjecutado : null;
 
+// ── EL CORTE DE ESTIMACIONES ────────────────────────────────────────────────
+// Lo estimado y lo pagado AL MOMENTO DEL CIERRE. Hasta ahora el cierre semanal
+// congelaba el avance físico y el dinero ejecutado, pero no estos dos, así que
+// el expediente no podía decir "en la S32 llevábamos $4.1M estimados": sólo
+// podía decir lo de HOY, que es otra pregunta y además se mueve.
+//
+// Vienen de `montoEstimado`/`montoPagado`, nunca del documento vivo de
+// estimaciones. Cruzar la serie semanal con el total de hoy produciría una
+// línea plana con el valor actual repetido hacia atrás, que es exactamente la
+// interpolación que no se hace.
+//
+// `null` cuando el cierre no lo registró. NO se infiere: no hay forma honesta
+// de saber qué estaba estimado en una semana que no lo anotó, y un 0 ahí se
+// leería como "esa semana no había nada estimado". Medido en producción el
+// 2026-10-05: las 33 semanas ya cerradas quedan en `null` para siempre.
+const montoEstimadoSnap = (snap) =>
+  (typeof snap?.montoEstimado === 'number') ? snap.montoEstimado : null;
+const montoPagadoSnap = (snap) =>
+  (typeof snap?.montoPagado === 'number') ? snap.montoPagado : null;
+
+// Por qué una semana no tiene corte de estimaciones. Una sola cuenta: el riel
+// y cualquier otra pantalla dicen esto mismo o no dicen nada.
+const FRASE_SIN_CORTE_EST =
+  'el cierre de esa semana no registró las estimaciones';
+
 // Esquema de cálculo de un snapshot (1 = antes del arreglo del recorte).
 const esquemaDe = (snap) => (snap?.esquema || 1);
 
+// Una cadena "YYYY-MM-DD" se arma en LOCAL antes de contar días.
+//
+// `new Date("2026-08-03")` se interpreta como UTC, que en México es el 2 de
+// agosto a las 18:00: domingo. Todo lo que cuente semanas trabaja en local, así
+// que un LUNES acababa en la semana de antes — un día de cada siete, que es
+// justo la frecuencia con la que se le echa la culpa al azar.
+//
+// Sólo se reinterpreta la forma de diez letras. Una marca de tiempo completa
+// ("…T03:40:00Z") sí designa un instante y su día local ya es el correcto;
+// tocarla sería inventar el error en la otra dirección.
+//
+// Va EN LÍNEA y no como helper compartido a propósito: ocho bancos de pruebas
+// extraen `semanaISO` sola del archivo, y un nombre libre aquí los deja a todos
+// sin arrancar. Las otras tres copias de esta regla llevan un puntero a esta
+// nota; si cambia, cambian las cuatro. Hasta el patrón va repetido: sacarlo a
+// una constante lo volvería un nombre libre otra vez.
+
 // Calcula el número ISO de semana ISO 8601 (semana que contiene el primer jueves del año)
 const semanaISO = (fecha) => {
-  const d = new Date(fecha);
+  const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+  const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
   d.setHours(0, 0, 0, 0);
   // Jueves de esta semana (semana ISO está definida por el jueves)
   d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -2520,6 +2570,23 @@ const semanaISO = (fecha) => {
     semana: Math.ceil(((d - inicioAño) / 86400000 + 1) / 7),
     año: d.getFullYear(),
   };
+};
+
+// El inverso de `semanaISO`: el jueves de la semana `sem` del año `año`.
+//
+// Lo que había —1 de enero + (sem−1)×7, y de ahí al jueves— sólo acierta
+// cuando el 1 de enero cae en jueves. En 2027 cae en viernes y la semana 4
+// devolvía el jueves de la 3: la ventana de la gráfica de proyección arrancaba
+// una semana antes del contrato y TODOS los índices se recorrían uno, igual
+// que con el lunes pero durante el año entero, no un día de cada siete.
+//
+// El 4 de enero siempre está en la semana 1 por definición, así que de ahí se
+// parte.
+const jueveDeSemanaISO = (año, sem) => {
+  const d = new Date(año, 0, 4);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));   // jueves de la semana 1
+  d.setDate(d.getDate() + (sem - 1) * 7);
+  return d;
 };
 
 // ID de snapshot: S{semana}-{año} ej. "S22-2026"
@@ -2610,20 +2677,30 @@ const etiquetaSemanaCorta = (clave) => {
   return `${String(clave).slice(0, 3)} · ${l.getDate()} ${MESES_CORTO[l.getMonth()]}`;
 };
 
-// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
-// y una afirmación sobre el estado de la obra.
-const leyendaSemanaSubida = (clave) => {
+// Las fechas que abarca una semana, en palabras: "21 al 27 de sep de 2026".
+//
+// Va aparte porque la dicen dos pantallas —la leyenda de las fotos y el panel
+// del riel— y son la MISMA afirmación sobre el calendario. Escrita dos veces,
+// el día que alguien arregle el cruce de año en una, la otra sigue mintiendo.
+const rangoSemanaEnPalabras = (clave) => {
   const l = lunesDeClaveSemana(clave);
-  if (!l) return 'Fotos sin fecha de subida registrada';
+  if (!l) return null;
   const f = new Date(l); f.setDate(l.getDate() + 6);
   // La semana 53 cruza el año (del 28 de dic de 2026 al 3 de ene de 2027). Con
   // un solo año al final, una de las dos puntas queda mal fechada, así que
   // cuando cruza se escriben los dos.
-  const rango = l.getFullYear() !== f.getFullYear()
+  return l.getFullYear() !== f.getFullYear()
     ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${l.getFullYear()} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
     : f.getMonth() !== l.getMonth()
       ? `${l.getDate()} de ${MESES_CORTO[l.getMonth()]} al ${f.getDate()} de ${MESES_CORTO[f.getMonth()]} de ${f.getFullYear()}`
       : `${l.getDate()} al ${f.getDate()} de ${MESES_CORTO[l.getMonth()]} de ${f.getFullYear()}`;
+};
+
+// La leyenda. Dice SUBIDAS, y lo dice siempre: es la diferencia entre un dato
+// y una afirmación sobre el estado de la obra.
+const leyendaSemanaSubida = (clave) => {
+  const rango = rangoSemanaEnPalabras(clave);
+  if (!rango) return 'Fotos sin fecha de subida registrada';
   return `Subidas en la semana del ${rango}`;
 };
 
@@ -2690,6 +2767,9 @@ const estadoPorSemana = (historialAvance = []) => {
       avance,
       // P1: el dinero se lee, no se reconstruye desde el avance.
       dinero: montoEjecutadoSnap(snap),
+      // El corte de estimaciones de ESA semana, o null. Nunca el total de hoy.
+      estimado: montoEstimadoSnap(snap),
+      pagado: montoPagadoSnap(snap),
       cerradoPor: snap.capturadoPor || null,
       fechaCierre: snap.fechaCierre || snap.fechaCaptura || null,
       delta: hayDelta ? avance - avancePrevio : null,
@@ -2708,6 +2788,284 @@ const cruzaAños = (estados = []) => new Set(estados.map(e => e.año)).size > 1;
 // La etiqueta de una semana: "S40" o "S40 · 2026".
 const etiquetaSemanaRiel = (estado, conAño) =>
   `S${String(estado.semana).padStart(2, '0')}${conAño ? ` · ${estado.año}` : ''}`;
+
+// ════════════════════════════════════════════════════════════════════════════
+// EL ARRANQUE QUE LE FALTA AL EXPEDIENTE
+// ════════════════════════════════════════════════════════════════════════════
+// `crearSnapshotAvance` recorta el historial a las últimas 52 semanas porque el
+// documento de Firestore tiene un límite de 1 MiB y la 0114 ya lo reventó una
+// vez. El recorte quita por el PRINCIPIO.
+//
+// Mientras las obras duraban un año o menos, eso quitaba algo que no había
+// pasado. Con obras MULTIANUALES quita la cimentación, el trazo y las
+// preliminares: justo lo que una controversia mira primero. Y lo hacía
+// callando: alguien abre la línea de tiempo, ve que empieza en la semana 30 del
+// segundo año, y concluye que la obra empezó ahí.
+//
+// Un expediente al que le falta el principio y no lo declara miente por
+// omisión. Esto es lo que lo declara.
+//
+// LO QUE SE AFIRMA Y LO QUE NO. El hueco se mide contra la fecha de INICIO de
+// la obra, que es un dato capturado, no contra una suposición sobre el recorte:
+// «el expediente empieza en la S12 de 2027 y la obra arrancó el 1 de noviembre
+// de 2025» es cierto sin importar por qué faltan. La CAUSA sí se distingue, y
+// sólo se nombra el recorte cuando quedó registrado que ocurrió (`recorte`, que
+// escribe la propia función al recortar). Si no hay registro, la pantalla dice
+// que no hay cierres de ese periodo, que es lo único que consta: pudo ser que
+// nadie capturara. Nunca se deduce el recorte de que haya 52 semanas justas —
+// una obra puede tener 52 cierres sin haber perdido ninguno.
+const HUECO_POR_RECORTE = 'recorte';
+const HUECO_SIN_CIERRES = 'sinCierres';
+
+const huecoDeArranque = (estados = [], obra, recorte = null) => {
+  if (!estados.length || !obra?.inicio) return null;
+  const inicio = fechaLocalDeISO(obra.inicio);
+  if (!inicio) return null;
+
+  const { semana, año } = semanaISO(inicio);
+  const claveInicio = snapshotId(semana, año);
+  const primera = estados[0].clave;
+
+  const lunIni = lunesDeClaveSemana(claveInicio);
+  const lunPri = lunesDeClaveSemana(primera);
+  if (!lunIni || !lunPri) return null;
+
+  // Semanas de calendario entre el arranque de la obra y el primer cierre que
+  // conserva el expediente. Por el calendario, no restando números de semana:
+  // un año ISO tiene 52 o 53.
+  const faltan = Math.round((lunPri - lunIni) / (7 * 86400000));
+  if (faltan <= 0) return null;
+
+  const perdidasRegistradas = Number(recorte?.perdidas) || 0;
+  return {
+    faltan,
+    claveInicio,
+    primera,
+    inicioObra: obra.inicio,
+    // La causa sólo se nombra cuando consta.
+    causa: perdidasRegistradas > 0 ? HUECO_POR_RECORTE : HUECO_SIN_CIERRES,
+    perdidasRegistradas,
+    recortadoEn: recorte?.en || null,
+  };
+};
+
+// La frase que se enseña. Se escribe aquí, junto a la cuenta, para que las dos
+// pantallas que la muestran digan lo mismo.
+const fraseHuecoDeArranque = (hueco) => {
+  if (!hueco) return null;
+  const sem = `${hueco.faltan} semana${hueco.faltan === 1 ? '' : 's'}`;
+  const desde = fechaEnPalabras(fechaLocalDeISO(hueco.inicioObra));
+  const base = `A este expediente le faltan las primeras ${sem}: empieza en `
+    + `${hueco.primera.replace('-', ' de ')} y la obra arrancó el ${desde}.`;
+  return hueco.causa === HUECO_POR_RECORTE
+    ? `${base} Los cierres más antiguos se borraron al llegar el historial al `
+      + `tope de 52 semanas, así que ese periodo ya no se puede consultar aquí.`
+    : `${base} No hay cierres registrados de ese periodo.`;
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA NOTA DE LA SEMANA
+// ════════════════════════════════════════════════════════════════════════════
+// El cierre semanal guarda números: avance, dinero, quién cerró. Lo que no
+// guardaba es POR QUÉ. Un avance de +0.4pp puede ser una semana floja o una
+// semana con el frente inundado y tres días sin acceso, y el expediente no
+// distinguía las dos. Cuando alguien pregunta, meses después, la respuesta
+// vive en la memoria de quien estuvo ahí —o no vive.
+//
+// CUATRO DECISIONES, y las cuatro importan:
+//
+// 1. NO BLOQUEA EL CIERRE. Una nota obligatoria se convierte en un punto o en
+//    "sin novedad" tecleado sin leer, y eso es peor que nada: ensucia el
+//    expediente con constancias falsas. El cierre sin nota se cierra, y el
+//    hueco se ve.
+//
+// 2. "SIN NOVEDAD" ES UNA OPCIÓN EXPLÍCITA, de un clic, DISTINTA de dejarlo
+//    vacío. Son dos hechos diferentes: uno es «el residente declara que no
+//    hubo incidencias», el otro es «nadie dijo nada». Guardarlos con la misma
+//    forma —texto vacío— los vuelve indistinguibles para siempre.
+//
+// 3. SE CONGELA cuando la semana deja de ser la corriente. Una nota que se
+//    puede reescribir un año después no sirve de constancia. Mientras la
+//    semana corre se corrige libremente, porque el viernes a las seis uno se
+//    equivoca; después queda. Si se tocó, `editadaEn` lo dice en pantalla.
+//
+//    El congelamiento es DISCIPLINA DE PANTALLA, no regla de Firestore: las
+//    reglas no pueden calcular en qué semana ISO estamos. Por eso `editadaEn`
+//    no es decorado — es lo único que hace visible una edición tardía.
+//
+// 4. VIVE EN SU PROPIO DOCUMENTO. `avance/historial` se recorta a 52 semanas
+//    (ver arriba), y una nota que desaparece sola es justo lo contrario de una
+//    constancia. En `avance/notas` las notas sobreviven al recorte, y el
+//    expediente puede explicar un periodo del que ya no conserva los números.
+const NOTA_SIN_NOVEDAD = 'sinNovedad';
+const NOTA_ESCRITA     = 'escrita';
+const NOTA_FALTA       = 'falta';
+
+// Lo que cabe en una nota. No es un límite de Firestore —caben 1 MiB— sino de
+// lectura: una nota es el apunte de la semana, no el informe. Con 52 notas de
+// este tamaño el documento ronda los 60 KB al año, muy lejos del techo que
+// obligó al recorte del historial.
+const LIMITE_NOTA_SEMANAL = 1000;
+
+// Qué se sabe de la nota de UNA semana cerrada. Devuelve siempre un estado
+// nombrado: nunca una cadena vacía que la pantalla tenga que interpretar.
+//
+// `estado` es un elemento de `estadoPorSemana`; `notas` es el mapa guardado en
+// `avance/notas`, con la misma clave `S40-2026`.
+const notaDeCierre = (notas, estado) => {
+  if (!estado) return null;
+  const n = (notas || {})[estado.clave];
+  const texto = typeof n?.texto === 'string' ? n.texto.trim() : '';
+
+  // Falta la nota. Se dice CON QUIÉN CERRÓ: el hueco de una semana no es una
+  // propiedad de la semana, es de quien la cerró, y sin nombre no se le puede
+  // preguntar a nadie.
+  if (!n || (!n.sinNovedad && !texto)) {
+    return { estado: NOTA_FALTA, clave: estado.clave, texto: null,
+      cerradoPor: estado.cerradoPor, fechaCierre: estado.fechaCierre,
+      autor: null, escritaEn: null, editadaEn: null };
+  }
+  return {
+    estado: n.sinNovedad && !texto ? NOTA_SIN_NOVEDAD : NOTA_ESCRITA,
+    clave: estado.clave,
+    texto: texto || null,
+    cerradoPor: estado.cerradoPor,
+    fechaCierre: estado.fechaCierre,
+    autor: n.autor || null,
+    autorNombre: n.autorNombre || null,
+    escritaEn: n.escritaEn || null,
+    // Sólo cuenta como editada si de verdad cambió después de escrita.
+    editadaEn: n.editadaEn && n.editadaEn !== n.escritaEn ? n.editadaEn : null,
+  };
+};
+
+// La frase que se enseña, escrita una sola vez para que la línea de tiempo, el
+// tablero de la dependencia y el informe por correo digan lo mismo.
+const fraseNota = (nota) => {
+  if (!nota) return null;
+  if (nota.estado === NOTA_ESCRITA) return nota.texto;
+  if (nota.estado === NOTA_SIN_NOVEDAD)
+    return 'Sin novedad: quien cerró la semana declaró que no hubo incidencias.';
+  // El hueco. No se disfraza de "sin novedad" (P2): decir que no hubo
+  // incidencias cuando nadie lo declaró es inventar una constancia.
+  return nota.cerradoPor
+    ? `Esta semana se cerró sin nota. La cerró ${nota.cerradoPor}.`
+    : 'Esta semana se cerró sin nota, y el cierre no registró quién la cerró.';
+};
+
+// ¿La semana de esta clave es la que corre hoy? Es lo que decide si la nota
+// todavía se puede corregir. Por el calendario —comparando el lunes de la
+// clave con el lunes de hoy—, no restando números de semana.
+const esLaSemanaCorriente = (clave, ahora = Date.now()) => {
+  const { semana, año } = semanaISO(new Date(ahora));
+  return clave === snapshotId(semana, año);
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// EL RIEL DE LA LÍNEA DE TIEMPO
+// ════════════════════════════════════════════════════════════════════════════
+// Una marca por semana, de la más vieja a la más reciente, con todo lo que se
+// sabe de esa semana. El riel ES el resumen de la obra: se lee de un vistazo,
+// antes de abrir nada.
+//
+// MARCAS Y NO DESLIZADOR. Un `input type=range` interpola: arrastrarlo lo
+// suelta en una posición que no corresponde a ninguna semana y hay que
+// redondear, y en el teléfono de un director no acierta. Una marca por semana
+// no tiene a dónde caerse.
+//
+// POR QUÉ SE PINTAN LOS HUECOS. El eje va semana a semana de CALENDARIO desde
+// la primera hasta la última de las que tienen algo —un cierre o una foto—,
+// sin saltarse las de en medio. Si sólo se pintaran las semanas con dato, una
+// S37 pegada a una S41 se leería como consecutivas y cuatro semanas sin cierre
+// desaparecerían de la vista. El hueco no es ausencia de información: es la
+// información. Es lo que un director reclama.
+//
+// Las PUNTAS sí salen del dato: no se inventan semanas antes de la primera
+// evidencia ni después de la última. Que al expediente le falte su principio
+// lo dice `huecoDeArranque`, que mide contra la fecha de inicio del contrato y
+// no contra el riel — el riel no puede saber lo que nunca se guardó.
+//
+// Se recorre sumando SIETE DÍAS al lunes, no uno al número de semana: un año
+// ISO tiene 52 o 53, y contar de S52 a S01 a mano pierde la 53 (2026 la tiene).
+const MARCA_CERRADA      = 'cerrada';      // cierre con delta comparable
+const MARCA_SIN_COMPARAR = 'sinComparar';  // hay cierre, pero el delta no se puede calcular
+const MARCA_SOLO_FOTOS   = 'soloFotos';    // nadie cerró; lo único que consta son fotos
+const MARCA_SIN_DATO     = 'sinDato';      // ni cierre ni fotos: el hueco
+
+// `clavesConFoto` es UNA CLAVE POR FOTO —no el conjunto— para que la marca
+// pueda decir cuántas hay. Las fotos sin fecha no entran: no se sabe de qué
+// semana son y colgarlas de una sería inventar evidencia fechada.
+const rielDeSemanas = (historialAvance = [], clavesConFoto = [], notas = {}) => {
+  const estados = estadoPorSemana(historialAvance);
+  const porClave = new Map(estados.map(e => [e.clave, e]));
+
+  const fotos = new Map();
+  for (const c of clavesConFoto || []) {
+    if (c) fotos.set(c, (fotos.get(c) || 0) + 1);
+  }
+
+  const lunes = [...new Set([...porClave.keys(), ...fotos.keys()])]
+    .map(lunesDeClaveSemana)
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+  if (!lunes.length) return [];
+
+  const fin = lunes[lunes.length - 1];
+  const marcas = [];
+  for (const d = new Date(lunes[0]); d <= fin; d.setDate(d.getDate() + 7)) {
+    const { semana, año } = semanaISO(d);
+    const clave = snapshotId(semana, año);
+    const cierre = porClave.get(clave) || null;
+    const nFotos = fotos.get(clave) || 0;
+    marcas.push({
+      clave, semana, año,
+      cierre,
+      fotos: nFotos,
+      estado: cierre
+        ? (cierre.sinDelta ? MARCA_SIN_COMPARAR : MARCA_CERRADA)
+        : (nFotos > 0 ? MARCA_SOLO_FOTOS : MARCA_SIN_DATO),
+      // La nota es de quien CERRÓ la semana. Una semana sin cierre no tiene
+      // hueco de nota: no hay a quién reclamárselo.
+      nota: cierre ? notaDeCierre(notas, cierre) : null,
+    });
+  }
+  return marcas;
+};
+
+// En qué semana abre el riel: la ÚLTIMA CON CIERRE, no la de hoy.
+//
+// Abrir en hoy recibe con un panel vacío a quien entra a una obra cuyo último
+// cierre fue hace tres semanas — y el vacío parece de la app, no de la obra.
+// La última cerrada es el último estado que la obra sí afirmó de sí misma.
+// Si no hay ningún cierre, la última semana con evidencia; si tampoco, nada.
+const marcaInicialDelRiel = (marcas = []) => {
+  for (let i = marcas.length - 1; i >= 0; i--) if (marcas[i].cierre) return marcas[i].clave;
+  for (let i = marcas.length - 1; i >= 0; i--) if (marcas[i].fotos > 0) return marcas[i].clave;
+  return null;
+};
+
+// Lo que el panel dice de una semana cuando NO hay números que enseñar.
+// Nunca un guion mudo: un guion significa lo mismo «no pasó nada» que «nadie
+// capturó», y son hechos distintos.
+const frasePanelSinCierre = (marca) => {
+  if (!marca || marca.cierre) return null;
+  if (marca.fotos > 0)
+    return `Esta semana no se cerró. Lo único que consta son ${marca.fotos} `
+      + `foto${marca.fotos === 1 ? '' : 's'} subida${marca.fotos === 1 ? '' : 's'}: `
+      + `no hay avance ni dinero registrados para ella.`;
+  return 'Esta semana no se cerró y no se subió evidencia. No consta nada de ella.';
+};
+
+// Por qué no hay delta en una semana cerrada. Son dos hechos distintos y el
+// guion los confundía con «0».
+const fraseSinDelta = (marca) => {
+  const razon = marca?.cierre?.sinDelta;
+  if (!razon) return null;
+  return razon === SIN_DELTA_PRIMER_CIERRE
+    ? 'Es el primer cierre del expediente: no hay semana anterior contra la cual restar.'
+    : 'No se puede comparar con la semana anterior: los dos cierres se calcularon '
+      + 'con definiciones distintas del avance.';
+};
 
 // Por qué no hay proyección de término. Cada una se dice con palabras
 // distintas porque son situaciones distintas, y la peor de las tres —la obra
@@ -2770,6 +3128,29 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
     : null;
   return { velocidad, semanasBase: base.length, semanasAFin, fechaFin,
     desviacionDias, finVigente, ampliado, razon: null };
+};
+
+// Por qué NO hay días de desviación que enseñar, en tres palabras.
+//
+// Devuelve `null` cuando sí los hay. Vive aparte porque lo dicen dos pantallas
+// —el KPI de proyección de la obra y la columna del portafolio— y son la misma
+// afirmación: escrita dos veces, arreglar una deja mintiendo a la otra.
+//
+// SON CINCO CASOS, NO TRES. La versión que estaba escrita a mano en el KPI
+// encadenaba las dos razones «graves» y caía a «requiere 2 cierres» en todo lo
+// demás. Eso está mal en un caso real: una obra con cierres de sobra y una
+// proyección perfectamente calculada, pero SIN PLAZO VIGENTE CAPTURADO, tiene
+// `desviacionDias === null` con `razon === null` — y el KPI le decía al
+// director «requiere 2 cierres», que es falso y lo manda a buscar el problema
+// donde no está. Lo que falta es la fecha de término, y hay que decir ésa.
+const frasePorQueSinDesviacion = (proy) => {
+  if (!proy) return 'sin datos de la obra';
+  if (proy.desviacionDias !== null && proy.desviacionDias !== undefined) return null;
+  if (proy.razon === SIN_PROY_SIN_AVANCE)
+    return proy.velocidad < 0 ? 'la obra retrocede' : 'la obra no avanza';
+  if (proy.razon === SIN_PROY_NO_COMPARABLES) return 'cierres no comparables';
+  if (proy.razon === SIN_PROY_POCOS_CIERRES) return 'requiere 2 cierres';
+  return 'sin plazo vigente capturado';
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -3157,9 +3538,30 @@ const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_AR
     `el archivo.`;
 };
 
+// El corte de estimaciones que se le pasa al cierre, a partir de la lista viva.
+//
+// `cargadas` es la condición y no un detalle: la lista arranca en `[]` y se
+// llena cuando contesta Firestore. Cerrar la semana en esa ventana escribiría
+// un corte de $0 — y $0 se lee «esta semana no había nada estimado», que es
+// una afirmación, no un hueco. Medido en producción: la 0114 lleva $109.2M
+// estimados; un cierre apresurado congelaría un cero en su expediente.
+//
+// Devuelve `null` —no un objeto de ceros— cuando no se puede afirmar nada.
+const corteDeEstimaciones = (estimaciones, cargadas) => {
+  if (!cargadas || !Array.isArray(estimaciones)) return null;
+  const monto = e => parseFloat(e?.monto) || 0;
+  return {
+    estimado: estimaciones.reduce((t, e) => t + monto(e), 0),
+    // La misma lectura de «pagada» que el resto de la app: sin acentos y en
+    // minúsculas, porque el estatus se captura a mano.
+    pagado: estimaciones.filter(e => _ne(e?.estatus) === 'pagada')
+                        .reduce((t, e) => t + monto(e), 0),
+  };
+};
+
 // Crear snapshot del avance actual y guardarlo en el historial
 // tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
-const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0) => {
+const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0, corteEst = null) => {
   if (!obraId || !Array.isArray(subs) || subs.length === 0) return null;
   try {
     const ahora = new Date();
@@ -3203,7 +3605,19 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
       // El denominador con que se calculó `avancePonderado`. Sin él la serie no
       // es reinterpretable si mañana cambia el contrato por un convenio.
       contratoRef,
+      // El corte de estimaciones de ESTA semana. `null` explícito —y no el
+      // campo ausente— cuando no se pudo afirmar: así el documento distingue
+      // «el cierre corrió sin saber las estimaciones» de «este snapshot es
+      // anterior al corte». Las dos se leen igual en pantalla, pero sólo una
+      // es un defecto que se puede perseguir.
+      montoEstimado: corteEst ? corteEst.estimado : null,
+      montoPagado:   corteEst ? corteEst.pagado   : null,
       modoAvance: modoVol ? "volumen" : "porcentaje",
+      // El esquema NO sube. Mide la definición del AVANCE y del DINERO
+      // EJECUTADO, y ninguna cambió: esto agrega dos cifras nuevas sin tocar
+      // las viejas. Subirlo partiría las series en una frontera falsa y
+      // dejaría de graficarse la historia por un campo añadido. La frontera
+      // del corte de estimaciones es el propio `null`, que se explica solo.
       esquema: ESQUEMA_SNAPSHOT,
     };
     // Leer historial actual, hacer upsert por id (semana actual sobrescribe el snapshot intermedio)
@@ -3222,6 +3636,29 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // Mantener máximo 52 semanas (1 año)
     semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
     const recortadas = semanas.slice(-52);
+
+    // El recorte quita por el PRINCIPIO, y antes lo hacía sin dejar rastro:
+    // una vez borradas las semanas viejas no queda nada que diga que existieron,
+    // así que la pantalla no podía distinguir «a esta obra le recortamos el
+    // arranque» de «a esta obra nadie le capturó el arranque». Son cosas
+    // distintas y el expediente tiene que poder decir cuál.
+    //
+    // Se acumula, porque se recorta de una en una: cada cierre nuevo por encima
+    // del tope tira el más viejo. `perdidas` es el total desde que esto se
+    // registra; las obras recortadas ANTES de esta línea no tienen el dato y la
+    // pantalla no se lo inventa.
+    const cuantasSeFueron = semanas.length - recortadas.length;
+    const recortePrevio = hist.recorte || null;
+    const recorte = cuantasSeFueron > 0
+      ? {
+          perdidas: (Number(recortePrevio?.perdidas) || 0) + cuantasSeFueron,
+          // La última que se tiró y la primera que sobrevive: entre las dos
+          // queda dicha la frontera del expediente.
+          ultimaPerdida: semanas[cuantasSeFueron - 1]?.id || null,
+          primeraConservada: recortadas[0]?.id || null,
+          en: new Date().toISOString(),
+        }
+      : recortePrevio;
     // NO se usa `fsSet`: devuelve `false` en silencio y este `await` ignoraba
     // el resultado, así que la función seguía y devolvía `snap` — el llamador
     // creía que había guardado. La 0114 acumuló SIETE cierres semanales
@@ -3234,7 +3671,8 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // pueda enseñárselo a quien acaba de cerrar la semana.
     try {
       await setDoc(docObra(obraId, 'avance', 'historial'),
-        { semanas: recortadas }, { merge: true });
+        recorte ? { semanas: recortadas, recorte } : { semanas: recortadas },
+        { merge: true });
     } catch (err) {
       throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
     }
@@ -3247,6 +3685,42 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // que ya se persistió antes de llegar a esta línea.
     if (e instanceof ErrorSnapshot) throw e;
     return null;
+  }
+};
+
+// Guardar la nota de una semana. Documento aparte, `avance/notas`, fuera del
+// recorte de 52 (ver `notaDeCierre`).
+//
+// `sinNovedad` y `texto` son excluyentes: o se declara que no hubo nada, o se
+// cuenta qué hubo. Si llegan los dos, manda el texto — alguien que escribió
+// algo tenía algo que decir.
+//
+// NO lanza. El cierre semanal no se cae porque la nota no haya guardado: el
+// cierre ya está escrito para cuando se llama esto. Devuelve si quedó, y la
+// pantalla avisa sin deshacer nada.
+const guardarNotaSemanal = async (obraId, clave, { texto = '', sinNovedad = false,
+    autor = null, autorNombre = null, rol = null } = {}) => {
+  if (!obraId || !clave) return false;
+  const limpio = String(texto || '').trim().slice(0, LIMITE_NOTA_SEMANAL);
+  if (!limpio && !sinNovedad) return false;
+  try {
+    const previo = (await getDoc(docObra(obraId, 'avance', 'notas'))).data()?.notas?.[clave] || null;
+    const ahora = new Date().toISOString();
+    await setDoc(docObra(obraId, 'avance', 'notas'), {
+      notas: { [clave]: {
+        texto: limpio,
+        sinNovedad: !limpio && !!sinNovedad,
+        autor, autorNombre, rol,
+        // La primera vez que se escribió no se pisa nunca: es la mitad de lo
+        // que hace creíble a `editadaEn`.
+        escritaEn: previo?.escritaEn || ahora,
+        editadaEn: ahora,
+      } },
+    }, { merge: true });
+    return true;
+  } catch (err) {
+    console.error('guardarNotaSemanal', err);
+    return false;
   }
 };
 
@@ -5190,9 +5664,11 @@ function PrimaryBtn({children,onClick,disabled}){
       color:disabled?C.textMut:"#fff",fontSize:12,fontWeight:500,width:"100%",marginTop:6,
       letterSpacing:"0.02em",cursor:disabled?"not-allowed":"pointer"}}>{children}</button>;
 }
-function SecBtn({children,onClick,style}){
-  return <button onClick={onClick} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
-    padding:"5px 10px",fontSize:11,color:C.textSec,...style}}>{children}</button>;
+function SecBtn({children,onClick,style,disabled}){
+  return <button onClick={onClick} disabled={disabled}
+    style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
+    padding:"5px 10px",fontSize:11,color:C.textSec,
+    cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.45:1,...style}}>{children}</button>;
 }
 function ReadOnly({children}){
   return <div style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:9,
@@ -6998,7 +7474,9 @@ function PanelEjecutivo({obras, datosPorObra, gpData, onSelectObra}){
 
 // Helper local: semana ISO {sem, año} + key string ordenable "Y2026-S37"
 const _semISOKey = (fecha) => {
-  const d = new Date(fecha);
+  // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+  const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+  const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
   if (isNaN(d)) return null;
   d.setHours(0,0,0,0);
   d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -7924,20 +8402,29 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
 // a `calcularKPIsObra`, que es donde nace `gt` y con él el margen, así que no
 // hay cifra de gasto que pueda filtrarse ni columna que ordenar por ella.
 //
-// Las cinco cifras del contrato, más avance y última captura. Ni margen, ni
-// gasto, ni personal, ni horas extra.
+// Las cinco cifras del contrato, más contratista, avance, atraso proyectado y
+// última captura. Ni margen, ni gasto, ni personal, ni horas extra.
 //
-// ORDEN POR DEFECTO: avance físico ascendente, y a igual avance la de mayor
-// monto contratado primero. Es la única cifra que sale de lo que la propia
-// dependencia capturó y contesta "cuál me preocupa" sin necesitar el programa
-// de ejecución convenido. Lo estrictamente correcto sería ordenar por
-// desviación contra ese programa — pero el programa no está cargado, y
-// ordenar por una desviación calculada contra un plazo lineal supuesto sería
-// inventar la cifra que el P2 prohíbe. Cuando el programa exista, este orden
-// es lo que hay que cambiar.
+// ORDEN POR DEFECTO: días de atraso proyectados, de mayor a menor; y donde no
+// hay atraso que calcular, avance físico ascendente.
+//
+// Antes era avance ascendente a secas, y la razón estaba escrita aquí: ordenar
+// por desviación contra un programa de ejecución que no está cargado habría
+// significado suponer un avance lineal e inventar la cifra que el P2 prohíbe.
+// Eso sigue siendo cierto de ESE cálculo. El que ordena esta tabla es otro:
+// `proyeccionDeAvance` proyecta con la velocidad REAL de los últimos cierres
+// comparables y la compara contra el plazo VIGENTE capturado. No supone nada;
+// cuando no puede medir, no devuelve un número, devuelve por qué no.
+//
+// Por eso el desempate importa tanto como el orden. Una obra sin atraso
+// calculable no es "una obra sin atraso": es una que no se pudo medir, y
+// mandarla al fondo con las que van bien la escondería. Van al fondo del
+// bloque medible, sí —no se puede afirmar que estén atrasadas—, pero entre
+// ellas se ordenan por avance ascendente y la celda dice en voz alta por qué
+// no hay número.
 // ════════════════════════════════════════════════════════════════════════════
 function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
-  const [orden, setOrden] = useState('avance|asc');
+  const [orden, setOrden] = useState('atraso|desc');
   const HOY = Date.now();
 
   const activas = obras.filter(o => (o.estado || 'activa') !== 'archivada');
@@ -7970,10 +8457,35 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
     const diasSinCaptura = ultAv?.fechaCaptura
       ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / 86400000) : null;
 
+    // El atraso proyectado, con la MISMA cuenta que el detalle de la obra.
+    // `info` manda sobre `o` porque las fechas de plazo —y la ampliación, que
+    // es la que decide contra qué se mide— viven en el documento de contrato.
+    const paraPlazo = { ...o, ...info };
+    const proy = proyeccionDeAvance(estadoPorSemana(avSemanas), af, paraPlazo, HOY);
+
+    // El contratista se captura a mano y es texto libre (#41): hasta que haya
+    // padrón, «ACME S.A.» y «Acme SA de CV» son dos empresas para la máquina.
+    // Eso impide CONTARLAS, no impide ordenarlas: la clave normalizada las
+    // deja juntas en la lista, que es lo único que la columna promete.
+    //
+    // La clave QUITA LA PUNTUACIÓN, y no es un detalle. Medido: ordenando por
+    // el texto tal cual, «Acme, S.A. de C.V.» y «ACME SA DE CV» quedan en los
+    // extremos con «Acme Servicios del Golfo» —otra empresa— en medio, porque
+    // la coma pesa en la comparación. Acentos y mayúsculas ya los perdona
+    // `localeCompare` con sensitivity:'base'; los puntos y las comas no, y son
+    // justo lo que cambia entre dos capturas de la misma razón social.
+    const contratista = String(info.empresaEjecutante ?? o.empresaEjecutante ?? '').trim();
+    const clave = _ne(contratista).replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+
     return {
       obra: o,
       nombre: info.contrato || info.nombre || o.contrato || o.nombre || o.id,
       contratado, ejecutado, estimado, pagado, porEjercer, af, diasSinCaptura,
+      contratista: contratista || null,
+      claveContratista: clave || null,
+      proy,
+      atraso: proy.desviacionDias,
+      sinAtraso: frasePorQueSinDesviacion(proy),
     };
   });
 
@@ -8001,28 +8513,110 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
         : `${f.nombre} — ${f.diasSinCaptura} días sin captura de avance`,
     }));
 
-  const OPCIONES_ORDEN = [
-    { val:'avance|asc',     lbl:'Avance: menor primero' },
-    { val:'avance|desc',    lbl:'Avance: mayor primero' },
-    { val:'contratado|desc',lbl:'Contratado: mayor primero' },
-    { val:'porEjercer|desc',lbl:'Por ejercer: mayor primero' },
-    { val:'captura|desc',   lbl:'Última captura: más antigua' },
-    { val:'nombre|asc',     lbl:'Nombre: A → Z' },
+  // Las diez columnas. `dirIni` es hacia dónde ordena el PRIMER clic, y no es
+  // la misma para todas: en un monto lo que se busca es el más grande, en el
+  // avance la obra más rezagada, y en la última captura la más vieja.
+  //
+  // EL ATRASO VA TERCERO, no al final. Medido en pantalla angosta: con las
+  // cinco cifras de dinero delante, la columna que ORDENA la tabla por omisión
+  // quedaba fuera de vista y había que arrastrar para encontrarla. Es la
+  // pregunta que trae al director a esta pantalla; va junto a quién es la obra
+  // y quién la construye, antes que el dinero.
+  const COLUMNAS = [
+    { id:'nombre',      lbl:'Obra',                       dirIni:'asc',  num:false },
+    { id:'contratista', lbl:'Contratista',                dirIni:'asc',  num:false },
+    { id:'atraso',      lbl:'Días de atraso proyectados', dirIni:'desc', num:true  },
+    { id:'contratado',  lbl:'Contratado',                 dirIni:'desc', num:true  },
+    { id:'ejecutado',   lbl:'Ejecutado',                  dirIni:'desc', num:true  },
+    { id:'estimado',    lbl:'Estimado',                   dirIni:'desc', num:true  },
+    { id:'pagado',      lbl:'Pagado',                     dirIni:'desc', num:true  },
+    { id:'porEjercer',  lbl:'Por ejercer',                dirIni:'desc', num:true  },
+    { id:'af',          lbl:'Avance físico',              dirIni:'asc',  num:true  },
+    { id:'captura',     lbl:'Última captura',             dirIni:'desc', num:true  },
   ];
   const [col, dir] = orden.split('|');
   const signo = dir === 'asc' ? 1 : -1;
+  const clicEnCabecera = (id) => {
+    const def = COLUMNAS.find(c => c.id === id);
+    setOrden(id === col ? `${id}|${dir === 'asc' ? 'desc' : 'asc'}`
+                        : `${id}|${def.dirIni}`);
+  };
+
+  const texto = (a,b,k) =>
+    (a[k]||'').localeCompare(b[k]||'', 'es', {sensitivity:'base'});
+
+  // Qué dice cada celda, en un solo lugar y por id de columna. Las tres que
+  // pueden no tener dato dicen en voz alta que no lo tienen: ninguna sale en
+  // blanco, ni con un guion —que se lee «no aplica»— ni con un cero.
+  const celdaDe = (f, id) => {
+    const falta = { est:{color:C.textMut, fontStyle:'italic'} };
+    switch (id) {
+      case 'nombre':
+        return { texto:f.nombre, est:{fontWeight:600, color:C.textPri,
+                 maxWidth:220, overflow:'hidden', textOverflow:'ellipsis'} };
+      // El contratista se captura a mano (#41): hasta que haya padrón puede
+      // sencillamente no estar, y eso no es lo mismo que no tener.
+      case 'contratista':
+        return f.contratista
+          ? { texto:f.contratista, est:{color:C.textSec, maxWidth:180,
+              overflow:'hidden', textOverflow:'ellipsis'} }
+          : { texto:'sin capturar', ...falta };
+      // Cero días de atraso es la AFIRMACIÓN «la obra va en tiempo», y no se
+      // puede hacer cuando la cuenta no salió. Cuando no hay número, la celda
+      // dice por qué no, con la misma frase que el KPI del detalle de la obra.
+      case 'atraso':
+        if (f.atraso === null || f.atraso === undefined)
+          return { texto:f.sinAtraso, est:{...falta.est, whiteSpace:'normal', maxWidth:160} };
+        return { texto: f.atraso > 0 ? `${f.atraso} días tarde`
+                      : f.atraso < 0 ? `${Math.abs(f.atraso)} días antes`
+                      : 'en el plazo',
+                 est:{color:f.atraso > 0 ? C.redDk : C.greenDk,
+                      fontWeight:f.atraso > 0 ? 700 : 400} };
+      case 'contratado':  return { texto:MXN(f.contratado),  est:{color:C.textPri} };
+      case 'ejecutado':   return { texto:MXN(f.ejecutado),   est:{color:C.textSec} };
+      case 'estimado':    return { texto:MXN(f.estimado),    est:{color:C.textSec} };
+      case 'pagado':      return { texto:MXN(f.pagado),      est:{color:C.textSec} };
+      case 'porEjercer':  return { texto:MXN(f.porEjercer),  est:{color:C.textPri} };
+      case 'af':          return { texto:`${NUM(f.af,1)}%`,  est:{fontWeight:700, color:C.blueDk} };
+      case 'captura': {
+        if (f.diasSinCaptura === null) return { texto:'sin captura', ...falta };
+        const alerta = f.diasSinCaptura >= 7;
+        return { texto: f.diasSinCaptura === 0 ? 'hoy'
+                      : `hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`,
+                 est:{color:alerta ? C.yellowDk : C.textMut} };
+      }
+      // Una columna nueva sin celda saldría vacía y nadie lo notaría. Que lo
+      // diga la propia tabla, en vez de dejar un hueco que parece un dato.
+      default: return { texto:`(sin celda para «${id}»)`, ...falta };
+    }
+  };
+
   const ordenadas = [...filas].sort((a,b) => {
-    if (col === 'nombre')
-      return signo * (a.nombre||'').localeCompare(b.nombre||'', 'es', {sensitivity:'base'});
+    if (col === 'nombre') return signo * texto(a,b,'nombre') || b.contratado - a.contratado;
+
+    // Dato ausente al final SIEMPRE, sin importar la dirección: una obra sin
+    // captura no es "la que menos avanzó", es la que no se sabe. Lo mismo el
+    // contratista en blanco y el atraso que no se pudo proyectar.
     let va, vb;
-    if (col === 'captura') { va = a.diasSinCaptura; vb = b.diasSinCaptura; }
-    else                   { va = a[col];           vb = b[col]; }
-    // Dato ausente al final siempre, sin importar la dirección: una obra sin
-    // captura no es "la que menos avanzó", es la que no se sabe.
+    if (col === 'captura')          { va = a.diasSinCaptura;    vb = b.diasSinCaptura; }
+    else if (col === 'contratista') { va = a.claveContratista;  vb = b.claveContratista; }
+    else                            { va = a[col];              vb = b[col]; }
     const aN = va === null || va === undefined, bN = vb === null || vb === undefined;
-    if (aN && bN) return 0;
+
+    if (aN && bN) {
+      // Las dos sin dato. En el atraso ese bloque del fondo NO es un montón
+      // indistinto: son obras que no se pudieron medir, y esconderlas en
+      // cualquier orden sería perderlas. Entre ellas van por avance
+      // ascendente, que es lo que sí se sabe de ellas.
+      if (col === 'atraso') return a.af - b.af || b.contratado - a.contratado;
+      return b.contratado - a.contratado;
+    }
     if (aN) return 1;
     if (bN) return -1;
+
+    if (col === 'contratista')
+      return signo * String(va).localeCompare(String(vb), 'es', {sensitivity:'base'})
+        || b.contratado - a.contratado;
     if (va !== vb) return signo * (va - vb);
     // Desempate: la de mayor monto contratado primero.
     return b.contratado - a.contratado;
@@ -8091,47 +8685,68 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
         </div>
       </>}
 
-      {/* ── Obras ── */}
-      <div style={{display:"flex",alignItems:"center",gap:6,margin:"14px 0 6px"}}>
-        <span style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
-                      textTransform:"uppercase"}}>Obras · ordenar</span>
-        <Sel value={orden} onChange={e => setOrden(e.target.value)}
-             style={{fontSize:10,padding:'4px 8px',flex:1,maxWidth:260}}>
-          {OPCIONES_ORDEN.map(o => <option key={o.val} value={o.val}>{o.lbl}</option>)}
-        </Sel>
+      {/* ── Obras ──
+          Tabla y no tarjetas porque la pregunta de esta pantalla es
+          comparativa: cuál obra está más atrasada que las otras. En tarjetas
+          cada obra se lee sola y hay que recordar la anterior para comparar.
+          Las cabeceras ordenan al hacer clic; la columna activa dice en qué
+          sentido va, para que la flecha no sea el único indicio (es color y
+          forma, y en voz alta no se oye). */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                   textTransform:"uppercase",margin:"14px 0 6px"}}>
+        Obras · clic en una columna para ordenar
       </div>
-      <div style={{display:"flex",flexDirection:"column",gap:6}}>
-        {ordenadas.map(f => {
-          const capAlerta = f.diasSinCaptura === null || f.diasSinCaptura >= 7;
-          return (
-            <div key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
-              style={{background:C.bg,borderRadius:8,padding:"10px 12px",
-                cursor:onSelectObra?"pointer":"default",
-                borderLeft:`3px solid ${capAlerta?C.yellow:C.blueDk}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",
-                           gap:8,marginBottom:5}}>
-                <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
-                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
-                <span style={{fontSize:14,fontWeight:700,color:C.blueDk,flexShrink:0}}>
-                  {NUM(f.af,1)}%
-                </span>
-              </div>
-              <Bar pct={f.af} color={C.blueDk}/>
-              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginTop:5}}>
-                Contratado {MXN(f.contratado)}{' · '}Ejecutado {MXN(f.ejecutado)}
-              </div>
-              <div style={{fontSize:10,color:C.textSec,lineHeight:1.6}}>
-                Estimado {MXN(f.estimado)}{' · '}Pagado {MXN(f.pagado)}
-                {' · '}Por ejercer {MXN(f.porEjercer)}
-              </div>
-              <div style={{fontSize:10,color:capAlerta?C.yellowDk:C.textMut,lineHeight:1.6}}>
-                {f.diasSinCaptura === null ? 'Sin captura registrada'
-                  : f.diasSinCaptura === 0 ? 'Capturada hoy'
-                  : `Última captura hace ${f.diasSinCaptura} día${f.diasSinCaptura===1?'':'s'}`}
-              </div>
-            </div>
-          );
-        })}
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:860}}>
+          <thead>
+            <tr>
+              {COLUMNAS.map(c => {
+                const act = c.id === col;
+                const sent = act ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
+                return (
+                  <th key={c.id} scope="col" aria-sort={sent}
+                      style={{padding:0,borderBottom:`1px solid ${C.border}`,
+                              textAlign:c.num?"right":"left"}}>
+                    <button type="button" onClick={() => clicEnCabecera(c.id)}
+                      aria-label={`Ordenar por ${c.lbl}`
+                        + (act ? ` — ordenada ahora de ${dir==='asc'?'menor a mayor':'mayor a menor'}`
+                               : '')}
+                      style={{width:"100%",background:"none",border:"none",cursor:"pointer",
+                        font:"inherit",padding:"6px 7px",color:act?C.textPri:C.textMut,
+                        fontWeight:act?700:600,letterSpacing:"0.03em",
+                        textAlign:c.num?"right":"left"}}>
+                      {c.lbl}{act ? (dir === 'asc' ? ' ↑' : ' ↓') : ''}
+                    </button>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Las celdas se pintan RECORRIENDO `COLUMNAS`, no en una segunda
+                lista escrita a mano. Dos listas paralelas que tienen que
+                coincidir en orden fallan de la peor manera posible: mover una
+                columna y olvidar la otra pone todas las cifras bajo el
+                encabezado equivocado, y la tabla sigue viéndose perfecta.
+                Pasó al mover el atraso al tercer lugar. */}
+            {ordenadas.map(f => (
+              <tr key={f.obra.id} onClick={() => onSelectObra && onSelectObra(f.obra.id)}
+                  style={{cursor:onSelectObra?"pointer":"default"}}>
+                {COLUMNAS.map((c, i) => {
+                  const { texto: val, est } = celdaDe(f, c.id);
+                  const base = {padding:"7px",borderBottom:`1px solid ${C.border}`,
+                                whiteSpace:"nowrap",textAlign:c.num?"right":"left",...est};
+                  // La primera celda es el encabezado de su renglón: sin esto,
+                  // un lector de pantalla lee «$12,400,000» sin decir de qué
+                  // obra, y la tabla deja de poderse recorrer a ciegas.
+                  return i === 0
+                    ? <th key={c.id} scope="row" style={base}>{val}</th>
+                    : <td key={c.id} style={base}>{val}</td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </Card>
   );
@@ -8743,7 +9358,9 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
 
   // Helper: semana ISO como {sem, año} y su etiqueta corta
   const semanaISOLocal = (fecha) => {
-    const d = new Date(fecha);
+    // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+    const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+    const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
     if (isNaN(d)) return null;
     d.setHours(0,0,0,0);
     d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -8757,7 +9374,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   // y termina hoy. Si el rango pedido (últimas N semanas) es menor al
   // plazo transcurrido, se usa el rango; si es mayor, se recorta al
   // inicio del contrato para no mostrar semanas huecas antes de existir.
-  const fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  // `fechaLocalDeISO` y no `new Date(...)`: la forma corta se interpreta como
+  // UTC, que en México es el día anterior a las 18:00. Para una obra que
+  // arrancó un LUNES eso la mete en la semana de antes, y la gráfica dibuja
+  // una semana entera previa al contrato. Pasa un día de cada siete, que es
+  // justo la frecuencia con la que se culpa al azar.
+  const fechaInicio = fechaLocalDeISO(obra?.inicio);
   const inicioValido = fechaInicio && !isNaN(fechaInicio);
   const semanas = (() => {
     const hoy = new Date();
@@ -8916,15 +9538,26 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
       const s = (e.estatus||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
       return s === 'pagada' || s === 'cobrada';
     })
-    .map(e => ({ ...e, _fecha: new Date(e.fechaCobro || e.fecha || e.periodo || 0) }))
+    // La fecha se arma en LOCAL —ver `semanaISO`— porque abajo pasa por
+    // `semanaISOLocal`: con la lectura UTC, una estimación cobrada un lunes se
+    // contabilizaba en la semana que ya había cerrado.
+    .map(e => {
+      const f = e.fechaCobro || e.fecha || e.periodo || 0;
+      const _s = typeof f === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(f.trim()) : null;
+      return { ...e, _fecha: _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(f) };
+    })
     .filter(e => !isNaN(e._fecha))
     .sort((a,b) => a._fecha - b._fecha);
-  // Suma pre-rango
+  // Suma pre-rango: todo lo cobrado ANTES de que empiece la primera semana de
+  // la ventana. El corte es el lunes de esa semana —no un jueves ni el 1 de
+  // enero más tantos días—, porque lo que se pregunta es si el cobro cae fuera
+  // de la ventana, y la ventana empieza el lunes.
   const primeraSemFecha = (() => {
     const s = semanas[0];
     if (!s) return null;
-    const d = new Date(s.año, 0, 1);
-    d.setDate(d.getDate() + (s.sem-1)*7);
+    const d = jueveDeSemanaISO(s.año, s.sem);
+    d.setDate(d.getDate() - 3);
+    d.setHours(0,0,0,0);
     return d;
   })();
   if (primeraSemFecha) {
@@ -9563,7 +10196,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const svgRef = useRef();
 
   const semanaISOLocal = (fecha) => {
-    const d = new Date(fecha);
+    // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
+    const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
+    const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
     if (isNaN(d)) return null;
     d.setHours(0,0,0,0);
     d.setDate(d.getDate() + 4 - (d.getDay() || 7));
@@ -9571,15 +10206,13 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
     return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
   };
   const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
-  const jueveDeSemana = (año, sem) => {
-    const d = new Date(año, 0, 1);
-    d.setDate(d.getDate() + (sem - 1) * 7);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    return d;
-  };
 
   const presupuesto = parseFloat(obra?.presupuesto) || 0;
-  let fechaInicio = obra?.inicio ? new Date(obra.inicio) : null;
+  // `fechaLocalDeISO` y no `new Date(...)`: ver la nota larga en la gráfica de
+  // tendencias. La forma corta se lee como UTC y en México cae el día anterior
+  // a las 18:00, así que una obra que arrancó un LUNES se va a la semana de
+  // antes. El fallback de abajo arma la fecha por partes y ya era local.
+  let fechaInicio = fechaLocalDeISO(obra?.inicio);
   let inicioValido = fechaInicio && !isNaN(fechaInicio);
 
   // Fallback fecha de inicio: si no está en contrato pero hay datos de GP,
@@ -9625,7 +10258,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   const isoHoy = semanaISOLocal(hoy);
   const semanasHist = [];
   {
-    let d = jueveDeSemana(isoInicio.año, isoInicio.sem);
+    let d = jueveDeSemanaISO(isoInicio.año, isoInicio.sem);
     while (true) {
       const iso = semanaISOLocal(d);
       const key = skey(iso.sem, iso.año);
@@ -10738,7 +11371,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // cada organización ya están aisladas por las reglas— sino porque esas cifras
 // no existen del lado de quien contrata.
 // ════════════════════════════════════════════════════════════════════════════
-function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], onNavTab}){
+function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], recorteHistorial = null, notasSemana = {}, onNavTab}){
   const contrato = parseFloat(obra?.presupuesto) || 0;
   const modoVol  = obra?.modoAvance === "volumen";
 
@@ -10793,6 +11426,12 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo     = (totalDias && totalDias > 0)
     ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+
+  // El arranque que le falta al expediente, con la misma cuenta que la
+  // pantalla de avance. Aquí importa más que allá: ésta es la pantalla desde
+  // la que se revisa un expediente, y es donde se decidiría darlo por completo.
+  const estadosSemana = estadoPorSemana(historialAvance);
+  const hueco = huecoDeArranque(estadosSemana, obra, recorteHistorial);
 
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
@@ -10887,6 +11526,20 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
       </div>
     </Card>
 
+    {/* ── El arranque que le falta al expediente ──
+        Arriba de todo lo demás a propósito: es cómo hay que leer lo que sigue.
+        Si falta el principio, la última captura, el avance y el plazo siguen
+        siendo ciertos, pero el EXPEDIENTE no está completo, y esta pantalla es
+        desde la que alguien lo daría por bueno. */}
+    {hueco && <Card accent={C.yellow}>
+      <div style={{fontSize:11,fontWeight:700,color:C.textPri,marginBottom:4}}>
+        Al expediente le falta su arranque
+      </div>
+      <div style={{fontSize:10,lineHeight:1.5,color:C.textSec}}>
+        {fraseHuecoDeArranque(hueco)}
+      </div>
+    </Card>}
+
     {/* ── Plazo ── */}
     <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
       <Tit>Plazo</Tit>
@@ -10949,20 +11602,96 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
         ))}
       </div>
     </Card>}
+
+    {/* Lo que dijo quien estuvo ahí. Sin `onGuardar`: la dependencia LEE la
+        nota del cierre, no la escribe — quien cierra la semana es quien
+        ejecuta. El hueco se ve igual que del otro lado, con quién cerró. */}
+    <NotasDeSemanas estados={estadosSemana} notas={notasSemana}
+      titulo="Lo que se reportó cada semana"/>
   </div>;
 }
 
 
 // ── BOTÓN GUARDAR AVANCE CON FIRESTORE ────────────────────────────────────
-function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo}) {
+// El diálogo del cierre semanal. Sustituye al `window.confirm` que sólo pedía
+// confirmar: ahora el mismo momento en que se cierra la semana es donde se
+// cuenta qué pasó, porque es el único momento en que alguien lo tiene fresco.
+//
+// Las tres salidas son tres botones distintos a propósito. "Sin novedad" es un
+// clic y escribe una declaración; "Cerrar sin nota" también es un clic y NO
+// escribe nada. Si fueran el mismo botón con el campo vacío, el expediente no
+// podría distinguir después «no hubo incidencias» de «nadie dijo nada».
+function ModalCierreSemanal({clave, onCancel, onCerrar, busy}){
+  const[texto,setTexto]=useState("");
+  const restantes = LIMITE_NOTA_SEMANAL - texto.length;
+  const hayTexto = texto.trim().length > 0;
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:460}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.caliza,marginBottom:4}}>
+        Cerrar la semana {clave.replace("-", " de ")}
+      </div>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
+        Se guardará el avance actual como reporte semanal y se notificará a los
+        directivos. No podrás sobreescribir esta semana con guardados normales.
+      </div>
+
+      <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+        Nota de la semana
+      </div>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginBottom:6}}>
+        Qué explica el avance de estos días: clima, frentes detenidos, entregas,
+        lo que haya. Dentro de un año esto es lo único que va a quedar.
+      </div>
+      <textarea value={texto} maxLength={LIMITE_NOTA_SEMANAL} rows={5}
+        onChange={e=>setTexto(e.target.value)} disabled={busy}
+        placeholder="Tres días sin acceso al frente 2 por la lluvia del martes…"
+        style={{width:"100%",boxSizing:"border-box",border:`0.5px solid ${C.border}`,
+          borderRadius:8,padding:"9px 10px",fontSize:12,lineHeight:1.5,
+          fontFamily:"inherit",color:C.textPri,resize:"vertical"}}/>
+      <div style={{fontSize:9,color:restantes<80?C.yellow:C.textMut,textAlign:"right",marginTop:3}}>
+        {restantes} caracteres
+      </div>
+      <div style={{fontSize:9,color:C.textMut,lineHeight:1.5,marginTop:6}}>
+        Podrás corregirla mientras esta siga siendo la semana corriente. Después
+        queda fija, y si la tocas quedará dicho cuándo.
+      </div>
+
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",marginTop:16}}>
+        <SecBtn onClick={onCancel} disabled={busy}>Cancelar</SecBtn>
+        {/* Las dos salidas sin texto, separadas. Ver el comentario de arriba. */}
+        <SecBtn disabled={busy||hayTexto} onClick={()=>onCerrar({sinNovedad:true})}>
+          Sin novedad
+        </SecBtn>
+        <SecBtn disabled={busy||hayTexto} onClick={()=>onCerrar({})}>
+          Cerrar sin nota
+        </SecBtn>
+        <button disabled={busy||!hayTexto} onClick={()=>onCerrar({texto})}
+          style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+            fontSize:11,fontWeight:700,color:C.bg,
+            cursor:(busy||!hayTexto)?"not-allowed":"pointer",opacity:(busy||!hayTexto)?0.45:1}}>
+          {busy?"Cerrando…":"Cerrar con nota"}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
+function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario, onHistorialNuevo, onGuardarNota,
+                           estimaciones=[], estCargadas=false}) {
   const[estado,setEstado]=useState("idle"); // idle | saving | saved | error
+  const[cierreAbierto,setCierreAbierto]=useState(false);
+  // La nota se intentó y no quedó. Se avisa SIN deshacer el cierre, que ya está
+  // escrito: decir "error" a secas mandaría a recerrar una semana ya cerrada.
+  const[falloNota,setFalloNota]=useState(false);
   // El fallo del snapshot no puede ser un parpadeo de 3 segundos: es lo que
   // dejó a la 0114 siete semanas sin histórico sin que nadie se enterara. El
   // aviso se queda hasta que el usuario lo cierra.
   const[falloSnapshot,setFalloSnapshot]=useState(null);
-  async function guardar(tipoSnapshot = "intermedio") {
+  async function guardar(tipoSnapshot = "intermedio", nota = null) {
     setEstado("saving");
     setFalloSnapshot(null);
+    setFalloNota(false);
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
@@ -11002,8 +11731,20 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       }
       // Crear snapshot del avance para histórico semanal
       const snap = await crearSnapshotAvance(obra.id, subs, usuario?.correo, tipoSnapshot,
-        obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0);
+        obra?.modoAvance === "volumen", parseFloat(obra?.presupuesto) || 0,
+        corteDeEstimaciones(estimaciones, estCargadas));
       if (snap && onHistorialNuevo) onHistorialNuevo(snap);
+      // La nota va DESPUÉS del cierre y no lo condiciona: para cuando se llega
+      // aquí la semana ya está escrita. Si la nota falla, se avisa aparte y el
+      // cierre se queda — tratarlo como un fallo del cierre mandaría a recerrar
+      // una semana que ya cerró.
+      // Va por el mismo manejador que la corrección desde la línea de tiempo,
+      // y no por `guardarNotaSemanal` directo: así la nota aparece en pantalla
+      // en cuanto queda, sin esperar a recargar la obra.
+      if (snap && nota && (nota.texto || nota.sinNovedad) && onGuardarNota) {
+        const ok = await onGuardarNota(snapshotId(snap.semana, snap.año), nota);
+        if (!ok) setFalloNota(true);
+      }
       // Si es oficial, también notif
       if (tipoSnapshot === "oficial" && snap) {
         await notifARoles(['director_general','director_operaciones','gerente_construccion','admin_sistema'], {
@@ -11040,23 +11781,33 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
           cursor:estado==="saving"?"not-allowed":"pointer",transition:"all .3s"}}>
         {labels_map[estado]}
       </button>
-      {/* Botón "Cerrar semana" — confirma con doble click */}
-      <button onClick={() => {
-          if (window.confirm(
-            "Cerrar la semana:\n\n" +
-            "- Esta guardará el avance actual como reporte semanal.\n" +
-            "- Se notificará a los directivos.\n" +
-            "- No podrás sobreescribir esta semana con guardados normales.\n\n" +
-            "¿Confirmas el cierre semanal?")) {
-            guardar("oficial");
-          }
-        }}
+      {/* Botón "Cerrar semana" — confirma y pide la nota de la semana */}
+      <button onClick={()=>setCierreAbierto(true)}
         disabled={estado==="saving"}
         style={{background:"transparent",border:`0.5px solid ${C.caliza}`,borderRadius:8,
           padding:"8px 0",color:C.caliza,fontSize:11,fontWeight:600,width:"100%",
           cursor:estado==="saving"?"not-allowed":"pointer"}}>
         Cerrar semana
       </button>
+      {cierreAbierto && (() => {
+        const { semana, año } = semanaISO(new Date());
+        return <ModalCierreSemanal clave={snapshotId(semana, año)} busy={estado==="saving"}
+          onCancel={()=>setCierreAbierto(false)}
+          onCerrar={async nota => { setCierreAbierto(false); await guardar("oficial", nota); }}/>;
+      })()}
+
+      {/* El cierre quedó; la nota no. Se dice exactamente eso. */}
+      {falloNota && (
+        <div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,borderRadius:8,
+          padding:"10px 12px",marginTop:4,fontSize:10,lineHeight:1.6,color:C.textPri}}>
+          <b>La semana cerró, pero la nota no se guardó.</b> El cierre sí quedó
+          registrado —no vuelvas a cerrar—. Vuelve a escribir la nota desde la
+          línea de tiempo mientras ésta siga siendo la semana corriente.
+          <div style={{marginTop:8}}>
+            <SecBtn onClick={()=>setFalloNota(false)}>Entendido</SecBtn>
+          </div>
+        </div>
+      )}
 
       {/* El histórico no se guardó. No se va solo: hay que leerlo y cerrarlo. */}
       {falloSnapshot && (
@@ -11091,7 +11842,123 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
 // Detectores: partidas más calientes, estancadas (≥2 sem sin movimiento),
 // retroceso, a ritmo crítico.
 // Gráfica: línea acumulada vs ideal lineal.
-function MiniDashAvance({obra, subs, historialAvance=[]}){
+// Las notas de las últimas semanas cerradas, en una sola lista que usan la
+// constructora y la dependencia. Se escribe una vez para que las dos pantallas
+// —y mañana el informe por correo— cuenten lo mismo.
+//
+// El hueco NO se esconde: una semana sin nota se pinta con el mismo peso que
+// una con nota, y dice quién la cerró. Una lista que sólo enseñara las semanas
+// documentadas daría la impresión de un expediente completo.
+//
+// `onGuardar` sólo llega del lado de quien puede escribir. Aunque llegue, sólo
+// la semana corriente se deja editar: ver la decisión 3 en `notaDeCierre`.
+function NotasDeSemanas({estados = [], notas = {}, cuantas = 6, onGuardar = null, titulo = "Notas de la semana"}){
+  const conAño = cruzaAños(estados);
+  const[editando,setEditando]=useState(null);   // clave en edición
+  const[borrador,setBorrador]=useState("");
+  const[guardando,setGuardando]=useState(false);
+  const[fallo,setFallo]=useState(false);
+  // El #31 en una línea. `guardarNotaSemanal` SÍ devuelve `false` cuando la
+  // escritura rebota —lo comprueba scripts/prueba-nota-no-calla.cjs contra el
+  // emulador—, pero si el editor se cierra igual, el hueco reaparece sin
+  // explicación y quien escribió cree que quedó. Ahí es donde el #31 se cuela:
+  // no en el helper, sino en la pantalla que ignora su respuesta. Si no quedó,
+  // el editor NO se cierra y el texto se conserva para no volver a teclearlo.
+  const intentar = async (clave, nota) => {
+    setGuardando(true); setFallo(false);
+    const ok = await onGuardar(clave, nota);
+    setGuardando(false);
+    if (ok) setEditando(null); else setFallo(true);
+  };
+  const ultimas = estados.slice(-cuantas).reverse();
+  if (ultimas.length === 0) return null;
+
+  const sinNota = ultimas.filter(e => notaDeCierre(notas, e)?.estado === NOTA_FALTA).length;
+
+  return <Card accent={C.caliza} style={{marginTop:10}}>
+    <Tit>{titulo}</Tit>
+    <div style={{fontSize:10,color:C.textMut,marginTop:-4,marginBottom:10}}>
+      {/* El conteo del hueco, dicho de frente y arriba. */}
+      {sinNota === 0
+        ? `Las últimas ${ultimas.length} semanas cerradas están documentadas.`
+        : `${sinNota} de las últimas ${ultimas.length} semanas cerradas no tienen nota.`}
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      {ultimas.map(e => {
+        const nota = notaDeCierre(notas, e);
+        const falta = nota.estado === NOTA_FALTA;
+        const corriente = esLaSemanaCorriente(e.clave);
+        const editable = !!onGuardar && corriente;
+        const enEdicion = editando === e.clave;
+        return <div key={e.clave} style={{border:`0.5px solid ${falta?C.yellow:C.border}`,
+          background:falta?C.yellowBg:C.surface, borderRadius:8, padding:"9px 11px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>
+              {etiquetaSemanaRiel(e, conAño)}
+            </div>
+            <div style={{fontSize:9,color:C.textMut}}>
+              {nota.cerradoPor ? `cerró ${nota.cerradoPor}` : "cierre sin autor registrado"}
+            </div>
+          </div>
+          {enEdicion ? <div style={{marginTop:6}}>
+            <textarea value={borrador} maxLength={LIMITE_NOTA_SEMANAL} rows={4} autoFocus
+              onChange={ev=>setBorrador(ev.target.value)} disabled={guardando}
+              style={{width:"100%",boxSizing:"border-box",border:`0.5px solid ${C.border}`,
+                borderRadius:6,padding:"7px 9px",fontSize:11,lineHeight:1.5,
+                fontFamily:"inherit",color:C.textPri,resize:"vertical"}}/>
+            {fallo && <div style={{marginTop:6,border:`0.5px solid ${C.red}`,
+              background:C.redBg,borderRadius:6,padding:"7px 9px",
+              fontSize:10,lineHeight:1.5,color:C.textPri}}>
+              <b>La nota no se guardó.</b> La escritura fue rechazada, así que
+              {falta ? " esta semana sigue sin nota."
+                     : " la nota de esta semana sigue como estaba."}
+              {" "}Tu texto no se perdió: está aquí abajo. Vuelve a intentarlo
+              y, si se repite, avisa a quien administra el sistema.
+            </div>}
+            <div style={{display:"flex",gap:6,justifyContent:"flex-end",marginTop:6}}>
+              <SecBtn disabled={guardando} onClick={()=>{setEditando(null);setFallo(false);}}>Cancelar</SecBtn>
+              <SecBtn disabled={guardando||borrador.trim().length>0}
+                onClick={()=>intentar(e.clave,{sinNovedad:true})}>
+                Sin novedad
+              </SecBtn>
+              <SecBtn disabled={guardando||borrador.trim().length===0}
+                style={{background:C.caliza,color:C.bg,fontWeight:700,borderColor:C.caliza}}
+                onClick={()=>intentar(e.clave,{texto:borrador})}>
+                {guardando?"Guardando…":fallo?"Reintentar":"Guardar"}
+              </SecBtn>
+            </div>
+          </div> : <>
+            <div style={{fontSize:11,lineHeight:1.55,marginTop:4,
+              color:falta?C.textPri:C.textSec,
+              fontStyle:nota.estado===NOTA_ESCRITA?"normal":"italic"}}>
+              {fraseNota(nota)}
+            </div>
+            {/* Que se tocó después de escrita se dice SIEMPRE: es lo único que
+                hace visible una corrección, porque el congelamiento es
+                disciplina de pantalla y no regla de Firestore. */}
+            {nota.editadaEn && <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
+              editada el {fechaEnPalabras(new Date(nota.editadaEn)) || nota.editadaEn.slice(0,10)}
+            </div>}
+            {editable && <div style={{marginTop:6}}>
+              <SecBtn onClick={()=>{ setBorrador(nota.texto || ""); setFallo(false); setEditando(e.clave); }}>
+                {falta ? "Escribir la nota" : "Corregir"}
+              </SecBtn>
+            </div>}
+            {/* Por qué ya no se puede corregir, dicho donde se intentaría. */}
+            {!!onGuardar && !corriente && falta && (
+              <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+                Esta semana ya pasó: la nota quedó congelada y el hueco es parte
+                del expediente.
+              </div>
+            )}
+          </>}
+        </div>;
+      })}
+    </div>
+  </Card>;
+}
+
+function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, notasSemana={}, onGuardarNota=null}){
   // Avance actual ponderado — FÍSICO sobre CONTRATO, compensado.
   const modoVol = (obra?.modoAvance === "volumen");
   const contratoObra = parseFloat(obra?.presupuesto) || 0;
@@ -11106,6 +11973,8 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
   const ultimoEstado = estados[estados.length-1] || null;
   const penultimoEstado = estados[estados.length-2] || null;
   const oficiales = estados.map(e => e.cierre);
+  // Si al expediente le falta el principio, se dice. Ver `huecoDeArranque`.
+  const hueco = huecoDeArranque(estados, obra, recorteHistorial);
 
   const ultimoOf = ultimoEstado?.cierre || null;
   const penultimoOf = penultimoEstado?.cierre || null;
@@ -11268,9 +12137,7 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           ? (desvDias>0?`${desvDias} días después del plazo vigente`
             :desvDias<0?`${Math.abs(desvDias)} días antes del plazo vigente`
             :"justo en el plazo vigente")
-          : proy.razon===SIN_PROY_SIN_AVANCE?(proy.velocidad<0?"la obra retrocede":"la obra no avanza")
-          : proy.razon===SIN_PROY_NO_COMPARABLES?"cierres no comparables"
-          : "requiere 2 cierres"}
+          : frasePorQueSinDesviacion(proy)}
         color={desvDias===null
           ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
           : desvDias>15?C.red:desvDias>0?C.yellow:C.greenDk} size={12}/>
@@ -11290,6 +12157,18 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
       background:C.bg, borderRadius:8, padding:"8px 11px"}}>
       {frasePlazo}
     </div>
+
+    {/* EL ARRANQUE QUE FALTA. Va pegado a la serie porque es la advertencia de
+        cómo leerla: todo lo que está debajo —la curva, la velocidad, la
+        proyección— se calcula sobre las semanas que quedaron, y si falta el
+        principio eso no es "el avance de la obra", es "el avance desde que
+        empieza el expediente". Un expediente incompleto que no lo declara se
+        presenta como completo. */}
+    {hueco && <div style={{fontSize:10,lineHeight:1.5,color:C.textPri,
+      background:C.yellowBg, border:`0.5px solid ${C.yellow}`,
+      borderRadius:8, padding:"8px 11px"}}>
+      <b>Al expediente le falta su arranque. </b>{fraseHuecoDeArranque(hueco)}
+    </div>}
 
     {/* Se quitó el párrafo de frontera de definición. El comportamiento no
         cambia: quien impide que los deltas crucen la frontera es
@@ -11396,6 +12275,10 @@ function MiniDashAvance({obra, subs, historialAvance=[]}){
           idxFrontera={hayTramoViejoS ? idxFronteraS : -1}/>
       </Card>
     )}
+
+    {/* Qué explica esos números. Va DEBAJO de la gráfica a propósito: la curva
+        plantea la pregunta y la nota la contesta. */}
+    <NotasDeSemanas estados={estados} notas={notasSemana} onGuardar={onGuardarNota}/>
   </div>;
 }
 
@@ -11697,8 +12580,9 @@ function MiniDashSubcontratos({obra, subcontratos}){
 // El default deja la interfaz de constructora exactamente como estaba.
 function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
-                   estimaciones,setEstimaciones,subcontratos,setSubcontratos,
-                   historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,
+                   estimaciones,setEstimaciones,estCargadas=false,subcontratos,setSubcontratos,
+                   historialAvance,setHistorialAvance,recorteHistorial=null,setCambiosPendientes,onNavTab,
+                   notasSemana={}, onGuardarNota=null,
                    nominaHistorial=[], setNominaHistorial,
                    subTabs=SUBTABS_OPERACION}){
   // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
@@ -11728,7 +12612,8 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
     {/* AVANCE FÍSICO + FOTOS (la pestaña Volúmenes de Captura) — con mini-dashboard histórico arriba */}
     {subTab==="avance" && (
       <>
-        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance}/>
+        <MiniDashAvance obra={obra} subs={subs} historialAvance={historialAvance} recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={onGuardarNota}/>
         {/* Órdenes de Trabajo — ver `vanLasOT`: la bandera de la obra Y que la
             sesión sea de una constructora. La OT es documento interno suyo. */}
         {vanLasOT(usuario, obra) && (
@@ -11742,6 +12627,8 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="volumenes"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          onGuardarNota={onGuardarNota}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -11752,6 +12639,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="materiales"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -11762,6 +12650,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           materiales={materiales} setMateriales={setMateriales}
           rol={rol} obra={obra} forceTab="maquinaria"
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          estimaciones={estimaciones} estCargadas={estCargadas}
           setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
       </>
     )}
@@ -11824,7 +12713,8 @@ function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setS
 }
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
-function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,setCambiosPendientes,onNavTab,onNominaHistorialCambio}){
+function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,onGuardarNota=null,setCambiosPendientes,onNavTab,onNominaHistorialCambio,
+                  estimaciones=[],estCargadas=false}){
   // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
@@ -12262,6 +13152,8 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
       onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
+      onGuardarNota={onGuardarNota}
+      estimaciones={estimaciones} estCargadas={estCargadas}
       onHistorialNuevo={(snap)=>{
         if (!setHistorialAvance) return;
         setHistorialAvance(hist => {
@@ -15889,11 +16781,12 @@ function AvanceCliente({obra, subs}){
 //
 // La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
 // de `semanaDeFoto`.
-function FotosCliente({obra, subs}){
+function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
   const[lightbox,setLightbox]=useState(null);
   const[vista,setVista]=useState("semana");     // "semana" | "partida"
   const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
   const[partidaSel,setPartidaSel]=useState(null);
+  const refMarcas = useRef({});
 
   // Todas las fotos de la obra, aplanadas, cada una con su partida y su semana.
   //
@@ -15951,13 +16844,72 @@ function FotosCliente({obra, subs}){
     return [...m.values()].sort((a,b) => String(a.sec).localeCompare(String(b.sec), 'es', {numeric:true}));
   }, [todas]);
 
-  // La semana que se está mirando. Por omisión, la más reciente con evidencia;
-  // si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
-  const semActiva = (semanaSel && (semanaSel === "__sin__" || semanas.includes(semanaSel)))
-    ? semanaSel
-    : (semanas[0] || (sinSemana.length ? "__sin__" : null));
+  // ── EL RIEL ────────────────────────────────────────────────────────────
+  // El eje de la línea de tiempo sale de `rielDeSemanas`, la misma cuenta que
+  // leen los KPIs: la galería por semana y el expediente por semana son la
+  // misma pantalla, y calcularlas aparte haría nacer la segunda cuenta.
+  const marcas = useMemo(
+    () => rielDeSemanas(historialAvance, todas.map(f => f.semana), notasSemana),
+    [historialAvance, todas, notasSemana]);
+  const conAño   = cruzaAños(marcas);
+  const hueco    = huecoDeArranque(estadoPorSemana(historialAvance), obra, recorteHistorial);
+  const claves   = marcas.map(m => m.clave);
+  const cerradas = marcas.filter(m => m.cierre).length;
 
+  // La semana que se está mirando. Por omisión, la última CON CIERRE —ver
+  // `marcaInicialDelRiel`—; si la obra no tiene ni un cierre, la última con
+  // evidencia, y si no hay ninguna fechada pero sí fotos, el grupo sin fecha.
+  const semActiva = (semanaSel && (semanaSel === "__sin__" || claves.includes(semanaSel)))
+    ? semanaSel
+    : (marcaInicialDelRiel(marcas) || (sinSemana.length ? "__sin__" : null));
+
+  const marcaActiva = marcas.find(m => m.clave === semActiva) || null;
   const deSemana = semActiva === "__sin__" ? sinSemana : todas.filter(f => f.semana === semActiva);
+
+  // Flechas del teclado sobre el riel. Son marcas discretas, así que moverse
+  // es ir a la marca de al lado: no hay posición intermedia a la que llegar.
+  const moverRiel = (paso) => {
+    const i = claves.indexOf(semActiva);
+    const j = i < 0 ? claves.length - 1 : Math.min(claves.length - 1, Math.max(0, i + paso));
+    const c = claves[j];
+    if (!c) return;
+    setSemanaSel(c);
+    refMarcas.current[c]?.focus();
+    refMarcas.current[c]?.scrollIntoView({block:"nearest", inline:"nearest"});
+  };
+  const teclasRiel = (ev) => {
+    const salto = {ArrowLeft:-1, ArrowRight:1, PageUp:-4, PageDown:4,
+                   Home:-claves.length, End:claves.length}[ev.key];
+    if (salto === undefined) return;
+    ev.preventDefault();
+    moverRiel(salto);
+  };
+
+  // El color de cada estado. Son cuatro y se distinguen a simple vista, porque
+  // el riel se lee de un golpe: lo que no se distingue no informa.
+  const COLOR_MARCA = {
+    [MARCA_CERRADA]:      C.green,
+    [MARCA_SIN_COMPARAR]: C.blue,
+    [MARCA_SOLO_FOTOS]:   C.textMut,
+    [MARCA_SIN_DATO]:     C.borderM,
+  };
+  const LEYENDA_MARCA = {
+    [MARCA_CERRADA]:      "semana cerrada",
+    [MARCA_SIN_COMPARAR]: "cerrada, sin comparar",
+    [MARCA_SOLO_FOTOS]:   "sólo fotos, sin cierre",
+    [MARCA_SIN_DATO]:     "sin cierre ni fotos",
+  };
+
+  // Una obra puede tener cierres y ninguna foto: entonces la línea de tiempo
+  // sigue valiendo y "por partida" no tiene nada que enseñar.
+  const vistaEf = todas.length === 0 ? "semana" : vista;
+
+  // El riel abre en la última semana cerrada, que suele estar al final de un
+  // eje de un año: sin esto queda fuera de la ventana y parece que no hay
+  // nada seleccionado.
+  useEffect(() => {
+    refMarcas.current[semActiva]?.scrollIntoView({block:"nearest", inline:"center"});
+  }, [semActiva]);
 
   const pActiva = partidas.find(p => p.id === partidaSel) || null;
 
@@ -16000,50 +16952,216 @@ function FotosCliente({obra, subs}){
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     <Card>
-      <Tit>Evidencia fotográfica</Tit>
+      {/* El título dice «la obra» y no «las fotos» porque el panel enseña
+          avance, dinero y la nota de quien cerró, no sólo evidencia. */}
+      <Tit>La obra, semana por semana</Tit>
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        {todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
+        {cerradas} semana{cerradas===1?"":"s"} cerrada{cerradas===1?"":"s"}
+        {" · "}{todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
         {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
         {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
       </div>
 
-      {todas.length === 0 ? (
+      {todas.length === 0 && marcas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
-          Aún no se han cargado fotos de esta obra.
+          Aún no hay cierres ni fotos de esta obra.
         </div>
-      ) : (
+      ) : todas.length > 0 && (
         <div style={{display:"flex",gap:6,marginBottom:10}}>
-          <button onClick={()=>setVista("semana")}  style={chip(vista==="semana")}>Por semana</button>
-          <button onClick={()=>setVista("partida")} style={chip(vista==="partida")}>Por partida</button>
+          <button onClick={()=>setVista("semana")}  style={chip(vistaEf==="semana")}>Por semana</button>
+          <button onClick={()=>setVista("partida")} style={chip(vistaEf==="partida")}>Por partida</button>
         </div>
       )}
 
-      {/* ── VISTA 1: una semana ─────────────────────────────────────────── */}
-      {todas.length > 0 && vista === "semana" && <>
-        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:6,marginBottom:8}}>
-          {semanas.map(w => (
-            <button key={w} onClick={()=>setSemanaSel(w)} style={chip(semActiva===w)}>
-              {etiquetaSemanaCorta(w)}
-            </button>
-          ))}
-          {sinSemana.length > 0 && (
+      {/* ── VISTA 1: la línea de tiempo, semana por semana ──────────────── */}
+      {(marcas.length > 0 || todas.length > 0) && vistaEf === "semana" && <>
+
+        {/* El expediente al que le falta el principio lo dice ANTES del riel.
+            El riel empieza donde empieza el dato, y sin esta línea eso se lee
+            como que la obra empezó ahí. */}
+        {hueco && (
+          <div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,borderRadius:6,
+            padding:"7px 9px",fontSize:9,color:C.yellowDk,lineHeight:1.45,marginBottom:8}}>
+            {fraseHuecoDeArranque(hueco)}
+          </div>
+        )}
+
+        {marcas.length > 0 && <>
+          <div role="tablist" aria-label="Semanas de la obra" onKeyDown={teclasRiel}
+            style={{display:"flex",gap:2,overflowX:"auto",padding:"2px 0 6px",
+              alignItems:"flex-end"}}>
+            {marcas.map(m => {
+              const act = semActiva === m.clave;
+              // El estado de la marca lo lleva el color, y el color no se lee en
+              // voz alta: dentro del botón sólo va el número de semana. Sin
+              // nombre accesible, un lector de pantalla recorrería nueve pestañas
+              // que dicen "32, 33, 34" y ninguna diría qué pasó esa semana.
+              const dice = `${etiquetaSemanaRiel(m, true)} — ${LEYENDA_MARCA[m.estado]}`
+                + (m.fotos > 0 ? ` · ${m.fotos} foto${m.fotos===1?"":"s"}` : "")
+                + (m.nota?.estado === NOTA_FALTA ? " · sin nota" : "");
+              return (
+                <button key={m.clave} role="tab" aria-selected={act}
+                  tabIndex={act ? 0 : -1}
+                  ref={el => { refMarcas.current[m.clave] = el; }}
+                  onClick={()=>setSemanaSel(m.clave)}
+                  aria-label={dice} title={dice}
+                  style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,
+                    background:act?C.surface:"none",borderRadius:5,padding:"3px 2px",
+                    border:`0.5px solid ${act?C.caliza:"transparent"}`,
+                    cursor:"pointer",flexShrink:0,width:conAño?32:24}}>
+                  {/* La foto es un punto aparte del cierre: son dos hechos
+                      distintos y fundirlos en un color los confunde. */}
+                  <span style={{width:4,height:4,borderRadius:99,
+                    background:m.fotos>0?C.blue:"transparent"}}/>
+                  <span style={{width:"100%",height:act?22:14,borderRadius:2,
+                    background:COLOR_MARCA[m.estado]}}/>
+                  {/* El hueco de nota, en ámbar, bajo la marca del cierre. */}
+                  <span style={{width:"100%",height:2,borderRadius:2,
+                    background:m.nota?.estado===NOTA_FALTA?C.yellow:"transparent"}}/>
+                  <span style={{fontSize:7,lineHeight:1,whiteSpace:"nowrap",
+                    color:act?C.caliza:C.textMut,fontWeight:act?700:500}}>
+                    {conAño ? `${m.semana}·${String(m.año).slice(2)}` : m.semana}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"3px 9px",fontSize:8,
+            color:C.textMut,marginBottom:9}}>
+            {[MARCA_CERRADA,MARCA_SIN_COMPARAR,MARCA_SOLO_FOTOS,MARCA_SIN_DATO].map(e => (
+              <span key={e} style={{display:"flex",alignItems:"center",gap:3}}>
+                <span style={{width:7,height:7,borderRadius:2,background:COLOR_MARCA[e]}}/>
+                {LEYENDA_MARCA[e]}
+              </span>
+            ))}
+            <span style={{display:"flex",alignItems:"center",gap:3}}>
+              <span style={{width:6,height:6,borderRadius:99,background:C.blue}}/>con fotos
+            </span>
+            <span style={{display:"flex",alignItems:"center",gap:3}}>
+              <span style={{width:8,height:3,borderRadius:2,background:C.yellow}}/>cerrada sin nota
+            </span>
+          </div>
+        </>}
+
+        {/* Las fotos sin fecha no son una semana, así que no son una marca del
+            riel: colgarlas de una sería inventar evidencia fechada. */}
+        {sinSemana.length > 0 && (
+          <div style={{marginBottom:9}}>
             <button onClick={()=>setSemanaSel("__sin__")} style={chip(semActiva==="__sin__")}>
               Sin fecha ({sinSemana.length})
             </button>
-          )}
-        </div>
-        <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
-          {semActiva === "__sin__"
-            ? "Fotos sin fecha de subida registrada"
-            : leyendaSemanaSubida(semActiva)}
-        </div>
-        <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
-          {semActiva === "__sin__"
-            ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
-            : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
-        </div>
-        {deSemana.length === 0 && (
-          <div style={{padding:20,textAlign:"center",color:C.textMut,fontSize:11}}>
+          </div>
+        )}
+
+        {/* ── EL PANEL DE LA SEMANA ──────────────────────────────────────
+            Cuando no hay número, dice POR QUÉ no lo hay. Nunca un guion: un
+            guion significa lo mismo «no cambió» que «nadie capturó». */}
+        {semActiva !== "__sin__" && marcaActiva && (
+          <div style={{background:C.surface,border:`0.5px solid ${C.border}`,borderRadius:7,
+            padding:"9px 10px",marginBottom:10}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:7,flexWrap:"wrap"}}>
+              <span style={{fontSize:13,fontWeight:700,color:C.caliza}}>
+                {etiquetaSemanaRiel(marcaActiva, conAño)}
+              </span>
+              <span style={{fontSize:9,color:C.textMut}}>
+                {rangoSemanaEnPalabras(marcaActiva.clave)}
+              </span>
+            </div>
+
+            {marcaActiva.cierre ? <>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(106px,1fr))",
+                gap:7,margin:"9px 0 7px"}}>
+                <Kpi label="Avance acumulado" color={C.caliza}
+                  value={marcaActiva.cierre.avance !== null
+                    ? `${NUM(marcaActiva.cierre.avance,1)}%` : "sin dato"}
+                  size={marcaActiva.cierre.avance !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.avance !== null ? null
+                    : "el cierre de esa semana no registró el avance ponderado"}/>
+                <Kpi label="Avanzó en la semana"
+                  color={marcaActiva.cierre.delta === null ? C.textMut
+                    : marcaActiva.cierre.delta < 0 ? C.red : C.green}
+                  value={marcaActiva.cierre.delta !== null
+                    ? `${marcaActiva.cierre.delta >= 0 ? "+" : ""}${NUM(marcaActiva.cierre.delta,2)} pp`
+                    : "no se puede comparar"}
+                  size={marcaActiva.cierre.delta !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.delta !== null
+                    ? `contra ${String(marcaActiva.cierre.deltaDe).replace("-"," de ")}`
+                    : fraseSinDelta(marcaActiva)}/>
+                <Kpi label="Ejecutado al cierre" color={C.blueDk}
+                  value={marcaActiva.cierre.dinero !== null
+                    ? `$${NUM(marcaActiva.cierre.dinero,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.dinero !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.dinero !== null
+                    ? "lo que el cierre registró como ejecutado"
+                    : "el cierre de esa semana no registró el monto ejecutado"}/>
+                {/* El corte de estimaciones. Dice lo que estaba estimado y
+                    cobrado ESA semana, no hoy: si no se registró, lo dice y
+                    se queda callado. Rellenarlo con el total vigente pintaría
+                    hacia atrás una línea plana que nunca ocurrió. */}
+                <Kpi label="Estimado al cierre" color={C.blueDk}
+                  value={marcaActiva.cierre.estimado !== null
+                    ? `$${NUM(marcaActiva.cierre.estimado,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.estimado !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.estimado !== null
+                    ? "lo estimado acumulado al cerrar"
+                    : FRASE_SIN_CORTE_EST}/>
+                <Kpi label="Pagado al cierre" color={C.greenDk}
+                  value={marcaActiva.cierre.pagado !== null
+                    ? `$${NUM(marcaActiva.cierre.pagado,0)}` : "sin dato"}
+                  size={marcaActiva.cierre.pagado !== null ? 15 : 11}
+                  sub={marcaActiva.cierre.pagado !== null
+                    ? "estimaciones pagadas al cerrar"
+                    : FRASE_SIN_CORTE_EST}/>
+              </div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
+                {marcaActiva.cierre.cerradoPor
+                  ? `Cerrada por ${marcaActiva.cierre.cerradoPor}`
+                  : "El cierre no registró quién lo hizo"}
+                {marcaActiva.cierre.fechaCierre
+                  && ` · ${fechaEnPalabras(fechaLocalDeISO(String(marcaActiva.cierre.fechaCierre).slice(0,10)))
+                        || String(marcaActiva.cierre.fechaCierre).slice(0,10)}`}
+              </div>
+              {/* La nota de la semana. El hueco se ve y nombra a quien cerró:
+                  un hueco con nombre se le puede reclamar a alguien. */}
+              <div style={{borderTop:`0.5px solid ${C.border}`,paddingTop:7,fontSize:10,
+                lineHeight:1.5,
+                color:marcaActiva.nota?.estado===NOTA_FALTA ? C.yellowDk : C.textSec,
+                fontStyle:marcaActiva.nota?.estado===NOTA_ESCRITA ? "normal" : "italic"}}>
+                {fraseNota(marcaActiva.nota)}
+                {marcaActiva.nota?.editadaEn && (
+                  <span style={{color:C.textMut,fontStyle:"italic"}}>
+                    {" "}— editada el {String(marcaActiva.nota.editadaEn).slice(0,10)}
+                  </span>
+                )}
+              </div>
+            </> : (
+              <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginTop:6}}>
+                {frasePanelSinCierre(marcaActiva)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* La cabecera de la galería sólo cuando hay galería. Encabezar con
+            "Subidas en la semana del 10 al 16 de ago" una semana sin una sola
+            foto anuncia algo que no está y obliga a desmentirlo abajo. */}
+        {deSemana.length > 0 ? <>
+          <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:2}}>
+            {semActiva === "__sin__"
+              ? "Fotos sin fecha de subida registrada"
+              : leyendaSemanaSubida(semActiva)}
+          </div>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:10}}>
+            {semActiva === "__sin__"
+              ? "Se cargaron antes de que se guardara la fecha. No se puede saber de qué semana son."
+              : "Es la fecha en que la foto se cargó a la app, no la fecha en que se ejecutó el trabajo."}
+          </div>
+        </> : marcaActiva?.cierre && (
+          // Sólo cuando la semana SÍ se cerró: ahí el panel habló de avance y
+          // dinero sin mencionar fotos, y el hueco hay que nombrarlo. En una
+          // semana sin cierre ya lo dijo `frasePanelSinCierre`, y repetirlo
+          // haría parecer dos hallazgos donde hay uno.
+          <div style={{padding:"14px 0",textAlign:"center",color:C.textMut,fontSize:10}}>
             No se subieron fotos en esta semana.
           </div>
         )}
@@ -16061,7 +17179,7 @@ function FotosCliente({obra, subs}){
       </>}
 
       {/* ── VISTA 2: una partida a lo largo de sus semanas ──────────────── */}
-      {todas.length > 0 && vista === "partida" && !pActiva && <>
+      {todas.length > 0 && vistaEf === "partida" && !pActiva && <>
         <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
           Elige una partida para ver su evidencia semana por semana.
         </div>
@@ -16081,7 +17199,7 @@ function FotosCliente({obra, subs}){
         ))}
       </>}
 
-      {todas.length > 0 && vista === "partida" && pActiva && <>
+      {todas.length > 0 && vistaEf === "partida" && pActiva && <>
         <button onClick={()=>setPartidaSel(null)}
           style={{background:"none",border:"none",color:C.blue,fontSize:10,padding:0,
             cursor:"pointer",marginBottom:8}}>‹ todas las partidas</button>
@@ -17624,7 +18742,7 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                 {[
                   {v:"porcentaje", lbl:"Por porcentaje", desc:"Para obras donde cada partida se mide en % de avance acumulado. Default."},
-                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para obras tipo precio unitario donde el catálogo es referencia y los volúmenes reales pueden variar (TAMSA, servicios especializados)."},
+                  {v:"volumen", lbl:"Por volumen ejecutado", desc:"Para contratos a precio unitario donde el catálogo es una referencia y los volúmenes realmente ejecutados pueden variar."},
                 ].map(opt => {
                   const sel = (obra.modoAvance||"porcentaje") === opt.v;
                   return <div key={opt.v} onClick={()=>pedirCambioModo(opt.v)}
@@ -19542,6 +20660,8 @@ export default function App(){
     setEstCargadas(false);
     setSubcontratos([]);
     setHistorialAvance([]);
+    setRecorteHistorial(null);
+    setNotasSemana({});
     setHistorialCargado(false);
     setOtrosGastos([]);
     setFechasModulos({});
@@ -19673,6 +20793,14 @@ export default function App(){
   // fetch condicional al rol en el useEffect(obraId) de abajo.
   const[nominaHistorial,setNominaHistorial]=useState([]);
   const[historialAvance,setHistorialAvance]=useState([]);  // [{id, semana, año, tipo, subs, avancePonderado, ...}]
+  // Lo que el historial PERDIÓ al llegar al tope de 52 semanas. Va aparte de
+  // `semanas` porque es un hermano suyo en el documento, y sin él la pantalla
+  // no puede distinguir un expediente al que le recortaron el arranque de uno
+  // al que nadie se lo capturó.
+  const[recorteHistorial,setRecorteHistorial]=useState(null);
+  // Las notas de las semanas cerradas. Documento aparte porque sobreviven al
+  // recorte de 52: una constancia que se borra sola no es constancia.
+  const[notasSemana,setNotasSemana]=useState({});
   const[historialCargado,setHistorialCargado]=useState(false);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
   // Fechas de última actualización por módulo, para detectar pendientes de captura
@@ -19688,10 +20816,24 @@ export default function App(){
     if (necesario) {
       fsGet(`obras/${obraId}/avance/historial`).then(d=>{
         if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
+        setRecorteHistorial(d?.recorte || null);
         setHistorialCargado(true);
       });
+      fsGet(`obras/${obraId}/avance/notas`).then(d=>setNotasSemana(d?.notas || {}));
     }
   }, [obraId, tab, subTabOper, historialCargado]);
+
+  // Escribir o corregir la nota de una semana. La pantalla sólo la enseña si
+  // Firestore la aceptó: pintar el texto antes de saberlo dejaría a quien la
+  // escribió creyendo que la constancia quedó cuando las reglas la rebotaron.
+  const guardarNota = useCallback(async (clave, nota) => {
+    const ok = await guardarNotaSemanal(obraId, clave, {
+      ...nota, autor: usuario?.correo || null,
+      autorNombre: usuario?.nombre || null, rol: usuario?.rol || null,
+    });
+    if (ok) setNotasSemana((await fsGet(`obras/${obraId}/avance/notas`))?.notas || {});
+    return ok;
+  }, [obraId, usuario?.correo, usuario?.nombre, usuario?.rol]);
 
   // Cargar otros gastos (manuales) al entrar a la obra para que el Dashboard
   // pueda incluirlos en las tendencias y el resumen de gasto total.
@@ -20187,7 +21329,7 @@ export default function App(){
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
-        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} onNavTab={navTab}/>
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
         : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
@@ -20198,9 +21340,11 @@ export default function App(){
           subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
           maquinaria={maquinaria} setMaquinaria={v=>{setMaquinaria(v);setCambiosPendientes(true);}}
           materiales={materiales} setMateriales={v=>{setMateriales(v);setCambiosPendientes(true);}}
-          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones} estCargadas={estCargadas}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
@@ -20219,9 +21363,11 @@ export default function App(){
           subs={subs} setSubs={v=>{setSubs(v);setCambiosPendientes(true);}}
           maquinaria={maquinaria} setMaquinaria={setMaquinaria}
           materiales={materiales} setMateriales={setMateriales}
-          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones} estCargadas={estCargadas}
           subcontratos={subcontratos} setSubcontratos={setSubcontratos}
           historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
+          recorteHistorial={recorteHistorial}
+          notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
@@ -20229,7 +21375,7 @@ export default function App(){
 
       {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
           fotos, las revisa — y lo que necesita es exactamente eso. */}
-      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
 
       {screen==="obra"&&tab==="contrato"&&obra&&(
         <Planeacion
@@ -20252,7 +21398,7 @@ export default function App(){
 
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
-      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs}/>}
+      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
       {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>

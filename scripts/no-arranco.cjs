@@ -38,6 +38,32 @@ module.exports = function noArranco(faltantes, archivo = 'src/App.jsx') {
 
 module.exports.NO_ARRANCO = NO_ARRANCO;
 
+// El tercer modo de no arrancar: falta algo del ENTORNO.
+//
+// No un símbolo renombrado ni una excepción, sino un insumo que la prueba
+// necesita y que no se puede fabricar sola: un volcado de producción, una
+// credencial, un archivo que alguien tiene que bajar antes. Es el caso más
+// fácil de clasificar mal porque la prueba sabe exactamente qué le falta, y
+// decirlo con `exit(1)` sale gratis.
+//
+// Sale caro después. Un rojo que lleva semanas puesto porque a alguien le
+// falta un archivo en /tmp es un rojo que se aprende a saltar, y el día que
+// esa misma prueba encuentre una regresión de verdad nadie la va a mirar. El
+// P4 existe para esto: tres estados, y "no pude mirar" es el tercero.
+module.exports.sinPrecondicion = function sinPrecondicion(queFalta, comoConseguirlo) {
+  const pasos = Array.isArray(comoConseguirlo) ? comoConseguirlo : [comoConseguirlo];
+  console.log('');
+  console.log('NO ARRANCÓ — le falta un insumo del entorno:');
+  console.log('  · ' + queFalta);
+  console.log('');
+  console.log('Esto NO es un rojo: no se comprobó nada, ni bien ni mal. Para que');
+  console.log('corra, conseguir eso primero:');
+  console.log('');
+  for (const p of pasos) if (p) console.log('  ' + p);
+  console.log('');
+  process.exit(NO_ARRANCO);
+};
+
 // El mismo principio, para el otro modo de no arrancar.
 //
 // Un símbolo que cambió de nombre lo atrapa `noArranco` arriba. Lo que no

@@ -346,11 +346,19 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
 
   const correrGuardar = async (tipo) => {
     const pedidas = [];
-    const LIBRES_G = ['setEstado', 'setFalloSnapshot', 'subs', 'maquinaria', 'materiales',
+    const LIBRES_G = ['setEstado', 'setFalloSnapshot', 'setFalloNota', 'subs',
+                      'maquinaria', 'materiales',
                       'obra', 'usuario', 'fsSetA', 'crearSnapshotAvance', 'onHistorialNuevo',
-                      'onSaved', 'notifARoles', 'ErrorSnapshot'];
+                      'onSaved', 'notifARoles', 'ErrorSnapshot',
+                      'onGuardarNota', 'snapshotId'];
     const args = {
-      setEstado: () => {}, setFalloSnapshot: () => {},
+      setEstado: () => {}, setFalloSnapshot: () => {}, setFalloNota: () => {},
+      // La nota de la semana NO entra por aquí. §5 mide qué RUTAS pide el
+      // guardado, y la nota se escribe por `onGuardarNota`, que es del padre.
+      // Dejarlo en null es parte de la medición: así `guardar` no la intenta y
+      // el inventario de rutas sigue contando sólo lo que esta sección juzga.
+      onGuardarNota: null,
+      snapshotId: (s, a) => `S${s}-${a}`,
       subs: [{ sec: 'A-01', a: 50, cantEjec: 5 }],
       maquinaria: [], materiales: [],
       obra: { id: OBRA_DEP, nombre: 'OBRA DEMO 1', contrato: 'C-1' },
