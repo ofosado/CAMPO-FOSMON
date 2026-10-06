@@ -39,6 +39,8 @@ archivo.
 | 39 | **El resumen semanal por correo lee la raíz, no `orgId`**: el margen bruto de una constructora puede salir en el correo de otra organización. Es el P5 roto por fuera de la pantalla. | ABIERTO |
 | 7 | **Obra 0112: lo ejecutado no cuadra con las estimaciones del residente** — $2.5M de diferencia sin explicar. | ABIERTO |
 | 8 | **Tres fórmulas distintas de «ejecutado» conviviendo en el código**, $3.8M entre ellas. Dos ramas ya atendieron parte. | PARCIAL |
+| 50 | **No existen las partidas extraordinarias.** Cuando el catálogo no se ejecuta completo se generan para ejercer el contrato, o porque hizo falta algo nuevo; hoy no hay dónde registrarlas, así que lo ejecutado sale por debajo de lo real y el catálogo congelado se presenta como si fuera todo el contrato. Clave, descripción, unidad, cantidad, PU e importe; aparte del catálogo congelado y marcadas como extraordinarias, con su convenio o autorización, y cuentan en el ejecutado. Aplica a los dos tipos de organización. **Hipótesis por verificar: puede ser la causa del #7.** | ABIERTO |
+| 51 | **El avance se compara contra una recta, no contra el programa de obra.** El art. 61 hace del programa contractual la base para medir el avance, y hoy `programadoEnFecha` reparte el 100% linealmente sobre los días transcurridos: la Curva S y el KPI «Avance ideal» presentan esa recta como si fuera el programa. Son dos cosas: dejar de afirmarla (decir «no disponible», ya decidido) y poder cargar el programa real. | ABIERTO |
 | 3 | **Pantallas que afirman en cero mientras llega el dato.** El Panel principal ya está; siguen la lista de obras, los módulos por obra, y el encabezado de Evidencia que dice «0 semanas cerradas» (medido 2026-10-06). El patrón de arreglo ya existe: `estCargadas`. | PARCIAL |
 | 2 | **Primer ingreso: GP se queda en «cargando».** Consecuencia mitigada en `fix/arranque`, causa raíz abierta. | PARCIAL |
 | 47 | **El año de la semana se pierde en dos sitios**, y en obras multianuales eso mezcla semanas de años distintos. Las dos partes deben arreglarse juntas. | PARCIAL |
@@ -75,14 +77,18 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
+| 52 | **La evidencia fotográfica georreferenciada no existe, y es el diferenciador del producto** según el documento maestro: captura en vivo con cámara, coordenadas con su precisión, marca de agua, hash de integridad, validación de proximidad y sello de servidor. Hoy no hay nada de eso. Bloquea el argumento de venta, no la demo. | ABIERTO |
 | 12 | **Exportación del expediente completo del cliente** (art. 74). Bloquea el contrato, no la demo. | ABIERTO |
 | 45 | **El informe del Art. 73 no existe**: el PDF ejecutivo que hay está hecho para la constructora, no para una dependencia. | ABIERTO |
+| 54 | **Exportación a SIMVER**: ahorra semanas en cada cierre de cuenta pública, y el ORFIS distingue las obras con coordenadas exactas. La parte de coordenadas depende del #52. | ABIERTO |
+| 53 | **Conexión en vivo con el servidor de gastos**, que retira el Google Sheet GP. El endpoint, el token de un solo uso y un ejemplo probado ya existen. Dos condiciones: la credencial como secreto en Cloud Functions, y **no migrar** — escribir en un documento aparte y comparar dos o tres semanas antes de cambiar la fuente, igual que en la migración de nómina. Retira además la causa raíz del #2 y del #40. | ABIERTO |
 | 13 | **Rehacer el PDF.** | ABIERTO |
 | 24 | **Plan de correos** — qué manda cotea y qué no. Urge el aviso de respaldo fallido y la recuperación de contraseña; el resto puede esperar. | ABIERTO |
 | 26 | **Pantalla de salud del sistema en administración.** Es la única señal útil si el backend está caído. | ABIERTO |
 | 27 | **La proyección asume contrato cerrado, y en TAMSA no aplica.** Depende de que exista `tipoContrato`. | ABIERTO |
 | 10 | **El formulario de maquinaria no pide fecha por movimiento.** | ABIERTO |
 | 41 | **La empresa ejecutante se teclea** — el mismo RFC escrito tres veces son tres empresas distintas. Ya existe de dónde traerlo. | ABIERTO |
+| 55 | **Comparativo de contratistas**: desviación ponderada por monto, días de atraso acumulados, cumplimiento de captura y días que tarda en presentar estimaciones. No se puede empezar antes del #41 —sin padrón, el mismo contratista son tres— ni antes del contador de días de la rama de estimaciones. | ABIERTO |
 | 36 | **El naranja de marca choca con el naranja de estado**: con daltonismo rojo-verde no se distingue «al corriente» de «crítico», y el color va solo. | ABIERTO |
 | 14 | **Manual de usuario con capturas + correo de alta automatizado.** | ABIERTO |
 
