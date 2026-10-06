@@ -3589,6 +3589,65 @@ const corteDeEstimaciones = (estimaciones, cargadas) => {
   };
 };
 
+// ── ESTIMACIONES DEL LADO DEPENDENCIA ──────────────────────────────────────
+// La constructora FORMULA estimaciones; la dependencia las RECIBE. Es el
+// mismo documento (`config/estimaciones`) y los mismos dos campos que mandan
+// el dinero: `monto` y `estatus`. No se renombran. `corteDeEstimaciones`
+// —tres funciones más arriba— los lee para congelar el corte de la semana, y
+// un campo con otro nombre no rompe nada en pantalla: deja el corte en cero
+// sin que nadie lo note. Lo que cambia es lo que se AGREGA alrededor.
+//
+// El literal de «pagada» vive aquí y no suelto en cada pantalla. El corte
+// compara con `_ne(estatus) === 'pagada'`, o sea sin acentos y en minúsculas,
+// así que un lado que escribiera "Pagado" pasaría la vista pero saldría del
+// corte. Una sola constante hace imposible esa divergencia.
+const ESTATUS_PAGADA = "Pagada";
+
+// El trámite de la dependencia no es el de la constructora. Allá una
+// estimación se elabora, se aprueba, se factura y se cobra; aquí se recibe en
+// ventanilla, se revisa, se autoriza y se paga. Son los mismos cuatro pasos
+// contados desde el otro lado del mostrador, y el último es literalmente el
+// mismo estado.
+const ESTATUS_ESTIMACION_DEPENDENCIA = ["Recibida", "En revisión", "Autorizada", ESTATUS_PAGADA];
+
+// Las fechas se capturan y se guardan como "AAAA-MM-DD" (el valor de un
+// <input type="date">). `new Date("2026-09-30")` las interpreta como medianoche
+// UTC, y al oeste de Greenwich eso pinta el día 29 y descuadra las restas por
+// un día. Construir la fecha por partes la deja en medianoche LOCAL, que es el
+// día que el usuario tecleó.
+const _fechaLocal = s => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || '');
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+};
+
+// El periodo en palabras, derivado de las dos fechas.
+//
+// `periodo` sigue existiendo y sigue siendo un string: la pantalla de la
+// constructora lo pinta y filtra con `e.periodo.trim()`. Lo que deja de
+// existir es CAPTURARLO a mano. "sep-2026" no dice contra qué día contar, y
+// sin un día de cierre el contador de días de recepción no se puede calcular
+// —que es justamente el número que la dependencia no tiene hoy.
+const periodoEnPalabras = (ini, fin) => {
+  const a = _fechaLocal(ini), b = _fechaLocal(fin);
+  const f = d => d.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" });
+  if (a && b) return `${f(a)} – ${f(b)}`;
+  if (b) return `al ${f(b)}`;
+  if (a) return `desde ${f(a)}`;
+  return "";
+};
+
+// Días entre el cierre del periodo y la recepción en ventanilla.
+//
+// Devuelve `null` —no 0— cuando falta cualquiera de las dos fechas. Un 0 se
+// lee «la presentaron el mismo día que cerró el periodo», que es una
+// afirmación; la falta de fecha es un hueco. La pantalla dice cuál de las dos
+// es, nunca las confunde.
+const diasDeRecepcion = est => {
+  const cierre = _fechaLocal(est?.periodoFin), recibo = _fechaLocal(est?.fechaRecepcion);
+  if (!cierre || !recibo) return null;
+  return Math.round((recibo - cierre) / 86400000);
+};
+
 // Crear snapshot del avance actual y guardarlo en el historial
 // tipo: "intermedio" (guardado normal) | "oficial" (cierre formal de viernes)
 const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedio", modoVol = false, contrato = 0, corteEst = null) => {
@@ -4703,6 +4762,40 @@ const borrarFotoHuerfana = async (fotoRef) => {
   }
 };
 
+// Helper Storage — adjunto de una estimación (carátula firmada, factura).
+//
+// No reusa `uploadFoto` aunque haga lo mismo, porque `uploadFoto` clava
+// `fotos/` en la ruta: una factura archivada ahí queda bajo el permiso de la
+// galería, y la galería la ve TODO el que puede ver la obra —incluido el
+// contratista, que no tiene por qué leer la carátula firmada de otro—. La
+// ruta propia es lo que permite que las reglas la juzguen aparte.
+//
+// `conOrg` antepone la organización igual que en las fotos, que es el esquema
+// de rutas que pidió el requerimiento: `/orgs/{oid}/obras/{obraId}/…`.
+//
+// Lanza, nunca devuelve silencio, y entrega el `ref` para que el llamador
+// borre el huérfano si el commit a Firestore falla después (mismo rescate que
+// `subirDocumento`).
+const subirAdjuntoEstimacion = async (obraId, estId, archivoId, base64url) => {
+  try {
+    const r = storageRef(fbStor, conOrg(`obras/${obraId}/estimaciones/${estId}/${archivoId}`));
+    await uploadString(r, base64url, 'data_url');
+    const url = await getDownloadURL(r);
+    return { url, ref: r, ruta: r.fullPath };
+  } catch (e) {
+    console.error('subirAdjuntoEstimacion FAILED', {
+      obraId, estId, archivoId,
+      errorCode: e?.code, errorMessage: e?.message,
+      base64Length: base64url ? base64url.length : 0,
+    });
+    if (e?.code === 'storage/unauthorized') {
+      throw new Error('No se pudo subir el archivo: tu rol no puede adjuntar ' +
+                      'documentos a las estimaciones de esta obra.');
+    }
+    throw new Error(`Storage: ${e?.code || 'error-desconocido'} — ${e?.message || 'error desconocido'}`);
+  }
+};
+
 // Helper: carga SheetJS bajo demanda y devuelve una promesa que se resuelve
 // cuando window.XLSX está disponible. Necesario porque en PWA standalone
 // el timing de la carga de scripts externos es distinto al browser normal —
@@ -5810,6 +5903,9 @@ const PERIODOS=[
 const CPTS=["Anticipo","En almacén","En tránsito","En fabricación"];
 const CT_COL={"Anticipo":C.yellow,"En almacén":C.green,"En tránsito":C.blue,"En fabricación":C.purple};
 const EST_COL={Pagada:C.green,Facturada:C.purple,Aprobada:C.blue,"En proceso":C.yellow};
+// Los cuatro estados del trámite de dependencia (ver ESTATUS_ESTIMACION_DEPENDENCIA).
+// «Pagada» conserva el verde que ya tiene arriba: es el mismo estado.
+const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purple,[ESTATUS_PAGADA]:C.green};
 
 // ── PANTALLA LOGIN ─────────────────────────────────────────────────────────
 function Login({onLogin}){
@@ -14272,6 +14368,318 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   </div>;
 }
 
+// ── ESTIMACIONES — VISTA DE DEPENDENCIA ────────────────────────────────────
+// Pantalla propia, no la de la constructora con campos escondidos (P5).
+//
+// `Estimaciones` está construida ALREDEDOR de la economía interna del
+// contratista: anticipo, fondo de garantía, retención estratégica, cobrado
+// efectivo, anticipo por recuperar. No es un bloque que se pueda apagar con
+// un `if` —es el esqueleto: `cE()` alimenta ocho de sus diez KPIs y las
+// cuatro columnas de cada renglón. Reusarla dejaría la frontera del P5 a un
+// `if` de distancia, y esa frontera tiene que ser estructura.
+//
+// Lo que la dependencia sí necesita y hoy no tiene en ninguna pantalla:
+//   · el periodo con fecha de cierre EXPLÍCITA, no texto libre;
+//   · la fecha en que la recibió en ventanilla, que es dato suyo;
+//   · los días entre una y otra — cuánto tardaron en presentarla;
+//   · la carátula firmada y la factura, adjuntas al expediente.
+//
+// Lo que NO cambia: `monto` y `estatus` se llaman igual que del otro lado,
+// porque `corteDeEstimaciones` los lee para congelar el corte de la semana.
+function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargadas, rol, usuario}) {
+  const editar = can(rol, "estimaciones", "editar");
+  const [guardando, setGuardando] = useState(false);
+  const [guardado,  setGuardado]  = useState(false);
+  const [fallo,     setFallo]     = useState("");
+  const [subiendo,  setSubiendo]  = useState(null);   // `no` de la estimación en curso
+
+  // El único camino a Firestore de esta pantalla, y pasa por `fsSetAEstricto`.
+  //
+  // `fsSetA` —el que usa la constructora— se traga el rechazo de las reglas y
+  // devuelve `false`. En una dependencia eso significa que el supervisor
+  // teclea un monto, ve la pantalla igual que siempre, y el dato no existe.
+  // Dinero capturado que no se guarda, sin una sola señal: el peor caso que
+  // puede tener esto. Aquí el error llega hasta la pantalla.
+  const persistir = async (lista) => {
+    await fsSetAEstricto(`obras/${obra.id}/config/estimaciones`, {data: lista},
+      { modulo:"estimaciones", entidad:`${lista.length} estimaciones`,
+        obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
+  };
+
+  const guardar = async () => {
+    setGuardando(true); setFallo("");
+    try {
+      await persistir(estimaciones);
+      setGuardado(true); setTimeout(()=>setGuardado(false), 2500);
+    } catch (e) {
+      setFallo(`NO se guardó: ${e?.message || 'error desconocido'}. ` +
+               `Lo que ves en pantalla todavía no está en el expediente — ` +
+               `no cierres esta pestaña.`);
+    }
+    setGuardando(false);
+  };
+
+  const actualiza = (i, cambios) => setEstimaciones(es => es.map((x, j) => {
+    if (j !== i) return x;
+    const n = {...x, ...cambios};
+    // `periodo` no se teclea: se deriva de las dos fechas. Así la pantalla de
+    // la constructora sigue leyendo el string que espera (`e.periodo.trim()`)
+    // y aquí no hay dos versiones del mismo periodo que puedan discrepar.
+    if ('periodoIni' in cambios || 'periodoFin' in cambios) {
+      n.periodo = periodoEnPalabras(n.periodoIni, n.periodoFin);
+    }
+    return n;
+  }));
+
+  const nueva = () => setEstimaciones(es => [...es, {
+    no: Math.max(0, ...es.map(e => Number(e?.no) || 0)) + 1,
+    monto: 0, periodo: "", periodoIni: "", periodoFin: "",
+    estatus: ESTATUS_ESTIMACION_DEPENDENCIA[0],
+    fechaRecepcion: "", recibidaPor: "", adjuntos: [],
+  }]);
+
+  // Adjuntar carátula o factura. Sube primero a Storage y después escribe la
+  // lista completa a Firestore: si el commit falla, borra el huérfano —el
+  // mismo rescate que `subirDocumento`—, porque un archivo en Storage que
+  // ninguna estimación referencia no lo encuentra nadie nunca.
+  const adjuntar = async (i, clase, file) => {
+    if (!file) return;
+    const est = estimaciones[i];
+    if (file.size > 10 * 1024 * 1024) {
+      setFallo(`"${file.name}" pesa ${NUM(file.size/1048576,1)} MB y el límite es 10 MB. ` +
+               `No se subió nada.`);
+      return;
+    }
+    setSubiendo(est.no); setFallo("");
+    const base64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = ev => res(ev.target.result);
+      r.onerror = () => rej(new Error('no se pudo leer el archivo'));
+      r.readAsDataURL(file);
+    }).catch(e => { setFallo(e.message); return null; });
+    if (!base64) { setSubiendo(null); return; }
+
+    let subidoRef = null;
+    try {
+      const archivoId = `${Date.now()}-${clase}`;
+      const subida = await subirAdjuntoEstimacion(obra.id, est.no, archivoId, base64);
+      subidoRef = subida.ref;
+      const adj = {
+        id: archivoId, nombre: file.name, tipo: file.type, tamaño: file.size,
+        url: subida.url, ruta: subida.ruta, clase,
+        fecha: new Date().toISOString().slice(0,10),
+        subidoPor: usuario?.correo || "",
+      };
+      const lista = estimaciones.map((x, j) =>
+        j === i ? {...x, adjuntos: [...(x.adjuntos||[]), adj]} : x);
+      try {
+        await persistir(lista);
+        setEstimaciones(lista);
+      } catch (commitErr) {
+        await borrarFotoHuerfana(subidoRef);
+        setFallo(`El archivo subió pero NO quedó ligado a la EST-${est.no}: ` +
+                 `${commitErr?.message || 'error desconocido'}. Se borró para no ` +
+                 `dejar basura; vuelve a intentarlo.`);
+      }
+    } catch (e) {
+      setFallo(e?.message || 'No se pudo subir el archivo.');
+    }
+    setSubiendo(null);
+  };
+
+  const quitarAdjunto = async (i, adjId) => {
+    const lista = estimaciones.map((x, j) =>
+      j === i ? {...x, adjuntos: (x.adjuntos||[]).filter(a => a.id !== adjId)} : x);
+    setFallo("");
+    try { await persistir(lista); setEstimaciones(lista); }
+    catch (e) { setFallo(`No se pudo quitar el adjunto: ${e?.message||'error desconocido'}.`); }
+  };
+
+  // ── La ventana de carga ──
+  // La lista arranca en `[]` y se llena cuando contesta Firestore. Pintar los
+  // KPIs en esa ventana diría "$0 recibidos", que no es un hueco sino una
+  // afirmación falsa sobre el expediente. Es el mismo defecto que ya costó
+  // caro en el riel de semanas y en los KPIs del tablero.
+  if (!estCargadas) {
+    return <Card>
+      <Tit>Estimaciones</Tit>
+      <div style={{fontSize:11,color:C.textMut,padding:"16px 0",textAlign:"center"}}>
+        Consultando el expediente…
+      </div>
+    </Card>;
+  }
+
+  const monto = e => parseFloat(e?.monto) || 0;
+  const total    = estimaciones.reduce((t,e) => t + monto(e), 0);
+  const pagado   = estimaciones.filter(e => _ne(e?.estatus) === _ne(ESTATUS_PAGADA))
+                               .reduce((t,e) => t + monto(e), 0);
+  const porPagar = total - pagado;
+  // El promedio se calcula SOLO sobre las que tienen las dos fechas, y la
+  // pantalla dice sobre cuántas. Promediar metiendo las incompletas como 0
+  // bajaría el número con estimaciones de las que no se sabe nada.
+  const conDias  = estimaciones.map(diasDeRecepcion).filter(d => d !== null);
+  const promDias = conDias.length ? conDias.reduce((a,b)=>a+b,0) / conDias.length : null;
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {!editar && <div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
+      borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
+       Vista de solo lectura — tu rol no permite capturar estimaciones.
+    </div>}
+
+    {fallo && <div role="alert" style={{background:C.redBg,border:`1px solid ${C.red}`,
+      borderRadius:8,padding:"9px 12px",fontSize:11,color:C.redDk,lineHeight:1.5}}>
+      {fallo}
+    </div>}
+
+    <Card>
+      <Tit>Estimaciones recibidas</Tit>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:7}}>
+        <Kpi label="Total recibido" value={MXN(total)} color={C.caliza} size={12}
+          sub={obra.presupuesto > 0 ? `${NUM(total/obra.presupuesto*100,1)}% del contrato` : `${estimaciones.length} estimaciones`}/>
+        <Kpi label="Pagado" value={MXN(pagado)} sub="estimaciones ya pagadas" color={C.green} size={12}/>
+        <Kpi label="Por pagar" value={MXN(porPagar)} sub="recibido aún no pagado" color={C.yellow} size={12}/>
+        <Kpi label="Días de recepción"
+          value={promDias === null ? "sin dato" : `${NUM(promDias,0)} d`}
+          sub={promDias === null
+            ? "falta fecha de cierre o de recepción"
+            : `promedio de ${conDias.length} de ${estimaciones.length}`}
+          color={promDias === null ? C.textMut : C.blue} size={12}/>
+      </div>
+    </Card>
+
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:8,flexWrap:"wrap"}}>
+        <Tit>Relación de estimaciones</Tit>
+        {editar && <div style={{display:"flex",gap:6}}>
+          <SecBtn onClick={nueva}>+ Registrar recepción</SecBtn>
+          <button onClick={guardar} disabled={guardando}
+            style={{background:guardado?C.green:C.caliza,border:"none",borderRadius:6,
+              padding:"5px 14px",fontSize:11,fontWeight:700,color:C.bg,
+              cursor:guardando?"wait":"pointer",transition:"background .3s"}}>
+            {guardando ? "Guardando…" : guardado ? "Guardado" : "Guardar cambios"}
+          </button>
+        </div>}
+      </div>
+
+      {estimaciones.length === 0 && (
+        <div style={{padding:"24px 16px",textAlign:"center",background:C.bg,borderRadius:8}}>
+          <div style={{fontSize:12,fontWeight:600,color:C.caliza,marginBottom:6}}>
+            Sin estimaciones recibidas
+          </div>
+          <div style={{fontSize:10,color:C.textSec,maxWidth:400,margin:"0 auto",lineHeight:1.5}}>
+            {editar
+              ? 'Usa "+ Registrar recepción" para capturar la primera: número, periodo con su fecha de cierre, monto sin IVA, estatus y la fecha en que llegó a ventanilla.'
+              : 'Esta obra todavía no tiene estimaciones registradas.'}
+          </div>
+        </div>
+      )}
+
+      {estimaciones.map((e, i) => {
+        const col  = EST_COL_DEP[e.estatus] || EST_COL[e.estatus] || C.textMut;
+        const dias = diasDeRecepcion(e);
+        const adjuntos = e.adjuntos || [];
+        // Tres cosas distintas, y la pantalla no las confunde: un número de
+        // días, «todavía no la reciben» y «ni siquiera hay contra qué contar».
+        const pillDias = dias === null
+          ? { color: C.textMut, texto: !e.periodoFin ? "sin fecha de cierre" : "sin fecha de recepción" }
+          : dias < 0
+            ? { color: C.yellow, texto: `recibida ${-dias} d ANTES del cierre` }
+            : { color: C.blue,   texto: `${dias} d en presentarla` };
+
+        return <div key={e.no ?? i} style={{background:C.bg,borderRadius:8,padding:"11px 13px",
+          marginBottom:8,borderLeft:`3px solid ${col}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+              <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-{e.no}</span>
+              <Bdg color={pillDias.color} small>{pillDias.texto}</Bdg>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              {editar
+                ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"4px 6px"}}
+                    onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
+                    {ESTATUS_ESTIMACION_DEPENDENCIA.map(s=><option key={s} value={s}>{s}</option>)}
+                  </Sel>
+                : <Bdg color={col}>{e.estatus||"—"}</Bdg>}
+              {editar && <button onClick={()=>setEstimaciones(es=>es.filter((_,j)=>j!==i))}
+                title="Quitar de la relación (se aplica al guardar)"
+                style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1,cursor:"pointer"}}>×</button>}
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto (SIN IVA)</div>
+              {editar
+                ? <Inp type="number" value={e.monto ?? 0} style={{fontSize:12,fontWeight:600,color:C.caliza}}
+                    onChange={ev=>actualiza(i,{monto:parseFloat(ev.target.value)||0})}/>
+                : <div style={{fontSize:14,fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</div>}
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Inicio del periodo</div>
+              {editar
+                ? <Inp type="date" value={e.periodoIni||""} style={{fontSize:11}}
+                    onChange={ev=>actualiza(i,{periodoIni:ev.target.value})}/>
+                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodoIni||"—"}</div>}
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Cierre del periodo</div>
+              {editar
+                ? <Inp type="date" value={e.periodoFin||""} style={{fontSize:11}}
+                    onChange={ev=>actualiza(i,{periodoFin:ev.target.value})}/>
+                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodoFin||"—"}</div>}
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Recibida en ventanilla</div>
+              {editar
+                ? <Inp type="date" value={e.fechaRecepcion||""} style={{fontSize:11}}
+                    onChange={ev=>actualiza(i,{
+                      fechaRecepcion: ev.target.value,
+                      // Quién la recibió queda registrado con la fecha y no
+                      // al crear el renglón: el dato es "quién la recibió",
+                      // no "quién abrió la pantalla".
+                      recibidaPor: ev.target.value ? (usuario?.correo || "") : "",
+                    })}/>
+                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.fechaRecepcion||"—"}</div>}
+            </div>
+          </div>
+
+          <div style={{fontSize:9,color:C.textMut,marginTop:8}}>
+            {e.periodo ? `Periodo ${e.periodo}` : "Periodo sin capturar"}
+            {e.recibidaPor ? ` · recibió ${e.recibidaPor}` : ""}
+          </div>
+
+          {/* Adjuntos — carátula firmada y factura */}
+          <div style={{borderTop:`1px solid ${C.border}`,marginTop:9,paddingTop:9}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Expediente</span>
+              {adjuntos.length === 0 &&
+                <span style={{fontSize:10,color:C.textMut}}>sin carátula ni factura</span>}
+              {adjuntos.map(a =>
+                <span key={a.id} style={{display:"inline-flex",alignItems:"center",gap:5,
+                  background:C.surface,border:`1px solid ${C.border}`,borderRadius:99,padding:"2px 8px"}}>
+                  <a href={a.url} target="_blank" rel="noreferrer"
+                    style={{fontSize:10,color:C.blueDk,textDecoration:"none"}}>
+                    {a.clase === 'caratula' ? 'Carátula' : a.clase === 'factura' ? 'Factura' : 'Archivo'} · {a.nombre}
+                  </a>
+                  {editar && <button onClick={()=>quitarAdjunto(i, a.id)} title="Quitar adjunto"
+                    style={{background:"none",border:"none",color:C.red,fontSize:12,lineHeight:1,cursor:"pointer",padding:0}}>×</button>}
+                </span>)}
+              {editar && subiendo !== e.no && ['caratula','factura'].map(clase =>
+                <label key={clase} style={{fontSize:10,color:C.textSec,background:C.surface,
+                  border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 9px",cursor:"pointer"}}>
+                  + {clase === 'caratula' ? 'Carátula firmada' : 'Factura'}
+                  <input type="file" accept="application/pdf,image/*" style={{display:"none"}}
+                    onChange={ev=>{ const f = ev.target.files?.[0]; ev.target.value=""; adjuntar(i, clase, f); }}/>
+                </label>)}
+              {subiendo === e.no && <span style={{fontSize:10,color:C.blue}}>Subiendo…</span>}
+            </div>
+          </div>
+        </div>;
+      })}
+    </Card>
+  </div>;
+}
+
 // ── RIESGO ─────────────────────────────────────────────────────────────────
 // ── APP PRINCIPAL ──────────────────────────────────────────────────────────
 
@@ -19148,10 +19556,11 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
 //
 // Para dependencia el juego es otro y vive en TABS_DEPENDENCIA (ver P5).
 const TABS_DEPENDENCIA = [
-  {id:"dash",      label:"Dashboard"},
-  {id:"avance",    label:"Avance"},
-  {id:"evidencia", label:"Evidencia"},
-  {id:"contrato",  label:"Contrato"},
+  {id:"dash",         label:"Dashboard"},
+  {id:"avance",       label:"Avance"},
+  {id:"estimaciones", label:"Estimaciones"},
+  {id:"evidencia",    label:"Evidencia"},
+  {id:"contrato",     label:"Contrato"},
 ];
 
 const TABS_POR_ROL = {
@@ -19166,9 +19575,9 @@ const TABS_POR_ROL = {
   cliente:             [{id:"avance_cliente",label:"Avance"},{id:"fotos_cliente",label:"Fotos"},{id:"estimaciones_cliente",label:"Estimaciones"},{id:"plazos_cliente",label:"Plazos"}],
 
   // ── Dependencia (P5) ──
-  // Cuatro pestañas: el estado de la obra de un vistazo, lo que se capturó,
-  // la evidencia y el contrato. No hay Gastos porque no hay economía interna
-  // del contratista que mostrar.
+  // Cinco pestañas: el estado de la obra de un vistazo, lo que se capturó, lo
+  // que se recibió en ventanilla, la evidencia y el contrato. No hay Gastos
+  // porque no hay economía interna del contratista que mostrar.
   //
   // Es el mismo juego para los seis roles operativos. Quién ESCRIBE no lo
   // decide el menú sino `can()`: el supervisor captura dentro de Avance y el
@@ -19176,7 +19585,7 @@ const TABS_POR_ROL = {
   // duplicaría en el menú una decisión que ya vive en PERMISOS, y las dos se
   // desincronizarían — es lo que pasó con `ROLES_PANEL_EJECUTIVO`.
   //
-  // El informe todavía no existe; entra como quinta cuando exista. Una
+  // El informe todavía no existe; entra como sexta cuando exista. Una
   // pestaña que anuncia "próximamente" no se le enseña a un cliente.
   director_obras:      TABS_DEPENDENCIA,
   subdirector:         TABS_DEPENDENCIA,
@@ -19220,22 +19629,26 @@ const tabsDe = usuario =>
 // El arreglo es un único cuello de botella —`destinoNav`— y no un parche por
 // llamador: los llamadores son siete y van a llegar más.
 //
-// La equivalencia, cuando existe. `operacion/estimaciones` NO está a
-// propósito: en dependencia el estimado no es una pantalla, es una de las
-// cifras del propio Dashboard, así que mandar ahí a quien ya está en el
-// Dashboard es un clic que no hace nada. Mejor que la tarjeta no sea
-// clicable: una tarjeta que se puede picar y no lleva a ningún lado enseña
-// que picar no sirve.
+// La equivalencia, cuando existe. `operacion/estimaciones` ya la tiene: hasta
+// que existió la pestaña, el estimado de una dependencia era sólo una cifra
+// del Dashboard y mandar ahí a quien ya estaba en el Dashboard era un clic
+// que no hacía nada. Ahora sí hay a dónde llegar — y el renglón de la EST con
+// su fecha de recepción es exactamente lo que la tarjeta estaba prometiendo.
+// Si un destino de constructora NO tiene equivalente aquí, la entrada no se
+// inventa: la tarjeta deja de ser clicable, porque una tarjeta que se puede
+// picar y no lleva a ningún lado enseña que picar no sirve.
 const DESTINOS_DEPENDENCIA = new Map([
-  ['operacion/avance',       { tab: 'avance',    subTab: 'avance' }],
-  ['planeacion/contrato',    { tab: 'contrato',  subTab: 'contrato' }],
-  ['planeacion/presupuesto', { tab: 'contrato',  subTab: 'presupuesto' }],
+  ['operacion/avance',       { tab: 'avance',       subTab: 'avance' }],
+  ['operacion/estimaciones', { tab: 'estimaciones' }],
+  ['planeacion/contrato',    { tab: 'contrato',     subTab: 'contrato' }],
+  ['planeacion/presupuesto', { tab: 'contrato',     subTab: 'presupuesto' }],
   // Los ids propios del menú de dependencia, para los enlaces que ya están
   // escritos en su idioma.
   ['dash',                   { tab: 'dash' }],
-  ['avance',                 { tab: 'avance',    subTab: 'avance' }],
+  ['avance',                 { tab: 'avance',       subTab: 'avance' }],
+  ['estimaciones',           { tab: 'estimaciones' }],
   ['evidencia',              { tab: 'evidencia' }],
-  ['contrato',               { tab: 'contrato',  subTab: 'contrato' }],
+  ['contrato',               { tab: 'contrato',     subTab: 'contrato' }],
 ]);
 
 /**
@@ -21393,6 +21806,17 @@ export default function App(){
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
           onNavTab={navTab}/>
+      )}
+
+      {/* ESTIMACIONES (dependencia). Pantalla propia, no la de la constructora:
+          allá el renglón lleva anticipo, fondo de garantía y retención
+          estratégica, que es economía interna del contratista (P5). */}
+      {screen==="obra"&&tab==="estimaciones"&&obra&&(
+        <EstimacionesDependencia
+          obra={obra}
+          estimaciones={estimaciones} setEstimaciones={setEstimaciones}
+          estCargadas={estCargadas}
+          rol={usuario.rol} usuario={usuario}/>
       )}
 
       {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
