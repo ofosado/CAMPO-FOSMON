@@ -3006,6 +3006,22 @@ const MARCA_SIN_COMPARAR = 'sinComparar';  // hay cierre, pero el delta no se pu
 const MARCA_SOLO_FOTOS   = 'soloFotos';    // nadie cerró; lo único que consta son fotos
 const MARCA_SIN_DATO     = 'sinDato';      // ni cierre ni fotos: el hueco
 
+// Los cuatro estados de arriba son cuatro HECHOS distintos y se guardan los
+// cuatro. Pero el riel se lee de un golpe, y un golpe no admite diccionario:
+// cuatro colores obligaban a una leyenda debajo, y una leyenda que hay que
+// leer para entender el riel es una leyenda que nadie lee. El riel acababa
+// diciendo menos por querer decir más.
+//
+// Así que la PINTURA contesta lo único que se contesta de un vistazo: si la
+// semana se cerró o no. La diferencia entre los cuatro la dice el panel con
+// palabras al seleccionar la semana —`fraseSinDelta` separa el cierre que no
+// se puede comparar, `frasePanelSinCierre` separa la semana con sólo fotos de
+// la vacía—, que es donde hay espacio para explicarla.
+//
+// Vive aquí, junto a los estados, y no dentro del componente: es una regla
+// sobre el riel, no sobre una pantalla. Si mañana otra lo pinta, pinta igual.
+const marcaCerrada = (marca) => !!marca?.cierre;
+
 // `clavesConFoto` es UNA CLAVE POR FOTO —no el conjunto— para que la marca
 // pueda decir cuántas hay. Las fotos sin fecha no entran: no se sabe de qué
 // semana son y colgarlas de una sería inventar evidencia fechada.
@@ -16897,14 +16913,10 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
     moverRiel(salto);
   };
 
-  // El color de cada estado. Son cuatro y se distinguen a simple vista, porque
-  // el riel se lee de un golpe: lo que no se distingue no informa.
-  const COLOR_MARCA = {
-    [MARCA_CERRADA]:      C.green,
-    [MARCA_SIN_COMPARAR]: C.blue,
-    [MARCA_SOLO_FOTOS]:   C.textMut,
-    [MARCA_SIN_DATO]:     C.borderM,
-  };
+  // El riel pinta dos estados; ver `marcaCerrada`. Los cuatro siguen aquí
+  // porque el LECTOR DE PANTALLA sí los oye, uno por uno, en el nombre
+  // accesible de cada marca: ahí no hay problema de espacio ni de diccionario,
+  // y quien no ve el color necesita que se los digan todos.
   const LEYENDA_MARCA = {
     [MARCA_CERRADA]:      "semana cerrada",
     [MARCA_SIN_COMPARAR]: "cerrada, sin comparar",
@@ -16988,12 +17000,12 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
       {/* ── VISTA 1: la línea de tiempo, semana por semana ──────────────── */}
       {(marcas.length > 0 || todas.length > 0) && vistaEf === "semana" && <>
 
-        {/* El expediente al que le falta el principio lo dice ANTES del riel.
-            El riel empieza donde empieza el dato, y sin esta línea eso se lee
-            como que la obra empezó ahí. */}
-        {hueco && (
-          <div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,borderRadius:6,
-            padding:"7px 9px",fontSize:9,color:C.yellowDk,lineHeight:1.45,marginBottom:8}}>
+        {/* Dónde empieza el expediente se dice DEBAJO del riel, junto a las
+            demás marcas; ver ahí. Cuando no hay riel que mirar —sólo fotos sin
+            fecha— el renglón tiene que salir igual, o esa pantalla calla que
+            al expediente le falta el principio. */}
+        {hueco && marcas.length === 0 && (
+          <div style={{fontSize:9,color:C.textMut,lineHeight:1.5,marginBottom:8}}>
             {fraseHuecoDeArranque(hueco)}
           </div>
         )}
@@ -17026,7 +17038,7 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
                   <span style={{width:4,height:4,borderRadius:99,
                     background:m.fotos>0?C.blue:"transparent"}}/>
                   <span style={{width:"100%",height:act?22:14,borderRadius:2,
-                    background:COLOR_MARCA[m.estado]}}/>
+                    background:marcaCerrada(m)?C.green:C.borderM}}/>
                   {/* El hueco de nota, en ámbar, bajo la marca del cierre. */}
                   <span style={{width:"100%",height:2,borderRadius:2,
                     background:m.nota?.estado===NOTA_FALTA?C.yellow:"transparent"}}/>
@@ -17038,20 +17050,18 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
               );
             })}
           </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:"3px 9px",fontSize:8,
-            color:C.textMut,marginBottom:9}}>
-            {[MARCA_CERRADA,MARCA_SIN_COMPARAR,MARCA_SOLO_FOTOS,MARCA_SIN_DATO].map(e => (
-              <span key={e} style={{display:"flex",alignItems:"center",gap:3}}>
-                <span style={{width:7,height:7,borderRadius:2,background:COLOR_MARCA[e]}}/>
-                {LEYENDA_MARCA[e]}
-              </span>
-            ))}
+          {/* Debajo del riel y no encima: el riel empieza donde empieza el
+              dato, y el renglón es lo que impide leer eso como que la obra
+              empezó ahí. Ocupa el lugar que tenía la leyenda de colores. */}
+          <div style={{fontSize:8,color:C.textMut,lineHeight:1.5,marginBottom:9,
+            display:"flex",flexWrap:"wrap",gap:"3px 9px",alignItems:"center"}}>
             <span style={{display:"flex",alignItems:"center",gap:3}}>
               <span style={{width:6,height:6,borderRadius:99,background:C.blue}}/>con fotos
             </span>
             <span style={{display:"flex",alignItems:"center",gap:3}}>
               <span style={{width:8,height:3,borderRadius:2,background:C.yellow}}/>cerrada sin nota
             </span>
+            {hueco && <span>{fraseHuecoDeArranque(hueco)}</span>}
           </div>
         </>}
 
