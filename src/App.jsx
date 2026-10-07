@@ -5810,7 +5810,14 @@ function Card({children,style,accent}){
 function Tit({children}){
   return <div style={{fontSize:12,fontWeight:600,color:C.textPri,marginBottom:8,letterSpacing:"0.01em"}}>{children}</div>;
 }
-function Kpi({label,value,sub,color,size=15}){
+// El default es 12 porque 107 de los 124 `<Kpi>` del archivo lo piden
+// explícitamente: 15 nunca fue la medida de la casa, era la que se quedaba
+// cuando nadie escribía `size`. Y como los que no lo escriben están mezclados
+// en la MISMA rejilla que los que sí —la fila de nómina tenía 13, 15, 15, 12,
+// 12, 15, 15—, la omisión no se leía como "tamaño por omisión": se leía como
+// una fila despareja. Poner el default donde ya está la mayoría empareja las
+// diecisiete sin tocar diecisiete renglones.
+function Kpi({label,value,sub,color,size=12}){
   return <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,
     padding:"8px 10px",borderLeft:`3px solid ${color}`,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
     <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>{label}</div>
@@ -11782,12 +11789,17 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
 
     {/* ── Plazo ── */}
     <Card accent={pctPlazo != null && pctPlazo >= 100 ? C.red : C.green}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,marginBottom:8}}>
         <Tit>Plazo</Tit>
         {/* Lo primero que se pregunta quien abre esta tarjeta, arriba y con
-            signo. Las tres fechas y la barra de abajo son el respaldo. */}
+            signo. Las tres fechas y la barra de abajo son el respaldo.
+            24, como la cifra de «La obra» justo arriba y la de «Avance general»
+            en el tablero de avance: las tres son lo mismo —la respuesta de la
+            tarjeta, arriba a la derecha, con su pie de 9—. Ésta iba a 18 y en
+            la pantalla se leía como si el plazo pesara menos que el avance,
+            cuando es la otra pregunta que trae a alguien a este tablero. */}
         <div style={{textAlign:"right",flexShrink:0}}>
-          <div style={{fontSize:18,fontWeight:700,lineHeight:1,color:desvPlazo.color}}>
+          <div style={{fontSize:24,fontWeight:700,lineHeight:1,color:desvPlazo.color}}>
             {desvPlazo.valor}
           </div>
           <div style={{fontSize:9,color:C.textMut,marginTop:3}}>{desvPlazo.sub}</div>
@@ -12338,7 +12350,7 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
       <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
         sub={ultimoEstado?`Última semana cerrada: ${etiquetaSemanaRiel(ultimoEstado, conAño)}`:"Sin cierres oficiales"}
-        color={semA(avanceActual)} size={14}/>
+        color={semA(avanceActual)} size={12}/>
       <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
         sub={deltaSemana!==null?`vs ${etiquetaSemanaRiel(penultimoEstado, conAño)}`
           : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables":"requiere 2 cierres"}
@@ -14019,7 +14031,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
                   Se suman al total de gastos de esta obra.
                 </div>
               </div>
-              <Kpi label="Total" value={MXN(totalOtrosGastos)} sub={`${otrosGastos.length} partidas`} color={C.yellow} size={13}/>
+              <Kpi label="Total" value={MXN(totalOtrosGastos)} sub={`${otrosGastos.length} partidas`} color={C.yellow} size={12}/>
             </div>
           </Card>
           <Card>
@@ -17075,7 +17087,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
           <Kpi label="Personal"
             value={conPago === null ? String(enListado) : `${enListado} · ${conPago}`}
             sub={conPago === null ? 'en listado' : 'en listado · con pago'}
-            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={13}/>
+            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={12}/>
           <Kpi label="Directo" value={semanaActual.totalDir} sub="mano de obra" color={C.blue}/>
           <Kpi label="Indirecto" value={semanaActual.totalInd} sub="administración" color={C.purple}/>
           <Kpi label="Total nómina" value={MXN(semanaActual.totalNomina)}
