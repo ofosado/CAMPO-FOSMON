@@ -114,21 +114,104 @@ async function requireAdmin(auth) {
   const snap = await admin.firestore().doc(`usuarios/${emailAId(email)}`).get();
   const perfil = snap.exists ? snap.data() : null;
   if (!perfil || !ROLES_ADMIN.includes(perfil.rol)) {
+    // El mensaje enumera lo que el código acepta de verdad. Antes decía «sólo
+    // director_general y admin_sistema», cuando `ROLES_ADMIN` admite seis roles:
+    // un mensaje que miente sobre el permiso manda a buscar el problema donde
+    // no está.
     throw new HttpsError(
       "permission-denied",
-      "Sólo director_general y admin_sistema pueden gestionar usuarios."
+      `Para gestionar usuarios se necesita uno de estos roles: ${ROLES_ADMIN.join(", ")}.`
     );
   }
   return { email, perfil };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// LA FRONTERA ENTRE ORGANIZACIONES
+//
+// `requireAdmin` contesta «quién llama y si es admin», pero no «de qué
+// organización». Sin esa segunda pregunta las cinco funciones de gestión de
+// usuarios operaban sobre la colección `usuarios` COMPLETA: `listarUsuarios`
+// devolvía el padrón entero y `cambiarPassword` aceptaba el correo de
+// cualquiera. Como `ROLES_ADMIN` incluye `director_obras` y `subdirector`, un
+// directivo de una dependencia podía resetear la contraseña de un director
+// general de la constructora. Que la interfaz no le ofreciera la pantalla no
+// era una defensa: un `onCall` se invoca desde el SDK sin pasar por la
+// interfaz.
+//
+// La frontera es el `orgId` del perfil de QUIEN LLAMA, nunca uno que venga en
+// `request.data`. `soporte` es el único rol que la cruza, porque existe para
+// eso —crear organizaciones y el primer usuario de cada una—; su alcance es a
+// identidades y jamás a operación, y eso lo sostienen las reglas de Firestore,
+// no este archivo.
+// ──────────────────────────────────────────────────────────────────────────
+function ambitoDe(perfil) {
+  const cross = ROLES_CROSS.includes(perfil.rol);
+  return { cross, orgId: cross ? null : String(perfil.orgId || "") };
+}
+
+// Exige que el usuario objetivo esté dentro del ámbito de quien llama.
+// Un perfil sin `orgId` —legado anterior a la migración de organizaciones— sólo
+// lo alcanza soporte: de nadie más se puede afirmar que sea de su organización.
+function exigirMismaOrg(ambito, perfilObjetivo, email) {
+  if (ambito.cross) return;
+  if (!ambito.orgId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Tu perfil no tiene organización asignada; no puedes gestionar usuarios."
+    );
+  }
+  if (String((perfilObjetivo || {}).orgId || "") !== ambito.orgId) {
+    // El mismo mensaje exista o no el usuario. Distinguir «no existe» de «no
+    // puedes» convertiría esta función en un modo de averiguar quién está dado
+    // de alta en las otras organizaciones.
+    throw new HttpsError("not-found", `Usuario no encontrado: ${email}`);
+  }
+}
+
+// Valida que un rol pueda otorgarse en una organización ANTES de escribir nada.
+// Es la misma condición que `aplicarClaimsUsuario` exige después, de
+// `ROLES_POR_TIPO` contra el `tipo` de la org. La diferencia es dónde se nota:
+// allá el trigger devuelve {ok:false, motivo:"rol_no_pertenece_tipo"}, se queda
+// sin aplicar claims, de forma asíncrona y sin lanzar. La cuenta queda creada,
+// el alta dice «listo», y el usuario entra a una sesión donde las reglas le
+// niegan todo. Aquí falla a la cara de quien da el alta.
+async function validarRolEnOrg(rol, orgId) {
+  const org = await leerOrg(orgId);
+  if (!org) throw new HttpsError("not-found", `La organización ${orgId} no existe.`);
+  if (!org.activa) {
+    throw new HttpsError("failed-precondition", `La organización ${orgId} está inactiva.`);
+  }
+  const permitidos = ROLES_POR_TIPO[org.tipo] || [];
+  if (!permitidos.includes(rol)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `El rol ${rol} no existe en una organización de tipo ${org.tipo || "(sin tipo)"}. ` +
+      `Válidos: ${permitidos.join(", ")}.`
+    );
+  }
+  return org;
+}
+
+// Un rol cross sólo lo otorga quien ya lo tiene. `soporte` no aparece en el
+// selector de la interfaz a propósito, pero esta función es invocable sin ella.
+function exigirPuedeOtorgarRol(ambito, rol) {
+  if (ROLES_CROSS.includes(rol) && !ambito.cross) {
+    throw new HttpsError(
+      "permission-denied",
+      `El rol ${rol} cruza organizaciones y sólo lo otorga quien ya lo tiene.`
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // CREAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
 exports.crearUsuario = onCall(async (request) => {
-  await requireAdmin(request.auth);
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
 
-  const { email, password, nombre, rol, obras_asignadas } = request.data || {};
+  const { email, password, nombre, rol, obras_asignadas, orgId: orgIdPedido } = request.data || {};
 
   if (!email || !password || !nombre || !rol) {
     throw new HttpsError(
@@ -142,6 +225,29 @@ exports.crearUsuario = onCall(async (request) => {
   if (password.length < 6) {
     throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
   }
+  exigirPuedeOtorgarRol(ambito, rol);
+
+  // ── La organización del usuario nuevo ──
+  // Sale del perfil de quien da el alta. Si se aceptara de `request.data`, un
+  // director general de la organización A crearía cuentas en la B con sólo
+  // cambiar un campo de la llamada, y `orgId` es el discriminante de todo el
+  // aislamiento: no se recibe de fuera. La excepción es soporte, que cruza
+  // organizaciones y por eso está OBLIGADO a decir en cuál.
+  const rolCross = ROLES_CROSS.includes(rol);
+  const orgId = rolCross
+    ? null
+    : (ambito.cross ? String(orgIdPedido || "").trim() : ambito.orgId);
+  if (!rolCross && !orgId) {
+    throw new HttpsError(
+      ambito.cross ? "invalid-argument" : "failed-precondition",
+      ambito.cross
+        ? "Falta `orgId`: un alta hecha por soporte tiene que decir en qué organización."
+        : "Tu perfil no tiene organización asignada; no se puede crear un usuario sin ella."
+    );
+  }
+  // Antes de tocar Auth: si el rol no cabe en el tipo de la org, no se crea
+  // nada. Al revés quedaría un registro huérfano en Auth sin perfil.
+  if (orgId) await validarRolEnOrg(rol, orgId);
 
   const emailNorm = email.toLowerCase().trim();
   const perfilRef = admin.firestore().doc(`usuarios/${emailAId(emailNorm)}`);
@@ -180,6 +286,11 @@ exports.crearUsuario = onCall(async (request) => {
     email: emailNorm,
     nombre,
     rol,
+    // Sin este campo, `aplicarClaimsUsuario` resolvía `orgId: null` y de ahí
+    // `tipo: null`, así que la cuenta entraba y no veía nada: toda regla de
+    // dependencia exige `oid == orgId()`. Una cuenta creada desde la app nacía
+    // muerta y el alta no lo decía.
+    orgId: orgId || null,
     obras_asignadas: Array.isArray(obras_asignadas) ? obras_asignadas : [],
     activo: true,
     uid: userRecord.uid,
@@ -195,7 +306,8 @@ exports.crearUsuario = onCall(async (request) => {
 // ACTUALIZAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
 exports.actualizarUsuario = onCall(async (request) => {
-  await requireAdmin(request.auth);
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
 
   const { email, cambios } = request.data || {};
   if (!email || !cambios || typeof cambios !== "object") {
@@ -208,11 +320,26 @@ exports.actualizarUsuario = onCall(async (request) => {
   if (!snap.exists) {
     throw new HttpsError("not-found", "Usuario no encontrado en Firestore.");
   }
+  const perfilObjetivo = snap.data() || {};
+  exigirMismaOrg(ambito, perfilObjetivo, emailNorm);
 
   if (cambios.rol && !ROLES_VALIDOS.includes(cambios.rol)) {
     throw new HttpsError("invalid-argument", `Rol inválido: ${cambios.rol}`);
   }
+  // El rol se valida contra la organización del usuario QUE SE EDITA, no la de
+  // quien edita: son la misma salvo cuando llama soporte. Y se valida aquí por
+  // lo mismo que en el alta — `ROLES_VALIDOS` es la unión de los dos tipos, así
+  // que sin esto un cambio de rol podía dejar la cuenta sin claims en silencio.
+  if (cambios.rol && cambios.rol !== perfilObjetivo.rol) {
+    exigirPuedeOtorgarRol(ambito, cambios.rol);
+    if (!ROLES_CROSS.includes(cambios.rol) && perfilObjetivo.orgId) {
+      await validarRolEnOrg(cambios.rol, String(perfilObjetivo.orgId));
+    }
+  }
 
+  // `orgId` no está en la lista: la organización de un usuario no se cambia
+  // editándolo. Mover una cuenta de organización reasigna obras, claims y
+  // permisos, y sería un acto aparte si alguna vez hace falta.
   const camposPermitidos = ["nombre", "rol", "obras_asignadas", "activo"];
   const update = {};
   for (const k of camposPermitidos) {
@@ -242,7 +369,8 @@ exports.actualizarUsuario = onCall(async (request) => {
 // ELIMINAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
 exports.eliminarUsuario = onCall(async (request) => {
-  const { email: emailLlamador } = await requireAdmin(request.auth);
+  const { email: emailLlamador, perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
 
   const { email } = request.data || {};
   if (!email) {
@@ -253,6 +381,12 @@ exports.eliminarUsuario = onCall(async (request) => {
   if (emailNorm === emailLlamador) {
     throw new HttpsError("failed-precondition", "No puedes eliminarte a ti mismo.");
   }
+
+  // El perfil se lee ANTES de borrar nada, para poder exigir la organización.
+  // Sin esto, el borrado iba directo a Auth por correo: alcanzaba a cualquier
+  // cuenta del sistema, de cualquier organización.
+  const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(emailNorm)}`).get();
+  exigirMismaOrg(ambito, perfilSnap.exists ? perfilSnap.data() : null, emailNorm);
 
   const userRecord = await admin.auth().getUserByEmail(emailNorm).catch(() => null);
   if (userRecord) {
@@ -267,7 +401,8 @@ exports.eliminarUsuario = onCall(async (request) => {
 // CAMBIAR CONTRASEÑA (admin resetea la de otro usuario)
 // ──────────────────────────────────────────────────────────────────────────
 exports.cambiarPassword = onCall(async (request) => {
-  await requireAdmin(request.auth);
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
 
   const { email, nuevaPassword } = request.data || {};
   if (!email || !nuevaPassword) {
@@ -276,8 +411,19 @@ exports.cambiarPassword = onCall(async (request) => {
   if (nuevaPassword.length < 6) {
     throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
   }
+  const emailNorm = email.toLowerCase().trim();
 
-  const userRecord = await admin.auth().getUserByEmail(email.toLowerCase().trim()).catch(() => null);
+  // La comprobación que faltaba, y la de peor consecuencia de las cinco: esta
+  // función buscaba el correo en Auth y le ponía contraseña nueva, sin mirar a
+  // qué organización pertenecía. Como `ROLES_ADMIN` incluye los directivos de
+  // dependencia, un director de obras de un municipio podía resetear la
+  // contraseña de un director general de la constructora y entrar como él. No
+  // es un hueco teórico: `onCall` se invoca desde el SDK sin pasar por la
+  // interfaz, y la interfaz era el único candado.
+  const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(emailNorm)}`).get();
+  exigirMismaOrg(ambito, perfilSnap.exists ? perfilSnap.data() : null, emailNorm);
+
+  const userRecord = await admin.auth().getUserByEmail(emailNorm).catch(() => null);
   if (!userRecord) {
     throw new HttpsError("not-found", "Usuario no encontrado.");
   }
@@ -306,9 +452,24 @@ exports.cambiarPassword = onCall(async (request) => {
 // LISTAR USUARIOS (combina Firestore + estado Auth)
 // ──────────────────────────────────────────────────────────────────────────
 exports.listarUsuarios = onCall(async (request) => {
-  await requireAdmin(request.auth);
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
 
-  const snap = await admin.firestore().collection("usuarios").get();
+  // Sólo la propia organización. Antes esto devolvía la colección completa:
+  // nombre, correo y rol de todos los usuarios de todas las organizaciones a
+  // cualquiera de los seis roles de `ROLES_ADMIN`. El padrón de personal de un
+  // cliente no es dato de otro cliente.
+  //
+  // El filtro va en la consulta y no sobre el resultado: así los documentos de
+  // las otras organizaciones no llegan ni a leerse.
+  if (!ambito.cross && !ambito.orgId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Tu perfil no tiene organización asignada; no puedes gestionar usuarios."
+    );
+  }
+  const col = admin.firestore().collection("usuarios");
+  const snap = await (ambito.cross ? col.get() : col.where("orgId", "==", ambito.orgId).get());
   const usuarios = [];
   for (const doc of snap.docs) {
     const data = doc.data();

@@ -165,16 +165,49 @@ service cloud.firestore {
       allow delete: if false;  // orgs no se borran, se marcan activa=false
     }
 
+    // Admin de gestión de UNA organización concreta. `soporte` cruza
+    // organizaciones porque existe para eso; los admins de cada org, no.
+    function esAdminDeOrg(oid) {
+      return esSoporte() || ((esAdminSistemaC() || esAdminSistemaD()) && orgId() == oid);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // usuarios/{docId} — perfil de cada usuario
-    //   · Cada quien lee/crea SU propio doc (auto-alta al login).
-    //   · Update lo hace admin de gestión (de la org del usuario) o soporte.
+    //   · Cada quien LEE su propio doc: el login lo necesita antes de tener
+    //     claims resueltos.
+    //   · Lo demás lo hace un admin de gestión DE LA MISMA ORGANIZACIÓN.
+    //
+    // ── POR QUÉ `esOwnUserDoc` SALIÓ DE `create` ──
+    // Estaba ahí para el auto-alta del login, que ya no existe: App.jsx
+    // rechaza la cuenta sin perfil y cierra sesión, en vez de inventarle uno
+    // (antes se autoasignaba `administrador_obra`). Dejarlo era una escalada
+    // completa, y no teórica:
+    //   · `esOwnUserDoc` NO pide `esAuth()` — sólo `request.auth != null` y
+    //     que el correo del token coincida con el id del documento. Una cuenta
+    //     recién nacida, sin un solo claim, lo cumple.
+    //   · La API key web viaja en el bundle, y el alta propia de cuentas no
+    //     estaba deshabilitada en Auth (`client.permissions` vacío, medido el
+    //     2026-10-07). Cualquiera podía crearse la cuenta de Auth.
+    //   · Con eso escribía su propio perfil con `rol:'director_general'` y
+    //     `orgId:'fosmon'`, y `sincronizarClaims` se lo CONCEDÍA: valida que el
+    //     rol exista, que la org exista y esté activa, y que el rol pertenezca
+    //     al tipo. Las tres condiciones se cumplen.
+    // Un perfil lo crea quien administra, nunca su dueño.
+    //
+    // ── POR QUÉ LAS LECTURAS LLEVAN `orgId` ──
+    // `usuarios` es raíz y compartida. Sin el filtro, cualquiera de los seis
+    // roles que `ROLES_ADMIN` admite —entre ellos los directivos de
+    // dependencia— leía el padrón completo: nombre, correo y rol de todos los
+    // usuarios de todos los clientes.
     // ─────────────────────────────────────────────────────────────────────
     match /usuarios/{docId} {
-      allow read: if esOwnUserDoc(docId) || esAdminSistemaOSoporte();
-      allow create: if esOwnUserDoc(docId) || esAdminSistemaOSoporte();
-      allow update: if esAdminSistemaOSoporte();
-      allow delete: if esAdminSistemaOSoporte();
+      allow read: if esOwnUserDoc(docId) || esAdminDeOrg(resource.data.orgId);
+      allow create: if esAdminDeOrg(request.resource.data.orgId);
+      // `orgId` no se mueve editando: cambiar de organización reasigna obras,
+      // claims y permisos de golpe, y no es un campo de este formulario.
+      allow update: if esAdminDeOrg(resource.data.orgId)
+                    && request.resource.data.orgId == resource.data.orgId;
+      allow delete: if esAdminDeOrg(resource.data.orgId);
     }
 
     // ═════════════════════════════════════════════════════════════════════

@@ -30,6 +30,13 @@
 // vacía de una constructora. Por eso el centinela es null y no "".
 let PREFIJO = null;
 
+// El `orgId` de la sesión, aparte del prefijo. Hace falta porque `usuarios/` es
+// una colección RAÍZ y compartida: `conOrg` no la prefija —y no debe—, pero las
+// consultas que la recorren sí tienen que acotarse a una organización. Sin esto
+// `notifARoles` buscaba por rol en toda la colección, y un aviso sobre el alta
+// de un usuario en un municipio llegaba al director de otro.
+let ORG_ID = null;
+
 /**
  * Fija el prefijo de la sesión. Se llama una sola vez, en el login, con los
  * claims ya refrescados.
@@ -39,6 +46,11 @@ let PREFIJO = null;
  * además metería los datos de un cliente en el espacio de otro.
  */
 export function fijarPrefijoOrg(tipo, orgId) {
+  // Se guarda para los DOS tipos. Una constructora no lleva prefijo de ruta
+  // pero sí tiene organización —los 14 usuarios de FOSMON tienen
+  // `orgId: "fosmon"`—, y es ese `orgId` el que acota las consultas a
+  // `usuarios/`.
+  ORG_ID = orgId || null;
   if (tipo === 'constructora') { PREFIJO = ''; return PREFIJO; }
   if (tipo === 'dependencia') {
     if (!orgId) throw new Error('Tu cuenta es de tipo dependencia pero no tiene organización asignada.');
@@ -50,7 +62,19 @@ export function fijarPrefijoOrg(tipo, orgId) {
 
 /** Se llama al cerrar sesión. Sin esto, la siguiente sesión arrancaría
  *  apuntando a la organización de la anterior. */
-export function limpiarPrefijoOrg() { PREFIJO = null; }
+export function limpiarPrefijoOrg() { PREFIJO = null; ORG_ID = null; }
+
+/**
+ * El `orgId` de la sesión. LANZA si no se ha fijado, por lo mismo que
+ * `prefijoOrg`: una consulta que cae a "todas las organizaciones" porque el
+ * dato no estaba es exactamente la fuga que esto evita.
+ */
+export function orgIdSesion() {
+  if (!ORG_ID) {
+    throw new Error('Se intentó consultar por organización sin organización resuelta.');
+  }
+  return ORG_ID;
+}
 
 export function prefijoOrg() {
   if (PREFIJO === null) {
