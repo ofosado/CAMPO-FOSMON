@@ -37,7 +37,7 @@ archivo.
 | # | Tema | Estado |
 |---|---|---|
 | 39 | **El resumen semanal por correo lee la raíz, no `orgId`**: el margen bruto de una constructora puede salir en el correo de otra organización. Es el P5 roto por fuera de la pantalla. | ABIERTO |
-| 7 | **Obra 0112: lo ejecutado no cuadra con las estimaciones del residente** — $2.5M de diferencia sin explicar. | ABIERTO |
+| 7 | **Obra 0112: lo ejecutado no cuadra con las estimaciones del residente** — $2.5M de diferencia sin explicar. Falta medirlo contra producción para ver si el #50 lo explica entero. | ABIERTO |
 | 8 | **Tres fórmulas distintas de «ejecutado» conviviendo en el código**, $3.8M entre ellas. Dos ramas ya atendieron parte. | PARCIAL |
 | 50 | **No existen las partidas extraordinarias.** Cuando el catálogo no se ejecuta completo se generan para ejercer el contrato, o porque hizo falta algo nuevo; hoy no hay dónde registrarlas, así que lo ejecutado sale por debajo de lo real y el catálogo congelado se presenta como si fuera todo el contrato. Clave, descripción, unidad, cantidad, PU e importe; aparte del catálogo congelado y marcadas como extraordinarias, con su convenio o autorización, y cuentan en el ejecutado. Aplica a los dos tipos de organización. **Hipótesis por verificar: puede ser la causa del #7.** | ABIERTO |
 | 51 | **El avance se compara contra una recta, no contra el programa de obra.** El art. 61 hace del programa contractual la base para medir el avance, y hoy `programadoEnFecha` reparte el 100% linealmente sobre los días transcurridos: la Curva S y el KPI «Avance ideal» presentan esa recta como si fuera el programa. Son dos cosas: dejar de afirmarla (decir «no disponible», ya decidido) y poder cargar el programa real. | ABIERTO |
@@ -53,9 +53,7 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
-| 6 | **No hay dónde capturar estimaciones en dependencia.** Es la mitad financiera del expediente y hoy no se puede demostrar. Dos amarres son condición de la rama: no renombrar `monto` ni `estatus`, y usar `fsSetAEstricto` (nunca `fsSetA`, que se traga el rechazo en un formulario de dinero). | SIGUIENTE |
-| 48 | **El plazo no dice si la obra va bien o mal**: días de atraso o a favor como KPI (−27 en verde, +55 en rojo), el par avance-contra-plazo, y la gráfica de avance acumulado con proyección. Pedido el 2026-10-06. | ABIERTO |
-| 49 | **Notas de reporte semanal sembradas** para que la prueba se vea como se va a ver en la demo. Pedido el 2026-10-06. | ABIERTO |
+| 56 | **¿Quién teclea pesos en estimaciones?** Las reglas dejan escribir `config/estimaciones` a `jefe_supervision` y `supervisor_obra`, pero `PERMISOS` les da `"ver"`: les sale el aviso de sólo lectura. Capturar avance y capturar dinero no son la misma autoridad; dime cuál de las dos manda y se alinea la otra. | DECISIÓN |
 | 4b | **Cuentas de prueba dedicadas por rol.** Depende del #4. | ABIERTO |
 | 4 | **Proyecto Firebase de pruebas con copia de datos.** Habilita el #4b y la migración a organizaciones. | ABIERTO |
 | 1 | **Sacar el repositorio de iCloud Drive.** | ABIERTO |
@@ -96,7 +94,8 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
-| 11 | Consolidar los bloques duplicados de KPIs en Nómina y Estimaciones. | ABIERTO |
+| 11 | Consolidar los bloques duplicados de KPIs. El de Estimaciones ya se fue —eran dos «Pagado» con cifras distintas—; queda Nómina. | PARCIAL |
+| — | `claude/minimalista` **se queda**: es el conmutador de vista por rol para probar la demo sin dar de alta usuarios. No se borra. | ABIERTO |
 | 15 | Distinguir «la obra avanzó» de «el residente se puso al corriente». | ABIERTO |
 | 16 | Sesión persistente: decidir la política. | ABIERTO |
 | 17 | Auditar otros módulos por el mismo hueco de «fecha faltante». | ABIERTO |
@@ -114,6 +113,12 @@ archivo.
 
 | # | Tema | Cuándo |
 |---|---|---|
+| — | **Los porcentajes del contrato sin capturar reventaban la cuenta, y `MXN` disfrazaba el NaN de «$0».** Se veía «COBRADO EFECTIVO $0» al lado de «PAGADO BRUTO $9,300,000». Encontrado mirando la tabla renderizada, no en la suite. | 2026-10-06 |
+| — | **Un estatus de fuera del trámite se pintaba como «Recibida».** Un `<select>` cuyo `value` no es ninguna de sus opciones no avisa: enseña la primera. Ahora se enseña el valor real, marcado como ajeno. | 2026-10-06 |
+| — | **La relación de estimaciones se lee como un estado de cuenta** en las dos pantallas, con acumulado y % del contrato, y TOTALES que reusa los mismos números de los KPIs. Sin columna de IVA: no hay tasa en el modelo de datos. | 2026-10-06 |
+| 49 | Notas de reporte semanal sembradas para la demo. | 2026-10-06 |
+| 48 | El plazo dice si la obra va bien o mal: KPI de días a favor o de atraso, en Plazo y en el panel. | 2026-10-06 |
+| 6 | No había dónde capturar estimaciones en dependencia — la mitad financiera del expediente. | 2026-10-06 |
 | 38 | El login inventaba el perfil que no encontraba y se autoasignaba permisos de escritura. | 2026-09-24 |
 | 35 | El modelo escrito decía que la dependencia no captura, y es falso; la escritura se denegaba y `fsSet` lo callaba. | 2026-09-24 |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo y partía caracteres UTF-8 en la frontera. | 2026-09-23 |
