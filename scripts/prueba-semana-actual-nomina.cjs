@@ -293,9 +293,14 @@ const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
 const C = new Proxy({}, { get: () => '#888' });
-const _KpiConDelta = ({label, valor, valorSub, deltaValor, deltaSub}) =>
+// El doble marca con «[tooltip: …]» lo que la tarjeta real pone en `title`, y
+// lo deja FUERA del cuerpo. Así la prueba puede afirmar las dos cosas por
+// separado: que la explicación se sigue diciendo, y que ya no estira el
+// renglón visible de las cinco tarjetas del consolidado.
+const _KpiConDelta = ({label, valor, valorSub, deltaValor, deltaSub, nota}) =>
   React.createElement('div', null,
-    ` ${label}: ${valor} | ${valorSub} | ${deltaValor === null ? '·' : deltaValor} ${deltaSub} `);
+    ` ${label}: ${valor} | ${valorSub} | ${deltaValor === null ? '·' : deltaValor} ${deltaSub} `
+    + (nota ? `[tooltip: ${nota}] ` : ''));
 const js = esbuild.transformSync(`(${kpiPersonal})`, { loader: 'jsx' }).code.trim().replace(/;$/, '');
 const panel = renderToStaticMarkup(new Function(
   'React', '_KpiConDelta', 'C', 'personalAgg', 'deltaPersonal', 'obrasSinPrevNom',
@@ -312,8 +317,14 @@ check(/303 directos · 146 indirectos/.test(txt),
 check(/−11 trab\. vs semana previa/.test(txt),
   'y una caída de 11 trabajadores, no de 71',
   txt.match(/(−|\+)\d+ trab\./)?.[0] || '?');
-check(/1 obra rayó su semana en varios archivos, sumados/.test(txt),
-  'el KPI declara que una obra rayó su semana en varios archivos');
+// La explicación de CÓMO se armó el 449 se sigue diciendo —es la diferencia
+// entre sumar las partes y quedarse con el último archivo subido, que son 449
+// y 350— pero vive en el tooltip. El renglón visible es sólo el desglose.
+check(/\[tooltip: 1 obra rayó su semana en varios archivos/.test(txt),
+  'el KPI sigue declarando que una obra rayó su semana en varios archivos');
+check(/449 \| 303 directos · 146 indirectos \|/.test(txt),
+  'y el renglón visible es sólo el desglose: ni una palabra más',
+  txt.match(/449 \| ([^|]+)\|/)?.[1]?.trim() || '?');
 
 const act = personalAgg.total, ant = personalPrev;
 check(act === 449 && act - ant === -11,

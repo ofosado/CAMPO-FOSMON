@@ -7820,14 +7820,20 @@ function _useEsMovil() {
 //              "1 obra sin snapshot previo".
 //   deltaValor: null AND deltaSub null → línea omitida por completo.
 //   deltaValor: ~0 (Math.abs < 0.05) → guion tenue + deltaSub o "sin cambio".
-function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
+//   nota: texto que explica CÓMO se armó la cifra, no qué dice. Va al tooltip
+//         de la tarjeta y no al cuerpo: el renglón de abajo es caro —estas
+//         cinco tarjetas van a la misma altura y la más alta las estira todas—
+//         y una explicación de procedencia no se consulta todos los días.
+//         Para advertencias de que la cifra NO es confiable está `valorSub`,
+//         que sí se lee siempre: eso nunca se esconde en un tooltip.
+function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color, nota }) {
   const sinDelta = deltaValor === null || deltaValor === undefined;
   const casiCero = !sinDelta && Math.abs(deltaValor) < 0.05;
 
   // Sin comparación numérica y sin nota → no dibujar la línea inferior.
   if (sinDelta && !deltaSub) {
     return (
-      <div className="dp-kpi-card" style={{borderLeftColor:color}}>
+      <div className="dp-kpi-card" style={{borderLeftColor:color}} title={nota || undefined}>
         <div className="dp-kpi-label">{label}</div>
         <div className="dp-kpi-value" style={{color}}>{valor}</div>
         {valorSub && <div className="dp-kpi-value-sub" style={{color}}>{valorSub}</div>}
@@ -7842,7 +7848,7 @@ function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color }) {
   const textoDelta = sinDelta ? deltaSub : (casiCero ? (deltaSub || 'sin cambio') : deltaSub);
 
   return (
-    <div className="dp-kpi-card" style={{borderLeftColor:color}}>
+    <div className="dp-kpi-card" style={{borderLeftColor:color}} title={nota || undefined}>
       <div className="dp-kpi-label">{label}</div>
       <div className="dp-kpi-value" style={{color}}>{valor}</div>
       {valorSub && <div className="dp-kpi-value-sub" style={{color}}>{valorSub}</div>}
@@ -8308,13 +8314,20 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             : null)}
           color={gpDisponible ? nivelMargen(consolidado.margenPct).color : C.textMut}
         />
+        {/* Lo de «rayó su semana en varios archivos» salió del renglón visible
+            y se fue al tooltip. NO es una advertencia sobre la cifra: es lo
+            contrario —el total está bien PORQUE se sumaron las partes, en vez
+            de enseñar sólo el último archivo subido, que es lo que hacía antes
+            y le quitaba a la 0126 tres cuartas partes de su nómina. Como no
+            pone el número en duda, no se gana el renglón: estiraba las cinco
+            tarjetas del consolidado para explicar una procedencia. */}
         <_KpiConDelta
           label="Personal"
           valor={`${personalAgg.total}`}
-          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos` +
-            (personalAgg.enPartes > 0
-              ? ` · ${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos, sumados`
-              : '')}
+          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
+          nota={personalAgg.enPartes > 0
+            ? `${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos; el total los suma, no se queda con el último.`
+            : null}
           deltaValor={deltaPersonal}
           deltaSub={deltaPersonal !== null
             ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`

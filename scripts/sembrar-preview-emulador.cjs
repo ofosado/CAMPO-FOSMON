@@ -48,6 +48,25 @@ const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
 // ── Auth del emulador, por REST ─────────────────────────────────────────────
 const authURL = ruta => `http://${HOST}:${PUERTO_AUTH}/identitytoolkit.googleapis.com/v1/${ruta}`;
 
+// El proyecto del emulador de Auth, LEÍDO DEL TOKEN que él mismo firma.
+//
+// No se puede dar por sabido. El alta y el login entran por la ruta de la llave
+// (`?key=…`), que no nombra proyecto: caen en el que el emulador tenga, que es
+// el de `--project` con el que lo arrancaron. Poner claims, en cambio, es ruta
+// de administrador y SÍ nombra proyecto. Si el nombre escrito aquí no es el del
+// emulador, el alta funciona, el login funciona, y los claims se van a un
+// proyecto vacío con USER_NOT_FOUND — que fue justo lo que pasó. Y un usuario
+// sin claims entra a la aplicación y no es de ninguna organización: las reglas
+// le niegan todo y la demo se ve como un producto roto.
+//
+// El `aud` del token es el proyecto que lo firmó, por construcción. No hay
+// forma de que discrepe del que atendió el alta.
+const proyectoDeToken = idToken => {
+  const carga = idToken.split('.')[1];
+  return JSON.parse(Buffer.from(carga, 'base64url').toString()).aud;
+};
+let proyectoAuth = null;
+
 async function crearCuenta(correo) {
   const r = await fetch(authURL(`accounts:signUp?key=${LLAVE}`), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -61,9 +80,11 @@ async function crearCuenta(correo) {
     });
     const j2 = await r2.json();
     if (!j2.localId) throw new Error(`no se pudo reusar ${correo}: ${JSON.stringify(j2.error)}`);
+    proyectoAuth = proyectoDeToken(j2.idToken);
     return j2.localId;
   }
   if (!j.localId) throw new Error(`no se pudo crear ${correo}: ${JSON.stringify(j.error)}`);
+  proyectoAuth = proyectoDeToken(j.idToken);
   return j.localId;
 }
 
@@ -71,7 +92,8 @@ async function crearCuenta(correo) {
 // la interfaz decide el tipo (P5). Si se sembraran sólo en el perfil, el front
 // entraría y elegiría mal la ruta: es justo el modo de fallo del #31 y el #35.
 async function ponerClaims(localId, claims) {
-  const r = await fetch(`http://${HOST}:${PUERTO_AUTH}/identitytoolkit.googleapis.com/v1/projects/${PROYECTO}/accounts:update`, {
+  // Al proyecto que firmó el token del alta, no al que diga una constante.
+  const r = await fetch(`http://${HOST}:${PUERTO_AUTH}/identitytoolkit.googleapis.com/v1/projects/${proyectoAuth || PROYECTO}/accounts:update`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
     body: JSON.stringify({ localId, customAttributes: JSON.stringify(claims) }),
