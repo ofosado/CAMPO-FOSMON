@@ -46,6 +46,26 @@ traverse(ast, {
   },
 });
 
+// `atrasadas` dejó de llevar su propia cuenta del plazo de pago y ahora llama
+// a `atrasoDeEstimacion`, que vive en el módulo porque la columna «Plazo de
+// pago» de cada renglón la comparte. Se trae de ahí, EJECUTABLE, junto con lo
+// que ella necesita: `C` para los colores —y `tok`, con el que `C` se arma— y
+// `fechaLocalDeISO`, que es la lectura de fecha correcta y la razón de haberla
+// sacado del componente. Copiar la cuenta aquí sería comprobar esta prueba
+// contra sí misma: el KPI «Atrasado» podría volver a discrepar de la columna
+// de su propio renglón y esto seguiría en verde.
+const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion'];
+const raizDecl = {};
+for (const n of ast.program.body) {
+  const d = n.type === 'VariableDeclaration' ? n
+          : n.type === 'ExportNamedDeclaration' && n.declaration?.type === 'VariableDeclaration' ? n.declaration
+          : null;
+  if (!d) continue;
+  for (const v of d.declarations)
+    if (v.id.type === 'Identifier' && v.init && RAIZ.includes(v.id.name))
+      raizDecl[v.id.name] ||= src.slice(v.init.start, v.init.end);
+}
+
 let fallas = 0;
 const check = (ok, titulo, detalle = '') => {
   console.log(`${ok ? ' ok ' : 'FALLA'}  ${titulo}${detalle ? '  ·  ' + detalle : ''}`);
@@ -54,13 +74,18 @@ const check = (ok, titulo, detalle = '') => {
 if (!decl) noArranco(['Estimaciones']);
 
 // En orden de dependencia, que es el mismo que tienen en el archivo.
-const NECESARIAS = ['cE', 'totalEst', 'pagadas', 'pagadoBruto', 'cobradoEfectivo',
+// `_pct` va antes de `cE` porque es lo que lee los porcentajes del contrato.
+// Sin él, una obra a la que nadie le capturó anticipo daba NaN y `MXN` lo
+// imprimía «$0»: justo el «COBRADO EFECTIVO $0» al lado de un «PAGADO BRUTO
+// $9,300,000» que esta prueba existe para que no vuelva a pasar.
+const NECESARIAS = ['_pct', 'cE', 'totalEst', 'pagadas', 'pagadoBruto', 'cobradoEfectivo',
   'facturado', 'porCobrar', 'diasPago', 'atrasadas', 'montoAtrasado'];
-const faltan = NECESARIAS.filter(n => !decl[n]);
+const faltan = [...NECESARIAS.filter(n => !decl[n]), ...RAIZ.filter(n => !raizDecl[n])];
 if (faltan.length) noArranco(faltan);
 
 const montar = (obra, estimaciones) => new Function('obra', 'estimaciones', `
   "use strict";
+  ${RAIZ.map(n => `const ${n} = ${raizDecl[n]};`).join('\n  ')}
   ${NECESARIAS.map(n => `const ${n} = ${decl[n]};`).join('\n  ')}
   return { cE, totalEst, pagadoBruto, cobradoEfectivo, facturado,
            porCobrar, diasPago, atrasadas, montoAtrasado };
