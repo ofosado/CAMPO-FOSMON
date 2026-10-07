@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { conOrg, fijarPrefijoOrg, limpiarPrefijoOrg } from "./rutas-org.js";
+import { conOrg, fijarPrefijoOrg, limpiarPrefijoOrg, orgIdSesion } from "./rutas-org.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
@@ -4507,16 +4507,25 @@ const crearNotifPara = async (uids, {categoria, tipo, titulo, mensaje, link, cre
   }
 };
 
-// Helper: notificar a usuarios de uno o varios roles
-// Lee la colección 'usuarios' filtrando por rol y activos
+// Helper: notificar a usuarios de uno o varios roles DE LA PROPIA ORGANIZACIÓN.
+//
+// `usuarios` es una colección raíz compartida por todas las organizaciones, así
+// que una consulta por rol a secas la recorre entera. Varias organizaciones
+// pueden tener un `director_obras`, y el aviso del alta de un usuario —con su
+// nombre y su correo en el mensaje— le llegaba al director de otro municipio.
+//
+// La consulta filtra por `orgId` y los roles se cruzan en memoria: `where(in)`
+// junto con otro `where(==)` exigiría un índice compuesto, y la colección es
+// chica. Lo que NO se hace es filtrar después de leer: así los documentos de las
+// demás organizaciones no llegan ni a salir de Firestore.
 const notifARoles = async (roles, payload) => {
   if (!Array.isArray(roles)) roles = [roles];
   try {
-    const q = query(collection(fbDb, 'usuarios'), where('rol', 'in', roles));
+    const q = query(collection(fbDb, 'usuarios'), where('orgId', '==', orgIdSesion()));
     const snap = await getDocs(q);
     const uids = snap.docs
       .map(d => d.data())
-      .filter(u => u.activo !== false && u.uid)
+      .filter(u => roles.includes(u.rol) && u.activo !== false && u.uid)
       .map(u => u.uid);
     return crearNotifPara(uids, payload);
   } catch (e) {

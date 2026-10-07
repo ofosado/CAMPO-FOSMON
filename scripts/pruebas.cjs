@@ -49,6 +49,7 @@ const NECESITAN_EMULADOR = new Set([
   'prueba-reglas-nomina-subcoleccion.cjs',
   'prueba-reglas-dependencia-captura.cjs',
   'prueba-prefijo-organizacion.cjs',
+  'prueba-aislamiento-de-usuarios.cjs',
 ]);
 
 // ¿Está el emulador de Firestore escuchando?
