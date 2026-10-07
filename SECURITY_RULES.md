@@ -1,23 +1,30 @@
 # CAMPO — Reglas de seguridad por rol
 
-**Estado: DESPLEGADO EN PRODUCCIÓN desde el 2026-09-15.**
+**Estado: DESPLEGADO EN PRODUCCIÓN desde el 2026-09-15. Último despliegue
+2026-10-07 — Firestore y Storage, los dos.**
 
 | | |
 |---|---|
-| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15** |
-| Ruleset vivo | `projects/campo-fosmon/rulesets/d29ec434-df74-4542-96c9-9a47f9aa46ce` |
-| Publicado | **2026-09-24 19:32 UTC** — trae las ocho rutas de captura de dependencia |
-| Contra el repo | **YA NO es idéntico.** Lo fue —byte a byte, 24 271 bytes, verificado el 2026-09-24 bajando el ruleset y haciendo `diff`— y lo sigue siendo contra `main`. Pero `firestore.rules` en la rama de trabajo tiene **25 119 bytes**: le sobran las dos rutas de `avance/notas`. Ver «Lo que está en el archivo y NO en producción» abajo |
-| Comprobado vivo | **34/34** con la API `projects:test` sobre el ruleset bajado del servidor — cero datos tocados. Un caso de control con expectativa falsa lo deja en 34/35, así que la comprobación no es vacía |
-| Desplegado desde | la rama `fix/modelo-dependencia-captura`, **antes de mezclar a `main`**. Mientras no se mezcle, `main` NO describe lo que corre en producción |
+| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15**; último `firebase deploy --only firestore:rules,storage` el **2026-10-07 18:24 UTC** |
+| Ruleset vivo — Firestore | `projects/campo-fosmon/rulesets/63182f2f-16f0-41cc-b61a-f4847511512a` (release `cloud.firestore`) |
+| Ruleset vivo — Storage | `projects/campo-fosmon/rulesets/cf4beea3-a166-4e18-ab9f-f723e7201c66` (release **`campo-fosmon.firebasestorage.app`**) |
+| Release `firebase.storage` | `0330d4de-…`, de 2026-07-16, **y el deploy de hoy NO lo tocó** pese a que el CLI imprimió «released rules storage.rules to firebase.storage». Lo bajé: son 11 renglones, `allow read, write: if false`. Deny-all, inofensivo — pero **no es el que gobierna el bucket**. Si algún día un bucket nuevo no obedece a `storage.rules`, mira primero cuál de los dos releases está leyendo |
+| Contra el repo | **IDÉNTICO**, los dos. Verificado el 2026-10-07 bajando ambos rulesets con la API `firebaserules.googleapis.com` y haciendo `diff` contra `firestore.rules` y `storage.rules` de `main` |
+| Comprobado vivo | la suite completa (**42 verde · 0 rojo · 0 sin arrancar**) contra el emulador cargado con estos mismos archivos, después del despliegue |
+| Desplegado desde | `main`, ya mezclado. Hoy `main` **sí** describe lo que corre en producción |
 | `orgs/fosmon` | existe desde el **2026-09-16 05:28**, `tipo: constructora`, `activa: true` |
 | Usuarios etiquetados | **14 de 14** con `orgId: "fosmon"` |
 
-Ruleset anterior, por si hay que volver:
-`1de0cdf3-eec1-44d7-aa85-583b8f4c42b3` (19 588 bytes, 2026-09-23 06:54 UTC).
-Es el mismo archivo **sin** las ocho rutas: volver a él deja al supervisor
-capturando contra el `match /{document=**}` final — sin guardar nada y sin
-avisar.
+Ruleset anterior de Firestore, por si hay que volver:
+`d29ec434-df74-4542-96c9-9a47f9aa46ce` (24 271 bytes, 2026-09-24 19:32 UTC).
+Es el mismo archivo **sin** las dos rutas de `avance/notas` y **con**
+`config/estimaciones` abierto a `puedeEditarObraD`: volver a él reabre la
+captura de estimaciones a `supervisor_obra` y `jefe_supervision`, y deja la
+nota semanal cayendo en el `match /{document=**}` final.
+
+Y el de antes: `1de0cdf3-eec1-44d7-aa85-583b8f4c42b3` (19 588 bytes,
+2026-09-23 06:54 UTC), sin las ocho rutas de captura de dependencia — volver
+a él deja al supervisor capturando sin guardar nada y sin avisar.
 
 > **Este renglón decía «NO desplegado» hasta el 2026-09-23 y llevaba ocho días
 > caduco.** Hizo que dos análisis independientes concluyeran que las reglas
@@ -28,36 +35,55 @@ avisar.
 > mismo commit**. Un documento maestro que miente es peor que no tenerlo:
 > se le cree.
 
-## Lo que está en el archivo y NO en producción
+Aquí vivía la sección «Lo que está en el archivo y NO en producción», que
+listaba las dos rutas de `avance/notas` como escritas pero no desplegadas.
+**Se desplegaron el 2026-10-07** (comprobado: renglones 233 y 393 del ruleset
+vivo) y la sección se borró, como ella misma pedía. Si vuelve a abrirse una
+brecha entre el archivo y lo vivo, esa sección se vuelve a escribir: el
+documento tiene que poder mentir en los dos sentidos o no sirve.
 
-Esta sección existe porque la de arriba sólo sabía mentir en un sentido:
-decía «no desplegado» de algo que sí lo estaba. El sentido contrario es
-igual de caro — dar por vivo lo que sólo está escrito — y es exactamente
-el PENDIENTES #31: una ruta sin regla, un helper que se traga el fallo, y
-una funcionalidad que lleva meses en el menú sin guardar nada.
+## EN STORAGE LAS REGLAS SE SUMAN — no gana la más específica
 
-| Ruta | En `firestore.rules` | En el ruleset vivo | Desde |
-|---|:-:|:-:|---|
-| `obras/{id}/avance/notas` | **sí** | **NO** | rama `feature/seguimiento-semanal`, 2026-10-05 |
-| `orgs/{oid}/obras/{id}/avance/notas` | **sí** | **NO** | rama `feature/seguimiento-semanal`, 2026-10-05 |
+**Léelo antes de tocar `storage.rules`.** Es el error que más caro sale aquí
+y es contraintuitivo, así que alguien lo va a volver a cometer.
 
-**Qué pasa hoy si alguien intenta escribir una nota.** La escritura cae en
-el `match /{document=**}` final y Firestore la deniega. La diferencia con
-el #31 es que esta vez **se nota**: `guardarNotaSemanal` no usa `fsSet` —usa
-`setDoc` en un `try/catch` y devuelve `false`— y la pantalla no cierra el
-editor cuando ese `false` llega; deja el texto puesto y dice que no quedó.
-Las dos mitades están comprobadas contra el emulador cargado con el ruleset
-de `main`:
+Si **cualquier** `match` que coincida con la ruta concede el acceso, el
+acceso se concede. No hay "la regla más específica gana", no hay "la de
+abajo pisa a la de arriba", no hay orden de precedencia. Es un **OR** sobre
+todas las reglas que coinciden. Firestore funciona igual.
 
-- `scripts/prueba-nota-no-calla.cjs` — el helper avisa (con un caso de
-  control que escribe `avance/historial` para que el rojo no pueda ser del
-  token).
-- `scripts/prueba-nota-semanal.cjs`, sección 7 — la pantalla no ignora el
-  aviso.
+Consecuencia práctica: **una regla apretada debajo de un comodín abierto no
+aprieta nada.** Esto no sirve para negar:
 
-Así que la funcionalidad **no funciona** hasta que se desplieguen las
-reglas, pero no miente mientras tanto. **Al desplegar: borrar esta sección
-y arreglar el renglón «Contra el repo» en el mismo commit.**
+```
+match /orgs/{oid}/obras/{obraId}/estimaciones/{p=**} {
+  allow write: if puedeCapturarEstimacionD(obraId);   // apretada
+}
+match /orgs/{oid}/obras/{obraId}/{p=**} {
+  allow write: if puedeEditarObraD(obraId);           // ← sigue concediendo
+}
+```
+
+El supervisor seguía subiendo la carátula firmada por el segundo `match`
+aunque el primero acababa de negárselo. **Pasó de verdad el 2026-10-07** y
+costó dos comprobaciones en rojo descubrirlo; en producción no habría
+costado ninguna, porque nada falla — simplemente se permite de más y en
+silencio.
+
+**La salida es enumerar, no reordenar.** Hoy `storage.rules` declara una por
+una las rutas de dependencia (`evidencia/`, `estimaciones/`, `convenios/`,
+`fotos/`) y no tiene comodín de obra. Enumerar es viable porque la app sólo
+construye dos rutas bajo una obra: `fotos/{conceptoId}/{fotoId}` y
+`estimaciones/{estId}/{archivoId}`.
+
+**Y si mañana aparece una tercera y nadie le escribe su regla, la subida
+lanza con mensaje a la cara** — `subirAdjuntoEstimacion` y `subirFoto` no se
+tragan el fallo. Ése es el modo de fallar correcto: un comodín abierto no
+avisa de nada. Es el mismo criterio del PENDIENTES #31.
+
+El comodín de **constructora** (`match /obras/{obraId}/{allPaths=**}`, path
+legacy) sí sigue vivo y es intencional: usa `puedeEditarObraC`, que coincide
+exactamente con `PERMISOS`, así que no concede de más.
 
 ## Modelo multi-tenant (2026-09, desplegado)
 
@@ -517,6 +543,30 @@ un hueco de la tabla: es la frontera del margen, y está explicada arriba en
 | `obras/{id}/subcontratos/**` | R/W | R/W | R | — |
 | `obras/{id}/(otros)/**` | R/W | R/W | R | — |
 | Cualquier otro path (fuera de `/obras/`) | ❌ | ❌ | ❌ | ❌ |
+
+### Lado dependencia — `orgs/{oid}/obras/{id}/…` (desplegado 2026-10-07)
+
+Sin comodín, a propósito. Ver la advertencia «EN STORAGE LAS REGLAS SE SUMAN».
+
+| Path | DO/Subdir/Jefe sup. | Contralor | `administrativo` (asignada) | `supervisor_obra` (asignada) | Contratista |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `evidencia/**` | R/W | R | R/W | R/W | R |
+| `estimaciones/**` | R · W **sólo DO y Subdir** | R | R/W | **R, no W** | ❌ |
+| `convenios/**` | R/W | R | R/W | R | ❌ |
+| `fotos/**` | R/W | R | R/W | R/W | ❌ |
+| cualquier otro path bajo la obra | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+`estimaciones/**` es la excepción y es deliberada: **capturar avance y
+capturar dinero no son la misma autoridad.** El supervisor va a campo y
+verifica lo ejecutado; la estimación es un trámite administrativo con
+consecuencia de pago. La carátula firmada y la factura llevan la misma
+autoridad que la cifra que respaldan, así que la regla es la misma función
+—`puedeCapturarEstimacionD`— en Storage y en Firestore. Dos reglas distintas
+para el mismo acto administrativo serían una puerta de atrás.
+Decisión del 2026-10-07: **manda `PERMISOS`, y las reglas lo respaldan.**
+`scripts/prueba-reglas-dependencia-captura.cjs` lee la lista de roles
+directamente de `const PERMISOS` en `src/App.jsx` en vez de reteclearla,
+para que las dos mitades no puedan separarse en silencio.
 
 ---
 

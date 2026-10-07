@@ -69,6 +69,8 @@ archivo.
 | 20 | **Integrar la verificación de ámbito de forma permanente** (hoy es un guion que alguien se acuerda de correr). | ABIERTO |
 | 46 | **El aviso de «tu rol cambió» puede dispararse al cambiar de sesión** — un `useRef` que no se vacía. Sin confirmar. | SOSPECHA |
 | 40 | **La lectura del GP Sheet arranca antes de que haya sesión.** | ABIERTO |
+| 58 | **`+ Nueva estimación` produce `no: NaN` si alguna estimación guardada no trae `no`**: calcula con `Math.max(...es.map(e=>e.no))`. El renglón sale como «EST-NaN» y el siguiente también. El `key` ya no depende de `no` (#59), así que no rompe el pintado, pero el número de estimación sí queda inservible. | ABIERTO |
+| 59 | **Un aviso de `key` de React en `Estimaciones` que NO se pudo reproducir.** Los cuatro de la consola son del **2026-10-06**, del buffer del preview, y no se vuelven a emitir: ni en recarga limpia ni en las dos obras sembradas. El barrido del archivo no encuentra ningún `.map` sin `key`, ni hoy ni en el commit de ayer. Sí se halló y cerró un defecto de esa clase (`key={e.no}`, ver abajo), pero **el rastro decía `at div` y aquél era un `<tr>`**, así que no se puede afirmar que sea el mismo. Si reaparece, anotar el sello `?t=` y el rol. | SIN REPRODUCIR |
 | — | **Despliegue de funciones pendiente**: rebase de `feature/resumen-semanal` + canario, y el retiro del cron `recordatorioCapturaSubs` que se fue con el #31. | POR DESPLEGAR |
 
 ## 5 · Falta algo que se prometió
@@ -115,7 +117,9 @@ archivo.
 |---|---|---|
 | — | **Los porcentajes del contrato sin capturar reventaban la cuenta, y `MXN` disfrazaba el NaN de «$0».** Se veía «COBRADO EFECTIVO $0» al lado de «PAGADO BRUTO $9,300,000». Encontrado mirando la tabla renderizada, no en la suite. | 2026-10-06 |
 | — | **Un estatus de fuera del trámite se pintaba como «Recibida».** Un `<select>` cuyo `value` no es ninguna de sus opciones no avisa: enseña la primera. Ahora se enseña el valor real, marcado como ajeno — en las TRES pantallas de estimación, no sólo en la que falló. | 2026-10-07 |
-| 56 | **Quién teclea pesos en estimaciones.** Manda `PERMISOS`: captura `administrativo`, corrigen `director_obras` y `subdirector`. Reglas de Firestore y Storage apretadas para que coincidan; **falta desplegarlas**. | 2026-10-07 |
+| 56 | **Quién teclea pesos en estimaciones.** Manda `PERMISOS`: captura `administrativo`, corrigen `director_obras` y `subdirector`. Reglas de Firestore y Storage apretadas para que coincidan y **DESPLEGADAS** el 2026-10-07 18:24 UTC; los dos rulesets vivos verificados idénticos al repo. Ver `SECURITY_RULES.md`. | 2026-10-07 |
+| — | **En Storage las reglas SE SUMAN: no gana la más específica.** Una regla apretada debajo de un comodín abierto no aprieta nada — el supervisor seguía subiendo la carátula por el comodín. Se quitó el comodín de obra de dependencia y se enumeraron las rutas. Advertencia permanente escrita en `SECURITY_RULES.md`, con su propio encabezado. | 2026-10-07 |
+| 59b | **La llave de React del renglón de estimación salía de `e.no`, que se teclea** — puede faltar (un `key={undefined}` React lo cuenta como ausente) y puede repetirse. Ahora es `i`, la misma identidad con la que `actualiza(i,…)` escribe el renglón. En las dos listas. `prueba-llave-estimacion.cjs`, con contraprueba que reproduce el aviso exacto. | 2026-10-07 |
 | — | **La relación de estimaciones se lee como un estado de cuenta** en las dos pantallas, con acumulado y % del contrato, y TOTALES que reusa los mismos números de los KPIs. Sin columna de IVA: no hay tasa en el modelo de datos. | 2026-10-06 |
 | 49 | Notas de reporte semanal sembradas para la demo. | 2026-10-06 |
 | 48 | El plazo dice si la obra va bien o mal: KPI de días a favor o de atraso, en Plazo y en el panel. | 2026-10-06 |
