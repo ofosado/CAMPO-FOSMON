@@ -59,6 +59,9 @@ const NECESARIOS = [
   'importeCatalogoPartida', 'importeEjecutadoPartida', 'desgloseEjecutado',
   'MODO_AVANCE_NUEVA_OBRA', 'ROLES_HABILITAN_PORCENTAJE', 'puedeElegirPorcentaje',
   'diagnosticoCambioModo',
+  // El id de la obra nueva. No se mide aquí —es de la prueba del alta— pero el
+  // formulario inicial lo invoca, así que sin él el objeto no se puede evaluar.
+  'nuevoIdObra',
 ];
 
 const trozos = [];
@@ -162,8 +165,13 @@ const { desgloseEjecutado, MODO_AVANCE_NUEVA_OBRA, puedeElegirPorcentaje,
   diagnosticoCambioModo } = app;
 // El formulario se evalúa con las constantes del módulo a la vista: si el alta
 // escribe el modo por constante en vez de a mano, hay que poder resolverla.
-const form = new Function(...[...vistos],
-  `"use strict"; return (${formInicial});`)(...[...vistos].map(n => app[n]));
+// Y se evalúa para los DOS lados. Desde 2026-10-07 una dependencia también da
+// de alta obras, y el inicializador se ramifica por `dep`: evaluar un solo lado
+// dejaría al otro naciendo en el modo que fuera sin que nadie lo mirara.
+const formDe = dep => new Function(...[...vistos], 'dep',
+  `"use strict"; return (${formInicial});`)(...[...vistos].map(n => app[n]), dep);
+const form = formDe(false);
+const formDep = formDe(true);
 
 console.log(`\nArchivo:   ${path.relative(raiz, archivo)}`);
 console.log(`Respaldos «modoAvance || …» encontrados: ${respaldos.length}\n`);
@@ -193,6 +201,9 @@ check(form.modoAvance !== undefined,
   `modoAvance: ${JSON.stringify(form.modoAvance)}`);
 check(form.modoAvance === 'volumen' && MODO_AVANCE_NUEVA_OBRA === 'volumen',
   'y el modo que escribe es volumen', String(form.modoAvance));
+check(formDep.modoAvance === 'volumen',
+  'y la obra que da de alta una dependencia nace igual, no en otro modo',
+  String(formDep.modoAvance));
 
 // Lo que de verdad importa: que el dinero de una obra recién creada salga de
 // `cantEjec × pu`. La constante podría decir «volumen» y el alta no usarla.

@@ -348,7 +348,17 @@ service cloud.firestore {
     // ═════════════════════════════════════════════════════════════════════
     match /orgs/{oid}/obras/{obraId} {
       allow read: if oid == orgId() && puedeVerObraD(obraId);
-      allow create, update, delete: if oid == orgId() && esDirectivoD();
+      // EDITOR, no `esDirectivoD()`. La diferencia es el contralor, y hasta hoy
+      // esta línea —y las cinco de abajo— lo dejaban CREAR, EDITAR Y BORRAR la
+      // obra. `esDirectivoD` es la lista de LECTURA amplia; que incluya al
+      // contralor es su razón de existir (fiscaliza todo). Usarla en un `write`
+      // le regala justo lo que la decisión de 2026-09 le niega: «lectura amplia
+      // sin edición». Quien fiscaliza no corrige.
+      //
+      // Estaba dormido porque ningún rol de dependencia tenía botón de alta. El
+      // alta de obra es lo que lo despierta, así que se cierra antes — mismo
+      // orden que el padrón: primero el aislamiento, después la pantalla.
+      allow create, update, delete: if oid == orgId() && esDirectivoDEditor();
 
       // Contratista solo ve el contratista de su propia obra
       match /contratistas/{cid} {
@@ -357,11 +367,11 @@ service cloud.firestore {
           || (esSupervisorObra() && obraId in obrasAsignadas())
           || (esContratista() && obraId in obrasAsignadas() && cid == request.auth.uid)
         );
-        allow write: if oid == orgId() && esDirectivoD();
+        allow write: if oid == orgId() && esDirectivoDEditor();
       }
       match /supervisores/{sid} {
         allow read: if oid == orgId() && esDirectivoD();
-        allow write: if oid == orgId() && esDirectivoD();
+        allow write: if oid == orgId() && esDirectivoDEditor();
       }
       match /programa/{pid} {
         allow read: if oid == orgId() && puedeVerObraD(obraId);
@@ -369,14 +379,14 @@ service cloud.firestore {
       }
       match /convenios/{cid} {
         allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
-        allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoD());
+        allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoDEditor());
       }
       match /evidencia/{eid} {
         // Supervisor de obra captura evidencia
         allow read: if oid == orgId() && puedeVerObraD(obraId);
-        allow create: if oid == orgId() && (esSupervisorObra() || esDirectivoD() || rol() == 'administrativo')
+        allow create: if oid == orgId() && (esSupervisorObra() || esDirectivoDEditor() || rol() == 'administrativo')
                       && obraId in obrasAsignadas();
-        allow update, delete: if oid == orgId() && esDirectivoD();
+        allow update, delete: if oid == orgId() && esDirectivoDEditor();
       }
 
       // ── CAPTURA DE AVANCE ───────────────────────────────────────────────
