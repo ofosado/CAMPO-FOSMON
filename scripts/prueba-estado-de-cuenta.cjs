@@ -81,6 +81,16 @@ if (process.argv[2] === '--contraprueba') {
         + `                            {e.estatus ? \`\${e.estatus} — fuera del trámite\` : "sin estatus"}\n`
         + `                          </option>}\n`,
       a: `` },
+    // El gemelo. Es una mutación aparte y no una sola para los dos guardias,
+    // porque lo que hay que poder distinguir es que la prueba mide CADA
+    // pantalla: con una sola mutación, quitar el guardián de la constructora
+    // podía seguir saliendo rojo por la dependencia.
+    { nombre: 'y en la constructora un «Recibida» vuelve a disfrazarse de «En proceso»',
+      de: `                        {!ESTATUS.includes(e.estatus) &&\n`
+        + `                          <option value={e.estatus||""}>\n`
+        + `                            {e.estatus ? \`\${e.estatus} — fuera del catálogo\` : "sin estatus"}\n`
+        + `                          </option>}\n`,
+      a: `` },
     { nombre: 'se agrega una columna de IVA con una tasa inventada',
       de: `    {id:'acu',  lbl:'Acumulado',         num:true},`,
       a: `    {id:'iva',  lbl:'IVA 16%',            num:true},\n`
@@ -391,35 +401,54 @@ check(JSON.stringify(rD.renglones.map(r => r.e.no)) === '[1,2,3]',
   'también ordena por número de estimación, no por orden de recepción capturada',
   rD.renglones.map(r => r.e.no).join(','));
 
-// ── 6bis. Un estatus de fuera del trámite se ve, no se disfraza ───────────
+// ── 6bis. Un estatus que no está en la lista se ve, no se disfraza ────────
 // Visto en el preview. Los dos lados del mostrador tienen vocabularios
 // distintos —allá se FACTURA, aquí se RECIBE— y un `<select>` cuyo `value` no
 // es ninguna de sus opciones no avisa: pinta la primera. Una estimación
 // guardada «Facturada» se veía como «Recibida», que es otro estado del
 // trámite. No se afirma que exista un guardián: se renderiza la celda con ese
 // dato y se mira qué cadena sale.
-console.log('\n6bis. Un estatus que no es del trámite de la dependencia');
+//
+// Se mide en LAS DOS pantallas. El defecto no era de la dependencia: era de
+// cualquier desplegable cuyo valor pueda no estar entre sus opciones, y las
+// dos pantallas de estimaciones cumplen esa condición por la misma razón —el
+// estatus se escribe de un lado y se lee del otro—. Arreglar sólo el renglón
+// que falló deja el gemelo esperando.
+console.log('\n6bis. Un estatus que no está en la lista del desplegable');
 {
   const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
   const React = require(path.join(raiz, 'node_modules/react'));
   const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
-  // Sólo el `<td>` del estatus, con las piezas de verdad: la lista de estados
-  // del archivo y el JSX del archivo. El `<Sel>` real es un `<select>` con
-  // estilos; aquí basta uno pelón, porque lo que se mide son las OPCIONES.
-  const jsx = src.slice(
-    src.indexOf('<td style={celda}>', src.indexOf('function EstimacionesDependencia')),
-  );
-  const celdaEstatus = jsx.slice(jsx.indexOf('<Sel value={e.estatus'),
-                                 jsx.indexOf('</Sel>') + 6);
-  const lista = src.match(/const ESTATUS_ESTIMACION_DEPENDENCIA\s*=\s*\[[^\]]*\]/)?.[0];
-  if (!lista || !/<Sel value=\{e\.estatus/.test(celdaEstatus)) {
-    const m = 'un estatus de fuera del trámite se ve tal cual en la celda';
-    fallos.push(m);
-    console.log(`   ✗ ${m}  ·  no se pudo extraer la celda del estatus de este archivo`);
-  } else {
+
+  const PANTALLAS = [
+    { nombre: 'dependencia', ancla: 'function EstimacionesDependencia',
+      lista: /const ESTATUS_ESTIMACION_DEPENDENCIA\s*=\s*\[[^\]]*\]/,
+      marca: 'fuera del trámite', propio: 'Autorizada', ajeno: 'Facturada',
+      // El de la dependencia usa `ESTATUS_PAGADA` para colorear el renglón.
+      preludio: 'const ESTATUS_PAGADA = "Pagada";' },
+    { nombre: 'constructora', ancla: 'function Estimaciones(',
+      lista: /const ESTATUS\s*=\s*\[[^\]]*\]/,
+      marca: 'fuera del catálogo', propio: 'Aprobada', ajeno: 'Recibida',
+      preludio: '' },
+  ];
+
+  for (const p of PANTALLAS) {
+    // Sólo el `<td>` del estatus, con las piezas de verdad: la lista de estados
+    // del archivo y el JSX del archivo. El `<Sel>` real es un `<select>` con
+    // estilos; aquí basta uno pelón, porque lo que se mide son las OPCIONES.
+    const desde = src.indexOf(p.ancla);
+    const jsx = desde < 0 ? '' : src.slice(src.indexOf('<Sel value={e.estatus', desde));
+    const celdaEstatus = jsx.slice(0, jsx.indexOf('</Sel>') + 6);
+    const lista = src.match(p.lista)?.[0];
+    if (desde < 0 || !lista || !/^<Sel value=\{e\.estatus/.test(celdaEstatus)) {
+      const m = `${p.nombre}: un estatus de fuera de la lista se ve tal cual en la celda`;
+      fallos.push(m);
+      console.log(`   ✗ ${m}  ·  no se pudo extraer la celda del estatus de este archivo`);
+      continue;
+    }
     const cuerpo = esbuild.transformSync(
-      `const ESTATUS_PAGADA = "Pagada";\n${lista};\n` +
-      `const Sel = p => React.createElement('select', {value:p.value, readOnly:true}, p.children);\n` +
+      `${p.preludio}\n${lista};\n` +
+      `const Sel = q => React.createElement('select', {value:q.value, readOnly:true}, q.children);\n` +
       `return (e, actualiza) => (${celdaEstatus});`,
       { loader: 'jsx' }).code;
     const celda = new Function('React', cuerpo)(React);
@@ -427,24 +456,24 @@ console.log('\n6bis. Un estatus que no es del trámite de la dependencia');
       React.createElement('table', null, React.createElement('tbody', null,
         React.createElement('tr', null, celda({ estatus: est }, () => {})))));
 
-    const ajeno = pinta('Facturada');
-    check(/Facturada/.test(ajeno),
-      'la celda enseña «Facturada» tal cual, en vez de pintar la primera opción de la lista',
+    const ajeno = pinta(p.ajeno);
+    check(new RegExp(p.ajeno).test(ajeno),
+      `${p.nombre}: la celda enseña «${p.ajeno}» tal cual, no la primera opción de la lista`,
       ajeno.match(/<option[^>]*>([^<]*)<\/option>/)?.[1] || '?');
-    check(/fuera del trámite/.test(ajeno),
-      'y dice que ese estado no es del trámite de la dependencia, para que lo corrijan',
-      ajeno.match(/>([^<]*fuera del trámite[^<]*)</)?.[1] || 'no lo dice');
+    check(ajeno.includes(p.marca),
+      `${p.nombre}: y dice que ese estado no es de su lista, para que lo corrijan`,
+      ajeno.match(new RegExp(`>([^<]*${p.marca}[^<]*)<`))?.[1] || 'no lo dice');
     check((ajeno.match(/<option/g) || []).length === 5,
-      'son los cuatro estados del trámite más el ajeno, ninguno de más',
+      `${p.nombre}: son los cuatro estados propios más el ajeno, ninguno de más`,
       `${(ajeno.match(/<option/g) || []).length} opciones`);
 
-    // Y uno del trámite NO se marca: si se marcara todo, la marca no diría nada.
-    const propio = pinta('Autorizada');
-    check(!/fuera del trámite/.test(propio),
-      'un estado que sí es del trámite no lleva ninguna advertencia encima',
+    // Y uno propio NO se marca: si se marcara todo, la marca no diría nada.
+    const propio = pinta(p.propio);
+    check(!propio.includes(p.marca),
+      `${p.nombre}: un estado que sí es de la lista no lleva advertencia encima`,
       (propio.match(/<option/g) || []).length + ' opciones');
     check(/sin estatus/.test(pinta('')),
-      'y una estimación sin estatus lo dice, en vez de pasar por «Recibida»');
+      `${p.nombre}: y una estimación sin estatus lo dice, en vez de pasar por otro estado`);
   }
 }
 

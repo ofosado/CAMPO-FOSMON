@@ -74,6 +74,17 @@ service firebase.storage {
           || ((esSupervisorObra() || rol() == 'administrativo')
               && (todasObras() || id in obrasAsignadas()));
     }
+    // Espejo exacto de `firestore.rules`. La carátula firmada y la factura son
+    // el respaldo documental del pago, así que llevan la misma autoridad que la
+    // cifra que respaldan: si el supervisor no teclea el monto, tampoco sube el
+    // comprobante de ese monto. Dos reglas distintas para el mismo acto
+    // administrativo serían una puerta de atrás.
+    function puedeCapturarEstimacionD(id) {
+      return esDependencia()
+          && (rol() in ['director_obras','subdirector']
+              || (rol() == 'administrativo'
+                  && (todasObras() || id in obrasAsignadas())));
+    }
 
     // ── CONSTRUCTORA — /obras/{obraId}/… (path legacy) ──
     match /obras/{obraId}/fotos/{allPaths=**} {
@@ -107,11 +118,36 @@ service firebase.storage {
       allow write: if oid == orgId() && (esSupervisorObra() || esDirectivoD() || rol() == 'administrativo')
                    && (todasObras() || obraId in obrasAsignadas());
     }
+    // Los adjuntos de la estimación: carátula firmada y factura. Misma autoridad
+    // que la cifra que respaldan (ver `puedeCapturarEstimacionD`). El contratista
+    // no los lee: son el expediente de la dependencia, no su acuse.
+    match /orgs/{oid}/obras/{obraId}/estimaciones/{allPaths=**} {
+      allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+      allow write: if oid == orgId() && puedeCapturarEstimacionD(obraId);
+    }
     match /orgs/{oid}/obras/{obraId}/convenios/{allPaths=**} {
       allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
       allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoD());
     }
-    match /orgs/{oid}/obras/{obraId}/{allPaths=**} {
+    // Las fotos de avance, enumeradas. ANTES había un comodín
+    // `/orgs/{oid}/obras/{obraId}/{allPaths=**}` aquí, y hay que no volver a
+    // ponerlo: EN STORAGE LAS REGLAS SE SUMAN, no gana la más específica. El
+    // comodín usaba `puedeEditarObraD` y por eso seguía concediendo la subida de
+    // la carátula a quien la regla de arriba acababa de negársela — una regla
+    // apretada debajo de un comodín abierto no aprieta nada. Costó dos
+    // comprobaciones en rojo descubrirlo, y en producción no habría costado
+    // ninguna.
+    //
+    // Enumerar es viable porque la app sólo construye dos rutas bajo una obra:
+    // `fotos/{conceptoId}/{fotoId}` y `estimaciones/{estId}/{archivoId}`. Si
+    // mañana aparece una tercera y nadie declara su regla, la subida LANZA con
+    // mensaje a la cara —`subirAdjuntoEstimacion` y `subirFoto` no se tragan el
+    // fallo—, que es el modo de fallar correcto. Al revés no: un comodín abierto
+    // no avisa de nada.
+    // Las dos condiciones son las que tenía el comodín, sin tocarlas: quién ve
+    // las fotos de una obra de dependencia es una decisión de producto aparte y
+    // no se mueve de pasada.
+    match /orgs/{oid}/obras/{obraId}/fotos/{allPaths=**} {
       allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
       allow write: if oid == orgId() && puedeEditarObraD(obraId);
     }

@@ -46,6 +46,7 @@ archivo.
 | 47 | **El año de la semana se pierde en dos sitios**, y en obras multianuales eso mezcla semanas de años distintos. Las dos partes deben arreglarse juntas. | PARCIAL |
 | — | **La cuenta de «Última captura» está escrita cuatro veces** y una de las cuatro miente. La tabla de la dependencia no es ninguna de ellas. | ABIERTO |
 | 25 | **`global/health` registra la intención, no el hecho**: el aviso de «el respaldo falló» puede estar mintiendo en cualquier dirección. | ABIERTO |
+| 57 | **Desplegables cuyo valor puede no estar en su lista.** Barrido del 2026-10-07 sobre los 22 `<select>` del repo: los tres de estatus de estimación ya llevan guardia. Quedan dos donde el valor sí viene de datos guardados y la lista es fija —el concepto de materiales (`CPTS`, App.jsx ~13329) y los campos de obra con opciones (`opciones`, ~19440)—; si alguien renombra una opción, los documentos viejos se pintan como otra cosa. Los siete restantes son estado efímero de UI y no aplican. | ABIERTO |
 | 29 | **Falta el índice de `auditoria` por `obraId`**: la bitácora filtrada por obra sale vacía, que se lee como «no hubo actividad». | ABIERTO |
 | 9 | **Dos decimales no alcanzan para capturar volumen** — el redondeo cambia la cifra. | ABIERTO |
 
@@ -53,7 +54,6 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
-| 56 | **¿Quién teclea pesos en estimaciones?** Las reglas dejan escribir `config/estimaciones` a `jefe_supervision` y `supervisor_obra`, pero `PERMISOS` les da `"ver"`: les sale el aviso de sólo lectura. Capturar avance y capturar dinero no son la misma autoridad; dime cuál de las dos manda y se alinea la otra. | DECISIÓN |
 | 4b | **Cuentas de prueba dedicadas por rol.** Depende del #4. | ABIERTO |
 | 4 | **Proyecto Firebase de pruebas con copia de datos.** Habilita el #4b y la migración a organizaciones. | ABIERTO |
 | 1 | **Sacar el repositorio de iCloud Drive.** | ABIERTO |
@@ -114,7 +114,8 @@ archivo.
 | # | Tema | Cuándo |
 |---|---|---|
 | — | **Los porcentajes del contrato sin capturar reventaban la cuenta, y `MXN` disfrazaba el NaN de «$0».** Se veía «COBRADO EFECTIVO $0» al lado de «PAGADO BRUTO $9,300,000». Encontrado mirando la tabla renderizada, no en la suite. | 2026-10-06 |
-| — | **Un estatus de fuera del trámite se pintaba como «Recibida».** Un `<select>` cuyo `value` no es ninguna de sus opciones no avisa: enseña la primera. Ahora se enseña el valor real, marcado como ajeno. | 2026-10-06 |
+| — | **Un estatus de fuera del trámite se pintaba como «Recibida».** Un `<select>` cuyo `value` no es ninguna de sus opciones no avisa: enseña la primera. Ahora se enseña el valor real, marcado como ajeno — en las TRES pantallas de estimación, no sólo en la que falló. | 2026-10-07 |
+| 56 | **Quién teclea pesos en estimaciones.** Manda `PERMISOS`: captura `administrativo`, corrigen `director_obras` y `subdirector`. Reglas de Firestore y Storage apretadas para que coincidan; **falta desplegarlas**. | 2026-10-07 |
 | — | **La relación de estimaciones se lee como un estado de cuenta** en las dos pantallas, con acumulado y % del contrato, y TOTALES que reusa los mismos números de los KPIs. Sin columna de IVA: no hay tasa en el modelo de datos. | 2026-10-06 |
 | 49 | Notas de reporte semanal sembradas para la demo. | 2026-10-06 |
 | 48 | El plazo dice si la obra va bien o mal: KPI de días a favor o de atraso, en Plazo y en el panel. | 2026-10-06 |

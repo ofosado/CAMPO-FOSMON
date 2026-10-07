@@ -14,6 +14,15 @@
 // nunca existió) y lo que se evitó a tiempo en el #28. Tercera vez que
 // aparece el patrón, así que esta prueba se escribe ANTES de desplegar.
 //
+// La tercera cosa que vigila (sección 7, desde 2026-10-07): que las reglas no
+// sean MÁS PERMISIVAS QUE LA APP. Lo eran — `PERMISOS` daba `estimaciones:"ver"`
+// a jefe_supervision y a supervisor_obra mientras `puedeEditarObraD` los dejaba
+// escribir el documento donde la dependencia teclea pesos. Nada se rompía hoy,
+// porque la interfaz no ofrecía el botón; el problema es que entonces el único
+// candado era la interfaz, y ésa se mueve con un `can()`. Capturar avance no es
+// capturar dinero: el supervisor verifica obra en campo, la estimación es un
+// trámite administrativo con consecuencia de pago.
+//
 // La segunda mitad es igual de importante y no es de seguridad genérica: es
 // LA DECISIÓN DE PRODUCTO. Una dependencia no ve el margen del contratista.
 // Ni su nómina, ni sus subcontratos, ni su maquinaria, ni su almacén, ni sus
@@ -145,12 +154,17 @@ const storsDe = new Map();
     'y al releerla el volumen ejecutado sigue ahí',
     `cantEjec = ${relectura.dato?.data?.[0]?.cantEjec}`);
 
-  // El resto de la captura: sin estas cuatro no hay obra que enseñar.
+  // El resto de la captura: sin estas tres no hay obra que enseñar.
+  //
+  // `config/estimaciones` NO está en esta lista, y la ausencia es el punto.
+  // Hasta hoy estaba, y lo que afirmaba era que el supervisor de obra teclea
+  // pesos —porque las reglas usaban `puedeEditarObraD` también ahí—. Capturar
+  // avance y capturar dinero son autoridades distintas; la matriz completa de
+  // quién puede está en la sección 7.
   for (const [ruta, datos, que] of [
     [enObra('config', 'info'), { nombre: 'Pavimentación calle Hidalgo', estado: 'activa' }, 'la ficha de la obra'],
     [enObra('config', 'catalogo'), { conceptos: [{ clave: 'E-01', desc: 'Excavación', unidad: 'm3', cant: 1200, pu: 320 }], importeContrato: 384000 }, 'el catálogo de partidas'],
     [enObra('config', 'parametros'), { pctAnticipo: 30, pctRetencion: 5 }, 'anticipo y retención'],
-    [enObra('config', 'estimaciones'), { data: [{ no: 1, periodo: '2026-09', monto: 120000, estatus: 'presentada' }] }, 'las estimaciones'],
   ]) {
     const e = await escribe(supervisor, ruta, datos);
     check(!e, `y ${que}`, e ? `DENEGADA: ${e.message}` : 'guardado');
@@ -287,32 +301,39 @@ const storsDe = new Map();
     marcaSup2 ? 'rebotó' : 'ESCRIBIÓ la marca');
 
   // ── 7. LAS ESTIMACIONES: QUIÉN CAPTURA EL DINERO ────────────────────────
-  // La sección 1 ya comprueba que el supervisor escribe `config/estimaciones`.
-  // Aquí se levanta la MATRIZ COMPLETA, porque este documento no es como los
-  // otros: es el único donde la dependencia teclea pesos, y lo que quede
-  // escrito aquí alimenta el corte semanal del expediente.
+  // La matriz completa, porque este documento no es como los otros: es el único
+  // donde la dependencia teclea pesos, y lo que quede escrito aquí alimenta el
+  // corte semanal del expediente.
   //
-  // Se afirma lo que las reglas PERMITEN HOY, no lo que la interfaz ofrece.
-  // No son lo mismo y la diferencia importa: `PERMISOS` en App.jsx le da
-  // `estimaciones:"ver"` a jefe_supervision y a supervisor_obra, mientras
-  // `puedeEditarObraD` en firestore.rules los deja escribir. Esa brecha es
-  // una DECISIÓN pendiente y está anotada en PENDIENTES; mientras no se
-  // decida, la prueba la deja escrita para que nadie la descubra en la demo.
+  // CAPTURAR AVANCE NO ES CAPTURAR DINERO (decisión 2026-10-07). El supervisor
+  // de obra va a campo y verifica lo ejecutado; la estimación es un trámite
+  // administrativo con consecuencia de pago. Teclea `administrativo`; corrigen
+  // `director_obras` y `subdirector`. `jefe_supervision` manda sobre el cuerpo
+  // de supervisión —escribe avance en CUALQUIER obra, lo comprueba la sección
+  // 3— pero no sobre la caja.
+  //
+  // Lo que esta sección vigila no es la lista: es que las reglas no vuelvan a
+  // ser MÁS PERMISIVAS QUE LA APP. Hasta hoy lo eran —`PERMISOS` daba
+  // `estimaciones:"ver"` a jefe_supervision y a supervisor_obra mientras
+  // `puedeEditarObraD` los dejaba escribir—, y eso deja el único candado en la
+  // interfaz. Un candado en la interfaz se abre moviendo un `can()`.
   console.log('\n7. Las estimaciones: quién teclea pesos en el expediente');
   const administrativo = await dep('administrativo', 'administrativo');
+  const subdirector = await dep('subdirector', 'subdirector', { todas: true, obras: [] });
   const EST = { data: [{ no: 1, periodoIni: '2026-09-01', periodoFin: '2026-09-30',
                          periodo: '01 sep 2026 – 30 sep 2026', monto: 120000,
                          estatus: 'Recibida', fechaRecepcion: '2026-10-05',
                          recibidaPor: 'sup@demo.mx', adjuntos: [] }] };
   for (const [quien, sesion, puede] of [
-    ['el supervisor de obra asignado', supervisor,      true],
-    ['el administrativo',              administrativo,  true],
-    ['el jefe de supervisión',         jefe,            true],
-    ['el director de Obras Públicas',  director,        true],
-    ['el contralor',                   contralor,       false],
-    ['el contratista',                 contratista,     false],
-    ['un supervisor de otra obra',     ajeno,           false],
-    ['la dependencia vecina',          vecina,          false],
+    ['el administrativo, que es la ventanilla', administrativo, true],
+    ['el director de Obras Públicas',           director,       true],
+    ['el subdirector',                          subdirector,    true],
+    ['el supervisor de obra, que captura avance pero no pesos', supervisor, false],
+    ['el jefe de supervisión, que manda sobre la obra y no sobre la caja', jefe, false],
+    ['el contralor',                            contralor,      false],
+    ['el contratista',                          contratista,    false],
+    ['un supervisor de otra obra',              ajeno,          false],
+    ['la dependencia vecina',                   vecina,         false],
   ]) {
     const e = await escribe(sesion, enObra('config', 'estimaciones'), EST);
     check(puede ? !e : (e && denegado(e)),
@@ -320,6 +341,38 @@ const storsDe = new Map();
       e ? (puede ? `DENEGADA: ${e.message}` : 'rebotó')
         : (puede ? 'guardado' : 'ESCRIBIÓ — teclearía pesos sin permiso'));
   }
+
+  // Y el cierre del círculo: que `PERMISOS` diga lo MISMO. Manda la app y las
+  // reglas la respaldan, así que las dos tienen que nombrar a los mismos tres.
+  //
+  // Se lee de App.jsx en vez de teclearla aquí porque el defecto que importa es
+  // la DERIVA: alguien cambia uno de los dos lados y el otro se queda. Si la
+  // lista de arriba se escribiera a mano en los dos sitios, esta prueba seguiría
+  // verde con las reglas abiertas y la app cerrada — que es exactamente el
+  // estado del que venimos.
+  const ROLES_DEP = ['director_obras', 'subdirector', 'jefe_supervision',
+                     'supervisor_obra', 'administrativo', 'contralor', 'contratista'];
+  const esperados = ['administrativo', 'director_obras', 'subdirector'].sort();
+  const srcApp = require('fs').readFileSync(
+    require('path').resolve(__dirname, '../src/App.jsx'), 'utf8');
+  const bloque = srcApp.match(/const PERMISOS\s*=\s*\{[\s\S]*?\n\};/)?.[0];
+  if (!bloque) noArranco('no se encontró el bloque PERMISOS en src/App.jsx');
+  const editanSegunApp = ROLES_DEP.filter(r => {
+    const fila = bloque.match(new RegExp(`\\n\\s*${r}\\s*:\\s*\\{([^}]*)\\}`))?.[1];
+    if (fila === undefined) noArranco(`PERMISOS no declara el rol \`${r}\``);
+    return /estimaciones\s*:\s*"editar"/.test(fila);
+  }).sort();
+  check(editanSegunApp.join(',') === esperados.join(','),
+    'y `PERMISOS` en App.jsx nombra a los mismos tres, sin deriva',
+    `app: [${editanSegunApp.join(', ')}]  ·  reglas: [${esperados.join(', ')}]`);
+
+  // Pero LEER sí: el avance financiero es parte del expediente y el supervisor
+  // necesita ver contra qué se le está pagando la obra que verifica. Quitarle
+  // la lectura junto con la escritura sería pasarse de apretado.
+  const leeSup = await lee(supervisor, enObra('config', 'estimaciones'));
+  check(!leeSup.err && leeSup.dato?.data?.[0]?.monto === 120000,
+    'y el supervisor LEE las estimaciones aunque no las escriba',
+    leeSup.err ? `denegada: ${leeSup.err.message}` : `$${leeSup.dato?.data?.[0]?.monto}`);
 
   // Y que lo escrito se relee con los campos nuevos intactos. El renombre de
   // `monto` o `estatus` rompería el corte semanal en silencio; el de las
@@ -355,14 +408,27 @@ const storsDe = new Map();
     /unauthorized|permission/i.test(e?.message || '');
 
   let primerAdj;
-  try { primerAdj = await sube(supervisor, RUTA_ADJ); }
+  try { primerAdj = await sube(administrativo, RUTA_ADJ); }
   catch (e) { noArranco(`el emulador de Storage no contesta en ${HOST}:${PUERTO_STOR} — ${e.message}`); }
-  check(!primerAdj, 'el supervisor adjunta la carátula a la estimación',
+  check(!primerAdj, 'el administrativo adjunta la carátula a la estimación',
     primerAdj ? `DENEGADA: ${primerAdj.code || primerAdj.message}` : RUTA_ADJ);
   if (primerAdj) {
     console.log('\n   Si esto está rojo, faltan reglas de Storage para esa ruta:');
     console.log('   el adjunto se subiría desde la pantalla y rebotaría en la demo.');
   }
+
+  // El adjunto va con la misma autoridad que la cifra que respalda. Si el
+  // supervisor no teclea el monto, tampoco sube el comprobante de ese monto:
+  // dos reglas distintas para el mismo acto administrativo serían una puerta de
+  // atrás, y la carátula es lo que acredita el pago.
+  const subeSup = await sube(supervisor, RUTA_ADJ);
+  check(subeSup && denegadoStor(subeSup),
+    'el supervisor NO la sube — el respaldo del pago sigue la regla del pago',
+    subeSup ? 'rebotó' : 'SUBIÓ — Storage quedó más flojo que Firestore');
+  const subeJefe = await sube(jefe, RUTA_ADJ);
+  check(subeJefe && denegadoStor(subeJefe),
+    'ni el jefe de supervisión',
+    subeJefe ? 'rebotó' : 'SUBIÓ — Storage quedó más flojo que Firestore');
 
   const vistaCont = await baja(contralor, RUTA_ADJ);
   check(!vistaCont.err, 'el contralor la descarga (fiscaliza el respaldo del pago)',
