@@ -7072,7 +7072,15 @@ function GestionUsuarios({usuario, obras, onClose}){
         </div>
       </div>
 
+      {/* El orden de estos tres casos importa. Cuando `listarUsuarios` falla,
+          `usuarios` se queda en `[]` y la pantalla decía «Sin usuarios
+          registrados»: una afirmación sobre el padrón que no se pudo leer, con
+          el aviso del error arriba contradiciéndola. Un dato ausente se dice
+          ausente; no se presenta como cero. */}
       {cargando ? <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>Cargando…</div>
+      : error ? <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>
+          No se pudo leer el padrón de usuarios. El aviso de arriba dice por qué.
+        </div>
       : usuarios.length===0 ? <div style={{padding:20,textAlign:"center",fontSize:11,color:C.textMut}}>
           Sin usuarios registrados. Crea el primero con "+ Nuevo usuario".
         </div>
@@ -20274,8 +20282,21 @@ function fmtFechaBit(iso){
 }
 // ── MENÚ CONFIGURACIÓN (header dropdown) ─────────────────────────────────
 // Agrupa Usuarios, Alertas y Bitácora para no saturar el header con botones.
-// Visible solo para Director General, Director Operaciones, Gerente
-// Construcción y Admin Sistema.
+//
+// Quién lo ve se decide AQUÍ y no con una lista escrita en cada sitio: estaba
+// escrita dos veces —en el header y otra vez en la opción— y dos listas se
+// desincronizan.
+//
+// Los mandos de una dependencia entran, y hasta hoy no entraban: por eso un
+// municipio no podía dar de alta a su propia gente sin que alguien corriera un
+// script. Entran a Usuarios y a Alertas, NO a Bitácora ni a Salud del sistema:
+// `auditoria/` y `global/` son colecciones raíz de la constructora, y una
+// dependencia no lee la operación de su contratista. Las reglas tampoco los
+// dejan, así que abrirles esas dos sería enseñarles una pantalla que sale con
+// error de permisos.
+const ROLES_CONFIG_C = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
+const ROLES_CONFIG_D = ["director_obras","subdirector"];
+const veConfiguracion = (rol) => ROLES_CONFIG_C.includes(rol) || ROLES_CONFIG_D.includes(rol);
 function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
   const [abierto, setAbierto] = useState(false);
   const ref = useRef(null);
@@ -20290,8 +20311,11 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
   const opciones = [
     { id: "alertas", label: "Alertas activas", badge: alertasNoLeidas,
       visible: true },
+    // Los mismos roles que `esAdminDeOrg()` en firestore.rules, de los dos
+    // tipos: cada admin administra a la gente de SU organización.
     { id: "usuarios", label: "Usuarios",
-      visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
+      visible: ["director_general","director_operaciones","admin_sistema",
+                ...ROLES_CONFIG_D].includes(rol) },
     { id: "bitacora", label: "Bitácora",
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
     // Los mismos roles que `esDirectivoC() || esAdminSistemaC()` en
@@ -22040,7 +22064,7 @@ export default function App(){
         <CentroNotificaciones usuario={usuario} notificaciones={notificaciones}
           onNavTab={(t,st)=>{ setScreen("obra"); navTab(t,st); }}
           onSelectObra={(id)=>{ if(id && id!==obraId) entrar(id); }}/>
-        {["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(usuario.rol) && (
+        {veConfiguracion(usuario.rol) && (
           <MenuConfiguracion screen={screen} setScreen={setScreen} alertasNoLeidas={alertasNoLeidasCount} rol={usuario.rol}/>
         )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,

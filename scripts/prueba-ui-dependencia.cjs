@@ -131,6 +131,16 @@
 //          justamente para que no estuviera: el mismo «dos sitios, se arregla
 //          uno» del nombre de la organización.
 //
+//   · `ROLES_CONFIG_D = []`, que es como estaba el día anterior
+//        → 4 rojas: el municipio se queda sin menú de Configuración, o sea sin
+//          alta de usuarios, que es justo lo que obligaba a correr un script.
+//   · la opción Usuarios sin `...ROLES_CONFIG_D`
+//        → 2 rojas: el menú aparece y por dentro no trae lo único que iba a
+//          buscar ahí. Es la mitad del arreglo que es fácil olvidar.
+//   · abrir Bitácora a `...ROLES_CONFIG_D`
+//        → 2 rojas, y es la contraparte: abrir el menú no es abrirlo todo.
+//          `auditoria/` es del contratista y la regla ni lo deja leer.
+//
 // El pie que dictaba «Maquinaria, Personal» al municipio se arregló primero
 // con una guardia, `vaElDescriptor`, y horas después el renombre a cotea dejó
 // el descriptor vacío y la guardia sin objeto. Las contrapruebas de aquella
@@ -211,8 +221,25 @@ traverse(ast, {
   },
 });
 
+// Las opciones del menú de Configuración tampoco son una declaración de
+// módulo: viven dentro de `MenuConfiguracion`. Se buscan por dónde viven, no
+// confiando en que el nombre `opciones` sea único en 22 000 renglones.
+let opcionesConfig = null;
+traverse(ast, {
+  FunctionDeclaration(p) {
+    if (!p.node.id || p.node.id.name !== 'MenuConfiguracion') return;
+    p.traverse({
+      VariableDeclarator(q) {
+        if (q.node.id.name === 'opciones' && q.node.init)
+          opcionesConfig ||= src.slice(q.node.init.start, q.node.init.end);
+      },
+    });
+  },
+});
+
 const NECESARIOS = [
   'TABS_POR_ROL', 'TABS_DEPENDENCIA', 'tabsDe', 'esDependencia',
+  'ROLES_CONFIG_C', 'ROLES_CONFIG_D', 'veConfiguracion',
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
@@ -229,6 +256,7 @@ const NECESARIOS = [
 ];
 const faltan = NECESARIOS.filter(n => !decl[n]);
 if (efectoMarca === null) faltan.push('el efecto que carga orgs/{orgId}/config/branding');
+if (opcionesConfig === null) faltan.push('el arreglo `opciones` dentro de MenuConfiguracion');
 if (faltan.length) noArranco(faltan, archivo);
 
 let fallas = 0;
@@ -306,6 +334,53 @@ check(!PROHIBIDAS.test(subOp), 'dentro de Avance no hay sub-pestañas de econom�
 check(!PROHIBIDAS.test(subPl), 'dentro de Contrato tampoco', subPl);
 check(menus.SUBTABS_OPERACION_DEPENDENCIA.length > 0 && menus.SUBTABS_PLANEACION_DEPENDENCIA.length > 0,
   'y ninguna de las dos quedó vacía — una pestaña sin contenido es una pestaña rota');
+
+// ════════════════════════════════════════════════════════════════════════════
+// 1 bis) EL MENÚ DE CONFIGURACIÓN: el municipio administra a su gente, y nada más
+// ════════════════════════════════════════════════════════════════════════════
+// Hasta hoy el menú no existía para una dependencia: nadie en un municipio
+// podía dar de alta a su propia gente sin que corriéramos un script. Abrirlo es
+// la mitad fácil; la otra es que se abra SÓLO a Usuarios y Alertas. Bitácora
+// lee `auditoria/` y Salud lee `global/`, que son colecciones raíz de la
+// constructora: enseñarlas sería P5, y además la regla las niega, así que la
+// pantalla saldría con error de permisos.
+const cfg = new Function(`"use strict";
+  const ROLES_CONFIG_C = ${decl['ROLES_CONFIG_C']};
+  const ROLES_CONFIG_D = ${decl['ROLES_CONFIG_D']};
+  const veConfiguracion = ${decl['veConfiguracion']};
+  // El arreglo real, con sus dos datos de entrada atados: el rol y el contador
+  // de alertas. Trae ya aplicado su propio \`.filter(o => o.visible)\`.
+  const opcionesDe = (rol, alertasNoLeidas) => ${opcionesConfig};
+  return { veConfiguracion, opcionesDe };`)();
+
+seccion('El menú de Configuración');
+
+const etiquetasCfg = (rol) => cfg.opcionesDe(rol, 0).map(o => o.label);
+
+for (const rol of ['director_obras', 'subdirector']) {
+  check(cfg.veConfiguracion(rol) === true,
+    `${rol} alcanza el menú de Configuración`, 'sin esto no hay alta de usuarios en el municipio');
+  const ls = etiquetasCfg(rol);
+  check(ls.includes('Usuarios'), `y dentro tiene Usuarios`, ls.join(' · '));
+  check(!/Bitácora|Salud/.test(ls.join(' ')),
+    'y no tiene Bitácora ni Salud del sistema — son del contratista', ls.join(' · '));
+}
+
+// Los demás roles de dependencia no administran a nadie: el mando sí, el
+// supervisor no. Si el menú se abriera a todos, cualquiera del municipio vería
+// el padrón y podría resetear contraseñas.
+for (const rol of ['jefe_supervision', 'supervisor_obra', 'administrativo', 'contralor', 'contratista']) {
+  check(cfg.veConfiguracion(rol) === false,
+    `${rol} no alcanza el menú de Configuración`);
+}
+
+// Y la constructora no perdió nada por el camino.
+const cfgDG = etiquetasCfg('director_general');
+check(['Usuarios', 'Bitácora', 'Salud del sistema'].every(l => cfgDG.includes(l)),
+  'el director general de la constructora conserva las tres', cfgDG.join(' · '));
+const cfgGer = etiquetasCfg('gerente_construccion');
+check(cfgGer.includes('Salud del sistema') && !cfgGer.includes('Usuarios'),
+  'y el gerente de construcción sigue viendo Salud sin ver Usuarios', cfgGer.join(' · '));
 
 // ════════════════════════════════════════════════════════════════════════════
 // 2) LAS RUTAS: qué se pide y qué no
