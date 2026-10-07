@@ -14493,7 +14493,17 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
               const celda = {padding:"5px 7px",borderBottom:`0.5px solid ${C.border}`,
                 verticalAlign:"middle",whiteSpace:"nowrap"};
               const num = {...celda, textAlign:"right", fontVariantNumeric:"tabular-nums"};
-              return <tr key={e.no}>
+              // La llave es `i` —la posición en `estimaciones`— y no `e.no`.
+              // Dos razones, las dos comprobadas en `prueba-llave-estimacion`:
+              // `no` puede faltar (el `sort` de arriba ya lo admite con
+              // `Number(x.e?.no)||0`) y un `key={undefined}` React lo cuenta
+              // como llave ausente; y `no` puede REPETIRSE, porque se teclea
+              // —dos renglones con el mismo número son dos hermanos con la
+              // misma llave—. `i` no puede ni faltar ni repetirse, y además es
+              // la identidad que ya usa todo lo que escribe en este renglón:
+              // `actualiza(i,…)` y el botón de borrar. Que la llave y la
+              // escritura usen la misma identidad es el punto.
+              return <tr key={i}>
                 <td style={{...celda,borderLeft:`3px solid ${atraso?.color===C.red?C.red:ecol}`,
                   fontWeight:700,color:C.caliza}}>EST-{String(e.no).padStart(2,'0')}</td>
                 <td style={celda}>
@@ -18020,9 +18030,11 @@ function EstimacionesCliente({obra, estimaciones}){
           Aún no se han generado estimaciones.
         </div>
       )}
-      {estimaciones.map(e => {
+      {/* `i` y no `e.no`, por lo mismo que en `Estimaciones`: `no` se teclea,
+          así que puede faltar o repetirse, y la llave no puede. */}
+      {estimaciones.map((e, i) => {
         const ecol = EST_COL[e.estatus] || C.yellow;
-        return <div key={e.no} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
+        return <div key={i} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
           borderLeft:`3px solid ${ecol}`}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
             <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
