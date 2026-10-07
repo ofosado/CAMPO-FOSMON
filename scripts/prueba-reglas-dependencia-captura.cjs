@@ -36,7 +36,7 @@
 
 const { initializeApp } = require('firebase/app');
 const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc,
-        addDoc, collection, getDocs } = require('firebase/firestore');
+        deleteDoc, addDoc, collection, getDocs } = require('firebase/firestore');
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
 const { getStorage, connectStorageEmulator, ref: refStor,
         uploadString, getDownloadURL } = require('firebase/storage');
@@ -86,6 +86,9 @@ const escribe = async (db, ruta, datos) => {
 const lee = async (db, ruta) => {
   try { return { dato: (await getDoc(doc(db, ...ruta))).data(), err: null }; }
   catch (e) { return { dato: null, err: e }; }
+};
+const borra = async (db, ruta) => {
+  try { await deleteDoc(doc(db, ...ruta)); return null; } catch (e) { return e; }
 };
 
 // Una captura como la que hace el supervisor: partidas con volumen ejecutado.
@@ -220,6 +223,42 @@ const storsDe = new Map();
   check(escCont && denegado(escCont),
     'pero NO lo escribe — fiscalizar no es corregir',
     escCont ? 'rebotó' : 'ESCRIBIÓ — el contralor no debería poder');
+
+  // EL DOCUMENTO DE LA OBRA, no un documento interior. Hasta el 2026-10-07 las
+  // seis escrituras del bloque de obra de dependencia se guardaban con
+  // `esDirectivoD()`, que es la lista de LECTURA amplia y lleva al contralor
+  // dentro: podía CREAR y BORRAR obras. Estaba dormido porque ningún rol de
+  // dependencia tenía botón de alta; el alta de obra es lo que lo despierta.
+  // Se mide con el emulador y no leyendo el archivo porque la pregunta es qué
+  // hace el motor de reglas, no qué dice el texto.
+  const altaCont = await escribe(contralor, ['orgs', ORG, 'obras', 'OP-CONTRALOR'],
+    { nombre: 'la que el contralor no puede dar de alta', presupuesto: 1 });
+  check(altaCont && denegado(altaCont),
+    'el contralor NO da de alta una obra',
+    altaCont ? 'rebotó' : 'CREÓ LA OBRA — es la lista de lectura en una escritura');
+  const edicCont = await escribe(contralor, ['orgs', ORG, 'obras', OBRA],
+    { presupuesto: 1 });
+  check(edicCont && denegado(edicCont),
+    'ni le cambia el monto contratado a una que ya existe',
+    edicCont ? 'rebotó' : 'EDITÓ EL MONTO — quien fiscaliza estaría corrigiendo');
+  const borrCont = await borra(contralor, ['orgs', ORG, 'obras', OBRA]);
+  check(borrCont && denegado(borrCont),
+    'ni la borra',
+    borrCont ? 'rebotó' : 'BORRÓ LA OBRA QUE FISCALIZA');
+
+  // La otra dirección, para que el arreglo no sea «quitar al contralor de las
+  // reglas»: la obra la tiene que seguir LEYENDO, que es su trabajo.
+  const leeObraCont = await lee(contralor, ['orgs', ORG, 'obras', OBRA]);
+  check(!leeObraCont.err, 'pero sí LEE la obra entera, con su monto',
+    leeObraCont.err ? `DENEGADA: ${leeObraCont.err.message}` : 'la lectura se conserva');
+
+  // Y quien sí adjudica, sí: si esto rebota, el botón de alta de la app está
+  // ofreciendo algo que las reglas no permiten.
+  const dirAlta = await dep('dir-alta', 'director_obras', { todas: true, obras: [] });
+  const altaDir = await escribe(dirAlta, ['orgs', ORG, 'obras', 'OP-ALTA-DIR'],
+    { nombre: 'Pavimentación de prueba', presupuesto: 4850000 });
+  check(!altaDir, 'el director de Obras Públicas SÍ da de alta la obra',
+    altaDir ? `DENEGADA: ${altaDir.message} — el botón de alta prometería de más` : 'creada');
 
   // jefe_supervision manda sobre todo el cuerpo de supervisión: escribe en
   // cualquier obra de su org, aunque no la tenga asignada.

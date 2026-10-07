@@ -6663,12 +6663,43 @@ const GP_OBRAS_CATALOGO = [
   {id:"0124",nombre:"SIOP Coatza Rehab. Puente", gastoGP:1770125},
 ];
 
-function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
-  const[paso,setPaso]=useState("seleccionar"); // seleccionar | completar
+// Los campos que pide el alta de CONSTRUCTORA, en la forma de `CAMPOS_CONTRATO`
+// para que el render sea uno solo. No se usa `CAMPOS_CONTRATO.constructora`
+// porque no son la misma lista: ahí está `diasPago`, que este formulario nunca
+// pidió, y las etiquetas son las largas de la pestaña Contrato. Igualarlas
+// cambiaría una pantalla que funciona sin que nadie lo haya pedido.
+const CAMPOS_ALTA_C = [
+  { lbl:"Contrato",          key:"contrato",        tipo:"text" },
+  { lbl:"Cliente",           key:"cliente",         tipo:"text" },
+  { lbl:"Superintendente",   key:"superintendente", tipo:"text" },
+  { lbl:"Residente de obra", key:"residente",       tipo:"text" },
+  { lbl:"Administrador",     key:"admin",           tipo:"text" },
+];
+
+// Lo que no se puede dejar en blanco, por tipo. En dependencia es lo que consta
+// en el acto de adjudicación: con qué número, bajo qué modalidad, a quién, por
+// cuánto y para cuándo. El RFC, el supervisor y el origen de los recursos se
+// completan en Contrato — exigirlos aquí bloquearía el alta de una obra que ya
+// está adjudicada por un dato que está en otro escritorio.
+const OBLIGATORIOS_ALTA = {
+  constructora: ["nombre","contrato","cliente","presupuesto","inicio","fin"],
+  dependencia:  ["nombre","contrato","modalidad","empresaEjecutante","presupuesto","inicio","fin"],
+};
+
+function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
+  // En dependencia no hay catálogo de GP del que escoger —GP es el Sheet de
+  // FOSMON— así que el paso 1 no existe y el id lo genera la app. Del lado
+  // constructora el id tiene que ser el código de 4 dígitos de GP para que
+  // empate con el Sheet, y de ahí sale el paso de selección.
+  const dep=esDependencia(usuario);
+  const campos=dep?camposContrato(usuario).filter(c=>c.key!=="presupuesto"):CAMPOS_ALTA_C;
+  const[paso,setPaso]=useState(dep?"completar":"seleccionar"); // seleccionar | completar
   const[gpSel,setGpSel]=useState(null);
   const[busqueda,setBusqueda]=useState("");
+  const[guardando,setGuardando]=useState(false);
+  const[errGuardar,setErrGuardar]=useState("");
   const[form,setForm]=useState({
-    id:"",nombre:"",contrato:"",cliente:"",superintendente:"",
+    id:dep?nuevoIdObra():"",nombre:"",contrato:"",cliente:"",superintendente:"",
     residente:"",admin:"",presupuesto:"",gastoGP:0,
     ultimaAct:new Date().toLocaleDateString("es-MX",{day:"2-digit",month:"long",year:"numeric"}),
     estado:"activa",pctAnticipo:10,pctFondoGar:5,pctRetencion:0,
@@ -6679,7 +6710,18 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
     modoAvance: MODO_AVANCE_NUEVA_OBRA
   });
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
-  const valid=form.nombre&&form.contrato&&form.cliente&&form.presupuesto&&form.inicio&&form.fin;
+  // La lista manda. Escrita a mano aquí, el alta de dependencia habría exigido
+  // `cliente` —que de ese lado no existe— y el botón no se habría habilitado
+  // nunca con el formulario completo.
+  const valid=OBLIGATORIOS_ALTA[dep?"dependencia":"constructora"].every(k=>form[k]);
+  const guardar=async()=>{
+    if(!valid||guardando) return;
+    setGuardando(true); setErrGuardar("");
+    const problema=await onSave(form);
+    // Si hubo problema el modal NO se cierra: cerrarlo con un error es cómo se
+    // pierde una captura de ocho campos sin que nadie se entere de por qué.
+    if(problema){ setErrGuardar(problema); setGuardando(false); }
+  };
 
   function seleccionarGP(obra) {
     setGpSel(obra);
@@ -6726,7 +6768,8 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
           <div style={{fontSize:14,fontWeight:700,color:C.textPri}}>
-            {paso==="seleccionar"?"Seleccionar obra de GP Construct":"Completar datos de la obra"}
+            {paso==="seleccionar"?"Seleccionar obra de GP Construct"
+              :dep?"Registrar una obra contratada":"Completar datos de la obra"}
           </div>
           {paso==="completar"&&gpSel&&(
             <div style={{fontSize:10,color:C.textMut,marginTop:2}}>
@@ -6803,22 +6846,36 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
       {paso==="completar"&&(
         <>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {/* Nombre desde GP Construct — no editable */}
+            {/* El nombre: de GP y no editable en constructora, a mano en
+                dependencia. El id se enseña en los dos casos porque es lo que
+                va a aparecer en la auditoría y en las rutas. */}
             <div>
               <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Nombre de la obra</div>
-              <div style={{background:"rgba(255,254,249,0.05)",border:`0.5px solid ${C.border}`,
-                borderRadius:6,padding:"7px 10px",fontSize:12,fontWeight:600,color:C.caliza,
-                display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span>{form.nombre}</span>
-                <span style={{fontSize:9,color:C.textMut,flexShrink:0,marginLeft:8}}>ID {gpSel?.id}</span>
-              </div>
+              {dep
+                ? <>
+                    <Inp type="text" value={form.nombre} onChange={e=>f("nombre",e.target.value)}
+                      placeholder="Pavimentación de la calle Hidalgo"/>
+                    <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
+                      Identificador asignado: <b style={{color:C.textSec}}>{form.id}</b>
+                    </div>
+                  </>
+                : <div style={{background:"rgba(255,254,249,0.05)",border:`0.5px solid ${C.border}`,
+                    borderRadius:6,padding:"7px 10px",fontSize:12,fontWeight:600,color:C.caliza,
+                    display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span>{form.nombre}</span>
+                    <span style={{fontSize:9,color:C.textMut,flexShrink:0,marginLeft:8}}>ID {gpSel?.id}</span>
+                  </div>}
             </div>
-            {[["Contrato","contrato","text"],["Cliente","cliente","text"],
-              ["Superintendente","superintendente","text"],["Residente de obra","residente","text"],
-              ["Administrador","admin","text"]].map(([l,k,t])=>(
-              <div key={k}>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{l}</div>
-                <Inp type={t} value={form[k]} onChange={e=>f(k,e.target.value)} placeholder={l}/>
+            {campos.map(c=>(
+              <div key={c.key}>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{c.lbl}</div>
+                {c.tipo==="opciones"
+                  ? <Sel value={form[c.key]||""} onChange={e=>f(c.key,e.target.value)}>
+                      <option value="">Selecciona…</option>
+                      {c.opciones.map(o=><option key={o} value={o}>{o}</option>)}
+                    </Sel>
+                  : <Inp type={c.tipo==="number"?"number":"text"} value={form[c.key]||""}
+                      onChange={e=>f(c.key,e.target.value)} placeholder={c.lbl}/>}
               </div>
             ))}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -6844,7 +6901,9 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
                 onChange={e=>f("justificacionAmpliacion",e.target.value)}/>
             </div>}
             <div>
-              <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Presupuesto total del contrato</div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+                {dep?"Monto contratado (SIN IVA)":"Presupuesto total del contrato"}
+              </div>
               <Inp type="number" value={form.presupuesto} onChange={e=>f("presupuesto",parseFloat(e.target.value)||0)} placeholder="0"/>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
@@ -6856,13 +6915,22 @@ function ModalNuevaObra({onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
               ))}
             </div>
           </div>
+          {errGuardar&&<div style={{marginTop:12,background:`${alfa(C.red,6.27)}`,
+            border:`0.5px solid ${alfa(C.red,33.33)}`,borderRadius:6,padding:"8px 12px",
+            fontSize:10,color:C.redDk}}>
+            {errGuardar}
+          </div>}
           <div style={{display:"flex",gap:8,marginTop:16}}>
-            <SecBtn onClick={()=>setPaso("seleccionar")} style={{flex:1}}>← Cambiar obra</SecBtn>
-            <button onClick={()=>valid&&onSave(form)} disabled={!valid}
-              style={{flex:2,background:valid?C.caliza:"rgba(255,254,249,0.2)",border:"none",borderRadius:6,
-                padding:"9px 0",fontSize:12,fontWeight:700,color:valid?C.bg:C.textMut,
-                cursor:valid?"pointer":"not-allowed"}}>
-              Activar en cotea
+            {/* En dependencia no hay a dónde volver: el paso 1 es el catálogo
+                de GP y ese lado no lo tiene. Cerrar es la única salida. */}
+            <SecBtn onClick={()=>dep?onClose():setPaso("seleccionar")} style={{flex:1}}>
+              {dep?"Cancelar":"← Cambiar obra"}
+            </SecBtn>
+            <button onClick={guardar} disabled={!valid||guardando}
+              style={{flex:2,background:valid&&!guardando?C.caliza:"rgba(255,254,249,0.2)",border:"none",borderRadius:6,
+                padding:"9px 0",fontSize:12,fontWeight:700,color:valid&&!guardando?C.bg:C.textMut,
+                cursor:valid&&!guardando?"pointer":"not-allowed"}}>
+              {guardando?"Guardando…":dep?"Registrar y cargar catálogo":"Activar en cotea"}
             </button>
           </div>
         </>
@@ -9009,8 +9077,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
+  // `puedeGestionar` NO se abre a dependencia, y la omisión es deliberada: con
+  // él van archivar, reactivar y el Historial, y esos tres no persisten —
+  // `archivar` escribe `global/historial_obras` y mueve el estado en memoria,
+  // pero nunca toca `obras/{id}`; `reactivar` sólo toca memoria—. Al recargar,
+  // la obra vuelve a estar activa. Ofrecerlos del lado dependencia sería
+  // prometer un archivado que no existe. Es defecto aparte (ver PENDIENTES) y
+  // afecta también a constructora, así que no se arregla de paso aquí.
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
+  // El alta sí, por los dos lados. Fuente única: `puedeAltaObra`.
+  const puedeDarDeAlta=puedeAltaObra(usuario);
   // P5: de este lado de la pantalla el dinero del contratista no existe.
   const dep=esDependencia(usuario);
   const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -9100,30 +9177,56 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     setConfirmarEliminar(null); setIdConfirm(""); setElimStep(1);
   };
 
+  // Devuelve `null` si la obra quedó, o el texto del problema si no.
+  //
+  // DEVOLVER EL PROBLEMA ES EL CAMBIO, no un detalle de estilo. Antes esto
+  // metía la obra en la lista ANTES de escribir y cerraba el modal sin mirar si
+  // `fsSet` había funcionado: `fsSet` devuelve `false` al ser denegada y aquí
+  // nadie lo leía, así que una obra rechazada por las reglas aparecía en la
+  // pantalla, con su monto, hasta que alguien recargara. Y el id repetido es
+  // peor que un error: `fsSet` escribe con `merge`, así que se FUNDE con la
+  // obra que ya estaba — campo por campo, sin aviso. Se comprueba antes.
   const agregarObra=async(form)=>{
     const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
-    setObras(oo=>[...oo,nueva]);
+    if(!nueva.id) return 'La obra no tiene identificador. No se guardó nada.';
+    if(await fsGet(`obras/${nueva.id}`))
+      return `Ya existe una obra con el identificador ${nueva.id}. No se guardó nada.`;
     // Guardar en Firestore: top-level + sub-doc info
-    await fsSet(`obras/${nueva.id}`, nueva);
-    await fsSet(`obras/${nueva.id}/config/info`, nueva);
+    const okObra = await fsSet(`obras/${nueva.id}`, nueva);
+    if(!okObra) return 'Firestore rechazó la escritura. Tu rol no puede dar de alta obras, o perdiste la sesión.';
+    // La segunda escritura es la misma carga en `config/info`, de donde el
+    // cargador de obras la relee. Si rebota NO se aborta: `obras/{id}` ya tiene
+    // todo y el cargador mezcla lo que encuentre, así que la obra queda
+    // completa. Se avisa en consola porque indica reglas desalineadas.
+    if(!await fsSet(`obras/${nueva.id}/config/info`, nueva))
+      console.warn(`[alta de obra] ${nueva.id} quedó sin config/info; se leerá del documento de la obra`);
+    setObras(oo=>[...oo,nueva]);
     fsAudit("crear", { modulo: "obra", entidad: nueva.nombre,
       obraId: nueva.id, obraNombre: nueva.contrato || nueva.nombre || "",
       despues: nueva, path: `obras/${nueva.id}` });
     setModalNueva(false);
-    // Notif a directivos sobre la nueva obra
-    notifARoles(['director_general','director_operaciones','admin_sistema'], {
+    // Notif a directivos sobre la nueva obra. La lista y la segunda línea del
+    // mensaje cambian con el tipo: en dependencia el que ejecuta es la empresa
+    // contratada, no un «cliente», y los roles de constructora no existen.
+    notifARoles(ROLES_AVISO_OBRA_NUEVA[dep?'dependencia':'constructora'], {
       categoria: 'gestion', tipo: 'obra_nueva',
       titulo: `Nueva obra · ${nueva.nombre}`,
-      mensaje: `${nueva.cliente || 'Sin cliente'} · Presupuesto: ${MXN(nueva.presupuesto)} · ID ${nueva.id}`,
+      mensaje: `${(dep ? nueva.empresaEjecutante : nueva.cliente) || (dep ? 'Sin empresa ejecutante' : 'Sin cliente')} · ${dep?'Monto contratado':'Presupuesto'}: ${MXN(nueva.presupuesto)} · ID ${nueva.id}`,
       link: { obraId: nueva.id, tab: 'dash' },
       creadaPor: usuario?.correo || 'sistema',
     });
+    // Y se entra a la obra directo al catálogo: una obra sin catálogo no acepta
+    // captura de avance, así que dejar al usuario en la lista es dejarlo a un
+    // paso de una obra que no sirve todavía. `onSelect` traduce el destino al
+    // menú de la sesión (`destinoNav`) y cae a la primera pestaña si no existe.
+    if(onSelect) onSelect(nueva.id, { tab:'planeacion', subTab:'presupuesto' });
+    return null;
   };
 
   const listaActual=ordenar(verHistorial?archivadas:activas);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {modalNueva&&<ModalNuevaObra onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}/>}
+    {modalNueva&&<ModalNuevaObra usuario={usuario} onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}/>}
 
     {/* Confirmación archivar */}
     {confirmarArchivar&&<div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,
@@ -9286,7 +9389,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         })()}
       </div>
       </div>
-      {puedeGestionar&&<button onClick={()=>setModalNueva(true)}
+      {puedeDarDeAlta&&<button onClick={()=>setModalNueva(true)}
         style={{background:C.caliza,border:"none",borderRadius:8,padding:"7px 14px",
           fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",flexShrink:0}}>
         + Nueva obra
@@ -19255,6 +19358,52 @@ const puedeEditarContrato = (usuario, rol) =>
     ? ROLES_EDITAN_CONTRATO_D.includes(rol)
     : (can(rol, "captura", "editar") || can(rol, "estimaciones", "editar"));
 
+// ── QUIÉN DA DE ALTA UNA OBRA ──────────────────────────────────────────────
+// Del lado constructora, los dos de siempre. Del lado dependencia es LA MISMA
+// LISTA que edita el contrato, y no por comodidad: el alta escribe exactamente
+// los dos documentos que escribe «Información del contrato» —`obras/{id}` y
+// `obras/{id}/config/info`—, así que la autoridad que hace falta es idéntica y
+// el razonamiento largo de `ROLES_EDITAN_CONTRATO_D` aplica palabra por
+// palabra, incluido el medio-guardado que evita. Dos listas para la misma
+// autoridad se desincronizan, y la que se queda atrás es la que ofrece el
+// botón que después rebota.
+const ROLES_ALTA_OBRA_C = ["director_operaciones", "gerente_construccion"];
+
+const puedeAltaObra = (usuario) =>
+  esDependencia(usuario)
+    ? ROLES_EDITAN_CONTRATO_D.includes(usuario?.rol)
+    : ROLES_ALTA_OBRA_C.includes(usuario?.rol);
+
+/**
+ * El identificador de una obra que se registra desde la app.
+ *
+ * NO sale del número de contrato aunque sea el nombre con el que la obra se
+ * conoce: un número de contrato se corrige —y lleva diagonales, que Firestore
+ * no admite en un id—, y un id que cambia deja huérfano todo lo que cuelga de
+ * él (catálogo, avance, estimaciones, evidencia).
+ *
+ * Y NO es consecutivo. El consecutivo tendría que salir de la lista que ESTA
+ * sesión tiene cargada, así que dos altas simultáneas producirían el mismo id;
+ * como `fsSet` escribe con `merge`, la segunda no daría error: se FUNDIRÍA con
+ * la primera, mitad de un contrato y mitad del otro. Es la escritura que se
+ * evapora sin aviso del #31, con otra cara.
+ */
+const nuevoIdObra = () => {
+  const n = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(n);
+  return `OB-${new Date().getFullYear()}-${n[0].toString(36).toUpperCase().padStart(7, "0").slice(-6)}`;
+};
+
+// A quién se le avisa de una obra nueva. La lista de constructora no sirve del
+// otro lado: `director_general` y `admin_sistema` no existen en una
+// dependencia, así que el aviso no le llegaba a nadie. El contralor entra
+// porque su alcance es de lectura amplia y el monto contratado es el contrato,
+// no el costo del contratista (P5).
+const ROLES_AVISO_OBRA_NUEVA = {
+  constructora: ["director_general", "director_operaciones", "admin_sistema"],
+  dependencia:  ["director_obras", "subdirector", "jefe_supervision", "contralor"],
+};
+
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
 function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
   const [tab, setTab] = useState("datos"); // datos | plazos | documentos
@@ -21247,15 +21396,19 @@ export default function App(){
   // El destino se traduce al menú de ESTA sesión (ver `destinoNav`); si ahí no
   // existe, no se navega. Antes `setTab` pintaba cualquier id, y por ahí una
   // dependencia llegaba a Nómina.
+  // Devuelve si navegó. Lo necesita `entrar`: si el destino pedido no existe en
+  // el menú de esta sesión hay que caer a la primera pestaña, no quedarse en la
+  // que estaba — que sería la de la obra ANTERIOR.
   const navTab = (tabId, subTabId) => {
     const d = destinoNav(tabId, subTabId, usuario);
-    if (!d) return;
+    if (!d) return false;
     setTab(d.tab);
     // Las dos pantallas con barra de sub-pestañas son `Operacion` y
     // `Planeacion`; en dependencia se montan bajo los ids `avance` y
     // `contrato` pero son las mismas y leen los mismos estados.
     if ((d.tab === "operacion" || d.tab === "avance") && d.subTab) setSubTabOper(d.subTab);
     if ((d.tab === "planeacion" || d.tab === "contrato") && d.subTab) setSubTabPlan(d.subTab);
+    return true;
   };
   const[obras,setObras]=useState(()=>{try{return loadObras();}catch{return _OBRAS_BASE.map(o=>({...o}));}});
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
@@ -21944,11 +22097,15 @@ export default function App(){
 
   const obra=obras.find(o=>o.id===obraId);
   const setObra=u=>setObras(oo=>oo.map(o=>o.id===u.id?u:o));
-  const entrar=async id=>{
+  const entrar=async(id, destino=null)=>{
     setObraId(id);setScreen("obra");
-    // Tab inicial = primera tab disponible según rol del usuario
-    const primerTab = tabsDe(usuario)[0]?.id || "dash";
-    setTab(primerTab);
+    // Tab inicial = el destino pedido si existe en el menú de esta sesión, si
+    // no la primera disponible. El alta de obra pide `planeacion/presupuesto`
+    // para dejar al usuario en el catálogo, que es lo siguiente que tiene que
+    // hacer; un rol o un tipo sin esa pestaña cae a la primera.
+    if (!destino || !navTab(destino.tab, destino.subTab)) {
+      setTab(tabsDe(usuario)[0]?.id || "dash");
+    }
     const o = obras.find(x=>x.id===id);
     setAuditObra(id, o?.contrato || o?.nombre || "");
     // Cargar override de permisos por obra (si lo tiene configurado)
