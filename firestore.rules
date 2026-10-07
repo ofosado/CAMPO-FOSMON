@@ -111,6 +111,28 @@ service cloud.firestore {
           || ((esSupervisorObra() || rol() == 'administrativo')
               && (todasObras() || id in obrasAsignadas()));
     }
+    // Capturar AVANCE y capturar DINERO no son la misma autoridad.
+    //
+    // El supervisor de obra va a campo y verifica lo ejecutado. La estimación
+    // es un trámite administrativo con consecuencia de pago: son dos actos
+    // distintos y por eso no comparten regla. Teclea pesos `administrativo`;
+    // `director_obras` y `subdirector` corrigen. `jefe_supervision` manda sobre
+    // el cuerpo de supervisión —escribe avance en cualquier obra— pero no sobre
+    // la caja. Contralor fiscaliza y no corrige; contratista no entra.
+    //
+    // Esta función existe para que aquí no vuelva a usarse `puedeEditarObraD`.
+    // Hasta hoy lo usaba, y eso dejaba las reglas MÁS permisivas que la app:
+    // `PERMISOS` ya daba `estimaciones:"ver"` a jefe_supervision y a
+    // supervisor_obra, así que el único candado era la interfaz. Un candado en
+    // la interfaz no es un candado: basta con que mañana alguien mueva un
+    // `can()` para que la escritura pase sin que nadie la haya autorizado.
+    // Manda PERMISOS y las reglas lo respaldan (decisión 2026-10-07).
+    function puedeCapturarEstimacionD(id) {
+      return esDependencia()
+          && (rol() in ['director_obras','subdirector']
+              || (rol() == 'administrativo'
+                  && (todasObras() || id in obrasAsignadas())));
+    }
 
     // Email normalizado a docId
     // BUG 2026-09-15: en Firebase Rules `.replace(re, sub)` interpreta el
@@ -342,9 +364,11 @@ service cloud.firestore {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
         allow write: if oid == orgId() && puedeEditarObraD(obraId);
       }
+      // Lee todo el que ve la obra —el avance financiero es parte del
+      // expediente—, pero escribe sólo quien tiene la autoridad del pago.
       match /config/estimaciones {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
-        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+        allow write: if oid == orgId() && puedeCapturarEstimacionD(obraId);
       }
       match /config/permisos {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);

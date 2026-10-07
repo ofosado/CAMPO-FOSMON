@@ -14514,13 +14514,25 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
                         onChange={ev=>actualiza(i,{fechaFact:ev.target.value})}/>
                     : <span style={{color:C.textSec}}>{e.fechaFact||"—"}</span>}
                 </td>
+                {/* Mismo guardia que en la pantalla de la dependencia, y por la
+                    misma razón: un <select> cuyo `value` no es ninguna de sus
+                    opciones no avisa, pinta la primera. Aquí el vocabulario es
+                    el de la constructora —En proceso / Aprobada / Facturada /
+                    Pagada— y el del otro lado del mostrador es otro, así que un
+                    «Recibida» guardado se vería como «En proceso»: un estado
+                    distinto, más atrasado, y sobre una estimación. Que se vea
+                    el valor real y que se note que es ajeno. */}
                 <td style={celda}>
                   {editar
-                    ? <Sel value={e.estatus} style={{fontSize:10,padding:"3px 5px"}}
+                    ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"3px 5px"}}
                         onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
+                        {!ESTATUS.includes(e.estatus) &&
+                          <option value={e.estatus||""}>
+                            {e.estatus ? `${e.estatus} — fuera del catálogo` : "sin estatus"}
+                          </option>}
                         {ESTATUS.map(s=><option key={s} value={s}>{s}</option>)}
                       </Sel>
-                    : <Bdg color={ecol} small>{e.estatus}</Bdg>}
+                    : <Bdg color={ecol} small>{e.estatus||"—"}</Bdg>}
                 </td>
                 {/* El plazo de pago vivía en una pastilla arriba de cada tarjeta.
                     Aquí es columna: puesto en fila, se ve de un vistazo cuáles
@@ -19064,8 +19076,16 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                     onChange={ev=>actualizarEstimacion(i,{periodo:ev.target.value})}/>
                   <Inp type="number" value={e.monto||0} style={{fontSize:11,fontWeight:600,textAlign:"right"}}
                     onChange={ev=>actualizarEstimacion(i,{monto:parseFloat(ev.target.value)||0})}/>
+                  {/* Tercera copia del mismo guardia. Esta lista tiene TRES
+                      estados y la de las estimaciones de obra tiene cuatro:
+                      una estimación de subcontrato guardada como «Aprobada» o
+                      «Facturada» se pintaba «En proceso». El `||"En proceso"`
+                      sólo cubre el vacío; un valor que existe pero no está en
+                      la lista pasaba igual de callado. */}
                   <Sel value={e.estatus||"En proceso"} style={{fontSize:10,padding:"4px 6px"}}
                     onChange={ev=>actualizarEstimacion(i,{estatus:ev.target.value})}>
+                    {!["En proceso","Autorizada","Pagada"].includes(e.estatus||"En proceso") &&
+                      <option value={e.estatus}>{`${e.estatus} — fuera del catálogo`}</option>}
                     <option value="En proceso">En proceso</option>
                     <option value="Autorizada">Autorizada</option>
                     <option value="Pagada">Pagada</option>
