@@ -5969,6 +5969,26 @@ const PERIODOS=[
 const CPTS=["Anticipo","En almacén","En tránsito","En fabricación"];
 const CT_COL={"Anticipo":C.yellow,"En almacén":C.green,"En tránsito":C.blue,"En fabricación":C.purple};
 const EST_COL={Pagada:C.green,Facturada:C.purple,Aprobada:C.blue,"En proceso":C.yellow};
+
+// Cómo va una estimación facturada contra su plazo de pago. Devuelve `null`
+// cuando no hay nada que decir: sólo una estimación FACTURADA y CON fecha tiene
+// un plazo corriendo. Una «En proceso» no debe nada todavía, y una facturada
+// sin fecha no se puede medir — ahí un «0 días» diría «recién facturada», que
+// es lo contrario de «no sabemos desde cuándo» (P2).
+const atrasoDeEstimacion = (e, diasPago) => {
+  if (e?.estatus !== "Facturada" || !e?.fechaFact) return null;
+  const f = fechaLocalDeISO(e.fechaFact);
+  if (!f) return null;
+  // Por fecha local y no por `new Date(iso)`, que las lee a medianoche UTC y al
+  // oeste de Greenwich cuenta un día de más. Un día de más en un plazo de pago
+  // es un reclamo al cliente que no procede.
+  const diasTrans = Math.floor((Date.now() - f) / 86400000);
+  const diasAtraso = diasTrans - diasPago;
+  const sub = `${diasTrans}d desde facturación vs plazo ${diasPago}d`;
+  if (diasAtraso > 0)              return {color:C.red,    texto:`${diasAtraso}d de atraso`,   sub};
+  if (diasTrans >= diasPago - 7)   return {color:C.yellow, texto:`${-diasAtraso}d para vencer`, sub};
+  return {color:C.green, texto:'Dentro de plazo', sub};
+};
 // Los cuatro estados del trámite de dependencia (ver ESTATUS_ESTIMACION_DEPENDENCIA).
 // «Pagada» conserva el verde que ya tiene arriba: es el mismo estado.
 const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purple,[ESTATUS_PAGADA]:C.green};
@@ -14236,7 +14256,29 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
     } catch(err) { console.error('dispararNotifsCambios', err); }
   };
   const ESTATUS=["En proceso","Aprobada","Facturada","Pagada"];
-  const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100,re=e.monto*(obra.pctRetencion||0)/100;return{a,fg,re,ef:e.monto-a-fg-re,pC:e.monto/obra.presupuesto*100};};
+  // Las deducciones de una estimación. Los tres porcentajes y el monto pasan
+  // por `_n`, y ESO ES LO QUE ARREGLA UN DEFECTO QUE YA ESTABA EN PRODUCCIÓN.
+  //
+  // Dos de los tres entraban crudos: una obra a la que nadie le capturó
+  // anticipo ni fondo de garantía los tiene `undefined`, y `monto * undefined`
+  // es NaN. De ahí en adelante `ef` es NaN, y `MXN` —que hace `Math.abs(n)||0`—
+  // lo imprime como «$0». En la pantalla se veía «PAGADO BRUTO $9,300,000» con
+  // «COBRADO EFECTIVO $0» justo al lado: no es que no haya entrado el dinero,
+  // es que la cuenta no se pudo hacer y el formateador la disfrazó de cero. El
+  // estado de cuenta lo empeoraba, porque además ponía «Neto a pagar $0» en
+  // cada renglón y un TOTALES que declaraba cero neto sobre $9.3M estimados.
+  //
+  // Un porcentaje no capturado es CERO de verdad —no hay deducción pactada—,
+  // así que leerlo como 0 es la cuenta correcta y no un relleno. Lo que no
+  // puede seguir pasando es que la aritmética reviente y el resultado se vea
+  // como una cifra legítima.
+  //
+  // Sólo los porcentajes. El monto se queda crudo a propósito: lo suman además
+  // `totalEst` y sus cuatro vecinos, y si aquí se leyera distinto que allá las
+  // columnas dejarían de cuadrar con los KPIs — que es justo lo que el renglón
+  // de TOTALES existe para que no pase.
+  const _pct = v => Number(v) || 0;
+  const cE=e=>{const a=e.monto*_pct(obra.pctAnticipo)/100,fg=e.monto*_pct(obra.pctFondoGar)/100,re=e.monto*_pct(obra.pctRetencion)/100;return{a,fg,re,ef:e.monto-a-fg-re};};
   const totalEst  =estimaciones.reduce((t,e)=>t+e.monto,0);
   // Dos cifras que hasta hoy se llamaban las DOS "Pagado", en dos bloques de
   // la misma pantalla, y no son lo mismo. En la 0114 una dice $109.2M y la
@@ -14277,11 +14319,66 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   const porCobrar =estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus))
                                .reduce((t,e)=>t+cE(e).ef,0);
   const diasPago  =obra.diasPago||30;
-  const atrasadas =estimaciones.filter(e=>{
-    if(e.estatus!=="Facturada"||!e.fechaFact) return false;
-    return Math.floor((Date.now()-new Date(e.fechaFact))/86400000) > diasPago;
-  });
+  // Por la misma cuenta que la columna «Plazo de pago» de la tabla, no por una
+  // propia. Estaban escritas dos veces en esta pantalla y las dos leían la
+  // fecha en UTC: el KPI «Atrasado» podía contar una estimación que la columna
+  // de su propio renglón declaraba dentro de plazo, en la misma vista.
+  const atrasadas =estimaciones.filter(e=>atrasoDeEstimacion(e,diasPago)?.color===C.red);
   const montoAtrasado=atrasadas.reduce((t,e)=>t+cE(e).ef,0);
+
+  // ── LA RELACIÓN, COMO ESTADO DE CUENTA ───────────────────────────────────
+  // Un estado de cuenta se lee en renglones: cada estimación contra las de
+  // arriba y contra el contrato. En tarjetas eso no se puede hacer —hay que
+  // recordar la anterior para comparar— y el acumulado ni siquiera existía.
+  //
+  // `actualiza` ESCRIBE POR LA POSICIÓN REAL EN EL ARREGLO, no por la del
+  // renglón. La tabla se ordena por número de estimación y el arreglo está en
+  // orden de captura: son distintos en cuanto alguien captura la 5 antes que
+  // la 4. Escribir por la posición de pantalla le metería el monto de una
+  // estimación a otra, en silencio y sobre dinero.
+  const actualiza = (iReal, cambios) =>
+    setEstimaciones(es => es.map((x, j) => j === iReal ? {...x, ...cambios} : x));
+
+  // El acumulado SÓLO tiene sentido en orden de estimación: es «cuánto llevo
+  // cobrado hasta ésta». Por eso se ordena por `no` antes de sumar, y no se
+  // confía en el orden en que estén guardadas.
+  const renglones = (() => {
+    let acum = 0;
+    return estimaciones
+      .map((e, i) => ({ e, i }))
+      .sort((x, y) => (Number(x.e?.no)||0) - (Number(y.e?.no)||0))
+      .map(({ e, i }) => {
+        const c = cE(e);
+        acum += (Number(e?.monto) || 0);
+        return { e, i, c, acum,
+          // `null`, no 0, cuando no hay contrato capturado. Un «0.00%» al lado
+          // de un acumulado con dinero dice que no se ha cobrado nada del
+          // contrato; lo que pasa es que no se sabe contra cuánto (P2).
+          pctAcum: obra.presupuesto > 0 ? acum / obra.presupuesto * 100 : null,
+          atraso: atrasoDeEstimacion(e, obra.diasPago||30) };
+      });
+  })();
+
+  // Las columnas. Una deducción pactada en CERO no abre columna: el mismo
+  // criterio que ya usan los KPIs de arriba. Una columna de ceros en un estado
+  // de cuenta se lee como que algo se dejó de calcular.
+  const COLS = [
+    {id:'no',   lbl:'Nº'},
+    {id:'per',  lbl:'Periodo de ejecución'},
+    {id:'imp',  lbl:'Importe', num:true},
+    ...((obra.pctAnticipo||0)  > 0 ? [{id:'amo', lbl:`Amort. anticipo ${obra.pctAnticipo}%`, num:true}] : []),
+    ...((obra.pctFondoGar||0)  > 0 ? [{id:'fg',  lbl:`Fondo gar. ${obra.pctFondoGar}%`,      num:true}] : []),
+    ...((obra.pctRetencion||0) > 0 ? [{id:'re',  lbl:`Ret. estrat. ${obra.pctRetencion}%`,   num:true}] : []),
+    {id:'ded',  lbl:'Total deducciones', num:true},
+    {id:'net',  lbl:'Neto a pagar',      num:true},
+    {id:'acu',  lbl:'Acumulado',         num:true},
+    {id:'pct',  lbl:'% contrato',        num:true},
+    {id:'fac',  lbl:'Fecha facturación'},
+    {id:'est',  lbl:'Estatus'},
+    {id:'plz',  lbl:'Plazo de pago'},
+    {id:'acc',  lbl:''},
+  ];
+
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
@@ -14365,72 +14462,120 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           </div>
         </div>
       )}
-      {estimaciones.map((e,i)=>{
-        const c=cE(e); const ecol=EST_COL[e.estatus]||C.yellow;
-        // Calcular días de atraso si la estimación está Facturada y tiene fecha
-        let pillAtraso = null;
-        if(e.estatus==="Facturada" && e.fechaFact){
-          const diasPago = obra.diasPago||30;
-          const diasTrans = Math.floor((new Date() - new Date(e.fechaFact))/(1000*60*60*24));
-          const diasAtraso = diasTrans - diasPago;
-          if(diasAtraso > 0){
-            pillAtraso = {color:C.red, texto:`${diasAtraso}d de atraso`, sub:`${diasTrans}d desde facturación vs plazo ${diasPago}d`};
-          } else if(diasTrans >= diasPago - 7){
-            pillAtraso = {color:C.yellow, texto:`${-diasAtraso}d para vencer`, sub:`${diasTrans}d desde facturación vs plazo ${diasPago}d`};
-          } else {
-            pillAtraso = {color:C.green, texto:`Dentro de plazo`, sub:`${diasTrans}d / ${diasPago}d de plazo`};
-          }
-        }
-        return <div key={e.no} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
-          borderLeft:`3px solid ${pillAtraso?.color===C.red?C.red:ecol}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
-              <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
-              {pillAtraso && <Bdg color={pillAtraso.color} small>{pillAtraso.texto}</Bdg>}
-            </div>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              {editar?<Sel value={e.estatus} style={{fontSize:10,padding:"4px 6px"}}
-                onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,estatus:ev.target.value}:x))}>
-                {ESTATUS.map(s=><option key={s} value={s}>{s}</option>)}
-              </Sel>:<Bdg color={ecol}>{e.estatus}</Bdg>}
-              <Bdg color={ecol} small>{e.estatus}</Bdg>
-              {editar&&<button onClick={()=>setEstimaciones(es=>es.filter((_,j)=>j!==i))}
-                style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1}}>×</button>}
-            </div>
-          </div>
-          {pillAtraso && <div style={{fontSize:9,color:C.textMut,marginTop:-4,marginBottom:8}}>{pillAtraso.sub}</div>}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto bruto (SIN IVA)</div>
-              {editar?<Inp type="number" value={e.monto} style={{fontSize:12,fontWeight:600,color:C.caliza}}
-                onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,monto:parseFloat(ev.target.value)||0}:x))}/>
-              :<div style={{fontSize:14,fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</div>}
-            </div>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Período</div>
-              {editar?<Inp type="text" value={e.periodo||""} placeholder="01–31 May 2026" style={{fontSize:11}}
-                onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,periodo:ev.target.value}:x))}/>
-              :<div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodo||"—"}</div>}
-            </div>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Fecha facturación</div>
-              {editar?<Inp type="date" value={e.fechaFact||""} style={{fontSize:11}}
-                onChange={ev=>setEstimaciones(es=>es.map((x,j)=>j===i?{...x,fechaFact:ev.target.value}:x))}/>
-              :<div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.fechaFact||"—"}</div>}
-            </div>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-            {[[`Anticip. (${obra.pctAnticipo}%)`,MXN(c.a),C.yellow],[`FG (${obra.pctFondoGar}%)`,MXN(c.fg),C.red],
-              [`Ret. (${obra.pctRetencion||0}%)`,MXN(c.re),C.pink],
-              ["Monto efectivo",MXN(c.ef),C.green],["% contrato",`${NUM(c.pC,2)}%`,C.caliza]].map(([l,v,col])=>
-              <div key={l}>
-                <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>{l}</div>
-                <div style={{background:C.card,border:`0.5px solid ${C.border}`,borderRadius:6,
-                  padding:"5px 8px",fontSize:12,fontWeight:600,color:col}}>{v}</div>
-              </div>)}
-          </div>
-        </div>;
-      })}
+      {renglones.length > 0 && <div style={{overflowX:"auto",marginTop:8}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:COLS.length*86}}>
+          <thead>
+            <tr>
+              {COLS.map(c =>
+                <th key={c.id} scope="col"
+                  style={{padding:"6px 7px",borderBottom:`1px solid ${C.border}`,
+                    textAlign:c.num?"right":"left",color:C.textMut,fontWeight:600,
+                    letterSpacing:"0.03em",textTransform:"uppercase",whiteSpace:"nowrap"}}>
+                  {c.lbl}
+                </th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {renglones.map(({e, i, c, acum, pctAcum, atraso}) => {
+              const ecol = EST_COL[e.estatus] || C.yellow;
+              const celda = {padding:"5px 7px",borderBottom:`0.5px solid ${C.border}`,
+                verticalAlign:"middle",whiteSpace:"nowrap"};
+              const num = {...celda, textAlign:"right", fontVariantNumeric:"tabular-nums"};
+              return <tr key={e.no}>
+                <td style={{...celda,borderLeft:`3px solid ${atraso?.color===C.red?C.red:ecol}`,
+                  fontWeight:700,color:C.caliza}}>EST-{String(e.no).padStart(2,'0')}</td>
+                <td style={celda}>
+                  {editar
+                    ? <Inp type="text" value={e.periodo||""} placeholder="01–31 may 2026"
+                        style={{fontSize:10,minWidth:104}}
+                        onChange={ev=>actualiza(i,{periodo:ev.target.value})}/>
+                    : <span style={{color:C.textSec}}>{e.periodo||"—"}</span>}
+                </td>
+                <td style={num}>
+                  {editar
+                    ? <Inp type="number" value={e.monto}
+                        style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right",minWidth:92}}
+                        onChange={ev=>actualiza(i,{monto:parseFloat(ev.target.value)||0})}/>
+                    : <span style={{fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</span>}
+                </td>
+                {/* Las deducciones pactadas en cero no abren columna: ver `COLS`. */}
+                {(obra.pctAnticipo||0)   > 0 && <td style={{...num,color:C.yellow}}>{MXN(c.a)}</td>}
+                {(obra.pctFondoGar||0)   > 0 && <td style={{...num,color:C.red}}>{MXN(c.fg)}</td>}
+                {(obra.pctRetencion||0)  > 0 && <td style={{...num,color:C.pink}}>{MXN(c.re)}</td>}
+                <td style={{...num,color:C.textSec}}>{MXN(c.a + c.fg + c.re)}</td>
+                <td style={{...num,color:C.green,fontWeight:700}}>{MXN(c.ef)}</td>
+                <td style={{...num,color:C.textSec}}>{MXN(acum)}</td>
+                <td style={{...num,color:pctAcum===null?C.textMut:C.caliza}}>
+                  {pctAcum===null ? "—" : `${NUM(pctAcum,2)}%`}
+                </td>
+                <td style={celda}>
+                  {editar
+                    ? <Inp type="date" value={e.fechaFact||""} style={{fontSize:10,minWidth:112}}
+                        onChange={ev=>actualiza(i,{fechaFact:ev.target.value})}/>
+                    : <span style={{color:C.textSec}}>{e.fechaFact||"—"}</span>}
+                </td>
+                <td style={celda}>
+                  {editar
+                    ? <Sel value={e.estatus} style={{fontSize:10,padding:"3px 5px"}}
+                        onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
+                        {ESTATUS.map(s=><option key={s} value={s}>{s}</option>)}
+                      </Sel>
+                    : <Bdg color={ecol} small>{e.estatus}</Bdg>}
+                </td>
+                {/* El plazo de pago vivía en una pastilla arriba de cada tarjeta.
+                    Aquí es columna: puesto en fila, se ve de un vistazo cuáles
+                    se están venciendo, que es la pregunta que trae a esta
+                    pantalla a quien cobra. El renglón de abajo —«45d desde
+                    facturación vs plazo 30d»— pasa al tooltip: dice de dónde
+                    sale el número, no qué dice. */}
+                <td style={celda} title={atraso?.sub || undefined}>
+                  {atraso
+                    ? <Bdg color={atraso.color} small>{atraso.texto}</Bdg>
+                    : <span style={{color:C.textMut}}>—</span>}
+                </td>
+                <td style={{...celda,textAlign:"center"}}>
+                  {editar && <button onClick={()=>setEstimaciones(es=>es.filter((_,j)=>j!==i))}
+                    aria-label={`Borrar estimación ${e.no}`}
+                    style={{background:"none",border:"none",color:C.red,fontSize:14,
+                      lineHeight:1,cursor:"pointer"}}>×</button>}
+                </td>
+              </tr>;
+            })}
+          </tbody>
+          {/* TOTALES. Las sumas de las columnas SON las mismas cifras de los KPIs
+              de arriba, por construcción: `totalEst` es el total de la columna de
+              importes y `cobradoEfectivo` sale del mismo `cE`. Un renglón de
+              totales calculado aparte es la forma clásica de que una pantalla se
+              contradiga consigo misma a la vista del cliente. */}
+          <tfoot>
+            <tr style={{borderTop:`1px solid ${C.borderM}`,fontWeight:700}}>
+              <td style={{padding:"7px",color:C.textPri,letterSpacing:"0.04em"}}>TOTALES</td>
+              <td/>
+              <td style={{padding:"7px",textAlign:"right",color:C.caliza,fontVariantNumeric:"tabular-nums"}}>{MXN(totalEst)}</td>
+              {(obra.pctAnticipo||0)  > 0 && <td style={{padding:"7px",textAlign:"right",color:C.yellow,fontVariantNumeric:"tabular-nums"}}>{MXN(anticipoAmort)}</td>}
+              {(obra.pctFondoGar||0)  > 0 && <td style={{padding:"7px",textAlign:"right",color:C.red,fontVariantNumeric:"tabular-nums"}}>{MXN(retenido)}</td>}
+              {(obra.pctRetencion||0) > 0 && <td style={{padding:"7px",textAlign:"right",color:C.pink,fontVariantNumeric:"tabular-nums"}}>{MXN(retenEstra)}</td>}
+              <td style={{padding:"7px",textAlign:"right",color:C.textSec,fontVariantNumeric:"tabular-nums"}}>{MXN(anticipoAmort+retenido+retenEstra)}</td>
+              <td style={{padding:"7px",textAlign:"right",color:C.green,fontVariantNumeric:"tabular-nums"}}>{MXN(totalEst-anticipoAmort-retenido-retenEstra)}</td>
+              <td/>
+              <td style={{padding:"7px",textAlign:"right",color:C.caliza,fontVariantNumeric:"tabular-nums"}}>
+                {obra.presupuesto > 0 ? `${NUM(totalEst/obra.presupuesto*100, 2)}%` : "—"}
+              </td>
+              <td/><td/><td/><td/>
+            </tr>
+          </tfoot>
+        </table>
+      </div>}
+      {/* Los montos del contrato se capturan y se guardan SIN IVA, y aquí no se
+          le agrega. El sistema no tiene en ningún lado la tasa de la obra: la
+          general es 16% pero la franja fronteriza es 8% y hay contratos exentos,
+          así que una columna «IVA» sería un porcentaje inventado multiplicando
+          dinero real. Cuando se capture la tasa en el contrato, se agrega. */}
+      {renglones.length > 0 && <div style={{fontSize:9,color:C.textMut,marginTop:8,lineHeight:1.5}}>
+        Importes SIN IVA. «Neto a pagar» descuenta amortización de anticipo, fondo de
+        garantía y retención estratégica. «Acumulado» y «% contrato» suman por número
+        de estimación, de la 1 en adelante.
+      </div>}
     </Card>
   </div>;
 }
@@ -14587,6 +14732,29 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
   const conDias  = estimaciones.map(diasDeRecepcion).filter(d => d !== null);
   const promDias = conDias.length ? conDias.reduce((a,b)=>a+b,0) / conDias.length : null;
 
+  // Los renglones del libro de entradas, EN ORDEN DE ESTIMACIÓN.
+  //
+  // El acumulado sólo quiere decir algo en ese orden: es «cuánto lleva
+  // reclamado el contratista hasta ésta». Sumado en el orden en que están
+  // guardadas —que es el de captura— un renglón diría un acumulado que no
+  // corresponde a su número en cuanto alguien registre la 5 antes que la 4.
+  //
+  // `i` es la posición REAL en el arreglo y viaja con cada renglón porque es
+  // la que necesita `actualiza`. Escribir por la posición de pantalla le
+  // metería el monto de una estimación a otra, en silencio y sobre dinero.
+  const renglones = (() => {
+    let acum = 0;
+    return estimaciones
+      .map((e, i) => ({ e, i }))
+      .sort((x, y) => (Number(x.e?.no)||0) - (Number(y.e?.no)||0))
+      .map(({ e, i }) => {
+        acum += monto(e);
+        return { e, i, acum,
+          pctAcum: obra.presupuesto > 0 ? acum / obra.presupuesto * 100 : null,
+          dias: diasDeRecepcion(e) };
+      });
+  })();
+
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar && <div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
@@ -14641,108 +14809,163 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
         </div>
       )}
 
-      {estimaciones.map((e, i) => {
-        const col  = EST_COL_DEP[e.estatus] || EST_COL[e.estatus] || C.textMut;
-        const dias = diasDeRecepcion(e);
-        const adjuntos = e.adjuntos || [];
-        // Tres cosas distintas, y la pantalla no las confunde: un número de
-        // días, «todavía no la reciben» y «ni siquiera hay contra qué contar».
-        const pillDias = dias === null
-          ? { color: C.textMut, texto: !e.periodoFin ? "sin fecha de cierre" : "sin fecha de recepción" }
-          : dias < 0
-            ? { color: C.yellow, texto: `recibida ${-dias} d ANTES del cierre` }
-            : { color: C.blue,   texto: `${dias} d en presentarla` };
-
-        return <div key={e.no ?? i} style={{background:C.bg,borderRadius:8,padding:"11px 13px",
-          marginBottom:8,borderLeft:`3px solid ${col}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
-              <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-{e.no}</span>
-              <Bdg color={pillDias.color} small>{pillDias.texto}</Bdg>
-            </div>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              {editar
-                ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"4px 6px"}}
-                    onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
-                    {ESTATUS_ESTIMACION_DEPENDENCIA.map(s=><option key={s} value={s}>{s}</option>)}
-                  </Sel>
-                : <Bdg color={col}>{e.estatus||"—"}</Bdg>}
-              {editar && <button onClick={()=>setEstimaciones(es=>es.filter((_,j)=>j!==i))}
-                title="Quitar de la relación (se aplica al guardar)"
-                style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1,cursor:"pointer"}}>×</button>}
-            </div>
-          </div>
-
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Monto (SIN IVA)</div>
-              {editar
-                ? <Inp type="number" value={e.monto ?? 0} style={{fontSize:12,fontWeight:600,color:C.caliza}}
-                    onChange={ev=>actualiza(i,{monto:parseFloat(ev.target.value)||0})}/>
-                : <div style={{fontSize:14,fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</div>}
-            </div>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Inicio del periodo</div>
-              {editar
-                ? <Inp type="date" value={e.periodoIni||""} style={{fontSize:11}}
-                    onChange={ev=>actualiza(i,{periodoIni:ev.target.value})}/>
-                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodoIni||"—"}</div>}
-            </div>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Cierre del periodo</div>
-              {editar
-                ? <Inp type="date" value={e.periodoFin||""} style={{fontSize:11}}
-                    onChange={ev=>actualiza(i,{periodoFin:ev.target.value})}/>
-                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.periodoFin||"—"}</div>}
-            </div>
-            <div>
-              <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4}}>Recibida en ventanilla</div>
-              {editar
-                ? <Inp type="date" value={e.fechaRecepcion||""} style={{fontSize:11}}
-                    onChange={ev=>actualiza(i,{
-                      fechaRecepcion: ev.target.value,
-                      // Quién la recibió queda registrado con la fecha y no
-                      // al crear el renglón: el dato es "quién la recibió",
-                      // no "quién abrió la pantalla".
-                      recibidaPor: ev.target.value ? (usuario?.correo || "") : "",
-                    })}/>
-                : <div style={{fontSize:12,color:C.textSec,padding:"5px 0"}}>{e.fechaRecepcion||"—"}</div>}
-            </div>
-          </div>
-
-          <div style={{fontSize:9,color:C.textMut,marginTop:8}}>
-            {e.periodo ? `Periodo ${e.periodo}` : "Periodo sin capturar"}
-            {e.recibidaPor ? ` · recibió ${e.recibidaPor}` : ""}
-          </div>
-
-          {/* Adjuntos — carátula firmada y factura */}
-          <div style={{borderTop:`1px solid ${C.border}`,marginTop:9,paddingTop:9}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <span style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Expediente</span>
-              {adjuntos.length === 0 &&
-                <span style={{fontSize:10,color:C.textMut}}>sin carátula ni factura</span>}
-              {adjuntos.map(a =>
-                <span key={a.id} style={{display:"inline-flex",alignItems:"center",gap:5,
-                  background:C.surface,border:`1px solid ${C.border}`,borderRadius:99,padding:"2px 8px"}}>
-                  <a href={a.url} target="_blank" rel="noreferrer"
-                    style={{fontSize:10,color:C.blueDk,textDecoration:"none"}}>
-                    {a.clase === 'caratula' ? 'Carátula' : a.clase === 'factura' ? 'Factura' : 'Archivo'} · {a.nombre}
-                  </a>
-                  {editar && <button onClick={()=>quitarAdjunto(i, a.id)} title="Quitar adjunto"
-                    style={{background:"none",border:"none",color:C.red,fontSize:12,lineHeight:1,cursor:"pointer",padding:0}}>×</button>}
-                </span>)}
-              {editar && subiendo !== e.no && ['caratula','factura'].map(clase =>
-                <label key={clase} style={{fontSize:10,color:C.textSec,background:C.surface,
-                  border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 9px",cursor:"pointer"}}>
-                  + {clase === 'caratula' ? 'Carátula firmada' : 'Factura'}
-                  <input type="file" accept="application/pdf,image/*" style={{display:"none"}}
-                    onChange={ev=>{ const f = ev.target.files?.[0]; ev.target.value=""; adjuntar(i, clase, f); }}/>
-                </label>)}
-              {subiendo === e.no && <span style={{fontSize:10,color:C.blue}}>Subiendo…</span>}
-            </div>
-          </div>
-        </div>;
-      })}
+      {/* La relación, en renglones. La ventanilla lleva un libro de entradas:
+          qué llegó, cuándo y con qué papeles. En tarjetas hay que bajar por
+          cada una para contestar «¿cuáles me faltan de pagar?», y el acumulado
+          —cuánto lleva reclamado el contratista contra el contrato— no se
+          podía ver de ningún modo. */}
+      {renglones.length > 0 && <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:940}}>
+          <thead>
+            <tr>
+              {['Nº','Periodo de ejecución','Monto','Acumulado','% contrato',
+                'Recibida en ventanilla','Días en presentarla','Estatus','Expediente','']
+                .map((l,k) =>
+                  <th key={l+k} scope="col"
+                    style={{padding:"6px 7px",borderBottom:`1px solid ${C.border}`,
+                      textAlign:[2,3,4].includes(k)?"right":"left",color:C.textMut,
+                      fontWeight:600,letterSpacing:"0.03em",textTransform:"uppercase",
+                      whiteSpace:"nowrap"}}>{l}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {renglones.map(({e, i, acum, pctAcum, dias}) => {
+              const col  = EST_COL_DEP[e.estatus] || EST_COL[e.estatus] || C.textMut;
+              const adjuntos = e.adjuntos || [];
+              // Tres cosas distintas, y la pantalla no las confunde: un número
+              // de días, «todavía no la reciben» y «ni siquiera hay contra qué
+              // contar».
+              const pillDias = dias === null
+                ? { color: C.textMut, texto: !e.periodoFin ? "sin fecha de cierre" : "sin fecha de recepción" }
+                : dias < 0
+                  ? { color: C.yellow, texto: `${-dias} d ANTES del cierre` }
+                  : { color: C.blue,   texto: `${dias} d` };
+              const celda = {padding:"5px 7px",borderBottom:`0.5px solid ${C.border}`,
+                verticalAlign:"middle",whiteSpace:"nowrap"};
+              const num = {...celda, textAlign:"right", fontVariantNumeric:"tabular-nums"};
+              return <tr key={e.no ?? i}>
+                <td style={{...celda,borderLeft:`3px solid ${col}`,fontWeight:700,color:C.caliza}}>
+                  EST-{String(e.no ?? i+1).padStart(2,'0')}
+                </td>
+                {/* Las dos fechas del periodo, una encima de otra: son un solo
+                    dato —de cuándo a cuándo— y partirlas en dos columnas obliga
+                    a leer el renglón dos veces. */}
+                <td style={celda}>
+                  {editar
+                    ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        <Inp type="date" value={e.periodoIni||""} style={{fontSize:10,minWidth:108}}
+                          onChange={ev=>actualiza(i,{periodoIni:ev.target.value})}/>
+                        <span style={{color:C.textMut}}>→</span>
+                        <Inp type="date" value={e.periodoFin||""} style={{fontSize:10,minWidth:108}}
+                          onChange={ev=>actualiza(i,{periodoFin:ev.target.value})}/>
+                      </div>
+                    : <span style={{color:C.textSec}}>{e.periodo || "sin capturar"}</span>}
+                </td>
+                <td style={num}>
+                  {editar
+                    ? <Inp type="number" value={e.monto ?? 0}
+                        style={{fontSize:11,fontWeight:600,color:C.caliza,textAlign:"right",minWidth:92}}
+                        onChange={ev=>actualiza(i,{monto:parseFloat(ev.target.value)||0})}/>
+                    : <span style={{fontWeight:700,color:C.caliza}}>{MXN(e.monto)}</span>}
+                </td>
+                <td style={{...num,color:C.textSec}}>{MXN(acum)}</td>
+                <td style={{...num,color:pctAcum===null?C.textMut:C.caliza}}>
+                  {pctAcum===null ? "—" : `${NUM(pctAcum,2)}%`}
+                </td>
+                <td style={celda}>
+                  {editar
+                    ? <Inp type="date" value={e.fechaRecepcion||""} style={{fontSize:10,minWidth:112}}
+                        onChange={ev=>actualiza(i,{
+                          fechaRecepcion: ev.target.value,
+                          // Quién la recibió queda registrado con la fecha y no
+                          // al crear el renglón: el dato es "quién la recibió",
+                          // no "quién abrió la pantalla".
+                          recibidaPor: ev.target.value ? (usuario?.correo || "") : "",
+                        })}/>
+                    : <span style={{color:C.textSec}}>{e.fechaRecepcion||"—"}</span>}
+                </td>
+                <td style={celda} title={e.recibidaPor ? `recibió ${e.recibidaPor}` : undefined}>
+                  <Bdg color={pillDias.color} small>{pillDias.texto}</Bdg>
+                </td>
+                {/* Un estatus guardado que NO está en la lista se enseña igual,
+                    marcado. Un <select> con un `value` que no es ninguna de
+                    sus opciones no avisa: pinta la primera. Así una estimación
+                    guardada como «Facturada» —el vocabulario del otro lado del
+                    mostrador, que llega en cuanto se importa un expediente— se
+                    vería como «Recibida», que es un estado distinto del
+                    trámite. Que se vea el valor real y que se note que es
+                    ajeno: el usuario elige el estado bueno y guarda. */}
+                <td style={celda}>
+                  {editar
+                    ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"3px 5px"}}
+                        onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
+                        {!ESTATUS_ESTIMACION_DEPENDENCIA.includes(e.estatus) &&
+                          <option value={e.estatus||""}>
+                            {e.estatus ? `${e.estatus} — fuera del trámite` : "sin estatus"}
+                          </option>}
+                        {ESTATUS_ESTIMACION_DEPENDENCIA.map(s=><option key={s} value={s}>{s}</option>)}
+                      </Sel>
+                    : <Bdg color={col} small>{e.estatus||"—"}</Bdg>}
+                </td>
+                {/* Carátula y factura. Que falten se dice con todas sus letras
+                    y no con una celda vacía: en una relación de estimaciones
+                    un hueco se lee como «todavía no lo capturo», y aquí el
+                    dato es «no llegó el papel». */}
+                <td style={{...celda,whiteSpace:"normal",minWidth:190}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                    {adjuntos.length === 0 &&
+                      <span style={{fontSize:9,color:C.textMut}}>sin carátula ni factura</span>}
+                    {adjuntos.map(a =>
+                      <span key={a.id} style={{display:"inline-flex",alignItems:"center",gap:4,
+                        background:C.surface,border:`1px solid ${C.border}`,borderRadius:99,padding:"1px 7px"}}>
+                        <a href={a.url} target="_blank" rel="noreferrer"
+                          style={{fontSize:9,color:C.blueDk,textDecoration:"none"}}>
+                          {a.clase === 'caratula' ? 'Carátula' : a.clase === 'factura' ? 'Factura' : 'Archivo'}
+                        </a>
+                        {editar && <button onClick={()=>quitarAdjunto(i, a.id)} title="Quitar adjunto"
+                          style={{background:"none",border:"none",color:C.red,fontSize:11,lineHeight:1,cursor:"pointer",padding:0}}>×</button>}
+                      </span>)}
+                    {editar && subiendo !== e.no && ['caratula','factura'].map(clase =>
+                      <label key={clase} style={{fontSize:9,color:C.textSec,background:C.surface,
+                        border:`1px solid ${C.border}`,borderRadius:6,padding:"2px 7px",cursor:"pointer"}}>
+                        + {clase === 'caratula' ? 'Carátula' : 'Factura'}
+                        <input type="file" accept="application/pdf,image/*" style={{display:"none"}}
+                          onChange={ev=>{ const f = ev.target.files?.[0]; ev.target.value=""; adjuntar(i, clase, f); }}/>
+                      </label>)}
+                    {subiendo === e.no && <span style={{fontSize:9,color:C.blue}}>Subiendo…</span>}
+                  </div>
+                </td>
+                <td style={{...celda,textAlign:"center"}}>
+                  {editar && <button onClick={()=>setEstimaciones(es=>es.filter((_,j)=>j!==i))}
+                    title="Quitar de la relación (se aplica al guardar)"
+                    aria-label={`Quitar estimación ${e.no ?? i+1}`}
+                    style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1,cursor:"pointer"}}>×</button>}
+                </td>
+              </tr>;
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{borderTop:`1px solid ${C.borderM}`,fontWeight:700}}>
+              <td style={{padding:"7px",color:C.textPri,letterSpacing:"0.04em"}}>TOTALES</td>
+              <td/>
+              {/* Es el MISMO `total` del KPI «Total recibido» de arriba, no una
+                  suma aparte: dos sumas de lo mismo en una pantalla acaban
+                  contradiciéndose delante del cliente. */}
+              <td style={{padding:"7px",textAlign:"right",color:C.caliza,fontVariantNumeric:"tabular-nums"}}>{MXN(total)}</td>
+              <td/>
+              <td style={{padding:"7px",textAlign:"right",color:C.caliza,fontVariantNumeric:"tabular-nums"}}>
+                {obra.presupuesto > 0 ? `${NUM(total/obra.presupuesto*100, 2)}%` : "—"}
+              </td>
+              <td/><td/><td/><td/><td/>
+            </tr>
+          </tfoot>
+        </table>
+      </div>}
+      {renglones.length > 0 && <div style={{fontSize:9,color:C.textMut,marginTop:8,lineHeight:1.5}}>
+        Montos SIN IVA, como los presenta el contratista. «Días en presentarla» va del
+        cierre del periodo a la recepción en ventanilla. «Acumulado» suma por número de
+        estimación, de la 1 en adelante.
+      </div>}
     </Card>
   </div>;
 }

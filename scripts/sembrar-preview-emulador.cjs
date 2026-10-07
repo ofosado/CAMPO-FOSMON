@@ -285,6 +285,68 @@ const semanasDe = (filas, contratado, cuantas) => {
   return out;
 };
 
+// ── LAS ESTIMACIONES ───────────────────────────────────────────────────────
+// Una estimación, con los nombres de campo que la APLICACIÓN lee.
+//
+// La siembra escribía `{num, fecha, estatus:'pagada'}` y las pantallas leen
+// `{no, periodo, fechaFact, estatus:'Pagada'}`. Los tres desajustes se ven
+// distinto y los tres son malos:
+//   · `num` en vez de `no` deja todas las estimaciones sin número. React las
+//     monta todas con la misma clave y avisa en consola, pero lo que ve el
+//     cliente es una relación donde nada se llama nada.
+//   · sin `periodo` la columna del periodo sale vacía en toda la tabla.
+//   · «pagada» en minúscula es el peor. El corte semanal compara sin acentos y
+//     en minúsculas, así que ESE sí la cuenta; pero la pantalla compara contra
+//     la cadena exacta «Pagada», así que los KPIs de «Pagado bruto», «Cobrado
+//     efectivo» y «Por cobrar» salen en cero con las estimaciones a la vista
+//     justo debajo. Dinero sembrado que la pantalla no suma: en una demo eso
+//     no se lee como un guion mal escrito, se lee como que el sistema no
+//     cuadra.
+const MAYUS1 = s => s.charAt(0).toUpperCase() + s.slice(1);
+const estimacionComoLaApp = (e, i) => {
+  // La fecha de la siembra es la de FACTURACIÓN. El periodo son las cuatro
+  // semanas que cierran en ella, y la recepción en ventanilla cae tres días
+  // después del cierre: ese retraso es lo que la pantalla de la dependencia
+  // mide —«Días en presentarla»— y con las fechas vacías la columna sale
+  // diciendo «sin fecha de cierre» en todos los renglones. Un hueco sembrado
+  // en una demo no se lee como un hueco: se reporta como defecto del producto.
+  const fin = e.fecha || '';
+  const ini = fin ? desplazar(fin, -27) : '';
+  return {
+    no: e.num ?? e.no ?? i + 1,
+    monto: e.monto,
+    // «pagada» → «Pagada», la cadena contra la que comparan las pantallas.
+    estatus: MAYUS1(String(e.estatus || 'En proceso')),
+    fechaFact: fin,
+    // Las dos pantallas leen el periodo distinto y las dos tienen que verlo:
+    // la constructora la cadena `periodo`, la dependencia las dos fechas, que
+    // son el dato duro del que ella saca los días. Se escriben las tres de la
+    // misma fuente para que no puedan discrepar.
+    periodo: fin ? periodoDeCierre(fin) : '',
+    periodoIni: ini,
+    periodoFin: fin,
+    fechaRecepcion: fin ? desplazar(fin, 3) : '',
+    recibidaPor: fin ? 'ventanilla@coatzacoalcos.gob.mx' : '',
+    adjuntos: [],
+  };
+};
+
+const desplazar = (iso, dias) => {
+  const [a, m, d] = iso.split('-').map(Number);
+  const f = new Date(a, m - 1, d + dias);
+  return `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}-${String(f.getDate()).padStart(2,'0')}`;
+};
+
+// «02 ago – 15 sep 2026»: las cuatro semanas que cierran en la fecha dada.
+const MES_CORTO = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const periodoDeCierre = (iso) => {
+  const [a, m, d] = iso.split('-').map(Number);
+  const fin = new Date(a, m - 1, d);
+  const ini = new Date(a, m - 1, d - 27);
+  const dia = f => `${String(f.getDate()).padStart(2,'0')} ${MES_CORTO[f.getMonth()]}`;
+  return `${dia(ini)} – ${dia(fin)} ${fin.getFullYear()}`;
+};
+
 // ── LAS NOTAS DEL CIERRE SEMANAL ───────────────────────────────────────────
 // Texto de ejemplo, para que la pestaña de notas y el riel de la evidencia se
 // vean con algo adentro en vez de con el hueco de siempre.
@@ -378,7 +440,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       opciones.conEconomia ? 'residente' : 'supervisor_obra'),
   });
   await escribir(`${prefijo}obras/${id}/config/estimaciones`, {
-    data: obra.estimaciones || [],
+    data: (obra.estimaciones || []).map(estimacionComoLaApp),
   });
 
   // Sólo del lado constructora: es exactamente lo que una dependencia no pide.
@@ -504,10 +566,17 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     ubicacion: 'Col. Centro, Coatzacoalcos, Ver.',
     inicio: '2026-04-01', fin: '2026-11-30', semilla: 7, nPartidas: 12,
     empresa: 'Constructora del Golfo, S.A. de C.V.', rfc: 'CGO180412QX3',
+    // CON LOS ESTADOS DEL TRÁMITE DE LA DEPENDENCIA, no los de la constructora.
+    // Allá una estimación se elabora, se aprueba, se FACTURA y se cobra; aquí
+    // se RECIBE en ventanilla, se revisa, se autoriza y se paga. Sembrar
+    // «Facturada» de este lado no revienta nada —y ése es el problema—: el
+    // desplegable no encuentra la opción, se queda en la primera, y la demo
+    // enseña «Recibida» en una estimación que el guion sembró facturada. Nadie
+    // ve el error; sólo ve un estado que no es.
     estimaciones: [
-      { num: 1, monto: 2800000, estatus: 'pagada',    fecha: '2026-06-20' },
-      { num: 2, monto: 3100000, estatus: 'pagada',    fecha: '2026-07-25' },
-      { num: 3, monto: 2400000, estatus: 'facturada', fecha: '2026-09-05' },
+      { num: 1, monto: 2800000, estatus: 'pagada',      fecha: '2026-06-20' },
+      { num: 2, monto: 3100000, estatus: 'pagada',      fecha: '2026-07-25' },
+      { num: 3, monto: 2400000, estatus: 'en revisión', fecha: '2026-09-05' },
     ],
     semanas: 4, diasSinCaptura: 3, fotosSemanas: 5,
   });

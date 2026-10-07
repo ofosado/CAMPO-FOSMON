@@ -77,7 +77,10 @@ traverse(ast, {
 });
 if (!decl) noArranco(['Estimaciones']);
 
-const NECESARIAS = ['cE', 'totalEst', 'retenido', 'retenEstra',
+// `_pct` va antes de `cE` porque es lo que lee los porcentajes del contrato.
+// Sin él, una obra a la que nadie le capturó anticipo daba NaN y `MXN` lo
+// imprimía «$0»: deducción que no se hizo, enseñada como deducción de cero.
+const NECESARIAS = ['_pct', 'cE', 'totalEst', 'retenido', 'retenEstra',
   'anticipoPactado', 'anticipoAmort', 'porRecuperarAnt'];
 const faltan = NECESARIAS.filter(n => !decl[n]);
 if (faltan.length) noArranco(faltan);
