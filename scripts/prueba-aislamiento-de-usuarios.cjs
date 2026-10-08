@@ -51,6 +51,8 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
 const noArranco = require('./no-arranco.cjs');
+// El `FieldValue` de verdad, el mismo que la función usa en producción.
+const { FieldValue } = require(path.join(raiz, 'functions/node_modules/firebase-admin/lib/firestore'));
 noArranco.vigilarExcepciones();
 
 const HOST = process.env.EMU_HOST || '127.0.0.1';
@@ -278,7 +280,11 @@ function baseFalsa(docsIniciales) {
       return hacer(null);
     },
   });
-  firestore.FieldValue = { serverTimestamp: () => '«servidor»' };
+  // `admin` NO lleva `.firestore.FieldValue`, a propósito: el `FieldValue` de
+  // verdad entra como su propio argumento al montar las funciones. El namespace
+  // es justo lo que el emulador de funciones pierde al envolver el módulo
+  // —`value.bind(target)` descarta las propiedades propias—, así que una prueba
+  // que se lo fabrica deja de ver ese modo de fallo entero.
   return {
     escrituras, authOps, docs, cuentas,
     admin: {
@@ -498,8 +504,8 @@ class HttpsErrorFalso extends Error {
     const base = baseFalsa(DOCS_BASE);
     let fns;
     try {
-      fns = new Function('admin', 'HttpsError',
-        `"use strict";${fuenteF}\nreturn {\n${fuentesFn}\n};`)(base.admin, HttpsErrorFalso);
+      fns = new Function('admin', 'HttpsError', 'FieldValue',
+        `"use strict";${fuenteF}\nreturn {\n${fuentesFn}\n};`)(base.admin, HttpsErrorFalso, FieldValue);
     } catch (e) {
       noArranco(`las funciones de ${path.basename(ARCH_FUNCS)} no se pudieron montar — ${e.message}`);
     }

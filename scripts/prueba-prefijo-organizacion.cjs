@@ -258,6 +258,106 @@ const noArranco = (motivo, pistaEmulador = false) => {
   catch { perfilOk = false; }
   check(perfilOk, 'el perfil se puede leer antes de resolver la organización');
 
+  // ── §5 La frontera de la sesión de plataforma, contra las reglas ────────
+  //
+  // `soporte` es el rol que cruza organizaciones, y existe para dos cosas:
+  // crear la organización y dar de alta a su primer usuario. "Nada más" no es
+  // una decisión de la interfaz —una pantalla que no ofrece un botón no es un
+  // candado— sino de estas reglas, y aquí se mide contra el emulador.
+  //
+  // Lo que esta rama cambió: `allow create` en `orgs/{oid}` admitía también a
+  // `esAdminSistemaC()` y `esAdminSistemaD()`. No era una escalada —crear
+  // `orgs/B` no da acceso a B— pero `esAdminSistemaD()` es `director_obras` y
+  // `subdirector`: el director de Obras Públicas de cualquier municipio podía
+  // dar de alta clientes en la plataforma.
+  console.log('\n§5 · la sesión de plataforma crea clientes y no ve operación');
+
+  const SOPORTE = { rol: 'soporte', orgId: null, tipo: null, todas: false, obras: [] };
+  const ORG_NUEVA = `muni-${Date.now().toString(36)}`;
+  const permitido = async (etiqueta, fn) => {
+    try { await fn(); return { ok: true }; }
+    catch (e) { return { ok: false, code: e.code || e.message }; }
+  };
+
+  // (a) Soporte da de alta la organización. Es el único que puede.
+  await entrarComo('u-soporte', SOPORTE);
+  const creo = await permitido('crear org', () => setDoc(doc(db, 'orgs', ORG_NUEVA), {
+    nombre: 'Municipio de Prueba', tipo: 'dependencia', activa: true,
+  }));
+  check(creo.ok, 'soporte da de alta una organización desde la app',
+        creo.ok ? ORG_NUEVA : `DENEGADA (${creo.code})`);
+
+  // (b) Y no cualquier organización: un tipo que no existe dejaría un cliente
+  //     sin roles válidos y sin ruta de obras.
+  const tipoInvalido = await permitido('tipo malo', () => setDoc(doc(db, 'orgs', `${ORG_NUEVA}-x`), {
+    nombre: 'Tipo inventado', tipo: 'municipio', activa: true,
+  }));
+  check(!tipoInvalido.ok, 'pero no una con un tipo que el producto no conoce',
+        tipoInvalido.ok ? 'LA DEJÓ PASAR' : 'denegada');
+
+  // (c) El `tipo` no se mueve después: cambiarlo reasignaría de golpe los roles
+  //     válidos y el lugar donde viven las obras.
+  const cambioTipo = await permitido('cambiar tipo', () => setDoc(doc(db, 'orgs', ORG_NUEVA), {
+    nombre: 'Municipio de Prueba', tipo: 'constructora', activa: true,
+  }, { merge: true }));
+  check(!cambioTipo.ok, 'ni cambiarle el tipo a una que ya existe',
+        cambioTipo.ok ? 'SE LO CAMBIÓ' : 'denegada');
+
+  // (d) Dar de alta al primer usuario de esa organización: eso sí.
+  const altaUsuario = await permitido('alta usuario', () => setDoc(
+    doc(db, 'usuarios', `primero_${ORG_NUEVA}`),
+    { email: `primero@${ORG_NUEVA}.gob.mx`, nombre: 'Primero', rol: 'director_obras', orgId: ORG_NUEVA }));
+  check(altaUsuario.ok, 'y da de alta al primer usuario de esa organización',
+        altaUsuario.ok ? 'creado' : `DENEGADA (${altaUsuario.code})`);
+
+  // (e) Y hasta aquí. Lo que sigue es operación, y no le toca.
+  const leeObraDep = await permitido('obra dep', () =>
+    getDoc(doc(db, `orgs/${ORG_DEP}/obras/${OBRA_DEP}/avance/subs`)));
+  check(!leeObraDep.ok, 'no lee el avance de una obra de dependencia',
+        leeObraDep.ok ? 'LO LEYÓ' : 'denegada');
+
+  const leeObraCons = await permitido('obra cons', () =>
+    getDoc(doc(db, `obras/${OBRA_CONS}/avance/subs`)));
+  check(!leeObraCons.ok, 'ni el de una obra de la constructora',
+        leeObraCons.ok ? 'LO LEYÓ' : 'denegada');
+
+  // La contabilidad de FOSMON es el dato más caro del repositorio y es
+  // exactamente lo que la app le pedía al montar antes de esta rama.
+  const leeGP = await permitido('gp', () => getDoc(doc(db, 'global/gp_construct')));
+  check(!leeGP.ok, 'ni la contabilidad de FOSMON, que es lo que la app le pedía',
+        leeGP.ok ? 'LA LEYÓ' : 'denegada');
+
+  // El rastro: lo escribe, no lo lee. Sus propios registros los revisa el
+  // directivo de la organización que corresponda.
+  const escribeAuditoria = await permitido('auditoria', () => setDoc(
+    doc(db, 'auditoria', `plataforma_${Date.now()}`),
+    { accion: 'crear', modulo: 'plataforma', entidad: ORG_NUEVA, correo: 'soporte@cotea.com.mx' }));
+  check(escribeAuditoria.ok, 'su propio rastro sí lo escribe: cada alta queda registrada',
+        escribeAuditoria.ok ? 'registrado' : `DENEGADA (${escribeAuditoria.code})`);
+  const leeAuditoria = await permitido('leer auditoria', () =>
+    getDocs(collection(db, 'auditoria')));
+  check(!leeAuditoria.ok, 'y no lo lee: la auditoría la revisa cada organización',
+        leeAuditoria.ok ? 'LA LEYÓ' : 'denegada');
+
+  // (f) Lo que esta rama le quitó a los clientes.
+  await entrarComo('u-dep', {
+    rol: 'director_obras', orgId: ORG_DEP, tipo: 'dependencia', todas: true, obras: [],
+  });
+  const depCreaOrg = await permitido('dep crea org', () => setDoc(doc(db, 'orgs', `${ORG_NUEVA}-dep`), {
+    nombre: 'Otro municipio', tipo: 'dependencia', activa: true,
+  }));
+  check(!depCreaOrg.ok, 'el director de Obras Públicas de un municipio ya NO crea clientes',
+        depCreaOrg.ok ? 'LO CREÓ' : 'denegada');
+
+  await entrarComo('u-admin-c', {
+    rol: 'admin_sistema', orgId: 'fosmon', tipo: 'constructora', todas: true, obras: [],
+  });
+  const consCreaOrg = await permitido('cons crea org', () => setDoc(doc(db, 'orgs', `${ORG_NUEVA}-c`), {
+    nombre: 'Otra constructora', tipo: 'constructora', activa: true,
+  }));
+  check(!consCreaOrg.ok, 'ni el admin_sistema de la constructora',
+        consCreaOrg.ok ? 'LO CREÓ' : 'denegada');
+
   console.log(`\n${fallas === 0 ? 'VERDE' : 'ROJO'} — ${fallas === 0 ? 'todo en su lugar' : `${fallas} fallas`}\n`);
   process.exit(fallas === 0 ? 0 : 1);
 })().catch(e => {

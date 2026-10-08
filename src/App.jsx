@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { conOrg, fijarPrefijoOrg, limpiarPrefijoOrg, orgIdSesion } from "./rutas-org.js";
+import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion } from "./rutas-org.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
@@ -5394,6 +5394,20 @@ const MODULOS_POR_TIPO = {
 // agregue uno.
 const esDependencia = usuario => usuario?.tipo === "dependencia";
 
+// ── LA SESIÓN DE PLATAFORMA ────────────────────────────────────────────────
+// `soporte` no es "un usuario sin tipo": es un usuario de OTRA cosa. Da de
+// alta organizaciones y el primer usuario de cada una, y no ve operación —ni
+// obras, ni avance, ni montos, ni evidencia—. Eso no lo sostiene esta función
+// sino las reglas de Firestore, donde `esConstructora()` y `esDependencia()`
+// son falsas para él y por ahí cuelga todo lo operativo.
+//
+// Aquí se pregunta por el ROL y no por el tipo, al contrario que
+// `esDependencia`: lo que define a este rol es precisamente no tener tipo, así
+// que preguntar `usuario?.tipo === null` daría también verdadero para una
+// sesión a medio resolver. `ROLES_CROSS` es la misma lista que `functions/`
+// usa para decidir que no lleva `orgId`.
+const esPlataforma = usuario => ROLES_CROSS.includes(usuario?.rol);
+
 // ── QUIÉN DICE SER LA APP ──────────────────────────────────────────────────
 // Dos cosas distintas que la barra de arriba enseñaba pegadas y las dos a
 // mano: el nombre del PRODUCTO, que es el mismo para todos, y el nombre de la
@@ -6075,11 +6089,30 @@ function Login({onLogin}){
       // tiene que decidirse con el dato que evalúan las reglas (P5), y el
       // prefijo vive en un módulo, fuera del árbol de React, así que no
       // dispara un re-render por sí solo.
+      //
+      // Y hay una tercera respuesta posible: NINGUNA organización. `soporte`
+      // cruza organizaciones por definición, así que sus claims traen
+      // `orgId: null` y `tipo: null`. Como `fijarPrefijoOrg` lanza con un tipo
+      // que no reconoce —y tiene razón en lanzar—, el rol existía en las
+      // reglas desde septiembre y NO PODÍA ENTRAR: el login lo sacaba de la
+      // sesión antes de pintar una sola pantalla. Se decide por el ROL, que es
+      // el dato con el que las reglas evalúan `esSoporte()`.
       let tipoOrg = null, orgIdUsuario = null;
       try {
         const { claims } = await getIdTokenResult(cred.user);
-        fijarPrefijoOrg(claims.tipo, claims.orgId);
-        tipoOrg = claims.tipo; orgIdUsuario = claims.orgId || null;
+        if (ROLES_CROSS.includes(claims.rol)) {
+          // Un rol cross con organización asignada es una inconsistencia, no un
+          // caso a tolerar: significaría que alguien le puso `orgId` a mano a un
+          // perfil de soporte, y la sesión de plataforma no sabría si es de
+          // plataforma o de ese cliente. Se niega la entrada en voz alta.
+          if (claims.orgId) {
+            throw new Error(`Tu cuenta es de soporte pero tiene la organización ${claims.orgId} asignada.`);
+          }
+          fijarSesionDePlataforma();
+        } else {
+          fijarPrefijoOrg(claims.tipo, claims.orgId);
+          tipoOrg = claims.tipo; orgIdUsuario = claims.orgId || null;
+        }
       } catch (e) {
         limpiarPrefijoOrg();
         setError(`${e.message || 'No se pudo determinar tu organización.'} Contacta al administrador.`);
@@ -7473,6 +7506,248 @@ function ModalPassword({usuario, onCancel, onConfirm, busy}){
         </button>
       </div>
     </div>
+  </div>;
+}
+
+// ── ADMINISTRACIÓN DE PLATAFORMA (rol `soporte`) ───────────────────────────
+// Dar de alta un cliente costaba una sesión de consola: `crear-org-fosmon.cjs`
+// con credenciales de administrador y después `backfill-claims.cjs`. Mientras
+// eso siguiera así, cada municipio nuevo nos cuesta a nosotros, y el producto
+// que se está vendiendo no se opera solo.
+//
+// ── LO QUE ESTA PANTALLA ES, Y SOBRE TODO LO QUE NO ──
+// Son dos actos y nada más: crear la organización y dar de alta a su primer
+// usuario. No hay lista de obras, ni avance, ni montos, ni evidencia, ni
+// bitácora de los clientes. Eso no lo sostiene este componente —un componente
+// no es un candado— sino las reglas de Firestore, donde `esConstructora()` y
+// `esDependencia()` son falsas para `soporte` y de ellas cuelga todo lo
+// operativo. Lo que este componente hace es no ofrecerlo.
+//
+// Y se monta como RAÍZ, no como una pestaña del armazón de siempre. Una
+// pestaña habría dejado alrededor el encabezado de obra, la campana, el menú
+// de configuración y la lista de obras de localStorage —que sobrevive al
+// cambio de sesión, es el defecto de las obras heredadas— y entonces el
+// "nada más" dependería de que cada uno de esos pedazos se portara bien.
+//
+// ── EL PRIMER USUARIO SE DA DE ALTA CON `ModalUsuario` ──
+// El mismo modal que usa la gestión de usuarios de cada organización, con
+// `tipoOrg` tomado de la org elegida. Una segunda copia del formulario se
+// desincroniza de las listas de roles, y una lista de roles desfasada crea
+// cuentas cuyos claims las reglas no reconocen: la cuenta entra y no ve nada.
+function PantallaPlataforma({ usuario, onLogout }) {
+  const [orgs, setOrgs] = useState(null);      // null = todavía no llega
+  const [errorLista, setErrorLista] = useState("");
+  const [form, setForm] = useState({ orgId:"", nombre:"", tipo:"dependencia",
+                                     empresa:"", empresaCorta:"", dominio:"" });
+  const [busy, setBusy] = useState(false);
+  const [aviso, setAviso] = useState(null);    // {ok:bool, texto:string}
+  const [altaEn, setAltaEn] = useState(null);  // la org donde se da de alta el primer usuario
+
+  // El padrón de organizaciones se lee directo: `allow read` en `orgs/{oid}`
+  // ya admite a soporte, y una Cloud Function de sólo lectura sería una pieza
+  // más que mantener para no ganar nada.
+  const recargar = async () => {
+    setErrorLista("");
+    try {
+      const s = await getDocs(collection(fbDb, "orgs"));
+      setOrgs(s.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => a.id.localeCompare(b.id)));
+    } catch (e) {
+      // El P4 en pequeño: no se pinta "0 organizaciones" cuando lo que pasó es
+      // que no se pudo leer. Cero clientes y lectura denegada se arreglan de
+      // maneras muy distintas.
+      setOrgs(null);
+      setErrorLista(e?.code || e?.message || "lectura denegada");
+    }
+  };
+  useEffect(() => { recargar(); }, []);
+
+  const crear = async () => {
+    setAviso(null);
+    setBusy(true);
+    const r = await callFn("crearOrganizacion", {
+      orgId: form.orgId.trim(),
+      nombre: form.nombre.trim(),
+      tipo: form.tipo,
+      branding: { empresa: form.empresa, empresaCorta: form.empresaCorta, dominio: form.dominio },
+    });
+    setBusy(false);
+    if (!r.ok) { setAviso({ ok:false, texto: r.error }); return; }
+    fsAudit("crear", { modulo:"plataforma", entidad:`orgs/${r.data.orgId}`,
+                       despues:{ nombre: form.nombre.trim(), tipo: form.tipo } });
+    setAviso({ ok:true, texto:`Organización «${r.data.orgId}» creada como ${r.data.tipo}. `
+                            + `Ahora dale de alta su primer usuario.` });
+    setForm({ orgId:"", nombre:"", tipo:"dependencia", empresa:"", empresaCorta:"", dominio:"" });
+    await recargar();
+    setAltaEn({ id: r.data.orgId, tipo: r.data.tipo, nombre: form.nombre.trim() });
+  };
+
+  const puedeCrear = form.orgId.trim() && form.nombre.trim() && !busy;
+
+  return <div style={{minHeight:"100vh",background:C.bg}}>
+    <style>{css}</style>
+    {/* El encabezado no lleva nombre de organización, porque esta sesión no es
+        de ninguna. `nombreOrg` ni se llama: no hay marca que leer. */}
+    <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"8px 14px",
+      display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <MarcaCotea tamano={20}/>
+        <div>
+          <div style={{fontSize:14,fontWeight:700,letterSpacing:"0.12em",color:C.textPri,lineHeight:1}}>{PRODUCTO.nombre}</div>
+          <div style={{fontSize:7,color:C.textMut,letterSpacing:"0.08em",marginTop:1,textTransform:"uppercase"}}>
+            Administración de plataforma
+          </div>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:9,color:C.textSec}}>{(usuario.nombre||"").split(" ")[0]}</div>
+          <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
+        </div>
+        <button onClick={onLogout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
+          padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer"}}>Salir</button>
+      </div>
+    </div>
+
+    <div style={{maxWidth:820,margin:"0 auto",padding:"14px 14px 56px",display:"flex",
+      flexDirection:"column",gap:12}}>
+
+      {/* Lo que esta sesión NO alcanza, dicho en pantalla. No es decoración:
+          quien opera soporte tiene que saber que no puede resolver una duda
+          sobre una cifra, porque no la ve. */}
+      <Card accent={C.blueDk}>
+        <div style={{fontSize:11,color:C.textSec,lineHeight:1.55}}>
+          Esta sesión da de alta <b>organizaciones</b> y el <b>primer usuario</b> de
+          cada una. No tiene acceso a obras, avance, estimaciones, montos ni
+          evidencia de ningún cliente, y no puede leer la bitácora. Cada alta
+          queda registrada con tu correo.
+        </div>
+      </Card>
+
+      {/* ── NUEVA ORGANIZACIÓN ── */}
+      <Card>
+        <Tit>Nueva organización</Tit>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Identificador</div>
+            <Inp type="text" value={form.orgId} placeholder="coatzacoalcos"
+              onChange={e=>setForm({...form, orgId:e.target.value})}/>
+            {/* Por qué se dice aquí y no se corrige en silencio: este
+                identificador queda en la ruta de TODOS los datos del cliente
+                (`orgs/{id}/obras/…`) y no se puede cambiar después. */}
+            <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
+              Minúsculas, números y guiones. Queda en la ruta de todos sus datos y no se puede cambiar.
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Tipo</div>
+            <Sel value={form.tipo} onChange={e=>setForm({...form, tipo:e.target.value})} style={{width:"100%"}}>
+              {TIPOS_ORG.map(t=><option key={t} value={t}>{t === "dependencia" ? "Dependencia (gobierno)" : "Constructora"}</option>)}
+            </Sel>
+            <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
+              Decide qué roles existen y qué ve la app. <b>No se puede cambiar después.</b>
+            </div>
+          </div>
+        </div>
+
+        <div style={{marginTop:10}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Nombre</div>
+          <Inp type="text" value={form.nombre} placeholder="H. Ayuntamiento de Coatzacoalcos"
+            onChange={e=>setForm({...form, nombre:e.target.value})}/>
+        </div>
+
+        <div style={{marginTop:12,paddingTop:10,borderTop:`0.5px solid ${C.border}`}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+            Marca del cliente — opcional
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Razón social</div>
+              <Inp type="text" value={form.empresa} placeholder="= el nombre"
+                onChange={e=>setForm({...form, empresa:e.target.value})}/>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Nombre corto</div>
+              <Inp type="text" value={form.empresaCorta} placeholder="COATZACOALCOS"
+                onChange={e=>setForm({...form, empresaCorta:e.target.value})}/>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Dominio</div>
+              <Inp type="text" value={form.dominio} placeholder="coatzacoalcos.gob.mx"
+                onChange={e=>setForm({...form, dominio:e.target.value})}/>
+            </div>
+          </div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:5}}>
+            Lo que el cliente ve como suyo en el encabezado. Si no lo capturas, la razón social es el nombre de arriba y lo demás se queda vacío — nunca con la marca de otro.
+          </div>
+        </div>
+
+        {aviso && <div style={{marginTop:10,fontSize:11,borderRadius:6,padding:"8px 10px",
+          background: aviso.ok ? C.greenBg : C.redBg, color: aviso.ok ? C.greenDk : C.redDk}}>
+          {aviso.texto}
+        </div>}
+
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:12}}>
+          <button onClick={crear} disabled={!puedeCrear}
+            style={{background:puedeCrear?C.caliza:C.border,border:"none",borderRadius:6,
+              padding:"7px 14px",fontSize:11,fontWeight:700,
+              color:puedeCrear?C.bg:C.textMut,cursor:puedeCrear?"pointer":"not-allowed"}}>
+            {busy ? "Creando…" : "Crear organización"}
+          </button>
+        </div>
+      </Card>
+
+      {/* ── LAS QUE YA EXISTEN ── */}
+      <Card>
+        <Tit>Organizaciones</Tit>
+        {errorLista
+          ? <div style={{fontSize:11,color:C.redDk,background:C.redBg,borderRadius:6,padding:"8px 10px"}}>
+              No se pudo leer el padrón de organizaciones ({errorLista}). No se está mostrando «ninguna»: no se sabe.
+            </div>
+          : orgs === null
+            ? <div style={{fontSize:11,color:C.textMut,padding:"8px 2px"}}>Cargando…</div>
+            : orgs.length === 0
+              ? <div style={{fontSize:11,color:C.textMut,padding:"8px 2px"}}>Todavía no hay ninguna.</div>
+              : <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {orgs.map(o => (
+                    <div key={o.id} style={{display:"grid",gridTemplateColumns:"1.2fr 2fr auto auto auto",
+                      gap:8,alignItems:"center",padding:"8px 10px",background:C.bg,borderRadius:8,
+                      opacity:o.activa === false ? 0.55 : 1}}>
+                      <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{o.id}</div>
+                      <div style={{fontSize:10,color:C.textSec,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.nombre || "—"}</div>
+                      <Bdg color={o.tipo === "dependencia" ? C.purple : C.blue} small>{o.tipo || "sin tipo"}</Bdg>
+                      <Bdg color={o.activa === false ? C.red : C.green} small>{o.activa === false ? "Inactiva" : "Activa"}</Bdg>
+                      <SecBtn onClick={()=>setAltaEn({ id:o.id, tipo:o.tipo, nombre:o.nombre })}>
+                        + Usuario
+                      </SecBtn>
+                    </div>
+                  ))}
+                </div>}
+      </Card>
+    </div>
+
+    {altaEn && <ModalUsuario
+      titulo={`Usuario en ${altaEn.nombre || altaEn.id}`}
+      /* Sin obras: una organización recién creada no tiene ninguna, y las de
+         una que ya opera no se leen desde aquí. El modal esconde el selector
+         cuando la lista viene vacía. */
+      obras={[]}
+      tipoOrg={altaEn.tipo}
+      pedirPassword={true}
+      busy={busy}
+      onCancel={()=>setAltaEn(null)}
+      onConfirm={async (f)=>{
+        setBusy(true);
+        // `orgId` explícito: `crearUsuario` OBLIGA a soporte a decir en qué
+        // organización, justamente porque su perfil no la trae.
+        const r = await callFn("crearUsuario", { ...f, orgId: altaEn.id });
+        setBusy(false);
+        if (!r.ok) { setAviso({ ok:false, texto:`No se creó el usuario: ${r.error}` }); setAltaEn(null); return; }
+        fsAudit("crear", { modulo:"plataforma", entidad:f.email,
+                           despues:{ rol:f.rol, orgId:altaEn.id } });
+        setAviso({ ok:true, texto:`${f.email} dado de alta en «${altaEn.id}» como ${ROL_LABEL[f.rol]||f.rol}.` });
+        setAltaEn(null);
+      }}/>}
   </div>;
 }
 
@@ -21414,7 +21689,15 @@ export default function App(){
   const[cambiosPendientes,setCambiosPendientes]=useState(false);
   // El Sheet de GP es la contabilidad de FOSMON: no se lee desde la sesión de
   // una dependencia (P5). Se pregunta por el tipo, no por el rol.
-  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct(!esDependencia(usuario));
+  //
+  // Ni desde la sesión de plataforma, y ésta se le había escapado al corte:
+  // `!esDependencia(usuario)` es VERDADERO para soporte —no tiene tipo—, así
+  // que la primera cosa que hacía una sesión de soporte al montar era pedir la
+  // contabilidad de un cliente. Las reglas la niegan, sí, pero el acuerdo con
+  // soporte es que no la pide; y una lectura negada deja el chip en «no
+  // disponible», que es la forma de decir "falló" cuando la verdad es "no me
+  // toca".
+  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct(!esDependencia(usuario) && !esPlataforma(usuario));
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -21852,6 +22135,20 @@ export default function App(){
   //   visible.
   useEffect(() => {
     if (!usuario) return;
+    // Una sesión de plataforma no tiene obras que cargar.
+    //
+    // Hoy, con un perfil de soporte recién creado, esto no reventaría: en
+    // `PERMISOS` soporte tiene `todas_obras:false`, así que cae a la rama de
+    // «sólo las asignadas» y su lista está vacía — termina sin pedir nada. El
+    // guardia está por el perfil que SÍ trae asignadas, que es alcanzable:
+    // `actualizarUsuario` escribe con merge sólo los campos que recibe, así
+    // que cambiarle el rol a `soporte` a una cuenta que era residente le deja
+    // su `obras_asignadas` intacto. Sin este `return`, esa sesión pediría cada
+    // obra, `docObra` resolvería la ruta con `conOrg` —que para plataforma
+    // LANZA a propósito—, el catch por obra se lo tragaría y la consola diría
+    // «1 de 1 obras asignadas no se cargaron», mandando a buscar un problema
+    // de permisos donde lo que hay es que no le toca.
+    if (esPlataforma(usuario)) return;
     (async () => {
       try {
         const esDirectivo = PERMISOS[usuario.rol]?.todas_obras === true;
@@ -22145,6 +22442,21 @@ export default function App(){
     setPermisosObraOverride(null);
     setUsuario(null); setScreen("obras"); setObraId(null);
   };
+
+  // ── LA SESIÓN DE PLATAFORMA SE VA POR OTRO LADO ──────────────────────────
+  // `soporte` no entra al armazón de siempre con menos pestañas: entra a otra
+  // pantalla. Lo que sigue de aquí para abajo —el encabezado con el nombre de
+  // la organización, la barra de obra, la campana, el menú de configuración, la
+  // lista de obras— está escrito para quien administra UNA organización y la
+  // opera. Recortarlo pieza por pieza para un rol que no tiene organización
+  // deja el "nada más" repartido en veinte condicionales, y basta que mañana
+  // alguien mueva uno.
+  //
+  // Va DESPUÉS de `logout` a propósito: la pantalla necesita poder cerrar la
+  // sesión, y `logout` es el único sitio donde se limpian el prefijo de módulo
+  // y el estado heredado.
+  if (esPlataforma(usuario)) return <PantallaPlataforma usuario={usuario} onLogout={logout}/>;
+
   const TABS=tabsDe(usuario);
   const dep=esDependencia(usuario);
 

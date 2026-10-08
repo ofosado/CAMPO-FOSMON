@@ -154,8 +154,17 @@ service cloud.firestore {
     match /orgs/{oid} {
       // Lectura: cualquier miembro de la org, o soporte
       allow read: if (esAuth() && orgId() == oid) || esSoporte();
-      // Crear: soporte (bootstrap) o admin de sistema (para casos edge)
-      allow create: if (esSoporte() || esAdminSistemaC() || esAdminSistemaD())
+      // Crear: SÓLO soporte.
+      //
+      // Hasta hoy también `esAdminSistemaC()` y `esAdminSistemaD()`, "para
+      // casos edge". No era una escalada —crear `orgs/B` no da acceso a B,
+      // porque un perfil de B lo crea un admin de B— pero sí ponía la facultad
+      // de dar de alta clientes en la plataforma en manos de cada cliente:
+      // `esAdminSistemaD()` es `director_obras` y `subdirector`, o sea el
+      // director de Obras Públicas de cualquier municipio. Y el único caso
+      // "edge" que había era el bootstrap, que lo hace el Admin SDK por un
+      // script y ni pasa por estas reglas.
+      allow create: if esSoporte()
                     && request.resource.data.tipo in ['constructora','dependencia']
                     && request.resource.data.nombre is string
                     && request.resource.data.activa is bool;
