@@ -36,11 +36,18 @@ const LLAVE = 'fake-api-key';
 // apagarlo.
 const CLAVE = 'demo1234';
 
+// La tercera no es de ninguna organización, y eso es el punto: `soporte` es
+// la sesión de plataforma. Sus claims llevan `orgId: null` y `tipo: null`
+// —así se los escribe `aplicarClaimsUsuario`— y su perfil tampoco lleva
+// `orgId`. Sembrarle una organización "para que funcione" sería sembrar el
+// caso que la app rechaza a propósito.
 const CUENTAS = [
   { correo: 'demo@fosmon.com.mx', nombre: 'Demo FOSMON',
     rol: 'director_general', tipo: 'constructora', orgId: 'fosmon' },
   { correo: 'oscar@cotea.com.mx', nombre: 'Oscar Fosado',
     rol: 'director_obras', tipo: 'dependencia', orgId: 'coatzacoalcos' },
+  { correo: 'soporte@cotea.com.mx', nombre: 'Soporte cotea',
+    rol: 'soporte', tipo: null, orgId: null },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
@@ -516,7 +523,13 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // ── Cuentas, claims y perfiles ────────────────────────────────────────────
   for (const c of CUENTAS) {
     const uid = await crearCuenta(c.correo);
-    await ponerClaims(uid, { rol: c.rol, orgId: c.orgId, tipo: c.tipo, todas: true, obras: [] });
+    // `todas` es «todas las obras de SU organización». Soporte no tiene
+    // organización, así que ponérselo en true sería sembrarle una facultad que
+    // no existe y que ninguna regla le concede.
+    await ponerClaims(uid, {
+      rol: c.rol, orgId: c.orgId, tipo: c.tipo,
+      todas: c.orgId !== null, obras: [],
+    });
     await escribir(`usuarios/${idDeCorreo(c.correo)}`, {
       nombre: c.nombre, correo: c.correo, rol: c.rol, activo: true,
       orgId: c.orgId, obras_asignadas: [], bienvenidaVista: true, uid,

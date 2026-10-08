@@ -26,6 +26,23 @@
 // divergencia se manifiesta como una escritura que se evapora sin error, que
 // es PENDIENTES #31 y #35.
 
+// ── EL TERCER ESTADO: LA SESIÓN DE PLATAFORMA ───────────────────────────────
+// `soporte` es el rol que cruza organizaciones: existe para crear una
+// organización y el primer usuario de cada una, y nada más. No tiene `orgId`
+// ni `tipo` —así se lo escribe `aplicarClaimsUsuario`, y así lo documenta la
+// cabecera de firestore.rules—, y por eso `fijarPrefijoOrg` LANZABA con sus
+// claims y el login lo sacaba de la sesión antes de pintar nada. El rol
+// existía en las reglas y no podía entrar.
+//
+// La tentación es admitir `tipo` ausente y caer a la raíz. Eso convertiría a
+// soporte en un usuario de la constructora: sus lecturas de obra apuntarían a
+// las cinco obras de FOSMON. El estado correcto no es "la raíz" sino "esta
+// sesión NO administra obras", y la forma de decirlo es que cualquier ruta de
+// obra reviente. Un símbolo y no una cadena a propósito: si alguna vez se
+// escapa a una concatenación, `symbol + string` lanza TypeError en vez de
+// armar una ruta plausible.
+const PLATAFORMA = Symbol('sesión de plataforma: sin obras');
+
 // `null` significa "todavía no se fijó", que NO es lo mismo que la cadena
 // vacía de una constructora. Por eso el centinela es null y no "".
 let PREFIJO = null;
@@ -60,6 +77,20 @@ export function fijarPrefijoOrg(tipo, orgId) {
   throw new Error(`No se pudo determinar tu organización (tipo=${tipo ?? 'ausente'}).`);
 }
 
+/**
+ * Fija la sesión de plataforma. Es el equivalente de `fijarPrefijoOrg` para el
+ * rol cross-tipo, y está aparte justamente para que no haya un camino en el
+ * que un `tipo` ausente resuelva a algo: aquí hay que pedirlo por su nombre.
+ *
+ * Quién la llama se decide con el ROL de los claims —el mismo dato con el que
+ * las reglas evalúan `esSoporte()`—, no con la ausencia de `tipo`.
+ */
+export function fijarSesionDePlataforma() { PREFIJO = PLATAFORMA; ORG_ID = null; }
+
+/** Para que la interfaz pueda preguntar "¿esta sesión administra obras?" sin
+ *  provocar la excepción. */
+export function esSesionDePlataforma() { return PREFIJO === PLATAFORMA; }
+
 /** Se llama al cerrar sesión. Sin esto, la siguiente sesión arrancaría
  *  apuntando a la organización de la anterior. */
 export function limpiarPrefijoOrg() { PREFIJO = null; ORG_ID = null; }
@@ -70,6 +101,9 @@ export function limpiarPrefijoOrg() { PREFIJO = null; ORG_ID = null; }
  * dato no estaba es exactamente la fuga que esto evita.
  */
 export function orgIdSesion() {
+  if (PREFIJO === PLATAFORMA) {
+    throw new Error('Esta sesión es de plataforma y no pertenece a ninguna organización: la consulta tiene que decir a cuál se refiere.');
+  }
   if (!ORG_ID) {
     throw new Error('Se intentó consultar por organización sin organización resuelta.');
   }
@@ -77,6 +111,9 @@ export function orgIdSesion() {
 }
 
 export function prefijoOrg() {
+  if (PREFIJO === PLATAFORMA) {
+    throw new Error('Esta sesión es de plataforma: administra organizaciones y usuarios, no obras.');
+  }
   if (PREFIJO === null) {
     throw new Error('Se intentó leer o escribir una obra sin organización resuelta.');
   }

@@ -21,6 +21,21 @@ const { setGlobalOptions } = require("firebase-functions");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 
+// `FieldValue` se trae por la ruta modular y NO como `admin.firestore.FieldValue`.
+// Es el mismo objeto —se midió: `require("firebase-admin/firestore").FieldValue
+// === admin.firestore.FieldValue`—, así que en producción esto no cambia nada.
+// Lo que cambia es que se puede medir: el emulador de funciones sustituye el
+// módulo `firebase-admin` por un proxy y para `firestore` devuelve
+// `value.bind(target)` (functionsEmulatorRuntime.js). `bind` descarta las
+// propiedades propias de la función, de modo que dentro del emulador
+// `admin.firestore.FieldValue` es `undefined` y cualquier función que escriba
+// una marca de tiempo del servidor muere con «Cannot read properties of
+// undefined». Pasaba en los seis usos del archivo, no en uno: `crearUsuario`,
+// `actualizarUsuario` y el disparador de claims tampoco se podían ejercitar
+// contra el emulador. Con la ruta modular el código corre igual en los dos
+// lados, que es la única manera de que una verificación local valga.
+const { FieldValue } = require("firebase-admin/firestore");
+
 // Secret de Resend para mandar correos transaccionales (resumen semanal, etc.)
 // Se carga en Cloud Functions con:  firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
@@ -205,6 +220,115 @@ function exigirPuedeOtorgarRol(ambito, rol) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// CREAR ORGANIZACIÓN
+//
+// Era `scripts/crear-org-fosmon.cjs`: dar de alta un cliente costaba una
+// sesión de consola con credenciales de administrador. Mientras eso siguiera
+// así, cada municipio nuevo nos cuesta a nosotros y el producto no se vende
+// solo.
+//
+// ── POR QUÉ `create()` Y NO `set()` ──
+// `set({merge:true})` sobre un id ya ocupado FUNDE los dos documentos campo
+// por campo y no falla: el nombre del cliente nuevo encima del viejo, el
+// `tipo` del viejo si el nuevo no lo trae. Es el mismo modo de fallo del #31 y
+// aquí el documento fundido es el tenant completo. `create()` revienta con
+// ALREADY_EXISTS, que es lo que uno quiere oír.
+//
+// ── POR QUÉ UN BATCH ──
+// La organización y su marca entran juntas o no entra ninguna. Una org a
+// medias —documento sí, marca no— no se nota al crearla y aparece después como
+// un encabezado en blanco en la primera demo.
+//
+// ── POR QUÉ SÓLO SOPORTE ──
+// Crear un tenant no es administrar el propio. Las reglas se lo permitían
+// también a `admin_sistema` y a los directivos de dependencia "para casos
+// edge"; esta rama se lo quita a los dos, aquí y en firestore.rules. No era
+// una escalada —crear `orgs/B` no da acceso a B, porque un perfil de B lo crea
+// un admin de B— pero sí es la facultad de crear clientes en la plataforma, y
+// ésa es nuestra.
+// ──────────────────────────────────────────────────────────────────────────
+
+// El id es parte de la ruta de TODOS los datos de ese cliente
+// (`orgs/{id}/obras/...`) y aparece en la URL de la marca. Se exige en
+// minúsculas y sin puntos ni barras: un id con `/` partiría la ruta en dos y
+// `.`/`..` son ids que Firestore rechaza. No se "normaliza" en silencio lo que
+// venga mal —un cliente dado de alta como `Coatzacoalcos` y guardado como
+// `coatzacoalcos` es una discrepancia que se descubre tarde—: se rechaza.
+const RE_ORG_ID = /^[a-z0-9][a-z0-9-]{1,38}$/;
+
+exports.crearOrganizacion = onCall(async (request) => {
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
+  if (!ambito.cross) {
+    throw new HttpsError(
+      "permission-denied",
+      "Dar de alta una organización es un acto de plataforma: lo hace el rol de soporte."
+    );
+  }
+
+  const { orgId, nombre, tipo, branding } = request.data || {};
+  const id = String(orgId || "").trim();
+  const nom = String(nombre || "").trim();
+
+  if (!id || !nom || !tipo) {
+    throw new HttpsError("invalid-argument", "Faltan datos requeridos: orgId, nombre y tipo.");
+  }
+  if (!RE_ORG_ID.test(id)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `El identificador «${id}» no sirve como id de organización. ` +
+      "Minúsculas, números y guiones, de 2 a 39 caracteres, empezando por letra o número."
+    );
+  }
+  if (!TIPOS_ORG.includes(tipo)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `Tipo inválido: ${tipo}. Válidos: ${TIPOS_ORG.join(", ")}.`
+    );
+  }
+
+  const db = admin.firestore();
+  const orgRef = db.doc(`orgs/${id}`);
+  const marcaRef = db.doc(`orgs/${id}/config/branding`);
+
+  // La marca: `empresa` es lo que el encabezado enseña al cliente como suyo.
+  // Por omisión es el nombre que se acaba de teclear —el mismo dato, no uno
+  // inventado—. `empresaCorta` y `dominio` se omiten si no se dieron: una
+  // cadena vacía escrita se vería después como un dato capturado.
+  const b = branding && typeof branding === "object" ? branding : {};
+  const marca = { empresa: String(b.empresa || nom).trim() };
+  if (String(b.empresaCorta || "").trim()) marca.empresaCorta = String(b.empresaCorta).trim();
+  if (String(b.dominio || "").trim()) marca.dominio = String(b.dominio).trim();
+
+  const batch = db.batch();
+  batch.create(orgRef, {
+    nombre: nom,
+    tipo,
+    activa: true,
+    creadaEn: FieldValue.serverTimestamp(),
+    creadaPor: request.auth.token.email || "",
+  });
+  batch.set(marcaRef, marca);
+
+  try {
+    await batch.commit();
+  } catch (e) {
+    if (e.code === 6 || /ALREADY_EXISTS/i.test(e.message || "")) {
+      throw new HttpsError(
+        "already-exists",
+        `Ya existe una organización con el identificador «${id}». No se escribió nada.`
+      );
+    }
+    throw new HttpsError("internal", `No se pudo crear la organización: ${e.message}`);
+  }
+
+  // Los roles válidos salen de aquí y no de la pantalla: quien acaba de crear
+  // la org necesita saber con qué rol puede dar de alta al primer usuario, y
+  // es esta tabla la que `validarRolEnOrg` va a exigir después.
+  return { ok: true, orgId: id, tipo, roles: ROLES_POR_TIPO[tipo] };
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // CREAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
 exports.crearUsuario = onCall(async (request) => {
@@ -294,7 +418,7 @@ exports.crearUsuario = onCall(async (request) => {
     obras_asignadas: Array.isArray(obras_asignadas) ? obras_asignadas : [],
     activo: true,
     uid: userRecord.uid,
-    creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+    creadoEn: FieldValue.serverTimestamp(),
     creadoPor: request.auth.token.email || "",
     ...(reparado ? { reparadoDeAuth: true } : {}),
   });
@@ -345,7 +469,7 @@ exports.actualizarUsuario = onCall(async (request) => {
   for (const k of camposPermitidos) {
     if (k in cambios) update[k] = cambios[k];
   }
-  update.actualizadoEn = admin.firestore.FieldValue.serverTimestamp();
+  update.actualizadoEn = FieldValue.serverTimestamp();
   update.actualizadoPor = request.auth.token.email || "";
 
   await ref.set(update, { merge: true });
@@ -1446,7 +1570,7 @@ async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) 
         mensaje,
         link: link || null,
         leida: false,
-        fecha: admin.firestore.FieldValue.serverTimestamp(),
+        fecha: FieldValue.serverTimestamp(),
         creadaPor: "sistema:recordatorios",
       });
   } catch (e) {
@@ -1847,8 +1971,8 @@ exports.sincronizarClaims = onDocumentWritten(
     // disponible en Auth.
     try {
       await admin.firestore().doc(`usuarios/${event.params.docId}`).update({
-        claimsVersion: admin.firestore.FieldValue.increment(1),
-        _claimsSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+        claimsVersion: FieldValue.increment(1),
+        _claimsSyncedAt: FieldValue.serverTimestamp(),
       });
       console.log(`sincronizarClaims [${event.params.docId}] rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${(res.claims.obras||[]).length} — claimsVersion incrementado`);
     } catch (e) {
