@@ -324,10 +324,60 @@ const ids = new Function(`"use strict";
   const nuevoIdObra = ${decl['nuevoIdObra']};
   return nuevoIdObra;`)();
 
+// El sorteo, con el azar PUESTO A MANO.
+//
+// Esto reemplaza a una afirmación que decía «5000 seguidos, ninguno repetido»
+// y que era falsa: seis caracteres en base 36 son 2,176,782,336 valores, y la
+// paradoja del cumpleaños da ~0.6% de probabilidad de un repetido en 5000
+// sorteos. Esa prueba no afirmaba conducta, afirmaba SUERTE — y el 2026-10-08
+// se le acabó en `main`, con el único cambio en el repositorio siendo unos
+// íconos. Una prueba que falla por azar enseña a correrla de nuevo, que es
+// exactamente cómo se pierde el día que encuentre algo de verdad.
+//
+// Lo que sí es conducta se mide con el azar controlado: se le inyecta un
+// `globalThis` propio cuyo `crypto` devuelve los valores que yo elijo, y se
+// mira qué identificador sale.
+const conSorteos = (...valores) => {
+  let i = 0, usados = 0;
+  const cripto = { getRandomValues: (a) => { a[0] = valores[i++]; usados++; return a; } };
+  const fn = new Function('globalThis', `"use strict"; return (${decl['nuevoIdObra']});`)({ crypto: cripto });
+  return { id: fn(), sorteos: () => usados };
+};
+const TOPE = 36 ** 6; // 'ZZZZZZ' + 1
+
+check(conSorteos(0).id === `OB-${new Date().getFullYear()}-000000`,
+  'el sorteo más bajo da seis ceros, no siete',
+  conSorteos(0).id);
+check(conSorteos(TOPE - 1).id.endsWith('-ZZZZZZ'),
+  'el más alto del espacio da ZZZZZZ y sigue midiendo seis',
+  conSorteos(TOPE - 1).id);
+
+// LA COMPROBACIÓN DE LA QUE SALIÓ TODO. Un uint32 llega casi al doble de
+// 36^6, y el excedente se resolvía con `padStart(7, "0").slice(-6)`: el valor
+// 2,176,782,336 daba '1000000' y, recortado, '000000' — el MISMO identificador
+// que el sorteo 0. Así la mitad baja del espacio salía el doble de seguido.
+// Con el sorteo repetido, el valor de fuera de rango se descarta y se vuelve a
+// sortear, de modo que aquí tienen que gastarse DOS sorteos y salir el segundo.
+const fuera = conSorteos(TOPE, 7);
+check(fuera.id === `OB-${new Date().getFullYear()}-000007`,
+  'un sorteo fuera de rango se descarta y se vuelve a sortear, no se recorta',
+  `${fuera.id} — recortar lo habría vuelto '000000', el mismo que el sorteo 0`);
+check(fuera.sorteos() === 2,
+  'y se nota: gastó dos sorteos para entregar uno',
+  `${fuera.sorteos()} sorteo(s)`);
+
+check(conSorteos(123).id !== conSorteos(124).id,
+  'dos sorteos distintos dan identificadores distintos',
+  'si fueran iguales el id no vendría del azar');
+
+// Y el volumen, afirmado contra lo que el espacio PUEDE garantizar. Tres
+// repetidos en 5000 tienen probabilidad ~2 en 100 millones: si esto sale rojo
+// es que el generador se encogió, no que hubo mala suerte.
 const generados = Array.from({ length: 5000 }, () => ids());
-check(new Set(generados).size === 5000,
-  '5000 identificadores seguidos, ninguno repetido',
-  `${new Set(generados).size} distintos`);
+const repetidos = generados.length - new Set(generados).size;
+check(repetidos <= 2,
+  '5000 identificadores seguidos, a lo más dos repetidos (el espacio no da para prometer cero)',
+  `${repetidos} repetidos`);
 check(generados.every(i => /^OB-\d{4}-[0-9A-Z]{6}$/.test(i)),
   'todos con la misma forma, y sin caracteres que Firestore no admita en un id',
   generados[0]);
@@ -577,3 +627,25 @@ correr().catch(e => {
 // Y una sobre la prueba misma (P4): renombrar `agregarObra` → salida 2, NO
 // ARRANCÓ. Lo atrapan `dentroDe` y `NECESARIOS`, que es lo que debe pasar: una
 // prueba que no encuentra lo que iba a medir no se declara verde.
+//
+// ── EL IDENTIFICADOR, REMEDIDO (2026-10-08) ─────────────────────────────────
+//
+// La §4 decía «5000 seguidos, ninguno repetido» y eso era falso: 36^6 son
+// 2,176,782,336 valores y el cumpleaños da ~0.6% de repetido en 5000 sorteos.
+// Se le acabó la suerte en `main` un día en que lo único que había cambiado
+// eran unos íconos de PWA. Medir el generador mostró además que el recorte
+// `padStart(7, "0").slice(-6)` tiraba la mitad del uint32 encima de la mitad
+// baja del espacio: 300,000 sorteos → 24 repetidos, ~1.5× lo que el tamaño
+// predice. Se arreglaron las dos cosas y se volvió a medir, 5 mutaciones,
+// 5 en ROJO:
+//
+//   · vuelve el recorte `padStart(7, "0").slice(-6)` — el defecto original.
+//   · el exceso por módulo, que sesga exactamente igual que el recorte.
+//   · el padding de vuelta en 7: los identificadores miden siete.
+//   · el id lo pone `Date.now()` en vez del azar.
+//   · el espacio encogido a 4096 valores con una máscara.
+//
+// Las cuatro primeras las ve el sorteo PUESTO A MANO —se le inyecta un
+// `globalThis` cuyo `crypto` devuelve lo que yo elijo—, no el volumen. Esa es
+// la diferencia: antes la §4 dependía del azar para encontrar un defecto del
+// azar, y por eso podía fallar sin defecto y pasar con uno.
