@@ -22,7 +22,7 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = []) {
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = []) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -1735,16 +1735,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   //   4. Rellenar hasta 12 fotos combinando partidas.
   // ════════════════════════════════════════════════════════════════════════
 
-  // Helper: obtener el array plano de fotos de una sub (schema mixto)
-  const fotosDeSub = (s) => {
-    if (!s?.fotos) return [];
-    // s.fotos puede ser: array directo, o objeto {subId: [foto,...], ...}
-    const arr = Array.isArray(s.fotos)
-      ? s.fotos
-      : Object.values(s.fotos).flat().filter(f => f && typeof f === 'object');
-    // Ordenar por fecha descendente (más recientes primero)
-    return arr.slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-  };
+  // Las fotos salen de `evidenciaDePartida`, la misma cuenta que lee la galería.
+  // Antes esta función aplanaba `s.fotos` por su cuenta: era una de tres copias
+  // del mismo recorrido, y la copia de la galería se quedó sin `.flat()` y dejó
+  // invisibles todas las fotos de producción en la pantalla del cliente
+  // (PENDIENTES #32). Con una sola cuenta, el PDF y la pantalla no pueden
+  // enseñar fotos distintas.
 
   // Calcular delta por partida usando historialAvance
   // El delta representa cuánto avanzó la partida en el último corte
@@ -1769,7 +1765,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   // Rankear partidas: primero por delta semanal, luego por #fotos como fallback
   const subsConFotos = subs
-    .map(s => ({ s, fotos: fotosDeSub(s), delta: deltaPorSec.get(s.sec) || 0 }))
+    .map((s, i) => ({ s, fotos: evidenciaDePartida(evidencia, idDePartida(s, i)),
+                      delta: deltaPorSec.get(s.sec) || 0 }))
     .filter(x => x.fotos.length > 0);
 
   subsConFotos.sort((a,b) => {
@@ -1786,16 +1783,23 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // (para no llenarlo todo con 12 fotos de una sola partida)
   const fotosAll = [];
   const MAX_FOTOS_POR_PARTIDA_PRIMER_PASE = 2;
+  // El pie de cada foto. La fecha NO se rellena con la de hoy: antes decía
+  // `f.fecha || hoy`, así que una foto sin fecha salía impresa, en un reporte
+  // firmado, con la fecha del día en que se generó el PDF. Es inventar un dato
+  // de campo. Si no hay fecha, lo dice.
+  const pieDeFoto = (s, f) => ({
+    sec: s.sec, sub: s.sub || '',
+    conc: f.sub || s.sub || '',
+    fecha: f.fechaServidor || f.fechaDeclarada || '',
+    sello: selloDeEvidencia(f).texto,
+    url: f.url || null,
+  });
   // Primer pase: hasta 2 fotos por partida
   subsConFotos.forEach(({s, fotos}) => {
     if (fotosAll.length >= 12) return;
     fotos.slice(0, MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
       if (fotosAll.length >= 12) return;
-      fotosAll.push({
-        sec: s.sec, sub: s.sub || '',
-        conc: f.conc || f.concepto || s.sub || '',
-        fecha: f.fecha || hoy, url: f.url || null,
-      });
+      fotosAll.push(pieDeFoto(s, f));
     });
   });
   // Segundo pase: si queda espacio, rellenar con fotos adicionales
@@ -1805,18 +1809,14 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       if (fotosAll.length >= 12) return;
       fotos.slice(MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
         if (fotosAll.length >= 12) return;
-        fotosAll.push({
-          sec: s.sec, sub: s.sub || '',
-          conc: f.conc || f.concepto || s.sub || '',
-          fecha: f.fecha || hoy, url: f.url || null,
-        });
+        fotosAll.push(pieDeFoto(s, f));
       });
     });
   }
 
   // Si NO hay fotos reales, mostrar placeholders informativos (sin datos DEMO)
   const fotos12 = fotosAll.length > 0 ? fotosAll : Array.from({length:6}, (_,i) => ({
-    sec:'—', sub:'', conc:'Sin fotos capturadas', fecha:'', url:null,
+    sec:'—', sub:'', conc:'Sin fotos capturadas', fecha:'', sello:'', url:null,
   }));
 
   // ── PRE-CARGAR fotos de Storage a base64 ──
@@ -1880,9 +1880,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         // Pie de foto
         sf(K.ng); R(fx,fy+FH,FW,7,'F');
         st(K.wh); fs(7); fw('bold'); T(foto.sec,fx+2,fy+FH+4.5);
+        // El sello va en el pie del reporte impreso por la misma razón que en la
+        // pantalla: una foto de archivo no tiene autor y nunca lo va a tener, y
+        // el PDF lo firma un residente. Si saliera igual que una captura en
+        // vivo, el reporte afirmaría una verificación que no ocurrió.
+        fs(5.5); fw('normal'); st(K.gmu);
+        T(foto.sello||'',fx+FW-1,fy+FH+4.5,{align:'right'});
         fs(6); fw('normal'); st(K.gmu);
         T((foto.conc||'').slice(0,32),fx+2,fy+FH+6.5);
-        T(foto.fecha||'',fx+FW-1,fy+FH+6.5,{align:'right'});
+        // El relleno de «sin fotos» no lleva sello, y tampoco «sin fecha»: ahí
+        // no hay foto de la cual decir que le falta la fecha.
+        T(foto.sello ? (foto.fecha||'sin fecha') : '',fx+FW-1,fy+FH+6.5,{align:'right'});
       });
       yf+=FH+7+4;
     }
@@ -2126,6 +2134,20 @@ const fsGet  = async (path) => { const r = conOrg(path); try { const d = await g
 const fsSet  = async (path, data) => { const r = conOrg(path); try { await setDoc(doc(fbDb, ...r.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
 const fsDel  = async (path) => { const r = conOrg(path); try { await deleteDoc(doc(fbDb, ...r.split('/'))); return true; } catch { return false; } };
 const fsColl = async (path) => { const r = conOrg(path); try { const s = await getDocs(collection(fbDb, ...r.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
+// La misma lectura, pero distinguiendo «no hay documentos» de «no se pudo
+// leer». `fsColl` devuelve `[]` en los dos casos, y para la evidencia esa
+// ambigüedad es un defecto: una galería que anuncia «sin evidencia» porque las
+// reglas negaron la lectura dice algo falso sobre la obra con toda confianza.
+const fsCollConEstado = async (path) => {
+  const r = conOrg(path);
+  try {
+    const s = await getDocs(collection(fbDb, ...r.split('/')));
+    return { ok: true, docs: s.docs.map(d => ({ id: d.id, ...d.data() })) };
+  } catch (e) {
+    console.error('fsCollConEstado', r, e?.code || e?.message);
+    return { ok: false, docs: [], error: e?.code || 'error-desconocido' };
+  }
+};
 
 // ── Horas extra de una semana de nómina ──────────────────────────────────
 // Existe como función, y una sola, porque el snapshot guarda el importe con
@@ -2651,6 +2673,200 @@ const semanaDeFoto = (foto) => {
   if (!d) return null;
   const { semana, año } = semanaISO(d);
   return snapshotId(semana, año);
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA EVIDENCIA, CON UN DOCUMENTO PROPIO POR FOTO
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hasta hoy una foto vivía DENTRO de `obras/{id}/avance/subs`, en un mapa
+// `fotos: { [idPartida]: [{id, url, fecha}, …] }` incrustado en la partida. Eso
+// tiene tres consecuencias medidas, no supuestas:
+//
+//   · PENDIENTES #30 — el peso. La URL de descarga con token son ~240 bytes por
+//     foto, y las fotos no se recortan nunca. En la 0112, con 14 partidas, el
+//     mapa `fotos` es el 64% del documento; en la 0126, el 52%. El límite de un
+//     documento de Firestore es 1 MiB y el que lo llena no es el catálogo: es
+//     un residente tomando muchas fotos, que es exactamente lo que queremos.
+//
+//   · La `×` dejaba basura. Borrar una foto la quitaba del mapa y dejaba el
+//     archivo en Storage. Medidos contra producción el 2026-10-08: 80 objetos
+//     (27 MiB) que ningún documento referencia.
+//
+//   · El token del query string es un secreto de acceso replicado en un
+//     documento que lee todo el que puede leer la obra. Si alguna vez se rota,
+//     las 656 URLs guardadas mueren a la vez y no hay de dónde regenerarlas.
+//
+// Ahora cada foto es `obras/{obraId}/evidencia/{eid}`, y la verdad del archivo
+// es `rutaStorage` —no la URL—, justamente para poder regenerarla.
+//
+// ── POR QUÉ EL LEGADO NO PUEDE LLEVAR LA MISMA INSIGNIA ────────────────────
+//
+// Las 656 fotos que ya existen NO tienen autor, y no es recuperable: ningún
+// documento guarda un uid y Storage no expone quién subió el objeto. Tampoco
+// tienen coordenadas ni hora de captura: lo único del servidor que se puede
+// recuperar es `timeCreated`, que es cuándo LLEGÓ el archivo, no cuándo se
+// apretó el botón.
+//
+// Por eso `subidaEn` se llama así y no `capturadaEn`. Meter la hora de llegada
+// en un campo que dice «capturada» sería inventar un dato de captura que nadie
+// midió — el mismo defecto que mostrar cero cuando falta el número. El valor
+// que traía el teléfono se conserva en `fechaDeclarada`, con ese nombre, porque
+// es declarado y no verificado: medidas las 656 contra la hora del servidor,
+// 48 están corridas un día (el teléfono en UTC-5 cerca de la medianoche). Y la
+// comparación fácil —`timeCreated` en UTC contra la fecha local— decía que
+// coincidían todas, que era mentira tranquilizadora.
+//
+// `verificada` es la única bandera que la pantalla puede usar para presumir, y
+// el legado nunca la tiene.
+const ORIGEN_LEGADO  = 'legado';
+const ORIGEN_EN_VIVO = 'captura_en_vivo';
+
+// Una foto normalizada, venga del documento nuevo o del mapa viejo. Todo lo que
+// pinta evidencia consume ESTA forma y ninguna otra: antes había tres copias
+// del aplanado —el PDF, el tablero y la galería del cliente— y cada una decidía
+// por su cuenta qué era una foto. Una de ellas se olvidó del `.flat()` y la
+// galería del cliente anunció fotos sobre una rejilla vacía (#32).
+const evidenciaNormalizada = (e) => ({
+  id: e.id,
+  url: e.urlOriginal || e.url || '',
+  rutaStorage: e.rutaStorage || null,
+  partidaId: e.partidaId || '',
+  sec: e.partidaClave || e.sec || '',
+  sub: e.partidaDesc || e.sub || '(sin descripción)',
+  origen: e.origen || ORIGEN_LEGADO,
+  // Verificada quiere decir: la hora la puso el servidor Y se sabe quién la
+  // tomó. Las dos cosas, no una.
+  verificada: e.origen === ORIGEN_EN_VIVO && !!e.subidaEn && !!e.capturadaPor,
+  fechaServidor: fechaDeTimestamp(e.subidaEn),
+  fechaDeclarada: e.fechaDeclarada || null,
+  anulada: !!e.anulada,
+  motivoAnulacion: e.motivoAnulacion || null,
+});
+
+// La semana de una pieza de evidencia. Prefiere la hora del SERVIDOR y sólo cae
+// a la declarada si no hay otra — y entonces la pantalla tiene que decir que es
+// declarada, porque agrupar por un dato que puso el teléfono y presentarlo como
+// un hecho del calendario es afirmar lo que no se midió.
+const semanaDeEvidencia = (ev) => {
+  const f = ev.fechaServidor || ev.fechaDeclarada;
+  const d = fechaLocalDeISO(f);
+  if (!d) return null;
+  const { semana, año } = semanaISO(d);
+  return snapshotId(semana, año);
+};
+
+// Un Timestamp de Firestore, un ISO o nada → fecha local `YYYY-MM-DD` o `null`.
+// Firestore devuelve `{seconds, nanoseconds}` o un objeto con `toDate()` según
+// por dónde entre el documento, y el guion de migración lo escribe como ISO.
+function fechaDeTimestamp(t) {
+  if (!t) return null;
+  if (typeof t === 'string') return t.slice(0, 10) || null;
+  const d = typeof t.toDate === 'function' ? t.toDate()
+          : typeof t.seconds === 'number' ? new Date(t.seconds * 1000)
+          : null;
+  if (!d || isNaN(d)) return null;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// ── EL CORTE ES POR OBRA Y ES EXPLÍCITO ────────────────────────────────────
+//
+// El despliegue del front y la migración de los datos son dos permisos
+// distintos y pueden pasar en cualquier orden, con días en medio. Si la
+// pantalla leyera «la subcolección y además el mapa viejo», habría dos fuentes
+// para la misma cuenta y el día que se solapen la galería contaría doble.
+//
+// Así que cada obra tiene una y sólo una fuente a la vez, y quién manda lo dice
+// `config/evidencia`, que escribe la migración al terminar esa obra. La
+// escritura respeta la misma bandera: mientras la obra no esté migrada, una
+// foto nueva sigue yendo al mapa viejo. Nunca hay mitad y mitad.
+const evidenciaMigrada = (cfg) => !!(cfg && cfg.migrada === true);
+
+// El id con el que una partida se reconoce en la evidencia. Vive aquí, una vez,
+// porque lo usan el lector y los dos consumidores (el PDF y el dashboard): si
+// cada uno derivara el id a su manera, el día que una partida no tenga `id` ni
+// `sec` los tres se desincronizarían y el PDF saldría sin fotos sin avisar.
+const idDePartida = (s, i) => (s && (s.id || s.sec)) || `#${i}`;
+
+// Las fotos de una obra, en la forma única, viniendo de donde toque.
+//
+// `cargada` existe porque `fsColl` devuelve `[]` cuando la lectura falla, y una
+// galería que dice «no hay evidencia» porque las reglas la negaron es una
+// respuesta creíble y falsa. Sin este dato la pantalla no puede distinguir
+// «no hay» de «no se pudo leer», y tiene que poder.
+const evidenciaDeObra = ({ cfgEvidencia, docsEvidencia, subs }) => {
+  if (evidenciaMigrada(cfgEvidencia))
+    return (docsEvidencia || []).map(evidenciaNormalizada);
+  // Obra sin migrar: el mapa incrustado, traducido a la misma forma. `origen`
+  // es legado porque es exactamente lo que es, y `subidaEn` no existe todavía
+  // —la hora del servidor la recupera la migración leyendo Storage—, así que
+  // estas fotos sólo tienen fecha declarada.
+  const out = [];
+  (subs || []).forEach((s, is) => {
+    const lista = (Array.isArray(s.fotos) ? s.fotos : Object.values(s.fotos || {}).flat())
+      .filter(Boolean);
+    lista.forEach((foto, i) => {
+      const url = typeof foto === 'string' ? foto : (foto.url || foto.src || '');
+      if (!url) return;
+      out.push(evidenciaNormalizada({
+        id: (typeof foto === 'object' && foto.id) || `${idDePartida(s, is)}-${i}`,
+        urlOriginal: url,
+        partidaId: idDePartida(s, is),
+        partidaClave: s.sec || '',
+        partidaDesc: s.sub || '(sin descripción)',
+        origen: ORIGEN_LEGADO,
+        fechaDeclarada: (typeof foto === 'object' && foto.fecha) || null,
+      }));
+    });
+  });
+  return out;
+};
+
+// Lo que una pantalla puede pintar: sin anuladas. La anulada no se borra —el
+// §7.7 del alcance municipal lo prohíbe y el expediente la necesita— pero no
+// cuenta como evidencia ni suma en ninguna insignia.
+const evidenciaVigente = (lista) => (lista || []).filter(e => !e.anulada);
+
+// Las fotos de una partida, por su id. Reemplaza las tres copias de
+// `fotosDeSub`. Ordena por fecha descendente con la misma regla que tenían, que
+// es la que el PDF necesita para elegir «las más recientes».
+const evidenciaDePartida = (lista, partidaId) =>
+  evidenciaVigente(lista)
+    .filter(e => e.partidaId === partidaId)
+    .sort((a, b) => String(b.fechaServidor || b.fechaDeclarada || '')
+      .localeCompare(String(a.fechaServidor || a.fechaDeclarada || '')));
+
+// ── EL SELLO DE UNA FOTO ──────────────────────────────────────────────────
+// Lo que la miniatura dice de sí misma. Existe porque las 656 fotos que ya
+// están en producción NO TIENEN AUTOR y nunca lo van a tener: no se guardó un
+// uid, así que el dato no se puede reconstruir de ninguna parte. Presentarlas
+// con la misma insignia que una captura en vivo sería afirmar que se sabe quién
+// las tomó, que es el mismo defecto que pintar «0%» cuando el número falta.
+//
+// Los dos sellos se distinguen por TEXTO, no por color. Hoy el estado se
+// comunica sólo con color en toda la app —PENDIENTES #36— y eso deja a un
+// usuario con daltonismo rojo-verde sin poder leerlo. Aquí no se repite: la
+// palabra es el canal, y el color y la forma son redundancia encima. La prueba
+// afirma que el sello de legado no contiene la palabra «verificada».
+const SELLO_VERIFICADA = 'verificada';
+const SELLO_LEGADO     = 'de archivo';
+
+const selloDeEvidencia = (ev) => ev && ev.verificada
+  ? { texto: SELLO_VERIFICADA, verificada: true,
+      dice: 'Capturada en la app. La hora la puso el servidor y quedó registrado quién la tomó.' }
+  : { texto: SELLO_LEGADO, verificada: false,
+      dice: 'Subida antes de que la app registrara autor. No se puede saber quién la tomó.' };
+
+// El renglón que resume el origen del lote. Nunca dice sólo «656 fotos»: ese
+// número solo haría creer que son 656 fotos verificadas.
+const fraseOrigenEvidencia = (lista) => {
+  const l = lista || [];
+  if (l.length === 0) return '';
+  const ver = l.filter(e => e && e.verificada).length;
+  const leg = l.length - ver;
+  if (leg === 0) return `${ver} ${ver === 1 ? 'verificada' : 'verificadas'}`;
+  if (ver === 0) return `${leg} de archivo, sin autor`;
+  return `${ver} ${ver === 1 ? 'verificada' : 'verificadas'} · ${leg} de archivo`;
 };
 
 // El lunes de una clave "S38-2026", para poder fechar la semana en palabras.
@@ -5868,6 +6084,24 @@ function Bdg({children,color,small,bgColor}){
   return <span style={{background:bg,color:textCol,borderRadius:99,
     padding:small?"1px 7px":"2px 9px",fontSize:small?9:10,fontWeight:500,whiteSpace:"nowrap",
     display:"inline-block"}}>{children}</span>;
+}
+// La insignia de origen de una foto, pegada a la miniatura. Existe UNA VEZ y
+// la usan la galería del cliente y el dashboard: tenerla dos veces es cómo
+// nació PENDIENTES #32 —dos copias del mismo recorrido, una se desincronizó— y
+// aquí el riesgo es peor, porque la copia que se quedara atrás afirmaría de una
+// foto sin autor que está verificada.
+function SelloEvidencia({ev}){
+  const s = selloDeEvidencia(ev);
+  return <span title={s.dice} aria-label={s.dice}
+    style={{position:"absolute",bottom:4,left:4,maxWidth:"calc(100% - 8px)",
+      background:s.verificada?"rgba(13,22,25,0.82)":"rgba(255,255,255,0.90)",
+      color:s.verificada?"#fff":C.textSec,
+      border:s.verificada?"none":`0.5px solid ${C.borderM}`,
+      borderRadius:s.verificada?99:2,
+      fontSize:7,lineHeight:1.4,fontWeight:600,padding:"1px 5px",
+      whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+    {s.verificada ? `✓ ${s.texto}` : s.texto}
+  </span>;
 }
 function Inp({style,...rest}){
   return <input {...rest} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
@@ -11536,7 +11770,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   </Card>;
 }
 
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,nominaHistorial=[],onNavTab}){
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,nominaHistorial=[],evidencia=[],onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
   const gastoGPLive = resolverGastoGP(obra, gpData);
@@ -11898,15 +12132,10 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     <Card {...clickableCard("operacion","avance")}>
       <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
       {(() => {
-        // Helper: extraer array plano de fotos reales de una sub (schema
-        // {subId: [foto,...]}). Ordenadas por fecha descendente.
-        const fotosDeSub = (s) => {
-          if (!s?.fotos) return [];
-          const arr = Array.isArray(s.fotos)
-            ? s.fotos
-            : Object.values(s.fotos).flat().filter(f => f && typeof f === 'object');
-          return arr.slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-        };
+        // Las fotos salen de `evidenciaDePartida`, igual que la galería y el
+        // PDF. Era la tercera copia del mismo aplanado: ver PENDIENTES #32,
+        // donde la copia de la galería perdió su `.flat()` y dejó invisible
+        // toda la evidencia de producción sin que ninguna prueba lo notara.
         // Elegir top 4: primero las que tienen delta de avance en el corte
         // semanal actual (mismo criterio que el PDF); si no hay historial,
         // por importe descendente.
@@ -11922,9 +12151,14 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             if (d > 0.01) deltaMap.set(sa.sec, d * (sa.imp||0) / 100);
           });
         }
+        // El id de la partida se saca ANTES de filtrar: `idDePartida` cae al
+        // índice cuando la partida no tiene `id` ni `sec`, y el índice de la
+        // lista filtrada no es el mismo que el de `subs`. Tomarlo después
+        // apuntaría a la evidencia de otra partida.
         const conFotos = subs
-          .filter(s => (s.imp||0) > 0)
-          .map(s => ({ s, delta: deltaMap.get(s.sec) || 0, fotos: fotosDeSub(s) }));
+          .map((s, i) => ({ s, delta: deltaMap.get(s.sec) || 0,
+                            fotos: evidenciaDePartida(evidencia, idDePartida(s, i)) }))
+          .filter(x => (x.s.imp||0) > 0);
         conFotos.sort((a,b) => {
           if (a.delta > 0 && b.delta === 0) return -1;
           if (a.delta === 0 && b.delta > 0) return 1;
@@ -11962,10 +12196,11 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
               {[0,1].map(fi=>{
                 const foto=mostrar[fi];
-                if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5"}}
+                if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5",position:"relative"}}
                   onClick={()=>setLbFoto(foto.url)}>
                   <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}
-                    onError={(e)=>{e.target.style.opacity=0.2;}}/></div>;
+                    onError={(e)=>{e.target.style.opacity=0.2;}}/>
+                  <SelloEvidencia ev={foto}/></div>;
                 return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
                   background:"rgba(0,0,0,0.03)",border:"1px dashed rgba(0,0,0,0.10)",
                   display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
@@ -17936,46 +18171,28 @@ function AvanceCliente({obra, subs}){
 //
 // La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
 // de `semanaDeFoto`.
-function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
+function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
   const[lightbox,setLightbox]=useState(null);
   const[vista,setVista]=useState("semana");     // "semana" | "partida"
   const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
   const[partidaSel,setPartidaSel]=useState(null);
   const refMarcas = useRef({});
 
-  // Todas las fotos de la obra, aplanadas, cada una con su partida y su semana.
-  //
-  // El mapa de una partida es `{ idPartida: [foto, foto, …] }`, así que
-  // `Object.values` devuelve un arreglo DE ARREGLOS. Sin `.flat()` cada
-  // elemento era un grupo: la insignia contaba grupos —una partida con 43
-  // fotos anunciaba "1 foto"— y al pintar, un arreglo no tiene `.url` ni
-  // `.src`, así que las fotos se saltaban todas. La galería anunciaba fotos y
-  // dejaba la rejilla en blanco. Las 475 fotos que hay hoy en producción eran
-  // invisibles en la pantalla que se le enseña al cliente (PENDIENTES #32).
-  //
-  // El `.filter(Boolean)` tira los huecos sin tirar las fotos que son una
-  // cadena suelta: el esquema es mixto y aquí se contempla ese caso.
-  const todas = useMemo(() => {
-    const out = [];
-    (subs||[]).forEach((s,is) => {
-      const lista = (Array.isArray(s.fotos)
-        ? s.fotos
-        : Object.values(s.fotos||{}).flat()).filter(Boolean);
-      lista.forEach((foto,i) => {
-        const url = typeof foto === "string" ? foto : (foto.url || foto.src || "");
-        if (!url) return;
-        out.push({
-          url,
-          k: `${s.id||s.sec||is}-${i}`,
-          partidaId: s.id || s.sec || `#${is}`,
-          sec: s.sec || "",
-          sub: s.sub || "(sin descripción)",
-          semana: semanaDeFoto(foto),
-        });
-      });
-    });
-    return out;
-  }, [subs]);
+  // Esta pantalla ya NO aplana nada. Recibe la lista única que armó
+  // `evidenciaDeObra` y sólo le pone la semana. Aplanar aquí era una de las tres
+  // copias del mismo recorrido, y la que se quedó sin `.flat()`: cada elemento
+  // era un GRUPO, así que la insignia contaba grupos —una partida con 43 fotos
+  // anunciaba "1 foto"— y al pintar, un arreglo no tiene `.url`, de modo que no
+  // se pintaba ninguna. Las fotos de producción eran invisibles en la pantalla
+  // que se le enseña al cliente (PENDIENTES #32). Con una sola copia, ese
+  // defecto no tiene dónde volver a aparecer.
+  const todas = useMemo(
+    () => evidenciaVigente(evidencia).map((e, i) => ({
+      ...e,
+      k: `${e.partidaId}-${e.id || i}`,
+      semana: semanaDeEvidencia(e),
+    })),
+    [evidencia]);
 
   // Las semanas con evidencia, de la más reciente a la más vieja. La clave
   // "S38-2026" NO se puede ordenar como texto —"S05-2027" iría antes que
@@ -18064,8 +18281,13 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
 
   const pActiva = partidas.find(p => p.id === partidaSel) || null;
 
-  // Rejilla de miniaturas. Una foto sin fecha lo dice encima, no se disfraza.
-  const rejilla = (fotos, conSello) => (
+  // Rejilla de miniaturas. Cada foto declara su origen encima de sí misma: ver
+  // `SelloEvidencia`. Las dos insignias se diferencian por la PALABRA —«de
+  // archivo» contra «verificada»— y además por forma: la de archivo es un
+  // rectángulo de esquinas rectas sin marca; la verificada es una pastilla con
+  // ✓. Si sólo cambiara el color, un usuario con daltonismo vería la misma
+  // insignia en una foto sin autor que en una captura en vivo (PENDIENTES #36).
+  const rejilla = (fotos) => (
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:6}}>
       {fotos.map(f => (
         <div key={f.k} onClick={()=>setLightbox(f.url)}
@@ -18073,10 +18295,7 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
             aspectRatio:"4/3",position:"relative"}}>
           <img src={f.url} alt={f.sub}
             style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
-          {conSello && !f.semana && (
-            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.6)",
-              color:"#fff",fontSize:8,padding:"2px 4px",textAlign:"center"}}>sin fecha</div>
-          )}
+          <SelloEvidencia ev={f}/>
         </div>
       ))}
     </div>
@@ -18109,13 +18328,32 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
         {cerradas} semana{cerradas===1?"":"s"} cerrada{cerradas===1?"":"s"}
         {" · "}{todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
+        {/* El total solo haría creer que son N fotos verificadas. El desglose
+            por origen va pegado al total, no escondido abajo. */}
+        {todas.length>0 && ` (${fraseOrigenEvidencia(todas)})`}
         {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
         {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
       </div>
 
+      {/* NO SE PUDO LEER no es lo mismo que NO HAY. El lector de Firestore
+          devuelve lista vacía cuando la regla niega o la red falla, así que sin
+          este aviso la galería anunciaría «aún no hay fotos» de una obra que sí
+          las tiene — y nadie lo reportaría, porque se lee como una obra nueva. */}
+      {!evidenciaCargada && (
+        <div style={{background:alfa(C.yellow,10),border:`0.5px solid ${C.yellow}`,
+          borderRadius:7,padding:"8px 10px",marginBottom:10,fontSize:10,
+          color:C.yellowDk,lineHeight:1.5}}>
+          <b>No se pudo leer la evidencia de esta obra.</b> Lo que se ve abajo
+          está incompleto: no quiere decir que no haya fotos. Vuelve a entrar; si
+          sigue igual, repórtalo.
+        </div>
+      )}
+
       {todas.length === 0 && marcas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
-          Aún no hay cierres ni fotos de esta obra.
+          {evidenciaCargada
+            ? "Aún no hay cierres ni fotos de esta obra."
+            : "No se pudo leer la evidencia, así que no se puede decir si hay fotos."}
         </div>
       ) : todas.length > 0 && (
         <div style={{display:"flex",gap:6,marginBottom:10}}>
@@ -18311,7 +18549,9 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
           // semana sin cierre ya lo dijo `frasePanelSinCierre`, y repetirlo
           // haría parecer dos hallazgos donde hay uno.
           <div style={{padding:"14px 0",textAlign:"center",color:C.textMut,fontSize:10}}>
-            No se subieron fotos en esta semana.
+            {evidenciaCargada
+              ? "No se subieron fotos en esta semana."
+              : "No se pudo leer la evidencia de esta semana."}
           </div>
         )}
         {porPartida(deSemana).map(([id,g]) => (
@@ -18322,7 +18562,7 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
               <span style={{fontSize:11,fontWeight:600,color:C.caliza}}>{g.sub}</span>
               <Bdg color={C.blue} small>{g.fotos.length} foto{g.fotos.length>1?"s":""}</Bdg>
             </div>
-            {rejilla(g.fotos, false)}
+            {rejilla(g.fotos)}
           </div>
         ))}
       </>}
@@ -18364,7 +18604,7 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
             <div style={{fontSize:10,color:C.textSec,fontWeight:600,marginBottom:6}}>
               {leyendaSemanaSubida(w)}
             </div>
-            {rejilla(pActiva.fotos.filter(f => f.semana === w), false)}
+            {rejilla(pActiva.fotos.filter(f => f.semana === w))}
           </div>
         ))}
         {pActiva.fotos.some(f => !f.semana) && (
@@ -18375,7 +18615,7 @@ function FotosCliente({obra, subs, historialAvance = [], notasSemana = {}, recor
             <div style={{fontSize:9,color:C.textMut,marginBottom:6}}>
               No se puede saber de qué semana son.
             </div>
-            {rejilla(pActiva.fotos.filter(f => !f.semana), false)}
+            {rejilla(pActiva.fotos.filter(f => !f.semana))}
           </div>
         )}
       </>}
@@ -21937,6 +22177,9 @@ export default function App(){
     setOtrosGastos([]);
     setFechasModulos({});
     setNominaHistorial([]);
+    setDocsEvidencia([]);
+    setCfgEvidencia(null);
+    setEvidenciaCargada(false);
 
     // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
@@ -21984,6 +22227,19 @@ export default function App(){
         }
       }
       setSubsCargados(true);
+    });
+    // La evidencia y su bandera de corte, en el mismo golpe. El orden importa:
+    // la bandera primero, porque es la que decide si los documentos valen. Si
+    // la obra no está migrada, no se piden los documentos — la subcolección
+    // está vacía y pedirla sólo gasta una lectura.
+    fsGet(`obras/${obraId}/config/evidencia`).then(async cfg => {
+      setCfgEvidencia(cfg || { migrada: false });
+      if (!evidenciaMigrada(cfg)) { setEvidenciaCargada(true); return; }
+      const r = await fsCollConEstado(`obras/${obraId}/evidencia`);
+      setDocsEvidencia(r.docs);
+      // Si la lectura falló, `cargada` se queda en falso a propósito: la
+      // galería tiene que poder decir «no se pudo leer» en vez de «no hay».
+      setEvidenciaCargada(r.ok);
     });
     // Maquinaria, almacén y subcontratos son economía interna del contratista:
     // en una dependencia no se piden (P5, vía `seSuscribe`). Los estados quedan
@@ -22052,6 +22308,15 @@ export default function App(){
   // todavía no llega. La guarda de cambio de modo (#21) necesita distinguirlos
   // — bloquear por un hueco sería confundir "no hay dato" con "el dato es 0".
   const[subsCargados,setSubsCargados]=useState(false);
+  // La evidencia de la obra: documentos de `obras/{id}/evidencia`, más la
+  // bandera que dice si esta obra ya se migró. Las dos juntas, porque leer una
+  // sin la otra no permite decidir de dónde sale la galería y se acabaría
+  // pintando el mapa viejo y la subcolección a la vez.
+  const[docsEvidencia,setDocsEvidencia]=useState([]);
+  const[cfgEvidencia,setCfgEvidencia]=useState(null);
+  // `[]` es lo que devuelve `fsColl` cuando la lectura FALLA, así que sin esto
+  // una galería vacía por permisos se presenta igual que una obra sin fotos.
+  const[evidenciaCargada,setEvidenciaCargada]=useState(false);
   const[maquinaria,setMaquinaria]=useState([]);
   const[materiales,setMateriales]=useState([]);
   const[estimaciones,setEstimaciones]=useState([]);
@@ -22482,6 +22747,15 @@ export default function App(){
   //  - Almacén sin captura en últimos 7 días (si ya hay materiales registrados)
   //  - Maquinaria sin captura en últimos 7 días
   //  - Nómina semanal sin cargar (última semana > 7 días)
+  // LA evidencia de la obra. Una sola lista, calculada una sola vez, y es la
+  // que consumen el tablero, el PDF y la galería del cliente. Antes cada una se
+  // aplanaba su propia copia del mapa `fotos` y las tres podían discrepar:
+  // dos usaban `.flat()` y la de la galería se quedó sin él durante semanas,
+  // anunciando fotos sobre una rejilla en blanco (#32).
+  const evidencia = useMemo(
+    () => evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs }),
+    [cfgEvidencia, docsEvidencia, subs]);
+
   const pendientesOp = (() => {
     if (screen !== "obra" || !obra) return 0;
     let count = 0;
@@ -22584,7 +22858,7 @@ export default function App(){
           // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
           // lecturas —una por sub— de documentos que nunca existieron, porque
           // las reglas denegaban la escritura. Ver PENDIENTES #31.
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial);
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
@@ -22634,7 +22908,7 @@ export default function App(){
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
         ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
-        : <Dashboard obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
+        : <Dashboard obra={obra} subs={subs} evidencia={evidencia} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
@@ -22690,7 +22964,7 @@ export default function App(){
 
       {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
           fotos, las revisa — y lo que necesita es exactamente eso. */}
-      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaCargada={evidenciaCargada} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
 
       {screen==="obra"&&tab==="contrato"&&obra&&(
         <Planeacion
@@ -22713,7 +22987,7 @@ export default function App(){
 
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
-      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} subs={subs} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
+      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaCargada={evidenciaCargada} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
       {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>

@@ -64,6 +64,16 @@ const ast = parse(src, {
 // función contenedora porque hay nombres repetidos en el archivo.
 const modulo = {}, dentro = {};
 traverse(ast, {
+  // `fechaDeTimestamp` es una DECLARACIÓN de función, no un `const`: tiene que
+  // estar hoisteada porque `evidenciaNormalizada`, que la llama, se declara
+  // antes. El extractor las toma también, o la pieza se queda sin alcanzar y el
+  // banco sale en NO ARRANCÓ por una razón que no tiene nada que ver con lo que
+  // afirma.
+  FunctionDeclaration(p) {
+    if (!p.node.id || p.getFunctionParent()) return;
+    const nombre = p.node.id.name;
+    if (!(nombre in modulo)) modulo[nombre] = src.slice(p.node.start, p.node.end);
+  },
   VariableDeclarator(p) {
     if (p.node.id.type !== 'Identifier' || !p.node.init) return;
     const nombre = p.node.id.name;
@@ -80,7 +90,13 @@ const falta = [];
 const M = (n) => { if (!(n in modulo)) falta.push(n); return modulo[n] || 'null'; };
 const D = (n) => { if (!(n in dentro)) falta.push(n); return dentro[n] || 'null'; };
 
+// El aplanado se mudó al módulo (#30). Este banco sigue entrando por `subs`
+// crudos, así que ahora recorre `evidenciaDeObra` → `todas`: el camino entero,
+// no sólo el último tramo.
 const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto',
+  'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
+  'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
+  'semanaDeEvidencia',
   'lunesDeClaveSemana', 'MESES_CORTO', 'etiquetaSemanaCorta',
   // El panel del riel y esta leyenda fechan la semana con la misma cuenta, así
   // que `leyendaSemanaSubida` ya no se sostiene sola.
@@ -116,6 +132,7 @@ return { semanaDeFoto, lunesDeClaveSemana, etiquetaSemanaCorta, leyendaSemanaSub
 const pantalla = new Function('subs', `"use strict";
 ${cuerpoModulo}
 const useMemo = (fn) => fn();
+const evidencia = evidenciaDeObra({ cfgEvidencia: null, docsEvidencia: [], subs });
 const todas = (${desenvolverMemo(D('FotosCliente.todas'))})();
 const semanas = (${desenvolverMemo(D('FotosCliente.semanas'))})();
 const sinSemana = ${D('FotosCliente.sinSemana')};

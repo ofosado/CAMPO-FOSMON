@@ -60,6 +60,16 @@ const ast = parse(src, {
 // las cuatro piezas de módulo de las que depende el aplanado.
 const modulo = {}, dentro = {};
 traverse(ast, {
+  // `fechaDeTimestamp` es una DECLARACIÓN de función, no un `const`: tiene que
+  // estar hoisteada porque `evidenciaNormalizada`, que la llama, se declara
+  // antes. El extractor las toma también, o la pieza se queda sin alcanzar y el
+  // banco sale en NO ARRANCÓ por una razón que no tiene nada que ver con lo que
+  // afirma.
+  FunctionDeclaration(p) {
+    if (!p.node.id || p.getFunctionParent()) return;
+    const nombre = p.node.id.name;
+    if (!(nombre in modulo)) modulo[nombre] = src.slice(p.node.start, p.node.end);
+  },
   VariableDeclarator(p) {
     if (p.node.id.type !== 'Identifier' || !p.node.init) return;
     const nombre = p.node.id.name;
@@ -73,7 +83,16 @@ traverse(ast, {
 });
 
 const falta = [];
-const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto'];
+// El aplanado se MUDÓ al módulo (#30): la pantalla ya no lo hace, lo hace
+// `evidenciaDeObra` una sola vez para la galería, el PDF y el dashboard. Este
+// banco sigue entrando por `subs` crudos —la forma que tienen en producción, la
+// que rompía todo—, así que ahora recorre el camino completo. Mejor que antes:
+// antes sólo comprobaba la copia de la galería, y las otras dos podían estar
+// rotas con este banco en verde. Es exactamente lo que pasó con el #32.
+const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto',
+  'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
+  'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
+  'semanaDeEvidencia'];
 const PIEZAS_PANTALLA = ['todas', 'partidas', 'porPartida'];
 for (const n of PIEZAS_MODULO) if (!(n in modulo)) falta.push(n);
 for (const n of PIEZAS_PANTALLA) if (!(n in dentro)) falta.push(`FotosCliente.${n}`);
@@ -94,9 +113,12 @@ const desenvolverMemo = (código) => {
 };
 
 // `galeria(subs)` devuelve lo que la pantalla tiene en la mano para pintar.
+// `cfgEvidencia` nulo es la obra SIN migrar: el camino que leen las cinco obras
+// de producción hoy.
 const galeria = new Function('subs', `"use strict";
 ${cuerpoModulo}
 const useMemo = (fn) => fn();
+const evidencia = evidenciaDeObra({ cfgEvidencia: null, docsEvidencia: [], subs });
 const todas = (${desenvolverMemo(dentro.todas)})();
 const partidas = (${desenvolverMemo(dentro.partidas)})();
 const porPartida = ${dentro.porPartida};
