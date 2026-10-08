@@ -41,8 +41,12 @@
    color de fondo de la app hay que cambiarlo **también** ahí, a mano. La
    prueba lo verifica para que no se olvide.
 
-   Y el `theme_color` del manifiesto (vite.config.js) no se toca hasta después
-   de la demo: ver PENDIENTES #37.
+   Y el `theme_color` del manifiesto (vite.config.js) tampoco: lo lee el
+   navegador antes de que exista el bundle. Ya vale el caliza de cotea
+   (`#14181C`), que NO es el `--c-caliza` de abajo (`#0D1619`). La diferencia
+   es a propósito: el manifiesto es IDENTIDAD —se cambió completo con los
+   íconos— y el puente es INTERFAZ, que se cambia de una vez cuando entre la
+   paleta y no color por color. Mientras tanto los dos hex conviven.
    ───────────────────────────────────────────────────────────────────────── */
 
 :root {
