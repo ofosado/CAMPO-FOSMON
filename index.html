@@ -3,19 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0D1619" />
+    <meta name="theme-color" content="#14181C" />
     <meta name="description" content="cotea — control de avance de obra." />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <!-- OJO: `apple-mobile-web-app-title`, los íconos y el `manifest` de
-         vite.config.js siguen diciendo CAMPO a propósito. Son la identidad de
-         la app YA INSTALADA; cambiarlos provoca reinstalaciones raras en iOS,
-         y el paquete de marca lo advierte. Se cambian en un despliegue
-         deliberado, con aviso previo a los usuarios de FOSMON. Pendiente. -->
-    <meta name="apple-mobile-web-app-title" content="CAMPO" />
+    <!-- El nombre y los íconos ya son los de cotea (antes CAMPO/FOSMON). Lo
+         que NO se movió es la identidad de la app instalada: `scope` y
+         `start_url` siguen en `/`, y el manifiesto ahora fija `id: '/'` para
+         que no se puedan mover por accidente. Por eso un iPhone de FOSMON que
+         tenga la app en la pantalla de inicio la conserva; lo que no hace iOS
+         es repintar el ícono ni el rótulo de una app ya instalada —se queda
+         con los que cacheó al instalarla y sólo cambian si el usuario la
+         borra y la vuelve a agregar—. De ahí el aviso previo: no es por
+         riesgo de que se rompa, es porque si no se avisa, la mitad de los
+         teléfonos van a seguir diciendo CAMPO y nadie va a saber por qué. -->
+    <meta name="apple-mobile-web-app-title" content="cotea" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <!-- Respaldo PNG del favicon para los navegadores que no toman el SVG. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <!-- 180×180 es la medida que iOS pide para el ícono de la pantalla de
+         inicio. Antes apuntaba a `/icon-192.png`, que iOS reescalaba. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png" />
     <title>cotea</title>
     <!-- Reset por URL — fix/actualizacion-pwa 2026-09-16 -----------------
       Interruptor de emergencia: si la PWA queda atrapada con un Service

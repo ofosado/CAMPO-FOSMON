@@ -28,13 +28,39 @@ export default defineConfig({
       // dispara skipWaiting + reload silencioso al login o sin cambios pendientes,
       // y muestra banner cuando hay captura sin guardar.
       registerType: 'prompt',
-      includeAssets: ['favicon.svg', 'icons.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'],
+      includeAssets: [
+        'favicon.svg', 'favicon-16.png', 'favicon-32.png', 'favicon-48.png',
+        'apple-touch-icon-180.png',
+        'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
+      ],
       manifest: {
-        name: 'CAMPO — FOSMON',
-        short_name: 'CAMPO',
-        description: 'Control de Avance, Maquinaria, Personal y Obra — FOSMON Construcciones',
-        theme_color: '#0D1619',
-        background_color: '#0D1619',
+        // `id` fijado a mano. No es decorativo: sin él, el navegador toma como
+        // identidad de la app instalada el `start_url` resuelto, de modo que
+        // cualquier día que alguien le ponga `start_url: '/?origen=pwa'` para
+        // medir instalaciones, Android deja de reconocer la app que FOSMON ya
+        // tiene en la pantalla de inicio y la siguiente visita ofrece
+        // instalar una SEGUNDA. Con el `id` escrito, el `start_url` se puede
+        // mover sin que la identidad se mueva. Vale `'/'` porque es lo que el
+        // `start_url` resuelve HOY: la app instalada conserva su identidad
+        // actual, que es justo lo que queremos al cambiarle nombre e íconos.
+        // (En iOS esto no aplica: Safari no implementa `id` y la identidad la
+        // da el `start_url`/`scope`, que tampoco se tocan.)
+        id: '/',
+        // Los nombres dejan de decir FOSMON: el manifiesto es del PRODUCTO, no
+        // del cliente. El logotipo del municipio o de la constructora entra en
+        // tiempo de ejecución desde `orgs/{orgId}/config/branding`, no aquí —
+        // si el manifiesto fuera por cliente habría que compilar un build por
+        // cliente, que es exactamente lo contrario de lo que se está armando.
+        name: 'cotea · control de avance, maquinaria, personal y obra',
+        short_name: 'cotea',
+        description: 'Control de avance, maquinaria, personal y obra.',
+        // Caliza de cotea. El `background_color` es el fondo de la pantalla de
+        // arranque, detrás del ícono: va en el MISMO crema que tiene el ícono
+        // de fondo, para que no aparezca un recuadro claro sobre negro durante
+        // el segundo que dura el splash. Estaba en `#0D1619` los dos, que con
+        // un ícono crema se vería como una calcomanía pegada.
+        theme_color: '#14181C',
+        background_color: '#F5F3EE',
         display: 'standalone',
         orientation: 'portrait',
         scope: '/',
