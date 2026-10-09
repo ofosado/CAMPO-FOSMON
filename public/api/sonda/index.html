@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>sonda de cámara</title>
+
+<!-- Vive bajo /api/ a propósito, y no es una ruta de servidor.
+     El service worker de cotea tiene alcance `/` y responde CUALQUIER
+     navegación con el index.html de la app, salvo las rutas que trae en su
+     `navigateFallbackDenylist`, que hoy es `/^\/api/`. Un teléfono que ya
+     tenga cotea instalado trae ese worker ACTIVO: una sonda en `/sonda/`
+     abriría la app en lugar de la sonda, y no habría forma de notarlo desde
+     aquí. Bajo `/api/` el worker viejo la deja pasar a la red. -->
+
+<link rel="manifest" href="/api/sonda/manifest.webmanifest">
+<meta name="theme-color" content="#14181C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="sonda">
+<link rel="apple-touch-icon" href="/apple-touch-icon-180.png">
+
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 18px 16px calc(40px + env(safe-area-inset-bottom));
+    background: #14181C; color: #F5F3EE;
+    font: 17px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  }
+  h1 { font-size: 22px; margin: 0 0 2px; letter-spacing: -.02em; }
+  .sub { color: #8A9199; font-size: 14px; margin: 0 0 20px; }
+  section { border: 1px solid #262C33; border-radius: 12px; padding: 14px; margin: 0 0 14px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #8A9199; margin: 0 0 10px; }
+  button {
+    display: block; width: 100%; padding: 16px; font-size: 18px; font-weight: 600;
+    border: 0; border-radius: 10px; background: #D9A13B; color: #14181C;
+    -webkit-appearance: none; margin: 4px 0 0;
+  }
+  button[disabled] { opacity: .35; }
+  button.sec { background: #262C33; color: #F5F3EE; }
+  .dato { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid #1E2429; font-size: 15px; }
+  .dato:last-child { border-bottom: 0; }
+  .dato b { font-weight: 600; text-align: right; word-break: break-word; }
+  .ok   { color: #5FD07A; } .mal { color: #F06B6B; } .medio { color: #D9A13B; } .gris { color: #8A9199; }
+  #cajaVideo { margin: 12px 0 0; display: none; }
+  video, img#foto { width: 100%; border-radius: 10px; background: #000; display: block; }
+  img#foto { margin-top: 10px; }
+  #vered { border-width: 2px; }
+  #veredClase { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
+  #veredTitulo { margin: 0; font-size: 16px; }
+  textarea { width: 100%; height: 230px; background: #0D1115; color: #C8CFD6; border: 1px solid #262C33;
+             border-radius: 10px; padding: 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
+  ol { padding-left: 22px; margin: 0; } li { margin-bottom: 9px; }
+  code { background: #0D1115; padding: 1px 5px; border-radius: 4px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>sonda de cámara</h1>
+<p class="sub">No pide contraseña, no lee ni escribe nada de CAMPO. Sólo le pregunta a este teléfono si la cámara por API sirve dentro de una app instalada.</p>
+
+<section id="vered">
+  <h2>Veredicto</h2>
+  <p id="veredClase" class="gris">INCOMPLETA</p>
+  <p id="veredTitulo">Empieza por el paso 1.</p>
+</section>
+
+<section>
+  <h2>Dónde estás</h2>
+  <div id="entorno"></div>
+</section>
+
+<section>
+  <h2>Paso 1 · Abrir la cámara</h2>
+  <button id="btnCam">Abrir la cámara trasera</button>
+  <div id="cajaVideo">
+    <video id="video" playsinline muted autoplay></video>
+    <img id="foto" alt="" hidden>
+  </div>
+  <div id="resCam"></div>
+</section>
+
+<section>
+  <h2>Paso 2 · Sal de la app y vuelve</h2>
+  <p class="sub" style="margin:0 0 10px">Vete a la pantalla de inicio (o abre otra app), espera unos segundos y vuelve aquí. Entonces aprieta el botón.</p>
+  <button id="btnRegreso" class="sec" disabled>¿Sigue viva la cámara?</button>
+  <div id="resRegreso"></div>
+</section>
+
+<section>
+  <h2>Paso 3 · La otra vía, para comparar</h2>
+  <p class="sub" style="margin:0 0 10px">Esto es lo que CAMPO usa HOY para las fotos: la hoja del sistema, no la cámara por API.</p>
+  <button id="btnArch" class="sec">Probar el botón de archivo</button>
+  <input id="arch" type="file" accept="image/*" capture="environment" hidden>
+  <div id="resArch"></div>
+</section>
+
+<section>
+  <h2>Qué me tienes que reportar</h2>
+  <ol>
+    <li>La palabra grande del <b>Veredicto</b>: VIABLE, CONDICIONADA, NO VIABLE o INCOMPLETA.</li>
+    <li>Si dice INCOMPLETA, el renglón que está debajo dice qué falta.</li>
+    <li>Y el reporte de abajo: apriétale «Copiar» y pégalo, o mándame la captura de pantalla.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Reporte</h2>
+  <textarea id="reporte" readonly></textarea>
+  <button id="btnCopiar" class="sec">Copiar el reporte</button>
+</section>
+
+<script src="/api/sonda/veredicto.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var VERSION = 'sonda 2026-10-08';
+
+  var estado = {
+    seguro: !!window.isSecureContext,
+    standalone: null,
+    api: null,
+    permiso: null,
+    pista: null,
+    marco: null,
+    foto: null,
+    archivo: null,
+    regreso: null,
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return String(s).replace(/[<&>]/g, function (c) { return ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' })[c]; }); };
+  var fila = function (k, v, clase) {
+    return '<div class="dato"><span class="gris">' + esc(k) + '</span><b class="' + (clase || '') + '">' + esc(v) + '</b></div>';
+  };
+
+  // ── Entorno ──────────────────────────────────────────────────────────────
+  //
+  // Dos detecciones, no una: `navigator.standalone` es lo de Safari (y lo
+  // único que contesta en iOS viejo), `display-mode` es lo estándar. Se
+  // aceptan las dos porque el riesgo no está en dar un falso «sí»: está en
+  // dar un falso «no» y mandarlo a instalar una app que ya instaló.
+  var modo = (function () {
+    if (!window.matchMedia) return 'sin matchMedia';
+    var modos = ['standalone', 'fullscreen', 'minimal-ui', 'browser'];
+    for (var i = 0; i < modos.length; i++)
+      if (window.matchMedia('(display-mode: ' + modos[i] + ')').matches) return modos[i];
+    return 'ninguno';
+  })();
+  var standalone = (window.navigator.standalone === true) ||
+    modo === 'standalone' || modo === 'fullscreen';
+  estado.standalone = !!standalone;
+  estado.api = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  var ua = navigator.userAgent;
+  var mIOS = ua.match(/OS (\d+)[_.](\d+)/);
+  var sistema = mIOS ? ('iOS ' + mIOS[1] + '.' + mIOS[2]) : (navigator.platform || 'desconocido');
+
+  $('entorno').innerHTML =
+    fila('App instalada (standalone)', estado.standalone ? 'SÍ' : 'NO — estás en el navegador',
+         estado.standalone ? 'ok' : 'medio') +
+    fila('Contexto seguro (HTTPS)', estado.seguro ? 'sí' : 'NO', estado.seguro ? 'ok' : 'mal') +
+    fila('getUserMedia existe', estado.api ? 'sí' : 'NO', estado.api ? 'ok' : 'mal') +
+    fila('Sistema', sistema) +
+    fila('Pantalla', window.innerWidth + '×' + window.innerHeight + ' @' + (window.devicePixelRatio || 1) + 'x');
+
+  // ── Veredicto y reporte ──────────────────────────────────────────────────
+  var CLASES = { 'VIABLE': 'ok', 'CONDICIONADA': 'medio', 'NO VIABLE': 'mal', 'INCOMPLETA': 'gris' };
+
+  function pintar() {
+    var v = window.SONDA.veredicto(estado);
+    $('veredClase').textContent = v.clase;
+    $('veredClase').className = CLASES[v.clase] || 'gris';
+    $('veredTitulo').textContent = v.titulo;
+
+    var l = [];
+    l.push(VERSION + '  ·  ' + new Date().toISOString());
+    l.push('VEREDICTO: ' + v.clase);
+    l.push('  ' + v.titulo);
+    l.push('');
+    l.push('app instalada : ' + (estado.standalone ? 'sí' : 'NO (navegador)'));
+    // Los dos valores crudos de los que sale el renglón de arriba. Van en el
+    // reporte porque el callejón sin salida posible es éste: que él ya esté en
+    // la app instalada, que la detección falle, y que la sonda le repita
+    // «instálala» sin que se pueda averiguar por qué desde un aeropuerto.
+    l.push('  detección   : navigator.standalone=' + String(window.navigator.standalone) +
+           ' · display-mode=' + modo);
+    l.push('https         : ' + (estado.seguro ? 'sí' : 'NO'));
+    l.push('getUserMedia  : ' + (estado.api ? 'existe' : 'NO EXISTE'));
+    l.push('permiso       : ' + (estado.permiso || 'sin pedir'));
+    if (estado.pista) {
+      l.push('pista         : ' + estado.pista.estado + ' · ' + estado.pista.ancho + '×' + estado.pista.alto +
+             ' · cara=' + estado.pista.cara);
+      l.push('camara        : ' + estado.pista.etiqueta);
+    }
+    if (estado.marco) {
+      l.push('cuadro        : ' + (estado.marco.vacio ? 'sin pixeles'
+        : ('prom=' + estado.marco.prom + ' rango=' + estado.marco.rango +
+           (estado.marco.sinImagen ? ' ← SIN IMAGEN' : ' (hay imagen)'))));
+    }
+    if (estado.foto)    l.push('foto API      : ' + estado.foto.ancho + '×' + estado.foto.alto + ' · ' + estado.foto.bytes + ' bytes');
+    if (estado.archivo) l.push('foto archivo  : ' + estado.archivo.ancho + '×' + estado.archivo.alto + ' · ' + estado.archivo.bytes + ' bytes · ' + estado.archivo.tipo);
+    l.push('tras volver   : ' + (estado.regreso || 'sin probar'));
+    l.push('');
+    l.push('UA: ' + ua);
+    $('reporte').value = l.join('\n');
+  }
+
+  // ── Paso 1 ───────────────────────────────────────────────────────────────
+  var stream = null, pista = null;
+
+  function leerPista() {
+    if (!pista) return null;
+    var s = {};
+    try { s = pista.getSettings ? pista.getSettings() : {}; } catch (e) {}
+    return {
+      estado: pista.readyState,
+      ancho: s.width || 0,
+      alto: s.height || 0,
+      cara: s.facingMode || '?',
+      // Recortada: cuando la pista no es de una cámara real, `label` trae un
+      // identificador de 88 caracteres en base64 que llena la pantalla.
+      etiqueta: (pista.label || '(sin etiqueta)').slice(0, 30),
+    };
+  }
+
+  // Espera a que el elemento de video tenga pixeles de verdad. En iOS el
+  // `getUserMedia` resuelve antes de que haya un solo cuadro, así que medir de
+  // inmediato daría «sin imagen» por impaciencia, no por fallo.
+  function esperarCuadro(video, ms) {
+    return new Promise(function (res) {
+      var t0 = Date.now();
+      (function tic() {
+        if (video.videoWidth > 0 && video.videoHeight > 0 && video.currentTime > 0) return res(true);
+        if (Date.now() - t0 > ms) return res(false);
+        setTimeout(tic, 150);
+      })();
+    });
+  }
+
+  function muestrearLuminancia(video) {
+    var c = document.createElement('canvas');
+    c.width = 64; c.height = 48;
+    var cx = c.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(video, 0, 0, c.width, c.height);
+    var d = cx.getImageData(0, 0, c.width, c.height).data;
+    var m = [];
+    for (var i = 0; i < d.length; i += 4)
+      m.push(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+    return m;
+  }
+
+  function guardarFoto(video) {
+    return new Promise(function (res) {
+      var c = document.createElement('canvas');
+      c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      var listo = function (blob) {
+        if (!blob) return res(null);
+        $('foto').src = URL.createObjectURL(blob);
+        $('foto').hidden = false;
+        res({ ancho: c.width, alto: c.height, bytes: blob.size });
+      };
+      if (c.toBlob) c.toBlob(listo, 'image/jpeg', 0.85);
+      else res(null);
+    });
+  }
+
+  $('btnCam').addEventListener('click', function () {
+    var b = $('btnCam');
+    b.disabled = true; b.textContent = 'Pidiendo permiso…';
+    $('resCam').innerHTML = '';
+
+    if (!estado.api) { estado.permiso = 'getUserMedia no existe'; b.textContent = 'No hay cámara por API'; return pintar(); }
+
+    navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } },
+    }).then(function (s) {
+      stream = s;
+      pista = s.getVideoTracks()[0] || null;
+      estado.permiso = 'ok';
+      estado.pista = leerPista();
+      $('cajaVideo').style.display = 'block';
+      var video = $('video');
+      video.srcObject = s;
+      var arranca = video.play();
+      if (arranca && arranca.catch) arranca.catch(function () {});
+      b.textContent = 'Midiendo el cuadro…';
+      return esperarCuadro(video, 6000).then(function (hubo) {
+        if (!hubo) { estado.marco = window.SONDA.analizarMarco([]); return null; }
+        try { estado.marco = window.SONDA.analizarMarco(muestrearLuminancia(video)); }
+        catch (e) { estado.marco = { vacio: true, sinImagen: true, motivo: 'el canvas no dejó leer el video: ' + e.name }; }
+        estado.pista = leerPista();
+        if (estado.marco.sinImagen) return null;
+        return guardarFoto(video);
+      }).then(function (f) {
+        if (f) estado.foto = f;
+        b.textContent = 'Listo — mira el veredicto';
+        $('btnRegreso').disabled = false;
+        var m = estado.marco || {};
+        $('resCam').innerHTML =
+          fila('Permiso', 'concedido', 'ok') +
+          fila('Resolución', (estado.pista.ancho || '?') + '×' + (estado.pista.alto || '?')) +
+          fila('Cámara', estado.pista.cara + ' · ' + estado.pista.etiqueta) +
+          fila('¿Llegó imagen?', m.sinImagen ? ('NO — ' + (m.motivo || 'cuadro uniforme')) : 'sí',
+               m.sinImagen ? 'mal' : 'ok') +
+          (m.vacio ? '' : fila('Luminancia', 'prom ' + m.prom + ' · rango ' + m.rango)) +
+          (estado.foto ? fila('Foto guardada', estado.foto.ancho + '×' + estado.foto.alto + ' · ' +
+              Math.round(estado.foto.bytes / 1024) + ' KB', 'ok') : '');
+        pintar();
+      });
+    }).catch(function (e) {
+      estado.permiso = (e && (e.name || e.message)) || 'falló sin decir por qué';
+      b.disabled = false; b.textContent = 'Volver a intentar';
+      $('resCam').innerHTML = fila('Permiso', estado.permiso, 'mal');
+      pintar();
+    });
+  });
+
+  // ── Paso 2 ───────────────────────────────────────────────────────────────
+  $('btnRegreso').addEventListener('click', function () {
+    var p = leerPista();
+    var video = $('video');
+    var viva = !!p && p.estado === 'live' && video.videoWidth > 0 && !video.paused;
+    var conImagen = false;
+    if (viva) {
+      try { conImagen = !window.SONDA.analizarMarco(muestrearLuminancia(video)).sinImagen; }
+      catch (e) { conImagen = false; }
+    }
+    estado.regreso = (viva && conImagen) ? 'viva' : 'muerta';
+    $('resRegreso').innerHTML =
+      fila('Pista', p ? p.estado : 'no hay', (p && p.estado === 'live') ? 'ok' : 'mal') +
+      fila('Video corriendo', video.paused ? 'NO (pausado)' : 'sí', video.paused ? 'mal' : 'ok') +
+      fila('Sigue llegando imagen', conImagen ? 'sí' : 'NO', conImagen ? 'ok' : 'mal');
+    pintar();
+  });
+
+  // ── Paso 3 ───────────────────────────────────────────────────────────────
+  $('btnArch').addEventListener('click', function () { $('arch').click(); });
+  $('arch').addEventListener('change', function (ev) {
+    var f = ev.target.files && ev.target.files[0];
+    if (!f) { $('resArch').innerHTML = fila('Archivo', 'no se eligió nada', 'medio'); return pintar(); }
+    var img = new Image();
+    img.onload = function () {
+      estado.archivo = { ancho: img.naturalWidth, alto: img.naturalHeight, bytes: f.size, tipo: f.type || '?' };
+      $('resArch').innerHTML =
+        fila('Archivo', Math.round(f.size / 1024) + ' KB · ' + (f.type || '?'), 'ok') +
+        fila('Tamaño', img.naturalWidth + '×' + img.naturalHeight);
+      pintar();
+    };
+    img.onerror = function () {
+      estado.archivo = { ancho: 0, alto: 0, bytes: f.size, tipo: f.type || '?' };
+      $('resArch').innerHTML = fila('Archivo', 'llegó pero no se pudo abrir como imagen', 'mal');
+      pintar();
+    };
+    img.src = URL.createObjectURL(f);
+  });
+
+  // ── Copiar ───────────────────────────────────────────────────────────────
+  $('btnCopiar').addEventListener('click', function () {
+    var t = $('reporte');
+    var hecho = function () { $('btnCopiar').textContent = 'Copiado'; };
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(t.value).then(hecho, function () { t.select(); });
+    else { t.removeAttribute('readonly'); t.select(); try { document.execCommand('copy'); hecho(); } catch (e) {} t.setAttribute('readonly', ''); }
+  });
+
+  pintar();
+})();
+</script>
+</body>
+</html>

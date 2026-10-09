@@ -103,7 +103,8 @@ archivo.
 | 17 | Auditar otros módulos por el mismo hueco de «fecha faltante». | ABIERTO |
 | 33 | `PanelEjecutivo` lleva desde el 18 de septiembre sin renderizarse. Ya se editó por error una vez: o se reactiva o se borra. | ABIERTO |
 | 43 | El correo del resumen semanal sigue firmando como CAMPO · FOSMON (6 sitios). | ABIERTO |
-| 37 | Íconos, nombre y `theme_color` de cotea, ya en la rama con el `id` del manifiesto fijado. Falta **desplegar con aviso previo**: iOS no repinta el ícono de una app ya instalada. | EN RAMA |
+| 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. | DESPLEGADO |
+| — | La sonda de cámara en `/api/sonda/` es diagnóstico, no producto: mide si `getUserMedia` sirve en standalone en iOS, que es la precondición del #52. Se retira en cuanto haya veredicto. Vive bajo `/api/` porque es la única ruta que el service worker ya instalado no se traga. | ABIERTO |
 | 18 | Nómina: arrastrar y soltar + pegar desde el portapapeles. | ABIERTO |
 | 42 | cotea no tiene eslogan y el campo está esperando uno. | DECISIÓN |
 | — | Unificar las tres copias del aplanado de fotos (se va con el #30). | ABIERTO |
