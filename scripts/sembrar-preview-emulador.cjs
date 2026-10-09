@@ -133,6 +133,42 @@ async function escribir(ruta, datos) {
   if (!r.ok) throw new Error(`escribir ${ruta}: ${r.status} ${(await r.text()).slice(0, 200)}`);
 }
 
+async function borrar(ruta) {
+  const r = await fetch(fsURL(ruta), {
+    method: 'DELETE', headers: { Authorization: 'Bearer owner' },
+  });
+  if (!r.ok && r.status !== 404) throw new Error(`borrar ${ruta}: ${r.status}`);
+}
+
+// ── EL SEMBRADOR SE HACE CARGO DE LA EVIDENCIA MIGRADA ─────────────────────
+//
+// El sembrador escribe las fotos en el MAPA VIEJO (`avance/subs.fotos`). No
+// escribe la subcolección `evidencia` ni levanta la bandera: eso lo hace la
+// migración. El problema es que no las BORRABA, y la subcolección sobrevive a
+// un resembrado.
+//
+// Eso dejó el preview mintiendo el 2026-10-08. Una corrida anterior había
+// migrado las obras de dependencia cuando las partidas todavía no tenían `id`,
+// así que la subcolección quedó con `partidaId` = `1, 2, 3, 6, 9, 10` y la
+// bandera arriba. Al resembrar, las partidas pasaron a `1__0, 2__1, …` y la
+// bandera siguió arriba apuntando a documentos viejos: la galería por semana
+// enseñaba sus 13 fotos —no mira la partida— y la pantalla de captura decía
+// «Agregar foto» en las doce. Trece fotos a la vista y ninguna alcanzable.
+//
+// Así que cada obra se siembra en UN solo estado, el sin migrar, que es el que
+// este guion sabe escribir entero. Si se quiere ver el estado migrado se corre
+// la migración encima, que deriva `partidaId` de los ids de verdad y verifica
+// contra lo que la pantalla veía. Lo que no puede volver a pasar es la mezcla.
+async function limpiarEvidenciaMigrada(prefijo, id) {
+  await borrar(`${prefijo}obras/${id}/config/evidencia`);
+  const r = await fetch(fsURL(`${prefijo}obras/${id}/evidencia?pageSize=300`),
+    { headers: { Authorization: 'Bearer owner' } });
+  if (!r.ok) return 0;
+  const docs = (await r.json()).documents || [];
+  for (const d of docs) await borrar(`${prefijo}obras/${id}/evidencia/${d.name.split('/').pop()}`);
+  return docs.length;
+}
+
 // ── La obra de mentira ──────────────────────────────────────────────────────
 // Las partidas se generan con una semilla fija: dos corridas dan lo mismo, así
 // que una captura de pantalla de hoy se puede comparar con la de mañana. Un
@@ -151,6 +187,22 @@ function partidas(semilla, n, contratado) {
     const cant = Math.round(50 + az() * 900);
     const a = Math.round(az() * 100);
     filas.push({
+      // `id` SE SIEMBRA, no se deja que la app lo invente.
+      //
+      // Es `${sec}__${idx}`, copia literal de la auto-migración de
+      // `avance/subs` en App.jsx (~22310). Antes la siembra no lo escribía y la
+      // app se lo asignaba al abrir la obra —y lo GUARDABA—, así que durante
+      // unos milisegundos la obra existía con un id distinto del que iba a
+      // tener. Eso bastó para arruinar el recorrido del 2026-10-08: la
+      // migración de evidencia corrió sobre los subs sin `id`, escribió
+      // `partidaId: '1'`, la app renombró la partida a `1__0`, y la pantalla
+      // de captura terminó diciendo «Agregar foto» en las doce partidas
+      // mientras la galería por semana enseñaba las 13 fotos. La evidencia
+      // estaba toda ahí y ninguna partida la alcanzaba.
+      //
+      // Sembrarlo deja el preview en el estado que tiene una obra de
+      // producción ya abierta, que es el único sobre el que se puede medir.
+      id: `${i + 1}__${i}`,
       sec: `${i + 1}`,
       cat: SECCIONES[i % SECCIONES.length],
       sub: `${SECCIONES[i % SECCIONES.length]} — concepto ${i + 1}`,
@@ -401,16 +453,24 @@ const notasDe = (semanas, semilla, autorNombre, rol) => {
 };
 
 async function sembrarObra(prefijo, id, obra, opciones = {}) {
+  // Primero se tira la evidencia migrada de corridas anteriores: si no, la
+  // bandera sobrevive al resembrado y la obra queda con la galería leyendo
+  // documentos viejos y la captura sin encontrar ninguno. Ver
+  // `limpiarEvidenciaMigrada`.
+  const tiradas = await limpiarEvidenciaMigrada(prefijo, id);
   const filas = partidas(obra.semilla, obra.nPartidas, obra.contratado);
-  // Las fotos cuelgan de la partida, bajo la llave de su `subId` —que para
-  // estas partidas sembradas es `sec`, porque no traen `id`—. Es la misma
-  // forma mixta `{ llave: [foto, …] }` que tiene producción, y es la que leen
-  // tanto la captura como la pestaña de evidencia.
+  // Las fotos cuelgan de la partida bajo la llave de su `subId`, que ahora es
+  // el `id` sembrado. Es la misma forma mixta `{ llave: [foto, …] }` que tiene
+  // producción, y es la que leen tanto la captura como la pestaña de evidencia.
+  // La llave da igual para leer —`evidenciaDeObra` aplana con `.flat()`— pero
+  // no para escribir: la app agrega la foto nueva bajo `s.id`, y si la siembra
+  // usa otra llave la partida acaba con dos cubetas de fotos en el mismo
+  // documento. Se siembra con la llave que la app va a usar.
   let nFotos = 0, semanasConFoto = new Set();
   if (obra.fotosSemanas) {
     const mapa = fotosDe(filas, obra.semilla,
       { semanas: obra.fotosSemanas, sinFecha: !!obra.fotosSinFecha });
-    for (const f of filas) if (mapa[f.sec]) f.fotos = { [f.sec]: mapa[f.sec] };
+    for (const f of filas) if (mapa[f.sec]) f.fotos = { [f.id]: mapa[f.sec] };
     for (const lista of Object.values(mapa)) for (const foto of lista) {
       nFotos++;
       semanasConFoto.add(claveSemana(foto));
@@ -477,7 +537,11 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   const conFoto = filas.filter(f => f.fotos).length;
   if (obra.fotosSemanas) console.log(
     `  ${id}: ${nFotos} foto(s) en ${conFoto} partida(s), ` +
-    `${[...semanasConFoto].sort().reverse().join(' ')}`);
+    `${[...semanasConFoto].sort().reverse().join(' ')}` +
+    // Se dice en voz alta: quien resiembra tiene que saber que la obra volvió
+    // al estado sin migrar y que si quería el migrado hay que correr la
+    // migración otra vez. Callarlo es cómo nació la mezcla.
+    (tiradas ? `  [evidencia migrada anterior: ${tiradas} doc(s) tirados, obra sin migrar]` : ''));
 }
 
 (async () => {

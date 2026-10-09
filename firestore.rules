@@ -252,6 +252,29 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId);
         allow write: if esDirectivoC();
       }
+      // LA BANDERA DEL CORTE DE EVIDENCIA. Decide, por obra, si la galería lee
+      // la subcolección nueva o el mapa viejo incrustado en `avance/subs`.
+      //
+      // Esta regla faltaba y el defecto era el #31 en su forma más cara: la
+      // ruta caía en el `match /{document=**}` final, `fsGet` se tragaba la
+      // denegación y devolvía `null`, y `null` se lee como «esta obra no está
+      // migrada». O sea que después de migrar, la app habría seguido leyendo —y
+      // escribiendo— el mapa viejo para siempre, con la subcolección entera
+      // llena y muerta. La migración «funcionaba» y no servía de nada.
+      //
+      // No lo atrapó ninguna prueba: los bancos ejecutan `evidenciaDeObra` con
+      // la bandera en la mano, nunca la LEEN de Firestore. Lo atrapó el
+      // recorrido del preview, contando fotos: 15 sembradas en la subcolección
+      // —5 de archivo y 8 verificadas vigentes— y la pantalla decía «15 de
+      // archivo, sin autor», que es exactamente lo que dice el mapa viejo.
+      //
+      // `write` NEGADO para todos. La escribe sólo la migración, que entra por
+      // la API de administración y no pasa por aquí. Un cliente que pudiera
+      // voltearla apagaría la evidencia de una obra entera con un campo.
+      match /config/evidencia {
+        allow read: if puedeVerObraC(obraId);
+        allow write: if false;
+      }
 
       match /avance/subs {
         allow read: if puedeVerObraC(obraId);
@@ -315,6 +338,32 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow create: if puedeEditarObraC(obraId);
         allow update, delete: if esDirectivoC();
+      }
+
+      // Una foto por documento. Es el destino de la migración del #30, y es
+      // donde vive la evidencia de las obras de constructora: las cinco de
+      // producción están en este path, no bajo /orgs. El bloque de dependencia
+      // ya tenía su regla de `evidencia` desde el día uno; esta faltaba, así
+      // que la ruta caía en el `match /{document=**}` final —que deniega— y la
+      // escritura habría fallado callada, igual que el #31.
+      //
+      // EL CLIENTE SÍ LEE: la galería «La obra, semana por semana» es
+      // exactamente la pantalla que se le enseña. No lleva `!esCliente()`.
+      //
+      // NO SE BORRA, SE ANULA (§7.7 del alcance municipal). `delete` no está
+      // permitido para NADIE, ni para un directivo: una foto que se puede
+      // borrar no es evidencia de nada, y el expediente necesita el hueco con
+      // su motivo. `update` sí lo puede hacer quien captura, porque quien se
+      // equivoca al subir es el supervisor que está en campo y no hay a quién
+      // escalarle desde el teléfono; lo que no puede es cambiar la foto: la
+      // regla sólo deja tocar los cuatro campos de la anulación.
+      match /evidencia/{eid} {
+        allow read: if puedeVerObraC(obraId);
+        allow create: if puedeEditarObraC(obraId);
+        allow update: if puedeEditarObraC(obraId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['anulada', 'motivoAnulacion', 'anuladaPor', 'anuladaEn']);
+        allow delete: if false;
       }
     }
 
@@ -390,12 +439,27 @@ service cloud.firestore {
         allow read: if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
         allow write: if oid == orgId() && (rol() == 'administrativo' || esDirectivoDEditor());
       }
+      // Supervisor de obra captura evidencia.
+      //
+      // NO SE BORRA, SE ANULA. Esta regla es la que el §7.7 gobierna de verdad
+      // —es el path municipal— y hasta hoy decía lo contrario: `delete` abierto
+      // a los directivos, `update` sin acotar, y el supervisor sin poder
+      // corregir nada. O sea: quien se equivoca al subir no puede arreglarlo, y
+      // quien puede, puede hacer desaparecer la foto del expediente. Las dos
+      // mitades estaban al revés.
+      //
+      // Ahora `delete` está negado para TODOS, y `update` sólo puede tocar los
+      // cuatro campos de la anulación — el mismo trato que el bloque de
+      // constructora, porque es el mismo principio. `create` no se toca: lo que
+      // cambia es cómo se retira una foto, no quién la sube.
       match /evidencia/{eid} {
-        // Supervisor de obra captura evidencia
         allow read: if oid == orgId() && puedeVerObraD(obraId);
         allow create: if oid == orgId() && (esSupervisorObra() || esDirectivoDEditor() || rol() == 'administrativo')
                       && obraId in obrasAsignadas();
-        allow update, delete: if oid == orgId() && esDirectivoDEditor();
+        allow update: if oid == orgId() && puedeEditarObraD(obraId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['anulada', 'motivoAnulacion', 'anuladaPor', 'anuladaEn']);
+        allow delete: if false;
       }
 
       // ── CAPTURA DE AVANCE ───────────────────────────────────────────────
@@ -425,6 +489,16 @@ service cloud.firestore {
       match /config/permisos {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
         allow write: if oid == orgId() && esDirectivoDEditor();
+      }
+      // La bandera del corte de evidencia. Mismo razonamiento que en el bloque
+      // de constructora, arriba: la lee todo el que ve la obra y no la escribe
+      // nadie desde el cliente. Aquí el daño sería peor, porque este es el path
+      // del expediente municipal: sin poder leer la bandera, la galería que se
+      // le enseña a la dependencia seguiría pintando el mapa viejo y ninguna
+      // foto capturada después de la migración aparecería.
+      match /config/evidencia {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if false;
       }
 
       // Donde escribe el supervisor cuando captura.
