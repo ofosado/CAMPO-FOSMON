@@ -17,22 +17,32 @@
  * Uso:
  *   gcloud auth application-default login
  *   gcloud config set project campo-fosmon
- *   node scripts/crear-org-fosmon.js
+ *   node scripts/crear-org-fosmon.cjs --prod              (ensayo, no escribe)
+ *   node scripts/crear-org-fosmon.cjs --prod --escribir    (aplica)
  *
- * Con --dry-run muestra lo que haría sin escribir.
+ * `--dry-run` ya no existe: el ensayo es lo que sale por omisión. Antes
+ * escribir era lo de omisión y teclear el archivo sin argumentos etiquetaba a
+ * todos los usuarios de producción.
  *
  * Idempotente: si la org ya existe y todos los usuarios ya tienen orgId,
  * el script no hace cambios.
  */
-const admin = require("firebase-admin");
+// El portón va PRIMERO, antes de `require("firebase-admin")` — que no está
+// instalado en la raíz de este repo. Si estuviera después, equivocarse de
+// destino daría un MODULE_NOT_FOUND en lugar de «No hay destino».
+const { resolverDestino } = require("./destino.cjs");
+const DESTINO = resolverDestino({
+  escribe: "crea orgs/fosmon y etiqueta con orgId a todos los usuarios sin él",
+});
+const ESCRIBIR = DESTINO.escribir;
 
-const DRY_RUN = process.argv.includes("--dry-run");
+const admin = require("firebase-admin");
 const ORG_ID = "fosmon";
 
 try {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
-    projectId: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || "campo-fosmon",
+    projectId: DESTINO.projectId,
   });
 } catch (e) {
   console.error("ERROR inicializando Firebase Admin con ADC:", e.message);
@@ -44,7 +54,7 @@ try {
 }
 
 (async () => {
-  console.log(`\nBootstrap organización ${ORG_ID}${DRY_RUN ? " (DRY RUN)" : ""}\n`);
+  console.log(`\nBootstrap organización ${ORG_ID}${ESCRIBIR ? "" : " (ENSAYO)"}\n`);
 
   const db = admin.firestore();
 
@@ -56,7 +66,7 @@ try {
     console.log(`Organización orgs/${ORG_ID} ya existe (tipo=${data.tipo}, activa=${data.activa}). No se toca.`);
   } else {
     console.log(`Organización orgs/${ORG_ID} NO existe. Se creará como tipo=constructora, activa=true.`);
-    if (!DRY_RUN) {
+    if (ESCRIBIR) {
       await orgRef.set({
         nombre: "FOSMON Construcciones",
         tipo: "constructora",
@@ -88,8 +98,8 @@ try {
     console.log(`  · ${d.id.padEnd(40)} rol=${(p.rol || "?").padEnd(22)} ${p.email || "(sin email)"}`);
   }
 
-  if (DRY_RUN) {
-    console.log("\n--dry-run especificado. No se escribió nada.");
+  if (!ESCRIBIR) {
+    console.log("\nEnsayo: no se escribió nada. Agrega `--escribir` para aplicar.");
     process.exit(0);
   }
 
