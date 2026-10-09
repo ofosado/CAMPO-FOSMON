@@ -93,7 +93,7 @@ const D = (n) => { if (!(n in dentro)) falta.push(n); return dentro[n] || 'null'
 // El aplanado se mudó al módulo (#30). Este banco sigue entrando por `subs`
 // crudos, así que ahora recorre `evidenciaDeObra` → `todas`: el camino entero,
 // no sólo el último tramo.
-const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto',
+const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
   'semanaDeEvidencia',
@@ -126,7 +126,8 @@ if (falta.length) {
 
 const mod = new Function(`"use strict";
 ${cuerpoModulo}
-return { semanaDeFoto, lunesDeClaveSemana, etiquetaSemanaCorta, leyendaSemanaSubida, semanaISO, snapshotId };`)();
+return { semanaDeEvidencia, evidenciaNormalizada, lunesDeClaveSemana, etiquetaSemanaCorta,
+  leyendaSemanaSubida, semanaISO, snapshotId };`)();
 
 // La pantalla del cliente: de `subs` crudos a lo que se ve en cada eje.
 const pantalla = new Function('subs', `"use strict";
@@ -156,6 +157,13 @@ const check = (ok, titulo, detalle = '') => {
 
 const foto = (n, fecha) => ({ id: `f${n}`, url: `https://ejemplo/${n}.jpg`, ...(fecha ? { fecha } : {}) });
 const partida = (sec, id, fotos) => ({ sec, id, sub: `Partida ${sec}`, fotos: { [id]: fotos } });
+// La forma NORMALIZADA, que es la que consume la pantalla de captura desde que
+// el aplanado se mudó al módulo. Se construye con `evidenciaNormalizada` del
+// archivo, no a mano: una forma tecleada aquí comprobaría este banco contra
+// sí mismo y no contra la pantalla.
+const ev = (n, fecha) => mod.evidenciaNormalizada({
+  id: `f${n}`, urlOriginal: `https://ejemplo/${n}.jpg`,
+  ...(fecha ? { fechaDeclarada: fecha } : {}) });
 
 // ════════════════════════════════════════════════════════════════════════════
 console.log('1. La foto cae en la semana en que se subió — incluidos los lunes');
@@ -169,8 +177,8 @@ console.log('1. La foto cae en la semana en que se subió — incluidos los lune
     const lun = new Date(d); lun.setDate(d.getDate() + i * 7);
     const dom = new Date(lun); dom.setDate(lun.getDate() + 6);
     const iso = (x) => `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
-    const a = mod.semanaDeFoto(foto(1, iso(lun)));
-    const b = mod.semanaDeFoto(foto(2, iso(dom)));
+    const a = mod.semanaDeEvidencia(ev(1, iso(lun)));
+    const b = mod.semanaDeEvidencia(ev(2, iso(dom)));
     if (a !== b) paresMal.push(`${iso(lun)}→${a} pero ${iso(dom)}→${b}`);
   }
   check(paresMal.length === 0,
@@ -178,12 +186,12 @@ console.log('1. La foto cae en la semana en que se subió — incluidos los lune
     paresMal.length ? `${paresMal.length} desfasado(s): ${paresMal[0]}` : 'los 52');
 }
 // Y la semana que sale es la del calendario, no una cualquiera consistente.
-check(mod.semanaDeFoto(foto(1, '2026-09-21')) === 'S39-2026',
+check(mod.semanaDeEvidencia(ev(1, '2026-09-21')) === 'S39-2026',
   'el lunes 21 de septiembre de 2026 es la semana 39',
-  mod.semanaDeFoto(foto(1, '2026-09-21')));
-check(mod.semanaDeFoto(foto(1, '2026-09-27')) === 'S39-2026',
+  mod.semanaDeEvidencia(ev(1, '2026-09-21')));
+check(mod.semanaDeEvidencia(ev(1, '2026-09-27')) === 'S39-2026',
   'y el domingo 27, la misma',
-  mod.semanaDeFoto(foto(1, '2026-09-27')));
+  mod.semanaDeEvidencia(ev(1, '2026-09-27')));
 
 // La vuelta: el lunes que la leyenda fecha es el lunes de esa semana.
 {
@@ -311,11 +319,11 @@ console.log('\n6. En la captura, lo de esta semana se ve y lo viejo se cuenta');
 {
   const HOY = 'S39-2026';
   const fotos = [
-    foto(1, '2026-09-22'),   // esta semana
-    foto(2, '2026-09-25'),   // esta semana
-    foto(3, '2026-09-15'),   // la pasada
-    foto(4, '2026-08-10'),   // de agosto
-    foto(5),                 // sin fecha
+    ev(1, '2026-09-22'),   // esta semana
+    ev(2, '2026-09-25'),   // esta semana
+    ev(3, '2026-09-15'),   // la pasada
+    ev(4, '2026-08-10'),   // de agosto
+    ev(5),                 // sin fecha
   ];
   const v = captura(fotos, HOY);
   check(v.ahora.length === 3 && v.viejas.length === 2,
@@ -328,7 +336,7 @@ console.log('\n6. En la captura, lo de esta semana se ve y lo viejo se cuenta');
     'y ninguna foto se pierde entre los dos grupos',
     `${v.ahora.length} + ${v.viejas.length} = ${fotos.length}`);
   // Sin histórico no aparece el botón: no hay nada que ofrecer.
-  const soloHoy = captura([foto(1, '2026-09-22')], HOY);
+  const soloHoy = captura([ev(1, '2026-09-22')], HOY);
   check(soloHoy.viejas.length === 0,
     'una partida fotografiada sólo esta semana no ofrece «ver anteriores»',
     `${soloHoy.viejas.length} anterior(es)`);

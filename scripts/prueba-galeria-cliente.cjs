@@ -89,7 +89,7 @@ const falta = [];
 // que rompía todo—, así que ahora recorre el camino completo. Mejor que antes:
 // antes sólo comprobaba la copia de la galería, y las otras dos podían estar
 // rotas con este banco en verde. Es exactamente lo que pasó con el #32.
-const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO', 'semanaDeFoto',
+const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
   'semanaDeEvidencia'];

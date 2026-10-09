@@ -94,6 +94,16 @@ const SEMANA_38 = {
     process.exit(1);
   }
 
+  // Se limpia ANTES de empezar. Este banco cuenta documentos —la sección 2
+  // afirma que la subcolección trae DOS semanas— y con restos de otra sesión en
+  // `obras/0126/nomina_historial` sale en rojo por algo que no tiene nada que
+  // ver con las reglas. Le pasó al banco de evidencia el 2026-10-08 y el
+  // defecto es el mismo aquí: una cuenta sobre una ruta compartida que da por
+  // hecho que el emulador está limpio. La API de administración no pasa por
+  // reglas, que es justo lo que hace falta cuando el borrado está negado.
+  await fetch(`http://${HOST}:${PUERTO}/emulator/v1/projects/${PROYECTO}/databases/(default)/documents`,
+    { method: 'DELETE' }).catch(() => {});
+
   const ruta = ['obras', OBRA, 'nomina_historial', 'Y2026-S38'];
 
   // ── 1. LA PREGUNTA DEL #31: ¿la escritura llega? ────────────────────────

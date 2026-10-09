@@ -48,6 +48,8 @@ const NECESITAN_EMULADOR = new Set([
   'prueba-cierre-emulador.cjs',
   'prueba-reglas-nomina-subcoleccion.cjs',
   'prueba-reglas-dependencia-captura.cjs',
+  'prueba-reglas-evidencia.cjs',
+  'prueba-migracion-ata-la-partida.cjs',
   'prueba-prefijo-organizacion.cjs',
   'prueba-aislamiento-de-usuarios.cjs',
 ]);

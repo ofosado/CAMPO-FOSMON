@@ -2661,20 +2661,6 @@ const hoyLocalISO = () => {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
 
-// La clave de semana de una foto, o `null` si no se puede saber.
-//
-// `null` es una respuesta legítima y la pantalla tiene que pintarla: el
-// esquema de fotos es mixto —hay cadenas sueltas de antes de que existiera
-// `fecha`— y una foto sin semana no es una foto que no exista. Esconderla
-// sería contar menos evidencia de la que hay.
-const semanaDeFoto = (foto) => {
-  if (!foto || typeof foto === 'string') return null;
-  const d = fechaLocalDeISO(foto.fecha);
-  if (!d) return null;
-  const { semana, año } = semanaISO(d);
-  return snapshotId(semana, año);
-};
-
 // ════════════════════════════════════════════════════════════════════════════
 // LA EVIDENCIA, CON UN DOCUMENTO PROPIO POR FOTO
 // ════════════════════════════════════════════════════════════════════════════
@@ -2756,12 +2742,22 @@ const semanaDeEvidencia = (ev) => {
   return snapshotId(semana, año);
 };
 
-// Un Timestamp de Firestore, un ISO o nada → fecha local `YYYY-MM-DD` o `null`.
+// Un Timestamp de Firestore o nada → fecha LOCAL `YYYY-MM-DD` o `null`.
 // Firestore devuelve `{seconds, nanoseconds}` o un objeto con `toDate()` según
-// por dónde entre el documento, y el guion de migración lo escribe como ISO.
+// por dónde entre el documento; las dos formas se convierten igual.
+//
+// Lo que NO acepta es una cadena ISO, y es a propósito. Tenía una rama que
+// hacía `t.slice(0,10)`, que recorta la fecha en UTC — exactamente la
+// comparación que medimos como mentirosa: una foto que llegó al servidor a las
+// 23:40 del 28 en México lleva `2026-09-29T05:40Z`, y el recorte decía «29».
+// Es el mismo error de un día que tienen 48 de las 656 fotos declaradas por el
+// teléfono, cometido otra vez al leer el dato que vino a corregirlo. Así que
+// `subidaEn` se escribe siempre como timestamp, por la app y por la migración,
+// y aquí sólo se entiende esa forma. Si alguna vez llega texto, esto devuelve
+// `null`: la foto se queda sin hora de servidor y sin el sello de verificada,
+// que es el fallo seguro.
 function fechaDeTimestamp(t) {
   if (!t) return null;
-  if (typeof t === 'string') return t.slice(0, 10) || null;
   const d = typeof t.toDate === 'function' ? t.toDate()
           : typeof t.seconds === 'number' ? new Date(t.seconds * 1000)
           : null;
@@ -2816,6 +2812,13 @@ const evidenciaDeObra = ({ cfgEvidencia, docsEvidencia, subs }) => {
         partidaDesc: s.sub || '(sin descripción)',
         origen: ORIGEN_LEGADO,
         fechaDeclarada: (typeof foto === 'object' && foto.fecha) || null,
+        // La anulación también se guarda en el mapa incrustado mientras la obra
+        // no esté migrada. Si no, el botón de anular tendría que seguir
+        // BORRANDO en producción hasta el día de la migración, y lo que se
+        // borra no deja hueco: así se fueron los 80 objetos huérfanos de
+        // Storage que nadie puede explicar.
+        anulada: typeof foto === 'object' && !!foto.anulada,
+        motivoAnulacion: (typeof foto === 'object' && foto.motivoAnulacion) || null,
       }));
     });
   });
@@ -2835,6 +2838,30 @@ const evidenciaDePartida = (lista, partidaId) =>
     .filter(e => e.partidaId === partidaId)
     .sort((a, b) => String(b.fechaServidor || b.fechaDeclarada || '')
       .localeCompare(String(a.fechaServidor || a.fechaDeclarada || '')));
+
+// ── ANULAR, QUE NO ES BORRAR ──────────────────────────────────────────────
+// La `×` de la pantalla de captura borraba la foto del arreglo y se acabó. Dos
+// consecuencias medidas: el objeto se quedaba en Storage para siempre —80
+// objetos, 27 MiB en producción, sin ninguna forma de saber a qué partida
+// pertenecían— y el expediente perdía el hecho de que alguien subió algo y
+// alguien lo quitó. El §7.7 del alcance municipal lo prohíbe por eso: en una
+// obra pública la evidencia retirada es parte del expediente.
+//
+// El motivo es obligatorio y se exige LARGO MÍNIMO, no «no vacío». Un campo
+// que acepta un punto es un campo opcional con pasos extra.
+const MOTIVO_ANULACION_MIN = 8;
+const motivoDeAnulacionValido = (t) => String(t || '').trim().length >= MOTIVO_ANULACION_MIN;
+
+// El id de un documento de evidencia. Del azar del sistema, no del reloj: dos
+// fotos que entran en el mismo milisegundo —el selector acepta varias a la vez
+// y las lee en paralelo— se pisarían una a la otra, y la que se pierde no
+// avisa. 96 bits bastan; no se recorta ni se rellena, así que no hay sesgo que
+// discutir (ver `nuevoIdObra`, donde recortar sí lo tenía).
+const nuevoIdEvidencia = () => {
+  const n = new Uint32Array(3);
+  globalThis.crypto.getRandomValues(n);
+  return Array.from(n, x => x.toString(36)).join('');
+};
 
 // ── EL SELLO DE UNA FOTO ──────────────────────────────────────────────────
 // Lo que la miniatura dice de sí misma. Existe porque las 656 fotos que ya
@@ -5973,6 +6000,13 @@ const css = `
     color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;cursor:pointer;
     display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s}
   .fotothumb:hover .fotodel{opacity:1}
+  /* El control de anular NO se esconde detrás de :hover. Quien captura lo hace
+     desde un teléfono y ahí no hay hover: el botón sólo aparecía DESPUÉS de
+     tocar la miniatura, que es el gesto de abrir la foto. Y lleva texto, no
+     sólo un glifo, porque «×» quiere decir borrar y esto no borra (#36). */
+  .fotoanular{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.66);border:none;
+    color:#fff;padding:2px 7px;border-radius:99px;font-size:8px;font-weight:700;
+    letter-spacing:.03em;cursor:pointer;line-height:1.5}
   .lb{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;
     display:flex;align-items:center;justify-content:center;padding:16px;cursor:pointer}
   .lb img{max-width:90vw;max-height:85vh;border-radius:10px;object-fit:contain}
@@ -6162,8 +6196,12 @@ function FotoUploader({fotos,onAdd,onDel}){
 //
 // Una foto SIN fecha se queda a la vista. No se sabe que sea vieja, y suponerlo
 // para esconderla sería afirmar algo que nadie capturó.
-function ConceptoFotos({fotos,onAdd,onDel}){
+//
+// El cuadro consume la forma normalizada de evidencia, igual que la galería del
+// cliente y que el PDF, y la `×` de borrar es ahora «anular con motivo».
+function ConceptoFotos({fotos,onAdd,onAnular=null}){
   const ref=useRef();const[lb,setLb]=useState(null);const[verViejas,setVerViejas]=useState(false);
+  const[porAnular,setPorAnular]=useState(null);
   const leer=useCallback(files=>{
     Array.from(files).filter(f=>f.type.startsWith("image/")).forEach(f=>{
       const r=new FileReader();r.onload=e=>onAdd({id:Math.random().toString(36).slice(2),url:e.target.result});r.readAsDataURL(f);
@@ -6173,11 +6211,14 @@ function ConceptoFotos({fotos,onAdd,onDel}){
     const {semana, año} = semanaISO(new Date());
     return snapshotId(semana, año);
   }, []);
-  const viejas  = fotos.filter(f => { const w = semanaDeFoto(f); return w && w !== semanaHoy; });
+  const viejas  = fotos.filter(f => { const w = semanaDeEvidencia(f); return w && w !== semanaHoy; });
   const ahora   = fotos.filter(f => !viejas.includes(f));
   const visibles = verViejas ? [...ahora, ...viejas] : ahora;
-  const miniatura = f => <div key={f.id} className="fotothumb" onClick={()=>setLb(f.url)}>
-    <img src={f.url} alt=""/><button className="fotodel" onClick={e=>{e.stopPropagation();onDel(f.id);}}>×</button>
+  const miniatura = f => <div key={f.id} className="fotothumb" style={{position:"relative"}} onClick={()=>setLb(f.url)}>
+    <img src={f.url} alt=""/>
+    <SelloEvidencia ev={f}/>
+    {onAnular && <button className="fotoanular" title="Anular esta foto con un motivo. No se borra."
+      onClick={e=>{e.stopPropagation();setPorAnular(f);}}>anular</button>}
   </div>;
   return <div>{visibles.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:5}}>
     {visibles.map(miniatura)}
@@ -6190,7 +6231,56 @@ function ConceptoFotos({fotos,onAdd,onDel}){
      {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
   </div>
   <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
-  <Lightbox url={lb} onClose={()=>setLb(null)}/></div>;
+  <Lightbox url={lb} onClose={()=>setLb(null)}/>
+  {porAnular && <ModalAnularFoto ev={porAnular} onCancel={()=>setPorAnular(null)}
+    onAnular={async motivo=>{ await onAnular(porAnular, motivo); setPorAnular(null); }}/>}
+  </div>;
+}
+
+// Anular una foto. El motivo es obligatorio y con largo mínimo
+// (`motivoDeAnulacionValido`): el expediente va a conservar esta foto para
+// siempre y lo único que va a explicar por qué dejó de contar es este renglón.
+function ModalAnularFoto({ev, onCancel, onAnular}){
+  const[motivo,setMotivo]=useState("");
+  const[busy,setBusy]=useState(false);
+  const valido = motivoDeAnulacionValido(motivo);
+  return <div onClick={e=>e.stopPropagation()}
+    style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:420}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.caliza,marginBottom:4}}>Anular esta foto</div>
+      <div style={{fontSize:10,color:C.textSec,lineHeight:1.6,marginBottom:12}}>
+        La foto NO se borra: sigue en el expediente con tu nombre y el motivo, y
+        deja de contar como evidencia. En una obra pública la evidencia retirada
+        es parte del expediente, así que esto no se puede deshacer borrando.
+      </div>
+      {ev.url && <img src={ev.url} alt="" style={{width:"100%",maxHeight:150,objectFit:"cover",
+        borderRadius:8,display:"block",marginBottom:12}}/>}
+      <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+        Motivo
+      </div>
+      <textarea value={motivo} rows={3} maxLength={300} disabled={busy}
+        onChange={e=>setMotivo(e.target.value)}
+        placeholder="Es de otra partida, la subí por equivocación"
+        style={{width:"100%",boxSizing:"border-box",border:`0.5px solid ${C.border}`,
+          borderRadius:8,padding:"9px 10px",fontSize:12,lineHeight:1.5,
+          fontFamily:"inherit",color:C.textPri,resize:"vertical"}}/>
+      <div style={{fontSize:9,color:valido?C.textMut:C.yellowDk,marginTop:3}}>
+        {valido ? "Queda registrado quién la anuló y cuándo."
+                : `Escribe al menos ${MOTIVO_ANULACION_MIN} caracteres.`}
+      </div>
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}>
+        <SecBtn onClick={onCancel} disabled={busy}>Cancelar</SecBtn>
+        <button disabled={busy||!valido}
+          onClick={async()=>{ setBusy(true); try{ await onAnular(motivo); } finally { setBusy(false); } }}
+          style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+            fontSize:11,fontWeight:700,color:C.bg,
+            cursor:(busy||!valido)?"not-allowed":"pointer",opacity:(busy||!valido)?0.45:1}}>
+          {busy?"Anulando…":"Anular"}
+        </button>
+      </div>
+    </div>
+  </div>;
 }
 
 // ── DATOS ──────────────────────────────────────────────────────────────────
@@ -10012,7 +10102,18 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             <div title={o.nombre || ''} style={{fontSize:13,fontWeight:700,color:C.textPri}}>{nombreShort}</div>
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3,flexShrink:0,marginLeft:10}}>
-            <Bdg color={col}>{o.estado.toUpperCase()}</Bdg>
+            {/* `o.estado` puede no venir: una obra creada por un guion, por una
+                importación o a medio alta no trae el campo. Sin la guarda, ese
+                `.toUpperCase()` revienta dentro del `.map()` y se lleva la
+                PANTALLA COMPLETA de obras —ninguna tarjeta, sólo la caída—, no
+                sólo la insignia de esa obra. Lo vi así el 2026-10-08 con dos
+                obras de ensayo sin `estado`: 4 obras en Firestore, 0 en
+                pantalla. El resto del archivo ya usaba este mismo default
+                (`'activa'`) en los otros dos lugares donde se pinta el estado;
+                éste era el único renglón sin él. La línea de arriba también
+                tolera el hueco (`ec[o.estado]||C.caliza`), así que el color ya
+                estaba resuelto y sólo faltaba el texto. */}
+            <Bdg color={col}>{(o.estado||'activa').toUpperCase()}</Bdg>
             {o.ultimaAct && <span style={{fontSize:9,color:C.textMut}}>Act: {o.ultimaAct}</span>}
           </div>
         </div>
@@ -13435,7 +13536,7 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
                    subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,
                    estimaciones,setEstimaciones,estCargadas=false,subcontratos,setSubcontratos,
                    historialAvance,setHistorialAvance,recorteHistorial=null,setCambiosPendientes,onNavTab,
-                   notasSemana={}, onGuardarNota=null,
+                   notasSemana={}, onGuardarNota=null, evid=null,
                    nominaHistorial=[], setNominaHistorial,
                    subTabs=SUBTABS_OPERACION}){
   // El sub-tab activo se acota a los permitidos AQUÍ y no en quien llama.
@@ -13482,7 +13583,8 @@ function Operacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,
           usuario={usuario} historialAvance={historialAvance} setHistorialAvance={setHistorialAvance}
           onGuardarNota={onGuardarNota}
           estimaciones={estimaciones} estCargadas={estCargadas}
-          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}/>
+          setCambiosPendientes={setCambiosPendientes} onNavTab={onNavTab}
+          evid={evid}/>
       </>
     )}
     {subTab==="almacen" && (
@@ -13567,7 +13669,7 @@ function Planeacion({subTab:subTabPedido,setSubTab,obra,setObra,rol,usuario,setS
 
 // ── CAPTURA ────────────────────────────────────────────────────────────────
 function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales,rol,obra,forceTab,usuario,historialAvance,setHistorialAvance,onGuardarNota=null,setCambiosPendientes,onNavTab,onNominaHistorialCambio,
-                  estimaciones=[],estCargadas=false}){
+                  estimaciones=[],estCargadas=false,evid=null}){
   // Estados para "el usuario ya empezó a agregar" — fuerza a mostrar la tabla
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
@@ -13589,10 +13691,13 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   // Sube la foto a Firebase Storage y guarda solo la URL en Firestore (no base64).
   // Esto evita que el documento Firestore crezca demasiado y permite cargar
   // miles de fotos sin afectar el rendimiento de carga.
-  // addFoto/delFoto reciben el id ÚNICO de la sub (no la clave sec, que puede repetirse)
-  const addFoto = async (subId, foto) => {
+  // addFoto/anularFoto reciben la PARTIDA, no sólo su id: el documento de
+  // evidencia guarda también la clave y la descripción, y derivarlas otra vez
+  // desde el id obligaría a buscar la partida de vuelta en `subs`.
+  const addFoto = async (partida, foto) => {
     if (!obra?.id) return;
-    let subidoRef = null;   // ref al objeto en Storage — para rescate si el commit local falla
+    const subId = partida.id || partida.sec;
+    let subidoRef = null;   // ref al objeto en Storage — para rescate si el commit falla
     try {
       const idSafe = (foto.id || Date.now()).toString();
       let urlFinal = foto.url;
@@ -13602,16 +13707,27 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         subidoRef = subida.ref;
       }
       try {
-        setSubs(ss => ss.map(s => {
-          if (s.id !== subId) return s;
-          const fotosObj = s.fotos || {};
-          // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
-          return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: hoyLocalISO()}]}};
-        }));
+        if (evid && evid.migrada) {
+          // Obra migrada: la foto es un documento propio y la ruta de Storage
+          // se guarda con ella. Sin `rutaStorage` el objeto sólo se alcanza por
+          // la URL con token, y esa URL trae `avance_${clave}__${índice}`
+          // dentro: mover una partida de lugar dejaba la foto irrecuperable
+          // (#30).
+          await evid.agregar({ partida, fotoId: idSafe, url: urlFinal,
+                               rutaStorage: subidoRef ? subidoRef.fullPath : null });
+        } else {
+          setSubs(ss => ss.map(s => {
+            if ((s.id || s.sec) !== subId) return s;
+            const fotosObj = s.fotos || {};
+            // Las fotos se guardan bajo la clave del id (no sec) para evitar colisiones
+            return {...s, fotos:{...fotosObj, [subId]:[...(fotosObj[subId] || fotosObj[s.sec] || []), {id: idSafe, url: urlFinal, fecha: hoyLocalISO()}]}};
+          }));
+        }
       } catch (commitErr) {
-        // El commit al estado local nunca debería fallar, pero si algún día
-        // se conecta a Firestore directo aquí y falla por permission-denied,
-        // el objeto en Storage quedaría huérfano.
+        // Ya no es código muerto: con la obra migrada el commit es una
+        // escritura real a Firestore y puede negarse por reglas. Si se niega,
+        // el objeto ya está en Storage y nadie lo referencia nunca más — así
+        // se juntaron los 80 huérfanos que hay hoy en producción.
         if (subidoRef) await borrarFotoHuerfana(subidoRef);
         throw commitErr;
       }
@@ -13620,12 +13736,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       alert(e.message || 'Error al subir foto');
     }
   };
-  const delFoto=(subId, fotoId)=>setSubs(ss=>ss.map(s=>{
-    if(s.id !== subId) return s;
-    const fotosObj = s.fotos || {};
-    const lista = fotosObj[subId] || fotosObj[s.sec] || [];
-    return {...s, fotos:{...fotosObj, [subId]: lista.filter(f=>f.id!==fotoId)}};
-  }));
+  // Anular, no borrar. La foto sigue en el expediente con su motivo; lo que
+  // cambia es que deja de contar como evidencia (`evidenciaVigente`).
+  const anularFoto = async (ev, motivo) => {
+    if (!evid) return;
+    try { await evid.anular(ev, motivo); }
+    catch (e) {
+      console.error('anularFoto error', e);
+      alert(e.message || 'No se pudo anular la foto');
+    }
+  };
   const rMaq=(i,f,v)=>setMaquinaria(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
   const rMat=(i,f,v)=>setMateriales(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
 
@@ -13725,8 +13845,11 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         // descripción, importe, input de avance y cuadro de fotos.
         const renderConcepto = (s, indentLevel = 0) => {
           const subId = s.id || s.sec;
-          const fotosObj = s.fotos || {};
-          const fotosArr = fotosObj[subId] || fotosObj[s.sec] || [];
+          // La captura lee la MISMA cuenta que la galería del cliente y que el
+          // PDF: `evid.lista`, ya aplanada y normalizada arriba. Antes aquí se
+          // volvía a aplanar `s.fotos` a mano, y esa cuarta copia es la que
+          // hacía posible el #32 (una copia perdió el `.flat()` y contó grupos).
+          const fotosArr = evidenciaDePartida(evid ? evid.lista : [], subId);
           const nF = fotosArr.length;
           // En modo volumen calculamos el % derivado para la barra y el semáforo.
           // Solo es derivable si hay volumen de catálogo Y volumen ejecutado; si
@@ -13815,8 +13938,8 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             <div style={{marginTop:8}}>
               <ConceptoFotos
                 fotos={fotosArr}
-                onAdd={editar ? (foto=>addFoto(subId, foto)) : (()=>{})}
-                onDel={editar ? (id=>delFoto(subId, id)) : (()=>{})}/>
+                onAdd={editar ? (foto=>addFoto(s, foto)) : (()=>{})}
+                onAnular={editar ? anularFoto : null}/>
               {!editar && fotosArr.length === 0 && (
                 <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas.</div>
               )}
@@ -18170,7 +18293,7 @@ function AvanceCliente({obra, subs}){
 //     semana A con la B»: se vería vacía y la culpa parecería de los datos.
 //
 // La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
-// de `semanaDeFoto`.
+// de `semanaDeEvidencia`.
 function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
   const[lightbox,setLightbox]=useState(null);
   const[vista,setVista]=useState("semana");     // "semana" | "partida"
@@ -22668,12 +22791,124 @@ export default function App(){
     return () => unsubs.forEach(u => u());
   },[usuario, obrasActivasKey, screen, verPanelEjecutivo]);
 
+  // ── LA EVIDENCIA, ANTES DE CUALQUIER `return` ───────────────────────────
+  //
+  // Estos dos `useMemo` están ARRIBA de los dos cortes de abajo —el de sin
+  // sesión y el de la sesión de plataforma— y tienen que seguir aquí. Nacieron
+  // más abajo, junto a lo que los usa, y eso reventaba la aplicación al
+  // entrar: React cuenta los hooks por ORDEN, y un hook detrás de un `return`
+  // condicional existe en unos renders y no en otros. El primer render es sin
+  // sesión (hook 64 ausente) y el segundo con sesión (hook 64 presente), así
+  // que la pantalla se quedaba en blanco en el login — no en una pantalla
+  // interior, en la primera.
+  //
+  // No lo atrapó la suite y es honesto decir por qué: los bancos extraen
+  // `evid` y `evidencia` por AST y los EJECUTAN sueltos, que es lo que hace
+  // que afirmen conducta en lugar de citar código. Nunca renderizan `App`, así
+  // que el orden de los hooks les es invisible. Lo atrapó el recorrido del
+  // preview, que es para lo que ese paso existe.
+  //
+  // `obra` sube con ellos porque es su dependencia. No es un hook y no cambia
+  // de valor por estar antes: `obras` y `obraId` son estado declarado mucho más
+  // arriba.
+  const obra=obras.find(o=>o.id===obraId);
+
+  // LA evidencia de la obra. Una sola lista, calculada una sola vez, y es la
+  // que consumen el tablero, el PDF y la galería del cliente. Antes cada una se
+  // aplanaba su propia copia del mapa `fotos` y las tres podían discrepar:
+  // dos usaban `.flat()` y la de la galería se quedó sin él durante semanas,
+  // anunciando fotos sobre una rejilla en blanco (#32).
+  const evidencia = useMemo(
+    () => evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs }),
+    [cfgEvidencia, docsEvidencia, subs]);
+
+  // ── ESCRIBIR EVIDENCIA ──────────────────────────────────────────────────
+  // Vive junto a la lectura porque leer y escribir tienen que honrar LA MISMA
+  // bandera de corte. Si una mitad escribiera a la subcolección mientras la
+  // otra siguiera leyendo el mapa incrustado, la foto que el supervisor acaba
+  // de subir no aparecería en la galería y el único camino de vuelta sería
+  // abrir Firestore a mano.
+  const evid = useMemo(() => {
+    const migrada = evidenciaMigrada(cfgEvidencia);
+    const ruta = (id) => `obras/${obra?.id}/evidencia/${id}`;
+    const ctx = { modulo: "evidencia", entidad: "foto",
+                  obraId: obra?.id, obraNombre: obra?.contrato || obra?.nombre || "" };
+    return {
+      migrada,
+      lista: evidencia,
+      cargada: evidenciaCargada,
+
+      // Una foto, un documento. `rutaStorage` se guarda porque es el único dato
+      // que permite volver al objeto: la ruta vieja se reconstruía como
+      // `avance_${clave}__${idx}`, con el ÍNDICE de la partida dentro del
+      // nombre, así que el día que una partida cambia de posición en el
+      // catálogo la reconstrucción apunta a otro lado (#30).
+      //
+      // No se escribe `capturadaEn`. `subidaEn` es cuándo LLEGÓ al servidor, y
+      // la hora del disparo no la sabe nadie: el teléfono dice la suya y
+      // medimos que 48 de 656 fotos de producción la tienen mal por un día.
+      // Meter las dos cosas en un campo llamado `capturadaEn` inventaría un
+      // dato de captura. La declarada se guarda aparte y con ese nombre.
+      agregar: async ({ partida, fotoId, url, rutaStorage }) => {
+        const id = nuevoIdEvidencia();
+        await fsSetAEstricto(ruta(id), {
+          urlOriginal: url,
+          rutaStorage: rutaStorage || null,
+          partidaId: partida?.id || partida?.sec || "",
+          partidaClave: partida?.sec || "",
+          partidaDesc: partida?.sub || "",
+          origen: ORIGEN_EN_VIVO,
+          capturadaPor: usuario?.uid || usuario?.correo || "",
+          capturadaPorNombre: usuario?.nombre || "",
+          fechaDeclarada: hoyLocalISO(),
+          subidaEn: serverTimestamp(),
+          anulada: false,
+          fotoIdLegado: fotoId || null,
+        }, ctx);
+        // Se vuelve a leer del servidor en lugar de adivinar: `serverTimestamp()`
+        // no tiene valor hasta que el servidor lo pone, y pintar la hora del
+        // teléfono mientras tanto enseñaría como verificada una fecha que es
+        // justo la que no es confiable.
+        const guardado = await fsGet(ruta(id));
+        if (guardado) setDocsEvidencia(ds => [...ds, { id, ...guardado }]);
+      },
+
+      // Anular no borra: ni el documento, ni el objeto de Storage. El
+      // expediente conserva que alguien subió algo y alguien lo retiró, con su
+      // motivo y su nombre. En una obra sin migrar se escribe en el mapa
+      // incrustado, porque si no la `×` seguiría borrando en producción hasta
+      // el día de la migración.
+      anular: async (ev, motivo) => {
+        if (!motivoDeAnulacionValido(motivo)) throw new Error("Falta el motivo");
+        const parche = {
+          anulada: true,
+          motivoAnulacion: motivo.trim(),
+          anuladaPor: usuario?.correo || usuario?.uid || "",
+        };
+        if (migrada) {
+          await fsSetAEstricto(ruta(ev.id), { ...parche, anuladaEn: serverTimestamp() }, ctx);
+          setDocsEvidencia(ds => ds.map(d => d.id === ev.id ? { ...d, ...parche } : d));
+          return;
+        }
+        setSubs(ss => ss.map(s => {
+          if ((s.id || s.sec) !== ev.partidaId) return s;
+          const fotosObj = s.fotos || {};
+          const llave = fotosObj[s.id] ? s.id : s.sec;
+          const lista = fotosObj[llave] || [];
+          return { ...s, fotos: { ...fotosObj, [llave]: lista.map(f =>
+            (f && typeof f === "object" && f.id === ev.id)
+              ? { ...f, ...parche, anuladaEn: new Date().toISOString() } : f) } };
+        }));
+        setCambiosPendientes(true);
+      },
+    };
+  }, [cfgEvidencia, evidencia, evidenciaCargada, obra?.id, obra?.contrato, obra?.nombre, usuario]);
+
   if(!usuario) return <><style>{css}</style><Login onLogin={u=>{
     setUsuario(u);
     if (u.bienvenidaVista !== true) setMostrarBienvenida(true);
   }}/></>;
 
-  const obra=obras.find(o=>o.id===obraId);
   const setObra=u=>setObras(oo=>oo.map(o=>o.id===u.id?u:o));
   const entrar=async(id, destino=null)=>{
     setObraId(id);setScreen("obra");
@@ -22747,15 +22982,6 @@ export default function App(){
   //  - Almacén sin captura en últimos 7 días (si ya hay materiales registrados)
   //  - Maquinaria sin captura en últimos 7 días
   //  - Nómina semanal sin cargar (última semana > 7 días)
-  // LA evidencia de la obra. Una sola lista, calculada una sola vez, y es la
-  // que consumen el tablero, el PDF y la galería del cliente. Antes cada una se
-  // aplanaba su propia copia del mapa `fotos` y las tres podían discrepar:
-  // dos usaban `.flat()` y la de la galería se quedó sin él durante semanas,
-  // anunciando fotos sobre una rejilla en blanco (#32).
-  const evidencia = useMemo(
-    () => evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs }),
-    [cfgEvidencia, docsEvidencia, subs]);
-
   const pendientesOp = (() => {
     if (screen !== "obra" || !obra) return 0;
     let count = 0;
@@ -22925,6 +23151,7 @@ export default function App(){
           notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
+          evid={evid}
           onNavTab={navTab}/>
       )}
 
@@ -22948,6 +23175,7 @@ export default function App(){
           notasSemana={notasSemana} onGuardarNota={guardarNota}
           nominaHistorial={nominaHistorial} setNominaHistorial={setNominaHistorial}
           setCambiosPendientes={setCambiosPendientes}
+          evid={evid}
           onNavTab={navTab}/>
       )}
 
