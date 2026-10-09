@@ -8,14 +8,22 @@
  *      gcloud auth application-default login
  *      gcloud config set project campo-fosmon
  *
- *   2) Ejecuta:
- *      node scripts/backfill-claims.js
+ *   2) Ensaya primero (NO escribe nada):
+ *      node scripts/backfill-claims.cjs --prod
  *
- *   3) Para simular sin escribir claims:
- *      node scripts/backfill-claims.js --dry-run
+ *   3) Y sólo entonces aplica:
+ *      node scripts/backfill-claims.cjs --prod --escribir
  *
  *   4) Verás por consola cuántos usuarios se actualizaron, cuántos ya estaban
  *      al día y cuántos fallaron (con el motivo).
+ *
+ * `--dry-run` ya no existe, y el cambio no es cosmético. Este guion reescribe
+ * CUSTOM CLAIMS DE FIREBASE AUTH de todos los usuarios, y los claims no están
+ * en Firestore: ni una regla ni el export de Firestore que usamos como respaldo
+ * los puede devolver. Mientras escribir era lo que salía por omisión y
+ * `--dry-run` era la forma de pedir que no lo hiciera, esto era un botón sin
+ * tapa — teclear el nombre del archivo sin argumentos bastaba para reescribir
+ * la identidad de todos. Ahora el ensayo es lo de omisión.
  *
  * ADC lee credenciales automáticamente en este orden:
  *   - Variable de entorno GOOGLE_APPLICATION_CREDENTIALS (opcional, para CI)
@@ -28,9 +36,22 @@
  * su nuevo token contenga los claims. Firebase Auth también refresca los
  * tokens automáticamente cada ~1 hora.
  */
-const admin = require("firebase-admin");
+// El portón va PRIMERO, antes incluso de `require("firebase-admin")`.
+//
+// No es manía de orden: `firebase-admin` no está instalado en la raíz de este
+// repo (vive en `functions/`), así que correr este guion desde aquí revienta en
+// el require con MODULE_NOT_FOUND y salida 1. Si el portón estuviera después,
+// el mensaje que recibe quien se equivocó de destino sería un stack trace de
+// Node en lugar de «No hay destino», y el guion habría quedado sin decir lo
+// único que importa decir. Resolviendo primero, el destino se contesta igual
+// esté o no instalado el SDK.
+const { resolverDestino } = require("./destino.cjs");
+const DESTINO = resolverDestino({
+  escribe: "reescribe custom claims de Firebase Auth de TODOS los usuarios",
+});
+const ESCRIBIR = DESTINO.escribir;
 
-const DRY_RUN = process.argv.includes("--dry-run");
+const admin = require("firebase-admin");
 
 // Debe coincidir con functions/index.js — ROLES_POR_TIPO + ROLES_CROSS
 const ROLES_POR_TIPO = {
@@ -65,7 +86,7 @@ function tipoDeRol(rol) {
 try {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
-    projectId: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || "campo-fosmon",
+    projectId: DESTINO.projectId,
   });
 } catch (e) {
   console.error("ERROR inicializando Firebase Admin con ADC:", e.message);
@@ -130,13 +151,13 @@ async function aplicarClaims(perfil) {
     JSON.stringify(ex.obras || []) === JSON.stringify(claims.obras || []) &&
     (ex.inactivo || false) === (claims.inactivo || false);
   if (iguales) return { ok: true, sinCambios: true, claims };
-  if (DRY_RUN) return { ok: true, claims, simulado: true };
+  if (!ESCRIBIR) return { ok: true, claims, simulado: true };
   await admin.auth().setCustomUserClaims(userRecord.uid, claims);
   return { ok: true, claims };
 }
 
 async function main() {
-  console.log(`Leyendo usuarios de Firestore${DRY_RUN ? " (DRY RUN)" : ""}…`);
+  console.log(`Leyendo usuarios de Firestore${ESCRIBIR ? "" : " (ENSAYO)"}…`);
   const snap = await admin.firestore().collection("usuarios").get();
   console.log(`Total en Firestore: ${snap.size}`);
 
@@ -158,7 +179,7 @@ async function main() {
       const claimsStr = res.claims.rol
         ? `rol=${res.claims.rol} orgId=${res.claims.orgId} tipo=${res.claims.tipo} todas=${res.claims.todas} obras=${res.claims.obras.length}`
         : "inactivo=true";
-      const marca = res.simulado ? "(dry)" : "     ";
+      const marca = res.simulado ? "(ensayo)" : "        ";
       console.log(`  ✓ ${marca} ${perfil.email}  → ${claimsStr}`);
     }
   }

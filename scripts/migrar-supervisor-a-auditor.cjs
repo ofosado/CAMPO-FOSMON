@@ -15,11 +15,14 @@
  *      gcloud auth application-default login
  *      gcloud config set project campo-fosmon
  *
- *   2) Ejecuta:
- *      node scripts/migrar-supervisor-a-auditor.js
+ *   2) Ensaya primero (NO escribe nada):
+ *      node scripts/migrar-supervisor-a-auditor.cjs --prod
  *
- *   3) Para simular sin escribir:
- *      node scripts/migrar-supervisor-a-auditor.js --dry-run
+ *   3) Y sólo entonces aplica:
+ *      node scripts/migrar-supervisor-a-auditor.cjs --prod --escribir
+ *
+ * `--dry-run` ya no existe: el ensayo es lo de omisión. Este guion cambia el
+ * ROL de usuarios, y el rol es lo que decide qué obras ve cada persona.
  *
  * Idempotente: al re-correr no cambia nada porque busca `rol == "supervisor"`
  * que ya no existirá tras la primera pasada.
@@ -28,14 +31,21 @@
  * automáticamente, así que los custom claims del usuario se actualizan solos.
  * No hace falta backfill separado.
  */
-const admin = require("firebase-admin");
+// El portón va PRIMERO, antes de `require("firebase-admin")` — que no está
+// instalado en la raíz de este repo. Si estuviera después, equivocarse de
+// destino daría un MODULE_NOT_FOUND en lugar de «No hay destino».
+const { resolverDestino } = require("./destino.cjs");
+const DESTINO = resolverDestino({
+  escribe: 'cambia el rol de usuarios de "supervisor" a "auditor"',
+});
+const ESCRIBIR = DESTINO.escribir;
 
-const DRY_RUN = process.argv.includes("--dry-run");
+const admin = require("firebase-admin");
 
 try {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
-    projectId: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || "campo-fosmon",
+    projectId: DESTINO.projectId,
   });
 } catch (e) {
   console.error("ERROR inicializando Firebase Admin con ADC:", e.message);
@@ -47,7 +57,7 @@ try {
 }
 
 (async () => {
-  console.log(`\nMigración supervisor → auditor${DRY_RUN ? " (DRY RUN)" : ""}\n`);
+  console.log(`\nMigración supervisor → auditor${ESCRIBIR ? "" : " (ENSAYO)"}\n`);
 
   const snap = await admin.firestore().collection("usuarios")
     .where("rol", "==", "supervisor")
@@ -64,8 +74,8 @@ try {
     console.log(`  · ${doc.id.padEnd(40)} ${perfil.email || "(sin email)"}   ${perfil.nombre || ""}`);
   }
 
-  if (DRY_RUN) {
-    console.log("\n--dry-run especificado. No se escribió nada. Corre sin --dry-run para aplicar.");
+  if (!ESCRIBIR) {
+    console.log("\nEnsayo: no se escribió nada. Agrega `--escribir` para aplicar.");
     process.exit(0);
   }
 
