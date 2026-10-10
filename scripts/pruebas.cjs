@@ -71,11 +71,39 @@ const hayEmulador = spawnSync(process.execPath, ['-e', `
   setTimeout(() => process.exit(1), 1500);
 `]).status === 0;
 
+// ── El reloj con el que se juzga ────────────────────────────────────────────
+//
+// La suite entera afirma sobre un producto mexicano: semanas ISO de captura,
+// cierres de nómina, "hace 7 días sin captura". Y `semanaISO` resuelve una
+// marca de tiempo completa por su DÍA LOCAL, que es lo correcto —un instante
+// designa un instante— pero local es local de la máquina que corre.
+//
+// El 2026-10-10, con la laptop en Europe/Madrid, la suite dio 52 verdes y UN
+// rojo: `2026-08-03T01:00:00Z` es domingo 2 a las 19:00 en México y lunes 3 a
+// las 03:00 en Madrid, así que la misma prueba sin cambiar una letra decía 31
+// en un sitio y 32 en el otro. Eso no es una prueba roja: es una suite cuyo
+// veredicto dependía de en qué país estaba abierta la computadora, que es la
+// forma más cara de "falla y luego pasa".
+//
+// Se fija aquí y no en el banco que falló porque el que falló fue el único que
+// tenía una marca de tiempo con hora; los demás usan la forma de diez letras y
+// hoy no se enteran. Esperar a que se enteren de uno en uno es volver a buscar
+// el defecto cada vez que alguien viaje.
+//
+// Lo que ESTO NO ARREGLA, y queda anotado en PENDIENTES: un teléfono fuera de
+// México sigue archivando su foto en la semana de su propio día local. Aquí se
+// hizo determinista la medición, no se cambió la conducta.
+const ZONA = 'America/Mexico_City';
+const entorno = { ...process.env, TZ: ZONA };
+console.log(`reloj de la suite: TZ=${ZONA}` +
+  (process.env.TZ && process.env.TZ !== ZONA
+    ? `  (la máquina trae TZ=${process.env.TZ}; se ignora a propósito)` : ''));
+
 const verdes = [], rojas = [], mudas = [], sinEmulador = [];
 
 for (const f of archivos) {
   const r = spawnSync(process.execPath, [path.join(dir, f)], {
-    encoding: 'utf8', cwd: path.join(dir, '..'),
+    encoding: 'utf8', cwd: path.join(dir, '..'), env: entorno,
   });
   const salida = (r.stdout || '') + (r.stderr || '');
   const rojasAqui = (salida.match(/^FALLA/gm) || []).length;

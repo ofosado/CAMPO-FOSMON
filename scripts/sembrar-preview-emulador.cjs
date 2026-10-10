@@ -41,6 +41,15 @@ const CLAVE = 'demo1234';
 // —así se los escribe `aplicarClaimsUsuario`— y su perfil tampoco lleva
 // `orgId`. Sembrarle una organización "para que funcione" sería sembrar el
 // caso que la app rechaza a propósito.
+// La cuarta es la que faltaba para poder MIRAR el caso del auditor. El auditor
+// es un externo —hoy son cuentas de @hytorc.com.mx y @noleaks.com.mx— con
+// `todas_obras:false` y, a la vez, con panel consolidado. Hasta ahora las tres
+// cuentas sembradas tenían `obras_asignadas: []`, así que la única pregunta que
+// importa de ese rol —¿el consolidado suma SÓLO sus obras?— no se podía ver en
+// pantalla: con cero asignadas, una lista filtrada y una sin filtrar se ven
+// igual de vacías. Se le asigna UNA de las dos obras de constructora a
+// propósito: el defecto se vería como una obra de más, y con una sola obra
+// sembrada no habría obra de más que ver.
 const CUENTAS = [
   { correo: 'demo@fosmon.com.mx', nombre: 'Demo FOSMON',
     rol: 'director_general', tipo: 'constructora', orgId: 'fosmon' },
@@ -48,6 +57,8 @@ const CUENTAS = [
     rol: 'director_obras', tipo: 'dependencia', orgId: 'coatzacoalcos' },
   { correo: 'soporte@cotea.com.mx', nombre: 'Soporte cotea',
     rol: 'soporte', tipo: null, orgId: null },
+  { correo: 'auditor@hytorc.com.mx', nombre: 'Auditor Hytorc',
+    rol: 'auditor', tipo: 'constructora', orgId: 'fosmon', obras: ['0114'] },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
@@ -590,15 +601,22 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     // `todas` es «todas las obras de SU organización». Soporte no tiene
     // organización, así que ponérselo en true sería sembrarle una facultad que
     // no existe y que ninguna regla le concede.
+    //
+    // Una cuenta que trae `obras` es, por definición, una de obras parciales:
+    // dejarle `todas: true` sembraría un usuario que las reglas dejan leer todo
+    // y que la pantalla filtra, y entonces el preview estaría mintiendo sobre
+    // cuál de los dos cerrojos es el que aguanta.
+    const asignadas = c.obras || [];
     await ponerClaims(uid, {
       rol: c.rol, orgId: c.orgId, tipo: c.tipo,
-      todas: c.orgId !== null, obras: [],
+      todas: c.orgId !== null && asignadas.length === 0, obras: asignadas,
     });
     await escribir(`usuarios/${idDeCorreo(c.correo)}`, {
       nombre: c.nombre, correo: c.correo, rol: c.rol, activo: true,
-      orgId: c.orgId, obras_asignadas: [], bienvenidaVista: true, uid,
+      orgId: c.orgId, obras_asignadas: asignadas, bienvenidaVista: true, uid,
     });
-    console.log(`  ${c.correo}  ${c.rol}  tipo=${c.tipo}  org=${c.orgId}`);
+    console.log(`  ${c.correo}  ${c.rol}  tipo=${c.tipo}  org=${c.orgId}` +
+                (asignadas.length ? `  obras=${asignadas.join(',')}` : ''));
   }
 
   // ── Obras de la constructora, en la RAÍZ ──────────────────────────────────
