@@ -90,14 +90,25 @@ const hayEmulador = spawnSync(process.execPath, ['-e', `
 // hoy no se enteran. Esperar a que se enteren de uno en uno es volver a buscar
 // el defecto cada vez que alguien viaje.
 //
-// Lo que ESTO NO ARREGLA, y queda anotado en PENDIENTES: un teléfono fuera de
-// México sigue archivando su foto en la semana de su propio día local. Aquí se
-// hizo determinista la medición, no se cambió la conducta.
-const ZONA = 'America/Mexico_City';
+// Lo que ESTO NO ARREGLA, y queda anotado en PENDIENTES #61: un teléfono fuera
+// de México sigue archivando su foto en la semana de su propio día local. Aquí
+// se hizo determinista la medición, no se cambió la conducta.
+//
+// ACTUALIZADO el 2026-10-11: fijarlo AQUÍ tampoco alcanzaba. El corredor es una
+// de las dos formas de correr un banco; la otra es a mano, que es justo como se
+// trabaja mientras se arregla algo, y ésa no pasaba por este renglón. Con la
+// laptop en Madrid, `prueba-series-sincronizadas` daba verde por `npm test` y
+// ROJO por `node scripts/…`: el mismo código, dos veredictos, según cómo lo
+// invocaras. Ahora el huso lo fija `reloj.cjs` desde el preámbulo que los 55
+// bancos ya cargan, y de ahí sale también esta constante — la zona es UNA
+// decisión y no se teclea en dos archivos. Lo de abajo se queda porque los
+// subprocesos heredan el entorno y porque el aviso vale: una suite verde en
+// Madrid no significa que la máquina de Madrid mida igual.
+const { ZONA, AMBIENTE } = require('./reloj.cjs');
 const entorno = { ...process.env, TZ: ZONA };
 console.log(`reloj de la suite: TZ=${ZONA}` +
-  (process.env.TZ && process.env.TZ !== ZONA
-    ? `  (la máquina trae TZ=${process.env.TZ}; se ignora a propósito)` : ''));
+  (AMBIENTE !== ZONA
+    ? `  (la máquina está en ${AMBIENTE}; se ignora a propósito)` : ''));
 
 const verdes = [], rojas = [], mudas = [], sinEmulador = [];
 

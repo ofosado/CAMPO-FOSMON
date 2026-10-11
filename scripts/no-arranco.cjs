@@ -17,6 +17,11 @@
 // `eliminarSemana` a `eliminarCarga` dejó `prueba-nomina-no-guarda-callado`
 // muerta antes de montar nada, y main pasó horas en rojo sin que se notara.
 
+// Fija el huso con el que se juzga, por efecto de carga. Vive aquí y no en
+// cada banco porque éste es el único módulo que los 55 ya requieren en su
+// cabecera, antes de construir ninguna fecha. El porqué está en `reloj.cjs`.
+require('./reloj.cjs');
+
 const NO_ARRANCO = 2;
 
 module.exports = function noArranco(faltantes, archivo = 'src/App.jsx') {
