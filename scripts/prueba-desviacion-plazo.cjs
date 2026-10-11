@@ -69,6 +69,10 @@ const NECESARIOS = [
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
   'proyeccionDeAvance', 'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
+  // El ARMADO de la cuenta, que ahora vive en un solo lugar: las pantallas
+  // llaman a `atrasoProyectado` en vez de repetir `estadoPorSemana` más la
+  // mezcla del plazo vigente. Sin él, la sección 4 revienta en vez de medir.
+  'atrasoProyectado',
 ];
 
 const trozos = [];           // declaraciones completas, en orden de fuente
@@ -179,6 +183,7 @@ if (process.argv.includes('--contraprueba')) {
 
 const app = new Function(`"use strict";\n${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
 const { C, kpiDesviacionPlazo, proyeccionDeAvance, estadoPorSemana, snapshotId,
+  atrasoProyectado,
   ESQUEMA_AVANCE, SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES,
   SIN_PROY_POCOS_CIERRES } = app;
 
@@ -327,12 +332,20 @@ console.log('\n4. Las dos pantallas, una sola cuenta\n');
 // se compara lo que produce cada una. Es el cable A→B: una prueba puede cubrir
 // que la cuenta está bien y que la pantalla la pinta, y seguir sin cubrir que
 // la pantalla pinta ESA cuenta.
+//
+// `atrasoProyectado` se inyecta con el reloj fijo, igual que
+// `proyeccionDeAvance`. Es el ARMADO de la cuenta —estados por semana más una
+// obra con el plazo vigente— que ahora vive en un solo lugar; las pantallas lo
+// llaman en vez de repetirlo. Si una se saliera de ahí, su `desvPlazo` dejaría
+// de depender de esta inyección y se vería aquí.
 const correrCuenta = (fuente) => new Function(
-  'kpiDesviacionPlazo', 'proyeccionDeAvance', 'estadoPorSemana',
-  'estados', 'estadosSemana', 'avanceActual', 'avance', 'obra', 'proy',
+  'kpiDesviacionPlazo', 'proyeccionDeAvance', 'estadoPorSemana', 'atrasoProyectado',
+  'estados', 'estadosSemana', 'historialAvance', 'avanceActual', 'avance', 'obra', 'proy',
   `"use strict"; return ${fuente};`)(
   kpiDesviacionPlazo, (e, a, o) => proyeccionDeAvance(e, a, o, AHORA), estadoPorSemana,
-  estados, estados, 56, 56, obraTarde, proyeccionDeAvance(estados, 56, obraTarde, AHORA));
+  (o, info, h, av) => atrasoProyectado(o, info, h, av, AHORA),
+  estados, estados, historial, 56, 56, obraTarde,
+  proyeccionDeAvance(estados, 56, obraTarde, AHORA));
 
 const resultados = cuentas.map(c => ({ donde: c.donde, k: correrCuenta(c.fuente) }));
 for (const r of resultados) console.log(`       ${r.donde}: ${r.k.valor} · ${r.k.sub}`);

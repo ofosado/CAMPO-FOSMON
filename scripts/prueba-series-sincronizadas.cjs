@@ -562,9 +562,34 @@ console.log('   qué día se corra la prueba.');
   check(s0802.semana === 31,
     `y el domingo anterior sigue siendo la 31 (dio ${s0802.semana})`);
   // Una marca de tiempo completa designa un instante: su día local manda.
+  //
+  // Esta afirmación es sobre México, y por eso `scripts/pruebas.cjs` corre toda
+  // la suite con TZ=America/Mexico_City. No es decoración: el 2026-10-10, con
+  // la laptop en Madrid, este mismo renglón dio 32 y la suite salió roja sin
+  // que nadie hubiera tocado el código. Si corres este banco a mano desde otro
+  // país, el aviso de abajo te lo dice en vez de dejarte buscar un defecto que
+  // no existe.
+  const zonaDeHoy = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!/Mexico|America\/(Merida|Monterrey|Cancun|Chihuahua|Tijuana)/.test(zonaDeHoy))
+    console.log(`      (ojo: esta máquina está en ${zonaDeHoy}; con \`npm test\` se fija México)`);
   const sInst = semanaISO('2026-08-03T01:00:00Z');   // 2 de agosto, 19:00 en México
   check(sInst.semana === 31,
     `un instante que en México cae el domingo se queda en la 31 (dio ${sInst.semana})`);
+
+  // Y lo que fijar la zona NO debe esconder: la regla real es «día local del
+  // aparato», no «día en México». Se afirma sin depender de en qué país corre,
+  // calculando el día local con el mismo `Date` que usa la cuenta. Un teléfono
+  // en otro huso archiva su foto en la semana de SU domingo, y eso hoy es así
+  // a propósito —`fechaDeclarada` es el reloj del teléfono— pero conviene que
+  // esté escrito donde se mide, no sólo en PENDIENTES.
+  const instante = '2026-08-03T01:00:00Z';
+  const diaLocal = new Date(instante);
+  const esperadaLocal = semanaISO(
+    `${diaLocal.getFullYear()}-${String(diaLocal.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(diaLocal.getDate()).padStart(2, '0')}`).semana;
+  check(semanaISO(instante).semana === esperadaLocal,
+    `la semana de un instante es la de su día LOCAL, corra donde corra ` +
+    `(${zonaDeHoy}: W${esperadaLocal})`);
 
   // f) El inverso tiene que invertir, también en un año que no empieza en jueves.
   const pares = [[2026, 1], [2026, 4], [2026, 53], [2027, 1], [2027, 4], [2027, 13], [2028, 9]];

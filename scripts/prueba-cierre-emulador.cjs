@@ -102,12 +102,37 @@ if (faltan.length) noArranco(faltan);
        '  node scripts/volcar-0114.cjs']);
   }
   const prod = JSON.parse(fs.readFileSync(VOLCADO, 'utf8'));
-  const semanasPrevias = prod.historial.semanas;
   const subs = prod.subs.data;
+
+  // ── La semana en curso se saca de la siembra, y no es un apaño ───────────
+  //
+  // El volcado es de PRODUCCIÓN y se baja el día que se corre, así que puede
+  // traer YA CERRADA la semana que este banco está a punto de cerrar. Cuando
+  // eso pasa, «el historial creció en uno» sale falso sin que nada esté roto:
+  // el cierre reemplazó la semana, que es lo correcto y es justo lo que mide la
+  // sección 5. Pasó el 2026-10-11 —la 0114 ya tenía su S41-2026 cerrada en
+  // producción— y el banco se puso rojo por el calendario, no por el código.
+  // Eso es «falla y luego pasa», que es el modo de fallo más caro.
+  //
+  // La alternativa era debilitar la aserción a «creció o reemplazó», y eso
+  // habría dejado de comprobar que la escritura LLEGA al servidor, que es para
+  // lo que este banco existe. La semana se calcula con la cuenta de la app
+  // —`semanaISO` y `snapshotId` extraídas del archivo, no copiadas— para que
+  // la siembra y el cierre no puedan discrepar sobre cuál es «esta semana».
+  const reloj = new Function(`"use strict";
+     const semanaISO = ${decl['semanaISO']};
+     const snapshotId = ${decl['snapshotId']};
+     return { semanaISO, snapshotId };`)();
+  const estaSemana = reloj.semanaISO(new Date());
+  const idEnCurso = reloj.snapshotId(estaSemana.semana, estaSemana.año);
+  const semanasPrevias = prod.historial.semanas.filter(s => s.id !== idEnCurso);
+  const yaVenia = prod.historial.semanas.length - semanasPrevias.length;
 
   console.log(`Volcado de producción del ${prod.bajadoEl}`);
   console.log(`  ${semanasPrevias.length} snapshots · ${subs.length} conceptos · ` +
-    `contrato ${prod.presupuesto}\n`);
+    `contrato ${prod.presupuesto}`);
+  console.log(`  se cierra ${idEnCurso}` +
+    (yaVenia ? ` · el volcado ya la traía y se saca de la siembra` : '') + '\n');
 
   // ── Firestore de verdad, en el emulador, con las reglas puestas ──────────
   const abrir = async (nombre, uid, claims) => {
