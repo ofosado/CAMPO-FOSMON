@@ -49,6 +49,8 @@ archivo.
 | 57 | **Desplegables cuyo valor puede no estar en su lista.** Barrido del 2026-10-07 sobre los 22 `<select>` del repo: los tres de estatus de estimación ya llevan guardia. Quedan dos donde el valor sí viene de datos guardados y la lista es fija —el concepto de materiales (`CPTS`, App.jsx ~13329) y los campos de obra con opciones (`opciones`, ~19440)—; si alguien renombra una opción, los documentos viejos se pintan como otra cosa. Los siete restantes son estado efímero de UI y no aplican. | ABIERTO |
 | 29 | **Falta el índice de `auditoria` por `obraId`**: la bitácora filtrada por obra sale vacía, que se lee como «no hubo actividad». | ABIERTO |
 | 9 | **Dos decimales no alcanzan para capturar volumen** — el redondeo cambia la cifra. | ABIERTO |
+| 60 | **Un `contralor` tiene TODAS las obras y no tiene vista concentrada.** Su única pantalla es la lista de tarjetas, de una en una. Ordenarla por atraso lo alivia, no lo resuelve: es hueco de diseño, no de orden. **No se arregla metiéndolo a `ROLES_PANEL_EJECUTIVO`** — en una constructora ese panel trae margen, y la frontera del P5 no se afloja por comodidad de navegación. Falta una vista concentrada SIN economía. Igual para `administrativo`. | ABIERTO |
+| 61 | **Un teléfono fuera de México archiva su foto en la semana de su propio día local.** `semanaISO` resuelve por día local, y local es el del aparato: un domingo por la noche en México es lunes en Madrid, y la foto cae en la semana siguiente. La suite ya fija `TZ=America/Mexico_City`, pero eso hizo determinista la **medición**, no la conducta. | ABIERTO |
 
 ## 3 · Impide enseñar el producto
 
@@ -72,6 +74,8 @@ archivo.
 | 58 | **`+ Nueva estimación` produce `no: NaN` si alguna estimación guardada no trae `no`**: calcula con `Math.max(...es.map(e=>e.no))`. El renglón sale como «EST-NaN» y el siguiente también. El `key` ya no depende de `no` (#59), así que no rompe el pintado, pero el número de estimación sí queda inservible. | ABIERTO |
 | 59 | **Un aviso de `key` de React en `Estimaciones` que NO se pudo reproducir.** Los cuatro de la consola son del **2026-10-06**, del buffer del preview, y no se vuelven a emitir: ni en recarga limpia ni en las dos obras sembradas. El barrido del archivo no encuentra ningún `.map` sin `key`, ni hoy ni en el commit de ayer. Sí se halló y cerró un defecto de esa clase (`key={e.no}`, ver abajo), pero **el rastro decía `at div` y aquél era un `<tr>`**, así que no se puede afirmar que sea el mismo. Si reaparece, anotar el sello `?t=` y el rol. | SIN REPRODUCIR |
 | — | **Despliegue de funciones pendiente**: rebase de `feature/resumen-semanal` + canario, y el retiro del cron `recordatorioCapturaSubs` que se fue con el #31. | POR DESPLEGAR |
+| 62 | **La carga a granel abre oyentes sobre obras que no son del usuario.** Quién PIDE ya está acotado (`necesitaDatosDeCartera`) y qué se ENTREGA también (`seSuscribe` por tipo, el P5 intacto), pero la lista sobre la que itera son las obras activas, no las asignadas. A un `auditor` con `todas_obras:false` el concentrado sí le filtra —medido— mientras que el granel no: hoy se tapa con las reglas de Firestore, que es un fallo de permiso por obra, no un acierto de diseño. | ABIERTO |
+| 63 | **`migrar-evidencia-subcoleccion.cjs` conserva su propio cerrojo de destino** en vez de usar `scripts/destino.cjs`. Dos cerrojos que hacen lo mismo se desincronizan; el que quede atrás es el que escribe a producción por accidente. | ABIERTO |
 
 ## 5 · Falta algo que se prometió
 
@@ -105,6 +109,7 @@ archivo.
 | 43 | El correo del resumen semanal sigue firmando como CAMPO · FOSMON (6 sitios). | ABIERTO |
 | 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. | DESPLEGADO |
 | — | La sonda de cámara en `/api/sonda/` es diagnóstico, no producto: mide si `getUserMedia` sirve en standalone en iOS, que es la precondición del #52. Se retira en cuanto haya veredicto. Vive bajo `/api/` porque es la única ruta que el service worker ya instalado no se traga. | ABIERTO |
+| 64 | Los dos manifiestos se sirven como `application/octet-stream`. iOS los instala igual, así que no bloquea nada; está anotado para que nadie lo vuelva a investigar desde cero cuando algún navegador deje de perdonarlo. | ABIERTO |
 | 18 | Nómina: arrastrar y soltar + pegar desde el portapapeles. | ABIERTO |
 | 42 | cotea no tiene eslogan y el campo está esperando uno. | DECISIÓN |
 | — | Unificar las tres copias del aplanado de fotos (se va con el #30). | ABIERTO |

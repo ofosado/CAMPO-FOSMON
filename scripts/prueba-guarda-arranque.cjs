@@ -102,19 +102,41 @@ check(!!condRender && /vePanelEjecutivo\(/.test(condRender),
 check(!!condRender && !/\.includes\(/.test(condRender),
   'el render del panel ya no lleva lista literal de roles');
 
-// b) El que carga: el init de `verPanelEjecutivo`.
+// b) El que carga: el init de `cargarCartera`.
+//
+// Se llamaba `verPanelEjecutivo` y decidía directo con el predicado. Dejó de
+// poder hacerlo el día que `contralor` y `administrativo` —que NO tienen panel
+// ejecutivo, a propósito, porque ese panel trae margen— empezaron a ordenar su
+// lista por atraso: para ordenar por atraso hay que haber cargado la cartera.
+// Con el cerrojo preguntando sólo por el panel, esos dos roles entraban con el
+// selector en «Atraso» y la lista en orden alfabético, porque `datosPorObra`
+// venía vacío. Nada estaba rojo; la conducta no existía.
+//
+// El defecto que esta sección vigila NO cambió: sigue siendo que la decisión de
+// cargar y la de pintar se desincronicen por tener cada una su lista de roles.
+// Lo que cambió es que ahora hay un salto en medio, así que se vigilan los dos
+// tramos: `cargarCartera` tiene que delegar en `necesitaDatosDeCartera`, y ésa
+// tiene que estar escrita en términos de `vePanelEjecutivo`. Ninguno de los dos
+// puede traer lista literal.
 let condCarga = null;
 traverse(ast, {
   VariableDeclarator(p) {
-    if (condCarga || p.node.id?.name !== 'verPanelEjecutivo') return;
+    if (condCarga || p.node.id?.name !== 'cargarCartera') return;
     condCarga = fuente(p.node.init);
   },
 });
 check(!!condCarga, 'se encontró la condición que carga los datos del panel');
-check(!!condCarga && /vePanelEjecutivo\(/.test(condCarga),
-  'la carga de datos decide con vePanelEjecutivo');
+check(!!condCarga && /necesitaDatosDeCartera\(/.test(condCarga),
+  'la carga de datos delega en necesitaDatosDeCartera');
 check(!!condCarga && !/\.includes\(/.test(condCarga),
   'la carga de datos ya no lleva lista literal de roles');
+
+const necesita = initModulo('necesitaDatosDeCartera');
+check(!!necesita, 'necesitaDatosDeCartera vive a nivel de módulo');
+check(!!necesita && /vePanelEjecutivo\(/.test(necesita),
+  'necesitaDatosDeCartera sigue decidiendo con vePanelEjecutivo');
+check(!!necesita && !/\.includes\(/.test(necesita),
+  'necesitaDatosDeCartera no lleva lista literal de roles');
 
 // ── 2. Promise.all de config/info ──────────────────────────────────────
 console.log('\n2. config/info — ¿una obra sin permiso tumba el lote?');

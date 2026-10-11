@@ -59,6 +59,19 @@ const CUENTAS = [
     rol: 'soporte', tipo: null, orgId: null },
   { correo: 'auditor@hytorc.com.mx', nombre: 'Auditor Hytorc',
     rol: 'auditor', tipo: 'constructora', orgId: 'fosmon', obras: ['0114'] },
+  // La quinta es el caso que no se podía MIRAR: `contralor` tiene
+  // `todas_obras:true` y NO está en `ROLES_PANEL_EJECUTIVO`, así que recibe la
+  // cartera completa y su única herramienta para recorrerla es la lista de
+  // tarjetas. Es el rol para el que se ordenó la lista por atraso, y sin una
+  // cuenta suya ese orden sólo se podía comprobar en un banco: con el director
+  // de obras la lista de tarjetas ya ni se pinta.
+  //
+  // Las tres obras de la dependencia sirven de fixture tal como están: dos con
+  // cierres suficientes para proyectar y la tercera con uno solo, así que el
+  // orden tiene que mandarla al final sin inventarle un cero. Con todas las
+  // obras en atraso medible no se vería la mitad que importa.
+  { correo: 'contralor@cotea.com.mx', nombre: 'Contraloría Coatzacoalcos',
+    rol: 'contralor', tipo: 'dependencia', orgId: 'coatzacoalcos' },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');

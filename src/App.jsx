@@ -3514,6 +3514,55 @@ const atrasoProyectado = (obra, info, historialAvance = [], avanceActual, ahora 
   proyeccionDeAvance(estadoPorSemana(historialAvance), avanceActual,
     { ...(obra || {}), ...(info || {}) }, ahora);
 
+// Los días de atraso de UNA obra, armados desde lo que el cargador dejó en
+// memoria para ella (`datosPorObra[id]`).
+//
+// Vive aquí y no dentro de la pantalla que ordena porque el avance que entra a
+// la proyección es el avance EN VIVO sobre contrato, y ése se calcula con
+// `avanceFisicoPonderado` sobre el catálogo: tres decisiones encadenadas —qué
+// subs, contra qué contrato, en qué modo— que una pantalla puede tomar distinto
+// de otra sin que nadie lo note. Escrita aquí, la lista ordena por el mismo
+// atraso que el tablero enseña al abrir la obra que la lista puso primero.
+//
+// `obra` ya trae `config/info` encima: el cargador mezcla `{...o, ...info}` con
+// esa precedencia antes de que la obra llegue a cualquier pantalla, así que el
+// fin ampliado —contra qué fecha se mide el atraso— ya viene puesto. De ahí el
+// `null` que se le pasa a `atrasoProyectado`, igual que en el tablero.
+const atrasoDeObra = (obra, datos = {}, ahora = Date.now()) => {
+  const subs = datos?.subs || [];
+  const contrato = Number(obra?.presupuesto) || 0;
+  const af = (contrato > 0 && subs.length > 0)
+    ? avanceFisicoPonderado(subs, contrato, obra?.modoAvance === 'volumen')
+    : 0;
+  return atrasoProyectado(obra, null, datos?.historialAvanceSemanas || [], af, ahora)
+    .desviacionDias;
+};
+
+// Una lista de obras ordenada por atraso, la más atrasada primero.
+//
+// `null` NO es cero, y en un orden por atraso ésa es toda la diferencia.
+// `desviacionDias` viene nulo por cinco razones distintas —de «requiere 2
+// cierres» a «sin plazo vigente capturado»— y restar nulos los convierte en 0,
+// que aterriza esas obras justo entre −1 y +1 día: en una lista que promete
+// orden por atraso, ese lugar se lee como «ésta va en tiempo», que es
+// precisamente la cifra inventada que no se permite. Van al final, después de
+// la última obra con atraso MEDIDO, y entre ellas por nombre, que es lo único
+// que se sabe de ellas.
+//
+// El atraso se pide UNA vez por obra y se guarda: dentro del comparador se
+// recalcularía unas cuantas veces por obra, y cada cálculo recorre el historial
+// completo.
+const porAtrasoDesc = (lista = [], atrasoDe) => {
+  const k = new Map(lista.map(o => [o.id, atrasoDe(o)]));
+  return [...lista].sort((a, b) => {
+    const x = k.get(a.id), y = k.get(b.id);
+    if (x === null && y === null) return String(a.nombre || '').localeCompare(String(b.nombre || ''));
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return y - x;
+  });
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
@@ -5976,6 +6025,61 @@ const ROLES_PANEL_EJECUTIVO = new Set([
   "director_obras", "subdirector", "jefe_supervision",
 ]);
 const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
+
+// ── ¿Quién navega por tarjetas y quién por la tabla? ───────────────────
+// Los roles con panel ejecutivo reciben arriba una tabla con una fila por obra,
+// ordenable, con el atraso y los días sin captura en columnas. Debajo traían
+// además la misma cartera en tarjetas: la segunda mitad de la pantalla repetía
+// la primera con menos datos y sin poder ordenarse, y la tabla —que es la
+// buena— quedaba a veinte tarjetas de distancia de su propia obra.
+//
+// `verHistorial` MANDA sobre esto, y no es un detalle. El panel sólo habla de
+// obras activas, así que en el Historial no se pinta; esconder ahí también las
+// tarjetas dejaría la pantalla de archivadas completamente en blanco, y justo
+// para los dos roles que pueden abrirla (`director_operaciones` y
+// `gerente_construccion`, ambos con panel). La lista se esconde donde la tabla
+// la reemplaza, no donde no hay tabla.
+const veListaDeTarjetas = (rol, verHistorial) => !!verHistorial || !vePanelEjecutivo(rol);
+
+// ── Los roles con la cartera completa y NINGUNA vista que la resuma ────
+// SE DERIVA, no se escribe. Son los que tienen `todas_obras` y no tienen panel
+// ejecutivo: hoy `administrativo` y `contralor`. Escrito a mano, este conjunto
+// se quedaría viejo en silencio en los dos sentidos —un rol nuevo con toda la
+// cartera no entraría, y si algún día se le da panel al contralor seguiría
+// aquí—. Derivado, se vacía solo el día que el hueco se cierre de verdad.
+//
+// Es un PALIATIVO declarado, no la solución: un contralor con todas las obras y
+// sin vista concentrada es un hueco de diseño (anotado en PENDIENTES), y ningún
+// orden de la lista lo cierra. Lo único que hace es que la obra que se está
+// cayendo aparezca primero en vez de donde le toque por nombre.
+const ROLES_SIN_CONCENTRADO = new Set(
+  Object.keys(PERMISOS).filter(r => PERMISOS[r].todas_obras && !vePanelEjecutivo(r)));
+
+// Con qué orden ABRE la lista, que no es lo mismo que qué órdenes ofrece.
+// Para los demás roles el alfabético sigue siendo el bueno: o traen pocas obras
+// asignadas, o traen arriba la tabla, que ya ordena.
+const ordenInicialDeLista = rol => ROLES_SIN_CONCENTRADO.has(rol) ? "atraso" : "nombre";
+
+// ── ¿Esta sesión necesita los datos de TODAS sus obras en la lista? ────
+// Son dos casos y el segundo es el que faltaba. El panel ejecutivo los necesita
+// para su tabla; los roles sin concentrado los necesitan para poder ORDENAR su
+// lista por atraso, que es lo único que tienen.
+//
+// MEDIDO EN PANTALLA, no deducido: con el cerrojo preguntando sólo por el panel,
+// el contralor entraba con «Atraso: Mayor → Menor» puesto en el selector, las
+// tres tarjetas en «EJECUTADO $0» y la lista en orden alfabético. No era un
+// orden equivocado —sin historial `atrasoDeObra` devuelve `null` y los nulos van
+// al final, empatados por nombre—: era un orden que no podía existir. La función
+// nueva, el selector nuevo y las 31 comprobaciones del banco estaban verdes
+// sobre una pantalla que no había cambiado.
+//
+// La frontera del margen NO se afloja aquí. Qué oyentes se levantan lo decide
+// `seSuscribe` por TIPO de organización, no por rol, y `soloContrato` sigue
+// siendo `esDependencia(usuario)`: un contralor de dependencia recibe las cuatro
+// claves de `CLAVES_BULK_DEPENDENCIA` y ninguna de las cinco de economía (P5).
+// Lo que se amplía es quién pide, no qué se entrega.
+const necesitaDatosDeCartera = rol =>
+  vePanelEjecutivo(rol) || ROLES_SIN_CONCENTRADO.has(rol);
 
 // ── Completud de los datos de una obra en el Panel Ejecutivo ───────────
 // El panel se alimenta de 8 listeners por obra. Antes el guard preguntaba
@@ -9750,7 +9854,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   // P5: de este lado de la pantalla el dinero del contratista no existe.
   const dep=esDependencia(usuario);
   const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const[orden,setOrden]=useState("nombre"); // nombre|importe_asc|importe_desc|avance_asc|avance_desc
+  // Nunca `useState("nombre")` con un `useEffect` que lo corrija después: eso
+  // pinta un render en A→Z y lo reordena encima, y el usuario ve saltar su
+  // propia lista. El orden de arranque se decide ANTES del primer render.
+  const[orden,setOrden]=useState(()=>ordenInicialDeLista(usuario.rol)); // nombre|atraso|importe_asc|importe_desc|avance_asc|avance_desc
   const[verHistorial,setVerHistorial]=useState(false);
   const[modalNueva,setModalNueva]=useState(false);
   const[confirmarArchivar,setConfirmarArchivar]=useState(null);
@@ -9770,8 +9877,16 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   const activas=todasObras.filter(o=>o.estado!=="archivada");
   const archivadas=todasObras.filter(o=>o.estado==="archivada");
 
+  // Un solo `ahora` para toda la lista: si cada obra preguntara la hora por su
+  // cuenta, dos obras de la misma pantalla se medirían contra instantes
+  // distintos. Da igual hoy —son milisegundos— y deja de dar igual el día que
+  // la lista se ordene por algo que cruce la medianoche.
+  const HOY = Date.now();
+  const atrasoDe = (o) => atrasoDeObra(o, datosPorObra[o.id], HOY);
+
   const ordenar=(lista)=>{
     const l=[...lista];
+    if(orden==="atraso")       return porAtrasoDesc(l, atrasoDe);
     if(orden==="importe_desc") return l.sort((a,b)=>b.presupuesto-a.presupuesto);
     if(orden==="importe_asc")  return l.sort((a,b)=>a.presupuesto-b.presupuesto);
     if(orden==="avance_desc")  return l.sort((a,b)=>b.gastoGP/b.presupuesto-a.gastoGP/a.presupuesto);
@@ -9883,6 +9998,11 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   };
 
   const listaActual=ordenar(verHistorial?archivadas:activas);
+
+  // El auditor incluido, por instrucción expresa: su concentrado ya viene
+  // filtrado a sus obras asignadas (medido aparte), así que la tabla le dice de
+  // su cartera lo mismo que las tarjetas y además ordenada.
+  const veLista = veListaDeTarjetas(usuario.rol, verHistorial);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {modalNueva&&<ModalNuevaObra usuario={usuario} onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}/>}
@@ -10060,6 +10180,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       <Sel value={orden} onChange={e=>setOrden(e.target.value)}
         style={{fontSize:10,padding:"5px 8px",flex:1,minWidth:160}}>
         <option value="nombre">Ordenar: A → Z</option>
+        {/* Se ofrece a todo rol que vea la lista, no sólo a los dos que abren
+            con él: quien tiene tres obras asignadas también quiere saber cuál
+            de las tres va tarde. Lo que cambia por rol es con cuál ABRE. */}
+        <option value="atraso">Atraso: Mayor → Menor</option>
         <option value="importe_desc">Importe: Mayor → Menor</option>
         <option value="importe_asc">Importe: Menor → Mayor</option>
         {/* Estas dos dicen "Avance" y ordenan por gasto/presupuesto — es el
@@ -10090,13 +10214,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           gpDisponible={gpDisponible} onSelectObra={onSelect}/>
     )}
 
-    {/* Lista de obras */}
+    {/* Lista de obras. El aviso de «no hay ninguna» NO lleva `veLista`: con
+        cero obras, esconderlo deja la pantalla en blanco —el panel de arriba no
+        tiene nada que pintar tampoco— y una pantalla en blanco se lee como una
+        falla de la app, no como una cartera vacía. Es el caso del auditor al
+        que todavía no le asignan obras. */}
     {listaActual.length===0&&<div style={{background:C.card,borderRadius:10,padding:24,
       textAlign:"center",color:C.textMut,fontSize:12}}>
       {verHistorial?"No hay obras archivadas":"No hay obras activas"}
     </div>}
 
-    {listaActual.map(o=>{
+    {veLista&&listaActual.map(o=>{
       const d = datosPorObra[o.id] || {};
       // Avance físico ponderado
       const subsO = d.subs || [];
@@ -22719,11 +22847,11 @@ export default function App(){
   // cualquier residente aparezcan en tiempo real sin reiniciar la app.
   const[datosPorObra,setDatosPorObra]=useState({});
   const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
-  const verPanelEjecutivo = !!usuario && vePanelEjecutivo(usuario.rol);
+  const cargarCartera = !!usuario && necesitaDatosDeCartera(usuario.rol);
   useEffect(()=>{
     if(!usuario) return;
     if(screen !== "obras") return;   // solo cargar cuando estoy en la lista de obras
-    if(!verPanelEjecutivo) return;   // solo si va a ver el Panel Ejecutivo
+    if(!cargarCartera) return;       // panel ejecutivo, u orden por atraso sin panel
     const activas = obras.filter(o=>o.estado!=="archivada");
     // El umbral era `<2` con el comentario "el Panel solo se muestra con ≥2
     // obras", pero DashboardPrincipal se pinta desde 1. Con exactamente una
@@ -22848,7 +22976,7 @@ export default function App(){
     });
 
     return () => unsubs.forEach(u => u());
-  },[usuario, obrasActivasKey, screen, verPanelEjecutivo]);
+  },[usuario, obrasActivasKey, screen, cargarCartera]);
 
   // ── LA EVIDENCIA, ANTES DE CUALQUIER `return` ───────────────────────────
   //
