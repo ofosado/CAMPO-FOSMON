@@ -3459,6 +3459,61 @@ const kpiDesviacionPlazo = (proy) => {
   return { valor: `−${Math.abs(d)} d`, sub: `de adelanto, ${contra}`, dias: d, color: C.greenDk };
 };
 
+// ── CUÁNTOS DÍAS LLEVA SIN CAPTURARSE ──────────────────────────────────────
+//
+// Estaba escrita TRES veces: el panel de constructora, el portafolio de
+// dependencia y el tablero de la obra. Y no eran la misma expresión — las dos
+// primeras leían sólo `fechaCaptura`, la tercera prefería `fechaCierre`—, así
+// que daban el mismo número por una coincidencia de cómo se escriben los
+// snapshots: `fechaCaptura` y `fechaCierre` salen del MISMO instante
+// (`ahora.toISOString()` en el cierre), y `fechaCierre` es null en los
+// intermedios. Dos cuentas que dan lo mismo no son una cuenta: es una que
+// todavía no se rompió.
+//
+// Donde sí se habrían separado: un registro que traiga `fechaCierre` sin
+// `fechaCaptura` —la forma que devuelve `estadoPorSemana`— hacía que el panel
+// dijera «sin captura» de una obra que el tablero reportaba al día. Por eso la
+// cuenta única acepta las dos formas en vez de exigir una.
+//
+// `fechaCaptura` manda sobre `fechaCierre` porque el número se llama «días sin
+// CAPTURA»: lo que fecha el evento que se está contando es la captura. El
+// cierre entra como respaldo, no como preferencia.
+//
+// Devuelve `null` —nunca 0— cuando no hay con qué contar. Un cero aquí se lee
+// «capturaron hoy», que es la mentira cómoda (P2).
+// CUÁL es esa fecha, separado de CUÁNTOS días han pasado, porque el tablero de
+// la obra enseña las dos cosas en el mismo Kpi: «hace 9 días» arriba y «2 oct
+// 26» debajo. Si la fecha se eligiera con una expresión y la cuenta con otra,
+// ese recuadro podría decir «hace 9 días» sobre una fecha que no es la que
+// contó, y nadie lo notaría hasta que las dos formas se separen.
+const fechaUltimaCapturaDe = (historialAvance = []) => {
+  const ult = Array.isArray(historialAvance) && historialAvance.length
+    ? historialAvance[historialAvance.length - 1] : null;
+  const fecha = ult?.fechaCaptura || ult?.fechaCierre || null;
+  if (!fecha) return null;
+  return Number.isFinite(new Date(fecha).getTime()) ? fecha : null;
+};
+
+const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
+  const fecha = fechaUltimaCapturaDe(historialAvance);
+  if (!fecha) return null;
+  return Math.floor((ahora - new Date(fecha).getTime()) / 86400000);
+};
+
+// ── EL ATRASO PROYECTADO DE UNA OBRA ───────────────────────────────────────
+//
+// `desviacionDias` ya vivía en un solo lugar (`proyeccionDeAvance`), pero el
+// ARMADO no: hay que pasarle los estados por semana y una obra cuyo plazo sea
+// el vigente. Esa segunda parte es la que se equivoca sola —`info` tiene que
+// mandar sobre `o`, porque el fin ampliado vive en el documento de contrato y
+// es el que decide contra qué fecha se mide el atraso—. Repetir el armado en
+// cada pantalla que quiera ordenar por atraso es repetir esa regla, y la copia
+// que la olvide va a medir contra el plazo firmado y declarar a tiempo una obra
+// que no lo está.
+const atrasoProyectado = (obra, info, historialAvance = [], avanceActual, ahora = Date.now()) =>
+  proyeccionDeAvance(estadoPorSemana(historialAvance), avanceActual,
+    { ...(obra || {}), ...(info || {}) }, ahora);
+
 // ════════════════════════════════════════════════════════════════════════════
 // LA SEMANA A LA QUE PERTENECE UN REGISTRO DE NÓMINA
 // ════════════════════════════════════════════════════════════════════════════
@@ -4273,7 +4328,7 @@ const BIBLIOTECA_RIESGOS = [
       const estados = estadoPorSemana(historialAvance);
       const ultimo = estados[estados.length-1];
       if (!ultimo || ultimo.avance === null) return null;
-      const proy = proyeccionDeAvance(estados, ultimo.avance, obra);
+      const proy = atrasoProyectado(obra, null, historialAvance, ultimo.avance);
       if (proy.razon !== null) return null;   // sin velocidad medible no hay nada que afirmar
       if (proy.desviacionDias === null) return null;
       // El atraso se mide en DÍAS reales contra el fin vigente, no contando
@@ -8749,7 +8804,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   const arrastreMargenPP = margenPctSinEsasObras - consolidado.margenPct;   // siempre >= 0
 
   // ── BLOQUE 2 — Excepciones ──
-  const HOY = new Date();
+  // Milisegundos, no `Date`: las tres cuentas que lo usan abajo son restas, y
+  // una de ellas entra a `diasSinCapturaDe`, que recibe una marca de tiempo.
+  const HOY = Date.now();
   const excepciones = [];
   // Índice de kpis por obra — evita recalcular calcularKPIsObra en el detector.
   const kpisById = Object.fromEntries(kpisPorObra.map(x => [x.obra.id, x.kpis]));
@@ -8758,11 +8815,14 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const nombre = resolverNombreCortoObra(o, gpData);
     const kpisObra = kpisById[o.id];
 
-    // (a) Sin captura ≥ 7 días
+    // (a) Sin captura ≥ 7 días. La cuenta es `diasSinCapturaDe` y no una resta
+    // local, porque este mismo número sale TRES veces en esta pantalla: aquí
+    // como excepción, en la columna «captura» de la tabla y en el texto «hace N
+    // días» de la fila. Si la excepción dice 8 y la fila dice 7, no hay forma
+    // de saber cuál es la obra que lleva una semana muda.
     const avSemanas = d.historialAvanceSemanas || [];
-    const ultAv = avSemanas[avSemanas.length - 1];
-    if (ultAv?.fechaCaptura) {
-      const dias = Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24));
+    const dias = diasSinCapturaDe(avSemanas, HOY);
+    if (dias !== null) {
       if (dias >= 7) {
         excepciones.push({
           obraId: o.id,
@@ -8862,12 +8922,13 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
         deltaMargen = mU - mP;
       }
     }
-    // Última captura (días atrás desde hoy)
-    let ultimaCapturaTxt = '—';
-    if (ultAv?.fechaCaptura) {
-      const dias = Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24));
-      ultimaCapturaTxt = dias === 0 ? 'hoy' : (dias === 1 ? 'ayer' : `hace ${dias} días`);
-    }
+    // Última captura (días atrás desde hoy). Mismo número que la columna
+    // `diasSinCaptura` de esta misma fila, de la misma cuenta: eran dos
+    // expresiones idénticas escritas por separado, y la columna ordena por una
+    // mientras la celda enseña la otra.
+    const diasCap = diasSinCapturaDe(avSemanas, HOY);
+    const ultimaCapturaTxt = diasCap === null ? '—'
+      : diasCap === 0 ? 'hoy' : (diasCap === 1 ? 'ayer' : `hace ${diasCap} días`);
     // Margen indefinido: gasto sin ejecución (ej. obra en arranque con
     // costos de movilización antes de facturar avance). calcularKPIsObra
     // fuerza mpct=0 por la guarda contra división entre cero, pero mostrar
@@ -8889,7 +8950,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       personal,
       deltaPersonal,
       ultimaCapturaTxt,
-      diasSinCaptura: ultAv?.fechaCaptura ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / (1000 * 60 * 60 * 24)) : null,
+      diasSinCaptura: diasCap,
     };
   });
 
@@ -9373,15 +9434,14 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
     const porEjercer = Math.max(contratado - pagado, 0);
 
     const avSemanas = d.historialAvanceSemanas || [];
-    const ultAv = avSemanas[avSemanas.length - 1];
-    const diasSinCaptura = ultAv?.fechaCaptura
-      ? Math.floor((HOY - new Date(ultAv.fechaCaptura)) / 86400000) : null;
+    const diasSinCaptura = diasSinCapturaDe(avSemanas, HOY);
 
-    // El atraso proyectado, con la MISMA cuenta que el detalle de la obra.
-    // `info` manda sobre `o` porque las fechas de plazo —y la ampliación, que
-    // es la que decide contra qué se mide— viven en el documento de contrato.
-    const paraPlazo = { ...o, ...info };
-    const proy = proyeccionDeAvance(estadoPorSemana(avSemanas), af, paraPlazo, HOY);
+    // El atraso proyectado, con la MISMA cuenta que el detalle de la obra —y
+    // «la misma» quiere decir la misma función, no una copia que coincida.
+    // Dentro va la precedencia de `info` sobre `o`, que es la parte que se
+    // olvida sola: el fin ampliado vive en el documento de contrato y es el que
+    // decide contra qué fecha se mide el atraso.
+    const proy = atrasoProyectado(o, info, avSemanas, af, HOY);
 
     // El contratista se captura a mano y es texto libre (#41): hasta que haya
     // padrón, «ACME S.A.» y «Acme SA de CV» son dos empresas para la máquina.
@@ -12363,12 +12423,11 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
 
   // Última captura: la más reciente del historial semanal. Si no hay historial
   // la cifra no se puede calcular, y entonces se dice (P2) — no se pone "hace
-  // 0 días", que se leería como "capturaron hoy".
-  const ultima = historialAvance.length > 0
-    ? historialAvance[historialAvance.length - 1] : null;
-  const fechaUltima = ultima?.fechaCierre || ultima?.fechaCaptura || null;
-  const diasSinCaptura = fechaUltima
-    ? Math.floor((Date.now() - new Date(fechaUltima).getTime()) / 86400000) : null;
+  // 0 días", que se leería como "capturaron hoy". La cuenta es `diasSinCapturaDe`,
+  // la misma que el concentrado, para que el tablero de una obra y el renglón de
+  // esa obra en la lista no puedan discrepar.
+  const fechaUltima = fechaUltimaCapturaDe(historialAvance);
+  const diasSinCaptura = diasSinCapturaDe(historialAvance);
 
   // Plazo. El fin vigente sale de `finVigenteDe`, la misma cuenta que usan la
   // proyección y la pantalla de plazos. Derivarlo aquí de la lista de
@@ -12409,7 +12468,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   // consumió —puro calendario, la obra podría estar al 2%—; esto dice si al
   // ritmo medido la obra llega. Van en la misma tarjeta porque juntas contestan
   // «¿va a tiempo?», que ninguna de las dos contesta sola.
-  const desvPlazo = kpiDesviacionPlazo(proyeccionDeAvance(estadosSemana, avance, obra));
+  const desvPlazo = kpiDesviacionPlazo(atrasoProyectado(obra, null, historialAvance, avance));
 
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
@@ -12981,7 +13040,7 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   // Proyección de término: velocidad, fecha y desviación contra el plazo
   // VIGENTE, en una sola cuenta que también devuelve por qué no hay
   // proyección cuando no la hay.
-  const proy = proyeccionDeAvance(estados, avanceActual, obra);
+  const proy = atrasoProyectado(obra, null, historialAvance, avanceActual);
   const velocidadProm = proy.velocidad;
   const fechaProyFin = proy.fechaFin;
   const finContrato = proy.finVigente;
