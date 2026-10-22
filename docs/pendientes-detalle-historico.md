@@ -452,8 +452,8 @@ arreglado.** Es inventario, medido sobre los 56 bancos, no deducido.
 
 | # | Insumo | Quién lo pone hoy | Por qué importa |
 |---|---|---|---|
-| a | **El proyecto de Firebase por omisión** | `.firebaserc` dice `default: campo-fosmon`, que es **PRODUCCIÓN** | Cualquier comando `firebase` sin `--project` apunta a producción. No muerde a los bancos —todos fijan `campo-fosmon-prueba` en literal— pero sí a cualquier mano que ejecute un comando suelto. Es el disfraz más caro de los que quedan. |
-| b | **El estado del emulador entre bancos** | Lo que dejó el anterior | **6 de 8** bancos con emulador NO borran datos antes de empezar (`aislamiento-de-usuarios`, `cierre-emulador`, `escritura-en-su-organizacion`, `nota-no-calla`, `prefijo-organizacion`, `reglas-dependencia-captura`). Las reglas ya no se heredan; **los documentos sí**. Es la misma trampa del #68 en el otro insumo. Los dos que sí limpian lo hacen por haberse quemado contando documentos. |
+| ~~a~~ | ~~El proyecto de Firebase por omisión~~ | **CERRADO el mismo día — #71** | Era la **cuarta** aparición del destino destructivo por omisión. Detalle abajo, porque no es un renglón de inventario: es la raíz de los otros tres. |
+| ~~b~~ | ~~El estado del emulador entre bancos~~ | **CERRADO el mismo día — #72** | 6 de 8 no limpiaban, y los 2 que limpiaban se tragaban el fallo. `scripts/emulador-limpio.cjs` limpia al entrar y NO ARRANCA si no puede. |
 | c | **La versión de Node** | La que tenga la máquina (hoy v26.0.0) | No hay `.nvmrc` ni `engines` en `package.json`. 47 bancos parsean `src/App.jsx` con Babel y ejecutan el resultado; un cambio de Node cambia qué sintaxis corre y cómo se redondea. |
 | d | **El locale de las cifras de dinero** | Elegido banco por banco | 9 bancos afirman con `'es-MX'` y 2 con `'en-US'` (`estado-de-cuenta`, `tabla-dependencia`). Los dos producen la misma salida para montos sin decimales, así que hoy no muerde — pero es una cuenta por número escrita de dos formas, y la app usa una sola. |
 | e | **El `PATH` y el JDK** | `export PATH=…openjdk…` a mano, antes de cada corrida | Sin él el emulador no arranca; el banco lo reporta como NO ARRANCÓ, que es correcto, pero la precondición no está escrita en ninguna parte ejecutable. |
@@ -465,6 +465,40 @@ arreglado.** Es inventario, medido sobre los 56 bancos, no deducido.
 los 56 bancos. Los **guiones de medición** (`medir-*.cjs`) no están en la
 suite —ése es el #65— así que ningún insumo suyo lo vigila nadie. Y son los
 que producen las cifras con las que se decide una escritura a producción.
+
+### La cuarta aparición: el destino destructivo era el de OMISIÓN (#71)
+
+Palabras del usuario al verlo: *«es la cuarta aparición del mismo patrón: el
+destino destructivo es el de omisión. Es la raíz de la que salieron todos los
+demás.»* Y tiene razón en el orden causal: las tres anteriores eran guiones
+que habían aprendido el hábito de alguien, y ese alguien era esto.
+
+| | Qué omitía | Qué pasaba |
+|---|---|---|
+| 1 | `migrar-evidencia-subcoleccion.cjs`, sin `EMU_HOST` | 270 documentos escritos en producción, 2026-10-09 01:43 |
+| 2 | Los tres guiones de Admin SDK, sin destino **y** sin `--escribir` | `backfill-claims` reescribía custom claims, que el respaldo no devuelve |
+| 3 | `destino.cjs` tapó los dos de arriba | — |
+| 4 | **`.firebaserc`, `default: campo-fosmon`** | `firebase deploy --only firestore:rules` sin `--project` → **PRODUCCIÓN**, sin avisar |
+
+**Lo que se hizo.** Fuera el alias de omisión; quedan `produccion` y `prueba`,
+los dos con nombre. Un deploy sin destino ahora se para y ofrece los dos.
+
+**Y lo que costó entender, que es la parte que vale.** La comprobación NO lee
+`.firebaserc`, y no por purismo del P3: **leer el archivo mide la mitad
+equivocada.** El `firebase` real resuelve el proyecto activo mirando también
+el configstore del usuario (`~/.config/configstore/firebase-tools.json`), que
+vive fuera del repositorio y que cualquier `firebase use produccion` vuelve a
+fijar. Este equipo lo tenía puesto a `campo-fosmon`, heredado de la ruta vieja
+de iCloud. O sea: **un `.firebaserc` impecable convive con el defecto.**
+
+Así que la §7 de `prueba-el-destino-se-escribe` le pregunta al `firebase` de
+verdad, con el comando que destruye (`deploy --dry-run`), desde la raíz. Es
+local, tarda ~1.5 s, no toca red y no fija nada —a diferencia de
+`firebase use <alias>`, que valida contra el servidor y **deja puesto** el
+proyecto activo, o sea que la prueba habría dejado instalado lo que mide.
+
+**Contraprueba**, no deducida: reponiendo el `default`, 4 comprobaciones en
+rojo, salida 1, y la propia salida dice `=== Deploying to 'campo-fosmon'...`.
 
 ---
 
