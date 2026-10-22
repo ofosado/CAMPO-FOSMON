@@ -16,8 +16,11 @@ vuelta atrás; luego lo que hace que una pantalla afirme algo falso; luego lo
 que impide enseñar el producto; luego lo que puede fallar en silencio; luego lo
 que falta y se prometió; al final lo cosmético.
 
-Los principios P1–P6 no están aquí: no se cierran, gobiernan. Viven en el
-archivo.
+Los principios P1–P7 no están aquí: no se cierran, gobiernan. Viven en el
+archivo. El **P7** es de 2026-10-22: *un banco CARGA su insumo; no lo hereda
+del ambiente, y si no puede cargarlo sale NO ARRANCÓ, nunca verde.* Salió de
+tres incidentes que eran el mismo —el reloj, los guiones muertos por renombre
+y 7 de 9 bancos juzgando el ruleset heredado—, y los tres se veían verdes.
 
 ---
 
@@ -78,6 +81,7 @@ archivo.
 | — | **Despliegue de funciones pendiente**: rebase de `feature/resumen-semanal` + canario, y el retiro del cron `recordatorioCapturaSubs` que se fue con el #31. | POR DESPLEGAR |
 | 62 | **La carga a granel abre oyentes sobre obras que no son del usuario.** Quién PIDE ya está acotado (`necesitaDatosDeCartera`) y qué se ENTREGA también (`seSuscribe` por tipo, el P5 intacto), pero la lista sobre la que itera son las obras activas, no las asignadas. A un `auditor` con `todas_obras:false` el concentrado sí le filtra —medido— mientras que el granel no: hoy se tapa con las reglas de Firestore, que es un fallo de permiso por obra, no un acierto de diseño. | ABIERTO |
 | 65 | **Los guiones de medición mueren por renombre y nadie los ve morir.** `medir-evidencia-para-migrar.cjs` (busca `fotosDeSub`) y `medir-fotos.cjs` (busca `conFotos`) no arrancan: 2 de 9. Sacan símbolos de `src/App.jsx` igual que los bancos, pero **no están en la suite**, así que no hay quien avise — es el P4 sin corredor. Importa porque son la herramienta con la que se decide una escritura a producción: el día que alguien quiera medir antes de migrar, se va a encontrar el guion muerto y la tentación va a ser migrar sin medir. | ABIERTO |
+| 70 | **Barrido del P7: qué más heredan los bancos del ambiente.** Inventario, nada arreglado. Ya cargado y sin agujeros: huso (56/56), ruleset (8/8), código por AST (47/56), datos de la 0114 (versionados), locale (0 llamadas sin locale). Sigue heredado, de más caro a menos: **(a)** `.firebaserc` pone `default: campo-fosmon`, o sea **PRODUCCIÓN** — no muerde a los bancos, que fijan el proyecto en literal, pero sí a cualquier `firebase …` suelto; **(b)** **6 de 8** bancos con emulador no borran datos antes de empezar: las reglas ya no se heredan, los documentos sí; **(c)** no hay `.nvmrc` ni `engines` y 47 bancos ejecutan lo que parsean; **(d)** 9 bancos afirman dinero con `es-MX` y 2 con `en-US`; **(e)** el `PATH` con el JDK; **(f)** ADC; **(g)** tres ficheros en `/tmp`; **(h)** `new Date()` directo en 6 bancos — el huso está fijo, el instante no. La lista completa, en el detalle. | ABIERTO |
 | 63 | **`migrar-evidencia-subcoleccion.cjs` conserva su propio cerrojo de destino** en vez de usar `scripts/destino.cjs`. Dos cerrojos que hacen lo mismo se desincronizan; el que quede atrás es el que escribe a producción por accidente. | ABIERTO |
 | 67 | **Los bancos de permisos no cargaban las reglas que decían juzgar** — 7 de 9. Medían el ruleset que el emulador tuviera puesto: `prueba-reglas-evidencia` denunciaba `create @ L453` mientras el archivo tenía ese `create` en L482. Un arreglo de reglas se podía ver verde por las reglas viejas. Es la forma del hallazgo del reloj en otro insumo. Cerrado con `scripts/reglas-del-repo.cjs`: cada banco carga el archivo antes de su primera sesión. | CERRADO |
 | 68 | **`prueba-nota-no-calla` deja el emulador con un ruleset mutilado y no lo restaura**, y tres bancos de permisos corren después en orden alfabético sobre el mismo proyecto. Medido: tras correrla, una escritura a `avance/notas` que antes pasaba rebota. Hoy **no mordía** —ningún otro banco toca esa ruta— y el #67 lo desactivó cargando por banco en vez de restaurar al salir, que es lo que sobrevive a que un banco reviente a media corrida. Queda escrito porque la trampa era de orden, y el orden lo fija `ls`. | CERRADO |

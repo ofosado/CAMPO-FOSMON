@@ -382,6 +382,92 @@ para no contar — y son objetivos opuestos.
 
 ---
 
+## P7. Un banco CARGA su insumo; no lo hereda del ambiente
+
+**Adoptado**: 2026-10-22. No salió de un incidente: salió de tres, y de que
+el usuario se diera cuenta antes que yo de que eran el mismo. *«Las tres son
+la misma falla con distinto disfraz. Y las tres se veían verdes.»*
+
+Un banco se compone de dos cosas: lo que afirma y el insumo contra el que lo
+afirma. El P3 y el P6 gobiernan lo primero. Éste gobierna lo segundo, y es
+más traicionero, porque **un insumo equivocado no rompe nada**: el banco
+corre entero, mide limpiamente y emite un veredicto —sobre otra cosa.
+
+**La regla, en dos mitades:**
+
+1. **El insumo se carga desde el repositorio al empezar**, dentro del propio
+   banco, antes de la primera medición. No se da por puesto, no se hereda de
+   quien corrió antes, no se toma de lo que el ambiente tuviera.
+2. **Si no se puede cargar, el banco sale NO ARRANCÓ (2)**, nunca verde y
+   nunca rojo. Es el P4: no se midió nada, ni bien ni mal.
+
+**Los tres disfraces, por si vuelve un cuarto:**
+
+| Insumo | Quién lo ponía | Qué se veía |
+|---|---|---|
+| La zona horaria | El reloj de la laptop (`Europe/Madrid`) | Verde o rojo según en qué país estuviera el equipo |
+| La lista de guiones de medición | El renombre de una función en `src/App.jsx` | 2 de 9 muertos, y nadie los veía morir: no estaban en la suite |
+| El ruleset de Firestore | Lo que el emulador tuviera puesto, o lo que le dejara el banco anterior | 7 de 9 bancos de permisos juzgando reglas que no eran las del archivo |
+
+A los que se añade el insumo de datos: `prueba-cierre-emulador` leía su
+volcado de `/tmp`, y reponerlo exigía red y un token de ADC vivo.
+
+**Lo que esto cuesta cuando no se cumple** no es un rojo: es que `npm test` y
+`node scripts/…` puedan dar veredictos distintos sobre lo mismo según qué
+corrió antes, en qué huso está la laptop o cuántas horas lleva el emulador
+arriba. **Un veredicto que depende de cómo lo invocaste no se arregla: se
+aprende a ignorar.**
+
+**Y el corolario del arreglo:** no se restaura al salir, se carga al entrar.
+Restaurar deja el orden importando —un banco que revienta a media corrida no
+restaura, y el siguiente hereda—. Cargar al entrar quita el orden de la
+ecuación. Lo mismo vale al otro extremo de la tubería: lo que gobierna
+producción se baja del servicio, no se lee del archivo del repo
+(`scripts/verificar-reglas-publicadas.cjs`).
+
+**Dónde vive el cumplimiento hoy:** `scripts/reloj.cjs` (huso),
+`scripts/reglas-del-repo.cjs` (ruleset), `insumos/` (datos). Un insumo nuevo
+necesita su cargador, no una nota en el `README`.
+
+### El barrido del P7 — qué más heredan los 56 bancos (2026-10-22)
+
+Pedido así: *«¿qué otro insumo heredan los bancos del ambiente y nadie carga?
+Quiero la lista aunque no arregles nada todavía.»* **Nada de esto está
+arreglado.** Es inventario, medido sobre los 56 bancos, no deducido.
+
+**Ya cargado (el P7 se cumple):**
+
+- **Huso horario** — `scripts/reloj.cjs`, vía `no-arranco.cjs`. **56/56** lo
+  requieren. Sin agujeros.
+- **Ruleset de Firestore** — `scripts/reglas-del-repo.cjs`. **8/8** bancos que
+  abren el emulador lo cargan. Sin agujeros.
+- **Código bajo prueba** — 47/56 lo extraen por AST de `src/App.jsx`, que es
+  el P3 funcionando.
+- **Datos de la 0114** — `insumos/0114-produccion.json`, versionado.
+- **Locale** — ninguna llamada a `toLocale*()` sin locale explícito. Sin
+  agujeros. (Pero ver abajo: dos bancos de dinero usan `'en-US'` y nueve
+  `'es-MX'`.)
+
+**Heredado todavía, por orden de qué tan caro sería:**
+
+| # | Insumo | Quién lo pone hoy | Por qué importa |
+|---|---|---|---|
+| a | **El proyecto de Firebase por omisión** | `.firebaserc` dice `default: campo-fosmon`, que es **PRODUCCIÓN** | Cualquier comando `firebase` sin `--project` apunta a producción. No muerde a los bancos —todos fijan `campo-fosmon-prueba` en literal— pero sí a cualquier mano que ejecute un comando suelto. Es el disfraz más caro de los que quedan. |
+| b | **El estado del emulador entre bancos** | Lo que dejó el anterior | **6 de 8** bancos con emulador NO borran datos antes de empezar (`aislamiento-de-usuarios`, `cierre-emulador`, `escritura-en-su-organizacion`, `nota-no-calla`, `prefijo-organizacion`, `reglas-dependencia-captura`). Las reglas ya no se heredan; **los documentos sí**. Es la misma trampa del #68 en el otro insumo. Los dos que sí limpian lo hacen por haberse quemado contando documentos. |
+| c | **La versión de Node** | La que tenga la máquina (hoy v26.0.0) | No hay `.nvmrc` ni `engines` en `package.json`. 47 bancos parsean `src/App.jsx` con Babel y ejecutan el resultado; un cambio de Node cambia qué sintaxis corre y cómo se redondea. |
+| d | **El locale de las cifras de dinero** | Elegido banco por banco | 9 bancos afirman con `'es-MX'` y 2 con `'en-US'` (`estado-de-cuenta`, `tabla-dependencia`). Los dos producen la misma salida para montos sin decimales, así que hoy no muerde — pero es una cuenta por número escrita de dos formas, y la app usa una sola. |
+| e | **El `PATH` y el JDK** | `export PATH=…openjdk…` a mano, antes de cada corrida | Sin él el emulador no arranca; el banco lo reporta como NO ARRANCÓ, que es correcto, pero la precondición no está escrita en ninguna parte ejecutable. |
+| f | **Credenciales de ADC** | `gcloud auth application-default` | Sólo para lo que mide producción (`verificar-reglas-publicadas`, los `medir-*`), y por eso ninguno de ellos está en la suite. Correcto por diseño; se anota para que siga siéndolo. |
+| g | **Dos ficheros en `/tmp`** | El ambiente | `/tmp/storage-prueba-ata-partida.txt` y `/tmp/adc.tok` en 2 bancos, más `/tmp/storage-obras.txt` en 2 guiones de medición. Es el mismo caso del volcado de la 0114, sin resolver. |
+| h | **`new Date()` directo** | El reloj del sistema | 6 bancos. El huso ya está fijado, así que no es el defecto del reloj otra vez; lo que queda suelto es el **instante**, que hace que un banco pueda cambiar de veredicto según el día (semana ISO, fin de mes, cambio de año). No medido si alguno depende de eso. |
+
+**El que NO está en la lista y debería preocupar más:** el barrido sólo mira
+los 56 bancos. Los **guiones de medición** (`medir-*.cjs`) no están en la
+suite —ése es el #65— así que ningún insumo suyo lo vigila nadie. Y son los
+que producen las cifras con las que se decide una escritura a producción.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por

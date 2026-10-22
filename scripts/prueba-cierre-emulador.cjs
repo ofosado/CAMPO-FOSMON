@@ -40,7 +40,14 @@ const noArranco = require('./no-arranco.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
 
-const VOLCADO = process.argv[2] || '/tmp/0114-produccion.json';
+// El insumo vive EN EL REPOSITORIO, versionado. Estaba en `/tmp`, y el día
+// que el sistema limpió el temporal este banco pasó a NO ARRANCÓ: correcto
+// como veredicto, pero la causa era que su insumo lo ponía el ambiente. Y la
+// reposición era peor que el síntoma — se rehacía leyendo PRODUCCIÓN, así que
+// el banco dependía de que hubiera red y de que el token de ADC sirviera.
+// Es una instantánea, no un dato vivo; una instantánea se versiona.
+const VOLCADO = process.argv[2] ||
+  path.join(raiz, 'insumos', '0114-produccion.json');
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
@@ -96,15 +103,18 @@ const faltan = NECESARIAS.filter(n => !decl[n]);
 if (faltan.length) noArranco(faltan);
 
 (async () => {
-  // Este banco corre contra el historial REAL de la 0114, que no vive en el
-  // repositorio: hay que bajarlo. Sin él no se comprueba nada, así que es
-  // NO ARRANCÓ y no rojo — decirlo al revés deja la suite con un rojo crónico
-  // que enseña a no mirar los rojos.
+  // Este banco corre contra el historial REAL de la 0114. Sin él no se
+  // comprueba nada, así que es NO ARRANCÓ y no rojo — decirlo al revés deja
+  // la suite con un rojo crónico que enseña a no mirar los rojos. La
+  // comprobación se queda aunque el insumo ya esté versionado: lo que cambió
+  // es de dónde sale, no qué pasa si falta.
   if (!fs.existsSync(VOLCADO)) {
     noArranco.sinPrecondicion(
-      `el volcado ${VOLCADO}, que es el historial real de la obra ${OBRA} y no está en el repositorio`,
-      ['TOKEN=$(gcloud auth application-default print-access-token) \\',
-       '  node scripts/volcar-0114.cjs']);
+      `el volcado ${path.relative(raiz, VOLCADO)}, que es el historial real de la obra ${OBRA}`,
+      ['Debería estar versionado en el repositorio. Si falta, se repone',
+       'bajándolo otra vez de producción (SOLO LECTURA):',
+       'TOKEN=$(gcloud auth application-default print-access-token) \\',
+       `  node scripts/volcar-0114.cjs ${OBRA} ${path.relative(raiz, VOLCADO)}`]);
   }
   const prod = JSON.parse(fs.readFileSync(VOLCADO, 'utf8'));
   const subs = prod.subs.data;
