@@ -95,6 +95,18 @@ const PROYECTO = 'campo-fosmon-prueba';
 const OBRA = '0126';
 const ORG_DEP = 'minatitlan';
 
+// ── Las reglas que se juzgan salen DEL ARCHIVO ──────────────────────────────
+//
+// Esto faltaba, y es más grave que el defecto que vine a arreglar: un banco
+// llamado `prueba-reglas-evidencia` no estaba midiendo `firestore.rules`, sino
+// el ruleset que el emulador tuviera puesto. El porqué completo —los dos modos
+// en que eso engaña, y la medición de los dos— está en `reglas-del-repo.cjs`.
+// `ARCH_REGLAS` es para la contraprueba: permite juzgar un ruleset derivado sin
+// tocar el archivo del repositorio.
+const { cargarReglas } = require('./reglas-del-repo.cjs');
+const ARCH_REGLAS = process.env.ARCH_REGLAS
+  ? path.resolve(process.env.ARCH_REGLAS) : path.join(raiz, 'firestore.rules');
+
 const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
 const tokenDe = (uid, claims) => {
   const ahora = Math.floor(Date.now() / 1000);
@@ -154,6 +166,12 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
                     anuladaPor: 'quien@sea.mx', anuladaEn: '2026-10-08T17:00:00Z' };
 
 (async () => {
+  // Antes de abrir una sola sesión: el ruleset que se va a juzgar es el del
+  // archivo. Si esto se mueve más abajo, el banco vuelve a opinar sobre lo que
+  // hubiera cargado.
+  console.log(`(reglas cargadas desde ${await cargarReglas(
+    { proyecto: PROYECTO, host: HOST, puerto: PUERTO, archivo: ARCH_REGLAS })})\n`);
+
   const abrir = async (nombre, uid, claims) => {
     const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, nombre);
     const auth = getAuth(app);
@@ -331,6 +349,69 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
   const eRCo = await intentar(() => getDoc(doc(contratista, ...RUTA_D, 'd1')));
   check(eRCo && denegado(eRCo), 'y una sesión de constructora no lee el path municipal',
     eRCo ? 'rebotó' : 'LEYÓ');
+
+  // ── 6b. EL DIRECTIVO CON LA FORMA DE CLAIM QUE PRODUCCIÓN LE ACUÑA ───────
+  //
+  // Esta sección es el punto ciego por el que se colό el defecto, y vale la
+  // pena dejar escrito cómo era de estrecho. La sección 6 afirmaba «el
+  // supervisor de obra captura evidencia en su obra» con un claim
+  // `todas:false, obras:[OBRA]`. Verde. Y la rama del directivo —la que dice
+  // "en cualquier obra"— nunca se intentó en `create`: `dirDep` se abría
+  // únicamente para comprobar que NO puede borrar.
+  //
+  // Mientras tanto, `obraId in obrasAsignadas()` colgaba de las tres ramas del
+  // `or`, y `backfill-claims.cjs` acuña a director_obras, subdirector y
+  // jefe_supervision con `obras: []` SIEMPRE. Un arreglo vacío: ese `in` es
+  // insatisfacible por construcción para exactamente los roles cuya rama dice
+  // "en cualquiera". Un banco verde sobre la rama que sí tenía obras asignadas
+  // no dice nada de la que no las tiene nunca.
+  //
+  // Lo que costaba: antes de migrar, el director subía la foto a `avance/subs`
+  // (`puedeEditarObraD`, que sí lleva `todasObras()`) y pasaba. Migrada la
+  // obra, la misma foto va a `evidencia/{eid}` y rebotaba. La migración
+  // convertía una captura que funcionaba en una denegada, en las cuatro obras
+  // de producción que ya están migradas.
+  //
+  // Por eso los claims de aquí abajo se escriben con la forma EXACTA que sale
+  // de `backfill-claims.cjs` —`todas: true, obras: []`— y no con una lista
+  // conveniente. Un banco de reglas que inventa un claim más cómodo que el que
+  // produce el sistema comprueba un sistema que no existe.
+  console.log('\n6b. El directivo captura en cualquier obra: `todas:true, obras:[]`');
+  const CLAIM_DIRECTIVO = (rol) => ({
+    tipo: 'dependencia', rol, orgId: ORG_DEP, todas: true, obras: [],
+  });
+  // La clase entera, no sólo el rol con el que mordió. Son los tres que
+  // `ROLES_TODAS_OBRAS` mete en el mismo saco y que `esDirectivoDEditor()`
+  // nombra uno por uno.
+  for (const rol of ['director_obras', 'subdirector', 'jefe_supervision']) {
+    const db = await abrir(`${rol}-${sello}`, `${rol}-sin-obras`, CLAIM_DIRECTIVO(rol));
+    const e = await intentar(() => setDoc(doc(db, ...RUTA_D, `dir-${rol}`), FOTO(rol)));
+    check(!e, `${rol} sube evidencia en una obra que no tiene asignada`,
+      e ? `DENEGADA: ${e.message}` : 'creada');
+  }
+
+  // Y el otro lado de la condición, que es lo que impide que esto sea una
+  // ampliación: `todasObras()` abre la rama del directivo, no la puerta.
+  const contralorDep = await abrir(`cont-${sello}`, 'contralor-dep',
+    CLAIM_DIRECTIVO('contralor'));
+  const eCon = await intentar(() => setDoc(doc(contralorDep, ...RUTA_D, 'cont1'), FOTO('c')));
+  check(eCon && denegado(eCon),
+    'el contralor NO captura aunque traiga `todas:true`: fiscaliza, no ejecuta',
+    eCon ? 'rebotó' : 'SUBIÓ — el contralor dejó de ser de sólo lectura');
+
+  const supAjeno = await abrir(`supaj-${sello}`, 'supervisor-0127', {
+    tipo: 'dependencia', rol: 'supervisor_obra', orgId: ORG_DEP, todas: false, obras: ['0127'],
+  });
+  const eSA = await intentar(() => setDoc(doc(supAjeno, ...RUTA_D, 'sa1'), FOTO('y')));
+  check(eSA && denegado(eSA),
+    'y un supervisor sin esta obra asignada sigue rebotando',
+    eSA ? 'rebotó' : 'ESCRIBIÓ — el `todasObras()` abrió la puerta de más');
+
+  // La mitad de Storage del mismo acto. No se intenta aquí —este banco no
+  // habla con Storage— pero queda anotado dónde vive: subir el archivo y
+  // escribir su documento son un solo acto para el usuario, y las dos reglas
+  // tienen que decir lo mismo. `storage.rules` L119 ya lo decía; esta no.
+  // `prueba-reglas-evidencia` y las reglas de Storage se leen juntas.
 
   // ── 7. LA BANDERA DEL CORTE: EL #31 EN EL INTERRUPTOR ───────────────────
   //

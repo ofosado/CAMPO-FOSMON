@@ -80,13 +80,22 @@ function rulesetSinNotas() {
   return { sin, quitados };
 }
 
-async function cargarReglas(contenido) {
-  const r = await fetch(
-    `http://${HOST}:${PUERTO}/emulator/v1/projects/${PROYECTO}:securityRules`,
-    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rules: { files: [{ name: 'firestore.rules', content: contenido }] } }) });
-  if (!r.ok) throw new Error(`no se pudieron cargar las reglas: ${r.status} ${(await r.text()).slice(0, 300)}`);
-}
+// Este banco deja el emulador con el ruleset MUTILADO puesto, y no lo
+// restaura. Eso era una trampa para los bancos de permisos que corren después
+// en orden alfabético —`prefijo-organizacion`, `reglas-dependencia-captura`,
+// `reglas-nomina-subcoleccion`— y que no cargaban nada: juzgaban las reglas de
+// aquí. Comprobado el 2026-10-11, no deducido: con el archivo completo cargado
+// un residente escribe en `avance/notas` y PASA; después de correr este banco,
+// la misma escritura REBOTA.
+//
+// No se arregla restaurando al salir. Restaurar deja el orden importando: si
+// este banco revienta a media corrida no restaura, y el siguiente vuelve a
+// heredar. Se arregló al revés —cada banco carga lo que va a juzgar antes de
+// su primera sesión— y por eso aquí se puede seguir dejando el ruleset
+// mutilado sin que le haga daño a nadie. Ver `reglas-del-repo.cjs`.
+const { cargarReglas: cargarRulesetEnEmulador } = require('./reglas-del-repo.cjs');
+const cargarReglas = (contenido) =>
+  cargarRulesetEnEmulador({ proyecto: PROYECTO, host: HOST, puerto: PUERTO, contenido });
 
 // La función real, tal cual está en el código que se va a desplegar.
 const ARCH_APP = process.argv[2]

@@ -51,6 +51,13 @@ const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PUERTO_STOR = Number(process.env.EMU_STOR_PORT || 9199);
 const PROYECTO = 'campo-fosmon-prueba';
 
+// Las reglas que este banco juzga salen DEL ARCHIVO, no de lo que el emulador
+// tuviera puesto ni de lo que le dejara la prueba anterior. Importa aquí:
+// `prueba-nota-no-calla` carga un ruleset mutilado a propósito, no lo
+// restaura, y en orden alfabético corre ANTES de este banco. El porqué
+// completo, con las dos mediciones del 2026-10-11, en `reglas-del-repo.cjs`.
+const { cargarReglas } = require('./reglas-del-repo.cjs');
+
 const ORG = 'dep-demo';         // la dependencia
 const OTRA_ORG = 'dep-vecina';  // otra dependencia, para probar el aislamiento
 const OBRA = 'OP-2026-001';     // la obra asignada al supervisor
@@ -105,6 +112,11 @@ const appsDe = new Map();
 const storsDe = new Map();
 
 (async () => {
+  // Antes de la primera sesión: si se mueve más abajo, el banco vuelve a
+  // opinar sobre el ruleset que hubiera.
+  console.log(`(reglas cargadas desde ${await cargarReglas(
+    { proyecto: PROYECTO, host: HOST, puerto: PUERTO })})`);
+
   const abrir = async (nombre, uid, claims) => {
     const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador',
       storageBucket: `${PROYECTO}.appspot.com` }, nombre);

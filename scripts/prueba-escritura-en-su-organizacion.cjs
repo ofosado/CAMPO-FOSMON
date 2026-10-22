@@ -77,6 +77,11 @@ const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
 
+// Las reglas que este banco juzga salen DEL ARCHIVO, no de lo que el emulador
+// tuviera puesto ni de lo que le dejara la prueba anterior. El porqué
+// completo, con las dos mediciones del 2026-10-11, en `reglas-del-repo.cjs`.
+const { cargarReglas } = require('./reglas-del-repo.cjs');
+
 const ORG_DEP = 'coatzacoalcos';
 const OBRA_DEP = 'OP-2026-001';
 const OBRA_CONS = '0114';
@@ -170,6 +175,11 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
 }
 
 (async () => {
+  // Antes de la primera sesión: si se mueve más abajo, el banco vuelve a
+  // opinar sobre el ruleset que hubiera.
+  console.log(`(reglas cargadas desde ${await cargarReglas(
+    { proyecto: PROYECTO, host: HOST, puerto: PUERTO })})`);
+
   // src/rutas-org.js es ESM y este guion CJS (la raíz es "type": "module").
   let rutas;
   try { rutas = await import(path.resolve(raiz, 'src/rutas-org.js')); }
