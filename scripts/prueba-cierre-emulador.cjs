@@ -47,6 +47,11 @@ const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
 const OBRA = '0114';
 
+// Este banco entra AUTENTICADO y con las reglas puestas (ver cabecera), así
+// que también depende del ruleset — y por tanto de que sea el del archivo y no
+// el que dejara la prueba anterior. El porqué, en `reglas-del-repo.cjs`.
+const { cargarReglas } = require('./reglas-del-repo.cjs');
+
 // El emulador de Auth acepta custom tokens sin firmar; no hace falta una
 // llave de servicio. Los `claims` son los que la app pone al residente y los
 // que `firestore.rules` lee en `puedeEditarObraC`.
@@ -103,6 +108,12 @@ if (faltan.length) noArranco(faltan);
   }
   const prod = JSON.parse(fs.readFileSync(VOLCADO, 'utf8'));
   const subs = prod.subs.data;
+
+  // Después de la precondición del volcado y antes de la primera sesión: si
+  // falta el volcado, lo que hay que decir es eso y no que el emulador no
+  // contesta.
+  console.log(`(reglas cargadas desde ${await cargarReglas(
+    { proyecto: PROYECTO, host: HOST, puerto: PUERTO })})`);
 
   // ── La semana en curso se saca de la siembra, y no es un apaño ───────────
   //

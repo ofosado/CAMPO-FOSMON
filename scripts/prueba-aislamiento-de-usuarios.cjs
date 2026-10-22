@@ -222,14 +222,17 @@ function manejador(mod, nombre) {
 // ── Carga de las reglas del repo en el emulador ─────────────────────────────
 // Por la API del propio emulador, para que la prueba mida las reglas DEL
 // ARCHIVO y no las que estuvieran cargadas de antes.
-async function cargarReglas(archivo) {
-  const r = await fetch(
-    `http://${HOST}:${PUERTO}/emulator/v1/projects/${PROYECTO}:securityRules`,
-    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rules: { files: [{ name: 'firestore.rules',
-        content: fs.readFileSync(archivo, 'utf8') }] } }) });
-  if (!r.ok) noArranco(`el emulador no aceptó las reglas: ${r.status} ${await r.text()}`);
-}
+//
+// Este banco era uno de los dos que ya lo hacía bien, y de aquí salió el
+// módulo compartido: el 2026-10-11 se encontró que los otros SIETE bancos de
+// permisos no cargaban nada. La copia local se va a `reglas-del-repo.cjs` por
+// la misma razón que la zona del reloj vive en un solo archivo — dos copias de
+// una decisión se desincronizan, y ésta ya se había desincronizado en el
+// manejo del fallo (aquí era `noArranco(...)`, que habla de símbolos que
+// cambiaron de nombre; un emulador caído o unas reglas mal escritas no son eso).
+const { cargarReglas: cargarRulesetEnEmulador } = require('./reglas-del-repo.cjs');
+const cargarReglas = (archivo) =>
+  cargarRulesetEnEmulador({ proyecto: PROYECTO, host: HOST, puerto: PUERTO, archivo });
 
 // Las organizaciones de la prueba llevan sufijo de corrida. NO es cosmético, y
 // tampoco se resuelve borrando el emulador al empezar:
