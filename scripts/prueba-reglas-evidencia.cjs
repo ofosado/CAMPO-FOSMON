@@ -104,6 +104,7 @@ const ORG_DEP = 'minatitlan';
 // `ARCH_REGLAS` es para la contraprueba: permite juzgar un ruleset derivado sin
 // tocar el archivo del repositorio.
 const { cargarReglas } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 const ARCH_REGLAS = process.env.ARCH_REGLAS
   ? path.resolve(process.env.ARCH_REGLAS) : path.join(raiz, 'firestore.rules');
 
@@ -166,6 +167,12 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
                     anuladaPor: 'quien@sea.mx', anuladaEn: '2026-10-08T17:00:00Z' };
 
 (async () => {
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
+
   // Antes de abrir una sola sesión: el ruleset que se va a juzgar es el del
   // archivo. Si esto se mueve más abajo, el banco vuelve a opinar sobre lo que
   // hubiera cargado.
@@ -194,16 +201,14 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
     process.exit(1);
   }
 
-  // Se limpia ANTES, no sólo después. Este banco cuenta documentos —«la
-  // subcolección se puede LISTAR» afirma que se leen DOS— y un emulador con
-  // restos de otra sesión lo pone en rojo por una razón que no tiene nada que
-  // ver con las reglas. Pasó: unos documentos de un bisect anterior dejaron la
-  // cuenta en once y el resumen de la suite dijo «reglas-evidencia ROJO», que
-  // es exactamente el rojo falso que hace desconfiar de la suite entera.
+  // La limpieza de entrada ya corrió arriba, antes de la primera sesión. Ésta
+  // es la de EN MEDIO: este banco cuenta documentos —«la subcolección se puede
+  // LISTAR» afirma que se leen DOS— y necesita volver a cero entre secciones.
+  // Pasó de verdad: unos documentos de un bisect dejaron la cuenta en once y
+  // la suite dijo «reglas-evidencia ROJO», el rojo falso que hace desconfiar
+  // de la suite entera. Lo que cambió es que ya no se traga el fallo.
   const limpiar = () =>
-    fetch(`http://${HOST}:${PUERTO}/emulator/v1/projects/${PROYECTO}/databases/(default)/documents`,
-      { method: 'DELETE' }).catch(() => {});
-  await limpiar();
+    limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
 
   const RUTA_C = ['obras', OBRA, 'evidencia'];
 

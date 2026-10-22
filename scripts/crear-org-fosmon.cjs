@@ -4,12 +4,12 @@
  * `orgId: "fosmon"` a todos los usuarios existentes que no lo tengan.
  *
  * IMPORTANTE — orden recomendado en el despliegue de feature/organizaciones:
- *   1) firebase deploy --only functions (nueva versión de sincronizarClaims
+ *   1) firebase deploy --only functions --project produccion (nueva versión de sincronizarClaims
  *      con soporte para orgId+tipo)
  *   2) node scripts/migrar-supervisor-a-auditor.js
  *   3) node scripts/crear-org-fosmon.js          ← este script
  *   4) node scripts/backfill-claims.js           (repuebla claims con orgId+tipo)
- *   5) firebase deploy --only firestore:rules,storage:rules
+ *   5) firebase deploy --only firestore:rules,storage:rules --project produccion
  *
  * NO mueve datos de obras a /orgs/fosmon/. Solo declara la organización
  * y etiqueta los perfiles con su orgId. Las obras siguen viviendo en /obras/*.

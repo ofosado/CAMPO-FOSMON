@@ -271,7 +271,7 @@ Función `generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subco
 
 **Guard:** todas verifican que el llamador tenga rol `director_general`, `director_operaciones` o `admin_sistema` consultando su perfil en Firestore.
 
-**Deploy:** `firebase deploy --only functions` desde Mac local.
+**Deploy:** `firebase deploy --only functions --project produccion` desde Mac local.
 
 ---
 
@@ -399,7 +399,7 @@ Función `generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subco
 ### Cloud Functions
 ```bash
 cd CAMPO-FOSMON
-firebase deploy --only functions
+firebase deploy --only functions --project produccion
 ```
 
 ### Probar localmente

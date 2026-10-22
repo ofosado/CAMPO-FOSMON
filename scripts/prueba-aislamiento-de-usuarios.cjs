@@ -231,6 +231,7 @@ function manejador(mod, nombre) {
 // manejo del fallo (aquí era `noArranco(...)`, que habla de símbolos que
 // cambiaron de nombre; un emulador caído o unas reglas mal escritas no son eso).
 const { cargarReglas: cargarRulesetEnEmulador } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 const cargarReglas = (archivo) =>
   cargarRulesetEnEmulador({ proyecto: PROYECTO, host: HOST, puerto: PUERTO, archivo });
 
@@ -322,6 +323,12 @@ class HttpsErrorFalso extends Error {
 
 (async () => {
   console.log('\n── LA GESTIÓN DE USUARIOS NO CRUZA ORGANIZACIONES ──────────────\n');
+
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
 
   // ═══ §1 y §2: las reglas, contra el emulador ═════════════════════════════
   await cargarReglas(ARCH_REGLAS).catch(e => {
