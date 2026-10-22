@@ -36,7 +36,7 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
-| 66 | **Migrar una obra convierte la captura del directivo en un rebote.** `firestore.rules` colgaba `&& obraId in obrasAsignadas()` de las TRES ramas del `create` de `evidencia`, y `backfill-claims.cjs` acuña a `director_obras`/`subdirector`/`jefe_supervision` con `obras: []` siempre: la rama del directivo era inalcanzable por construcción. Antes de migrar la foto iba a `avance/subs` (`puedeEditarObraD`, que sí lleva `todasObras()`) y pasaba. **Está pasando hoy en las cuatro obras ya migradas en producción**, y la pantalla lo cuenta como «ya no tienes acceso a esta obra». Arreglado y medido en el repo; falta el deploy de reglas, que es tuyo. | POR DESPLEGAR |
+| 66 | **Migrar una obra convertía la captura del directivo en un rebote — en el camino de DEPENDENCIA.** El `create` de `evidencia` colgaba `&& obraId in obrasAsignadas()` de las tres ramas del `or`, y `backfill-claims.cjs` acuña a `director_obras`/`subdirector`/`jefe_supervision` con `obras: []` siempre: la rama del directivo era inalcanzable por construcción. Desplegado el 2026-10-22 y medido contra el ruleset publicado (7 casos, con contraprueba que vuelve a ponerlo en rojo). **Corrección al reporte inicial: NO estaba mordiendo en producción.** Yo dije «las cuatro obras migradas» dando por hecho que eran de dependencia; medido después, las cuatro migradas (0112, 0114, 0126, 0127) son de **constructora**, que usa `puedeEditarObraC` y nunca tuvo el defecto. Producción no tiene hoy ningún usuario de dependencia. Era defecto latente, y habría mordido el día de la demo a COTEA. | CERRADO |
 | 39 | **El resumen semanal por correo lee la raíz, no `orgId`**: el margen bruto de una constructora puede salir en el correo de otra organización. Es el P5 roto por fuera de la pantalla. | ABIERTO |
 | 7 | **Obra 0112: lo ejecutado no cuadra con las estimaciones del residente** — $2.5M de diferencia sin explicar. Falta medirlo contra producción para ver si el #50 lo explica entero. | ABIERTO |
 | 8 | **Tres fórmulas distintas de «ejecutado» conviviendo en el código**, $3.8M entre ellas. Dos ramas ya atendieron parte. | PARCIAL |
@@ -57,6 +57,7 @@ archivo.
 
 | # | Tema | Estado |
 |---|---|---|
+| 69 | **Antes de sentarnos con Orlando: el recorrido completo con un usuario de dependencia REAL.** Entrar, ver sus obras, subir una foto, verla en la galería. El motor de reglas ya lo sabemos —el #66 se midió contra el ruleset publicado y `verificar-reglas-publicadas.cjs` lo vigila—, pero eso es el motor, no el camino: la vista de dependencia nunca se ha recorrido de extremo a extremo con una cuenta que exista. Hoy el Auth de producción tiene 14 usuarios y **los 14 son de constructora**, así que hace falta dar de alta la cuenta (escritura a producción, no hecha). Esto no es un pendiente suelto: es requisito de la demo, y si falla, falla delante del director de Obras Públicas. | ABIERTO |
 | 4b | **Cuentas de prueba dedicadas por rol.** Depende del #4. | ABIERTO |
 | 4 | **Proyecto Firebase de pruebas con copia de datos.** Habilita el #4b y la migración a organizaciones. | ABIERTO |
 | 1 | **Sacar el repositorio de iCloud Drive.** | ABIERTO |
