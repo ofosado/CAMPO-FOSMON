@@ -57,6 +57,7 @@ const PROYECTO = 'campo-fosmon-prueba';
 // restaura, y en orden alfabético corre ANTES de este banco. El porqué
 // completo, con las dos mediciones del 2026-10-11, en `reglas-del-repo.cjs`.
 const { cargarReglas } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 
 const ORG = 'dep-demo';         // la dependencia
 const OTRA_ORG = 'dep-vecina';  // otra dependencia, para probar el aislamiento
@@ -112,6 +113,12 @@ const appsDe = new Map();
 const storsDe = new Map();
 
 (async () => {
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
+
   // Antes de la primera sesión: si se mueve más abajo, el banco vuelve a
   // opinar sobre el ruleset que hubiera.
   console.log(`(reglas cargadas desde ${await cargarReglas(

@@ -81,6 +81,7 @@ const PROYECTO = 'campo-fosmon-prueba';
 // tuviera puesto ni de lo que le dejara la prueba anterior. El porqué
 // completo, con las dos mediciones del 2026-10-11, en `reglas-del-repo.cjs`.
 const { cargarReglas } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 
 const ORG_DEP = 'coatzacoalcos';
 const OBRA_DEP = 'OP-2026-001';
@@ -175,6 +176,12 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
 }
 
 (async () => {
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
+
   // Antes de la primera sesión: si se mueve más abajo, el banco vuelve a
   // opinar sobre el ruleset que hubiera.
   console.log(`(reglas cargadas desde ${await cargarReglas(

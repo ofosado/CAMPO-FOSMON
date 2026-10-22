@@ -172,6 +172,93 @@ for (const g of GUIONES) {
     ok(`${g} se para en el portón, sin cargar el SDK`);
 }
 
+// ── 7. La CUARTA aparición: el destino de omisión del proyecto entero ─────
+//
+// Las seis secciones de arriba tapan los guiones. Pero `.firebaserc` decía
+// `default: campo-fosmon` —PRODUCCIÓN— así que `firebase deploy --only
+// firestore:rules` sin `--project` desplegaba a producción, y nada en la
+// pantalla lo decía. Es el mismo patrón que costó los 270 documentos del
+// 2026-10-09, un escalón más arriba: ya no un guion, la configuración del
+// repositorio. De esa raíz salieron los otros tres.
+//
+// Esto NO se comprueba leyendo `.firebaserc`. Leer el archivo sería afirmar
+// que un símbolo existe, y además mediría la mitad equivocada: el `firebase`
+// real resuelve el proyecto activo mirando TAMBIÉN el configstore del usuario
+// (`~/.config/configstore/firebase-tools.json`), que vive fuera del
+// repositorio y que un `firebase use produccion` vuelve a fijar. Un
+// `.firebaserc` impecable con un configstore apuntado a producción da
+// exactamente el defecto que esta sección existe para impedir.
+//
+// Así que se le pregunta al `firebase` de verdad, desde la raíz del
+// repositorio, qué resuelve cuando nadie le dice nada. Es local y sin red.
+// Se mide con el comando que de verdad destruye —`firebase deploy`— y no con
+// `firebase use <alias>`, que valida el proyecto CONTRA EL SERVIDOR: eso
+// metería red y credenciales en la suite, y además FIJA el proyecto activo en
+// el configstore, o sea que la prueba dejaría puesto el defecto que mide.
+// `deploy` sin `--project` se para antes de tocar nada, es local, tarda ~1.5 s,
+// no escribe en ningún sitio, y de paso imprime los alias con su proyecto: la
+// misma corrida contesta «no hay destino de omisión» y «los dos destinos
+// siguen siendo pedibles por nombre».
+console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde ──');
+{
+  const RAIZ = path.join(DIR, '..');
+  const cli = spawnSync('firebase',
+    ['deploy', '--only', 'firestore:rules', '--dry-run'], {
+      encoding: 'utf8', cwd: RAIZ, timeout: 60000,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    });
+
+  if (cli.error && cli.error.code === 'ENOENT') {
+    sinPrecondicion(
+      'el `firebase` de la línea de comandos, que es quien resuelve el proyecto activo',
+      ['Sin él no se puede medir a dónde apunta un deploy sin `--project`.',
+       'Leer `.firebaserc` no sirve, y por dos razones: afirmaría que un',
+       'símbolo existe en vez de qué pasa al teclear el comando, y mide la',
+       'mitad equivocada — el proyecto activo también sale del configstore',
+       'del usuario, que vive FUERA del repositorio.',
+       'npm i -g firebase-tools']);
+  }
+
+  const dijo = ((cli.stdout || '') + (cli.stderr || '')).trim();
+  const primera = dijo.split('\n').find(l => l.trim()) || '(nada)';
+  const sinActivo = /No project active|No active project/i.test(dijo);
+
+  // LA afirmación de esta sección. Que se pare, y que se pare por no tener
+  // destino: un `deploy` que falla por otra cosa (sin sesión, sin red) no
+  // demuestra nada sobre el destino de omisión y no puede pasar por verde.
+  if (cli.status === 0)
+    falla('`firebase deploy` sin `--project` no procede',
+      'que se pare', `salió 0 — procedió: ${primera}`);
+  else if (!sinActivo)
+    falla('`firebase deploy` sin `--project` se para por FALTA DE DESTINO',
+      'el texto «No project active»', primera);
+  else
+    ok('`firebase deploy` sin `--project` se para por no tener destino');
+
+  // La simétrica: quitar el destino de omisión no puede volver imposible
+  // desplegar. Si lo volviera, alguien repondría el `default` a la primera
+  // urgencia y estaríamos peor que antes, porque ya nadie lo estaría mirando.
+  for (const [alias, esperado] of [['produccion', 'campo-fosmon'],
+                                   ['prueba', 'campo-fosmon-prueba']]) {
+    if (!new RegExp(`${alias}\\s*\\(${esperado}\\)`).test(dijo))
+      falla(`el alias \`${alias}\` sigue nombrando a ${esperado}`,
+        `«${alias} (${esperado})» entre las opciones`, primera);
+    else
+      ok(`y ofrece \`--project ${alias}\` → ${esperado}`);
+  }
+
+  // Y que no haya nombrado producción como el destino que iba a usar. El
+  // nombre `campo-fosmon` SÍ aparece arriba, pero como alias ofrecido; lo que
+  // no puede aparecer es una línea que lo dé por elegido.
+  const lineaDestino = dijo.split('\n').find(l =>
+    /campo-fosmon(?!-prueba)/.test(l) && !/\bproduccion\s*\(/.test(l));
+  if (lineaDestino)
+    falla('no da producción por elegida en ninguna línea',
+      'producción sólo como alias ofrecido', lineaDestino.trim());
+  else
+    ok('y en ninguna línea da producción por elegida');
+}
+
 console.log('');
 console.log(`${oks} comprobación(es) en verde · ${fallas} en rojo`);
 if (fallas > 0) {

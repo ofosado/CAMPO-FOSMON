@@ -1,12 +1,13 @@
 # CAMPO — Reglas de seguridad por rol
 
 **Estado: DESPLEGADO EN PRODUCCIÓN desde el 2026-09-15. Último despliegue
-2026-10-07 — Firestore y Storage, los dos.**
+2026-10-22 — sólo Firestore (el arreglo del #66).**
 
 | | |
 |---|---|
-| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15**; último `firebase deploy --only firestore:rules,storage` el **2026-10-07 18:24 UTC** |
-| Ruleset vivo — Firestore | `projects/campo-fosmon/rulesets/63182f2f-16f0-41cc-b61a-f4847511512a` (release `cloud.firestore`) |
+| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15**; último `firebase deploy --only firestore:rules` el **2026-10-22 19:53 UTC** |
+| Ruleset vivo — Firestore | `projects/campo-fosmon/rulesets/1b223bc0-f3f6-4905-bf64-52c236a81e2e`, publicado **2026-10-22T19:53:16Z** (release `cloud.firestore`). El anterior era `63182f2f-16f0-41cc-b61a-f4847511512a`, del 2026-10-07 |
+| Cómo se comprueba | `node scripts/verificar-reglas-publicadas.cjs` — baja el ruleset **publicado** del servicio y le pasa 9 casos por el motor real. No lee `firestore.rules`: el archivo verde no demuestra que producción esté verde. Con `CONTRAPRUEBA=1` tiene que salir 1 |
 | Ruleset vivo — Storage | `projects/campo-fosmon/rulesets/cf4beea3-a166-4e18-ab9f-f723e7201c66` (release **`campo-fosmon.firebasestorage.app`**) |
 | Release `firebase.storage` | `0330d4de-…`, de 2026-07-16, **y el deploy de hoy NO lo tocó** pese a que el CLI imprimió «released rules storage.rules to firebase.storage». Lo bajé: son 11 renglones, `allow read, write: if false`. Deny-all, inofensivo — pero **no es el que gobierna el bucket**. Si algún día un bucket nuevo no obedece a `storage.rules`, mira primero cuál de los dos releases está leyendo |
 | Contra el repo | **IDÉNTICO**, los dos. Verificado el 2026-10-07 bajando ambos rulesets con la API `firebaserules.googleapis.com` y haciendo `diff` contra `firestore.rules` y `storage.rules` de `main` |
@@ -589,7 +590,7 @@ Ver `AUDITORIA_CONSULTAS.md` para el análisis de qué consultas del frontend qu
 2. **Desplegar Cloud Function `sincronizarClaims` primero:**
    ```
    cd functions
-   firebase deploy --only functions:sincronizarClaims,functions:backfillClaims
+   firebase deploy --only functions:sincronizarClaims,functions:backfillClaims --project produccion
    ```
 
 3. **Correr backfill para asignar claims a usuarios existentes:**
@@ -603,13 +604,13 @@ Ver `AUDITORIA_CONSULTAS.md` para el análisis de qué consultas del frontend qu
 
 4. **Verificar que los usuarios reales tienen claims:**
    ```
-   firebase auth:export /tmp/users.json --format=JSON
+   firebase auth:export /tmp/users.json --format=JSON --project produccion
    grep -c '"customClaims"' /tmp/users.json    # debe ser >= 1
    ```
 
 5. **Desplegar reglas:**
    ```
-   firebase deploy --only firestore:rules,storage
+   firebase deploy --only firestore:rules,storage --project produccion
    ```
 
 6. **Todos los usuarios activos DEBEN cerrar sesión y volver a entrar** para
@@ -638,7 +639,7 @@ Si algo se rompe en producción tras desplegar:
 1. Redesplegar reglas anteriores desde `main`:
    ```
    git checkout main -- firestore.rules storage.rules
-   firebase deploy --only firestore:rules,storage
+   firebase deploy --only firestore:rules,storage --project produccion
    ```
 2. Los custom claims quedarán activos pero las reglas volverían a `allow ... if request.auth != null` — no bloquea nada.
 3. Restaurar Firestore desde backup si hubiera pérdida de datos:

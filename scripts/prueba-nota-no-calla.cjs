@@ -94,6 +94,7 @@ function rulesetSinNotas() {
 // su primera sesión— y por eso aquí se puede seguir dejando el ruleset
 // mutilado sin que le haga daño a nadie. Ver `reglas-del-repo.cjs`.
 const { cargarReglas: cargarRulesetEnEmulador } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 const cargarReglas = (contenido) =>
   cargarRulesetEnEmulador({ proyecto: PROYECTO, host: HOST, puerto: PUERTO, contenido });
 
@@ -120,6 +121,12 @@ const m = src.match(/const guardarNotaSemanal = async \([\s\S]*?\n};/);
       'firestore.rules no declara `avance/notas`, así que no hay nada que quitar ' +
       'y el escenario de esta prueba —una ruta sin regla— no se puede montar.');
   }
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
+
   await cargarReglas(sin);
   console.log(`   (ruleset de la prueba: firestore.rules menos ${quitados} bloque(s) de \`avance/notas\`)\n`);
 

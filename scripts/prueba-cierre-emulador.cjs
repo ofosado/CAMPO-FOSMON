@@ -58,6 +58,7 @@ const OBRA = '0114';
 // que también depende del ruleset — y por tanto de que sea el del archivo y no
 // el que dejara la prueba anterior. El porqué, en `reglas-del-repo.cjs`.
 const { cargarReglas } = require('./reglas-del-repo.cjs');
+const { limpiarDatos } = require('./emulador-limpio.cjs');
 
 // El emulador de Auth acepta custom tokens sin firmar; no hace falta una
 // llave de servicio. Los `claims` son los que la app pone al residente y los
@@ -118,6 +119,12 @@ if (faltan.length) noArranco(faltan);
   }
   const prod = JSON.parse(fs.readFileSync(VOLCADO, 'utf8'));
   const subs = prod.subs.data;
+
+  // P7 — los documentos también se heredan. Antes de la primera sesión y
+  // antes de la primera aserción: este banco empieza sobre un Firestore
+  // vacío, no sobre lo que le dejó el que corrió antes. Si no puede
+  // limpiar, no arranca (2); ver `emulador-limpio.cjs`.
+  await limpiarDatos({ proyecto: PROYECTO, host: HOST, puerto: PUERTO });
 
   // Después de la precondición del volcado y antes de la primera sesión: si
   // falta el volcado, lo que hay que decir es eso y no que el emulador no

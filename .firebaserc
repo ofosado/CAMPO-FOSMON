@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "campo-fosmon"
+    "produccion": "campo-fosmon",
+    "prueba": "campo-fosmon-prueba"
   }
 }
