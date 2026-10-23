@@ -2194,9 +2194,46 @@ const _trunc = (v, depth=0) => {
   return String(v);
 };
 
+/**
+ * Deja un renglón en la bitácora. Devuelve `true` si quedó escrito.
+ *
+ * ── POR QUÉ DEVUELVE ALGO (P7, sexta aparición) ───────────────────────────
+ * Hasta el 2026-10-23 esto terminaba en `catch { console.warn("fsAudit fallo
+ * (silencioso)") }` y no devolvía nada. Dos consecuencias, y la segunda es
+ * la grave:
+ *
+ *  · Quien llama no podía distinguir «quedó registrado» de «se perdió»,
+ *    porque las dos cosas se veían igual desde fuera: `undefined`.
+ *  · La propia etiqueta —«silencioso»— normalizaba el defecto. Es la
+ *    bitácora: el canal con el que pensamos enterarnos de lo que pasó. Un
+ *    canal que se cae sin avisar no es un canal degradado, es ninguno.
+ *
+ * No LANZA, y es deliberado: un renglón de bitácora que no se pudo escribir
+ * no es razón para tumbarle al usuario la captura que sí se guardó. Lo que
+ * hace es (1) no afirmar que se escribió, (2) mandarlo a la misma cola de
+ * mejor esfuerzo que los rastros de permiso, con su ruta, para reintentarlo
+ * en el próximo arranque, y (3) gritarlo con `console.error`, no con un
+ * `warn` que se pierde entre el ruido.
+ */
 async function fsAudit(tipo, opciones = {}) {
-  try {
-    const entry = {
+  // La ruta y el renglón se arman FUERA del `try`, y una sola vez: el camino
+  // de fallo encola exactamente lo que el de éxito iba a escribir. Armarlo de
+  // nuevo en el `catch` serían dos cuentas del mismo renglón, y el día que
+  // una se quedara atrás la fila drenada diría algo distinto de la que se
+  // escribió en línea.
+  let ruta;
+  try { ruta = rutaAuditoria(opciones.oid); }
+  catch (e) {
+    // `rutaAuditoria` lanza cuando la sesión no tiene organización resuelta.
+    // Sin ruta no hay a dónde entregarlo ni hoy ni al drenar, así que tampoco
+    // se encola: guardar algo imposible de entregar es llenar la cola de lo
+    // que nunca va a salir.
+    console.error("fsAudit: sin bitácora a la que escribir ·", tipo, e?.message);
+    return false;
+  }
+
+  const entry = (() => {
+    const e = {
       tipo,
       usuario: _auditCtx.correo || "anonimo",
       nombre: _auditCtx.nombre || "",
@@ -2209,16 +2246,25 @@ async function fsAudit(tipo, opciones = {}) {
       ts: new Date().toISOString(),
       userAgent: typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 200) : "",
     };
-    if (opciones.antes !== undefined) entry.antes = _trunc(opciones.antes);
-    if (opciones.despues !== undefined) entry.despues = _trunc(opciones.despues);
-    if (opciones.meta) entry.meta = _trunc(opciones.meta);
-    // La ruta la decide `rutaAuditoria`, no esta función (#73): la bitácora
-    // de una dependencia vive bajo su organización, la de la constructora en
-    // la raíz, y un acto de soporte SOBRE una org se registra en la de esa
-    // org —por eso `opciones.oid`—. Antes era `"auditoria"` a secas para
-    // todos, y la regla de lectura no miraba la organización.
-    await addDoc(collection(fbDb, rutaAuditoria(opciones.oid)), entry);
-  } catch(e) { console.warn("fsAudit fallo (silencioso):", e?.message); }
+    if (opciones.antes !== undefined) e.antes = _trunc(opciones.antes);
+    if (opciones.despues !== undefined) e.despues = _trunc(opciones.despues);
+    if (opciones.meta) e.meta = _trunc(opciones.meta);
+    return e;
+  })();
+
+  // La ruta la decide `rutaAuditoria`, no esta función (#73): la bitácora de
+  // una dependencia vive bajo su organización, la de la constructora en la
+  // raíz, y un acto de soporte SOBRE una org se registra en la de esa org
+  // —por eso `opciones.oid`—. Antes era `"auditoria"` a secas para todos, y
+  // la regla de lectura no miraba la organización.
+  try {
+    await addDoc(collection(fbDb, ruta), entry);
+    return true;
+  } catch(e) {
+    console.error("fsAudit: el renglón NO quedó en la bitácora ·", tipo,
+      e?.code || e?.message, "— va a la cola");
+    return encolarRastro(ruta, entry, almacenLocal());
+  }
 }
 
 // ── EL PUENTE AL MÓDULO DE PERMISO DENEGADO ────────────────────────────────
@@ -2258,17 +2304,26 @@ const almacenLocal = () => {
  * POR NO TENER LA OBRA tampoco podría dejar constancia de que se le negó, y
  * el rastro estaría vacío exactamente en el caso que lo motivó.
  */
-async function escribirRastroDenegacion(rastro) {
-  await addDoc(collection(fbDb, rutaAuditoria()), rastro);
+async function escribirRastroDenegacion(ruta, rastro) {
+  await addDoc(collection(fbDb, ruta), rastro);
 }
 
 async function dejarRastroDenegacion(rastro) {
+  // La ruta se resuelve AQUÍ, con la sesión que sufrió la denegación, y viaja
+  // con la fila hasta que se entregue. Ver `encolarRastro`: resolverla al
+  // drenar metería el rastro de un municipio en la bitácora de otro.
+  let ruta;
+  try { ruta = rutaAuditoria(); }
+  catch (e) {
+    console.error('rastro de denegación: la sesión no tiene bitácora ·', e?.message);
+    return false;
+  }
   try {
-    await escribirRastroDenegacion(rastro);
+    await escribirRastroDenegacion(ruta, rastro);
     return true;
   } catch (e) {
-    console.warn('rastro de denegación: no se pudo escribir, va a la cola', e?.code || e?.message);
-    return encolarRastro(rastro, almacenLocal());
+    console.error('rastro de denegación: no se pudo escribir, va a la cola', e?.code || e?.message);
+    return encolarRastro(ruta, rastro, almacenLocal());
   }
 }
 
@@ -6700,12 +6755,16 @@ function Login({onLogin}){
       // Configura ctx de auditoría y registra login
       setAuditCtx({ correo: email, nombre: perfil.nombre, rol: perfil.rol, obraId: null, obraNombre: "" });
       fsAudit("login", { modulo: "sesion", entidad: email });
-      // Los rastros que no se pudieron escribir en su momento. Aquí hay
-      // sesión y prefijo, que es lo que les faltaba. Sin `await`: es mejor
-      // esfuerzo y no debe retrasar la entrada ni impedirla si falla.
+      // Los renglones que no se pudieron escribir en su momento —rastros de
+      // denegación y filas de bitácora—. Aquí hay sesión, que es lo que les
+      // faltaba; la ruta la traen ellos. Sin `await`: es mejor esfuerzo y no
+      // debe retrasar la entrada ni impedirla si falla.
       drenarCola(almacenLocal(), escribirRastroDenegacion, serverTimestamp)
-        .then(r => { if (r.enviados) console.info(`rastros pendientes enviados: ${r.enviados}, quedan ${r.pendientes}`); })
-        .catch(e => console.warn('drenado de rastros:', e?.message));
+        .then(r => {
+          if (r.enviados || r.descartados)
+            console.info(`cola: ${r.enviados} entregados, ${r.pendientes} pendientes, ${r.descartados} descartados`);
+        })
+        .catch(e => console.error('drenado de la cola:', e?.message));
       onLogin({
         correo: email,
         email,  // duplicado por compatibilidad con código que usa usuario.email
@@ -21815,6 +21874,15 @@ const JOBS_PROGRAMADOS = [
   { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
     que:"Baja la hoja de gastos y la deja lista para el dashboard.",
     cuando:"diario 8:00",    limiteHoras: 36 },
+  // Éste no vigila una tarea: vigila a la app. Cuenta las capturas que las
+  // reglas rechazaron cuando el usuario SÍ tenía la obra asignada — el caso
+  // que `src/permiso-denegado.js` no sabe explicar y que el usuario no puede
+  // corregir. Su rojo no dice «se cayó un cron», dice «hay gente capturando
+  // y perdiendo la captura». 36 h, como la diaria: si se calla día y medio,
+  // el vigilante también sale en rojo.
+  { id:"permisos_denegados", funcion:"vigilarDenegaciones",   nombre:"Denegaciones sin explicar",
+    que:"Cuenta las capturas rechazadas a quien sí tenía la obra.",
+    cuando:"diario 8:30",    limiteHoras: 36 },
 ];
 
 // "hace N días" en el formato que ya se usa en el resto de la app. Devuelve

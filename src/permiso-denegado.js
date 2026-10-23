@@ -184,7 +184,20 @@ const LLAVE = 'campo.rastros_pendientes';
 // rastros sin poder enviarse, el problema no es que falten los 51 siguientes.
 const TOPE = 50;
 
-export function encolarRastro(rastro, almacen) {
+/**
+ * Guarda una fila que no se pudo escribir, JUNTO CON SU RUTA.
+ *
+ * ── POR QUÉ VIAJA LA RUTA EN VEZ DE RESOLVERSE AL DRENAR ───────────────────
+ * Desde el #73 la bitácora está partida: la de una dependencia vive en
+ * `orgs/{oid}/auditoria` y la de la constructora en la raíz. La cola
+ * sobrevive al cierre de sesión. Si al drenar se preguntara «¿dónde escribe
+ * ESTA sesión?», la fila que un municipio encoló ayer aterrizaría hoy en la
+ * bitácora de la constructora — que es exactamente la fuga que el #73 acaba
+ * de cerrar, entrando por detrás y puesta por nosotros.
+ *
+ * La ruta se decide cuando hay con qué decidirla, y se guarda.
+ */
+export function encolarRastro(ruta, fila, almacen) {
   if (!almacen) return false;
   try {
     // El centinela del servidor NO sobrevive a `JSON.stringify`: se guardaría
@@ -193,9 +206,9 @@ export function encolarRastro(rastro, almacen) {
     // de una fila que pasó por la cola dice cuándo se DRENÓ, no cuándo pasó.
     // Esa es justamente la razón de que `ts`, el reloj del aparato, viaje
     // también: es el único que conserva el momento del fallo.
-    const { tsServidor, ...sinCentinela } = rastro;
+    const { tsServidor, ...sinCentinela } = fila;
     const cola = leerCola(almacen);
-    cola.push(sinCentinela);
+    cola.push({ ruta, fila: sinCentinela });
     almacen.setItem(LLAVE, JSON.stringify(cola.slice(-TOPE)));
     return true;
   } catch {
@@ -226,21 +239,30 @@ export function leerCola(almacen) {
  * `nuevoCentinela` repone el `tsServidor` que `encolarRastro` tuvo que tirar.
  * Si no se pasa, la fila se escribe sin él y queda con un solo reloj: peor,
  * pero honesto. Inventar una hora de servidor sería peor que no tenerla.
+ *
+ * `escribir` recibe DOS argumentos —`(ruta, fila)`— y no uno: la ruta sale de
+ * la cola, no de la sesión que está drenando. Ver `encolarRastro`.
+ *
+ * Una entrada que no trae ruta no se puede entregar a ningún lado, y dejarla
+ * dando vueltas sería una cola que nunca se vacía. Se descarta, pero el
+ * número SALE en el resultado: perder filas en silencio es el defecto que
+ * esta pieza entera existe para no tener.
  */
 export async function drenarCola(almacen, escribir, nuevoCentinela) {
   const cola = leerCola(almacen);
-  if (!cola.length) return { enviados: 0, pendientes: 0 };
+  if (!cola.length) return { enviados: 0, pendientes: 0, descartados: 0 };
 
   const quedan = [];
-  let enviados = 0;
-  for (const rastro of cola) {
+  let enviados = 0, descartados = 0;
+  for (const entrada of cola) {
+    if (!entrada?.ruta || !entrada?.fila) { descartados++; continue; }
     try {
-      await escribir(nuevoCentinela
-        ? { ...rastro, tsServidor: nuevoCentinela() }
-        : rastro);
+      await escribir(entrada.ruta, nuevoCentinela
+        ? { ...entrada.fila, tsServidor: nuevoCentinela() }
+        : entrada.fila);
       enviados++;
     } catch {
-      quedan.push(rastro);
+      quedan.push(entrada);
     }
   }
   try {
@@ -248,5 +270,5 @@ export async function drenarCola(almacen, escribir, nuevoCentinela) {
     else almacen.removeItem(LLAVE);
   } catch { /* ver `encolarRastro`: aquí tampoco se promete nada */ }
 
-  return { enviados, pendientes: quedan.length };
+  return { enviados, pendientes: quedan.length, descartados };
 }
