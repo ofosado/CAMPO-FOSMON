@@ -197,11 +197,11 @@ const lanza = (fn) => {
   try { rutas = await import(archivoRutas); }
   catch (e) { noArranco([`no se pudo cargar ${path.basename(archivoRutas)} — ${e.message}`], archivoRutas); }
   for (const n of ['conOrg', 'fijarPrefijoOrg', 'fijarSesionDePlataforma', 'esSesionDePlataforma',
-                   'limpiarPrefijoOrg', 'orgIdSesion']) {
+                   'limpiarPrefijoOrg', 'orgIdSesion', 'rutaAuditoria']) {
     if (typeof rutas[n] !== 'function') noArranco([`\`${n}\` exportada por rutas-org.js`], archivoRutas);
   }
   const { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, esSesionDePlataforma,
-          limpiarPrefijoOrg, orgIdSesion } = rutas;
+          limpiarPrefijoOrg, orgIdSesion, rutaAuditoria } = rutas;
 
   // ══════════════════════════════════════════════════════════════════════════
   seccion('§1 · LA SESIÓN DE PLATAFORMA NO ADMINISTRA OBRAS');
@@ -217,8 +217,21 @@ const lanza = (fn) => {
 
   check(conOrg('usuarios/soporte_cotea_com_mx') === 'usuarios/soporte_cotea_com_mx',
         'el padrón de usuarios sigue alcanzable: es raíz y compartido');
-  check(conOrg('auditoria/x') === 'auditoria/x',
-        'y la auditoría también, que es donde queda su rastro');
+  // La auditoría dejó de ser raíz compartida con el #73. Para soporte eso
+  // abría un hueco: `conOrg('auditoria')` ahora REVIENTA en una sesión de
+  // plataforma, y si su rastro colgara de ahí, su login y su cierre de sesión
+  // se perderían callados. Por eso la ruta de la bitácora la decide
+  // `rutaAuditoria` y no `conOrg`.
+  const audConOrg = lanza(() => conOrg('auditoria'));
+  check(audConOrg.lanzo,
+        'la auditoría ya NO es raíz compartida: `conOrg` revienta para soporte',
+        audConOrg.lanzo ? 'revienta' : `NO LANZÓ — devolvió «${audConOrg.valor}»`);
+  check(rutaAuditoria() === 'auditoria',
+        'pero su rastro de sesión sí tiene dónde caer: la raíz',
+        rutaAuditoria());
+  check(rutaAuditoria('coatzacoalcos') === 'orgs/coatzacoalcos/auditoria',
+        'y lo que soporte hace SOBRE una org se registra en la bitácora de esa org',
+        rutaAuditoria('coatzacoalcos'));
 
   const lista = lanza(() => conOrg('obras'));
   check(lista.lanzo && /plataforma/i.test(lista.mensaje),
@@ -244,6 +257,15 @@ const lanza = (fn) => {
   check(esSesionDePlataforma() === false && conOrg('obras') === 'orgs/coatzacoalcos/obras',
         'y el estado no se queda pegado: la sesión siguiente resuelve normal',
         conOrg('obras'));
+
+  // El #73 por donde importa: la bitácora de un municipio NO es la raíz.
+  check(rutaAuditoria() === 'orgs/coatzacoalcos/auditoria',
+        'un municipio escribe su bitácora bajo su organización, no en la raíz',
+        rutaAuditoria());
+  fijarPrefijoOrg('constructora', 'fosmon');
+  check(rutaAuditoria() === 'auditoria',
+        'y la constructora sigue en la raíz, que es donde están las 4200 filas de hoy',
+        rutaAuditoria());
   limpiarPrefijoOrg();
   check(esSesionDePlataforma() === false,
         'cerrar sesión no deja a nadie en estado de plataforma');
@@ -422,18 +444,34 @@ const lanza = (fn) => {
   // también reales, contra un Firestore de mentiras que apunta qué método se
   // usó para escribir cada documento. Lo que importa no es que escriba: es CON
   // QUÉ MÉTODO, porque `set` funde y `create` revienta.
-  const fabricaCrearOrg = (perfilEnPadron, fallaCommit) => {
+  const fabricaCrearOrg = (perfilEnPadron, fallaCommit, orgsExistentes = []) => {
     const escrituras = [];
     const lote = {
       create: (ref, data) => escrituras.push({ metodo: 'create', ruta: ref.ruta, data }),
       set: (ref, data) => escrituras.push({ metodo: 'set', ruta: ref.ruta, data }),
       commit: async () => { if (fallaCommit) throw fallaCommit; },
     };
+    // El padrón de organizaciones, de mentiras pero consultable: la guardia de
+    // la segunda constructora (§5) pregunta por él y hay que poder contestarle
+    // «hay una» y «no hay ninguna» sin tocar Firestore.
+    const consulta = (filas) => ({
+      where: (campo, op, valor) => {
+        if (op !== '==') throw new Error(`el padrón de mentiras no sabe «${op}»`);
+        return consulta(filas.filter(o => o[campo] === valor));
+      },
+      limit: n => consulta(filas.slice(0, n)),
+      get: async () => ({ empty: filas.length === 0,
+                          docs: filas.map(o => ({ id: o.id, data: () => o })) }),
+    });
     const db = {
       doc: ruta => ({
         ruta,
         get: async () => ({ exists: !!perfilEnPadron, data: () => perfilEnPadron }),
       }),
+      collection: nombre => {
+        if (nombre !== 'orgs') throw new Error(`consulta inesperada a «${nombre}»`);
+        return consulta(orgsExistentes);
+      },
       batch: () => lote,
     };
     // `admin` entra como la fábrica de Firestore y NADA MÁS: a propósito no
@@ -461,8 +499,8 @@ const lanza = (fn) => {
     return { escrituras, handler };
   };
 
-  const llamar = async (perfil, data, fallaCommit) => {
-    const { escrituras, handler } = fabricaCrearOrg(perfil, fallaCommit);
+  const llamar = async (perfil, data, fallaCommit, orgsExistentes) => {
+    const { escrituras, handler } = fabricaCrearOrg(perfil, fallaCommit, orgsExistentes);
     const peticion = { auth: { token: { email: perfil ? perfil.email : 'nadie@cotea.com.mx' } }, data };
     try { return { ok: true, valor: await handler(peticion), escrituras }; }
     catch (e) { return { ok: false, code: e.code, mensaje: e.message, escrituras }; }
@@ -582,6 +620,62 @@ const lanza = (fn) => {
   check(!otroFallo.ok && otroFallo.code === 'internal' && /se cayó la red/.test(otroFallo.mensaje),
         'cualquier otra caída se reporta como lo que es, sin disfrazarla de duplicado',
         otroFallo.code);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  seccion('§5 · LA SEGUNDA CONSTRUCTORA NO NACE EN SILENCIO');
+  // ══════════════════════════════════════════════════════════════════════════
+  // El flanco que dejó el #73. La bitácora se partió por ruta —cada
+  // dependencia lee la suya— pero la RAÍZ sigue siendo «de la constructora»,
+  // y `esDirectivoC()` no distingue entre dos. Lo mismo `obras/{obraId}`,
+  // `global/*` y `health/*`: la suposición de una sola constructora es de
+  // todo firestore.rules, no de un bloque.
+  //
+  // Taparlo en la regla pedía escribir `orgId() == 'fosmon'` dentro de la
+  // frontera que separa inquilinos. En vez de eso se niega el nacimiento, y
+  // esto es lo que afirma que se niega: el día que alguien dé de alta la
+  // segunda constructora se va a encontrar el motivo en la cara, no seis
+  // meses después en los montos de otro.
+  //
+  // Se ejecuta el cuerpo real de `crearOrganizacion` contra un padrón que ya
+  // trae una constructora. No se comprueba que exista un símbolo: se mira si
+  // escribió.
+  const YA_FOSMON = [{ id: 'fosmon', tipo: 'constructora', nombre: 'FOSMON Construcciones' }];
+  const OTRA_C = { orgId: 'constructora-dos', nombre: 'Otra Constructora', tipo: 'constructora' };
+
+  const segunda = await llamar(SOPORTE, OTRA_C, null, YA_FOSMON);
+  check(!segunda.ok, 'con una constructora ya dada de alta, la segunda NO se crea',
+        segunda.ok ? 'LA CREÓ' : `${segunda.code}`);
+  check(!segunda.ok && segunda.code === 'failed-precondition',
+        'y falla como precondición, no como argumento inválido: el dato era bueno, el momento no',
+        segunda.code);
+  check(segunda.escrituras.length === 0,
+        'sin dejar nada escrito a medias',
+        segunda.escrituras.map(e => e.ruta).join(', ') || 'nada');
+  check(!segunda.ok && /fosmon/.test(segunda.mensaje || ''),
+        'el mensaje nombra a la que ya está, para que quien lo lea sepa contra qué choca',
+        segunda.mensaje || 'sin mensaje');
+  check(!segunda.ok && /\/orgs\//.test(segunda.mensaje || '')
+        && /obras|global|health|bit[áa]cora/i.test(segunda.mensaje || ''),
+        'y dice QUÉ hay que migrar antes, que es la diferencia entre un no y un callejón',
+        segunda.mensaje || 'sin mensaje');
+
+  // Que la guardia no se haya pasado de ancha: lo que debe seguir pasando.
+  const depConFosmon = await llamar(SOPORTE, BUENA, null, YA_FOSMON);
+  check(depConFosmon.ok,
+        'una DEPENDENCIA sí se da de alta con la constructora ya existente — es el caso de COTEA',
+        depConFosmon.ok ? 'creada' : `${depConFosmon.code}: ${depConFosmon.mensaje}`);
+
+  const segundaDep = await llamar(SOPORTE, { orgId: 'veracruz', nombre: 'Veracruz', tipo: 'dependencia' },
+    null, [...YA_FOSMON, { id: 'coatzacoalcos', tipo: 'dependencia', nombre: 'Coatzacoalcos' }]);
+  check(segundaDep.ok,
+        'y la segunda dependencia también: el límite es a constructoras, no a clientes',
+        segundaDep.ok ? 'creada' : `${segundaDep.code}: ${segundaDep.mensaje}`);
+
+  const primeraC = await llamar(SOPORTE, OTRA_C, null,
+    [{ id: 'coatzacoalcos', tipo: 'dependencia', nombre: 'Coatzacoalcos' }]);
+  check(primeraC.ok,
+        'y con ninguna constructora en el padrón, la primera sí nace — la guardia cuenta por tipo',
+        primeraC.ok ? 'creada' : `${primeraC.code}: ${primeraC.mensaje}`);
 
   console.log(`\n${fallas === 0 ? 'VERDE' : 'ROJO'} — ${fallas === 0 ? 'el alta de organización se sostiene' : `${fallas} fallas`}\n`);
   process.exit(fallas === 0 ? 0 : 1);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion } from "./rutas-org.js";
+import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion, rutaAuditoria } from "./rutas-org.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
@@ -2211,7 +2211,12 @@ async function fsAudit(tipo, opciones = {}) {
     if (opciones.antes !== undefined) entry.antes = _trunc(opciones.antes);
     if (opciones.despues !== undefined) entry.despues = _trunc(opciones.despues);
     if (opciones.meta) entry.meta = _trunc(opciones.meta);
-    await addDoc(collection(fbDb, "auditoria"), entry);
+    // La ruta la decide `rutaAuditoria`, no esta función (#73): la bitácora
+    // de una dependencia vive bajo su organización, la de la constructora en
+    // la raíz, y un acto de soporte SOBRE una org se registra en la de esa
+    // org —por eso `opciones.oid`—. Antes era `"auditoria"` a secas para
+    // todos, y la regla de lectura no miraba la organización.
+    await addDoc(collection(fbDb, rutaAuditoria(opciones.oid)), entry);
   } catch(e) { console.warn("fsAudit fallo (silencioso):", e?.message); }
 }
 
@@ -8055,7 +8060,10 @@ function PantallaPlataforma({ usuario, onLogout }) {
     });
     setBusy(false);
     if (!r.ok) { setAviso({ ok:false, texto: r.error }); return; }
-    fsAudit("crear", { modulo:"plataforma", entidad:`orgs/${r.data.orgId}`,
+    // `oid`: el alta de una organización se registra en la bitácora de esa
+    // organización, que es quien tiene que poder ver quién la dio de alta.
+    fsAudit("crear", { oid: r.data.orgId,
+                       modulo:"plataforma", entidad:`orgs/${r.data.orgId}`,
                        despues:{ nombre: form.nombre.trim(), tipo: form.tipo } });
     setAviso({ ok:true, texto:`Organización «${r.data.orgId}» creada como ${r.data.tipo}. `
                             + `Ahora dale de alta su primer usuario.` });
@@ -8226,7 +8234,8 @@ function PantallaPlataforma({ usuario, onLogout }) {
         const r = await callFn("crearUsuario", { ...f, orgId: altaEn.id });
         setBusy(false);
         if (!r.ok) { setAviso({ ok:false, texto:`No se creó el usuario: ${r.error}` }); setAltaEn(null); return; }
-        fsAudit("crear", { modulo:"plataforma", entidad:f.email,
+        fsAudit("crear", { oid: altaEn.id,
+                           modulo:"plataforma", entidad:f.email,
                            despues:{ rol:f.rol, orgId:altaEn.id } });
         setAviso({ ok:true, texto:`${f.email} dado de alta en «${altaEn.id}» como ${ROL_LABEL[f.rol]||f.rol}.` });
         setAltaEn(null);
@@ -21853,7 +21862,10 @@ function Bitacora({obras}){
     (async ()=>{
       setCargando(true); setError("");
       try {
-        const q = query(collection(fbDb,"auditoria"), orderBy("ts","desc"), limit(maxItems));
+        // `conOrg` y no `"auditoria"` a secas (#73): cada organización lee la
+        // suya. Para la constructora resuelve a la raíz, que es donde están
+        // las 4200 filas de hoy; para una dependencia, a la de su org.
+        const q = query(collection(fbDb,conOrg("auditoria")), orderBy("ts","desc"), limit(maxItems));
         const snap = await getDocs(q);
         const arr = snap.docs.map(d=>({id:d.id, ...d.data()}));
         if(!cancel){ setItems(arr); setCargando(false); }

@@ -120,15 +120,40 @@ export function prefijoOrg() {
   return PREFIJO;
 }
 
+// Las colecciones que NO son compartidas. `obras` desde el principio;
+// `auditoria` desde el #73 (2026-10-22), cuando se midió que su regla de
+// lectura —`esDirectivoC() || esDirectivoD()`— no miraba la organización y
+// un director de Obras de un municipio leía la bitácora de la constructora,
+// con `pu`, `pctRetencion` y `totalNomina` dentro. Se partió por RUTA y no
+// por campo: un campo mal puesto filtra, una ruta mal puesta no existe.
+const PREFIJADAS = ['obras', 'auditoria'];
+
 /**
- * Antepone el prefijo SÓLO a las rutas de obra.
+ * Antepone el prefijo a las rutas que pertenecen a UNA organización.
  *
- * `usuarios/`, `global/`, `auditoria/` y `notificaciones/` son colecciones
- * raíz compartidas y no se tocan — de hecho el propio login lee
- * `usuarios/{id}` ANTES de que exista prefijo, y tiene que poder.
+ * `usuarios/`, `global/` y `notificaciones/` siguen siendo colecciones raíz
+ * compartidas y no se tocan — de hecho el propio login lee `usuarios/{id}`
+ * ANTES de que exista prefijo, y tiene que poder.
  */
 export function conOrg(path) {
-  return (path === 'obras' || path.startsWith('obras/'))
-    ? prefijoOrg() + path
-    : path;
+  return PREFIJADAS.includes(path.split('/')[0]) ? prefijoOrg() + path : path;
+}
+
+/**
+ * Dónde escribe su bitácora esta sesión.
+ *
+ * Aparte de `conOrg` por los dos casos que `conOrg` no puede resolver:
+ *
+ *  · `oid` explícito — soporte da de alta una organización o su primer
+ *    usuario. Ese acto es SOBRE esa organización, así que se registra en su
+ *    bitácora y lo ve su dirección, no la de la constructora.
+ *  · sesión de plataforma sin `oid` — el login y el cierre de sesión del
+ *    propio soporte no son de ninguna organización. Van a la raíz. Dejar que
+ *    reventara `prefijoOrg()` perdería esos renglones en silencio, que es
+ *    justo el defecto que una bitácora existe para no tener.
+ */
+export function rutaAuditoria(oid) {
+  if (oid) return `orgs/${oid}/auditoria`;
+  if (esSesionDePlataforma()) return 'auditoria';
+  return conOrg('auditoria');
 }

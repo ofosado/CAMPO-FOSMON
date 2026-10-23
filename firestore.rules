@@ -617,14 +617,60 @@ service cloud.firestore {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // auditoria/{id} — log append-only.
-    // Lectura: directivos de constructora, directivos de dependencia.
-    // (Soporte NO puede leer: sus propios registros los verá el auditor de
-    //  la org que corresponda.)
+    // auditoria — log append-only, PARTIDO POR INQUILINO (#73).
+    //
+    // Hasta el 2026-10-22 era una sola colección en la raíz con
+    // `read: esDirectivoC() || esDirectivoD()`. Ninguno de los dos ayudantes
+    // mira `orgId()` y la regla no miraba el documento, así que un director
+    // de Obras de un municipio leía la bitácora de la constructora y la de
+    // otro municipio. Medido con el motor contra el ruleset publicado: las
+    // cuatro lecturas cruzadas salieron ALLOW.
+    //
+    // No era un detalle de metadatos. De las 4200 filas de producción, 2212
+    // llevan `monto`, `pu`, `pctRetencion`, `pctAnticipo`, `importeContrato`
+    // o `totalNomina` dentro de `antes`/`despues`: es la economía del
+    // contratista, con su valor anterior y el nuevo. El P5 roto un nivel por
+    // debajo de la pantalla.
+    //
+    // ── Por qué PARTIR y no acotar por campo ───────────────────────────────
+    // Acotar sería `resource.data.orgId == orgId()`. Tres razones medidas en
+    // contra: (1) ninguna de las 4200 filas trae `orgId`, así que haría falta
+    // o reescribir producción entera o un valor por omisión con el nombre de
+    // un inquilino incrustado en la regla que separa inquilinos; (2) el
+    // documento lo redacta el CLIENTE —el create es abierto a propósito, ver
+    // abajo—, y una frontera que depende de un campo que escribe el cliente
+    // depende de que nadie afloje nunca el ancla del create; (3) todo lo
+    // demás de dependencia ya vive bajo `/orgs/{oid}/`. Un campo mal puesto
+    // filtra; una ruta mal puesta no existe.
+    //
+    // ── Por qué el CREATE sigue abierto a cualquier sesión de la org ───────
+    // Es deliberado y es la pieza del rastro de permisos denegados: cuando a
+    // alguien se le niega una escritura por reglas, el registro de esa
+    // negación no puede depender de la misma condición que acaba de negar.
+    // Por eso el create no mira la obra ni el rol — sólo la organización— y
+    // por eso `update, delete: if false`: se puede dejar constancia, nunca
+    // borrarla ni corregirla.
+    //
+    // ── La raíz es de la constructora, y eso supone que hay UNA ───────────
+    // Igual que `obras/{obraId}`: la raíz es el camino legado de la
+    // constructora. `esDirectivoC()` no distingue entre dos constructoras, y
+    // tampoco lo hacen `global/*`, `health/*` ni `obras/*`. La suposición es
+    // de todo el archivo, no de este bloque, así que no se tapa aquí: se
+    // niega el nacimiento de la segunda constructora en `crearOrganizacion`,
+    // con un mensaje que dice qué hay que migrar antes. Ver §5 de
+    // `prueba-alta-de-organizacion.cjs`.
     // ─────────────────────────────────────────────────────────────────────
     match /auditoria/{id} {
-      allow read: if esDirectivoC() || esDirectivoD();
-      allow create: if esAuth();  // incluye soporte — cada acción se registra
+      allow read:   if esDirectivoC();
+      // Soporte también: su sesión no pertenece a ninguna organización, y sus
+      // actos SOBRE una org se registran en la bitácora de esa org (abajo).
+      allow create: if esConstructora() || esSoporte();
+      allow update, delete: if false;
+    }
+
+    match /orgs/{oid}/auditoria/{id} {
+      allow read:   if oid == orgId() && esDirectivoD();
+      allow create: if (oid == orgId() && esAuth()) || esSoporte();
       allow update, delete: if false;
     }
 
