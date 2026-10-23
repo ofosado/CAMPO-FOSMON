@@ -1,13 +1,15 @@
 # CAMPO — Reglas de seguridad por rol
 
 **Estado: DESPLEGADO EN PRODUCCIÓN desde el 2026-09-15. Último despliegue
-2026-10-22 — sólo Firestore (el arreglo del #66).**
+2026-10-23 — sólo Firestore (el arreglo del #73: `auditoria` partida por
+organización).**
 
 | | |
 |---|---|
-| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15**; último `firebase deploy --only firestore:rules` el **2026-10-22 19:53 UTC** |
-| Ruleset vivo — Firestore | `projects/campo-fosmon/rulesets/1b223bc0-f3f6-4905-bf64-52c236a81e2e`, publicado **2026-10-22T19:53:16Z** (release `cloud.firestore`). El anterior era `63182f2f-16f0-41cc-b61a-f4847511512a`, del 2026-10-07 |
+| En `main` desde | `697bdfe` "modelo multi-tenant", **2026-09-15**; último `firebase deploy --only firestore:rules` el **2026-10-23 17:52 UTC** |
+| Ruleset vivo — Firestore | `projects/campo-fosmon/rulesets/ebd4f8bb-35a1-4812-ab04-41879f0afe19`, publicado **2026-10-23T17:52:01Z** (release `cloud.firestore`). El anterior era `1b223bc0-f3f6-4905-bf64-52c236a81e2e`, del 2026-10-22 — **volver a él reabre la fuga del #73**: deja `auditoria` entera en la raíz, legible por cualquier directivo de cualquier organización |
 | Cómo se comprueba | `node scripts/verificar-reglas-publicadas.cjs` — baja el ruleset **publicado** del servicio y le pasa 9 casos por el motor real. No lee `firestore.rules`: el archivo verde no demuestra que producción esté verde. Con `CONTRAPRUEBA=1` tiene que salir 1 |
+| Y la frontera de la bitácora | `node scripts/medir-auditoria-entre-inquilinos.cjs` — 17 casos contra el ruleset **publicado**, verde desde el `ebd4f8bb`. `--ruleset <id>` le hace las mismas preguntas a un ruleset viejo: contra `1b223bc0` salen 4 en rojo. **Se corre después de cada despliegue de reglas**, y antes de dar de alta el primer usuario de dependencia (#69) |
 | Ruleset vivo — Storage | `projects/campo-fosmon/rulesets/cf4beea3-a166-4e18-ab9f-f723e7201c66` (release **`campo-fosmon.firebasestorage.app`**) |
 | Release `firebase.storage` | `0330d4de-…`, de 2026-07-16, **y el deploy de hoy NO lo tocó** pese a que el CLI imprimió «released rules storage.rules to firebase.storage». Lo bajé: son 11 renglones, `allow read, write: if false`. Deny-all, inofensivo — pero **no es el que gobierna el bucket**. Si algún día un bucket nuevo no obedece a `storage.rules`, mira primero cuál de los dos releases está leyendo |
 | Contra el repo | **IDÉNTICO**, los dos. Verificado el 2026-10-07 bajando ambos rulesets con la API `firebaserules.googleapis.com` y haciendo `diff` contra `firestore.rules` y `storage.rules` de `main` |
@@ -377,6 +379,7 @@ Peor caso ~350 bytes: cabe holgado en los 1000 bytes permitidos por token.
 - **Firestore bloquea:**
   - Escribir en `global/gp_construct` o `global/gp_detalle/*` (solo Cloud Function con Admin SDK).
   - Editar o borrar entradas de `auditoria/*` (append-only).
+  - **Leer `orgs/{oid}/auditoria/*`, la bitácora de una dependencia** (#73, desde el 2026-10-23). La raíz es la bitácora de la constructora y nada más; la de cada dependencia vive bajo su org y no sale de ahí.
   - Leer notificaciones ajenas.
 - **Storage permite:** todo bajo `/obras/**` (fotos, docs, subcontratos, nomina).
 - **Storage bloquea:** cualquier ruta fuera de `/obras/**`.
@@ -473,7 +476,8 @@ Idéntico a `superintendente` y `residente` — mismos permisos de captura, mism
 | `global/gp_detalle/obras/{id}` | Cualquier autenticado con rol válido | **Bloqueado** (solo Cloud Function) |
 | `global/historial_obras` | Solo directivos | Solo directivos |
 | `notificaciones/{uid}/items/{id}` | Solo el `uid` dueño | Solo el `uid` dueño (crear entre usuarios permitido: la app crea notifs cross-user al cambiar estatus) |
-| `auditoria/{id}` | Solo directivos | Cualquier autenticado puede **crear** (append) · edit/delete **bloqueado** |
+| `auditoria/{id}` | **Solo directivos de la CONSTRUCTORA** (`esDirectivoC()`; no incluye `auditor` ni `cliente`) | Cualquiera de la constructora, y `soporte`, pueden **crear** (append) · edit/delete **bloqueado** |
+| `orgs/{oid}/auditoria/{id}` | **Solo directivos de ESA dependencia** (`oid == orgId() && esDirectivoD()`) | Cualquier autenticado de esa org, y `soporte`, pueden **crear** · edit/delete **bloqueado** |
 | `health/{path=**}` | Solo `admin_sistema`/directivos | Solo Cloud Function |
 
 ---

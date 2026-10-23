@@ -288,6 +288,42 @@ exports.crearOrganizacion = onCall(async (request) => {
   }
 
   const db = admin.firestore();
+
+  // ── UNA SOLA CONSTRUCTORA, Y ES UNA CONDICIÓN EXPLÍCITA (#73) ────────────
+  //
+  // Media plataforma supone que la constructora es una: `obras/{obraId}`,
+  // `global/gp_construct`, `global/historial_obras`, `health/*` y la
+  // `auditoria` de la raíz viven todos fuera de `/orgs/` y los guarda
+  // `esConstructora()` / `esDirectivoC()`, que no distinguen entre dos. La
+  // segunda constructora no rompería nada visible el día que se cree: se
+  // rompería después, cuando sus directivos leyeran las obras, los montos y
+  // la bitácora de la primera.
+  //
+  // Esto no se tapa en las reglas poniendo `orgId() == 'fosmon'`: el nombre
+  // de un inquilino incrustado en la frontera que separa inquilinos es algo
+  // que en seis meses nadie recuerda por qué está ahí. Se niega el
+  // nacimiento, con un mensaje que dice qué hay que migrar antes.
+  //
+  // El día que haya una segunda constructora de verdad, esto sale en la cara
+  // de quien la da de alta. Lo ejecuta el §5 de
+  // `scripts/prueba-alta-de-organizacion.cjs`.
+  if (tipo === "constructora") {
+    const yaHay = await db.collection("orgs")
+      .where("tipo", "==", "constructora").limit(1).get();
+    if (!yaHay.empty) {
+      const otra = yaHay.docs[0].id;
+      throw new HttpsError(
+        "failed-precondition",
+        `Ya existe la constructora «${otra}», y hoy la plataforma sólo sostiene una. ` +
+        "No es un límite de producto: `obras/`, `global/*`, `health/*` y la " +
+        "bitácora de la raíz están fuera de /orgs y los guardan reglas que no " +
+        "distinguen entre dos constructoras, así que la segunda leería las obras, " +
+        "los montos y la bitácora de la primera. Para dar de alta otra hay que " +
+        "migrar antes esos paths a /orgs/{orgId}/. No se escribió nada."
+      );
+    }
+  }
+
   const orgRef = db.doc(`orgs/${id}`);
   const marcaRef = db.doc(`orgs/${id}/config/branding`);
 
