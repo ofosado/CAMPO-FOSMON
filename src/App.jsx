@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion, rutaAuditoria } from "./rutas-org.js";
+import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola } from "./permiso-denegado.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
@@ -2218,6 +2219,84 @@ async function fsAudit(tipo, opciones = {}) {
     // todos, y la regla de lectura no miraba la organización.
     await addDoc(collection(fbDb, rutaAuditoria(opciones.oid)), entry);
   } catch(e) { console.warn("fsAudit fallo (silencioso):", e?.message); }
+}
+
+// ── EL PUENTE AL MÓDULO DE PERMISO DENEGADO ────────────────────────────────
+// `src/permiso-denegado.js` decide; aquí se le dan las manos. Está así, con
+// todo inyectado, para que el banco ejecute aquella decisión de verdad en vez
+// de una copia.
+
+/** Fuerza el JWT nuevo. Es lo mismo que hace el listener de `claimsVersion`,
+ *  pero bajo demanda: aquí no esperamos a que la Cloud Function lo anuncie. */
+async function refrescarTokenAhora() {
+  if (!fbAuth.currentUser) throw new Error('no hay sesión');
+  await getIdToken(fbAuth.currentUser, true);
+}
+
+/** ¿El token YA REFRESCADO trae esta obra? Es el dato con el que las reglas
+ *  juzgan, así que es el único con el que se puede afirmar «perdiste el
+ *  acceso» sin inventar. */
+async function obraEnClaims(obraId) {
+  if (!fbAuth.currentUser) return false;
+  const { claims } = await getIdTokenResult(fbAuth.currentUser);
+  if (claims?.todas === true) return true;
+  return Array.isArray(claims?.obras) && claims.obras.includes(obraId);
+}
+
+const almacenLocal = () => {
+  // Safari en modo privado lanza al tocar localStorage, no al leerlo.
+  try { return typeof localStorage === 'undefined' ? null : localStorage; }
+  catch { return null; }
+};
+
+/**
+ * Escribe el rastro del caso 3. Si no puede, lo encola — y la cola es mejor
+ * esfuerzo declarado, no un almacén: ver el comentario de `encolarRastro`.
+ *
+ * El `create` de `auditoria` no pide la obra a propósito (#73). Esa es la
+ * pieza que deshace la circularidad: si pidiera la obra, a quien se le niega
+ * POR NO TENER LA OBRA tampoco podría dejar constancia de que se le negó, y
+ * el rastro estaría vacío exactamente en el caso que lo motivó.
+ */
+async function escribirRastroDenegacion(rastro) {
+  await addDoc(collection(fbDb, rutaAuditoria()), rastro);
+}
+
+async function dejarRastroDenegacion(rastro) {
+  try {
+    await escribirRastroDenegacion(rastro);
+    return true;
+  } catch (e) {
+    console.warn('rastro de denegación: no se pudo escribir, va a la cola', e?.code || e?.message);
+    return encolarRastro(rastro, almacenLocal());
+  }
+}
+
+/**
+ * Lo que los dos sitios de llamada comparten: reintentar una vez con token
+ * fresco, clasificar, y —sólo en el caso inexplicado— dejar rastro.
+ *
+ * Devuelve el resultado del módulo. No decide si avisar con `alert` o con un
+ * `throw`: eso depende de quién llama, y los dos llamadores lo hacen distinto.
+ */
+async function conPermisoReintentado(intentar, { obraId, ruta }) {
+  const r = await conReintentoDePermiso(intentar, {
+    obraId,
+    refrescarToken: refrescarTokenAhora,
+    tieneLaObra: () => obraEnClaims(obraId),
+  });
+  if (r.caso === CASO.INEXPLICADO) {
+    await dejarRastroDenegacion(construirRastro({
+      uid: fbAuth.currentUser?.uid,
+      correo: _auditCtx.correo,
+      obraId, ruta,
+      codigo: r.error?.code,
+      detalle: r.detalle,
+      ahoraISO: new Date().toISOString(),
+      servidor: serverTimestamp(),
+    }));
+  }
+  return r;
 }
 
 // Wrappers con auditoría. Si no se pasa ctx, no se audita.
@@ -5113,33 +5192,43 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
 // `conOrg` la foto de un supervisor de dependencia se va a una ruta que las
 // reglas niegan — mismo defecto que en `fsSetAEstricto`, sólo que aquí sí se ve
 // porque este helper lanza.
+//
+// ── EL MENSAJE DE LA DENEGACIÓN (2026-10-23) ───────────────────────────────
+// `storage/unauthorized` se traducía SIEMPRE a «ya no tienes acceso a esta
+// obra». Esa frase afirma algo sobre el dato: dice que al usuario le quitaron
+// la obra. Las más de las veces era falso — lo normal es que el token vaya
+// rancio— y manda al supervisor a pedir un permiso que ya tiene, de pie en la
+// obra, con la foto sin subir.
+//
+// Ahora son tres casos y los distingue `src/permiso-denegado.js`: reintento
+// con token fresco, y sólo si con el token fresco la obra NO está en sus
+// claims se le dice que perdió el acceso. Si la obra SÍ está y aun así lo
+// niegan, el mensaje lo dice tal cual y la app deja rastro.
 const uploadFoto = async (obraId, conceptoId, fotoId, base64url) => {
-  try {
-    const r = storageRef(fbStor, conOrg(`obras/${obraId}/fotos/${conceptoId}/${fotoId}`));
+  const ruta = conOrg(`obras/${obraId}/fotos/${conceptoId}/${fotoId}`);
+  const r = storageRef(fbStor, ruta);
+
+  const res = await conPermisoReintentado(async () => {
     await uploadString(r, base64url, 'data_url');
-    const url = await getDownloadURL(r);
-    return { url, ref: r };
-  } catch(e) {
+    return { url: await getDownloadURL(r), ref: r };
+  }, { obraId, ruta }).catch(e => {
+    // No era permiso: red, cuota, disco. El código real va en el mensaje
+    // porque es lo único accionable —`retry-limit-exceeded` se arregla
+    // buscando señal, `quota-exceeded` no se arregla desde el teléfono—.
     console.error('uploadFoto FAILED', {
       obraId, conceptoId, fotoId,
-      errorCode: e?.code,
-      errorMessage: e?.message,
+      errorCode: e?.code, errorMessage: e?.message,
       base64Length: base64url ? base64url.length : 0,
     });
-    // Casos comunes:
-    //  - storage/unauthorized: reglas de Firebase Storage bloquean el write
-    //    → puede indicar que el usuario perdió acceso a esta obra en vivo
-    //      (ver claimsVersion listener). Traducimos a mensaje explícito.
-    //  - storage/quota-exceeded: se acabó la cuota del plan Blaze
-    //  - storage/retry-limit-exceeded: sin internet o red inestable
-    //  - storage/unauthenticated: sesión de Firebase expiró
-    const codigo = e?.code || 'error-desconocido';
-    if (codigo === 'storage/unauthorized') {
-      throw new Error(`No se pudo subir la foto: ya no tienes acceso a esta obra.`);
-    }
-    const mensaje = e?.message || 'error desconocido';
-    throw new Error(`Storage: ${codigo} — ${mensaje}`);
+    throw new Error(`No se pudo subir la foto · ${e?.code || 'error-desconocido'} — ${e?.message || 'error desconocido'}`);
+  });
+
+  if (res.caso === CASO.SIN_ACCESO || res.caso === CASO.INEXPLICADO) {
+    console.error('uploadFoto DENEGADO', { obraId, conceptoId, fotoId,
+      caso: res.caso, errorCode: res.error?.code });
+    throw new Error(res.mensaje);
   }
+  return res.valor;
 };
 
 // Helper: rescate de objeto huérfano en Storage cuando el commit a Firestore
@@ -6611,6 +6700,12 @@ function Login({onLogin}){
       // Configura ctx de auditoría y registra login
       setAuditCtx({ correo: email, nombre: perfil.nombre, rol: perfil.rol, obraId: null, obraNombre: "" });
       fsAudit("login", { modulo: "sesion", entidad: email });
+      // Los rastros que no se pudieron escribir en su momento. Aquí hay
+      // sesión y prefijo, que es lo que les faltaba. Sin `await`: es mejor
+      // esfuerzo y no debe retrasar la entrada ni impedirla si falla.
+      drenarCola(almacenLocal(), escribirRastroDenegacion, serverTimestamp)
+        .then(r => { if (r.enviados) console.info(`rastros pendientes enviados: ${r.enviados}, quedan ${r.pendientes}`); })
+        .catch(e => console.warn('drenado de rastros:', e?.message));
       onLogin({
         correo: email,
         email,  // duplicado por compatibilidad con código que usa usuario.email
@@ -20378,18 +20473,30 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
           subidoPor: "",
         };
         const nuevos = [...docs, doc];
-        try {
-          await fsSetA(`obras/${obra.id}/contrato/documentos`, {lista: nuevos},
-            { modulo:"contrato", entidad:`documento ${file.name}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-          setDocs(nuevos);
-        } catch (commitErr) {
-          // Commit a Firestore falló (posiblemente porque el usuario perdió
-          // acceso a la obra entre el upload y el commit). Borra el objeto
-          // huérfano de Storage para no dejar basura.
+        // El commit podía fallar por cualquier cosa —red, cuota, permiso— y
+        // el aviso decía siempre «ya no tienes acceso a esta obra». Mismo
+        // defecto que en `uploadFoto` y mismo arreglo: un reintento con token
+        // fresco, y la frase del acceso perdido sólo cuando es cierta.
+        //
+        // El huérfano de Storage se borra cuando el commit NO quedó, sea cual
+        // sea la razón. Si el reintento sí quedó, no hay huérfano que borrar.
+        const rutaDoc = `obras/${obra.id}/contrato/documentos`;
+        const res = await conPermisoReintentado(
+          () => fsSetA(rutaDoc, {lista: nuevos},
+            { modulo:"contrato", entidad:`documento ${file.name}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre }),
+          { obraId: obra.id, ruta: conOrg(rutaDoc) },
+        ).catch(async commitErr => {
           await borrarFotoHuerfana(subidoRef);
-          alert("No se pudo guardar el documento: ya no tienes acceso a esta obra.");
+          alert(`No se pudo guardar el documento · ${commitErr?.code || 'error-desconocido'} — ${commitErr?.message || 'error desconocido'}`);
           throw commitErr;
+        });
+
+        if (res.caso === CASO.SIN_ACCESO || res.caso === CASO.INEXPLICADO) {
+          await borrarFotoHuerfana(subidoRef);
+          alert(`No se pudo guardar el documento. ${res.mensaje}`);
+          throw res.error;
         }
+        setDocs(nuevos);
       } catch(e) { console.error(e); }
       setUploading(false);
     };
