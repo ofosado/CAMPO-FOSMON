@@ -334,11 +334,25 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
   console.log('\n§4 · la foto que sube el supervisor apunta a su organización');
   const fuenteUpload = declaraciones(modApp, ['uploadFoto']);
   const rutasStorage = [];
-  const fabricaUp = new Function('storageRef', 'fbStor', 'uploadString', 'getDownloadURL', 'conOrg',
+
+  // Desde el #74 `uploadFoto` pasa por el puente de `src/permiso-denegado.js`.
+  // Aquí entra un doble que sólo corre la operación: ESTA sección mide A QUÉ
+  // RUTA va la foto, no cómo se clasifica una denegación. Lo segundo lo mide
+  // `prueba-mensaje-de-permiso.cjs`, con sesiones y denegaciones reales. `CASO`
+  // sí es el del módulo y no una copia: si fuera `undefined`, la comparación
+  // que hace `uploadFoto` pasaría por verdadera sin que nadie la juzgue.
+  let CASO;
+  try { ({ CASO } = await import(path.resolve(raiz, 'src/permiso-denegado.js'))); }
+  catch (e) { noArranco(`no se pudo cargar src/permiso-denegado.js — ${e.message}`); }
+  const conPermisoReintentado = async (intentar) => ({ caso: null, valor: await intentar() });
+
+  const fabricaUp = new Function('storageRef', 'fbStor', 'uploadString', 'getDownloadURL',
+    'conOrg', 'conPermisoReintentado', 'CASO',
     `${fuenteUpload}; return uploadFoto;`);
   const uploadFoto = fabricaUp(
     (_stor, ruta) => { rutasStorage.push(ruta); return { ruta }; },
-    {}, async () => {}, async r => `https://ejemplo/${r.ruta}`, conOrg);
+    {}, async () => {}, async r => `https://ejemplo/${r.ruta}`, conOrg,
+    conPermisoReintentado, CASO);
 
   limpiarPrefijoOrg();
   fijarPrefijoOrg('dependencia', ORG_DEP);
