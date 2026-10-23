@@ -1762,24 +1762,177 @@ async function ejecutarBackupFirestore() {
   if (!resp.ok) {
     throw new Error(`Export error ${resp.status}: ${JSON.stringify(data)}`);
   }
+  // Sin `operationName` no hay nada que vigilar. El export puede haber
+  // arrancado, pero un respaldo que no se puede verificar no se puede
+  // declarar bueno, y éste es el renglón del panel que menos puede mentir.
+  if (!data.name) {
+    throw new Error(
+      `El export arrancó pero no devolvió operationName, así que no hay forma ` +
+      `de saber si terminó. Respuesta: ${JSON.stringify(data)}`);
+  }
   return { destino, operationName: data.name };
 }
 
+// ── EL FINAL DEL EXPORT, NO SU ARRANQUE (#77) ──────────────────────────────
+//
+// `:exportDocuments` es una operación de larga duración: el POST vuelve en
+// milisegundos con un `operationName` y el trabajo sigue en background. Hasta
+// el 2026-10-23 el registro de salud se escribía con ese POST y decía
+// `ok: true, "Iniciado: …"`. O sea: el panel se ponía VERDE por haber pedido
+// el respaldo, no por tenerlo.
+//
+// Eso no es un matiz. El export falla después del arranque por cosas
+// corrientes —se acabó el permiso al bucket, el prefijo ya existe, lo cancelan—
+// y en todas el panel seguía verde. Un respaldo es justo lo que uno mira
+// cuando ya perdió lo demás: es el último renglón que puede permitirse
+// mentir. El 2026-09-21 hay un ROJO en `backup_historial` que sí se vio sólo
+// porque el POST mismo devolvió 400; si hubiera reventado un minuto después,
+// nadie se entera.
+//
+// Ahora la corrida espera a que la operación llegue a un estado TERMINAL y
+// registra ése. Tres salidas, no dos:
+//
+//   SUCCESSFUL           → ok: true.   El respaldo existe.
+//   FAILED / CANCELLED   → ok: false.  El respaldo no existe.
+//   no terminó a tiempo  → ok: false.  NO SABEMOS si existe.
+//
+// La tercera es la que importa y por eso no es verde: «no se pudo verificar»
+// no es «salió bien». Se distingue de la segunda en el mensaje y en
+// `verificado`, porque la reacción es distinta —ir a mirar el bucket contra
+// arreglar el export—, pero ninguna de las dos pinta verde.
+
+// Lo que Firestore reporta en `metadata.operationState`.
+const EXPORT_TERMINAL_OK = "SUCCESSFUL";
+const EXPORT_TERMINAL_MAL = ["FAILED", "CANCELLED"];
+
+/**
+ * Traduce una operación de export a `{terminal, ok, estado, detalle}`.
+ *
+ * Separada del bucle a propósito: es la regla que decide si un respaldo
+ * cuenta, y se puede correr contra respuestas concretas sin red.
+ */
+function clasificarExport(op) {
+  const estado = op?.metadata?.operationState || "";
+  const err = op?.error;
+  const detalleErr = err
+    ? `${err.message || JSON.stringify(err)}${err.code != null ? ` (code ${err.code})` : ""}`
+    : "";
+
+  if (EXPORT_TERMINAL_MAL.includes(estado)) {
+    return { terminal: true, ok: false, estado, detalle: detalleErr || "sin detalle" };
+  }
+  if (op?.done === true) {
+    if (err) return { terminal: true, ok: false, estado: estado || "FAILED", detalle: detalleErr };
+    // `done` sin error y sin estado explícito: la operación cerró bien. Si el
+    // estado viene y NO es SUCCESSFUL, mandan los hechos y no el optimismo.
+    if (estado && estado !== EXPORT_TERMINAL_OK) {
+      return { terminal: true, ok: false, estado, detalle: "terminó en un estado que no es SUCCESSFUL" };
+    }
+    return { terminal: true, ok: true, estado: estado || EXPORT_TERMINAL_OK, detalle: "" };
+  }
+  const p = op?.metadata?.progressDocuments;
+  return {
+    terminal: false, ok: false, estado: estado || "PROCESSING",
+    detalle: p ? `${p.completedWork || 0}/${p.estimatedWork || "?"} documentos` : "",
+  };
+}
+
+/** Lee el estado actual de la operación contra la API de Firestore. */
+async function leerOperacionExport(operationName) {
+  const accessToken = await admin.app().options.credential.getAccessToken();
+  const token = accessToken.access_token || accessToken;
+  const resp = await fetch(`https://firestore.googleapis.com/v1/${operationName}`, {
+    headers: { "Authorization": `Bearer ${token}` },
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(`No se pudo consultar el export (HTTP ${resp.status}): ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+/**
+ * Espera a que el export llegue a un estado terminal, o se rinde con el plazo.
+ *
+ * `leer`, `dormir` y `ahora` se inyectan para poder ejercitar el bucle de
+ * verdad —no una copia suya— sin red y sin esperar minutos reales.
+ *
+ * Un fallo al CONSULTAR no se confunde con un fallo del export: se reintenta
+ * hasta agotar el plazo y, si nunca se pudo leer, la salida es «sin verificar»
+ * con el error de lectura en el detalle. Son dos averías con dos reacciones.
+ */
+async function esperarFinDelExport(operationName, {
+  plazoMs = 7 * 60 * 1000,
+  pausaMs = 15 * 1000,
+  leer = leerOperacionExport,
+  dormir = (ms) => new Promise((r) => setTimeout(r, ms)),
+  ahora = () => Date.now(),
+} = {}) {
+  const t0 = ahora();
+  let intentos = 0;
+  let ultimo = { estado: "DESCONOCIDO", detalle: "" };
+
+  for (;;) {
+    intentos++;
+    try {
+      const c = clasificarExport(await leer(operationName));
+      if (c.terminal) {
+        return { ...c, verificado: true, intentos, esperaMs: ahora() - t0 };
+      }
+      ultimo = c;
+    } catch (e) {
+      ultimo = { estado: "ILEGIBLE", detalle: e?.message || String(e) };
+    }
+    if (ahora() - t0 + pausaMs >= plazoMs) {
+      return {
+        terminal: false, ok: false, verificado: false,
+        estado: ultimo.estado, detalle: ultimo.detalle,
+        intentos, esperaMs: ahora() - t0,
+      };
+    }
+    await dormir(pausaMs);
+  }
+}
+
+/** El renglón que va al panel de salud y al historial. Sin cifras inventadas. */
+function mensajeDeRespaldo(destino, r) {
+  const seg = Math.round((r.esperaMs || 0) / 1000);
+  if (r.verificado && r.ok) return `Completado: ${destino} (verificado en ${seg} s)`;
+  if (r.verificado) return `El export terminó en ${r.estado}: ${r.detalle || "sin detalle"} · ${destino}`;
+  return (
+    `SIN VERIFICAR tras ${seg} s: el export arrancó y a esta hora seguía en ` +
+    `${r.estado}${r.detalle ? ` (${r.detalle})` : ""}. No se sabe si el respaldo ` +
+    `quedó completo — hay que mirar ${destino} a mano.`
+  );
+}
+
 // SCHEDULED: domingo 3:00 a.m. hora México (baja actividad)
+//
+// `timeoutSeconds` sube a 540 porque ahora la corrida ESPERA al export. El
+// plazo de espera (420 s) queda deliberadamente por debajo: si la función se
+// muriera por timeout no escribiría nada y el panel diría «sin correr», que es
+// otra mentira. Rendirse a tiempo y escribir «sin verificar» es lo correcto.
 exports.backupSemanalFirestore = onSchedule({
   schedule: "0 3 * * 0",
   timeZone: "America/Mexico_City",
   region: "us-central1",
+  timeoutSeconds: 540,
 }, async () => {
   const t0 = Date.now();
   console.log("Iniciando backup semanal de Firestore…");
   try {
     const res = await ejecutarBackupFirestore();
-    console.log(`Backup iniciado OK. Destino: ${res.destino}, Op: ${res.operationName}`);
-    await registrarSalud("backup", true, `Iniciado: ${res.destino}`, {
+    console.log(`Export lanzado. Destino: ${res.destino}, Op: ${res.operationName}`);
+    const fin = await esperarFinDelExport(res.operationName, { plazoMs: 420 * 1000 });
+    const mensaje = mensajeDeRespaldo(res.destino, fin);
+    console.log(`Backup: ${mensaje}`);
+    await registrarSalud("backup", fin.ok, mensaje, {
       duracionMs: Date.now() - t0,
       destino: res.destino,
       operationName: res.operationName,
+      estadoExport: fin.estado,
+      verificado: fin.verificado,
+      consultas: fin.intentos,
     });
   } catch (e) {
     console.error("Error en backup semanal:", e);
@@ -1789,7 +1942,12 @@ exports.backupSemanalFirestore = onSchedule({
 });
 
 // CALLABLE: lanzar backup manualmente (solo director_general / admin_sistema)
-exports.probarBackup = onCall({ region: "us-central1" }, async (request) => {
+//
+// Espera al export igual que la corrida semanal, con un plazo corto para no
+// pasarse del tiempo que un cliente aguanta. Devuelve `verificado` aparte de
+// `ok` justamente para que «no me alcanzó el tiempo» no se lea como «salió
+// bien»: antes esto devolvía `ok: true` por haber arrancado.
+exports.probarBackup = onCall({ region: "us-central1", timeoutSeconds: 120 }, async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
   const email = (request.auth.token.email || "").toLowerCase();
   const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(email)}`).get();
@@ -1799,7 +1957,15 @@ exports.probarBackup = onCall({ region: "us-central1" }, async (request) => {
   }
   try {
     const res = await ejecutarBackupFirestore();
-    return { ok: true, ...res };
+    const fin = await esperarFinDelExport(res.operationName, { plazoMs: 90 * 1000, pausaMs: 10 * 1000 });
+    return {
+      ok: fin.ok,
+      verificado: fin.verificado,
+      estado: fin.estado,
+      mensaje: mensajeDeRespaldo(res.destino, fin),
+      destino: res.destino,
+      operationName: res.operationName,
+    };
   } catch (e) {
     throw new HttpsError("internal", `Error en backup: ${e.message}`);
   }
