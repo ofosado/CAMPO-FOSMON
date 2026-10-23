@@ -97,6 +97,20 @@ if (process.argv[2] === '--contraprueba') {
     { nombre: 'un solo reloj: el rastro pierde la hora del aparato',
       de: '    ts: ahoraISO,\n    tsServidor: servidor ?? null,',
       a:  '    tsServidor: servidor ?? null,' },
+
+    // La fuga del #73 entrando por detrás: si la ruta no viaja con la fila, lo
+    // que un municipio encoló ayer aterriza hoy en la bitácora de la
+    // constructora. Una cola que vacía bien pero en el lugar equivocado es
+    // peor que una cola que no vacía.
+    { nombre: 'la cola pierde su ruta: todo aterriza en la bitácora de la raíz',
+      de: '      await escribir(entrada.ruta, nuevoCentinela',
+      a:  '      await escribir(\'auditoria\', nuevoCentinela' },
+
+    // Descartar es admisible; descartar en silencio no. El número que sale en
+    // el resultado es la única señal de que la cola está perdiendo filas.
+    { nombre: 'el descarte se calla: la fila se tira y nadie se entera',
+      de: '    if (!entrada?.ruta || !entrada?.fila) { descartados++; continue; }',
+      a:  '    if (!entrada?.ruta || !entrada?.fila) { continue; }' },
   ];
   let malas = 0;
   for (const m of MUTACIONES) {
@@ -345,13 +359,14 @@ const check = (ok, titulo, detalle = '') => {
     ruta: RUTA_DOCS, codigo: 'permission-denied',
     ahoraISO: haceTresDias, servidor: serverTimestamp(),
   });
-  check(encolarRastro(paraCola, almacen) === true, 'se encola lo que no se pudo escribir');
+  check(encolarRastro('auditoria', paraCola, almacen) === true,
+    'se encola lo que no se pudo escribir');
   const enCola = leerCola(almacen);
   check(enCola.length === 1, 'y se puede volver a leer', `${enCola.length} en cola`);
-  check(!('tsServidor' in enCola[0]) || enCola[0].tsServidor == null,
+  check(!('tsServidor' in enCola[0].fila) || enCola[0].fila.tsServidor == null,
     'el centinela del servidor NO viaja en la cola: JSON lo convertiría en un mapa vacío',
-    JSON.stringify(enCola[0].tsServidor));
-  check(enCola[0].ts === haceTresDias,
+    JSON.stringify(enCola[0].fila.tsServidor));
+  check(enCola[0].fila.ts === haceTresDias,
     'pero la hora del aparato sí, que es la que dice cuándo pasó');
 
   // Sin almacenamiento —Safari en privado, cuota llena— la función lo DICE.
@@ -359,16 +374,44 @@ const check = (ok, titulo, detalle = '') => {
   const almacenRoto = { getItem: () => null,
                         setItem: () => { throw new Error('QuotaExceededError'); },
                         removeItem: () => {} };
-  check(encolarRastro(paraCola, almacenRoto) === false,
+  check(encolarRastro('auditoria', paraCola, almacenRoto) === false,
     'si el almacenamiento falla, devuelve FALSE en vez de fingir que guardó');
-  check(encolarRastro(paraCola, null) === false,
+  check(encolarRastro('auditoria', paraCola, null) === false,
     'y sin almacenamiento ninguno, lo mismo');
+
+  // ── La ruta viaja con la fila, y es lo que impide reabrir el #73 ─────────
+  // La cola sobrevive al cierre de sesión. Si el drenado preguntara «¿dónde
+  // escribe ESTA sesión?», el rastro que un municipio encoló ayer caería hoy
+  // en la bitácora de la constructora. Aquí se encolan dos filas con rutas
+  // distintas y se exige que cada una salga por la suya.
+  const almacenMixto = almacenFalso();
+  encolarRastro('orgs/coatzacoalcos/auditoria',
+    { ...paraCola, marca: 'del-municipio' }, almacenMixto);
+  encolarRastro('auditoria', { ...paraCola, marca: 'de-la-raiz' }, almacenMixto);
+  const entregas = [];
+  const resRutas = await drenarCola(almacenMixto,
+    async (ruta, fila) => { entregas.push([ruta, fila.marca]); }, serverTimestamp);
+  check(resRutas.enviados === 2, 'las dos filas se entregan', `enviados=${resRutas.enviados}`);
+  check(entregas.some(([r, m]) => r === 'orgs/coatzacoalcos/auditoria' && m === 'del-municipio'),
+    'la del municipio sale por la bitácora del municipio',
+    entregas.map(e => e.join('→')).join('  ·  '));
+  check(entregas.some(([r, m]) => r === 'auditoria' && m === 'de-la-raiz'),
+    'y la de la raíz por la raíz — ninguna hereda la ruta de la otra');
+
+  // Una entrada sin ruta no se puede entregar a ningún lado. Se descarta,
+  // pero el número SALE: perder filas en silencio es el defecto de siempre.
+  const almacenSucio = almacenFalso();
+  almacenSucio.setItem('campo.rastros_pendientes', JSON.stringify([{ fila: paraCola }]));
+  const resSucio = await drenarCola(almacenSucio, async () => {}, serverTimestamp);
+  check(resSucio.enviados === 0 && resSucio.descartados === 1,
+    'una entrada sin ruta se descarta y el descarte se REPORTA, no se calla',
+    `enviados=${resSucio.enviados} descartados=${resSucio.descartados}`);
 
   // Drenar: se escribe de verdad contra el emulador y se repone el centinela.
   const antes = (await comoDirectivo(() => getDocs(collection(db, 'auditoria')))).size;
   await entrarComo('u-auditor', CON('auditor', [OBRA]));
   const res = await drenarCola(almacen,
-    (x) => addDoc(collection(db, 'auditoria'), x), serverTimestamp);
+    (ruta, x) => addDoc(collection(db, ruta), x), serverTimestamp);
   check(res.enviados === 1 && res.pendientes === 0,
     'al drenar se escribe lo pendiente', `enviados=${res.enviados} pendientes=${res.pendientes}`);
   check(leerCola(almacen).length === 0, 'y la cola queda vacía');
@@ -384,7 +427,7 @@ const check = (ok, titulo, detalle = '') => {
   // Lo que no se puede escribir se QUEDA. Una cola que tira lo que no pudo
   // enviar es peor que no tener cola.
   const almacen2 = almacenFalso();
-  encolarRastro(paraCola, almacen2);
+  encolarRastro('auditoria', paraCola, almacen2);
   const res2 = await drenarCola(almacen2,
     () => Promise.reject(new Error('sin red')), serverTimestamp);
   check(res2.enviados === 0 && res2.pendientes === 1,

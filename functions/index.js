@@ -1035,29 +1035,224 @@ async function descargarYGuardarGP() {
 // Registra el resultado de cada ejecución de un cron job en Firestore
 // para que el Panel de Salud pueda monitorear el estado del sistema.
 // Path: global/health = { [tipo]: { ultimaEjecucion, ok, mensaje, duracionMs, meta } }
+//
+// ── POR QUÉ YA NO SE TRAGA SU PROPIO FALLO (P7, quinta aparición) ──────────
+// Hasta el 2026-10-23 esto terminaba en `catch { console.warn("fallo
+// silencioso") }`. El nombre lo decía y aun así se quedó: el instrumento con
+// el que nos enteramos de que algo se cayó era de los que no avisan.
+//
+// Lo que producía no era "no se registró". Era PEOR, porque las dos mitades
+// decían cosas distintas:
+//
+//  · Cloud Scheduler marcaba la corrida como EXITOSA —la función terminó sin
+//    lanzar—, así que quien mira la consola de Functions ve verde.
+//  · `global/health` se quedaba con el registro anterior, así que la pantalla
+//    de salud, pasado el plazo, decía «sin correr» en rojo.
+//
+// Y «sin correr» es una AFIRMACIÓN SOBRE EL DATO que en ese caso es falsa: sí
+// corrió, lo que no se pudo fue anotarlo. Son dos averías con dos reacciones
+// distintas —revisar el cron contra revisar los permisos de escritura— y el
+// silencio las volvía indistinguibles.
+//
+// Ahora lanza. En el camino de éxito eso hace fallar la invocación, que es lo
+// correcto: un trabajo cuyo resultado no se pudo registrar no terminó bien,
+// porque nadie se va a enterar de que terminó. Para el camino de fallo está
+// `registrarFalloDeSalud`, que conserva el error original.
 async function registrarSalud(tipo, ok, mensaje, meta = {}) {
+  const ref = admin.firestore().doc("global/health");
+  const snap = await ref.get();
+  const actual = snap.exists ? snap.data() : {};
+  const entry = {
+    ultimaEjecucion: new Date().toISOString(),
+    ok: !!ok,
+    mensaje: String(mensaje || ""),
+    ...meta,
+  };
+  // También guarda historial corto: últimas 10 ejecuciones por tipo
+  const histPrev = Array.isArray(actual[`${tipo}_historial`]) ? actual[`${tipo}_historial`] : [];
+  const hist = [entry, ...histPrev].slice(0, 10);
+  // `mergeFields` y no `merge:true`, y sin volver a escribir `actual`.
+  //
+  // `set({...actual, [tipo]: entry}, {merge:true})` hace merge PROFUNDO: el
+  // mapa nuevo se funde campo por campo con el viejo en vez de sustituirlo.
+  // Medido el 2026-10-23: tras una corrida buena que dejó
+  // `permisos_denegados.denegaciones = 1`, la siguiente corrida FALLIDA —que
+  // no contó nada— quedaba con `ok:false` y ese `denegaciones:1` encima. Un
+  // registro que mezcla dos corridas y presenta como cifra de ésta la que
+  // midió la anterior. Es el mismo defecto que este trabajo vino a cerrar,
+  // puesto en el renglón que lo reporta.
+  //
+  // De paso quita el `...actual`: reescribir el documento entero machacaba lo
+  // que otro cron hubiera anotado entre la lectura y la escritura.
+  await ref.set({
+    [tipo]: entry,
+    [`${tipo}_historial`]: hist,
+  }, { mergeFields: [tipo, `${tipo}_historial`] });
+}
+
+/**
+ * El registro de salud del camino de FALLO.
+ *
+ * Ahí el trabajo ya va a reventar y el error original es el que explica qué
+ * pasó: perderlo cambiaría un diagnóstico por otro. Pero tragarse el segundo
+ * fallo nos devuelve al defecto que `registrarSalud` acaba de dejar de tener.
+ *
+ * Así que salen los dos en el mismo error, con `cause` apuntando al original
+ * para que la cadena quede entera.
+ */
+async function registrarFalloDeSalud(tipo, error, meta = {}) {
+  const original = error?.message || String(error);
   try {
-    const ref = admin.firestore().doc("global/health");
-    const snap = await ref.get();
-    const actual = snap.exists ? snap.data() : {};
-    const entry = {
-      ultimaEjecucion: new Date().toISOString(),
-      ok: !!ok,
-      mensaje: String(mensaje || ""),
-      ...meta,
-    };
-    // También guarda historial corto: últimas 10 ejecuciones por tipo
-    const histPrev = Array.isArray(actual[`${tipo}_historial`]) ? actual[`${tipo}_historial`] : [];
-    const hist = [entry, ...histPrev].slice(0, 10);
-    await ref.set({
-      ...actual,
-      [tipo]: entry,
-      [`${tipo}_historial`]: hist,
-    }, { merge: true });
-  } catch (e) {
-    console.warn(`registrarSalud(${tipo}) fallo silencioso:`, e?.message);
+    await registrarSalud(tipo, false, original, meta);
+  } catch (e2) {
+    throw new Error(
+      `${original} · y además no se pudo registrar la salud de ${tipo}: ` +
+      `${e2?.message || e2}`, { cause: error });
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// LAS DENEGACIONES QUE NO SABEMOS EXPLICAR
+// ════════════════════════════════════════════════════════════════════════════
+// El front, cuando las reglas le niegan una escritura y el usuario SÍ tiene la
+// obra en sus claims (el caso 3 de `src/permiso-denegado.js`), escribe una fila
+// `tipo:"error_permiso"` en la bitácora. Esa fila es el único rastro de un
+// defecto que el usuario no puede corregir y que nosotros no sabemos explicar.
+//
+// Escribirla no es enterarse. La bitácora es un flujo cronológico de actividad
+// normal —4,201 filas al 2026-10-23— y una fila nuestra entre ellas sólo
+// existe si a alguien se le ocurre bajar a buscarla. Por eso hay dos empujones
+// y no uno: este trabajo diario la pone en el semáforo, y el resumen semanal
+// la manda por correo. El semáforo da el ESTADO; el correo da el AVISO. Un
+// semáforo que nadie abre no entera a nadie.
+//
+// ── POR QUÉ NO ES UNA CONSULTA DE GRUPO DE COLECCIÓN ───────────────────────
+// Desde el #73 la bitácora está partida: `auditoria` en la raíz y
+// `orgs/{oid}/auditoria` por organización. Lo natural sería
+// `collectionGroup("auditoria")`. Medido contra PRODUCCIÓN el 2026-10-23, las
+// tres variantes fallan con `FAILED_PRECONDITION`:
+//
+//   collectionGroup(auditoria).where(tsServidor > x)        → falta COLLECTION_GROUP_ASC
+//   collectionGroup(auditoria).where(tipo ==).where(ts > x) → falta índice compuesto
+//   collectionGroup(auditoria).where(tipo == x)             → falta COLLECTION_GROUP_ASC
+//
+// Los índices de un solo campo que Firestore crea solo son de alcance
+// COLECCIÓN, no de grupo. Recorrer colección por colección usa esos índices
+// automáticos y NO necesita desplegar ningún índice nuevo — medido: las tres
+// consultas por colección contestan.
+//
+// ── Y POR QUÉ SE FILTRA `tipo` EN LA CONSULTA Y LA FECHA EN MEMORIA ────────
+// Igualdad y rango sobre campos distintos piden índice compuesto. De los dos,
+// el que recorta es `tipo`: hoy hay 0 filas `error_permiso` contra 4,201
+// totales. Filtrar por fecha traería la semana entera (168 filas) para
+// descartarlas casi todas. Si algún día esto se vuelve caro es porque la
+// alarma está sonando sin parar, y ese sería el problema, no el costo.
+const TIPO_DENEGACION = "error_permiso";
+
+/**
+ * Las colecciones de bitácora que hay HOY: la raíz más una por organización.
+ * Se enumeran en cada corrida y no se guardan: una organización nueva tiene
+ * que entrar al conteo el día que nace, no el día que alguien se acuerde.
+ */
+async function coleccionesDeBitacora(db) {
+  const orgs = await db.collection("orgs").listDocuments();
+  return ["auditoria", ...orgs.map(o => `orgs/${o.id}/auditoria`)];
+}
+
+/**
+ * Cuenta las denegaciones inexplicadas posteriores a `desde`.
+ *
+ * LANZA si no puede contar. Devolver 0 cuando la consulta falló sería pintar
+ * de verde la pantalla que existe para avisar — el mismo defecto que este
+ * trabajo viene a cerrar, un nivel más adentro.
+ *
+ * ── LA FILA SIN FECHA SE CUENTA ────────────────────────────────────────────
+ * Una fila lleva dos relojes (ver `construirRastro`): `tsServidor`, que pone
+ * Firestore, y `ts`, el del aparato. Se prefiere el del servidor porque el del
+ * teléfono miente —en 16 capturas de la 0127 mintió—. Si no trae ninguno de
+ * los dos, se cuenta igual: no saber cuándo pasó no es no haber pasado, y de
+ * los dos errores posibles el que se puede permitir es contar de más.
+ */
+async function contarDenegaciones(db, desde) {
+  const colecciones = await coleccionesDeBitacora(db);
+  const filas = [];
+  for (const col of colecciones) {
+    const snap = await db.collection(col)
+      .where("tipo", "==", TIPO_DENEGACION).get();
+    for (const d of snap.docs) filas.push({ coleccion: col, ...d.data() });
+  }
+
+  const cuando = f => {
+    if (f.tsServidor?.toDate) return f.tsServidor.toDate();
+    const t = Date.parse(f.ts || "");
+    return Number.isFinite(t) ? new Date(t) : null;
+  };
+  const enVentana = filas.filter(f => {
+    const c = cuando(f);
+    return c === null || c >= desde;
+  });
+
+  const obras = [...new Set(enVentana.map(f => f.obraId).filter(Boolean))];
+  const codigos = [...new Set(enVentana.map(f => f.codigo).filter(Boolean))];
+  return {
+    total: enVentana.length,
+    historicas: filas.length,
+    obras, codigos, colecciones,
+    sinFecha: enVentana.filter(f => cuando(f) === null).length,
+  };
+}
+
+/** El renglón que leen el semáforo y el correo. Una sola redacción para los
+ *  dos: si discrepan, uno de los dos está mintiendo. */
+function textoDenegaciones({ total, obras, codigos, sinFecha }) {
+  if (total === 0) return "Ninguna denegación inexplicada.";
+  return `${total} denegación(es) que la app no supo explicar` +
+    (obras.length ? ` · obras: ${obras.join(", ")}` : "") +
+    (codigos.length ? ` · códigos: ${codigos.join(", ")}` : "") +
+    (sinFecha ? ` · ${sinFecha} sin fecha utilizable` : "");
+}
+
+// ── SCHEDULED: cada día 8:30 hora México (después de actualizarGPSheet) ──
+// El plazo del semáforo es 36 h, igual que el de `gp_sync`: si este trabajo se
+// calla día y medio, el panel se pone en rojo por silencio. Que el vigilante
+// tenga vigilante es justo el punto — un canal que puede callarse sin que se
+// note vuelve a ser el defecto que vino a cerrar.
+exports.vigilarDenegaciones = onSchedule({
+  schedule: "30 8 * * *",
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+}, async () => {
+  const t0 = Date.now();
+  const db = admin.firestore();
+  try {
+    // La ventana arranca donde terminó la corrida anterior, para que ninguna
+    // fila se cuente dos veces ni se salte entre corridas. Sin corrida previa
+    // —la primera vez, o tras borrar el registro— se toman 24 h y el mensaje
+    // lo dice: una ventana supuesta no se presenta como medida.
+    const salud = await db.doc("global/health").get();
+    const previa = salud.exists ? salud.data()?.permisos_denegados?.ultimaEjecucion : null;
+    const tPrevia = Date.parse(previa || "");
+    const primera = !Number.isFinite(tPrevia);
+    const desde = primera ? new Date(Date.now() - 24 * 3600 * 1000) : new Date(tPrevia);
+
+    const r = await contarDenegaciones(db, desde);
+    const mensaje = textoDenegaciones(r) +
+      (primera ? " · primera corrida: ventana supuesta de 24 h" : "");
+    console.log(`vigilarDenegaciones: ${mensaje}`);
+    await registrarSalud("permisos_denegados", r.total === 0, mensaje, {
+      duracionMs: Date.now() - t0,
+      denegaciones: r.total,
+      historicas: r.historicas,
+      desde: desde.toISOString(),
+      colecciones: r.colecciones,
+      obras: r.obras,
+    });
+  } catch (e) {
+    console.error("vigilarDenegaciones falló:", e);
+    await registrarFalloDeSalud("permisos_denegados", e, { duracionMs: Date.now() - t0 });
+    throw e;
+  }
+});
 
 // ── SCHEDULED: cada día 8am hora México ──
 // Antes era semanal (lunes 9am), pero las facturas se agregan a GP durante
@@ -1082,7 +1277,7 @@ exports.actualizarGPSheet = onSchedule({
     });
   } catch (e) {
     console.error("Error en actualización programada de GP:", e);
-    await registrarSalud("gp_sync", false, e.message || String(e), { duracionMs: Date.now() - t0 });
+    await registrarFalloDeSalud("gp_sync", e, { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
@@ -1259,8 +1454,39 @@ async function calcularKpisObra(obraId, gpData) {
   };
 }
 
+/**
+ * El renglón de denegaciones del correo.
+ *
+ * Tres estados, y los tres se ven distinto. El que importa es el tercero:
+ * cuando el conteo FALLA, el correo no dice «0». Un cero inventado aquí es
+ * peor que no decir nada, porque este renglón existe precisamente para que
+ * alguien confíe en él una vez por semana sin abrir la aplicación.
+ */
+function bloqueDenegaciones(den) {
+  if (!den) return "";
+  if (den.error) {
+    return `
+          <div style="margin-top:14px;padding:10px 14px;background:#FFF6E5;border-left:3px solid #C98A1B;border-radius:4px;font-size:12px;color:#7A5410;">
+            <b>No se pudo contar las denegaciones de permiso de esta semana.</b>
+            El dato falta, no es cero. (${den.error})
+          </div>`;
+  }
+  if (!den.total) {
+    return `
+          <div style="margin-top:14px;font-size:11px;color:#9AA0AC;">
+            Sin denegaciones de permiso inexplicadas en los últimos 7 días.
+          </div>`;
+  }
+  return `
+          <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
+            <b>${den.total} ${den.total === 1 ? "captura fue rechazada" : "capturas fueron rechazadas"} sin que sepamos por qué</b>
+            en los últimos 7 días${den.obras?.length ? ` · ${den.obras.join(", ")}` : ""}.
+            Quien las intentó sí tenía la obra asignada: no es algo que pueda arreglar desde la app.
+          </div>`;
+}
+
 // HTML del email semanal — diseño compacto, mobile-friendly
-function buildEmailHTML(kpisObras, fechaCorte) {
+function buildEmailHTML(kpisObras, fechaCorte, denegaciones) {
   const filasObras = kpisObras.map(k => {
     const colorAvance = semaforoColor(k.avancePct, "avance");
     const colorGasto = semaforoColor(k.pctGasto, "gasto");
@@ -1323,7 +1549,7 @@ function buildEmailHTML(kpisObras, fechaCorte) {
           ${obrasSinCaptura > 0 ? `
           <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
             <b>${obrasSinCaptura} ${obrasSinCaptura === 1 ? "obra" : "obras"} sin captura en los últimos 7 días.</b> Revisa la columna "Sin captura" abajo.
-          </div>` : ""}
+          </div>` : ""}${bloqueDenegaciones(denegaciones)}
         </td></tr>
         <!-- Tabla de obras -->
         <tr><td style="padding:0;">
@@ -1408,11 +1634,24 @@ async function generarYEnviarResumenSemanal(apiKey) {
     return { enviados: 0, motivo: "sin_destinatarios" };
   }
 
+  // 4bis) Las denegaciones que la app no supo explicar, de los últimos 7 días.
+  // Va en un `catch` propio y NO tumba el correo: los KPIs de obra son la
+  // razón de ser de este envío y no se pierden porque el conteo falle. Pero
+  // el fallo VIAJA —`{ error }`— para que el renglón diga «no se pudo contar»
+  // en vez de un cero que nadie capturó.
+  let denegaciones;
+  try {
+    denegaciones = await contarDenegaciones(db, new Date(Date.now() - 7 * 24 * 3600 * 1000));
+  } catch (e) {
+    console.error("resumen semanal: no se pudieron contar las denegaciones:", e);
+    denegaciones = { error: e?.message || String(e) };
+  }
+
   // 5) Arma el HTML
   const fechaCorte = new Date().toLocaleDateString("es-MX", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
-  const html = buildEmailHTML(kpisValidos, fechaCorte);
+  const html = buildEmailHTML(kpisValidos, fechaCorte, denegaciones);
 
   // 6) Envía
   const resultado = await enviarEmailResend(apiKey, {
@@ -1445,7 +1684,7 @@ exports.resumenSemanalEmail = onSchedule({
     });
   } catch (e) {
     console.error("Error en resumen semanal:", e);
-    await registrarSalud("email_semanal", false, e.message || String(e), { duracionMs: Date.now() - t0 });
+    await registrarFalloDeSalud("email_semanal", e, { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
@@ -1544,7 +1783,7 @@ exports.backupSemanalFirestore = onSchedule({
     });
   } catch (e) {
     console.error("Error en backup semanal:", e);
-    await registrarSalud("backup", false, e.message || String(e), { duracionMs: Date.now() - t0 });
+    await registrarFalloDeSalud("backup", e, { duracionMs: Date.now() - t0 });
     throw e;
   }
 });
@@ -1685,8 +1924,7 @@ exports.recordatorioCapturaObra = onSchedule({
       { duracionMs: Date.now() - t0, obrasSinCaptura, notifsEnviadas: contadorNotifs });
   } catch (e) {
     console.error("recordatorioCapturaObra falló:", e);
-    await registrarSalud("recordatorio_obra", false, e.message || String(e),
-      { duracionMs: Date.now() - t0 });
+    await registrarFalloDeSalud("recordatorio_obra", e, { duracionMs: Date.now() - t0 });
   }
 });
 
@@ -1812,8 +2050,7 @@ exports.recordatorioLunes = onSchedule({
       { duracionMs: Date.now() - t0, notifsEnviadas: contadorNotifs });
   } catch (e) {
     console.error("recordatorioLunes falló:", e);
-    await registrarSalud("recordatorio_lunes", false, e.message || String(e),
-      { duracionMs: Date.now() - t0 });
+    await registrarFalloDeSalud("recordatorio_lunes", e, { duracionMs: Date.now() - t0 });
   }
 });
 
