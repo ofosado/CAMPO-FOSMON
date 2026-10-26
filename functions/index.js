@@ -1382,6 +1382,39 @@ const avanceFisicoPonderado = (subs = [], contrato = 0, modoVol = false) => {
   return Math.min(100, (desgloseEjecutado(subs, modoVol).total / contrato) * 100);
 };
 
+// ── Días sin captura ───────────────────────────────────────────────────────
+// Copia literal de `fechaUltimaCapturaDe` / `diasSinCapturaDe` de src/App.jsx,
+// por la misma razón que las tres de arriba: `recordatorioLunes` le manda al
+// residente un texto que dice «Sin captura hace N días», y ese N tiene que ser
+// el MISMO que el residente ve en el tablero de su obra cuando abre la app
+// para contestar. Hasta hoy eran dos cuentas: aquí se leía sólo `fechaCaptura`
+// —`fechaCierre` no aparecía en este archivo ni una vez— y, cuando no había
+// fecha, se escribía `999`. Ese 999 no es un número medido, es un relleno, y
+// hacía dos daños a la vez en la obra recién dada de alta: `999 > 7` le sumaba
+// un pendiente «cierre semanal» que nadie podía resolver, y `999 < 300` —el
+// filtro que existía sólo para tapar el relleno— le quitaba la alerta A4, que
+// es justo la que debía avisar de esa obra.
+//
+// `null` quiere decir «no se puede contar», no «cero». Quien lo reciba decide
+// qué dice; lo que no puede hacer es inventar el número.
+//
+// Si se toca una copia hay que tocar la otra: no hay build compartido entre
+// functions/ y src/. `prueba-una-cuenta-por-numero.cjs` ejecuta las dos sobre
+// los mismos historiales y exige que den lo mismo.
+const fechaUltimaCapturaDe = (historialAvance = []) => {
+  const ult = Array.isArray(historialAvance) && historialAvance.length
+    ? historialAvance[historialAvance.length - 1] : null;
+  const fecha = ult?.fechaCaptura || ult?.fechaCierre || null;
+  if (!fecha) return null;
+  return Number.isFinite(new Date(fecha).getTime()) ? fecha : null;
+};
+
+const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
+  const fecha = fechaUltimaCapturaDe(historialAvance);
+  if (!fecha) return null;
+  return Math.floor((ahora - new Date(fecha).getTime()) / 86400000);
+};
+
 // Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore
 async function calcularKpisObra(obraId, gpData) {
   const db = admin.firestore();
@@ -2146,14 +2179,14 @@ exports.recordatorioLunes = onSchedule({
       const histSnap = await admin.firestore()
         .doc(`obras/${obra.id}/avance/historial`).get();
       const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
-      const ultimoSnap = semanas.length > 0
-        ? [...semanas].sort((a, b) => (b.año - a.año) || (b.semana - a.semana))[0]
-        : null;
-      let diasDesdeUltima = 999;
-      if (ultimoSnap?.fechaCaptura) {
-        diasDesdeUltima = Math.floor((hoy - new Date(ultimoSnap.fechaCaptura)) / 86400000);
-      }
-      if (diasDesdeUltima > 7) { pendientes++; razones.push("cierre semanal"); }
+      // La MISMA cuenta que el tablero de la obra. `null` = nunca se cerró una
+      // semana, o la fecha guardada no es una fecha.
+      const fechaUltima = fechaUltimaCapturaDe(semanas);
+      const diasDesdeUltima = diasSinCapturaDe(semanas, hoy.getTime());
+      const nuncaSeCerro = diasDesdeUltima === null;
+      // Una obra sin un solo cierre tiene el cierre semanal pendiente: eso no
+      // se deduce de un número grande, se dice.
+      if (nuncaSeCerro || diasDesdeUltima > 7) { pendientes++; razones.push("cierre semanal"); }
 
       // (b) Almacén — leer materiales
       const matSnap = await admin.firestore()
@@ -2202,8 +2235,13 @@ exports.recordatorioLunes = onSchedule({
         }
       }
 
-      // Notif A4: sin capturar en 10+ días
-      if (diasDesdeUltima > 10 && diasDesdeUltima < 300) {
+      // Notif A4: sin capturar en 10+ días, o sin capturar NUNCA.
+      //
+      // El `< 300` que estaba aquí no filtraba obras viejas: filtraba el 999
+      // que esta misma función se inventaba cuando no había fecha. O sea que
+      // la obra que jamás capturó —la que más falta hace avisar— era
+      // exactamente la única que no disparaba la alerta.
+      if (nuncaSeCerro || diasDesdeUltima > 10) {
         // También al gerente / dirección de operaciones
         const usuariosObra = await usuariosCapturaDeObra(obra.id, false);
         const gerentesSnap = await admin.firestore().collection("usuarios")
@@ -2220,8 +2258,14 @@ exports.recordatorioLunes = onSchedule({
           await crearNotifCloud(u.uid, {
             categoria: "alerta",
             tipo: "sin_captura_10d",
-            titulo: `Sin captura hace ${diasDesdeUltima} días · ${nombreCorto}`,
-            mensaje: `La última captura fue el ${ultimoSnap?.fechaCaptura?.slice(0, 10) || "?"}. Revisar con el equipo.`,
+            // Sin cierres no hay número de días que decir, y escribir uno
+            // sería inventarlo. Se dice lo que se sabe.
+            titulo: nuncaSeCerro
+              ? `Sin una sola captura · ${nombreCorto}`
+              : `Sin captura hace ${diasDesdeUltima} días · ${nombreCorto}`,
+            mensaje: nuncaSeCerro
+              ? "Esta obra no tiene ningún cierre semanal registrado. Revisar con el equipo."
+              : `La última captura fue el ${fechaUltima.slice(0, 10)}. Revisar con el equipo.`,
             link: { tab: "dash", obraId: obra.id },
           });
           contadorNotifs++;

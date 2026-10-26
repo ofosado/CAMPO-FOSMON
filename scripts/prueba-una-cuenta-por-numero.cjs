@@ -514,12 +514,206 @@ seccion('Qué contesta la cuenta única');
     `${conInfo.desviacionDias} vs ${sinInfo.desviacionDias} días`);
 }
 
-console.log('');
-console.log(`${oks} comprobación(es) en verde · ${fallas} en rojo`);
-if (fallas > 0) {
-  console.log('');
-  console.log('Si esto está rojo hay dos cuentas del mismo número. Puede que hoy den');
-  console.log('lo mismo; el día que una cambie, el panel y la lista van a decir cosas');
-  console.log('distintas de la misma obra y no habrá forma de saber cuál tiene razón.');
+// ════════════════════════════════════════════════════════════════════════════
+// 4) La sexta copia, que vive en el OTRO despliegue
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `recordatorioLunes` le manda al residente «Sin captura hace N días». Ese N
+// se lee junto al del tablero —la alerta llega el lunes y el residente abre la
+// app para contestarla— y hasta hoy salía de una cuenta propia escrita DENTRO
+// del cron: leía sólo `fechaCaptura` (`fechaCierre` no aparecía en ese archivo
+// ni una vez) y, sin fecha, escribía 999.
+//
+// Las secciones 1 a 3 no podían verlo: sólo miran src/App.jsx. Aquí se
+// ejercitan los dos archivos. Y no basta con comparar las dos copias del
+// helper: el defecto no era que el helper estuviera mal, era que el cron no lo
+// llamaba. Por eso la aserción que manda es la última —correr el cron con la
+// cuenta MUTADA y exigir que el texto se mueva—, no el diferencial.
+seccion('La misma cuenta en functions/index.js');
+
+const { deFunciones, SimboloPerdido } = require('./extraer-de-app.cjs');
+let fnMod;
+try {
+  fnMod = deFunciones('diasSinCapturaDe', 'fechaUltimaCapturaDe');
+} catch (e) {
+  if (!(e instanceof SimboloPerdido)) throw e;
+  sinPrecondicion(
+    `functions/index.js ya no declara ${e.faltantes.map(n => `\`${n}\``).join(', ')}`,
+    ['O se renombró la copia, o el cron del lunes volvió a traer la cuenta',
+     'metida en su propio cuerpo. Las dos cosas son el defecto que esta',
+     'sección vigila, y desde aquí no se distinguen de un renombre inocente:',
+     'hay que ir a ver `recordatorioLunes` antes de creerle a un verde.']);
 }
-process.exit(fallas > 0 ? 1 : 0);
+
+{
+  // Los casos en los que las dos copias SE SEPARABAN. Si mañana alguien toca
+  // una sola, truena aquí y no en el correo del lunes.
+  const BATERIA = [
+    ['dos cierres normales', HISTORIAL],
+    ['sin un solo cierre', []],
+    ['sólo `fechaCierre`', [{ semana: 37, año: 2026, tipo: 'oficial',
+      fechaCierre: '2026-09-14T18:00:00.000Z' }]],
+    ['las dos fechas, distintas', [{ semana: 37, año: 2026, tipo: 'oficial',
+      fechaCaptura: '2026-09-14T18:00:00.000Z',
+      fechaCierre: '2026-09-20T18:00:00.000Z' }]],
+    ['fecha ilegible', [{ semana: 37, año: 2026, fechaCaptura: 'ayer' }]],
+  ];
+  const dif = ([, h]) => [mod.diasSinCapturaDe(h, AHORA), fnMod.diasSinCapturaDe(h, AHORA)];
+  const discrepan = BATERIA.filter(c => {
+    const [a, f] = dif(c);
+    return a !== f || mod.fechaUltimaCapturaDe(c[1]) !== fnMod.fechaUltimaCapturaDe(c[1]);
+  });
+  check(discrepan.length === 0,
+    `las dos copias contestan igual en los ${BATERIA.length} casos que las separaban`,
+    (discrepan.length ? discrepan : BATERIA)
+      .map(c => `${c[0]}: ${dif(c).map(v => String(v)).join(' vs ')}`).join(' · '));
+}
+
+// ── Correr el cron de verdad ──────────────────────────────────────────────
+//
+// `deFunciones` no entra al cuerpo de un callback a propósito —un símbolo que
+// vive dentro de un handler se mueve mañana y la extracción por nombre se
+// muere callada—, así que el handler se saca con un recorrido propio y corto.
+const srcFn = fs.readFileSync(path.join(raiz, 'functions/index.js'), 'utf8');
+const astFn = parse(srcFn, { sourceType: 'module',
+  plugins: ['classProperties', 'optionalChaining', 'nullishCoalescingOperator', 'dynamicImport'] });
+// `texto` recorta sobre src/App.jsx. Aquí se recorta del OTRO archivo, y
+// confundirlos no da un rojo: da un `SyntaxError` y un NO ARRANCÓ.
+const textoFn = n => srcFn.slice(n.start, n.end);
+let handler = null;
+traverse(astFn, {
+  AssignmentExpression(p) {
+    const z = p.node.left;
+    if (z.type !== 'MemberExpression') return;
+    if (z.object?.name !== 'exports' || z.property?.name !== 'recordatorioLunes') return;
+    if (p.node.right.type !== 'CallExpression') return;
+    const args = p.node.right.arguments;
+    handler = args[args.length - 1];
+  },
+});
+if (!handler)
+  sinPrecondicion('no encontré `exports.recordatorioLunes = onSchedule(…, handler)`',
+    ['El trabajo del lunes cambió de forma o de nombre. Lo que esta sección',
+     'correría no es el cron que manda la alerta, así que no mediría nada.']);
+
+// Todo lo que el handler toma de fuera se inyecta explícito. Si pide algo que
+// no está en la mesa NO es rojo: es que el cron creció, y lo que saliera de
+// este sandbox no sería lo que corre en producción.
+const notifs = [];
+const docFalso = datos => ({ exists: datos !== null, data: () => datos || {},
+  updateTime: null });
+const mesa = {
+  console: { log() {}, warn() {}, error() {} },
+  fechaUltimaCapturaDe: fnMod.fechaUltimaCapturaDe,
+  diasSinCapturaDe: fnMod.diasSinCapturaDe,
+  nombreObraNotif: o => String(o.nombre || o.id),
+  usuariosCapturaDeObra: async () => [{ uid: 'u1', email: 'residente@fosmon.mx' }],
+  crearNotifCloud: async (_uid, n) => { notifs.push(n); },
+  registrarSalud: async () => {}, registrarFalloDeSalud: async () => {},
+};
+// Un `admin` de mentira que sirve UNA obra con el historial que se le pase, y
+// nada más: ni materiales ni maquinaria, que son los otros dos pendientes.
+const adminFalso = semanas => ({
+  firestore: () => ({
+    collection: () => ({
+      get: async () => ({
+        docs: [{ id: '0199', data: () => ({ nombre: 'Obra 0199', estado: 'activa' }) }],
+        forEach() {},
+      }),
+      where: () => ({ get: async () => ({ forEach() {} }) }),
+    }),
+    doc: ruta => ({ get: async () => (/\/avance\/historial$/.test(ruta)
+      ? docFalso(semanas === null ? null : { semanas })
+      : docFalso(null)) }),
+  }),
+});
+
+{
+  // Los libres del handler se piden con el `scope` de Babel, no con `deFuera`:
+  // aquel resuelve expresiones cortas y no sabe de `let`/`const` de bloque, y
+  // un cuerpo de 100 renglones es casi todo bloques. Darle la lista mal aquí
+  // no daría un rojo: daría un NO ARRANCÓ permanente, que es peor.
+  const libres = new Set();
+  traverse(parse(`(${textoFn(handler)})`, { sourceType: 'module' }), {
+    ReferencedIdentifier(p) {
+      if (p.scope.hasBinding(p.node.name, true)) return;
+      libres.add(p.node.name);
+    },
+  });
+  const sinSitio = [...libres]
+    .filter(n => !GLOBALES.has(n) && n !== 'admin' && n !== 'Date')
+    .filter(n => !(n in mesa));
+  if (sinSitio.length)
+    sinPrecondicion(
+      `\`recordatorioLunes\` ya usa \`${sinSitio.join('`, `')}\`, que esta prueba no sabe fabricar`,
+      ['El cron creció. Correrlo con un hueco mediría otro cron, no éste.',
+       'Hay que darle el insumo que pide antes de volver a creerle al verde.']);
+}
+
+// El handler hace `new Date()`, no `Date.now()`, así que lo que se fija es el
+// constructor. Mismo motivo que en la sección 1: sin esto la prueba saldría
+// roja todos los días por el reloj de la laptop y no por el código.
+const RelojReal = Date;
+class RelojFijo extends RelojReal {
+  constructor(...a) { super(...(a.length ? a : [AHORA])); }
+  static now() { return AHORA; }
+}
+// Un revés DEL CRON es rojo, no «no arrancó»: el handler relanza, así que una
+// excepción aquí es un lunes sin alertas en producción. Lo que sí sería un 2
+// es que reventara el andamiaje —la extracción, el parseo—, y eso pasa antes
+// de llegar a esta función.
+const correrElCron = async (semanas, inyecta = {}) => {
+  notifs.length = 0;
+  const m = { ...mesa, Date: RelojFijo, ...inyecta };
+  const nombres = Object.keys(m);
+  const hacer = new Function('admin', ...nombres,
+    `"use strict"; return (${textoFn(handler)});`);
+  try {
+    await hacer(adminFalso(semanas), ...nombres.map(n => m[n]))();
+  } catch (e) {
+    check(false, 'el cron del lunes corre sin reventar', e.message);
+  }
+  return notifs.slice();
+};
+
+(async () => {
+  // (a) Captura vieja: el texto del lunes tiene que decir el MISMO número que
+  //     el tablero de esa obra, que es lo que el residente va a abrir.
+  const viejo = [cierre(30, 12, '2026-08-01T18:00:00.000Z')];
+  const dias = mod.diasSinCapturaDe(viejo, AHORA);
+  const a4 = (await correrElCron(viejo)).find(n => n.tipo === 'sin_captura_10d');
+  check(!!a4 && a4.titulo.includes(`${dias} días`),
+    'el correo del lunes dice los mismos días que el tablero de la obra',
+    a4 ? a4.titulo : 'no mandó la alerta A4');
+
+  // (b) Obra sin un solo cierre. Era el agujero: `999 > 7` le ponía un
+  //     pendiente que nadie podía resolver y `999 < 300` le quitaba la alerta,
+  //     o sea que la obra más abandonada era la única callada.
+  const a4n = (await correrElCron([])).find(n => n.tipo === 'sin_captura_10d');
+  check(!!a4n,
+    'la obra que nunca capturó SÍ dispara la alerta — antes era la única que no',
+    a4n ? a4n.titulo : 'no mandó nada');
+  check(!!a4n && !/\d+\s*días/.test(a4n.titulo) && !/999/.test(JSON.stringify(a4n)),
+    'y no se inventa un número de días que nadie midió',
+    a4n ? `${a4n.titulo} — ${a4n.mensaje}` : '—');
+
+  // (c) LA CONTRAPRUEBA SEMÁNTICA, que es la que vale. Se muta la cuenta y el
+  //     texto tiene que moverse. Un cron que la reimplemente en su cuerpo no
+  //     se mueve, y ése era exactamente el estado hasta hoy.
+  const a4m = (await correrElCron(viejo, {
+    diasSinCapturaDe: (h, ahora) => fnMod.diasSinCapturaDe(h, ahora) + 1000,
+  })).find(n => n.tipo === 'sin_captura_10d');
+  check(!!a4m && a4m.titulo.includes(`${dias + 1000} días`),
+    'si se muta la cuenta, el texto del lunes se mueve: el cron la LLAMA',
+    a4m ? a4m.titulo : 'no mandó la alerta A4');
+
+  console.log('');
+  console.log(`${oks} comprobación(es) en verde · ${fallas} en rojo`);
+  if (fallas > 0) {
+    console.log('');
+    console.log('Si esto está rojo hay dos cuentas del mismo número. Puede que hoy den');
+    console.log('lo mismo; el día que una cambie, el panel y la lista van a decir cosas');
+    console.log('distintas de la misma obra y no habrá forma de saber cuál tiene razón.');
+  }
+  process.exit(fallas > 0 ? 1 : 0);
+})().catch(e => { console.error(e); process.exit(2); });
