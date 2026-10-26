@@ -208,7 +208,16 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
   // ── Montaje de los helpers de App.jsx ─────────────────────────────────────
   archivo0 = path.join(raiz, 'src/App.jsx');
   const modApp = astDe(archivo0);
-  const NOMBRES = ['fsGet', 'fsSet', 'fsDel', 'fsSetAEstricto', 'fsSetA'];
+  // El canal de escrituras perdidas viaja con los helpers, y en este orden:
+  // desde el #22 las tres escrituras avisan por él cuando el rechazo llega, y
+  // montarlas sin él dejaba el sandbox con `avisarEscrituraPerdida is not
+  // defined` — NO ARRANCÓ, que es lo que debe pasar, pero aquí la pieza
+  // existe y lo que falta es traerla. Se trae la de verdad, no un doble:
+  // un doble mediría el doble.
+  const CANAL = ['_escriturasPerdidas', '_oyentesDeEscritura', '_avisarOyentes',
+                 'avisarEscrituraPerdida', 'escriturasPerdidas',
+                 'olvidarEscriturasPerdidas'];
+  const NOMBRES = [...CANAL, 'fsGet', 'fsSet', 'fsDel', 'fsSetAEstricto', 'fsSetA'];
   const fuenteHelpers = declaraciones(modApp, NOMBRES);
 
   const auditoria = [];                     // lo que la bitácora registró
@@ -223,7 +232,8 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
   } catch (e) {
     noArranco(`los helpers de App.jsx no se pudieron montar en el sandbox — ${e.message}`);
   }
-  const { fsGet, fsSetA, fsSetAEstricto } = helpers;
+  const { fsGet, fsSetA, fsSetAEstricto, escriturasPerdidas,
+          olvidarEscriturasPerdidas } = helpers;
 
   // Lectura cruda por ruta LITERAL, para poder afirmar dónde NO quedó.
   const leerCrudo = async (rutaLiteral) => {
@@ -322,9 +332,17 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
   // Y la versión que se traga el error tampoco escribe: devuelve `false`, que
   // es lo correcto cuando no se pudo decidir dónde.
   limpiarPrefijoOrg();
+  olvidarEscriturasPerdidas();
   const okHuerfano = await fsSetA(`obras/${OBRA_CONS}/avance/subs`, { marca: marcaHuerfana });
   check(okHuerfano === false,
         'y la versión indulgente devuelve false, no un éxito falso', String(okHuerfano));
+  // …y devolver `false` no la exime de avisar (#22). Aquí ni siquiera hay
+  // prefijo que anotar, así que la ruta viaja cruda DICIÉNDOLO: «obras/0114»
+  // a secas, cuando el usuario es de una dependencia, es la noticia entera.
+  const avisos = escriturasPerdidas();
+  check(avisos.length === 1 && /sin organización resuelta/.test(avisos[0].ruta),
+        'y lo deja escrito en el canal, diciendo que no había organización',
+        avisos.map(a => a.ruta).join(' · ') || '(el canal está vacío)');
 
   // ── §4 La foto del supervisor ───────────────────────────────────────────
   // Storage tiene el MISMO esquema que Firestore (`storage.rules`: /obras/…

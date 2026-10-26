@@ -2124,6 +2124,62 @@ const callFn = async (name, data) => {
 const docObra  = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
 const collObra = (...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
 
+// ── El canal de las escrituras que no quedaron (PENDIENTES #22) ────────────
+//
+// `fsSet`, `fsDel` y `fsSetA` devuelven `false` cuando la escritura se
+// rechaza. Devolverlo no basta: medido por AST sobre este mismo archivo, 21
+// de sus llamadas TIRAN el resultado. En esos sitios una escritura denegada
+// por reglas se ve exactamente igual que una exitosa, y la pantalla sigue
+// adelante afirmando que guardó.
+//
+// Eso ya costó: la 0114 perdió SIETE cierres semanales (semanas 32 a 38 de
+// 2026) porque el documento rozaba el límite de 1 MiB, `fsSet` devolvía
+// `false`, nadie lo miraba y la pantalla decía «Guardado». El arreglo de
+// aquel caso fue local —ver `crearSnapshotAvance`, que escribe directo para
+// que el error llegue vivo—; éste es el general.
+//
+// La decisión: NO lanzar desde los helpers. Un guardado de fondo que no
+// llegó no es razón para tumbarle la captura al usuario, y volverlos
+// estrictos obligaría a envolver 21 sitios en `try` que acabarían tragándose
+// el error otra vez, un piso más abajo. Lo que se hace es quitarle a la
+// pérdida la posibilidad de ser SILENCIOSA: toda escritura rechazada pasa
+// por aquí, y de aquí sale a una franja que el usuario ve. Quien SÍ mira el
+// booleano sigue pudiendo dar un mensaje mejor; quien no lo mira ya no
+// consigue que la pérdida no se note.
+//
+// Es la misma forma del #75 y del #77: el silencio se declara, nunca se
+// hereda.
+const _escriturasPerdidas = [];
+const _oyentesDeEscritura = new Set();
+
+const _avisarOyentes = () => {
+  const copia = _escriturasPerdidas.slice();
+  for (const oyente of _oyentesDeEscritura) {
+    // Un oyente que revienta no puede dejar ciegos a los demás ni, mucho
+    // menos, tumbar la escritura que ya terminó. Se grita y se sigue.
+    try { oyente(copia); } catch (e) { console.error('oyente de escrituras perdidas', e); }
+  }
+};
+
+const avisarEscrituraPerdida = (ruta, e) => {
+  const fila = {
+    ruta,
+    codigo: e?.code || e?.message || 'error-desconocido',
+    en: new Date().toISOString(),
+  };
+  _escriturasPerdidas.push(fila);
+  console.error('ESCRITURA PERDIDA ·', ruta, '·', fila.codigo);
+  _avisarOyentes();
+  return fila;
+};
+
+const escriturasPerdidas = () => _escriturasPerdidas.slice();
+const olvidarEscriturasPerdidas = () => { _escriturasPerdidas.length = 0; _avisarOyentes(); };
+const alPerderseUnaEscritura = (oyente) => {
+  _oyentesDeEscritura.add(oyente);
+  return () => _oyentesDeEscritura.delete(oyente);
+};
+
 // Helpers Firestore
 //
 // OJO CON LOS `catch`: se tragan el error y devuelven un valor neutro. Eso es
@@ -2131,9 +2187,14 @@ const collObra = (...segs) => collection(fbDb, ...conOrg(['obras', ...segs].join
 // pantalla— pero es también el mecanismo exacto de PENDIENTES #31 y #35. Por
 // eso `conOrg()` se evalúa FUERA del try: si el prefijo no resuelve, la
 // excepción sale a la superficie en vez de convertirse en `null`/`false`.
+//
+// Las tres de ESCRITURA avisan además por el canal de arriba. La ruta que
+// viaja es la ya prefijada (`r`, no `path`): en una dependencia las dos no
+// son la misma, y la que importa para diagnosticar una denegación es la que
+// de verdad se intentó.
 const fsGet  = async (path) => { const r = conOrg(path); try { const d = await getDoc(doc(fbDb, ...r.split('/'))); return d.exists() ? d.data() : null; } catch { return null; } };
-const fsSet  = async (path, data) => { const r = conOrg(path); try { await setDoc(doc(fbDb, ...r.split('/')), data, {merge:true}); return true; } catch(e) { console.error('fsSet',e); return false; } };
-const fsDel  = async (path) => { const r = conOrg(path); try { await deleteDoc(doc(fbDb, ...r.split('/'))); return true; } catch { return false; } };
+const fsSet  = async (path, data) => { const r = conOrg(path); try { await setDoc(doc(fbDb, ...r.split('/')), data, {merge:true}); return true; } catch(e) { avisarEscrituraPerdida(r, e); return false; } };
+const fsDel  = async (path) => { const r = conOrg(path); try { await deleteDoc(doc(fbDb, ...r.split('/'))); return true; } catch(e) { avisarEscrituraPerdida(r, e); return false; } };
 const fsColl = async (path) => { const r = conOrg(path); try { const s = await getDocs(collection(fbDb, ...r.split('/'))); return s.docs.map(d=>({id:d.id,...d.data()})); } catch { return []; } };
 // La misma lectura, pero distinguiendo «no hay documentos» de «no se pudo
 // leer». `fsColl` devuelve `[]` en los dos casos, y para la evidencia esa
@@ -2380,9 +2441,20 @@ const fsSetAEstricto = async (path, data, ctx) => {
   }
   return true;
 };
+// Aquí `conOrg` va DENTRO, al revés que en los otros tres, y es deliberado:
+// ésta es la versión indulgente, y `prueba-escritura-en-su-organizacion` §3
+// exige que un prefijo que no resuelve devuelva `false` —no que lance—,
+// porque «no se pudo decidir dónde escribir» es un no-guardado, no un
+// derrumbe. Para la ruta del aviso se reintenta el prefijo; si tampoco
+// resuelve, viaja la ruta cruda diciéndolo, que es justamente la noticia.
 const fsSetA = async (path, data, ctx) => {
   try { return await fsSetAEstricto(path, data, ctx); }
-  catch (e) { console.error('fsSetA', path, e); return false; }
+  catch (e) {
+    let r;
+    try { r = conOrg(path); } catch { r = `${path} (sin organización resuelta)`; }
+    avisarEscrituraPerdida(r, e);
+    return false;
+  }
 };
 const fsDelA = async (path, ctx) => {
   let antes = null;
@@ -15552,14 +15624,23 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         {editar&&<SecBtn onClick={()=>setEstimaciones(es=>[...es,{no:(es.length>0?Math.max(...es.map(e=>e.no)):0)+1,monto:0,periodo:"",estatus:"En proceso"}])}>+ Nueva estimación</SecBtn>}
         {editar&&<button onClick={async ()=>{
           try{
-            await fsSetA(`obras/${obra.id}/config/estimaciones`, {data:estimaciones},
+            // El `try` no alcanzaba: `fsSetA` NO lanza, devuelve `false`. Con
+            // el resultado tirado, una escritura denegada caía igual en
+            // `setSaved(true)` y el botón decía «Guardado» (PENDIENTES #22).
+            const ok1 = await fsSetA(`obras/${obra.id}/config/estimaciones`, {data:estimaciones},
               { modulo:"estimaciones", entidad:`${estimaciones.length} estimaciones`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-            await fsSetA(`obras/${obra.id}/config/parametros`,
+            const ok2 = await fsSetA(`obras/${obra.id}/config/parametros`,
               {pctAnticipo:obra.pctAnticipo,pctFondoGar:obra.pctFondoGar,pctRetencion:obra.pctRetencion||0},
               { modulo:"contrato", entidad:"parámetros de estimación", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
-            // Disparar notif por cambios detectados
-            dispararNotifsCambios(estimaciones);
-            setSaved(true); setTimeout(()=>setSaved(false),2500);
+            // Las notificaciones salen de lo GUARDADO. Avisar de un cambio que
+            // no quedó escrito es mandar a mirar un expediente que no cambió.
+            if (ok1 && ok2) {
+              dispararNotifsCambios(estimaciones);
+              setSaved(true); setTimeout(()=>setSaved(false),2500);
+            }
+            // Si alguna falló no se dice nada aquí: la franja de escrituras
+            // perdidas ya está puesta, con la ruta y el código, y un `alert`
+            // encima sólo taparía el dato con el que se diagnostica.
           }catch(e){alert("Error al guardar");}
         }} style={{background:saved?C.green:C.caliza,border:"none",borderRadius:6,
           padding:"5px 14px",fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",
@@ -20481,12 +20562,15 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
       if (v === undefined || v === null) continue;
       datos[key] = tipo === "number" ? (parseFloat(v) || 0) : v;
     }
-    await fsSetA(`obras/${obra.id}/config/info`, datos,
+    const okInfo = await fsSetA(`obras/${obra.id}/config/info`, datos,
       { modulo:"contrato", entidad:"datos generales", obraId:obra.id, obraNombre:obra.contrato||obra.nombre });
     // También escribir top-level para que la obra sea listable en getDocs(collection('obras'))
-    await fsSet(`obras/${obra.id}`, {id: obra.id, ...datos, estado: obra.estado || 'activa'});
-    setSaving(false); setSaved(true);
-    setTimeout(()=>setSaved(false), 2500);
+    const okRaiz = await fsSet(`obras/${obra.id}`, {id: obra.id, ...datos, estado: obra.estado || 'activa'});
+    setSaving(false);
+    // Las dos. Si sólo una queda, el contrato y la lista de obras dicen cosas
+    // distintas, y eso no es «guardado» (PENDIENTES #22). La franja de
+    // escrituras perdidas dice cuál se cayó.
+    if (okInfo && okRaiz) { setSaved(true); setTimeout(()=>setSaved(false), 2500); }
   }
 
   // Agregar ampliación
@@ -22461,6 +22545,19 @@ export default function App(){
   //   con sesión, sin cambios          → recarga silenciosa
   //   con sesión, con cambios          → banner con botón, nunca sola
   const[aplicarUpdatePendiente,setAplicarUpdatePendiente]=useState(null); // función o null
+
+  // Las escrituras que se rechazaron. Se suscribe UNA vez, al montar, y antes
+  // de cualquier otra cosa: si la suscripción dependiera de que haya sesión,
+  // una denegación durante el arranque —que es cuando más las hay— no tendría
+  // quien la enseñara. El arreglo del canal está arriba, en
+  // `avisarEscrituraPerdida`.
+  const[perdidas,setPerdidas]=useState([]);
+  useEffect(() => {
+    // Las que ya hubiera antes de montar: el canal es un módulo y empieza a
+    // contar en cuanto se carga el archivo, no en cuanto React llega.
+    setPerdidas(escriturasPerdidas());
+    return alPerderseUnaEscritura(setPerdidas);
+  }, []);
   // Refs a estado actual accesible desde el callback de subscribe (que se
   // suscribe una sola vez pero puede dispararse mucho después de que usuario/
   // cambiosPendientes cambien). Los stale closures se evitan leyendo refs.
@@ -23596,6 +23693,43 @@ export default function App(){
       {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>
+
+    {/* Franja de escrituras perdidas — PENDIENTES #22.
+        No se puede cerrar sin leerla: el botón dice «Entendido», no «×». Y no
+        reintenta, a propósito — reintentar lo que las reglas negaron es
+        volver a negarlo, y lo que se perdió por tamaño no cabe tampoco la
+        segunda vez. Lo que hace es que la pérdida no pase inadvertida. */}
+    {perdidas.length > 0 && (
+      <div role="alert" style={{
+        position:"fixed", left:0, right:0, bottom:28, zIndex:100,
+        display:"flex", justifyContent:"center", pointerEvents:"none",
+      }}>
+        <div style={{
+          background:C.card, border:`1px solid ${C.border}`, borderLeft:`3px solid ${C.red}`,
+          borderRadius:8, padding:"9px 13px", boxShadow:"0 4px 12px rgba(0,0,0,0.15)",
+          display:"flex", alignItems:"center", gap:12, pointerEvents:"auto", maxWidth:460,
+        }}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>
+              {perdidas.length === 1
+                ? "Un cambio NO se guardó"
+                : `${perdidas.length} cambios NO se guardaron`}
+            </div>
+            <div style={{fontSize:10,color:C.textMut,marginTop:2,wordBreak:"break-all"}}>
+              {perdidas[perdidas.length-1].ruta} · {perdidas[perdidas.length-1].codigo}
+            </div>
+            <div style={{fontSize:10,color:C.textMut,marginTop:2}}>
+              Vuelve a capturarlo y, si se repite, repórtalo con esta línea.
+            </div>
+          </div>
+          <button onClick={olvidarEscriturasPerdidas} style={{
+            background:"transparent", border:`1px solid ${C.border}`, borderRadius:6,
+            padding:"6px 12px", fontSize:11, fontWeight:600, color:C.textPri,
+            cursor:"pointer", whiteSpace:"nowrap",
+          }}>Entendido</button>
+        </div>
+      </div>
+    )}
 
     {/* Banner de actualización disponible — fix/actualizacion-pwa 2026-09-16
         Solo aparece cuando hay sesión activa Y cambios pendientes en captura.
