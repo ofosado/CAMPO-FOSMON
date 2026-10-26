@@ -37,6 +37,7 @@ const path = require('path');
 
 const RAIZ = path.resolve(__dirname, '..');
 const ARCHIVO = path.join(RAIZ, 'src/App.jsx');
+const ARCHIVO_FUNCIONES = path.join(RAIZ, 'functions/index.js');
 
 class SimboloPerdido extends Error {
   constructor(faltantes, donde) {
@@ -63,13 +64,13 @@ const DEL_MOTOR = new Set(Object.getOwnPropertyNames(globalThis).concat([
   'undefined', 'arguments',
 ]));
 
-let _cache = null;
+const _cache = new Map();
 
-function indexar() {
-  if (_cache) return _cache;
+function indexar(archivo) {
+  if (_cache.has(archivo)) return _cache.get(archivo);
   const { parse } = require(path.join(RAIZ, 'node_modules/@babel/parser'));
   const traverse = require(path.join(RAIZ, 'node_modules/@babel/traverse')).default;
-  const src = fs.readFileSync(ARCHIVO, 'utf8');
+  const src = fs.readFileSync(archivo, 'utf8');
   const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
 
   // Sólo nivel superior del módulo. Un `const` dentro de un componente no es
@@ -113,18 +114,20 @@ function indexar() {
     return libres;
   };
 
-  _cache = { decl, libresDe };
-  return _cache;
+  const idx = { decl, libresDe };
+  _cache.set(archivo, idx);
+  return idx;
 }
 
-// Pide símbolos de `src/App.jsx` y devuelve un objeto con ellos, ya
+// Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya
 // ejecutables, con sus dependencias de nivel superior resueltas.
-function deApp(...nombres) {
+function deArchivo(archivo, ...nombres) {
   const pedidos = nombres.flat();
-  const { decl, libresDe } = indexar();
+  const donde = path.relative(RAIZ, archivo);
+  const { decl, libresDe } = indexar(archivo);
 
   const faltan = pedidos.filter(n => !decl.has(n));
-  if (faltan.length) throw new SimboloPerdido(faltan, 'src/App.jsx');
+  if (faltan.length) throw new SimboloPerdido(faltan, donde);
 
   // Cierre transitivo. Lo que no esté declarado arriba y no sea del motor se
   // deja pasar: si de verdad hacía falta, al ejecutar sale un `is not
@@ -152,4 +155,15 @@ function deApp(...nombres) {
   return new Function(`"use strict";\n${cuerpo}\n${devuelve}`)();
 }
 
-module.exports = { deApp, SimboloPerdido, ARCHIVO };
+// De `src/App.jsx`. Es la llamada que `prueba-herramientas-de-medicion-viven`
+// reconoce y ejercita, así que los guiones de medición piden por aquí.
+const deApp = (...nombres) => deArchivo(ARCHIVO, ...nombres);
+
+// De `functions/index.js`. Existe porque hay cuentas escritas DOS veces —una
+// por despliegue, sin build compartido— y la única forma de exigir que
+// coincidan es correr las dos. Ver el preámbulo de `diasSinCapturaDe` allá.
+const deFunciones = (...nombres) => deArchivo(ARCHIVO_FUNCIONES, ...nombres);
+
+module.exports = {
+  deApp, deFunciones, deArchivo, SimboloPerdido, ARCHIVO, ARCHIVO_FUNCIONES,
+};
