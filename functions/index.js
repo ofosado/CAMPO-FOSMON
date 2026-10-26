@@ -1223,8 +1223,18 @@ exports.vigilarDenegaciones = onSchedule({
   region: "us-central1",
 }, async () => {
   const t0 = Date.now();
-  const db = admin.firestore();
   try {
+    // `admin.firestore()` vive DENTRO del try, y no es colocación casual: lo
+    // encontró `prueba-cron-que-no-se-traga-su-fallo.cjs` el 2026-10-26 con
+    // esta línea una arriba, fuera. Ahí, si reventaba —app sin inicializar,
+    // credencial transitoria—, el `catch` no corría: la función lanzaba
+    // (Scheduler sí se enteraba) pero `global/health` no recibía nada, y
+    // pasado el plazo la pantalla decía «sin correr». Eso es falso: sí
+    // corrió, lo que no pudo fue arrancar. Es el defecto del #75 colándose
+    // por el único renglón que quedaba fuera, y justo en el vigilante que
+    // existe para que los demás no se callen.
+    const db = admin.firestore();
+
     // La ventana arranca donde terminó la corrida anterior, para que ninguna
     // fila se cuente dos veces ni se salte entre corridas. Sin corrida previa
     // —la primera vez, o tras borrar el registro— se toman 24 h y el mensaje
@@ -2091,6 +2101,13 @@ exports.recordatorioCapturaObra = onSchedule({
   } catch (e) {
     console.error("recordatorioCapturaObra falló:", e);
     await registrarFalloDeSalud("recordatorio_obra", e, { duracionMs: Date.now() - t0 });
+    // Sin este `throw`, Scheduler da la corrida por EXITOSA aunque el trabajo
+    // haya reventado: no reintenta, no alerta, y la única señal queda en un
+    // registro que nadie abre. Es el #75 en el otro extremo — allá el canal
+    // que avisa se callaba, aquí el trabajo. Ver el barrido completo en el
+    // banco `prueba-cron-que-no-se-traga-su-fallo.cjs`, que lo exige de los
+    // SEIS trabajos programados, no de éste.
+    throw e;
   }
 });
 
@@ -2217,6 +2234,9 @@ exports.recordatorioLunes = onSchedule({
   } catch (e) {
     console.error("recordatorioLunes falló:", e);
     await registrarFalloDeSalud("recordatorio_lunes", e, { duracionMs: Date.now() - t0 });
+    // Ver el comentario de `recordatorioCapturaObra`: un trabajo que no lanza
+    // es un trabajo que Scheduler cuenta como bueno.
+    throw e;
   }
 });
 
