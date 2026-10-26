@@ -110,30 +110,71 @@ console.log(`reloj de la suite: TZ=${ZONA}` +
   (AMBIENTE !== ZONA
     ? `  (la máquina está en ${AMBIENTE}; se ignora a propósito)` : ''));
 
-const verdes = [], rojas = [], mudas = [], sinEmulador = [];
+// ── EL PLAZO: UN BANCO QUE NO TERMINA NO ES UN BANCO QUE PASA ──────────────
+//
+// Los bancos corren en serie, así que uno que no vuelve no tarda la suite: la
+// para para siempre. Y colgarse es exactamente lo que hace un banco apuntado a
+// un puerto que no contesta — un `net.connect` sin plazo espera hasta que el
+// sistema operativo se aburra, y en macOS eso son más de 75 segundos por
+// intento; con reintentos, nunca. Lo que ve quien corrió `npm test` es una
+// terminal quieta, y lo que hace es matarla con ^C: la suite no dijo ni verde
+// ni rojo, y el silencio se interpretó como «estaba tardando».
+//
+// Un banco que se pasa del plazo NO es verde ni rojo: es el tercer estado. No
+// se comprobó la conducta, se comprobó que no contesta. Se cuenta con las que
+// no arrancaron —que es lo que es— y la suite sale con 1.
+//
+// El plazo es generoso a propósito: los bancos de reglas levantan sesiones
+// contra el emulador y `prueba-puente-color` arranca un Chrome. Se puede subir
+// con `PLAZO_BANCO` cuando haga falta, pero no desactivar: un plazo que se
+// puede quitar con una variable vacía es el defecto otra vez.
+const PLAZO_BANCO = Math.max(10_000, Number(process.env.PLAZO_BANCO) || 240_000);
+
+const verdes = [], rojas = [], mudas = [], sinEmulador = [], colgadas = [];
 
 for (const f of archivos) {
+  const t0 = Date.now();
   const r = spawnSync(process.execPath, [path.join(dir, f)], {
     encoding: 'utf8', cwd: path.join(dir, '..'), env: entorno,
+    timeout: PLAZO_BANCO, killSignal: 'SIGKILL',
   });
+  const tardó = Date.now() - t0;
   const salida = (r.stdout || '') + (r.stderr || '');
   const rojasAqui = (salida.match(/^FALLA/gm) || []).length;
 
+  // `spawnSync` marca el plazo vencido con `error.code === 'ETIMEDOUT'`; la
+  // señal sola no basta, porque un banco también puede morir por SIGKILL del
+  // sistema (sin memoria, por ejemplo) y eso no es lo mismo.
+  const seColgó = r.error && r.error.code === 'ETIMEDOUT';
+
   let estado;
-  if (r.status === 0) { estado = 'verde'; verdes.push(f); }
+  if (seColgó) { estado = 'SE COLGÓ'; colgadas.push([f, tardó, salida]); }
+  else if (r.status === 0) { estado = 'verde'; verdes.push(f); }
   else if (r.status === NO_ARRANCO) { estado = 'NO ARRANCÓ'; mudas.push([f, salida]); }
   else if (NECESITAN_EMULADOR.has(f) && !hayEmulador) { estado = 'sin emulador'; sinEmulador.push(f); }
   else { estado = 'ROJO'; rojas.push([f, salida, rojasAqui]); }
 
-  const detalle = rojasAqui > 0 ? `${rojasAqui} comprobación(es)` : '';
+  const detalle = seColgó
+    ? `sin contestar en ${Math.round(tardó / 1000)} s`
+    : (rojasAqui > 0 ? `${rojasAqui} comprobación(es)` : '');
   console.log(`${estado.padEnd(12)} ${f.replace(/^prueba-|\.cjs$/g, '').padEnd(34)} ${detalle}`);
 }
 
 console.log('');
 console.log(`${verdes.length} en verde · ${rojas.length} en rojo · ` +
-            `${mudas.length} sin arrancar · ${sinEmulador.length} sin emulador ` +
+            `${mudas.length} sin arrancar · ${colgadas.length} colgada(s) · ` +
+            `${sinEmulador.length} sin emulador ` +
             `(de ${archivos.length})`);
 
+for (const [f, tardó, salida] of colgadas) {
+  console.log(`\n──────── ${f} no contestó en ${Math.round(tardó / 1000)} s ────────`);
+  console.log('Se le dio muerte. No se comprobó nada: no es verde ni rojo.');
+  console.log('Suele ser una conexión a un puerto que no contesta — un emulador');
+  console.log('caído, o un puerto cambiado— sin plazo propio. El banco debería');
+  console.log('ponerle plazo a lo que espera y salir 2 si no llega.');
+  const cola = salida.trim().split('\n').slice(-8).join('\n');
+  if (cola) console.log('\nLo último que alcanzó a decir:\n' + cola);
+}
 for (const [f, salida] of mudas) {
   console.log(`\n──────── ${f} no arrancó ────────`);
   console.log(salida.trim());
@@ -148,4 +189,4 @@ if (sinEmulador.length > 0) {
   console.log('  firebase emulators:start --only firestore,auth --project campo-fosmon-prueba');
 }
 
-process.exit(rojas.length + mudas.length > 0 ? 1 : 0);
+process.exit(rojas.length + mudas.length + colgadas.length > 0 ? 1 : 0);

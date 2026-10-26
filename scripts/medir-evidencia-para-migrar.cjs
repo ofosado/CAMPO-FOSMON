@@ -87,19 +87,17 @@ const val = v => {
 const campos = d => Object.fromEntries(Object.entries((d && d.fields) || {}).map(([k, v]) => [k, val(v)]));
 
 // ── Lo que hace la app, extraído de la app ──────────────────────────────────
-// `fotosDeSub` no se reimplementa: se saca del archivo y se ejecuta, para que
-// lo medido sea lo que la pantalla ve y no lo que yo crea que ve.
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
-const src = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
-let fotosDeSubSrc = null;
-traverse(ast, { VariableDeclarator(p) {
-  if (p.node.id.name === 'fotosDeSub' && p.node.init && !fotosDeSubSrc)
-    fotosDeSubSrc = src.slice(p.node.init.start, p.node.init.end);
-} });
-if (!fotosDeSubSrc) { console.error('No se pudo extraer `fotosDeSub` de src/App.jsx'); process.exit(2); }
-const fotosDeSub = new Function(`"use strict"; return ${fotosDeSubSrc};`)();
+// No se reimplementa nada: se saca del archivo y se ejecuta, para que lo
+// medido sea lo que la pantalla ve y no lo que yo crea que ve.
+//
+// Antes esto pedía `fotosDeSub`, que era una de las tres copias que aplanaban
+// el mapa incrustado. La unificación de evidencia las fundió en
+// `evidenciaDeObra`, y este guion se quedó sin arrancar sin que nadie se
+// enterara: no está en la suite. Ahora la petición pasa por `deApp`, y
+// `prueba-herramientas-de-medicion-viven.cjs` la lee de aquí y la exige en
+// cada corrida de la suite.
+const { deApp } = require('./extraer-de-app.cjs');
+const { evidenciaDeObra } = deApp('evidenciaDeObra');
 
 // ── Storage: el inventario real, con la hora del servidor ───────────────────
 // `gsutil ls -l -r` da «bytes  timeCreated  gs://…», que es exactamente
@@ -155,19 +153,22 @@ const rutaDeURL = (url) => {
     const d = campos(doc);
     const subs = Array.isArray(d.data) ? d.data : [];
     const bytesDoc = Buffer.byteLength(JSON.stringify(doc.fields || {}), 'utf8');
-    let bytesFotos = 0, cuantas = 0;
-    for (const s of subs) {
-      bytesFotos += Buffer.byteLength(JSON.stringify(s.fotos || {}), 'utf8');
-      for (const f of fotosDeSub(s)) {
-        cuantas++;
-        fotos.push({
-          obra: o.id, prefijo: o.prefijo,
-          partidaId: s.id || s.sec || '', sec: s.sec || '', sub: s.sub || '',
-          id: f.id || null, url: f.url || (typeof f === 'string' ? f : '') || '',
-          fechaDeclarada: f.fecha || null,
-        });
-      }
+    let bytesFotos = 0;
+    for (const s of subs) bytesFotos += Buffer.byteLength(JSON.stringify(s.fotos || {}), 'utf8');
+    // `cfgEvidencia: null` a propósito: esta medición es sobre las obras SIN
+    // migrar, que son las que todavía llevan el mapa incrustado. Para una obra
+    // ya migrada la lectura correcta es la subcolección, y entonces aquí no
+    // hay nada que contar.
+    const evid = evidenciaDeObra({ cfgEvidencia: null, docsEvidencia: [], subs });
+    for (const e of evid) {
+      fotos.push({
+        obra: o.id, prefijo: o.prefijo,
+        partidaId: e.partidaId, sec: e.sec, sub: e.sub,
+        id: e.id || null, url: e.url || '',
+        fechaDeclarada: e.fechaDeclarada || null,
+      });
     }
+    const cuantas = evid.length;
     totalDoc += bytesDoc;
     console.log(`${(o.prefijo + o.id).padEnd(17)}  ${kb(bytesDoc).padStart(9)}  ${String(subs.length).padStart(9)}  ` +
       `${String(cuantas).padStart(15)}  ${(100 * bytesFotos / (bytesDoc || 1)).toFixed(0).padStart(9)}%`);

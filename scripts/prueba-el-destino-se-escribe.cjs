@@ -28,14 +28,28 @@ vigilarExcepciones('los guiones que pueden escribir');
 
 const DIR = __dirname;
 
-// Los guiones que pasan por el portón. Si mañana hay un cuarto, va aquí.
+// Los guiones que pasan por el portón. Si mañana hay otro, va aquí.
+//
+// Están en dos listas y no por capricho. Los tres de `GUIONES` cargan el Admin
+// SDK, que no está instalado en la raíz de este repo: aunque el portón los
+// deje pasar, se caen en el `require` antes de tocar nada, así que correrlos
+// con `--prod --escribir` desde la suite es seguro.
+//
+// `migrar-evidencia-subcoleccion.cjs` NO: habla REST con un token de
+// `/tmp/adc.tok`, y en la laptop de quien tenga sesión abierta ese comando
+// escribe de verdad en producción. Correrlo así desde la suite sería cometer
+// el accidente del 2026-10-09 una vez por `npm test`. Por eso entra en las
+// secciones donde el portón lo PARA —que son las que afirman algo sobre el
+// cerrojo— y se queda fuera de las dos que lo dejan proceder.
 const GUIONES = [
   'backfill-claims.cjs',
   'crear-org-fosmon.cjs',
   'migrar-supervisor-a-auditor.cjs',
 ];
 
-for (const g of GUIONES) {
+const PASAN_POR_EL_PORTON = [...GUIONES, 'migrar-evidencia-subcoleccion.cjs'];
+
+for (const g of PASAN_POR_EL_PORTON) {
   try { require('fs').accessSync(path.join(DIR, g)); }
   catch { sinPrecondicion(`no está scripts/${g}`, 'Si el guion se borró, borrar su renglón de GUIONES aquí.'); }
 }
@@ -67,7 +81,7 @@ const falla = (q, esperado, obtenido) => {
 // Ésta es LA afirmación. Antes de hoy este mismo comando —el nombre del
 // archivo, sin un argumento— apuntaba a producción y escribía.
 console.log('\n── Correrlo sin decir a dónde ──');
-for (const g of GUIONES) {
+for (const g of PASAN_POR_EL_PORTON) {
   const { status, salida } = correr(g, []);
   if (status !== NO_ARRANCO)
     falla(`${g} sin argumentos se para`, `salida ${NO_ARRANCO}`, `salida ${status}`);
@@ -81,7 +95,7 @@ for (const g of GUIONES) {
 
 // ── 2. Dos destinos a la vez tampoco se adivina ────────────────────────────
 console.log('\n── Pedirle emulador y producción al mismo tiempo ──');
-for (const g of GUIONES) {
+for (const g of PASAN_POR_EL_PORTON) {
   const { status, salida } = correr(g, ['--prod'], { EMU_HOST: '127.0.0.1', EMU_PORT: '8080' });
   if (status !== NO_ARRANCO)
     falla(`${g} con --prod y emulador se para`, `salida ${NO_ARRANCO}`, `salida ${status}`);
@@ -98,7 +112,7 @@ for (const g of GUIONES) {
 // creería que ella lo protege, cuando lo que lo protege es la AUSENCIA de
 // `--escribir`.
 console.log('\n── La bandera vieja junto con la nueva ──');
-for (const g of GUIONES) {
+for (const g of PASAN_POR_EL_PORTON) {
   const { status, salida } = correr(g, ['--prod', '--dry-run', '--escribir']);
   if (status !== NO_ARRANCO)
     falla(`${g} con --dry-run y --escribir se para`, `salida ${NO_ARRANCO}`, `salida ${status}`);
@@ -158,7 +172,7 @@ for (const g of GUIONES) {
 // equivoque de destino recibiría un stack trace de Node en lugar de «No hay
 // destino».
 console.log('\n── El portón va antes de cargar el Admin SDK ──');
-for (const g of GUIONES) {
+for (const g of PASAN_POR_EL_PORTON) {
   const { status, salida } = correr(g, []);
   if (/MODULE_NOT_FOUND|Cannot find module/.test(salida))
     falla(`${g} contesta el destino sin depender de firebase-admin`,

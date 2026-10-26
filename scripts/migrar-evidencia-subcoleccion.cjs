@@ -85,15 +85,8 @@ const P = 'campo-fosmon';
 const BUCKET = 'campo-fosmon.firebasestorage.app';
 
 const args = process.argv.slice(2);
-const ESCRIBIR = args.includes('--escribir');
 const iObra = args.indexOf('--obra');
 const SOLO = iObra >= 0 ? args[iObra + 1] : null;
-
-// Contra el emulador no hay token ni bucket: se apunta el transporte a
-// localhost y la hora de servidor se toma de un listado sembrado. Es como se
-// ensaya esto sin pedir permiso para tocar producción.
-const EMU_HOST = process.env.EMU_HOST || null;
-const EMU_PORT = Number(process.env.EMU_PORT || 8080);
 
 // ── PRODUCCIÓN SE PIDE, NO SE HEREDA ───────────────────────────────────────
 //
@@ -105,26 +98,30 @@ const EMU_PORT = Number(process.env.EMU_PORT || 8080);
 // Eso me pasó el 2026-10-09 a la 01:43: corrí `--obra 0114 --escribir` sin
 // `EMU_HOST` queriendo migrar la obra del preview y escribí 270 documentos en
 // producción. No se perdió nada —el mapa viejo es la red y quedó intacto— pero
-// fue una escritura a producción sin autorización, que es justo lo que este
-// proyecto reserva para un OK explícito.
+// fue una escritura a producción sin autorización.
 //
-// Ahora producción exige `--prod` escrito a mano, junto con `--escribir`. Un
-// olvido ya no apunta a producción: no apunta a ningún lado y el guion se para.
-const PROD = args.includes('--prod');
-if (!EMU_HOST && !PROD) {
-  console.error(
-    '\nNo hay destino.\n\n' +
-    '  Emulador:    EMU_HOST=127.0.0.1 EMU_PORT=8080 node ' + path.basename(__filename) + ' …\n' +
-    '  Producción:  node ' + path.basename(__filename) + ' --prod …\n\n' +
-    'Producción se pide con `--prod`. Antes era lo que salía por omisión y el\n' +
-    '2026-10-09 eso escribió 270 documentos en producción por una variable de\n' +
-    'entorno olvidada. El destino se escribe, no se deduce.');
-  process.exit(2);
-}
-if (EMU_HOST && PROD) {
-  console.error('\n`--prod` y EMU_HOST a la vez. Decide uno: no voy a adivinar cuál.');
-  process.exit(2);
-}
+// Este guion tenía su PROPIO portón, copiado del de `destino.cjs`. Dos cerrojos
+// que contestan la misma pregunta se desincronizan, y el que se quede atrás es
+// el que escribe a producción por accidente: el de aquí, por ejemplo, no
+// conocía `--dry-run`, así que aceptaba callado la bandera con la que uno cree
+// protegerse. Ahora pasa por el portón único, como los otros tres.
+const { resolverDestino } = require('./destino.cjs');
+const destino = resolverDestino({
+  escribe: 'crea obras/{id}/evidencia/{id} y marca config/evidencia.migrada',
+  projectIdProd: P,
+});
+
+// Contra el emulador no hay token ni bucket: se apunta el transporte a
+// localhost y la hora de servidor se toma de un listado sembrado. El portón
+// acepta `FIRESTORE_EMULATOR_HOST` además de `EMU_HOST`, y las dos traen el
+// puerto pegado; se parte aquí para el transporte, que los quiere aparte.
+const [EMU_HOST, PUERTO_PEGADO] = destino.emulador
+  ? (() => { const [h, p] = String(destino.emulador).split(':'); return [h, p]; })()
+  : [null, null];
+const EMU_PORT = Number(PUERTO_PEGADO || process.env.EMU_PORT || 8080);
+const PROD = destino.prod;
+const ESCRIBIR = destino.escribir;
+
 const BASE = EMU_HOST
   ? `/v1/projects/${P}/databases/(default)/documents`
   : `/v1/projects/${P}/databases/(default)/documents`;

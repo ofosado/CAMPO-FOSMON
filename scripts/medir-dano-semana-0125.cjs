@@ -16,46 +16,55 @@
 const fs = require('fs');
 const path = require('path');
 const raiz = path.resolve(__dirname, '..');
+const { deApp, ARCHIVO } = require('./extraer-de-app.cjs');
+
+// Los helpers de nivel superior van por `deApp`: la petición queda escrita en
+// una llamada que `prueba-herramientas-de-medicion-viven.cjs` lee y ejercita en
+// cada corrida de la suite, así que un renombre sale en rojo ahí y no el día
+// que alguien quiera volver a medir.
+const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
+const api = deApp('semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina');
+
+// El OYENTE no es un símbolo con nombre: es el segundo argumento de un
+// `onSnapshot` dentro de un componente. `deApp` no lo alcanza a propósito —sólo
+// indexa nivel superior— así que se saca aquí, y aquí se para si no está.
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
-
-const src = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
-
-const global = {};
+const src = fs.readFileSync(ARCHIVO, 'utf8');
 let oyenteNomina = null;
-traverse(ast, {
-  VariableDeclarator(p) {
-    if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent)
-      global[p.node.id.name] ||= src.slice(p.node.init.start, p.node.init.end);
-  },
+traverse(parse(src, { sourceType: 'module', plugins: ['jsx'] }), {
   CallExpression(p) {
     if (p.node.callee.name !== 'onSnapshot' || p.node.arguments.length < 2) return;
     if (!/'nomina'\s*,\s*'historial'/.test(src.slice(p.node.arguments[0].start, p.node.arguments[0].end))) return;
     oyenteNomina = src.slice(p.node.arguments[1].start, p.node.arguments[1].end);
   },
 });
-
-const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
-const faltan = necesarios.filter(n => !global[n]);
-if (faltan.length || !oyenteNomina) {
-  console.error('No se pudo montar la medición. Falta: ' + (faltan.join(', ') || 'el oyente de nómina'));
+if (!oyenteNomina) {
+  console.error('No se pudo montar la medición: no está el oyente de `nomina/historial` en src/App.jsx.');
   process.exit(2);
 }
-const api = new Function(`"use strict";
-  ${necesarios.map(n => `const ${n} = ${global[n]};`).join('\n  ')}
-  return { ${necesarios.join(', ')} };`)();
 
+// El camino de hoy tiene DOS tramos. El oyente ya no arma el calendario: deja
+// el arreglo crudo en `_nomDoc`, y el ensamblado lo convierte con
+// `semanasDeNomina` cuando ya llegó todo. Esta medición seguía leyendo
+// `parche.nominaSemanas` del oyente —el camino de antes— y se caía con un
+// `undefined.map` desde que el tramo se partió en dos. Se recorren los dos.
 const loQueRecibeElTablero = (registros) => {
-  let recibido = null;
+  let crudo = null;
   new Function('snap', 'patch', 'o', ...necesarios, `"use strict"; (${oyenteNomina})(snap);`)(
     { exists: () => true, data: () => ({ semanas: registros }) },
-    (_id, parche) => { recibido = parche.nominaSemanas; },
+    (_id, parche) => { if ('_nomDoc' in parche) crudo = parche._nomDoc; },
     { id: '0125' },
     ...necesarios.map(n => api[n]),
   );
-  return recibido;
+  if (crudo === null) {
+    console.error('El oyente de `nomina/historial` ya no entrega `_nomDoc`.');
+    console.error('Cambió el camino: esta medición mediría otra cosa. Revísala.');
+    process.exit(2);
+  }
+  return api.semanasDeNomina(crudo);
 };
 
 // ── Producción, 0125 (TAMSA Veracruz), leída el 2026-09-22 ─────────────────
