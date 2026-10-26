@@ -18,6 +18,7 @@
 // Un borrado no se revierte, pero lo que decía sí queda.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { resolverDestino } = require('./destino.cjs');
 
@@ -74,7 +75,25 @@ const TIPO_HUERFANO = 'captura_sub_pendiente';
     process.exit(0);
   }
 
-  const volcado = path.join(__dirname, '..', `avisos-huerfanos-borrados-${new Date().toISOString().slice(0, 10)}.json`);
+  // El volcado sale FUERA del árbol del repo. Trae correos de empleados
+  // reales, y un archivo así dentro del directorio es cuestión de tiempo que
+  // alguien lo commitee sin querer: un `git add -A` distraído lo publica. No
+  // basta con `.gitignore` —lo que no debería estar ahí no se protege, se
+  // saca—. Si el directorio no existe, el guion se para ANTES de borrar nada:
+  // quedarse sin constancia de un borrado que no se revierte es peor que no
+  // borrar hoy.
+  const dirDatos = process.env.CAMPO_DATOS_PROD ||
+    path.join(os.homedir(), 'Desarrollo', 'CAMPO-datos-produccion');
+  if (!fs.existsSync(dirDatos)) {
+    console.error(
+      `\nNo existe ${dirDatos}, que es donde va el volcado.\n\n` +
+      '  mkdir -p "' + dirDatos + '" && chmod 700 "' + dirDatos + '"\n\n' +
+      'No se borró nada. El volcado es la única constancia de qué decía lo\n' +
+      'que se borra, y un borrado en producción no se revierte.');
+    process.exit(2);
+  }
+  const volcado = path.join(dirDatos,
+    `avisos-huerfanos-borrados-${new Date().toISOString().slice(0, 10)}.json`);
   fs.writeFileSync(volcado, JSON.stringify(aBorrar, null, 2));
   console.log(`\nVolcado íntegro antes de borrar: ${volcado}`);
 
