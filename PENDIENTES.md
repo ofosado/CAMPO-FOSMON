@@ -39,7 +39,7 @@ definición del problema.**
 | 28 | **El historial de avance sigue en UN documento con tope de 52 semanas**, y el recorte ya borró 7 cierres de la 0114. La nómina sí migró a subcolección (desplegada 2026-09-23); el avance no. | PARCIAL |
 | 28b | **Los documentos viejos de nómina ya se pueden vaciar** — la fecha de seguridad era el 2026-09-30 y ya pasó. Es una decisión tuya, no una tarea: hasta vaciarlos son la única salida de la migración. | DECISIÓN |
 | 21 | **Cambiar a modo volumen borra el avance capturado, en silencio.** | ABIERTO |
-| 22 | **`fsGet`/`fsSet`/`fsDel` se tragan cualquier fallo** (64 llamadas): una escritura rechazada por reglas se ve exactamente igual que una exitosa. El caso urgente se cerró en `fix/catalogo-no-borra-avance`; el resto no. | PARCIAL |
+| 22 | **`fsSet`/`fsDel`/`fsSetA` se tragaban cualquier fallo**: una escritura rechazada por reglas se veía exactamente igual que una exitosa. Cerrado el 2026-10-26 con un canal central (`avisarEscrituraPerdida`): el helper devuelve `false` en vez de `undefined`, deja la ruta ya prefijada y el código en el canal, y una franja `role="alert"` dice «Un cambio NO se guardó». Las dos afirmaciones de éxito que mentían (estimaciones y contrato) ahora están condicionadas al `true`. Medido en el preview contra el emulador con las reglas reales: con reglas que niegan sale la franja con `orgs/coatzacoalcos/obras/OP-2026-001 · permission-denied` y no sale «Guardado»; con las reglas reales sale «Guardado» y la franja no aparece. Banco nuevo `prueba-escritura-que-no-miente.cjs`, 26 aserciones, 10 mutaciones todas en rojo. | CERRADO |
 
 ## 2 · El expediente afirma algo falso
 
