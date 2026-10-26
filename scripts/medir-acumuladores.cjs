@@ -20,9 +20,6 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const raiz = path.resolve(__dirname, '..');
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
 const PROYECTO = 'campo-fosmon';
 const BASE = `/v1/projects/${PROYECTO}/databases/(default)/documents`;
@@ -85,21 +82,13 @@ const campos = d => Object.fromEntries(
   Object.entries((d && d.fields) || {}).map(([k, v]) => [k, val(v)]));
 
 // ── `tamañoFirestore` y `LIMITE_DOC_FIRESTORE` salen de la app, no de una copia ──
-const src = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
-const decl = {};
-traverse(ast, { VariableDeclarator(p) {
-  if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent)
-    decl[p.node.id.name] ||= src.slice(p.node.init.start, p.node.init.end);
-}});
-for (const n of ['tamañoFirestore', 'LIMITE_DOC_FIRESTORE'])
-  if (!decl[n]) { console.error(`No se pudo extraer \`${n}\` de src/App.jsx`); process.exit(1); }
-const { tamañoFirestore, LIMITE_DOC_FIRESTORE } = new Function(`
-  "use strict";
-  const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
-  const tamañoFirestore = ${decl['tamañoFirestore']};
-  return { tamañoFirestore, LIMITE_DOC_FIRESTORE };
-`)();
+// Se piden por `deApp` y no con un bloque de Babel propio: así la petición
+// queda escrita donde `prueba-herramientas-de-medicion-viven.cjs` la encuentra
+// y la ejercita en cada corrida. Un bloque propio sólo se entera de un
+// renombre el día que alguien corre este guion — y ese día ya se quería medir.
+const { deApp } = require('./extraer-de-app.cjs');
+const { tamañoFirestore, LIMITE_DOC_FIRESTORE } =
+  deApp('tamañoFirestore', 'LIMITE_DOC_FIRESTORE');
 
 const KB = b => `${(b / 1024).toFixed(1)} KB`;
 const PCT = b => b / LIMITE_DOC_FIRESTORE * 100;

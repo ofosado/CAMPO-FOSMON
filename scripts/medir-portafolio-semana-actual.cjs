@@ -27,9 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const raiz = path.resolve(__dirname, '..');
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const { deApp } = require('./extraer-de-app.cjs');
 
 const PROYECTO = 'campo-fosmon';
 const BASE = `/v1/projects/${PROYECTO}/databases/(default)/documents`;
@@ -71,23 +69,13 @@ const val = (v) => {
 const campos = (f) => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, val(v)]));
 
 // ── Los helpers, extraídos del archivo de verdad ────────────────────────────
-const src = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
-const decl = {};
-traverse(ast, {
-  VariableDeclarator(p) {
-    if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent)
-      decl[p.node.id.name] ||= src.slice(p.node.init.start, p.node.init.end);
-  },
-});
-const NECESARIOS = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
-const faltan = NECESARIOS.filter(n => !decl[n]);
-if (faltan.length) { console.error('No se pudo montar: falta ' + faltan.join(', ')); process.exit(2); }
-const api = new Function(`"use strict";
-  ${NECESARIOS.map(n => `const ${n} = ${decl[n]};`).join('\n  ')}
-  return { ${NECESARIOS.join(', ')} };`)();
-const { heImporte, semanasDeNomina } = api;
+// La petición va por `deApp` y queda escrita aquí en una llamada que
+// `prueba-herramientas-de-medicion-viven.cjs` lee y ejercita en cada corrida:
+// un renombre en la app sale en rojo en la suite, no el día que alguien
+// intente medir.
+const { heImporte, semanasDeNomina } = deApp('semanaISO', 'heImporte',
+  'numSemanaNomina', 'fechaCargaNomina', 'añoSemanaNomina', 'claveSemanaNomina',
+  'semanasDeNomina');
 
 // ── Los cinco sitios, con la fórmula tal como está en main ──────────────────
 // `porObra` es { obraId: nominaSemanas }. Es lo único que cambia entre los dos
