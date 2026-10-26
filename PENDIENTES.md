@@ -78,7 +78,6 @@ definición del problema.**
 | # | Tema | Estado |
 |---|---|---|
 | 6b | **Falta `onAuthStateChanged`: sesión zombie tras revocación.** Ojo: hay dos pendientes numerados 6; éste es el de sesión. | ABIERTO |
-| 19 | **`setObra` sin declarar en GastosGP** — crash de runtime latente. | ABIERTO |
 | 44 | **Un banco apuntado a un puerto muerto cuelga la suite** en vez de fallar: no hay plazo y el silencio no grita. | ABIERTO |
 | 23 | **`networkTimeoutSeconds: 5` del service worker** afecta toda lectura de Firestore, no sólo la que se pensó. | ABIERTO |
 | 20 | **Integrar la verificación de ámbito de forma permanente** (hoy es un guion que alguien se acuerda de correr). | ABIERTO |
@@ -130,7 +129,7 @@ definición del problema.**
 | 17 | Auditar otros módulos por el mismo hueco de «fecha faltante». | ABIERTO |
 | 33 | `PanelEjecutivo` lleva desde el 18 de septiembre sin renderizarse. Ya se editó por error una vez: o se reactiva o se borra. | ABIERTO |
 | 43 | El correo del resumen semanal sigue firmando como CAMPO · FOSMON (6 sitios). | ABIERTO |
-| 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. | DESPLEGADO |
+| 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. **Re-medido contra producción el 2026-10-26 porque se reportó que «seguía saliendo el de FOSMON»: no sigue.** `campo-fosmon.netlify.app` sirve los tres íconos con la **misma suma** que el repo (`favicon.svg` `4d970e7d67bf`, `icon-192.png` `b59e2fd13e1d`, `apple-touch-icon-180.png` `f962a8e4ade3`), el manifiesto en vivo dice `cotea`, el `<title>` dice `cotea` y los archivos son la C bitono. Lo que se ve viejo es **del aparato**: el ícono de la app instalada se fija al instalar, y los PNG conservaron su nombre (`icon-192.png` et al. se modificaron en sitio en `2b10235`), así que un service worker viejo también puede servir la versión vieja desde su precaché. Se arregla borrando y volviendo a agregar la app; en el navegador, recargando con la actualización aplicada. **No hay nada que cambiar en el código.** | DESPLEGADO |
 | — | La sonda de cámara en `/api/sonda/` es diagnóstico, no producto: mide si `getUserMedia` sirve en standalone en iOS, que es la precondición del #52. Se retira en cuanto haya veredicto. Vive bajo `/api/` porque es la única ruta que el service worker ya instalado no se traga. | ABIERTO |
 | 64 | Los dos manifiestos se sirven como `application/octet-stream`. iOS los instala igual, así que no bloquea nada; está anotado para que nadie lo vuelva a investigar desde cero cuando algún navegador deje de perdonarlo. | ABIERTO |
 | 18 | Nómina: arrastrar y soltar + pegar desde el portapapeles. | ABIERTO |
@@ -154,6 +153,7 @@ archivo.
 | 49 | Notas de reporte semanal sembradas para la demo. | 2026-10-06 |
 | 48 | El plazo dice si la obra va bien o mal: KPI de días a favor o de atraso, en Plazo y en el panel. | 2026-10-06 |
 | 6 | No había dónde capturar estimaciones en dependencia — la mitad financiera del expediente. | 2026-10-06 |
+| 19 | **`setObra` sin declarar en GastosGP.** Estaba arreglado desde el commit `00df88b` —cuyo mensaje nombra el #19— y el índice nunca se actualizó: trece renglones de lista pidiendo trabajo ya hecho. Medido hoy: `setObra` está en los props (App.jsx:14500), se usa (14797) y el sitio de llamada lo pasa (23580). Un índice que pide trabajo hecho gasta la misma atención que uno que pide trabajo real. | 2026-09-22 |
 | 38 | El login inventaba el perfil que no encontraba y se autoasignaba permisos de escritura. | 2026-09-24 |
 | 35 | El modelo escrito decía que la dependencia no captura, y es falso; la escritura se denegaba y `fsSet` lo callaba. | 2026-09-24 |
 | 34 | El transporte decodificaba el cuerpo trozo a trozo y partía caracteres UTF-8 en la frontera. | 2026-09-23 |
