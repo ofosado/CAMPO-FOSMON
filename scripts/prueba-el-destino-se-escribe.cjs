@@ -223,15 +223,49 @@ console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde �
   const primera = dijo.split('\n').find(l => l.trim()) || '(nada)';
   const sinActivo = /No project active|No active project/i.test(dijo);
 
-  // LA afirmación de esta sección. Que se pare, y que se pare por no tener
-  // destino: un `deploy` que falla por otra cosa (sin sesión, sin red) no
-  // demuestra nada sobre el destino de omisión y no puede pasar por verde.
+  // UN FALLO AL CONSULTAR NO ES UN FALLO DE LO CONSULTADO.
+  //
+  // El 2026-10-26 esta sección salió ROJA ×3 bajo la suite y VERDE al volver a
+  // correrla sola, seis veces seguidas. Eso es un no determinismo, y por el
+  // acuerdo («si falla y luego pasa, no quedó») se persiguió hasta la causa:
+  // el único modo de no-arranque contemplado era `ENOENT`. Cualquier OTRA
+  // forma de que el CLI no conteste —se lo llevó el plazo de 60 s, el
+  // configstore estaba tomado, pidió sesión, le falló la red al buscar
+  // actualización— deja `dijo` sin la respuesta, y las tres aserciones de
+  // abajo se disparaban en rojo. O sea: el banco acusaba al destino de haber
+  // cambiado cuando lo que se había roto era el instrumento.
+  //
+  // Dos averías distintas, dos reacciones distintas. Así que antes de juzgar
+  // se exige que el CLI HAYA CONTESTADO LA PREGUNTA: o procedió (status 0), o
+  // dijo que no tenía proyecto activo. Cualquier otra cosa es NO ARRANCÓ (2),
+  // que en la suite grita igual de fuerte que un rojo pero no manda a nadie a
+  // buscar una regresión que no existe.
+  //
+  // Esto NO afloja la medición: quitarle los alias a `.firebaserc` sigue
+  // saliendo con «No project active» —con otra frase detrás— así que sigue
+  // llegando a las comprobaciones de abajo; y reponer el `default`, que es el
+  // defecto que esta sección persigue, hace que proceda y caiga en el rojo.
+  if (cli.status !== 0 && !sinActivo) {
+    sinPrecondicion(
+      'una respuesta de `firebase` a «¿a dónde desplegarías si nadie te dice?»',
+      ['El CLI está instalado pero no contestó la pregunta. Salió con ' +
+         `status=${cli.status} signal=${cli.signal}` +
+         (cli.error ? ` error=${cli.error.code || cli.error.message}` : '') +
+         ', y dijo:',
+       '',
+       '  ' + (dijo ? dijo.split('\n').slice(0, 6).join('\n  ') : '(nada)'),
+       '',
+       'Eso no dice NADA sobre el destino de omisión, ni a favor ni en contra.',
+       'Suele ser sesión caducada o el configstore tomado por otro `firebase`',
+       'corriendo a la vez. Arreglarlo y volver a correr:',
+       '  firebase login',
+       '  node scripts/prueba-el-destino-se-escribe.cjs']);
+  }
+
+  // LA afirmación de esta sección: que se pare por no tener destino.
   if (cli.status === 0)
     falla('`firebase deploy` sin `--project` no procede',
       'que se pare', `salió 0 — procedió: ${primera}`);
-  else if (!sinActivo)
-    falla('`firebase deploy` sin `--project` se para por FALTA DE DESTINO',
-      'el texto «No project active»', primera);
   else
     ok('`firebase deploy` sin `--project` se para por no tener destino');
 

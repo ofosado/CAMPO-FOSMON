@@ -125,11 +125,20 @@ const CHROME = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
                 '/Applications/Chromium.app/Contents/MacOS/Chromium',
                 '/usr/bin/google-chrome', '/usr/bin/chromium'].find(p => fs.existsSync(p));
 
+// Los tres no-arranques de abajo decían «NO ARRANCÓ» y salían con 1. La suite
+// clasifica POR CÓDIGO DE SALIDA, no por el texto, así que los contaba como
+// rojos: mandaba a buscar una regresión de color cuando lo que faltaba era el
+// navegador. Es la misma avería que el 2026-10-26 hizo parpadear a
+// `prueba-el-destino-se-escribe` — un fallo al MEDIR disfrazado de fallo de lo
+// medido— y por el acuerdo («el patrón se arregla en todo el repo») se corrige
+// aquí también. Tres estados: verde 0 · ROJO 1 · NO ARRANCÓ 2.
 if (!CHROME) {
-  console.error('NO ARRANCÓ: no se encontró Chrome ni Chromium.');
-  console.error('Esta prueba necesita un navegador de verdad: mide lo que se pinta,');
-  console.error('no lo que el código dice que se pintaría. Sin él no hay prueba.');
-  process.exit(1);
+  noArranco.sinPrecondicion(
+    'Chrome o Chromium, que es quien pinta los colores que esta prueba mide',
+    ['Esta prueba necesita un navegador de verdad: mide lo que SE PINTA, no lo',
+     'que el código dice que pintaría. Sin él no hay prueba — ni buena ni mala.',
+     'Instalar Google Chrome, o Chromium:',
+     '  brew install --cask google-chrome']);
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'puente-color-'));
@@ -154,15 +163,25 @@ try {
 } catch (e) {
   try { dom = fs.readFileSync(volcado, 'utf8'); } catch { dom = ''; }
   if (!dom) {
-    console.error('NO ARRANCÓ: Chrome no devolvió el DOM.', e.message);
-    process.exit(1);
+    noArranco.sinPrecondicion(
+      'el DOM pintado: Chrome no lo devolvió',
+      ['El navegador está instalado pero la corrida no terminó. Dijo:',
+       '',
+       '  ' + String(e && e.message).split('\n').slice(0, 4).join('\n  '),
+       '',
+       'Eso no dice nada sobre los colores. Suele ser el plazo de 90 s o un',
+       'perfil de Chrome tomado. Volver a correr:',
+       '  node scripts/prueba-puente-color.cjs']);
   }
 }
 
 const m = /<pre id="salida">([\s\S]*?)<\/pre>/.exec(dom);
 if (!m) {
-  console.error('NO ARRANCÓ: la página no dejó salida. El script no corrió.');
-  process.exit(1);
+  noArranco.sinPrecondicion(
+    'la salida de la página: el script del navegador no llegó a correr',
+    ['Chrome devolvió un DOM, pero sin el `<pre id="salida">` que lleva las',
+     'mediciones. Nada se midió, así que nada se puede afirmar del color.',
+     'Mirar que el HTML que arma este banco siga siendo válido.']);
 }
 const obtenido = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
 
