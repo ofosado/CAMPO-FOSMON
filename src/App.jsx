@@ -5914,18 +5914,21 @@ const esPlataforma = usuario => ROLES_CROSS.includes(usuario?.rol);
 // nombre se iban a cambiar dos de los tres. Ese día llegó —2026-10-01, CAMPO
 // pasa a ser cotea— y fue un renglón, que era justamente el punto.
 //
-// El descriptor se queda VACÍO a propósito, no borrado. «Control de Avance,
-// Maquinaria, Personal y Obra» era el desarrollo de la sigla CAMPO y con el
-// nombre nuevo no quiere decir nada; de paso nombraba dos módulos que la
-// sesión de un municipio no tiene. El eslogan definitivo está por decidirse y
-// queda anotado como pendiente: mejor sin descriptor que con uno malo.
+// El descriptor estuvo VACÍO a propósito desde el 2026-10-01: «Control de
+// Avance, Maquinaria, Personal y Obra» era el desarrollo de la sigla CAMPO,
+// con el nombre nuevo no quería decir nada, y de paso nombraba dos módulos
+// que la sesión de un municipio no tiene. Mejor sin descriptor que con uno
+// malo. El 2026-10-26 Omar decidió el definitivo: **«Tu obra, al momento»**.
+// Sirve para los dos tipos de organización —una dependencia también tiene
+// obras— y no promete ningún módulo.
 //
-// Vacío tiene que significar NO PINTAR NADA, igual que el `null` de
-// `nombreOrg`. Si alguien lo pinta sin preguntar, el pie dice «cotea — » con
-// la raya colgando.
+// Vacío sigue teniendo que significar NO PINTAR NADA, igual que el `null` de
+// `nombreOrg`: la guarda de los dos sitios que lo pintan se queda puesta. Si
+// alguien lo vuelve a vaciar, el pie no puede decir «cotea — » con la raya
+// colgando.
 const PRODUCTO = {
   nombre: "cotea",
-  descriptor: "",
+  descriptor: "Tu obra, al momento",
 };
 
 /**
