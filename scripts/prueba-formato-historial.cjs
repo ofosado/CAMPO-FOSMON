@@ -37,10 +37,26 @@ const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
 
 const decl = {};
+// Con qué valor ARRANCA el estado `formatoHist` de la pantalla de nómina. No
+// se teclea aquí: se saca del archivo, porque lo que esta prueba quiere
+// afirmar es que ESE valor —el que de verdad tiene la pantalla antes de que la
+// lectura conteste— no alcanza para escribir. Teclearlo sería comprobar la
+// prueba contra sí misma, y el día que alguien lo cambie de vuelta la prueba
+// seguiría en verde midiendo un valor que ya no existe.
+let arranqueFormatoHist = null;
 traverse(ast, {
   VariableDeclarator(p) {
     if (p.node.id.type === 'Identifier' && p.node.init && !p.scope.parent?.parent)
       decl[p.node.id.name] ||= src.slice(p.node.init.start, p.node.init.end);
+    if (arranqueFormatoHist === null
+        && p.node.id.type === 'ArrayPattern'
+        && p.node.id.elements[0]?.name === 'formatoHist'
+        && p.node.init?.type === 'CallExpression'
+        && p.node.init.callee?.name === 'useState'
+        && p.node.init.arguments.length === 1) {
+      const a = p.node.init.arguments[0];
+      arranqueFormatoHist = src.slice(a.start, a.end);
+    }
   },
   ClassDeclaration(p) { if (p.node.id) decl['class:' + p.node.id.name] ||= src.slice(p.node.start, p.node.end); },
 });
@@ -280,11 +296,146 @@ console.log('1. Quién decide de dónde se lee');
         `\`nomina: ${JSON.stringify(v)}\` no se toma por migrada`);
   }
 
+  // ── 5. Dónde se ESCRIBE, y qué pasa cuando no se sabe ────────────────────
+  //
+  // La lectura ya estaba cubierta; la escritura no lo estaba, y es el lado que
+  // pierde datos. El formato viejo no añade una semana: hace `set` del arreglo
+  // ENTERO. Escribir con la lista en la mano todavía vacía no deja el
+  // documento como estaba, lo REEMPLAZA por la carga nueva.
+  //
+  // Eso es lo que le pasó a la 0126 el 2026-10-23: la pantalla arrancaba
+  // suponiendo formato viejo, la lectura había fallado —la guarda llevaba
+  // lanzando desde que a la subcolección le faltó una semana—, y las dos
+  // partes de la semana 42 cayeron en el documento viejo aplastando lo que
+  // tenía. 132 trabajadores y $679,126.67 dejaron de salir en pantalla, porque
+  // esa obra lee de la subcolección. Y se realimentaba: cada lectura volvía a
+  // lanzar, así que cada carga siguiente volvía al mismo sitio equivocado.
+  console.log('\n5. Dónde se ESCRIBE — y que no se escriba sin saberlo');
+  {
+    const m = montarEscritura();
+
+    // Formato viejo: un solo documento, el de siempre.
+    {
+      const { escrituras, error } = await escribir(m, '0126', m.ARREGLO, [S36, S37], ['Y2026-S36']);
+      check(!error && escrituras.length === 1 && escrituras[0].ruta === DOC_VIEJO
+            && escrituras[0].datos?.semanas?.length === 2,
+        'con la bandera en 1 se escribe el documento viejo, con el historial completo',
+        error ? `lanzó ${error.name}: ${error.message.slice(0, 60)}`
+              : escrituras.map(e => e.ruta).join(', ') || '(no escribió nada)');
+    }
+
+    // Y REEMPLAZA. Esta es la mecánica del daño, no un detalle: si añadiera,
+    // escribir con el historial vacío sería inofensivo y nada de lo de abajo
+    // haría falta.
+    {
+      const { escrituras } = await escribir(m, '0126', m.ARREGLO, [S37], ['Y2026-S37']);
+      const dentro = escrituras[0]?.datos?.semanas || [];
+      check(dentro.length === 1 && dentro[0]?.archivo === 's37.xlsx',
+        'el formato viejo REEMPLAZA el arreglo entero: lo que no va en la mano, se va',
+        `quedó con ${dentro.length}: ${dentro.map(r => r.archivo).join(', ') || '(vacío)'}`);
+    }
+
+    // Subcolección: un documento por semana tocada, y el viejo ni se roza.
+    {
+      const { escrituras, error } = await escribir(m, '0126', m.SUBCOLECCION, [S36, S38a, S38b], ['Y2026-S38']);
+      check(!error && escrituras.length === 1
+            && escrituras[0].ruta === `${SUBCOL}/Y2026-S38`
+            && escrituras[0].datos?.partes?.length === 2,
+        'con la bandera en 2 se escribe sólo la semana tocada, con sus dos partes',
+        error ? `lanzó ${error.name}` : escrituras.map(e => e.ruta).join(', ') || '(nada)');
+      check(!escrituras.some(e => e.ruta === DOC_VIEJO),
+        'y el documento viejo no se toca');
+    }
+
+    // LA QUE IMPORTA. El valor con el que arranca la pantalla, con el
+    // historial todavía vacío: exactamente el estado en el que estuvo la 0126.
+    {
+      const { escrituras, borrados, error } = await escribir(
+        m, '0126', m.arranquePantalla, [], ['Y2026-S42']);
+      check(!!error,
+        'con el formato que la pantalla tiene ANTES de leer, guardar falla en vez de suponer',
+        error ? `lanzó ${error.name}` : `ESCRIBIÓ: ${escrituras.map(e => e.ruta).join(', ')}`);
+      check(escrituras.length === 0 && borrados.length === 0,
+        'y no escribe ni borra NADA: el documento viejo queda intacto',
+        `${escrituras.length} escritura(s), ${borrados.length} borrado(s)`);
+      check(!!error && /no se sabe en qué formato/i.test(error.message),
+        'el mensaje dice por qué no se guardó, no "error desconocido"',
+        error?.message?.slice(0, 70));
+      check(!!error && /no se ha tocado|intacto|nada de lo que ya estaba/i.test(error.message),
+        'y dice que no se perdió nada, que es lo que el residente necesita saber');
+    }
+
+    // Cualquier otro valor tampoco alcanza. La regla no es "0 es especial":
+    // es que sólo 1 y 2 son formatos, y lo demás es no saber.
+    for (const v of [0, 3, '2', true, null, undefined, NaN]) {
+      const { escrituras, borrados, error } = await escribir(m, '0126', v, [S36], ['Y2026-S36']);
+      check(!!error && escrituras.length === 0 && borrados.length === 0,
+        `con formato ${JSON.stringify(v) ?? String(v)} no se escribe nada`,
+        error ? '' : `ESCRIBIÓ ${escrituras.length}`);
+    }
+  }
+
   console.log(fallas === 0
     ? '\nTodas las comprobaciones en verde.'
     : `\n${fallas} comprobación(es) en rojo.`);
   process.exit(fallas > 0 ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
+
+// El escritor real de `src/App.jsx`, con un Firestore que APUNTA en vez de
+// escribir. Las dependencias no se enumeran a mano: `fuenteDeApp` resuelve el
+// cierre transitivo. Una lista tecleada aprueba su propia revisión de
+// completitud y luego revienta a media corrida con un `is not defined`.
+function montarEscritura() {
+  const { fuenteDeApp } = require('./extraer-de-app.cjs');
+  if (!arranqueFormatoHist) {
+    console.error('No se encontró con qué valor arranca `formatoHist` en la pantalla de');
+    console.error('nómina. Sin eso esta prueba no puede afirmar nada sobre el estado');
+    console.error('previo a la lectura, que es justo lo que perdió la semana 42 de la 0126.');
+    process.exit(2);
+  }
+  // Lo que nombre esa expresión tiene que venir también, o no se puede evaluar.
+  const libres = new Set();
+  traverse(parse(`(${arranqueFormatoHist})`, { sourceType: 'module' }), {
+    ReferencedIdentifier(p) { if (!p.scope.hasBinding(p.node.name, true)) libres.add(p.node.name); },
+  });
+  const { cuerpo } = fuenteDeApp(['escribirHistorialNomina',
+    'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION', ...libres]);
+
+  const escrituras = [], borrados = [];
+  const ref = (ruta) => ({ ruta });
+  const stubs = {
+    doc: (_db, ...p) => ref(p.join('/')),
+    collection: (_db, ...p) => ref(p.join('/')),
+    setDoc: async (r, datos) => { escrituras.push({ ruta: r.ruta, datos }); },
+    addDoc: async () => ({}),                      // la auditoría no es el sujeto
+    deleteDoc: async (r) => { borrados.push(r.ruta); },
+    getDoc: async () => ({ exists: () => false, data: () => null }),
+    getFirestore: () => ({}), initializeApp: () => ({}),
+    encolarRastro: () => {}, rutaAuditoria: () => 'auditoria',
+    conOrg: conOrgReal,
+    ErrorHistorialNomina: class ErrorHistorialNomina extends Error {
+      constructor(m, c) { super(m); this.name = 'ErrorHistorialNomina'; this.causa = c; }
+    },
+  };
+  const nombres = Object.keys(stubs);
+  const mod = new Function(...nombres, `"use strict";\n${cuerpo}\n` +
+    `const arranquePantalla = ${arranqueFormatoHist};\n` +
+    `return { escribirHistorialNomina, arranquePantalla,\n` +
+    `         ARREGLO: FORMATO_HISTORIAL_ARREGLO,\n` +
+    `         SUBCOLECCION: FORMATO_HISTORIAL_SUBCOLECCION };`
+  )(...nombres.map(n => stubs[n]));
+  return { ...mod, escrituras, borrados, fuente: arranqueFormatoHist };
+}
+
+// Llama al escritor y devuelve lo que INTENTÓ hacer. Como en `leer`, una
+// excepción es el resultado de esa comprobación y no el final del guion.
+async function escribir(m, obraId, formato, historial, tocadas) {
+  m.escrituras.length = 0; m.borrados.length = 0;
+  let error = null;
+  try { await m.escribirHistorialNomina(obraId, formato, historial, tocadas, null); }
+  catch (e) { error = e; }
+  return { escrituras: [...m.escrituras], borrados: [...m.borrados], error };
+}
 
 // El documento viejo ausente se escribe así para que se lea como intención y
 // no como descuido: `undefined` en el mapa significa "no existe".

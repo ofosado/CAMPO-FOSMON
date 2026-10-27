@@ -3950,6 +3950,12 @@ const semanasDeNomina = (registros) => {
 const FORMATO_HISTORIAL_ARREGLO = 1;
 const FORMATO_HISTORIAL_SUBCOLECCION = 2;
 
+// Y un tercer estado que NO vive en Firestore: «todavía no sé». La bandera
+// ausente significa 1 porque leer el formato viejo de una obra sin nómina
+// acierta; pero ESCRIBIR sin saber no acierta nunca, y suponer 1 ahí fue lo que
+// le costó a la 0126 la semana 42 (ver `escribirHistorialNomina`).
+const FORMATO_HISTORIAL_DESCONOCIDO = 0;
+
 const formatoHistorial = (info, cual) => {
   const v = info?.formatoHistorial?.[cual];
   return v === FORMATO_HISTORIAL_SUBCOLECCION
@@ -4066,7 +4072,30 @@ const claveDocSemana = (reg) => claveSemanaNomina(reg) || CLAVE_SIN_SEMANA;
 //
 // Lanza si falla. No se traga nada: estas escrituras las pide el usuario y
 // tiene que poder saber QUÉ pasó (el #22 es exactamente lo contrario).
+//
+// Y lanza ANTES de escribir si no sabe en qué formato escribir. No es celo:
+// el formato viejo se guarda con un `set` del arreglo ENTERO, así que escribir
+// con la lista vacía en la mano no añade una semana, REEMPLAZA el documento.
+// La pantalla arrancaba suponiendo formato 1 con historial `[]`, y si la
+// lectura fallaba —o si el usuario soltaba el archivo antes de que
+// contestara— la carga caía en el documento viejo y se llevaba por delante lo
+// que hubiera. Le pasó a la 0126 el 2026-10-23: dos partes de la semana 42
+// aterrizaron en el documento viejo, aplastaron su contenido y nunca llegaron
+// a la subcolección, que es de donde esa obra lee. 132 trabajadores y
+// $679,126.67 dejaron de estar en pantalla, y como `avisarSiFaltanSemanas`
+// lanza desde entonces en cada lectura, la siguiente carga volvía a caer en el
+// mismo sitio: el fallo se alimentaba solo.
+//
+// Suponer es lo que no se puede hacer. Si no se sabe, no se escribe.
 const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx) => {
+  if (formato !== FORMATO_HISTORIAL_ARREGLO && formato !== FORMATO_HISTORIAL_SUBCOLECCION) {
+    throw new ErrorHistorialNomina(
+      `No se sabe en qué formato está guardado el historial de nómina de la ` +
+      `obra ${obraId}, así que no se escribe nada. Guardar sin saberlo puede ` +
+      `reemplazar el historial completo o dejar la carga donde la pantalla no ` +
+      `la lee. Vuelve a abrir la nómina de la obra; si el error se repite, ` +
+      `avisa a sistemas: nada de lo que ya estaba se ha tocado.`);
+  }
   if (formato === FORMATO_HISTORIAL_ARREGLO) {
     await fsSetAEstricto(`obras/${obraId}/nomina/historial`, { semanas: historial }, ctx);
     return;
@@ -4192,8 +4221,11 @@ const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_AR
       `guarda el archivo y avisa a sistemas para que compacte el historial de ` +
       `la obra ${obraId}. En cuanto esté, vuelve a cargarlo.`;
   }
+  // El punto se pone sólo si el mensaje de abajo no lo trae. Los errores de
+  // Firestore son una frase suelta, pero los nuestros son párrafos y ya cierran
+  // bien: la guarda de formato salía en pantalla como «no se ha tocado..».
   return `No se pudo guardar la semana de nómina: ` +
-    `${err?.message || 'error desconocido'}.\n\n` +
+    `${(err?.message || 'error desconocido').replace(/[.!?]\s*$/, '')}.\n\n` +
     `La semana NO quedó registrada. Revisa la conexión y vuelve a intentar ` +
     `antes de cerrar esta pantalla; si la cierras, hay que volver a cargar ` +
     `el archivo.`;
@@ -17418,9 +17450,12 @@ function Nomina({obra, rol, onHistorialCambio}) {
   useEffect(() => { ensureXLSX().catch(() => {}); }, []);
   const [historial, setHistorial] = useState([]);
   // En qué formato se leyó el historial de esta obra, para escribir en el
-  // mismo. Arranca en el viejo: si la lectura no llegó a contestar, todavía no
-  // hay nada que guardar, y si falla se queda en el formato que no borra nada.
-  const [formatoHist, setFormatoHist] = useState(FORMATO_HISTORIAL_ARREGLO);
+  // mismo. Arranca SIN SABER, no en el viejo. Arrancaba en el viejo con el
+  // argumento de que era «el formato que no borra nada», y es al revés: el
+  // formato viejo escribe el arreglo entero de un golpe, así que con el
+  // historial todavía vacío la primera carga lo reemplaza. Mientras esto valga
+  // `DESCONOCIDO`, `escribirHistorialNomina` se niega a escribir y lo dice.
+  const [formatoHist, setFormatoHist] = useState(FORMATO_HISTORIAL_DESCONOCIDO);
   // fix/kpis-en-cero (2026-09-17): Nomina mantiene su state local (para su
   // propia UI), pero notifica los cambios al App via onHistorialCambio para
   // que Dashboard, MiniDashNomina y detectarRiesgos vean el snapshot fresco.
