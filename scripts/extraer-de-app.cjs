@@ -119,15 +119,31 @@ function indexar(archivo) {
   return idx;
 }
 
-// Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya
-// ejecutables, con sus dependencias de nivel superior resueltas.
-function deArchivo(archivo, ...nombres) {
-  const pedidos = nombres.flat();
+// El CÓDIGO de los símbolos pedidos y de todo lo que necesitan, en el orden
+// del archivo, listo para pegar dentro de un `new Function`.
+//
+// Existe aparte de `deArchivo` porque hay bancos que no pueden conformarse con
+// los símbolos ya ejecutables: tienen que pegar este cuerpo JUNTO a un trozo
+// que vive DENTRO de un componente —`Captura.addFoto`, `App.evid`— y que por
+// eso `deArchivo` no puede devolver. Hasta hoy esos bancos armaban el cuerpo
+// con una lista tecleada a mano, y la lista era la segunda copia: el
+// 2026-10-26 `fechaDeTimestamp` pasó a apoyarse en `fechaEnZonaObra` y TRES
+// bancos —`reglas-evidencia`, `anular-no-borra`, `plazo-multianual`—
+// reventaron con un `is not defined` a media corrida, después de que su propia
+// comprobación de completitud diera la cosecha por buena. Nombrar lo que se
+// quiere está bien; nombrar lo que eso necesita es mantener una copia del
+// grafo de dependencias, y las copias se desincronizan.
+//
+// `tolerante` es para el banco cuya contraprueba QUITA un símbolo a propósito
+// y quiere que la aserción salga ROJA en lugar de que el banco no arranque.
+// Por omisión un símbolo raíz ausente es `SimboloPerdido`.
+function fuenteDe(archivo, nombres, { tolerante = false } = {}) {
+  const pedidos = [].concat(nombres).flat();
   const donde = path.relative(RAIZ, archivo);
   const { decl, libresDe } = indexar(archivo);
 
   const faltan = pedidos.filter(n => !decl.has(n));
-  if (faltan.length) throw new SimboloPerdido(faltan, donde);
+  if (faltan.length && !tolerante) throw new SimboloPerdido(faltan, donde);
 
   // Cierre transitivo. Lo que no esté declarado arriba y no sea del motor se
   // deja pasar: si de verdad hacía falta, al ejecutar sale un `is not
@@ -151,6 +167,14 @@ function deArchivo(archivo, ...nombres) {
     .map(d => d.fuente)
     .join('\n\n');
 
+  return { cuerpo, presentes: pedidos.filter(n => decl.has(n)), faltan };
+}
+
+// Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya
+// ejecutables, con sus dependencias de nivel superior resueltas.
+function deArchivo(archivo, ...nombres) {
+  const pedidos = nombres.flat();
+  const { cuerpo } = fuenteDe(archivo, pedidos);
   const devuelve = `return { ${pedidos.join(', ')} };`;
   return new Function(`"use strict";\n${cuerpo}\n${devuelve}`)();
 }
@@ -164,6 +188,11 @@ const deApp = (...nombres) => deArchivo(ARCHIVO, ...nombres);
 // coincidan es correr las dos. Ver el preámbulo de `diasSinCapturaDe` allá.
 const deFunciones = (...nombres) => deArchivo(ARCHIVO_FUNCIONES, ...nombres);
 
+// El cuerpo en texto, de `src/App.jsx`, para los bancos que además tienen que
+// pegar un trozo de dentro de un componente.
+const fuenteDeApp = (nombres, opciones) => fuenteDe(ARCHIVO, nombres, opciones);
+
 module.exports = {
-  deApp, deFunciones, deArchivo, SimboloPerdido, ARCHIVO, ARCHIVO_FUNCIONES,
+  deApp, deFunciones, deArchivo, fuenteDe, fuenteDeApp,
+  SimboloPerdido, ARCHIVO, ARCHIVO_FUNCIONES,
 };

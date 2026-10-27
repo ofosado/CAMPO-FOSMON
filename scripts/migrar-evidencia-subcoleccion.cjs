@@ -224,36 +224,25 @@ const aCampos = (o) => Object.fromEntries(
 // salir de la función que pinta la galería, no de una copia mía que puede
 // divergir el día que alguien toque el aplanado. Ya pasó: había tres copias y
 // una perdió su `.flat()` (#32).
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
-const src = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const ast = parse(src, {
-  sourceType: 'module',
-  plugins: ['jsx', 'classProperties', 'optionalChaining', 'nullishCoalescingOperator', 'dynamicImport'],
-});
-const modulo = {};
-traverse(ast, {
-  FunctionDeclaration(p) {
-    if (!p.node.id || p.getFunctionParent()) return;
-    if (!(p.node.id.name in modulo)) modulo[p.node.id.name] = src.slice(p.node.start, p.node.end);
-  },
-  VariableDeclarator(p) {
-    if (p.node.id.type !== 'Identifier' || !p.node.init || p.getFunctionParent()) return;
-    if (!(p.node.id.name in modulo)) modulo[p.node.id.name] = src.slice(p.node.init.start, p.node.init.end);
-  },
-});
-const PIEZAS = ['fechaLocalDeISO', 'semanaISO', 'snapshotId', 'ORIGEN_LEGADO',
-  'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada', 'idDePartida',
-  'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente', 'semanaDeEvidencia'];
-const faltan = PIEZAS.filter(n => !(n in modulo));
-if (faltan.length) {
-  console.error('No se pudieron extraer de src/App.jsx: ' + faltan.join(', '));
+//
+// Se pide por `deApp`, que resuelve el cierre transitivo. El bloque de Babel
+// propio que había aquí traía EXACTAMENTE los nombres de una lista tecleada y
+// nada de lo que esos nombres necesitaran. El 2026-10-26 `fechaDeTimestamp`
+// pasó a apoyarse en `fechaEnZonaObra` y este guion —el que decide una
+// escritura a producción— murió con un `is not defined` en plena verificación
+// del paso 4, con la lista completa y la comprobación de arriba en verde.
+const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
+const PIEZAS = ['evidenciaDeObra', 'evidenciaVigente', 'evidenciaNormalizada',
+  'idDePartida', 'evidenciaMigrada', 'semanaDeEvidencia', 'fechaDeTimestamp'];
+let app;
+try {
+  app = deApp(PIEZAS);
+} catch (e) {
+  if (!(e instanceof SimboloPerdido)) throw e;
+  console.error(e.message);
   console.error('La migración no puede verificarse contra la pantalla sin ellas. No corre.');
   process.exit(1);
 }
-const app = new Function(`"use strict";
-  ${PIEZAS.map(n => `const ${n} = ${modulo[n]};`).join('\n')}
-  return { ${PIEZAS.join(', ')} };`)();
 
 // ── Storage: la hora del servidor, leída del servidor ───────────────────────
 // Se lista el bucket por la API de GCS en el momento de migrar, no de un archivo

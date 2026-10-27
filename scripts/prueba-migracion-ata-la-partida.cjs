@@ -105,34 +105,21 @@ const aCampos = (o) => Object.fromEntries(
 // `evidenciaDePartida` es la función que usan los TRES consumidores que se
 // quedaron en cero: la pantalla de captura, el PDF y el tablero. Se ejecuta la
 // del archivo, no una copia: una copia se comprobaría contra sí misma.
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
-const fuente = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const piezas = {};
-traverse(parse(fuente, { sourceType: 'module',
-  plugins: ['jsx', 'classProperties', 'optionalChaining', 'nullishCoalescingOperator', 'dynamicImport'] }), {
-  FunctionDeclaration(p) {
-    if (!p.node.id || p.getFunctionParent()) return;
-    if (!(p.node.id.name in piezas)) piezas[p.node.id.name] = fuente.slice(p.node.start, p.node.end);
-  },
-  VariableDeclarator(p) {
-    if (p.node.id.type !== 'Identifier' || !p.node.init || p.getFunctionParent()) return;
-    if (!(p.node.id.name in piezas)) piezas[p.node.id.name] = fuente.slice(p.node.init.start, p.node.init.end);
-  },
-});
-const NECESARIAS = ['ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp',
-  'evidenciaNormalizada', 'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra',
-  'evidenciaVigente', 'evidenciaDePartida'];
-const faltan = NECESARIAS.filter(n => !(n in piezas));
-if (faltan.length) {
-  console.error('No se encontraron estas piezas en src/App.jsx: ' + faltan.join(', '));
+// Por `deApp`, que resuelve el cierre transitivo. El bloque de Babel propio
+// que había aquí traía los nombres de una lista tecleada y NADA de lo que esos
+// nombres necesitaran; el 2026-10-26 `fechaDeTimestamp` pasó a apoyarse en
+// `fechaEnZonaObra` y este banco reventó al ejecutar, con la lista completa.
+const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
+let app;
+try {
+  app = deApp('evidenciaDeObra', 'evidenciaDePartida', 'idDePartida', 'evidenciaMigrada');
+} catch (e) {
+  if (!(e instanceof SimboloPerdido)) throw e;
+  console.error(e.message);
   console.error('Si el corte por obra se reescribió, esta prueba hay que rehacerla:');
   console.error('la foto sigue teniendo que poder alcanzarse DESDE SU PARTIDA.');
   process.exit(2);
 }
-const app = new Function(`"use strict";
-${NECESARIAS.map(n => `const ${n} = ${piezas[n]};`).join('\n')}
-return { ${NECESARIAS.join(', ')} };`)();
 
 // `porPartida(cfg, docs, subs)` es la cuenta que ven la captura, el PDF y el
 // tablero: cuántas fotos alcanza cada partida POR SU ID.

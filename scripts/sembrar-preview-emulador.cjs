@@ -654,15 +654,82 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // El Sheet de GP: es lo que alimenta el chip y el margen del lado
   // constructora. Sin esto el tablero de FOSMON saldría sin gasto y no se
   // podría comprobar que quedó igual.
+  //
+  // Cuáles semanas hay es del SHEET (`semanasDisponibles`), no de la obra. Una
+  // obra sin gasto en una semana que el Sheet sí midió gastó CERO; eso no es un
+  // hueco, y promediarla contra cero es la cuenta correcta. El hueco que sí
+  // impide medir el ritmo es una columna que el Sheet no trae —o el cambio de
+  // año, que es el #47—, y ése es global a las dos obras, así que no se puede
+  // enseñar con una obra sí y otra no. Lo fija el banco
+  // `prueba-la-semana-sin-su-año.cjs`; aquí se siembra la forma de producción.
+  //
+  //   0114 — gasta las cuatro últimas: el ritmo sale de cuatro semanas reales.
+  //   0121 — se salta S39, S41 y S42: mismo ritmo medible, con ceros dentro.
+  //
+  // La 0114 además trae un proveedor que aparece por primera vez en la última
+  // semana y otro que sube más del 50%, para que la tarjeta de excepciones y
+  // la tabla de abajo tengan en qué coincidir o discrepar.
+  // La pestaña de Gastos arma su obra como `{...resumen, ...detalle}`: el
+  // resumen sale de `global/gp_construct` y el detalle de
+  // `global/gp_detalle/obras/<id>`, y el detalle GANA. Sembrar sólo el resumen
+  // dejaba el preview enseñando el detalle de un volcado de producción que
+  // alguien importó al emulador y nadie vuelve a tocar: semanas, proveedores y
+  // rubros ajenos encima de los sembrados. Por eso los dos salen de aquí.
+  const gpSemanas = ['S38','S39','S40','S41','S42','S43'];
+  const GP = {
+    '0114': {
+      id: '0114', nombre: 'Oaxaca Parque Lineal', grandTotal: 21400000,
+      semanas: { S40: 1850000, S41: 2100000, S42: 1740000, S43: 2310000 },
+      rubros: {
+        100: { id: '100', nombreCorto: 'Materiales', grandTotal: 16300000 },
+        400: { id: '400', nombreCorto: 'Maquinaria y equipo', grandTotal: 5100000 },
+      },
+      proveedores: [
+        { nombre: 'Aceros del Istmo', rubroId: '100', rubroNombre: 'Materiales',
+          total: 6200000, grandTotal: 6200000,
+          semanas: { S40: 820000, S41: 910000, S42: 760000, S43: 1180000 } },
+        { nombre: 'Concretos Oaxaca', rubroId: '100', rubroNombre: 'Materiales',
+          total: 4900000, grandTotal: 4900000,
+          semanas: { S40: 700000, S41: 880000, S42: 640000, S43: 690000 } },
+        // Nuevo de verdad: no aparece antes de S43. La tarjeta de excepción y
+        // la tabla de abajo tienen que coincidir en que es uno solo.
+        { nombre: 'Rentas Tehuantepec', rubroId: '400', rubroNombre: 'Maquinaria y equipo',
+          total: 440000, grandTotal: 440000, semanas: { S43: 440000 } },
+      ],
+    },
+    '0121': {
+      id: '0121', nombre: 'SIOP Coatza Rehab. Av. Universidad', grandTotal: 19900000,
+      semanas: { S38: 1400000, S40: 1950000, S43: 1620000 },
+      rubros: {
+        100: { id: '100', nombreCorto: 'Materiales', grandTotal: 19900000 },
+      },
+      proveedores: [
+        { nombre: 'Triturados del Golfo', rubroId: '100', rubroNombre: 'Materiales',
+          total: 3100000, grandTotal: 3100000,
+          semanas: { S38: 900000, S40: 1200000, S43: 1000000 } },
+        { nombre: 'Asfaltos Coatza', rubroId: '100', rubroNombre: 'Materiales',
+          total: 1870000, grandTotal: 1870000,
+          semanas: { S38: 500000, S40: 750000, S43: 620000 } },
+      ],
+    },
+  };
   await escribir('global/gp_construct', {
     parserVersion: 3,
     ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
-    obras: {
-      '0114': { id: '0114', nombre: 'Oaxaca Parque Lineal', grandTotal: 21400000 },
-      '0121': { id: '0121', nombre: 'SIOP Coatza Rehab. Av. Universidad', grandTotal: 19900000 },
-    },
+    semanasDisponibles: gpSemanas,
+    ultimaSemana: 'S43',
+    obras: GP,
   });
+  for (const [id, o] of Object.entries(GP)) {
+    await escribir(`global/gp_detalle/obras/${id}`, {
+      parserVersion: 3,
+      ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
+      ...o,
+    });
+  }
   console.log('obras de constructora: 0114, 0121 (en la raíz) + global/gp_construct');
+  console.log('  GP: 0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
+  console.log('  y su detalle en global/gp_detalle/obras/<id>, que es el que gana');
 
   // ── Obras de la dependencia, BAJO SU ORGANIZACIÓN ─────────────────────────
   // Tres obras: una sana, una atrasada y una recién arrancada sin estimaciones

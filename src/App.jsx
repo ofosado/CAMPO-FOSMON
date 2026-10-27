@@ -2858,19 +2858,55 @@ const fechaLocalDeISO = (txt) => {
   return d;
 };
 
-// La fecha de HOY como "YYYY-MM-DD", en el calendario de quien la captura.
+// ── EN QUÉ CALENDARIO CAE UN INSTANTE ──────────────────────────────────────
 //
-// Lo que había era el ISO completo recortado a diez letras, y en México eso
-// adelanta la fecha un día desde las 18:00, porque es UTC. Una foto subida el
-// domingo a las siete de la tarde se guardaba con la fecha del lunes, o sea
-// archivada en la semana SIGUIENTE, en el único día de la semana en que eso
-// se nota. El mismo error estaba en la fecha por omisión de un gasto manual
-// —que alimenta la serie semanal de gasto—, en la de una estimación nueva, en
-// la de un adjunto y en los días transcurridos de plazo.
-const hoyLocalISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+// El día de un instante depende de DÓNDE se pregunte, y la respuesta correcta
+// no es «donde está el aparato»: es donde está la obra. La semana a la que
+// pertenece una foto, el día de un gasto y los días transcurridos de plazo son
+// hechos de la obra, no del teléfono que los teclea.
+//
+// Lo que había resolvía el día con `getFullYear/getMonth/getDate`, que son el
+// huso del aparato. Un residente capturando desde fuera de México —o
+// simplemente un teléfono con el huso mal puesto, que es lo común— archivaba
+// la evidencia en otro día: el domingo por la noche en México ya es lunes en
+// Madrid, y la foto se iba a la semana SIGUIENTE. Es el único día de la semana
+// en que el corrimiento de un día se nota, y por eso tardó en verse.
+//
+// Medido ya una vez contra producción: de las 656 fotos del legado, 48 traen
+// la fecha declarada corrida un día respecto de la hora del servidor, todas de
+// teléfonos en UTC-5 cerca de la medianoche.
+//
+// Una obra municipal mexicana se mide en el calendario de la Ciudad de México.
+// Si algún día hay obras en Baja California o Sonora —que tienen otro huso—
+// esto deja de ser una constante y pasa a ser un campo de la obra; hasta
+// entonces es una suposición ESCRITA, en un solo sitio, y no una suposición
+// repartida en veinte llamadas a `getDate()`.
+const ZONA_OBRA = 'America/Mexico_City';
+
+// Un `Date` → "YYYY-MM-DD" en el calendario de la obra.
+//
+// Por partes y no con `toLocaleDateString`, a propósito: el formato con `es-MX`
+// sale `dd/mm/aaaa` y con otro locale sale otra cosa, así que el resultado
+// dependería del idioma del aparato — cambiar un heredado por otro. `en-CA`
+// daría la forma correcta de casualidad; `formatToParts` la da a propósito.
+const fechaEnZonaObra = (fecha) => {
+  const d = fecha instanceof Date ? fecha : new Date(fecha);
+  if (isNaN(d.getTime())) return null;
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: ZONA_OBRA, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(d).map(x => [x.type, x.value]));
+  return (p.year && p.month && p.day) ? `${p.year}-${p.month}-${p.day}` : null;
 };
+
+// La fecha de HOY como "YYYY-MM-DD", en el calendario de la OBRA.
+//
+// Antes de esto era el ISO completo recortado a diez letras —UTC, o sea un día
+// adelantado desde las 18:00 en México—, y después fue el huso del aparato.
+// El mismo error estuvo en la fecha por omisión de un gasto manual —que
+// alimenta la serie semanal de gasto—, en la de una estimación nueva, en la de
+// un adjunto y en los días transcurridos de plazo.
+const hoyLocalISO = () => fechaEnZonaObra(new Date());
 
 // ════════════════════════════════════════════════════════════════════════════
 // LA EVIDENCIA, CON UN DOCUMENTO PROPIO POR FOTO
@@ -2967,13 +3003,17 @@ const semanaDeEvidencia = (ev) => {
 // y aquí sólo se entiende esa forma. Si alguna vez llega texto, esto devuelve
 // `null`: la foto se queda sin hora de servidor y sin el sello de verificada,
 // que es el fallo seguro.
+//
+// El día sale en el calendario de la OBRA, no en el del aparato: el instante
+// que guardó el servidor es el mismo en todo el mundo, pero el día en que cae
+// no, y la semana de la evidencia se arma con el día. Ver `ZONA_OBRA`.
 function fechaDeTimestamp(t) {
   if (!t) return null;
   const d = typeof t.toDate === 'function' ? t.toDate()
           : typeof t.seconds === 'number' ? new Date(t.seconds * 1000)
           : null;
   if (!d || isNaN(d)) return null;
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  return fechaEnZonaObra(d);
 }
 
 // ── EL CORTE ES POR OBRA Y ES EXPLÍCITO ────────────────────────────────────
@@ -4528,11 +4568,11 @@ const BIBLIOTECA_RIESGOS = [
       if (!obra.fin || !gpData?.obras || !kpis) return null;
       const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
       if (!obraGP) return null;
-      const semanas = gpData.semanasDisponibles || [];
-      const ult4 = semanas.slice(-4);
-      const sumUlt4 = ult4.reduce((t,s)=>t+(obraGP.semanas[s]||0), 0);
-      const velocidad = ult4.length>0 ? sumUlt4/ult4.length : 0;
-      if (velocidad <= 0) return null;
+      // La MISMA cuenta que el KPI «Velocidad prom.» de la pestaña Gastos, no
+      // una copia: si discreparan, la excepción y el renglón que la explica
+      // dirían cosas distintas de la misma obra.
+      const { velocidad } = velocidadSemanalGP(obraGP.semanas, gpData.semanasDisponibles);
+      if (velocidad === null || velocidad <= 0) return null;
       const totalGastado = obraGP.grandTotal || 0;
       const restante = obra.presupuesto - totalGastado;
       if (restante <= 0) return {severidad:'critico', valor:'0 sem', detalle:'Presupuesto agotado', extra:`Gastado: ${MXN(totalGastado)}`};
@@ -4876,10 +4916,7 @@ const BIBLIOTECA_RIESGOS = [
       if (!gpData?.obras || !gpData.ultimaSemana) return null;
       const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
       if (!obraGP?.proveedores?.length) return null;
-      const nuevos = obraGP.proveedores.filter(p => {
-        const sems = Object.keys(p.semanas || {});
-        return sems.length === 1 && sems[0] === gpData.ultimaSemana;
-      });
+      const nuevos = proveedoresNuevosGP(obraGP.proveedores, gpData.semanasDisponibles, gpData.ultimaSemana);
       if (nuevos.length === 0) return null;
       const total = nuevos.reduce((t,p)=>t+(p.total||0), 0);
       return {severidad:'bajo', valor: `${nuevos.length}`, detalle: 'Verificar registro y autorización', extra: `${MXN(total)} en total`};
@@ -4894,19 +4931,9 @@ const BIBLIOTECA_RIESGOS = [
       if (!gpData?.obras || !gpData.ultimaSemana || !gpData.semanasDisponibles?.length) return null;
       const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
       if (!obraGP?.proveedores?.length) return null;
-      const idxU = gpData.semanasDisponibles.indexOf(gpData.ultimaSemana);
-      if (idxU <= 0) return null;
-      const semAnt = gpData.semanasDisponibles[idxU-1];
-      const incs = obraGP.proveedores
-        .map(p => {
-          const ult = p.semanas[gpData.ultimaSemana] || 0;
-          const ant = p.semanas[semAnt] || 0;
-          if (ult <= 0 || ant <= 0) return null;
-          return {nombre: p.nombre, ant, ult, pct: ((ult-ant)/ant)*100};
-        })
-        .filter(p => p && p.pct > 50);
+      const incs = incrementosDeProveedorGP(obraGP.proveedores, gpData.semanasDisponibles, gpData.ultimaSemana);
       if (incs.length === 0) return null;
-      return {severidad:'medio', valor: `${incs.length}`, detalle: 'Verificar autorización de incremento', extra: incs.slice(0,2).map(p=>`${p.nombre}: +${p.pct.toFixed(0)}%`).join(' · ')};
+      return {severidad:'medio', valor: `${incs.length}`, detalle: 'Verificar autorización de incremento', extra: incs.slice(0,2).map(p=>`${p.nombre}: +${p.incrementoPct.toFixed(0)}%`).join(' · ')};
     },
   },
   {
@@ -4918,8 +4945,10 @@ const BIBLIOTECA_RIESGOS = [
       if (!gpData?.obras || !gpData.semanasDisponibles?.length) return null;
       const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
       if (!obraGP?.proveedores?.length) return null;
-      const ult4 = gpData.semanasDisponibles.slice(-4);
-      if (ult4.length < 4) return null;
+      // Cuatro SEGUIDAS, no las cuatro últimas de la lista: con un hueco en
+      // medio «sin facturar en 4 semanas» abarcaría cinco.
+      const ult4 = ultimasSemanasSeguidasGP(gpData.semanasDisponibles, 4);
+      if (!ult4) return null;
       const inactivos = obraGP.proveedores.filter(p => {
         const sumU4 = ult4.reduce((t,s)=>t+(p.semanas[s]||0), 0);
         return p.total > 0 && sumU4 === 0;
@@ -5139,6 +5168,115 @@ const archivarViejas = async (uid, notifs) => {
     }
     await batch.commit();
   } catch(e) { console.error('archivarViejas', e); }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA SERIE SEMANAL DE GASTO: CUÁNTAS SEMANAS HAY DE VERDAD
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `gpData.semanasDisponibles` son claves `S42` SIN AÑO —el parser del Sheet
+// tira el año (#47)— y encima sólo conserva las columnas del año más reciente.
+// Los dos defectos se tapan entre sí: como sólo sobrevive un año las claves no
+// chocan, y por eso hoy, a mitad de 2026, no se ve nada raro. Medido contra
+// producción el 2026-10-26: `colMap` trae 42 claves `week_`, todas de 2026,
+// mientras `year_2024` y `year_2025` sí existen.
+//
+// Donde se ve es al cambiar de año. El 5 de enero la lista entera es `["S1"]`,
+// y cuatro sitios hacían `slice(-4)` y dividían entre `length`:
+//
+//   · el KPI «Velocidad prom.» con el subtítulo FIJO «últimas 4 semanas» —el
+//     renglón decía cuatro mientras la cuenta usaba una;
+//   · «el presupuesto se agota en N semanas», proyectado desde esa velocidad;
+//   · la excepción `fin_006`, con su propia copia de la misma cuenta, que
+//     podía contradecir al KPI de su propia pantalla;
+//   · «proveedores nuevos esta semana», que en la primera semana del año marca
+//     como nuevos a TODOS, porque ninguno alcanza a tener una segunda semana.
+//
+// Ninguno decía que le faltaban semanas. Un promedio de una semana presentado
+// como promedio de cuatro no es un promedio impreciso: es una cifra inventada.
+//
+// El hueco no tiene que ser de fin de año. Si al Sheet le falta una columna,
+// `slice(-4)` toma S38, S39, S41, S42 —cinco semanas de calendario divididas
+// entre cuatro— y tampoco lo dice.
+//
+// Por eso la pregunta que se contesta aquí no es «dame las últimas cuatro»
+// sino «¿hay cuatro SEGUIDAS?». La no-consecutividad es justo la firma del
+// cambio de año —42 → 1 no es +1—, así que esto muerde en los dos casos sin
+// necesitar el año, que es precisamente lo que el documento no trae.
+const _numeroDeSemanaGP = (clave) => {
+  const m = /^S(\d{1,2})$/.exec(String(clave || ''));
+  const n = m ? Number(m[1]) : null;
+  return (n !== null && n >= 1 && n <= 53) ? n : null;
+};
+
+// Las últimas `n` semanas de la serie, SÓLO si son `n` seguidas; si no, `null`.
+// Quien pregunta tiene que decir «faltan semanas», no promediar lo que haya.
+const ultimasSemanasSeguidasGP = (semanasDisponibles = [], n = 4) => {
+  if (!Array.isArray(semanasDisponibles) || semanasDisponibles.length < n) return null;
+  const ult = semanasDisponibles.slice(-n);
+  const nums = ult.map(_numeroDeSemanaGP);
+  if (nums.some(x => x === null)) return null;
+  for (let i = 1; i < nums.length; i++) if (nums[i] !== nums[i - 1] + 1) return null;
+  return ult;
+};
+
+// El gasto semanal promedio de una obra, o `null` cuando no se puede medir.
+// `null` quiere decir «no se puede contar», nunca cero: cero es un ritmo, y un
+// ritmo de cero proyecta que el presupuesto no se agota nunca.
+//
+// `semanasBase` sale junto con la cifra para que el renglón diga cuántas
+// semanas la respaldan en lugar de llevar un «4» escrito a mano. Es el mismo
+// trato que `proyeccionDeAvance` tiene con `semanasBase` desde el #51.
+const velocidadSemanalGP = (semanasObra, semanasDisponibles, n = 4) => {
+  const base = ultimasSemanasSeguidasGP(semanasDisponibles, n);
+  if (!base || !semanasObra) return { velocidad: null, semanasBase: 0, base: [] };
+  const suma = base.reduce((t, s) => t + (semanasObra[s] || 0), 0);
+  return { velocidad: suma / base.length, semanasBase: base.length, base };
+};
+
+// La semana anterior a la última, sólo si es la INMEDIATAMENTE anterior. En la
+// primera semana de un año la «anterior» de la lista no existe, y en un Sheet
+// con un hueco la anterior de la lista está a dos semanas: restar contra ella
+// y llamarlo «vs semana anterior» es nombrar mal el dato.
+const semanaAnteriorGP = (semanasDisponibles = [], ultimaSemana) => {
+  const i = (semanasDisponibles || []).indexOf(ultimaSemana);
+  if (i <= 0) return null;
+  const a = _numeroDeSemanaGP(semanasDisponibles[i - 1]);
+  const b = _numeroDeSemanaGP(ultimaSemana);
+  return (a !== null && b !== null && b === a + 1) ? semanasDisponibles[i - 1] : null;
+};
+
+// Un proveedor es NUEVO si su único gasto cae en la última semana. Eso sólo se
+// puede afirmar si hay historia contra la cual estar ausente: el 5 de enero el
+// Sheet trae una sola semana, todos tienen exactamente esa, y ninguno es nuevo.
+//
+// Lo que hace falta es que la historia EXISTA, no que esté pegada. Faltar
+// desde S38 sigue siendo faltar aunque el Sheet no traiga S42, y exigir cuatro
+// semanas seguidas —como se exigía— escondía una tarjeta que decía la verdad
+// por un hueco que no le incumbe. La contigüidad sí le incumbe a «vs semana
+// anterior» y a la velocidad, que son restas contra una semana concreta.
+const proveedoresNuevosGP = (proveedores, semanasDisponibles, ultimaSemana) => {
+  if (!ultimaSemana || (semanasDisponibles || []).indexOf(ultimaSemana) <= 0) return [];
+  return (proveedores || []).filter(p => {
+    const sems = Object.keys(p?.semanas || {});
+    return sems.length === 1 && sems[0] === ultimaSemana;
+  });
+};
+
+// Proveedores que facturaron más de `pct`% por encima de la semana anterior.
+// Devuelve `[]` —no una lista vacía por casualidad— cuando no hay una semana
+// anterior contigua contra la que comparar.
+const incrementosDeProveedorGP = (proveedores, semanasDisponibles, ultimaSemana, pct = 50) => {
+  const ant = semanaAnteriorGP(semanasDisponibles, ultimaSemana);
+  if (!ant) return [];
+  return (proveedores || [])
+    .map(p => {
+      const ult = p.semanas?.[ultimaSemana] || 0;
+      const prev = p.semanas?.[ant] || 0;
+      if (ult <= 0 || prev <= 0) return null;
+      return { ...p, gastoUlt: ult, gastoAnt: prev, incrementoPct: ((ult - prev) / prev) * 100 };
+    })
+    .filter(p => p && p.incrementoPct > pct);
 };
 
 // ── Helper KPIs por obra (reutilizable para Dashboard, Panel Ejecutivo y PDF) ──
@@ -14196,16 +14334,14 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
 
   // Gasto última semana y delta
   const gastoUltimaSem = datosObra?.semanas && ultimaSem ? (datosObra.semanas[ultimaSem] || 0) : 0;
-  const semanasOrdenadas = semanas.slice();
-  const idxUlt = semanasOrdenadas.indexOf(ultimaSem);
-  const semAnterior = idxUlt > 0 ? semanasOrdenadas[idxUlt - 1] : null;
+  const semAnterior = semanaAnteriorGP(semanas, ultimaSem);
   const gastoSemAnterior = datosObra?.semanas && semAnterior ? (datosObra.semanas[semAnterior] || 0) : 0;
-  const deltaUltSem = gastoUltimaSem - gastoSemAnterior;
+  const deltaUltSem = semAnterior ? gastoUltimaSem - gastoSemAnterior : null;
 
-  // Velocidad promedio últimas 4 semanas
-  const ultimas4 = semanasOrdenadas.slice(-4);
-  const sumUlt4 = datosObra?.semanas ? ultimas4.reduce((t,s)=>t+(datosObra.semanas[s]||0), 0) : 0;
-  const velocidadProm = ultimas4.length > 0 ? sumUlt4/ultimas4.length : 0;
+  // Velocidad promedio de las últimas semanas SEGUIDAS, y cuántas son. El
+  // subtítulo las nombra; antes decía «últimas 4 semanas» pasara lo que pasara.
+  const { velocidad: velocidadProm, semanasBase } =
+    velocidadSemanalGP(datosObra?.semanas, semanas);
 
   // ── Análisis de proveedores ──
   const todosProveedores = datosObra?.proveedores || [];
@@ -14219,29 +14355,16 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
     ? top10Prov.reduce((t,p)=>t+p.total, 0) / totalProveedores * 100
     : 0;
 
-  // Proveedores nuevos esta semana (aparecen en ultimaSem pero no en semanas anteriores)
-  const nuevosEstaSem = ultimaSem
-    ? todosProveedores.filter(p => {
-        const semanasConGasto = Object.keys(p.semanas);
-        return semanasConGasto.length === 1 && semanasConGasto[0] === ultimaSem;
-      })
-    : [];
-
-  // Proveedores con mayor incremento esta semana vs anterior
-  const proveedoresIncremento = todosProveedores
-    .map(p => ({
-      ...p,
-      gastoUlt: p.semanas[ultimaSem] || 0,
-      gastoAnt: semAnterior ? (p.semanas[semAnterior] || 0) : 0,
-    }))
-    .filter(p => p.gastoUlt > 0 && p.gastoAnt > 0)
-    .map(p => ({...p, incrementoPct: ((p.gastoUlt - p.gastoAnt) / p.gastoAnt) * 100}))
-    .filter(p => p.incrementoPct > 50)
+  // Las tres listas salen de los mismos ayudantes que las excepciones gst_003,
+  // gst_004 y gst_005. Eran tres copias, y una copia que se queda atrás hace
+  // que la tarjeta de excepciones y la tabla de abajo cuenten distinto.
+  const nuevosEstaSem = proveedoresNuevosGP(todosProveedores, semanas, ultimaSem);
+  const proveedoresIncremento = incrementosDeProveedorGP(todosProveedores, semanas, ultimaSem)
     .sort((a,b)=>b.incrementoPct-a.incrementoPct)
     .slice(0, 5);
 
-  // Proveedores inactivos: tienen gasto histórico pero no en últimas 4 semanas
-  const proveedoresInactivos = ultimas4.length >= 4
+  const ultimas4 = ultimasSemanasSeguidasGP(semanas, 4);
+  const proveedoresInactivos = ultimas4
     ? todosProveedores.filter(p => {
         const totalUlt4 = ultimas4.reduce((t,s)=>t+(p.semanas[s]||0), 0);
         return p.total > 0 && totalUlt4 === 0;
@@ -14270,7 +14393,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
     ? Object.values(datosObra?.semanas || {}).reduce((t,v)=>t+v,0) / semanas.length
     : 0;
   const semanasAnomalas = datosObra?.semanas
-    ? semanasOrdenadas.filter(s => (datosObra.semanas[s]||0) > gastoPromedioSem * 2 && (datosObra.semanas[s]||0) > 0)
+    ? semanas.filter(s => (datosObra.semanas[s]||0) > gastoPromedioSem * 2 && (datosObra.semanas[s]||0) > 0)
     : [];
 
   // Proyección: a velocidad actual, ¿cuándo se agota el presupuesto?
@@ -14293,11 +14416,14 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
         sub={`GP + maquinaria${totalOtrosGastos>0?` + otros (${MXN(totalOtrosGastos)})`:""}`}
         color={C.red} size={12}/>
       <Kpi label="Última semana" value={MXN(gastoUltimaSem)}
-        sub={`${deltaUltSem>=0?"+":""}${MXN(deltaUltSem)} vs sem ant.`}
-        color={deltaUltSem > gastoPromedioSem ? C.red : C.caliza} size={12}/>
-      <Kpi label="Velocidad prom." value={MXN(velocidadProm)} sub="últimas 4 semanas" color={C.purple} size={12}/>
+        sub={deltaUltSem===null?"sin semana anterior contigua":`${deltaUltSem>=0?"+":""}${MXN(deltaUltSem)} vs sem ant.`}
+        color={deltaUltSem!==null && deltaUltSem > gastoPromedioSem ? C.red : C.caliza} size={12}/>
+      <Kpi label="Velocidad prom." value={velocidadProm===null?"—":MXN(velocidadProm)}
+        sub={velocidadProm===null?"faltan semanas seguidas":`últimas ${semanasBase} semanas`}
+        color={velocidadProm===null?C.textMut:C.purple} size={12}/>
       <Kpi label="% presupuesto" value={`${NUM(pctPresupuesto,1)}%`}
-        sub={semanasParaAgotar ? `agota en ~${semanasParaAgotar} sem` : "consumido"}
+        sub={semanasParaAgotar ? `agota en ~${semanasParaAgotar} sem`
+          : velocidadProm===null ? "sin ritmo medible" : "consumido"}
         color={pctPresupuesto > 85 ? C.red : pctPresupuesto > 60 ? C.yellow : C.green}/>
     </div>
 
@@ -14605,7 +14731,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
           </div>
           {rubrosOrdenados.map((r,ri) => {
             const col = colorRubro(ri);
-            const valoresSem = semanasOrdenadas.map(s => r.semanas[s] || 0);
+            const valoresSem = semanas.map(s => r.semanas[s] || 0);
             const maxV = Math.max(...valoresSem, 1);
             const provDelRubro = (r.proveedores || []).sort((a,b)=>b.total-a.total).slice(0,3);
             return <div key={r.id} style={{marginBottom:18,paddingBottom:14,borderBottom:`0.5px solid ${C.border}`}}>
@@ -14625,14 +14751,14 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
               {/* Mini sparkline */}
               <div style={{display:"flex",alignItems:"flex-end",gap:3,height:30,marginBottom:6}}>
                 {valoresSem.map((v,i) => (
-                  <div key={i} title={`${semanasOrdenadas[i]}: ${MXN(v)}`}
+                  <div key={i} title={`${semanas[i]}: ${MXN(v)}`}
                     style={{flex:1,background:v>0?col:"transparent",
                       height:`${Math.max((v/maxV)*30, v>0?2:0)}px`,
-                      borderRadius:2,opacity:i===semanasOrdenadas.length-1?1:0.5}}/>
+                      borderRadius:2,opacity:i===semanas.length-1?1:0.5}}/>
                 ))}
               </div>
               <div style={{display:"flex",justifyContent:"space-between",fontSize:8,color:C.textMut,marginBottom:6}}>
-                {semanasOrdenadas.length > 0 && <><span>{semanasOrdenadas[0]}</span><span>{semanasOrdenadas[semanasOrdenadas.length-1]}</span></>}
+                {semanas.length > 0 && <><span>{semanas[0]}</span><span>{semanas[semanas.length-1]}</span></>}
               </div>
               {/* Top 3 proveedores del rubro */}
               {provDelRubro.length > 0 && (
@@ -14658,9 +14784,9 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
           <Card>
             <Tit>Tendencia semanal de gasto</Tit>
             <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-              {semanasOrdenadas.length} semanas registradas · Promedio: {MXN(gastoPromedioSem)}/sem
+              {semanas.length} semanas registradas · Promedio: {MXN(gastoPromedioSem)}/sem
             </div>
-            {semanasOrdenadas.map(s => {
+            {semanas.map(s => {
               const v = (datosObra?.semanas && datosObra.semanas[s]) || 0;
               const pct = gastoMaxHistorico > 0 ? (v/gastoMaxHistorico)*100 : 0;
               const esAnomala = semanasAnomalas.includes(s);
@@ -14681,8 +14807,10 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
             <Tit>Proyección de gasto</Tit>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
               <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.blueDk}`}}>
-                <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Velocidad última 4 sem</div>
-                <div style={{fontSize:14,fontWeight:700,color:C.blueDk}}>{MXN(velocidadProm)}/sem</div>
+                <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>
+                  {velocidadProm===null?"Velocidad":`Velocidad últimas ${semanasBase} sem`}</div>
+                <div style={{fontSize:14,fontWeight:700,color:velocidadProm===null?C.textMut:C.blueDk}}>
+                  {velocidadProm===null?"no medible":`${MXN(velocidadProm)}/sem`}</div>
               </div>
               <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.greenDk}`}}>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>Por consumir</div>

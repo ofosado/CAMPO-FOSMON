@@ -75,7 +75,13 @@ traverse(ast, {
   },
 });
 
-const falta = [];
+// Lo de nivel de módulo se pide por `fuenteDeApp`, que resuelve el cierre
+// transitivo. La lista de abajo nombra lo que este banco QUIERE; lo que eso
+// necesita a su vez no se teclea aquí. Tenerlo tecleado fue lo que mató a este
+// banco el 2026-10-26: `fechaDeTimestamp` empezó a apoyarse en
+// `fechaEnZonaObra`, la lista seguía completa —así que la comprobación de
+// abajo no dijo nada— y reventó al ejecutar.
+const { fuenteDeApp, SimboloPerdido } = require('./extraer-de-app.cjs');
 const PIEZAS_MODULO = ['fechaLocalDeISO', 'semanaISO', 'snapshotId',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
@@ -83,9 +89,19 @@ const PIEZAS_MODULO = ['fechaLocalDeISO', 'semanaISO', 'snapshotId',
   'MOTIVO_ANULACION_MIN', 'motivoDeAnulacionValido', 'nuevoIdEvidencia',
   'SELLO_VERIFICADA', 'SELLO_LEGADO', 'selloDeEvidencia'];
 const PIEZAS_DENTRO = ['App.evid', 'Captura.addFoto', 'Captura.anularFoto'];
-for (const n of PIEZAS_MODULO) if (!(n in modulo)) falta.push(n);
-for (const n of PIEZAS_DENTRO) if (!(n in dentro)) falta.push(n);
 
+let cuerpoModulo;
+try {
+  cuerpoModulo = fuenteDeApp(PIEZAS_MODULO).cuerpo;
+} catch (e) {
+  if (!(e instanceof SimboloPerdido)) throw e;
+  console.error(e.message);
+  console.error('\nSi la escritura de evidencia se reescribió, este banco hay que rehacerlo');
+  console.error('contra el camino nuevo, no borrarlo: lo que afirma sigue siendo cierto.');
+  process.exit(1);
+}
+
+const falta = PIEZAS_DENTRO.filter(n => !(n in dentro));
 if (falta.length) {
   console.error('No se encontraron estas piezas en ' + archivo + ':');
   for (const f of falta) console.error('  · ' + f);
@@ -93,8 +109,6 @@ if (falta.length) {
   console.error('contra el camino nuevo, no borrarlo: lo que afirma sigue siendo cierto.');
   process.exit(1);
 }
-
-const cuerpoModulo = PIEZAS_MODULO.map(n => `const ${n} = ${modulo[n]};`).join('\n');
 const desenvolverMemo = (código) => {
   const m = /^useMemo\s*\(([\s\S]*),\s*\[[^\]]*\]\s*\)$/.exec(código.trim());
   return m ? m[1].trim() : código;
