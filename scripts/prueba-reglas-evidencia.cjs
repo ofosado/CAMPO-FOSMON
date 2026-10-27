@@ -38,7 +38,6 @@
 //   node scripts/prueba-reglas-evidencia.cjs
 
 const path = require('path');
-const fs = require('fs');
 const { initializeApp } = require('firebase/app');
 const { getFirestore, connectFirestoreEmulator, doc, setDoc, updateDoc, getDoc,
         deleteDoc, collection, getDocs } = require('firebase/firestore');
@@ -52,41 +51,33 @@ noArranco.vigilarExcepciones();
 // La sección 7 no afirma «la regla existe»: afirma qué frase sale en el
 // encabezado de la galería cuando la bandera se lee de un Firestore con las
 // reglas puestas. Para eso hacen falta las piezas de verdad, no una copia.
+// Se pide por `deApp` y no con un bloque de Babel propio. El que había aquí
+// llevaba su PROPIA lista `NECESARIAS` tecleada a mano y no resolvía
+// dependencias: el día que `fechaDeTimestamp` pasó a apoyarse en
+// `fechaEnZonaObra` —para resolver el día en el calendario de la obra y no en
+// el del aparato— la lista seguía estando completa, así que la comprobación
+// de arriba daba por buena la cosecha, y el banco reventó más abajo con un
+// `is not defined` a media corrida. Una lista de dependencias tecleada a mano
+// es una copia más que mantener. `deApp` saca el cierre transitivo.
 const raiz = path.resolve(__dirname, '..');
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
-
-const fuente = fs.readFileSync(path.join(raiz, 'src/App.jsx'), 'utf8');
-const piezas = {};
-traverse(parse(fuente, { sourceType: 'module',
-  plugins: ['jsx', 'classProperties', 'optionalChaining', 'nullishCoalescingOperator', 'dynamicImport'] }), {
-  // `fechaDeTimestamp` es una declaración de función hoisteada, no un `const`.
-  FunctionDeclaration(p) {
-    if (!p.node.id || p.getFunctionParent()) return;
-    if (!(p.node.id.name in piezas)) piezas[p.node.id.name] = fuente.slice(p.node.start, p.node.end);
-  },
-  VariableDeclarator(p) {
-    if (p.node.id.type !== 'Identifier' || !p.node.init || p.getFunctionParent()) return;
-    if (!(p.node.id.name in piezas)) piezas[p.node.id.name] = fuente.slice(p.node.init.start, p.node.init.end);
-  },
-});
-const NECESARIAS = ['ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp',
-  'evidenciaNormalizada', 'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra',
-  'evidenciaVigente', 'fraseOrigenEvidencia'];
-const sinEncontrar = NECESARIAS.filter(n => !(n in piezas));
-if (sinEncontrar.length) {
-  console.error('No se encontraron estas piezas en src/App.jsx: ' + sinEncontrar.join(', '));
+const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
+let app;
+try {
+  app = deApp('evidenciaDeObra', 'evidenciaVigente', 'fraseOrigenEvidencia');
+} catch (e) {
+  if (!(e instanceof SimboloPerdido)) throw e;
+  console.error(e.message);
   console.error('Si el corte por obra se reescribió, esta prueba hay que rehacerla:');
   console.error('la bandera sigue teniendo que poder LEERSE, o la migración es inerte.');
   process.exit(2);
 }
 // `fraseEncabezado(cfg, docs, subs)` es literalmente lo que la galería imprime
 // entre paréntesis en su encabezado.
-const fraseEncabezado = new Function('cfg', 'docs', 'subs', `"use strict";
-${NECESARIAS.map(n => `const ${n} = ${piezas[n]};`).join('\n')}
-const lista = evidenciaDeObra({ cfgEvidencia: cfg, docsEvidencia: docs, subs });
-const vig = evidenciaVigente(lista);
-return { frase: fraseOrigenEvidencia(vig), cuantas: vig.length };`);
+const fraseEncabezado = (cfg, docs, subs) => {
+  const lista = app.evidenciaDeObra({ cfgEvidencia: cfg, docsEvidencia: docs, subs });
+  const vig = app.evidenciaVigente(lista);
+  return { frase: app.fraseOrigenEvidencia(vig), cuantas: vig.length };
+};
 
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);

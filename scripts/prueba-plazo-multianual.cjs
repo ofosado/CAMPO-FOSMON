@@ -105,25 +105,18 @@ const ANIDADOS = [
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
 const ast = parse(src, OPTS);
-const trozos = [];
-const vistos = new Set();
+// Lo de nivel de módulo lo saca `fuenteDeApp`, que resuelve además lo que esos
+// nombres necesitan. El barrido propio que había aquí sólo traía los nombres
+// de `RAIZ_NOMBRES` y nada más: cuando `hoyLocalISO` pasó a apoyarse en
+// `fechaEnZonaObra` —2026-10-26, para resolver el día en el calendario de la
+// obra y no en el del aparato— este banco reventó con un `is not defined`.
+// `tolerante` conserva la conducta que el banco quiere a propósito: un nombre
+// ausente deja la aserción en ROJO, no al banco sin arrancar.
+const { fuenteDeApp } = require('./extraer-de-app.cjs');
+const { cuerpo: cuerpoModulo, presentes: vistos } =
+  fuenteDeApp(RAIZ_NOMBRES, { tolerante: true });
 const anidados = {};
 traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    const d = p.node.declarations[0];
-    if (d?.id?.type === 'Identifier' && RAIZ_NOMBRES.includes(d.id.name)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(d.id.name);
-    }
-  },
-  FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && RAIZ_NOMBRES.includes(n)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(n);
-    }
-  },
   VariableDeclarator(p) {
     const n = p.node.id?.name;
     if (!n || !p.node.init) return;
@@ -138,7 +131,7 @@ traverse(ast, {
 
 // Un nombre ausente NO revienta: queda `undefined` y la aserción que lo use
 // falla, que es justo lo que debe pasar contra la versión vieja.
-const app = new Function(`${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
+const app = new Function(`${cuerpoModulo}\n;return {${[...vistos].join(',')}};`)();
 const {
   estadoPorSemana, cruzaAños, etiquetaSemanaRiel, proyeccionDeAvance,
   finVigenteDe, snapshotId, hoyLocalISO, fechaLocalDeISO, fechaEnPalabras, NUM,
