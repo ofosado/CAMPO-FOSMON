@@ -38,9 +38,30 @@ ciertos **hoy**.
 
 Esa frase caduca sola: en cuanto se mezcle código nuevo deja de valer, y no se
 nota desde aquí. **Antes de creerle a un `CERRADO`, medir**, no leer esta
-fecha: `git log --oneline origin/main..main -- src functions firestore.rules storage.rules`
-tiene que salir **vacío**. Si sale algo, hay renglones que dicen `CERRADO` y
-son `POR DESPLEGAR`.
+fecha:
+
+```
+node scripts/verificar-despliegue.cjs      # al día 0 · ATRÁS 1 · no se pudo medir 2
+```
+
+Mide **lo vivo** en los cuatro canales y compara por contenido: el commit que
+trae dentro el bundle que sirve Netlify, el ruleset que la API reporta como
+publicado —byte por byte contra el archivo— y el `index.js` del ZIP de origen
+que Cloud Functions guardó al desplegar, una por una las 17. Si sale 1, hay
+renglones que dicen `CERRADO` y son `POR DESPLEGAR`. Si sale 2, no se pudo
+mirar: no es lo mismo que estar bien, y confundirlos es lo que dejó pasar los
+36 commits.
+
+Comparar `origin/main` contra `main` **no** sustituye a esto, y fue el primer
+intento: empujar construye el front y nada más. Las reglas y las funciones
+suben por su cuenta, así que el push puede estar al día mientras dos de los
+cuatro canales se quedaron atrás.
+
+Que el verificador sepa decir que **no** se comprueba con
+`node scripts/contraprueba-verificar-despliegue.cjs`: clona el repositorio a
+un directorio desechable, le rompe un canal a la vez y exige el rojo. Se corre
+cuando se toca el verificador — uno que sólo ha salido verde no ha demostrado
+que mida.
 
 **El orden es por daño, no por esfuerzo.** Primero lo que destruye datos sin
 vuelta atrás; luego lo que hace que una pantalla afirme algo falso; luego lo
