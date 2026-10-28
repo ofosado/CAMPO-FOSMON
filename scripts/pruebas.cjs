@@ -49,6 +49,7 @@ const NECESITAN_EMULADOR = new Set([
   'prueba-reglas-nomina-subcoleccion.cjs',
   'prueba-reglas-dependencia-captura.cjs',
   'prueba-reglas-evidencia.cjs',
+  'prueba-reglas-extraordinarias.cjs',
   'prueba-migracion-ata-la-partida.cjs',
   'prueba-prefijo-organizacion.cjs',
   'prueba-aislamiento-de-usuarios.cjs',

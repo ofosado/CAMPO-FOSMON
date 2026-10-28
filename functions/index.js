@@ -1523,16 +1523,26 @@ const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
 // Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore
 async function calcularKpisObra(obraId, gpData) {
   const db = admin.firestore();
-  const [infoSnap, subsSnap, maqSnap, matSnap, otrosSnap, estSnap] = await Promise.all([
+  const [infoSnap, subsSnap, maqSnap, matSnap, otrosSnap, estSnap, extraSnap] = await Promise.all([
     db.doc(`obras/${obraId}/config/info`).get(),
     db.doc(`obras/${obraId}/avance/subs`).get(),
     db.doc(`obras/${obraId}/avance/maquinaria`).get(),
     db.doc(`obras/${obraId}/avance/materiales`).get(),
     db.doc(`obras/${obraId}/config/otros_gastos`).get(),
     db.doc(`obras/${obraId}/config/estimaciones`).get(),
+    db.doc(`obras/${obraId}/avance/extraordinarias`).get(),
   ]);
   const info = infoSnap.exists ? infoSnap.data() : {};
-  const subs = (subsSnap.exists ? (subsSnap.data().data || []) : []);
+  // El catálogo y las extraordinarias se mezclan ANTES de cualquier cuenta,
+  // igual que en la app: el correo del lunes y la pantalla tienen que decir el
+  // mismo avance. Si aquí se leyera sólo `subs`, una obra que ejerce su
+  // contrato con extraordinarias saldría estancada en el correo de dirección
+  // mientras la pantalla la enseña avanzando, y la discrepancia se leería como
+  // «la app miente» justo cuando la app tiene razón.
+  const delCatalogo = (subsSnap.exists ? (subsSnap.data().data || []) : []);
+  const extraordinarias = (extraSnap.exists ? (extraSnap.data().data || []) : [])
+    .map((s) => ({ ...s, extra: true }));
+  const subs = [...delCatalogo, ...extraordinarias];
   const maquinaria = (maqSnap.exists ? (maqSnap.data().data || []) : []);
   const materiales = (matSnap.exists ? (matSnap.data().data || []) : []);
   const otros = (otrosSnap.exists ? (otrosSnap.data().items || []) : []);

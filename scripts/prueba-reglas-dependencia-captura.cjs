@@ -513,6 +513,59 @@ const storsDe = new Map();
   check(!/\/fotos\//.test(RUTA_ADJ),
     'el adjunto no cuelga de la ruta de fotos', RUTA_ADJ);
 
+  // ── 9. LAS PARTIDAS EXTRAORDINARIAS ─────────────────────────────────────
+  // Documento nuevo: `avance/extraordinarias`. Nace por la 0112, que se quedó
+  // en 97.42% porque la obra ejecutada fuera de catálogo no tenía renglón.
+  //
+  // Por qué se mide aquí y no sólo en el banco de cálculo: la pantalla guarda
+  // con `fsSetA`, que se TRAGA el rechazo de las reglas y devuelve `false`. Un
+  // documento sin regla cae en el `match /{document=**}` final —que deniega— y
+  // el supervisor teclearía el convenio, vería la pantalla idéntica y no
+  // guardaría nada. Es el #31 otra vez, en una ruta nueva.
+  //
+  // La decisión que se vigila: MISMAS LLAVES QUE `avance/subs`. Son partidas,
+  // se capturan en la misma pantalla y cuentan en el mismo ejecutado. Darles
+  // un permiso distinto sería afirmar que son otra cosa.
+  console.log('\n9. Las extraordinarias se gobiernan con las mismas llaves que el catálogo');
+  const EXTRAS = { data: [{ id: 'EXTRA__1', extra: true, sec: 'E-1',
+    sub: 'Muro de contención no previsto', imp: 258000, cant: 1, pu: 258000,
+    unidad: 'LOTE', cantEjec: 1, convenio: 'CONV-2026-03',
+    creadoPor: 'supervisor@demo.mx' }], fecha: '2026-10-28T12:00:00.000Z' };
+
+  const errExtra = await escribe(supervisor, enObra('avance', 'extraordinarias'), EXTRAS);
+  check(!errExtra, 'el supervisor asignado escribe `avance/extraordinarias`',
+    errExtra ? `DENEGADA: ${errExtra.message} — el convenio se teclearía y se perdería`
+             : 'una extraordinaria');
+  const relExtra = await lee(supervisor, enObra('avance', 'extraordinarias'));
+  check(relExtra.dato?.data?.[0]?.convenio === 'CONV-2026-03'
+     && relExtra.dato?.data?.[0]?.cantEjec === 1,
+    'y al releerla siguen ahí el convenio y el volumen ejecutado',
+    `convenio ${relExtra.dato?.data?.[0]?.convenio} · cantEjec ${relExtra.dato?.data?.[0]?.cantEjec}`);
+
+  // Simetría exacta con `subs`, rol por rol. Si una de las dos columnas se
+  // mueve, lo que hay es una extraordinaria con permisos propios — y entonces
+  // alguien puede ver el avance sin ver de qué está hecho.
+  for (const [quien, sesion] of [
+    ['el contralor', contralor], ['el contratista', contratista],
+    ['el jefe de supervisión', jefe], ['un supervisor de otra obra', ajeno],
+    ['la dependencia vecina', vecina], ['el director general de FOSMON', fosmon],
+  ]) {
+    const rS = await lee(sesion, enObra('avance', 'subs'));
+    const rE = await lee(sesion, enObra('avance', 'extraordinarias'));
+    const wS = await escribe(sesion, enObra('avance', 'subs'), { data: [] });
+    const wE = await escribe(sesion, enObra('avance', 'extraordinarias'), { data: [] });
+    check(!!rS.err === !!rE.err && !!wS === !!wE,
+      `${quien}: lo mismo en las dos rutas`,
+      `subs lee ${rS.err ? 'no' : 'sí'}/escribe ${wS ? 'no' : 'sí'} · ` +
+      `extraordinarias lee ${rE.err ? 'no' : 'sí'}/escribe ${wE ? 'no' : 'sí'}`);
+  }
+  // Y la frontera del margen no se mueve: la extraordinaria es alcance de la
+  // obra, no economía del contratista. El director la ve, como ve `subs`.
+  const dirExtra = await lee(director, enObra('avance', 'extraordinarias'));
+  check(!dirExtra.err,
+    'el director de Obras Públicas las LEE: es obra de su expediente, no costo ajeno',
+    dirExtra.err ? `DENEGADA: ${dirExtra.err.message}` : 'las ve');
+
   console.log(fallas === 0
     ? '\nLa obra de dependencia captura de verdad, y el costo del contratista no cruza.'
     : `\n${fallas} comprobación(es) en rojo. NO desplegar hasta resolverlas.`);

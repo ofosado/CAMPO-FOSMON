@@ -391,7 +391,14 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
   // ruido que entrena a ignorar la consola (P5: el corte es NO PEDIR).
   console.log('\n§5 · el guardado del supervisor no pide maquinaria ni almacén');
   const fuenteGuardar = declaracionInterna(modApp, 'GuardarAvanceBtn', 'guardar');
-  const fuenteSeSuscribe = declaraciones(modApp, ['RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe']);
+  // Los ayudantes del módulo se EXTRAEN, no se inyectan a mano. Inyectarlos
+  // sería escribir aquí una segunda versión de lo que separa el catálogo de
+  // las extraordinarias, y entonces esta sección juzgaría mi copia en vez del
+  // código que corre. Además, un ayudante nuevo en `guardar` que no esté en la
+  // lista revienta dentro del `try` de `guardar` —que se traga la excepción— y
+  // el inventario de rutas sale VACÍO: rojo con el mensaje equivocado.
+  const fuenteSeSuscribe = declaraciones(modApp, ['RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
+    'esExtraordinaria', 'soloCatalogo', 'soloExtraordinarias', 'importeCatalogoPartida']);
 
   const correrGuardar = async (tipo) => {
     const pedidas = [];
