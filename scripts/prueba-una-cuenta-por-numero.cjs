@@ -607,6 +607,13 @@ const mesa = {
   fechaUltimaCapturaDe: fnMod.fechaUltimaCapturaDe,
   diasSinCapturaDe: fnMod.diasSinCapturaDe,
   nombreObraNotif: o => String(o.nombre || o.id),
+  // El cron resuelve primero de quién son las obras de la raíz. Aquí se le da
+  // contestada: esta sección mide el NÚMERO de días sin captura que el lunes
+  // le dice al residente, no la frontera entre organizaciones —eso lo mide
+  // `prueba-correo-no-cruza-organizaciones.cjs` con dos orgs de verdad—. Y se
+  // pone en la mesa en vez de dejarla reventar porque un sandbox al que le
+  // falta un insumo no mide el cron que corre en producción.
+  orgDeLaRaiz: async () => 'fosmon',
   usuariosCapturaDeObra: async () => [{ uid: 'u1', email: 'residente@fosmon.mx' }],
   crearNotifCloud: async (_uid, n) => { notifs.push(n); },
   registrarSalud: async () => {}, registrarFalloDeSalud: async () => {},

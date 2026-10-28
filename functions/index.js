@@ -208,6 +208,67 @@ async function validarRolEnOrg(rol, orgId) {
   return org;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// DE QUIÉN ES LA RAÍZ
+//
+// `obras/`, `global/*` y `health/*` viven fuera de `/orgs` y son de la
+// constructora: por eso `crearOrganizacion` rechaza una segunda constructora,
+// porque dos no caben en una raíz que no está particionada.
+//
+// Los trabajos programados leen esa raíz y luego eligen a quién hablarle. La
+// elección la hacían POR EL NOMBRE DEL ROL: `director_general`,
+// `gerente_construccion`. Hoy eso acierta, pero acierta por coincidencia de
+// vocabularios —ninguno de esos tres nombres está en `ROLES_POR_TIPO
+// .dependencia`—, no porque haya una frontera. Una coincidencia de nombres no
+// es una defensa: el día que alguien quiera que `director_obras` reciba un
+// resumen de SUS obras, basta meterlo en la lista de roles para que el gasto,
+// el presupuesto y lo cobrado de las obras de la constructora salgan en el
+// correo de un municipio. Y el margen bruto de un contratista no es dato de la
+// dependencia que lo contrata.
+//
+// Esta función contesta la pregunta que faltaba —«¿de quién son estos datos?»—
+// y la contesta leyendo, no suponiendo. Si no hay exactamente una constructora
+// LANZA: el trabajo no corre. Mandar el correo «de todas formas» con una
+// organización adivinada es justo el modo de fallar que no se puede permitir,
+// porque nadie se entera. Que no salga el correo se nota el lunes.
+async function orgDeLaRaiz(db) {
+  const snap = await db.collection("orgs").where("tipo", "==", "constructora").get();
+  const ids = snap.docs.map(d => d.id);
+  if (ids.length !== 1) {
+    throw new Error(
+      `No se puede determinar de quién es \`obras/\`: hay ${ids.length} organización(es) ` +
+      `de tipo constructora (${ids.join(", ") || "ninguna"}), y la raíz es de una sola. ` +
+      "El trabajo no corre: elegir destinatario sin saber de quién es el dato es " +
+      "como inventarse una cifra."
+    );
+  }
+  return ids[0];
+}
+
+// Parte un padrón en «los de esta organización» y «los que quedaron fuera».
+//
+// El filtro NO va en la consulta, a diferencia de `listarUsuarios`. Allá el
+// resultado viaja a un cliente y lo que no se lee no se puede filtrar mal;
+// aquí no sale nada del servidor salvo el correo, y hace falta poder CONTAR a
+// quien se quedó fuera. Un destinatario que desaparece en silencio es el
+// defecto espejo del destinatario de más: el director deja de recibir su
+// resumen del lunes y nadie se entera de que dejó de recibirlo.
+//
+// Se distingue el que no tiene organización del que es de otra. Al primero se
+// le dice el nombre —es un registro roto de la propia casa, y hay que
+// arreglarlo—; del segundo sólo se dice cuántos, porque el padrón de otro
+// cliente no es dato de éste.
+function partirPorOrg(perfiles, orgId) {
+  const dentro = [], sinOrg = [], deOtra = [];
+  for (const u of perfiles) {
+    const suya = String(u.orgId || "");
+    if (!suya) sinOrg.push(u);
+    else if (suya === orgId) dentro.push(u);
+    else deOtra.push(u);
+  }
+  return { dentro, sinOrg, deOtra };
+}
+
 // Un rol cross sólo lo otorga quien ya lo tiene. `soporte` no aparece en el
 // selector de la interfaz a propósito, pero esta función es invocable sin ella.
 function exigirPuedeOtorgarRol(ambito, rol) {
@@ -1572,8 +1633,40 @@ function bloqueDenegaciones(den) {
           </div>`;
 }
 
+/**
+ * El renglón de quién NO recibió este correo.
+ *
+ * Existe porque acotar por organización puede dejar fuera a alguien por un
+ * registro incompleto, y esa pérdida es silenciosa por naturaleza: el que no
+ * recibe no sabe que debía recibir. Se le dice a quien sí lo recibe.
+ *
+ * Al que no tiene organización se le pone el nombre: es una cuenta de la
+ * propia casa con el perfil a medias, y con el nombre se arregla en un
+ * minuto. De los que son de OTRA organización sólo se dice cuántos: saber que
+ * existen basta para entender el número, y el padrón de otro cliente no es
+ * dato de éste.
+ */
+function bloqueFueraDeAlcance({ sinOrg = [], deOtra = [] } = {}) {
+  if (!sinOrg.length && !deOtra.length) return "";
+  const partes = [];
+  if (sinOrg.length) {
+    const quienes = sinOrg.map(u => u.email || u.nombre || "(sin correo)").join(", ");
+    partes.push(`<b>${sinOrg.length} ${sinOrg.length === 1 ? "cuenta no tiene" : "cuentas no tienen"} ` +
+      `organización asignada</b> y por eso no ${sinOrg.length === 1 ? "recibió" : "recibieron"} ` +
+      `este resumen: ${quienes}. Se arregla desde Administración → Usuarios.`);
+  }
+  if (deOtra.length) {
+    partes.push(`${deOtra.length} ${deOtra.length === 1 ? "cuenta con un rol de dirección pertenece" : "cuentas con rol de dirección pertenecen"} ` +
+      "a otra organización; este resumen no es suyo.");
+  }
+  return `
+          <div style="margin-top:14px;padding:10px 14px;background:#FFF6E5;border-left:3px solid #C98A1B;border-radius:4px;font-size:12px;color:#7A5410;">
+            ${partes.join("<br>")}
+          </div>`;
+}
+
 // HTML del email semanal — diseño compacto, mobile-friendly
-function buildEmailHTML(kpisObras, fechaCorte, denegaciones) {
+function buildEmailHTML(kpisObras, fechaCorte, denegaciones, reparto) {
   const filasObras = kpisObras.map(k => {
     const colorAvance = semaforoColor(k.avancePct, "avance");
     const colorGasto = semaforoColor(k.pctGasto, "gasto");
@@ -1636,7 +1729,7 @@ function buildEmailHTML(kpisObras, fechaCorte, denegaciones) {
           ${obrasSinCaptura > 0 ? `
           <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
             <b>${obrasSinCaptura} ${obrasSinCaptura === 1 ? "obra" : "obras"} sin captura en los últimos 7 días.</b> Revisa la columna "Sin captura" abajo.
-          </div>` : ""}${bloqueDenegaciones(denegaciones)}
+          </div>` : ""}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}
         </td></tr>
         <!-- Tabla de obras -->
         <tr><td style="padding:0;">
@@ -1685,6 +1778,10 @@ async function enviarEmailResend(apiKey, { from, to, subject, html }) {
 // Función principal: arma y envía el resumen semanal
 async function generarYEnviarResumenSemanal(apiKey) {
   const db = admin.firestore();
+  // 0) ¿De quién son las obras de la raíz? Se pregunta ANTES de leer nada:
+  // si no se puede contestar, este correo no se manda. Ver `orgDeLaRaiz`.
+  const orgRaiz = await orgDeLaRaiz(db);
+
   // 1) Lista obras activas (top-level)
   const obrasSnap = await db.collection("obras").get();
   const obras = obrasSnap.docs
@@ -1708,13 +1805,16 @@ async function generarYEnviarResumenSemanal(apiKey) {
   const kpisValidos = kpisObras.filter(Boolean)
     .sort((a, b) => (b.presupuesto || 0) - (a.presupuesto || 0));
 
-  // 4) Obtiene destinatarios: usuarios activos con roles del portafolio
+  // 4) Destinatarios: activos, con rol del portafolio, Y DE LA ORGANIZACIÓN
+  // DUEÑA DE LAS OBRAS QUE ACABAN DE LEERSE. El rol solo no basta: ver el
+  // comentario de `orgDeLaRaiz`. Este correo lleva presupuesto, gasto y
+  // cobrado de cada obra; es el renglón de dinero que no puede cruzar.
   const usuariosSnap = await db.collection("usuarios").get();
-  const destinatarios = usuariosSnap.docs
+  const candidatos = usuariosSnap.docs
     .map(d => d.data())
-    .filter(u => u.activo !== false && ROLES_RESUMEN_SEMANAL.includes(u.rol))
-    .map(u => u.email)
-    .filter(Boolean);
+    .filter(u => u.activo !== false && ROLES_RESUMEN_SEMANAL.includes(u.rol));
+  const reparto = partirPorOrg(candidatos, orgRaiz);
+  const destinatarios = reparto.dentro.map(u => u.email).filter(Boolean);
 
   if (destinatarios.length === 0) {
     console.warn("No hay destinatarios para resumen semanal");
@@ -1738,7 +1838,7 @@ async function generarYEnviarResumenSemanal(apiKey) {
   const fechaCorte = new Date().toLocaleDateString("es-MX", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
-  const html = buildEmailHTML(kpisValidos, fechaCorte, denegaciones);
+  const html = buildEmailHTML(kpisValidos, fechaCorte, denegaciones, reparto);
 
   // 6) Envía
   const resultado = await enviarEmailResend(apiKey, {
@@ -1747,8 +1847,15 @@ async function generarYEnviarResumenSemanal(apiKey) {
     subject: `CAMPO · Resumen semanal · ${kpisValidos.length} obras activas`,
     html,
   });
-  console.log(`Resumen enviado a ${destinatarios.length} destinatarios. Resend ID: ${resultado.id}`);
-  return { enviados: destinatarios.length, destinatarios, resendId: resultado.id };
+  console.log(`Resumen enviado a ${destinatarios.length} destinatarios de ${orgRaiz}. Resend ID: ${resultado.id}`);
+  return {
+    enviados: destinatarios.length, destinatarios, resendId: resultado.id,
+    // Viaja al registro de salud para que la exclusión quede medida y no sólo
+    // dicha en el correo de esta semana.
+    orgId: orgRaiz,
+    sinOrg: reparto.sinOrg.map(u => u.email).filter(Boolean),
+    excluidosDeOtraOrg: reparto.deOtra.length,
+  };
 }
 
 // SCHEDULED: lunes 9:07 a.m. hora México (después de actualizarGPSheet a las 9:00)
@@ -2109,14 +2216,26 @@ async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) 
 // Helper: lista de usuarios activos que pueden capturar avance en una obra
 // (Superintendente, Residente, Admin de Obra) según usuario.obras_asignadas.
 // Filtra: solo usuarios ACTIVOS con la obra en su lista.
-async function usuariosCapturaDeObra(obraId, incluirSupervisor = false) {
+// `orgId` es obligatorio: estas obras son las de la raíz y el aviso sólo va a
+// quien es de esa organización. El rol y `obras_asignadas` no son frontera —un
+// id de obra que coincida basta para que un aviso con el nombre de la obra
+// caiga en la bandeja de otro cliente—. Ver `orgDeLaRaiz`.
+//
+// De paso, `activo` pasa a mirarse en memoria. La consulta decía
+// `where("activo", "!=", false)`, y en Firestore una desigualdad DESCARTA los
+// documentos que no traen el campo: un perfil sin `activo` —que es un perfil
+// activo— no recibía un solo aviso. Hoy los 14 perfiles de producción lo
+// traen, así que esto no cambia ningún envío; cambia el día que alguien dé de
+// alta una cuenta a mano.
+async function usuariosCapturaDeObra(obraId, orgId, incluirSupervisor = false) {
   const rolesCaptura = ["superintendente", "residente", "administrador_obra"];
   if (incluirSupervisor) rolesCaptura.push("supervisor");
   const snap = await admin.firestore().collection("usuarios")
-    .where("activo", "!=", false).get();
+    .where("orgId", "==", orgId).get();
   const out = [];
   snap.forEach(doc => {
     const u = doc.data();
+    if (u.activo === false) return;
     if (!rolesCaptura.includes(u.rol)) return;
     const asignadas = Array.isArray(u.obras_asignadas) ? u.obras_asignadas : [];
     if (asignadas.includes(obraId)) {
@@ -2142,6 +2261,10 @@ exports.recordatorioCapturaObra = onSchedule({
   try {
     const { semana, año } = semanaISOFn(new Date());
     const idSem = snapIdFn(semana, año);
+    // De quién son estas obras. Si no se puede contestar, no se avisa a nadie:
+    // ver `orgDeLaRaiz`. El `throw` lo recoge el `catch` de abajo, y Scheduler
+    // lo cuenta como fallo, que es lo que tiene que pasar.
+    const orgRaiz = await orgDeLaRaiz(admin.firestore());
     const obrasSnap = await admin.firestore().collection("obras").get();
     let contadorNotifs = 0;
     let obrasSinCaptura = 0;
@@ -2158,7 +2281,7 @@ exports.recordatorioCapturaObra = onSchedule({
       if (yaCapturado) continue;
 
       obrasSinCaptura++;
-      const usuarios = await usuariosCapturaDeObra(obra.id, false);
+      const usuarios = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
       const nombreCorto = nombreObraNotif(obra);
       for (const u of usuarios) {
         if (!u.uid) continue;
@@ -2208,6 +2331,8 @@ exports.recordatorioLunes = onSchedule({
   const t0 = Date.now();
   try {
     const hoy = new Date();
+    // De quién son estas obras. Ver `orgDeLaRaiz`.
+    const orgRaiz = await orgDeLaRaiz(admin.firestore());
     const obrasSnap = await admin.firestore().collection("obras").get();
     let contadorNotifs = 0;
 
@@ -2264,7 +2389,7 @@ exports.recordatorioLunes = onSchedule({
 
       // Notif A3: 3+ pendientes
       if (pendientes >= 3) {
-        const usuarios = await usuariosCapturaDeObra(obra.id, false);
+        const usuarios = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
         const nombreCorto = nombreObraNotif(obra);
         for (const u of usuarios) {
           if (!u.uid) continue;
@@ -2287,13 +2412,21 @@ exports.recordatorioLunes = onSchedule({
       // exactamente la única que no disparaba la alerta.
       if (nuncaSeCerro || diasDesdeUltima > 10) {
         // También al gerente / dirección de operaciones
-        const usuariosObra = await usuariosCapturaDeObra(obra.id, false);
+        const usuariosObra = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
+        // Por organización, no por nombre de rol. La alerta lleva el nombre de
+        // la obra y cuántos días lleva sin captura; eso es operación de la
+        // constructora. Se acota en la consulta por `orgId` y el rol se filtra
+        // en memoria a propósito: un `==` sobre `orgId` más un `in` sobre `rol`
+        // pide un índice compuesto, y un trabajo semanal que revienta por un
+        // índice que falta es un trabajo que deja de avisar.
         const gerentesSnap = await admin.firestore().collection("usuarios")
-          .where("rol", "in", ["gerente_construccion", "director_operaciones"]).get();
+          .where("orgId", "==", orgRaiz).get();
+        const ROLES_ALERTA_CAPTURA = ["gerente_construccion", "director_operaciones"];
         const gerentes = [];
         gerentesSnap.forEach(d => {
           const u = d.data();
-          if (u.activo !== false) gerentes.push({ uid: u.uid || d.id, email: u.email, nombre: u.nombre });
+          if (u.activo === false || !ROLES_ALERTA_CAPTURA.includes(u.rol)) return;
+          gerentes.push({ uid: u.uid || d.id, email: u.email, nombre: u.nombre });
         });
         const receptores = [...usuariosObra, ...gerentes];
         const nombreCorto = nombreObraNotif(obra);
@@ -2536,8 +2669,27 @@ exports.sincronizarClaims = onDocumentWritten(
 // backfill después de desplegar por primera vez. Idempotente — no re-escribe
 // si los claims ya están correctos.
 exports.backfillClaims = onCall({ region: "us-central1" }, async (request) => {
-  await requireAdmin(request.auth);
-  const snap = await admin.firestore().collection("usuarios").get();
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
+
+  // La SEXTA función de gestión. El barrido que acotó a las otras cinco
+  // (`listarUsuarios`, `crearUsuario`, `actualizarUsuario`, `eliminarUsuario`,
+  // `cambiarPassword`) se saltó ésta, y devuelve `detalle` con el correo y el
+  // rol de CADA usuario recorrido: el mismo padrón completo que allá se cerró,
+  // por otra puerta. `ROLES_ADMIN` incluye `director_obras` y `subdirector`,
+  // así que la puerta la abría cualquier directivo de cualquier dependencia.
+  // Y además reescribía los claims de gente ajena.
+  //
+  // El filtro va en la consulta, como en `listarUsuarios`: aquí el resultado
+  // sí viaja a un cliente.
+  if (!ambito.cross && !ambito.orgId) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Tu perfil no tiene organización asignada; no puedes gestionar usuarios."
+    );
+  }
+  const col = admin.firestore().collection("usuarios");
+  const snap = await (ambito.cross ? col.get() : col.where("orgId", "==", ambito.orgId).get());
   const resultados = [];
   for (const doc of snap.docs) {
     const perfil = doc.data();
