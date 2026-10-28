@@ -145,6 +145,10 @@ const check = (ok, titulo, detalle = '') => {
 const denegado = e => e?.code === 'permission-denied' ||
   /permission[-_ ]?denied/i.test(e?.message || '');
 const intentar = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+// Una lectura denegada es un resultado ROJO, no un banco que revienta. Sin
+// esto, `(await getDoc(x)).data()` tira y la corrida sale con 2 —«no
+// arrancó»— cuando en realidad SÍ se midió: la regla cerró la puerta.
+const leerODenegada = async (ref) => { try { return (await getDoc(ref)).data(); } catch { return null; } };
 
 // Una foto con la forma que escribe `evid.agregar`.
 const FOTO = (n) => ({
@@ -216,7 +220,7 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
   }
   await setDoc(doc(residente, ...RUTA_C, 'ev2'), FOTO('b'));
 
-  const leido = (await getDoc(doc(residente, ...RUTA_C, 'ev1'))).data();
+  const leido = await leerODenegada(doc(residente, ...RUTA_C, 'ev1'));
   check(leido?.urlOriginal === 'https://storage/a.jpg', 'y volver a leerlo');
   check(leido?.rutaStorage === `obras/${OBRA}/fotos/avance_p1/a`,
     'con su `rutaStorage`, que es lo que cierra el #30', leido?.rutaStorage);
@@ -253,7 +257,7 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
   const eAnu = await intentar(() => updateDoc(doc(residente, ...RUTA_C, 'ev1'), ANULACION));
   check(!eAnu, 'el residente anula su propia foto',
     eAnu ? `DENEGADA: ${eAnu.message}` : 'anulada con motivo');
-  const tras = (await getDoc(doc(residente, ...RUTA_C, 'ev1'))).data();
+  const tras = await leerODenegada(doc(residente, ...RUTA_C, 'ev1'));
   check(tras?.anulada === true && tras?.motivoAnulacion === ANULACION.motivoAnulacion,
     'y el motivo queda escrito en el documento', tras?.motivoAnulacion);
   check(tras?.urlOriginal === 'https://storage/a.jpg',
@@ -270,7 +274,7 @@ const ANULACION = { anulada: true, motivoAnulacion: 'es de otra partida, me equi
   check(eMix && denegado(eMix),
     'ni colar un campo de más junto a la anulación',
     eMix ? 'rebotó' : 'PASÓ — la anulación es un caballo de Troya');
-  check((await getDoc(doc(residente, ...RUTA_C, 'ev2'))).data()?.anulada === false,
+  check((await leerODenegada(doc(residente, ...RUTA_C, 'ev2')))?.anulada === false,
     'y ese intento no anuló nada a medias');
 
   // ── 4. EL CLIENTE VE SU OBRA, PERO NO LA TOCA ───────────────────────────

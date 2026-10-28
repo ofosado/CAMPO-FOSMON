@@ -69,6 +69,11 @@ const check = (ok, titulo, detalle = '') => {
 const denegado = e => e?.code === 'permission-denied' ||
   /permission[-_ ]?denied/i.test(e?.message || '');
 
+// Una lectura denegada es un resultado ROJO, no un banco que revienta. Sin
+// esto, `(await getDoc(x)).data()` tira y la corrida sale con 2 —«no
+// arrancó»— cuando en realidad SÍ se midió: la regla cerró la puerta.
+const leerODenegada = async (ref) => { try { return (await getDoc(ref)).data(); } catch { return null; } };
+
 // Una semana con la forma que tendrá en la subcolección: guarda las PARTES,
 // porque la 38 de la 0126 vino en dos archivos y borrar una no puede borrar
 // la otra.
@@ -137,7 +142,7 @@ const SEMANA_38 = {
   }
 
   // Y releerla: escribir sin poder leer sería igual de inútil.
-  const leido = (await getDoc(doc(residente, ...ruta))).data();
+  const leido = await leerODenegada(doc(residente, ...ruta));
   check(leido?.clave === 'Y2026-S38', 'y volver a leerla', leido?.clave || 'no se leyó');
   check(Array.isArray(leido?.partes) && leido.partes.length === 2,
     'con sus DOS partes intactas: una semana partida en dos archivos sigue siendo dos cargas',
