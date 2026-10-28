@@ -8,8 +8,39 @@ Hasta el 2026-10-06 el archivo creció 1,057 líneas y se le quitaron 22. Por es
 no se podía ver si la lista avanzaba: no avanzaba, engordaba.
 
 **Estado**: `ABIERTO` · `EN RAMA` (hay rama viva) · `PARCIAL` (una parte se
-arregló, otra no) · `SOSPECHA` (no confirmado) · `POR DESPLEGAR` (el código
-está, falta subirlo) · `CERRADO`.
+arregló, otra no) · `SOSPECHA` (no confirmado) · `SIN REPRODUCIR` (se intentó
+y no se logró) · `DECISIÓN` (no espera código, espera que alguien decida) ·
+`POR DESPLEGAR` (mezclado a `main` y en verde, pero **no** en producción) ·
+`CERRADO` (en producción y comprobado ahí).
+
+**Mezclado no es desplegado.** Un renglón que sólo está en `main` va en
+`POR DESPLEGAR`, nunca en `CERRADO`: mientras no suba, al usuario le sigue
+pasando lo mismo que el primer día, y el índice estaría contando un arreglo
+que nadie recibió. No es formalismo — el 2026-10-28, al ir a desplegar el #50,
+producción llevaba **36 commits de atraso** (`src/App.jsx` +655/−644) y esta
+lista marcaba un solo renglón pendiente de subir.
+
+Son **cuatro canales independientes**: que uno esté al día no dice nada de los
+otros, y ninguno se da por hecho — se mide.
+
+| canal | cómo sube | cómo se comprueba qué está vivo |
+|---|---|---|
+| front | `git push origin main` (Netlify construye de ahí) | bajar `assets/index-*.js` del sitio y buscar **frases** del cambio; el hash sólo dice qué commit se construyó, las frases dicen si llegó |
+| reglas Firestore | `firebase deploy --only firestore:rules` | API de firebaserules, release `cloud.firestore`, y **diff** contra el archivo: `--only` publica el archivo entero |
+| reglas Storage | `firebase deploy --only storage` | igual, release `firebase.storage/<bucket>` |
+| funciones | `firebase deploy --only functions` | llamar una `onCall` **sin autenticar**: un `UNAUTHENTICATED` con mensaje propio prueba que el módulo cargó. Un despliegue "exitoso" no prueba nada, porque el error de carga no aparece hasta la primera invocación |
+
+**Frontera medida el 2026-10-28:** los cuatro canales al día — el último
+commit que tocó código es `ca0a6ee` y está arriba en los cuatro (front
+comprobado por frases; `firestore.rules` y `storage.rules` idénticos byte por
+byte a lo vivo; funciones con canario). Por eso los `CERRADO` de abajo son
+ciertos **hoy**.
+
+Esa frase caduca sola: en cuanto se mezcle código nuevo deja de valer, y no se
+nota desde aquí. **Antes de creerle a un `CERRADO`, medir**, no leer esta
+fecha: `git log --oneline origin/main..main -- src functions firestore.rules storage.rules`
+tiene que salir **vacío**. Si sale algo, hay renglones que dicen `CERRADO` y
+son `POR DESPLEGAR`.
 
 **El orden es por daño, no por esfuerzo.** Primero lo que destruye datos sin
 vuelta atrás; luego lo que hace que una pantalla afirme algo falso; luego lo
@@ -134,7 +165,7 @@ definición del problema.**
 | 17 | Auditar otros módulos por el mismo hueco de «fecha faltante». | ABIERTO |
 | 33 | **`PanelEjecutivo` borrado** (271 renglones). Es el que mandaba por correo los domingos a dirección: lo reemplazó `DashboardPrincipal` el 2026-09-18 y desde entonces ninguna vista lo renderizaba. Se conservaba «por si hay que hacer rollback»; cinco semanas después ese seguro nunca se cobró y el costo sí se pagó —se editó por error una vez, y `prueba-semana-actual-nomina.cjs` agarra el PRIMER `_KpiConDelta label="Personal"` del archivo, que sólo por suerte no era el suyo—. **`vePanelEjecutivo` y `ROLES_PANEL_EJECUTIVO` se quedan:** no son el panel, son quién ve UN consolidado, y deciden cuál de los dos —`DashboardPrincipal` o `PortafolioDependencia`— se pinta. Verificado en el preview con los dos tipos de organización. | CERRADO 2026-10-26 |
 | 43 | El correo del resumen semanal sigue firmando como CAMPO · FOSMON (6 sitios). | ABIERTO |
-| 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. **Re-medido contra producción el 2026-10-26 porque se reportó que «seguía saliendo el de FOSMON»: no sigue.** `campo-fosmon.netlify.app` sirve los tres íconos con la **misma suma** que el repo (`favicon.svg` `4d970e7d67bf`, `icon-192.png` `b59e2fd13e1d`, `apple-touch-icon-180.png` `f962a8e4ade3`), el manifiesto en vivo dice `cotea`, el `<title>` dice `cotea` y los archivos son la C bitono. Lo que se ve viejo es **del aparato**: el ícono de la app instalada se fija al instalar, y los PNG conservaron su nombre (`icon-192.png` et al. se modificaron en sitio en `2b10235`), así que un service worker viejo también puede servir la versión vieja desde su precaché. Se arregla borrando y volviendo a agregar la app; en el navegador, recargando con la actualización aplicada. **No hay nada que cambiar en el código.** | DESPLEGADO |
+| 37 | Íconos, nombre y `theme_color` de cotea, con el `id` del manifiesto fijado. Desplegado el 2026-10-09 dentro del paquete de reglas+front. Queda el aviso: **iOS no repinta el ícono de una app ya instalada** — quien la tenga en la pantalla de inicio la borra y la vuelve a agregar. **Re-medido contra producción el 2026-10-26 porque se reportó que «seguía saliendo el de FOSMON»: no sigue.** `campo-fosmon.netlify.app` sirve los tres íconos con la **misma suma** que el repo (`favicon.svg` `4d970e7d67bf`, `icon-192.png` `b59e2fd13e1d`, `apple-touch-icon-180.png` `f962a8e4ade3`), el manifiesto en vivo dice `cotea`, el `<title>` dice `cotea` y los archivos son la C bitono. Lo que se ve viejo es **del aparato**: el ícono de la app instalada se fija al instalar, y los PNG conservaron su nombre (`icon-192.png` et al. se modificaron en sitio en `2b10235`), así que un service worker viejo también puede servir la versión vieja desde su precaché. Se arregla borrando y volviendo a agregar la app; en el navegador, recargando con la actualización aplicada. **No hay nada que cambiar en el código.** | CERRADO |
 | — | La sonda de cámara en `/api/sonda/` es diagnóstico, no producto: mide si `getUserMedia` sirve en standalone en iOS, que es la precondición del #52. Se retira en cuanto haya veredicto. Vive bajo `/api/` porque es la única ruta que el service worker ya instalado no se traga. | ABIERTO |
 | 64 | Los dos manifiestos se sirven como `application/octet-stream`. iOS los instala igual, así que no bloquea nada; está anotado para que nadie lo vuelva a investigar desde cero cuando algún navegador deje de perdonarlo. | ABIERTO |
 | 18 | Nómina: arrastrar y soltar + pegar desde el portapapeles. | ABIERTO |
