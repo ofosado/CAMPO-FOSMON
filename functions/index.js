@@ -783,17 +783,10 @@ function parsearGPConstruct(csvText) {
         const key = `total_year_${año}`;
         if (colMap[key] === undefined) colMap[key] = ci;
       }
-      // Total mensual: "Total 1 .- Enero", "Total Enero"
-      const matchTotalMes = c.match(/total\s+(?:\d+\s*[.\-]+\s*)?([a-záéíóú]+)/i);
-      if (matchTotalMes) {
-        const mesNombre = normalize(matchTotalMes[1]);
-        if (MESES[mesNombre]) {
-          // Asignamos al año más reciente disponible (2026 por defecto)
-          // (mejorable: trackear año del contexto)
-          const key = `total_month_2026_${MESES[mesNombre]}`;
-          if (colMap[key] === undefined) colMap[key] = ci;
-        }
-      }
+      // Los totales MENSUALES no se resuelven aquí. Se parecen a los anuales
+      // pero no lo son: "Total 1 .- Enero" aparece UNA VEZ POR AÑO en la misma
+      // fila, y quedarse con la primera es quedarse con la de 2024. Ver el
+      // bloque por año más abajo.
       // %
       if (c === '%' && colMap.pct === undefined) colMap.pct = ci;
     });
@@ -825,11 +818,43 @@ function parsearGPConstruct(csvText) {
       }
     }
   }
+  // Totales MENSUALES, con el año que les toca. Misma técnica que las semanas
+  // y por la misma razón: la fila de meses repite "Total 1 .- Enero" una vez
+  // por año, y el bloque de arriba se quedaba con la primera aparición —la de
+  // 2024— guardándola como `total_month_2026_01`. No era un desfase pequeño:
+  // medido el 2026-10-27 contra la hoja real, los doce meses «de 2026» de la
+  // obra 0099 sumaban $20,119,989.65, que es EXACTAMENTE su total de 2024, y
+  // la hoja ni siquiera tenía noviembre ni diciembre de 2026. Importa porque
+  // `extraerGastoTotalGP` cae a la suma de meses cuando no hay total anual:
+  // una obra sin total habría enseñado el gasto de otro año como si fuera suyo.
+  const mesColsByYear = {};
+  if (monthRow >= 0) {
+    const porColumna = Object.entries(yearCols).sort((a, b) => a[1] - b[1]);
+    let año = null, cur = 0;
+    for (let ci = 0; ci < lines[monthRow].length; ci++) {
+      while (cur < porColumna.length && ci >= porColumna[cur][1]) { año = porColumna[cur][0]; cur++; }
+      const c = (lines[monthRow][ci] || '').trim();
+      const m = c.match(/total\s+(?:\d+\s*[.\-]+\s*)?([a-záéíóú]+)/i);
+      if (!m || !año) continue;
+      const mes = MESES[normalize(m[1])];
+      if (!mes) continue;
+      if (!mesColsByYear[año]) mesColsByYear[año] = {};
+      if (mesColsByYear[año][mes] === undefined) mesColsByYear[año][mes] = ci;
+    }
+  }
   // Tomar las semanas del año más reciente como las "semanas disponibles" del Sheet
   const añoMasReciente = Object.keys(weekColsByYear).sort().pop() || '2026';
   const weekColsActual = weekColsByYear[añoMasReciente] || {};
   Object.entries(weekColsActual).forEach(([n, ci]) => {
     colMap[`week_${añoMasReciente}_${n}`] = ci;
+  });
+
+  // Sólo los meses del año en curso, igual que las semanas. Emitir los tres años
+  // triplicaría `meses` en cada obra, rubro y proveedor de `gp_detalle` —que ya
+  // pesa unos 3 MB— y la pantalla sigue leyendo doce meses, no treinta y seis.
+  const mesColsActual = mesColsByYear[añoMasReciente] || {};
+  Object.entries(mesColsActual).forEach(([mes, ci]) => {
+    colMap[`total_month_${añoMasReciente}_${mes}`] = ci;
   });
 
   // Asociar columnas de años individuales (sin desplegar) si existen
@@ -849,9 +874,14 @@ function parsearGPConstruct(csvText) {
     const row = lines[i];
     const label = (row[1] || '').trim();
     if (!label) continue;
-    // Saltar totales y secciones
+    // Saltar totales y secciones. El filtro de totales NO puede ser «empieza con
+    // total»: hay un proveedor real llamado TOTAL PLAY TELECOMUNICACIONES, y por
+    // tirarlo la tabla de rubros de dos obras no cuadraba con su propio total
+    // (0001 por $37,092.90 y 0037 por $35,988.79, medido contra la hoja el
+    // 2026-10-27). Un renglón de agregado dice «Total general» o «Total <código>»;
+    // un proveedor dice su nombre. Se pide esa forma, no el prefijo suelto.
     if (/^(grand\s*total|total\s+general)$/i.test(label)) continue;
-    if (/^total/i.test(label)) continue;
+    if (/^total\s+\d/i.test(label)) continue;
     if (/^\d\s+(EGRESOS|INGRESOS)/i.test(label)) continue;
 
     const extraerValores = () => {
@@ -904,26 +934,40 @@ function parsearGPConstruct(csvText) {
         };
       }
     } else if (/^\d{3}\s/.test(label) && curObra) {
-      // RUBRO: empieza con 3 dígitos
-      curRubro = label.slice(0, 3);
+      // RUBRO: empieza con 3 dígitos. La clave es la ETIQUETA COMPLETA, no el
+      // código, porque el código SE REPITE: 14 de las 34 obras de la hoja
+      // traen «300 INDIRECTOS» y «300 SUBCONTRATOS». Indexando por «300», el
+      // segundo rubro nunca se creaba —el `if` de abajo lo daba por existente—
+      // y todos sus proveedores se colgaban del primero. El resultado no era
+      // un hueco, que se nota: era una etiqueta falsa. En la 0112 había
+      // $1,308,275.55 de subcontratos escritos «INDIRECTOS», y en la 0114
+      // $2,487,929.25, y la tabla de rubros no sumaba su propio total.
+      // El `id` sigue siendo el código, que es lo que la hoja dice.
+      curRubro = label;
       if (!obras[curObra].rubros[curRubro]) {
         const vals = extraerValores();
         obras[curObra].rubros[curRubro] = {
-          id: curRubro, nombre: label, nombreCorto: label.slice(4).trim(),
+          id: label.slice(0, 3), nombre: label, nombreCorto: label.slice(4).trim(),
           semanas: vals.semanas, meses: vals.meses, años: vals.años,
           total2026: vals.total2026, grandTotal: vals.grandTotal,
           proveedores: [],
         };
       }
-    } else if (curObra && curRubro && !/^\d/.test(label)) {
-      // PROVEEDOR
+    } else if (curObra && curRubro) {
+      // PROVEEDOR. Antes esta rama exigía que el nombre NO empezara con
+      // dígito, y así se perdía en silencio «3.1 SWEET INMOBILIARIA Y
+      // DESARROLLADORA DE PROYECTOS, S.A. DE C.V.» con $22,000 en la 0099.
+      // El guardia sobraba: las obras y los rubros ya se llevaron sus
+      // etiquetas en las ramas de arriba, los totales y las secciones se
+      // saltan antes, y un renglón sin dinero se descarta dos líneas abajo.
+      // Un proveedor que se llama con un número sigue siendo un proveedor.
       const vals = extraerValores();
       const totalProv = vals.grandTotal > 0
         ? vals.grandTotal
         : Object.values(vals.años).reduce((t,v)=>t+v,0);
       if (totalProv === 0) continue;
       const prov = {
-        nombre: label, rubroId: curRubro,
+        nombre: label, rubroId: obras[curObra].rubros[curRubro].id,
         rubroNombre: obras[curObra].rubros[curRubro].nombreCorto,
         semanas: vals.semanas, meses: vals.meses, años: vals.años,
         total2026: vals.total2026, grandTotal: vals.grandTotal,
