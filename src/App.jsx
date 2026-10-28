@@ -2506,6 +2506,34 @@ const importeEjecutadoPartida = (s, modoVol = false) => {
 // Importe de catálogo de UNA partida = su tope.
 const importeCatalogoPartida = s => parseFloat(s?.imp ?? s?.importe) || 0;
 
+// ───────────────────────────────────────────────────────────────────────────
+// PARTIDAS EXTRAORDINARIAS
+//
+// Una extraordinaria es UNA PARTIDA MÁS: misma forma, mismos campos, misma
+// cuenta. Lo único que la distingue es `extra: true`, su autorización y de
+// dónde sale. No son una cuenta aparte y no deben serlo: el malecón (0112) iba
+// en 97.42% con su catálogo congelado igualado al peso con el contrato, y los
+// $666,349 que faltaban para ejercerlo son obra hecha que no tenía dónde
+// teclearse. Una extraordinaria que no cuenta en el ejecutado no sirve de nada.
+//
+// MEZCLADAS en memoria, SEPARADAS en disco. Las dos mitades de esa frase son
+// decisiones, no detalles:
+//
+//   Mezcladas, porque hay veinte sitios que suman sobre el catálogo —el KPI, la
+//   tabla, el cierre semanal, el correo, el PDF—. Pasarle a cada uno un segundo
+//   arreglo es el camino seguro a dos cuentas del mismo número: basta que
+//   alguien agregue el sitio veintiuno sin enterarse para que su KPI y el
+//   renglón de su propia tabla discrepen. Yendo mezcladas, los veinte aciertan
+//   sin tocarlos.
+//
+//   Separadas en disco, porque `avance/subs` SE REESCRIBE ENTERO cada vez que
+//   alguien vuelve a subir el archivo del catálogo. Una extraordinaria tecleada
+//   a mano no puede evaporarse porque el residente recargó el Excel. Y porque
+//   ese documento ya va apretado: el de la 0114 pesa ~1.4 MB con 335 partidas.
+const esExtraordinaria = s => s?.extra === true;
+const soloCatalogo = (subs = []) => (subs || []).filter(s => !esExtraordinaria(s));
+const soloExtraordinarias = (subs = []) => (subs || []).filter(esExtraordinaria);
+
 // Desglose del ejecutado de un catálogo completo.
 //   catalogo  = lo ejecutado hasta el 100% de cada partida
 //   excedente = lo capturado por encima del catálogo (PENDIENTE DE CLASIFICAR)
@@ -9839,6 +9867,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       fsDel(`obras/${id}/config/estimaciones`),
       fsDel(`obras/${id}/config/catalogo`),
       fsDel(`obras/${id}/avance/subs`),
+      fsDel(`obras/${id}/avance/extraordinarias`),
       fsDel(`obras/${id}/avance/maquinaria`),
       fsDel(`obras/${id}/avance/materiales`),
       fsDel(`obras/${id}/avance/historial`),
@@ -12789,24 +12818,50 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
+      // El guardado es el sitio donde las dos mitades se vuelven a separar. Este
+      // mapeo es una LISTA BLANCA —lo que no esté aquí no se escribe—, así que
+      // una extraordinaria guardada por este camino llegaría a `avance/subs`
+      // sin su `extra` y sin su autorización: dejaría de ser extraordinaria y
+      // se duplicaría en la siguiente carga. Por eso se parte antes de mapear.
+      const paraDisco = (s, idx) => ({
+        id: s.id || `${s.sec || 'C'}__${idx}`,
+        sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
+        n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
+        cat: s.cat || null, catDesc: s.catDesc || null,
+        ruta: s.ruta || [],
+        // Campos para modo volumen
+        cant: s.cant || 0,       // cantidad del catálogo
+        pu: s.pu || 0,           // precio unitario
+        unidad: s.unidad || '',  // unidad de medida
+        cantEjec: s.cantEjec || 0,  // cantidad ejecutada acumulada
+      });
+      const delCatalogo = soloCatalogo(subs);
+      const extraordinarias = soloExtraordinarias(subs);
       const avanceData = {
-        data: subs.map((s, idx)=>({
-          id: s.id || `${s.sec || 'C'}__${idx}`,
-          sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
-          n: s.n || 1, a: s.a || 0, fotos: s.fotos || {},
-          cat: s.cat || null, catDesc: s.catDesc || null,
-          ruta: s.ruta || [],
-          // Campos para modo volumen
-          cant: s.cant || 0,       // cantidad del catálogo
-          pu: s.pu || 0,           // precio unitario
-          unidad: s.unidad || '',  // unidad de medida
-          cantEjec: s.cantEjec || 0,  // cantidad ejecutada acumulada
-        })),
+        data: delCatalogo.map(paraDisco),
         fecha: new Date().toISOString()
       };
       await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
         { modulo:"avance_fisico", entidad:`captura ${tipoSnapshot}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
-          meta:{ tipo: tipoSnapshot, nSubs: subs.length, avancePromedio: subs.reduce((s,x)=>s+(x.a||0),0)/(subs.length||1) } });
+          meta:{ tipo: tipoSnapshot, nSubs: delCatalogo.length, avancePromedio: delCatalogo.reduce((s,x)=>s+(x.a||0),0)/(delCatalogo.length||1) } });
+      // Las extraordinarias se escriben SIEMPRE que la obra tenga alguna, no
+      // sólo cuando cambian: la captura es el momento en que se mueve su
+      // `cantEjec`, que es dinero ejecutado igual que el del catálogo. Si la
+      // obra no tiene ninguna no se escribe el documento, para no sembrar
+      // documentos vacíos en las obras que nunca van a usarlas.
+      if (extraordinarias.length) {
+        await fsSetA(`obras/${obra.id}/avance/extraordinarias`,
+          { data: extraordinarias.map((s, i) => ({ ...paraDisco(s, i),
+              extra: true,
+              convenio: s.convenio || '',
+              autorizadoPor: s.autorizadoPor || '',
+              autorizadoEn: s.autorizadoEn || null,
+              creadoPor: s.creadoPor || usuario?.correo || '',
+              creadoEn: s.creadoEn || null })),
+            fecha: new Date().toISOString() },
+          { modulo:"avance_fisico", entidad:`${extraordinarias.length} extraordinaria(s)`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
+            meta:{ tipo: tipoSnapshot, importe: extraordinarias.reduce((t,x)=>t+importeCatalogoPartida(x),0) } });
+      }
       // Maquinaria y almacén son costo del contratista: están en
       // `RUTAS_SOLO_CONSTRUCTORA` y las reglas no las declaran del lado
       // dependencia. El mismo inventario que decide qué se PIDE decide qué se
@@ -13867,7 +13922,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         mandaba a «Planeación», que una dependencia no tiene en su menú. Un
         instructivo que nombra una pestaña inexistente es peor que no tenerlo:
         el usuario la busca, no la encuentra y reporta un defecto que no es. */}
-    {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length === 0 && (
+    {tab==="volumenes" && soloCatalogo(subs).filter(s => (s.imp||0) > 0).length === 0 && (
       <EmptyState
         titulo={`Aún no hay ${lexico(usuario).catalogo.toLowerCase()}`}
         mensaje="Antes de capturar avance físico necesitas cargar el catálogo de conceptos de esta obra. Es lo que define qué subsecciones hay y cuánto pesa cada una."
@@ -13881,13 +13936,19 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           "Confirma. El catálogo aparece automáticamente aquí para capturar avance."
         ]}/>
     )}
-    {tab==="volumenes" && subs.filter(s => (s.imp||0) > 0).length > 0 && <Card>
+    {tab==="volumenes" && (soloCatalogo(subs).filter(s => (s.imp||0) > 0).length > 0
+                           || soloExtraordinarias(subs).length > 0) && <Card>
       <Tit>Avance por concepto</Tit>
       {(() => {
         // ── Construir ÁRBOL JERÁRQUICO desde la ruta de ancestros de cada concepto
         // Cada nodo: { tipo:"categoria", clave, desc, nivel, hijos:[] } o
         //            { tipo:"concepto", sub } (hoja)
-        const subsConImp = subs.filter(s => (s.imp||0) > 0);
+        // El árbol se arma SÓLO con el catálogo. Una extraordinaria no trae
+        // `ruta` ni `cat` —no nace de un archivo con jerarquía—, así que si
+        // entrara aquí caería como hoja suelta en la raíz, indistinguible de
+        // una partida contratada. Eso es justo lo que no puede pasar: lo que
+        // se hizo fuera de contrato tiene que verse fuera de contrato.
+        const subsConImp = soloCatalogo(subs).filter(s => (s.imp||0) > 0);
         const raiz = { tipo: 'categoria', clave: '__root__', desc: '', nivel: 0, hijos: [] };
         const nodoPorClave = new Map();  // clave categoría → nodo
         nodoPorClave.set('__root__', raiz);
@@ -13944,7 +14005,15 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         // Renderiza un concepto individual (sub).
         // Es la hoja del árbol — todo está siempre visible inline:
         // descripción, importe, input de avance y cuadro de fotos.
-        const renderConcepto = (s, indentLevel = 0) => {
+        // `cabecera` sólo reemplaza la COLUMNA IZQUIERDA (clave, descripción y
+        // el renglón de cifras). Las extraordinarias la mandan editable; el
+        // catálogo la deja nula y usa la de siempre. Lo que NO se duplica es lo
+        // de la derecha: el input de avance, la barra, el tope al 100%, el
+        // excedente y las fotos. Una segunda copia de esa captura es la forma
+        // exacta en que nació el #32 —dos recorridos iguales, uno se quedó
+        // atrás—, y aquí la copia rezagada afirmaría un avance distinto del
+        // mismo dato.
+        const renderConcepto = (s, indentLevel = 0, cabecera = null) => {
           const subId = s.id || s.sec;
           // La captura lee la MISMA cuenta que la galería del cliente y que el
           // PDF: `evid.lista`, ya aplanada y normalizada arriba. Antes aquí se
@@ -13975,6 +14044,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             marginLeft: indentLevel * 16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:5,gap:8}}>
               <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                {cabecera ? cabecera({nF, impEjecutado, impExcedente, excedePresup, pctDerivado}) : <>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
                   <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>
@@ -13989,6 +14059,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                     : <>{MXN(s.imp)}</>
                   }
                 </div>
+                </>}
               </div>
               <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
                 {editar ? (
@@ -14097,7 +14168,118 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           </div>;
         };
 
-        return <>{raiz.hijos.map(h => renderNodo(h, 0))}</>;
+        // ── PARTIDAS EXTRAORDINARIAS ─────────────────────────────────────────
+        // Van en su propio bloque, DEBAJO del árbol y marcadas. No es adorno:
+        // el malecón (0112) se quedó en 97.42% con el catálogo ejercido al
+        // peso porque $666,349 de obra hecha no tenían dónde teclearse. Lo que
+        // faltaba no era una cuenta nueva —las cuentas ya las hace `subs`
+        // entero—, era el renglón.
+        const extras = soloExtraordinarias(subs);
+        const impExtraAut  = extras.reduce((t,s)=>t+importeCatalogoPartida(s),0);
+        const impExtraEjec = extras.reduce((t,s)=>t+importeEjecutadoPartida(s,modoVol),0);
+        // El importe de una extraordinaria NO se teclea: se deriva de cantidad
+        // × precio unitario, igual que maquinaria. Teclearlo aparte abriría dos
+        // caminos al mismo número, y este número es dinero que se le va a
+        // cobrar a la dependencia con un convenio detrás.
+        const rExtra = (id, campo, valor) => setSubs(ss => ss.map(x => {
+          if ((x.id || x.sec) !== id) return x;
+          const u = {...x, [campo]: valor};
+          u.imp = Math.round((parseFloat(u.cant)||0) * (parseFloat(u.pu)||0));
+          return u;
+        }));
+        const borrarExtra = (id, desc) => {
+          if (!window.confirm(`¿Eliminar la extraordinaria «${desc||'sin descripción'}»? Se pierde también el avance capturado en ella.`)) return;
+          setSubs(ss => ss.filter(x => (x.id || x.sec) !== id));
+        };
+        // La clave se propone libre contra TODO `subs`, catálogo incluido: dos
+        // partidas con la misma clave se pisan al guardar, porque `id` cae en
+        // `sec` cuando falta.
+        const agregarExtra = () => setSubs(ss => {
+          const usadas = new Set(ss.map(x => (x.sec||'').trim().toUpperCase()));
+          let n = 1; while (usadas.has(`E-${n}`)) n++;
+          return [...ss, { id: `EXTRA__${Date.now()}`, extra: true,
+            sec: `E-${n}`, sub: '', imp: 0, n: 1, a: 0, fotos: {},
+            cat: null, catDesc: null, ruta: [],
+            cant: 0, pu: 0, unidad: '', cantEjec: 0,
+            convenio: '', autorizadoPor: '', autorizadoEn: null,
+            creadoPor: usuario?.correo || '', creadoEn: new Date().toISOString() }];
+        });
+
+        const bloqueExtras = (extras.length > 0 || editar) && <div style={{marginTop:12}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap",
+            background:C.purpleBg,borderRadius:8,padding:"9px 12px",marginBottom:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+              <span style={{fontSize:11,fontWeight:700,color:C.purpleDk,letterSpacing:"0.04em"}}>FUERA DE CATÁLOGO</span>
+              <span style={{fontSize:10,color:C.purpleDk,opacity:0.85}}>
+                {extras.length} extraordinaria{extras.length!==1?"s":""}
+              </span>
+            </div>
+            {/* Sin ninguna extraordinaria NO se imprime «$0 · $0». Cero
+                autorizado y cero ejecutado se leen como una medición, y lo
+                que hay es ausencia de renglones: son cosas distintas. */}
+            {extras.length > 0 && <div style={{fontSize:10,color:C.purpleDk,flexShrink:0}}>
+              autorizado {MXN(impExtraAut)} · ejecutado {MXN(impExtraEjec)}
+            </div>}
+          </div>
+          {extras.length === 0 && <div style={{fontSize:10,color:C.textMut,padding:"0 2px 8px"}}>
+            No hay partidas extraordinarias. Se agrega una cuando hay obra ejecutada que el catálogo contratado no contempla.
+          </div>}
+          {extras.map(s => renderConcepto(s, 0, ({nF, impEjecutado, impExcedente}) => <>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
+              <Bdg color={C.purple} small>EXTRA</Bdg>
+              {editar
+                ? <Inp value={s.sec||""} placeholder="Clave" aria-label="Clave de la extraordinaria"
+                    onChange={e=>rExtra(s.id||s.sec,'sec',e.target.value)}
+                    style={{width:72,fontSize:10,padding:"3px 6px"}}/>
+                : <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>}
+              {editar
+                ? <Inp value={s.sub||""} placeholder="Descripción del concepto ejecutado"
+                    aria-label="Descripción de la extraordinaria"
+                    onChange={e=>rExtra(s.id||s.sec,'sub',e.target.value)}
+                    style={{flex:1,minWidth:140,fontSize:10,padding:"3px 6px"}}/>
+                : <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>}
+              {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
+            </div>
+            {editar
+              ? <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",marginBottom:3}}>
+                  <Inp type="number" min="0" step="any" value={s.cant||""} placeholder="Cant."
+                    aria-label="Cantidad autorizada" onChange={e=>rExtra(s.id||s.sec,'cant',parseFloat(e.target.value)||0)}
+                    style={{width:70,fontSize:10,padding:"3px 6px",textAlign:"right"}}/>
+                  <Inp value={s.unidad||""} placeholder="Unidad" aria-label="Unidad"
+                    onChange={e=>rExtra(s.id||s.sec,'unidad',e.target.value)}
+                    style={{width:62,fontSize:10,padding:"3px 6px"}}/>
+                  <Inp type="number" min="0" step="any" value={s.pu||""} placeholder="P.U."
+                    aria-label="Precio unitario" onChange={e=>rExtra(s.id||s.sec,'pu',parseFloat(e.target.value)||0)}
+                    style={{width:92,fontSize:10,padding:"3px 6px",textAlign:"right"}}/>
+                  <span style={{fontSize:10,color:C.textPri,fontWeight:700,whiteSpace:"nowrap"}}>= {MXN(s.imp||0)}</span>
+                  <Inp value={s.convenio||""} placeholder="Convenio / oficio que la autoriza"
+                    aria-label="Convenio que autoriza la extraordinaria"
+                    onChange={e=>rExtra(s.id||s.sec,'convenio',e.target.value)}
+                    style={{flex:1,minWidth:150,fontSize:10,padding:"3px 6px"}}/>
+                  <button onClick={()=>borrarExtra(s.id||s.sec, s.sub)} title="Eliminar extraordinaria"
+                    style={{background:"none",border:"none",color:C.red,fontSize:15,lineHeight:1,cursor:"pointer",padding:"0 4px"}}>×</button>
+                </div>
+              : <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
+                  {fmtCant(parseFloat(s.cant)||0, s.pu)} {s.unidad||''} · PU {MXN(s.pu||0)} · autorizado {MXN(s.imp||0)}
+                </div>}
+            {/* El convenio faltante se dice en amarillo y no se esconde: una
+                extraordinaria sin oficio detrás es cobro que la dependencia va
+                a rechazar, y es mejor verlo al capturarla que al estimarla. */}
+            <div style={{fontSize:9,color:C.textMut}}>
+              {s.convenio ? `Convenio ${s.convenio}` : <span style={{color:C.yellowDk,fontWeight:700}}>Sin convenio capturado</span>}
+              {` · Ejec ${MXN(impEjecutado)}`}
+              {impExcedente > 0 && <span style={{color:C.yellowDk,fontWeight:700}}>
+                {` · sobre lo autorizado ${MXN(impExcedente)}`}</span>}
+            </div>
+          </>))}
+          {editar && <button onClick={agregarExtra}
+            style={{background:"none",border:`1px dashed ${C.purple}`,borderRadius:8,padding:"7px 12px",
+              color:C.purpleDk,fontSize:11,fontWeight:600,cursor:"pointer",width:"100%",marginTop:2}}>
+            + Agregar extraordinaria
+          </button>}
+        </div>;
+
+        return <>{raiz.hijos.map(h => renderNodo(h, 0))}{bloqueExtras}</>;
       })()}
     </Card>}
 
@@ -16516,8 +16698,13 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
       return;
     }
     setObra({...obra, presupuesto: importeContrato});
-    // Actualizar el state global de subs si el padre lo permite (para no requerir reload)
-    if (setSubsGlobal) setSubsGlobal(subsParaAvance);
+    // Actualizar el state global de subs si el padre lo permite (para no requerir reload).
+    // Las extraordinarias que ya estaban en pantalla se CONSERVAN: lo que acaba
+    // de reemplazarse es el catálogo, no ellas —viven en otro documento y éste
+    // ni lo tocó—. Pisarlas aquí no las borraría del disco, pero dejaría la
+    // pantalla diciendo menos ejecutado del que hay, y si alguien cierra la
+    // semana en ese momento el cierre se lleva la cifra corta a la historia.
+    if (setSubsGlobal) setSubsGlobal(ss => [...subsParaAvance, ...soloExtraordinarias(ss)]);
     setCatalogoGuardado(cat);
     setFase('confirmado');
   }
@@ -22454,6 +22641,15 @@ export default function App(){
     // Carga de subs con fallback al catálogo (para obras que cargaron catálogo
     // antes del fix que sincroniza catálogo → subs automáticamente)
     fsGet(`obras/${obraId}/avance/subs`).then(async d=>{
+      // Las extraordinarias se piden en el mismo golpe y se MEZCLAN al final
+      // del arreglo. A partir de aquí nadie más en la app tiene que acordarse
+      // de que existen: son partidas, y las veinte cuentas que suman sobre
+      // `subs` las suman solas. Van al final para que el catálogo conserve su
+      // orden —quien lo trabaja lo lee por número de partida— y las nuevas
+      // aparezcan juntas, que es como se revisan.
+      const dExtra = await fsGet(`obras/${obraId}/avance/extraordinarias`);
+      const extras = (dExtra && Array.isArray(dExtra.data) ? dExtra.data : [])
+        .map((s, i) => ({ ...s, extra: true, id: s.id || `EXTRA__${i}` }));
       if(d && Array.isArray(d.data) && d.data.length > 0) {
         // AUTO-MIGRACIÓN: subs viejos guardados sin id único. Si alguno no tiene
         // id, le asignamos uno derivado de su posición (índice) que es único.
@@ -22463,9 +22659,12 @@ export default function App(){
         const subsConId = necesitaMigrar
           ? d.data.map((s, idx) => ({ ...s, id: s.id || `${s.sec || 'C'}__${idx}` }))
           : d.data;
-        setSubs(subsConId);
+        setSubs([...subsConId, ...extras]);
         if (necesitaMigrar) {
-          // Guardar la migración para próximas cargas (silencioso)
+          // Guardar la migración para próximas cargas (silencioso). Va
+          // `subsConId` y no el estado: lo que se está migrando es el catálogo,
+          // y meterle las extraordinarias aquí las duplicaría en la carga
+          // siguiente —estarían en los dos documentos y se mezclarían dos veces—.
           fsSet(`obras/${obraId}/avance/subs`, { data: subsConId });
         }
       } else {
@@ -22488,8 +22687,14 @@ export default function App(){
             unidad: c.unidad || '',
             cantEjec: 0,
           }));
-          setSubs(subsFromCat);
+          setSubs([...subsFromCat, ...extras]);
           fsSet(`obras/${obraId}/avance/subs`, { data: subsFromCat });
+        } else if (extras.length) {
+          // Sin catálogo pero CON extraordinarias. Pasa en una obra que todavía
+          // no sube su catálogo y ya tuvo trabajo fuera de él; si no se pusieran
+          // aquí, la pantalla diría que no hay nada que capturar y el dinero
+          // ejecutado saldría en cero teniendo partidas.
+          setSubs(extras);
         }
       }
       setSubsCargados(true);

@@ -280,6 +280,17 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId);
         allow write: if puedeEditarObraC(obraId);
       }
+      // Partidas extraordinarias: las mismas llaves que el catálogo, a
+      // propósito. Son partidas, se capturan en la misma pantalla y cuentan en
+      // el mismo ejecutado; darles un permiso distinto sería afirmar que son
+      // otra cosa. En particular el cliente SÍ las ve, igual que ve `subs`:
+      // ocultarle la obra que se le hizo fuera de catálogo mientras se le
+      // enseña el avance que ella produce es justo la clase de media verdad
+      // que este expediente no puede contar.
+      match /avance/extraordinarias {
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
+      }
       match /avance/maquinaria {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow write: if puedeEditarObraC(obraId);
@@ -528,6 +539,15 @@ service cloud.firestore {
 
       // Donde escribe el supervisor cuando captura.
       match /avance/subs {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Extraordinarias: mismas llaves que `subs`, por lo mismo que del lado
+      // constructora. Aquí el que no se excluye es el CONTRATISTA, y tampoco
+      // se le excluye de `subs`: son las partidas de su propio trabajo. Lo que
+      // el contratista no ve es el corte semanal y su nota, dos renglones más
+      // abajo, y eso no cambia.
+      match /avance/extraordinarias {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
         allow write: if oid == orgId() && puedeEditarObraD(obraId);
       }
