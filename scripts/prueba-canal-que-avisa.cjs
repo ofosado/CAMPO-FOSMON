@@ -565,10 +565,16 @@ const dbQueRevienta = (porQue) => ({
   // El renglón llega al correo de verdad. El `bloqueDenegaciones` que se le
   // inyecta aquí es una MARCA, no el de arriba: lo que se mide es que el
   // armado del HTML lo monte, no lo que diga.
+  // `bloqueFueraDeAlcance` entra como marca vacía por la misma razón: aquí se
+  // mide que el armado MONTE el renglón de denegaciones, no lo que digan sus
+  // vecinos. A quién dejó fuera el correo por no tener organización lo mide
+  // `prueba-correo-no-cruza-organizaciones.cjs`, que arma el HTML completo.
   const email = new Function('semaforoColor', 'APP_URL', 'PCT_FMT', 'MXN_FMT', 'bloqueDenegaciones',
+    'bloqueFueraDeAlcance',
     `${decl.buildEmailHTML}; return buildEmailHTML;`)(
     () => '#000', 'https://ejemplo', n => `${n}%`, n => `$${n}`,
-    d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`);
+    d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`,
+    () => '');
   const html = email([{ obraId: '0114', nombre: 'Obra', avancePct: 10, pctGasto: 10,
     totGasto: 1, presupuesto: 2, cobrado: 1, diasDesdeCaptura: 1 }], 'hoy',
     { error: 'no se pudo' });
