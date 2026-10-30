@@ -7188,7 +7188,11 @@ function useGPConstruct(activo = true) {
   const [gpEstado, setGpEstado] = useState('cargando');
   const [gpIntentos, setGpIntentos] = useState(0);
 
-  const PARSER_VERSION = 3;
+  // Tiene que ser EL MISMO número que `PARSER_VERSION` en `functions/index.js`,
+  // y los dos viajan por canales de despliegue distintos. Mientras uno esté
+  // arriba y el otro no, esta pantalla dice «version_vieja» y no enseña cifras
+  // —que es lo correcto— pero no enseña ninguna. Hay que desplegar los dos.
+  const PARSER_VERSION = 4;
   // Reintentos con espera creciente. Tres intentos cubren el corte de red
   // corto y el arranque en frío; más allá de eso el problema no es transitorio
   // y seguir reintentando sólo esconde el fallo.
@@ -15157,7 +15161,13 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
 // ════════════════════════════════════════════════════════════════════════════
 function PanelDiagnosticoGP({gpData, obra, datosObra}){
   const [abierto, setAbierto] = useState(false);
-  const colsCount = Object.keys(gpData?.colMap || {}).length;
+  // Columnas de verdad, no entradas del mapa: una semana a caballo entre dos
+  // meses ocupa DOS columnas bajo una sola clave. Contar claves decía 43
+  // semanas donde la hoja tiene 48 columnas, y esa diferencia era justo la
+  // señal que habría delatado el dinero que se perdía al pisarse una con otra.
+  const colDe = (v) => Array.isArray(v) ? v[0] : v;
+  const colsCount = Object.values(gpData?.colMap || {})
+    .reduce((t, v) => t + (Array.isArray(v) ? v.length : 1), 0);
   const obrasDetectadas = gpData?.totalObras || 0;
   const semanasDet = gpData?.semanasDisponibles?.length || 0;
   const mesesDet = gpData?.mesesDisponibles?.length || 0;
@@ -15186,18 +15196,28 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
           Columnas detectadas
         </div>
         <div style={{maxHeight:180,overflow:"auto",border:`0.5px solid ${C.border}`,borderRadius:6,padding:8}}>
-          {Object.entries(gpData?.colMap||{}).sort((a,b)=>a[1]-b[1]).map(([k,v])=>{
+          {Object.entries(gpData?.colMap||{}).sort((a,b)=>colDe(a[1])-colDe(b[1])).map(([k,v])=>{
+            // Los prefijos son los que el parser EMITE. Antes se comparaba
+            // contra `y_`, `m_`, `w_` y `total_2026`, que no existen: la
+            // columna «tipo» salía vacía en todos los renglones y el panel
+            // que estaba puesto para diagnosticar el parser no diagnosticaba
+            // nada. Si se renombran allá, aquí se rompen en silencio otra vez.
             let tipo='', color=C.textMut;
-            if(k.startsWith('y_')) { tipo='Año'; color=C.purple; }
-            else if(k.startsWith('m_')) { tipo='Mes 2026'; color=C.blue; }
-            else if(k.startsWith('w_')) { tipo='Semana'; color=C.green; }
-            else if(k==='total_2026') { tipo='Total 2026'; color=C.orange; }
+            if(k.startsWith('week_')) { tipo='Semana'; color=C.green; }
+            else if(k.startsWith('total_month_')) { tipo='Mes'; color=C.blue; }
+            else if(k.startsWith('total_year_')) { tipo='Total año'; color=C.orange; }
+            else if(k.startsWith('year_')) { tipo='Año'; color=C.purple; }
             else if(k==='grand_total') { tipo='Grand Total'; color=C.red; }
             else if(k==='pct') { tipo='%'; color=C.textMut; }
+            const partida = Array.isArray(v) && v.length>1;
             return <div key={k} style={{display:"flex",justifyContent:"space-between",
               fontSize:9,padding:"3px 6px",borderBottom:`0.5px dashed ${C.border}`}}>
-              <span style={{fontFamily:"monospace",color:C.textSec}}>col {v}</span>
-              <span style={{color:color,fontWeight:600}}>{tipo}</span>
+              <span style={{fontFamily:"monospace",color:partida?C.orange:C.textSec}}>
+                col {Array.isArray(v) ? v.join('+') : v}
+              </span>
+              <span style={{color:color,fontWeight:600}}>
+                {tipo}{partida ? ' · partida en 2 meses' : ''}
+              </span>
               <span style={{fontFamily:"monospace",color:C.textMut}}>{k}</span>
             </div>;
           })}
