@@ -329,6 +329,137 @@ if (o1) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+seccion('7 · una semana partida en dos columnas sigue siendo una semana (defecto E)');
+
+// La hoja es una tabla dinámica agrupada por mes, y una semana de calendario
+// que cruza el cambio de mes sale PARTIDA EN DOS COLUMNAS: la última de un mes
+// y la primera del siguiente. No es un caso raro —en la hoja real pasa cinco
+// veces en 2026, cinco en 2025 y seis en 2024, siempre en frontera de mes.
+//
+// El anclaje es el mismo de la sección 3 y por la misma razón: las sumas
+// internas cuadran igual con el defecto puesto, porque el parser lee la misma
+// columna equivocada para TODAS las filas. Lo único que lo delata es comparar
+// la serie semanal contra el total ANUAL de su propio año, que la hoja trae
+// escrito aparte.
+
+const colsSemanaPorAño = (() => {
+  const filaAñosL = filas.find(f => f.some(c => /^20\d{2}$/.test((c || '').trim())));
+  const filaSem = filas.find(f => f.filter(c => /^[1-5]?[0-9]$/.test((c || '').trim())).length >= 3);
+  if (!filaAñosL || !filaSem) return null;
+  const porCol = [];
+  filaAñosL.forEach((c, ci) => { if (/^20\d{2}$/.test((c || '').trim())) porCol.push([(c || '').trim(), ci]); });
+  porCol.sort((a, b) => a[1] - b[1]);
+  const mapa = {};
+  let año = null, k = 0;
+  for (let ci = 0; ci < filaSem.length; ci++) {
+    while (k < porCol.length && ci >= porCol[k][1]) { año = porCol[k][0]; k++; }
+    const cel = (filaSem[ci] || '').trim();
+    if (!/^[1-5]?[0-9]$/.test(cel) || !año) continue;
+    const n = parseInt(cel);
+    if (n < 1 || n > 53) continue;
+    (mapa[año] ||= {});
+    (mapa[año][n] ||= []).push(ci);
+  }
+  return mapa;
+})();
+
+if (!colsSemanaPorAño) {
+  sinPrecondicion('la fila de semanas de la hoja de prueba',
+    ['Sin ella no se puede saber qué columnas forman cada semana.']);
+}
+
+// La hoja de prueba TIENE que traer una semana partida, o esta sección entera
+// mide aire y daría verde sin haber probado nada.
+const partidasEnLaHoja = Object.entries(colsSemanaPorAño[añoReciente] || {})
+  .filter(([, cols]) => cols.length > 1);
+if (partidasEnLaHoja.length === 0) {
+  sinPrecondicion(
+    `una semana repartida en dos columnas dentro de ${añoReciente}`,
+    ['La hoja de prueba dejó de reproducir la forma de la real.',
+     'En la real, una semana a caballo entre dos meses ocupa la última',
+     'columna de uno y la primera del otro. Sin ese caso aquí, esta',
+     'sección no prueba nada y el defecto volvería sin que nadie lo viera.']);
+}
+
+// (a) estructural: el parser tiene que conservar TODAS las columnas de la
+//     semana, no quedarse con una. Es lo que el panel de diagnóstico enseña.
+for (const [n, cols] of partidasEnLaHoja) {
+  const enMapa = r.colMap[`week_${añoReciente}_${n}`];
+  const vistas = [].concat(enMapa === undefined ? [] : enMapa);
+  exigir(vistas.length === cols.length,
+    `la semana ${n} ocupa ${cols.length} columnas en la hoja y el parser reporta ${vistas.length}`,
+    vistas.length === cols.length ? null :
+      [`la hoja la tiene en [${cols.join(', ')}] y colMap dice [${vistas.join(', ')}]`,
+       'quedarse con una columna tira el dinero de la otra, en silencio']);
+}
+
+// (b) de fondo: la serie semanal de cada nodo suma su total de ese año.
+let semanasMal = 0, dineroTirado = 0;
+for (const [quien, n] of todosLosNodos) {
+  const suma = Object.values(n.semanas || {}).reduce((t, v) => t + v, 0);
+  const propio = (n.años || {})['Y' + añoReciente] || 0;
+  if (cerca(suma, propio)) continue;
+  semanasMal++;
+  dineroTirado += propio - suma;
+  console.log(`         ${quien}: las semanas suman ${pesos(suma)} y su Y${añoReciente} es ${pesos(propio)}` +
+    `  ← faltan ${pesos(propio - suma)}`);
+}
+exigir(semanasMal === 0,
+  `en los ${todosLosNodos.length} nodos, las semanas suman el total de ${añoReciente}`,
+  semanasMal === 0 ? null : [
+    `${semanasMal} nodo(s) descuadrados, ${pesos(dineroTirado)} que la serie semanal no ve`,
+    'medido contra la hoja real el 2026-10-28, esto eran $9,719,396.98 en las',
+    'cinco obras activas y $15,409,486.89 en las 34 de la hoja']);
+
+// (c) y la obra entera contra el «Total general», no sólo contra su año: si
+//     alguna columna se contara DOS veces la suma se pasaría, y (b) sola no
+//     distingue «faltó una columna» de «sobró una».
+for (const o of obras) {
+  const porAños = Object.values(o.años || {}).reduce((t, v) => t + v, 0);
+  exigirCifra(porAños, o.grandTotal,
+    `${o.id} · sumar los años da el «Total general», ni de más ni de menos`);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+seccion('8 · los dos lados del despliegue hablan de la misma versión de parser');
+
+// `PARSER_VERSION` está escrito DOS VECES —en `functions/index.js`, que lo
+// graba en `global/gp_construct`, y en `src/App.jsx`, que rechaza la caché si
+// no empata— y cada uno viaja por un canal de despliegue distinto. Mientras
+// uno esté arriba y el otro no, la pantalla dice «version_vieja» y no enseña
+// cifras: honesto, pero sin gasto en pantalla hasta que suban los dos.
+//
+// Esto se comprueba leyendo el número de los dos archivos, no ejecutando: el
+// de `src/App.jsx` vive dentro de `useGPConstruct` y la comparación está en
+// línea en `cargarGP`, un `useCallback` que no se puede sacar y correr sin
+// montar React. Se deja dicho para que nadie lo confunda con una prueba de
+// conducta: lo que se exige aquí es COHERENCIA entre dos archivos, y el día
+// que la comparación se pueda ejecutar, esta sección sobra.
+
+const versionDe = (archivo, re) => {
+  const txt = fs.readFileSync(path.join(RAIZ, archivo), 'utf8');
+  const hits = [...txt.matchAll(re)].map(m => Number(m[1]));
+  return { archivo, hits };
+};
+const enFunciones = versionDe('functions/index.js', /^const PARSER_VERSION = (\d+);/gm);
+const enApp = versionDe('src/App.jsx', /^\s*const PARSER_VERSION = (\d+);/gm);
+
+for (const { archivo, hits } of [enFunciones, enApp]) {
+  if (hits.length !== 1) {
+    sinPrecondicion(`un único \`PARSER_VERSION\` en ${archivo}`,
+      [`se encontraron ${hits.length}: ${hits.join(', ') || '(ninguno)'}`,
+       'o se renombró la constante, o hay dos y entonces no se sabe cuál manda']);
+  }
+}
+
+exigir(enFunciones.hits[0] === enApp.hits[0],
+  `functions/index.js y src/App.jsx dicen ambos PARSER_VERSION ${enFunciones.hits[0]}`,
+  enFunciones.hits[0] === enApp.hits[0] ? null : [
+    `functions/index.js dice ${enFunciones.hits[0]} y src/App.jsx dice ${enApp.hits[0]}`,
+    'con estos distintos, el front rechaza la caché y la pantalla de gastos',
+    'se queda sin cifras hasta que el otro canal también se despliegue']);
+
+// ───────────────────────────────────────────────────────────────────────────
 console.log('');
 if (fallas) {
   console.log(`${fallas} FALLA${fallas === 1 ? '' : 'S'} — la hoja de GP no entra entera.`);

@@ -25,6 +25,25 @@
 //   firebase emulators:start --only firestore,auth --project campo-fosmon
 //   node scripts/sembrar-preview-emulador.cjs
 
+// La versión del parser se LEE de `functions/index.js`, no se teclea aquí. Era
+// la tercera copia del mismo número —las otras dos están en
+// `functions/index.js` y `src/App.jsx`— y al subirla a 4 el preview se habría
+// quedado en «caché de versión vieja», con la pantalla de Gastos en blanco y
+// la culpa aparentemente en la pantalla. Si el día de mañana no se encuentra,
+// se aborta: sembrar una versión inventada deja el preview mudo.
+const PARSER_VERSION = (() => {
+  const txt = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'functions', 'index.js'), 'utf8');
+  const m = txt.match(/^const PARSER_VERSION = (\d+);/m);
+  if (!m) {
+    console.error('No se encontró `PARSER_VERSION` en functions/index.js.\n' +
+      'Sin ese número la semilla deja el preview en «versión vieja» y la\n' +
+      'pantalla de Gastos sin cifras. Se aborta antes de escribir nada.');
+    process.exit(2);
+  }
+  return Number(m[1]);
+})();
+
 const HOST = '127.0.0.1';
 const PUERTO_FS = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
@@ -72,6 +91,14 @@ const CUENTAS = [
   // obras en atraso medible no se vería la mitad que importa.
   { correo: 'contralor@cotea.com.mx', nombre: 'Contraloría Coatzacoalcos',
     rol: 'contralor', tipo: 'dependencia', orgId: 'coatzacoalcos' },
+  // La sexta existe por una sola pantalla: el panel de diagnóstico del parser
+  // de GP, que sólo ve `admin_sistema`. Sin esta cuenta ese panel NO SE PODÍA
+  // ABRIR en el preview, y así estuvo clasificando columnas contra prefijos
+  // que el parser no emite —`y_`, `m_`, `w_`— con la columna «tipo» vacía en
+  // todos los renglones. Un instrumento que nadie puede encender es como no
+  // tenerlo: es el que debía haber delatado la semana en dos columnas.
+  { correo: 'sistema@fosmon.com.mx', nombre: 'Admin Sistema',
+    rol: 'admin_sistema', tipo: 'constructora', orgId: 'fosmon' },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
@@ -713,22 +740,41 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       ],
     },
   };
+  // `colMap` es lo que mira el panel de diagnóstico del parser, y se siembra
+  // con la forma REAL de la hoja: la S40 repartida en DOS columnas porque cae
+  // a caballo entre septiembre y octubre. Sin un caso partido aquí, el panel
+  // se vería bien en el preview y seguiría sin saber enseñar el único caso que
+  // importa —que es cómo se perdieron $9,719,396.98 sin que nadie lo viera.
+  const gpColMap = {
+    grand_total: 204,
+    total_year_2025: 144, total_year_2026: 203,
+    year_2025: 74, year_2026: 145,
+    total_month_2026_09: 193, total_month_2026_10: 199,
+    week_2026_38: [186], week_2026_39: [188], week_2026_40: [196, 198],
+    week_2026_41: [200], week_2026_42: [201], week_2026_43: [202],
+  };
   await escribir('global/gp_construct', {
-    parserVersion: 3,
+    parserVersion: PARSER_VERSION,
     ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
     semanasDisponibles: gpSemanas,
     ultimaSemana: 'S43',
+    mesesDisponibles: ['M2026-09', 'M2026-10'],
+    ultimoMes: 'M2026-10',
+    totalObras: Object.keys(GP).length,
+    colMap: gpColMap,
     obras: GP,
   });
   for (const [id, o] of Object.entries(GP)) {
     await escribir(`global/gp_detalle/obras/${id}`, {
-      parserVersion: 3,
+      parserVersion: PARSER_VERSION,
       ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
       ...o,
     });
   }
   console.log('obras de constructora: 0114, 0121 (en la raíz) + global/gp_construct');
-  console.log('  GP: 0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
+  console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
+  console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
+  console.log('  colMap con la S40 partida en dos columnas, como la hoja real');
   console.log('  y su detalle en global/gp_detalle/obras/<id>, que es el que gana');
 
   // ── Obras de la dependencia, BAJO SU ORGANIZACIÓN ─────────────────────────

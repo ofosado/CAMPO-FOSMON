@@ -728,7 +728,11 @@ exports.listarUsuarios = onCall(async (request) => {
 
 const GP_SHEET_ID = "1UaRI7ysMttXvET9I6hXPJAqadUYRd0Y0Qiwy8uRi82c";
 const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/export?format=csv`;
-const PARSER_VERSION = 3;
+// v4 (2026-10-28): una semana a caballo entre dos meses se suma en vez de
+// pisarse. La caché v3 trae la serie semanal corta y NO se puede reaprovechar:
+// subir el número es lo que hace que el front la rechace y pida Refrescar en
+// vez de seguir pintando cifras que ya se sabe que faltan.
+const PARSER_VERSION = 4;
 
 // ── Parser CSV robusto (maneja comillas con comas dentro) ──
 function parseCsvLine(line) {
@@ -856,7 +860,20 @@ function parsearGPConstruct(csvText) {
   // Construir mapa de semanas del AÑO ACTUAL (2026)
   // Las semanas se repiten por año, así que solo nos quedamos con las de la última instancia
   // (asumiendo que el orden de columnas es 2024 → 2025 → 2026)
-  const weekColsByYear = {}; // {año: {semana: ci}}
+  // {año: {semana: [ci, ...]}} — LISTA de columnas, no una sola. La hoja es
+  // una tabla dinámica agrupada por mes, y una semana de calendario que cruza
+  // el cambio de mes sale PARTIDA EN DOS COLUMNAS: la última del mes que
+  // termina y la primera del que empieza. Guardando un solo índice, la segunda
+  // columna PISABA a la primera y su dinero desaparecía de la serie semanal
+  // —sólo de ésa: meses, años y Total general salían bien, que es por lo que
+  // nadie lo vio en producción.
+  //
+  // No es un caso raro ni nuevo: en la hoja del 2026-10-28 pasa 5 veces en
+  // 2026 (S14 S18 S27 S36 S40), 5 en 2025 y 6 en 2024, SIEMPRE en frontera de
+  // mes. Medido ese día, eran $9,719,396.98 invisibles en las cinco obras
+  // activas y $15,409,486.89 en las 34 de la hoja; la 0127 sola perdía
+  // $3,118,966.24 y su velocidad semanal salía 26.7% baja.
+  const weekColsByYear = {};
   if (weekRow >= 0) {
     // Vamos a mapear semanas asociándolas al año contextual basado en la columna
     // Para eso, recorremos el row de semanas y vamos contando en qué bloque de año estamos
@@ -874,7 +891,8 @@ function parsearGPConstruct(csvText) {
         const n = parseInt(cell);
         if (n >= 1 && n <= 53) {
           if (!weekColsByYear[añoActual]) weekColsByYear[añoActual] = {};
-          weekColsByYear[añoActual][n] = ci;
+          if (!weekColsByYear[añoActual][n]) weekColsByYear[añoActual][n] = [];
+          weekColsByYear[añoActual][n].push(ci);
         }
       }
     }
@@ -906,8 +924,11 @@ function parsearGPConstruct(csvText) {
   // Tomar las semanas del año más reciente como las "semanas disponibles" del Sheet
   const añoMasReciente = Object.keys(weekColsByYear).sort().pop() || '2026';
   const weekColsActual = weekColsByYear[añoMasReciente] || {};
-  Object.entries(weekColsActual).forEach(([n, ci]) => {
-    colMap[`week_${añoMasReciente}_${n}`] = ci;
+  // El valor de una entrada `week_*` es una LISTA de columnas. Las demás
+  // entradas de `colMap` siguen siendo un índice suelto: una semana es lo
+  // único que la hoja puede repartir en varias columnas.
+  Object.entries(weekColsActual).forEach(([n, cols]) => {
+    colMap[`week_${añoMasReciente}_${n}`] = cols;
   });
 
   // Sólo los meses del año en curso, igual que las semanas. Emitir los tres años
@@ -967,12 +988,19 @@ function parsearGPConstruct(csvText) {
         if (!isNaN(v) && v !== 0) meses[`M${mesKey}`] = Math.abs(v);
       });
 
-      // Semanas (del año actual)
+      // Semanas (del año actual). Una semana puede venir en varias columnas
+      // —ver `weekColsByYear`— y entonces su gasto es la SUMA de todas, no la
+      // de la última. Se toma el valor absoluto columna por columna, igual que
+      // en meses y años, para no cambiar de criterio a media cuenta.
       const semanas = {};
-      Object.entries(colMap).filter(([k]) => k.startsWith('week_')).forEach(([k, ci]) => {
+      Object.entries(colMap).filter(([k]) => k.startsWith('week_')).forEach(([k, cols]) => {
         const partes = k.split('_'); // ['week', '2026', '22']
-        const v = parseMonto(row[ci]);
-        if (!isNaN(v) && v !== 0) semanas[`S${partes[2]}`] = Math.abs(v);
+        let suma = 0;
+        for (const ci of cols) {
+          const v = parseMonto(row[ci]);
+          if (!isNaN(v)) suma += Math.abs(v);
+        }
+        if (suma !== 0) semanas[`S${partes[2]}`] = suma;
       });
 
       // total2026 = el más reciente total anual
