@@ -1564,6 +1564,119 @@ async function descargarYGuardarGPPorObra(credenciales = {}) {
   return { ...agrupado, obrasPedidas: claves, obrasConError: fallos, renglonesLeidos: renglones.length };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// EL CATÁLOGO: qué obras EXISTEN — que no es la misma pregunta que cuánto gastaron
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Nace de un defecto que el cambio de arriba introdujo. El alta de obra del
+// lado constructora obliga a escoger primero una obra de GP, y esa lista salía
+// de `global/gp_construct`, que es el documento de GASTO. Mientras el gasto
+// venía de la hoja había 34 obras ahí y la lista alcanzaba de casualidad. Desde
+// que el gasto se pide obra por obra sólo quedan las que CAMPO ya tiene —cinco—
+// y dar de alta una obra NUEVA se vuelve imposible: la que falta no está en la
+// lista porque no está en CAMPO, y no está en CAMPO porque no se puede dar de
+// alta. El círculo es cerrado, y no da ningún error: una lista corta no parece
+// una lista mutilada.
+//
+// El arreglo no es ampliar la lista del gasto —eso serían siete minutos de
+// llamadas para alimentar un selector— es separar las dos preguntas. «Qué obras
+// existen» se contesta con el recorrido completo, UNA llamada, y sale un
+// documento chico.
+//
+// Va SIN DINERO a propósito. El catálogo sirve para escoger; el gasto de una
+// obra que todavía no está en CAMPO no tiene a quién pertenecer, y publicarlo
+// en un documento aparte sería una segunda cuenta del mismo número.
+const CATALOGO_GP_VERSION = 1;
+
+// Pura. El nombre que gana es el del cheque MÁS RECIENTE, no el más repetido:
+// una obra que se renombró arrastra cientos de renglones con el nombre viejo y
+// unos pocos con el nuevo, y el que hay que enseñar para escogerla hoy es el
+// nuevo. Empate de fecha → el más repetido; eso es un desempate, no la regla.
+//
+// Medido el 2026-11-02 sobre los 46,470 renglones del recorrido completo: 67
+// obras con clave de 4 dígitos, 16 renglones sin clave, ninguna obra con dos
+// grafías. `obrasRenombradas` existe para que el día que aparezca una no haya
+// que adivinar cuál nombre se escogió.
+function catalogoDeRenglonesGP(filas) {
+  const lista = Array.isArray(filas) ? filas : [];
+  const porId = new Map();
+  let sinClave = 0;
+
+  for (const fila of lista) {
+    const etiqueta = String(fila && fila.DesProy != null ? fila.DesProy : "").trim();
+    const m = /^(\d{4})\s+(\S.*)$/.exec(etiqueta);
+    if (!m) { sinClave++; continue; }
+    const id = m[1];
+    const nombre = m[2].trim();
+    const fecha = String((fila && fila.F_Cheque) || "").slice(0, 10);
+    let e = porId.get(id);
+    if (!e) { e = { id, nombres: new Map(), ultimoCheque: "" }; porId.set(id, e); }
+    const g = e.nombres.get(nombre) || { cuenta: 0, ultima: "" };
+    g.cuenta++;
+    if (fecha > g.ultima) g.ultima = fecha;
+    e.nombres.set(nombre, g);
+    if (fecha > e.ultimoCheque) e.ultimoCheque = fecha;
+  }
+
+  const obrasRenombradas = [];
+  const obras = [...porId.values()].map((e) => {
+    const candidatos = [...e.nombres.entries()].sort((a, b) => {
+      if (a[1].ultima !== b[1].ultima) return a[1].ultima < b[1].ultima ? 1 : -1;
+      if (a[1].cuenta !== b[1].cuenta) return b[1].cuenta - a[1].cuenta;
+      return a[0].localeCompare(b[0]);
+    });
+    if (candidatos.length > 1) {
+      obrasRenombradas.push({ id: e.id, grafias: candidatos.map((c) => c[0]) });
+    }
+    return { id: e.id, nombre: candidatos[0][0], ultimoCheque: e.ultimoCheque };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+
+  return { obras, renglonesLeidos: lista.length, renglonesSinClave: sinClave, obrasRenombradas };
+}
+
+// El recorrido completo: obra 0 quiere decir «todas». 46,470 renglones y 12.8 s
+// medidos; el proceso llega a 228 MB, de ahí los 512 MiB del exportado.
+async function pedirTodoGP(usuario, password) {
+  const token = await entrarGPApi(usuario, password);
+  const r = await fetch(`${GP_API_BASE}/reportes/chequesObra/${GP_API_EMPRESA}/0`, {
+    headers: { Authorization: token, Accept: "application/json" },
+  });
+  if (!r.ok) throw new Error(`recorrido completo: HTTP ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error("recorrido completo: la respuesta no es una lista");
+  return j;
+}
+
+async function descargarYGuardarCatalogoGP(credenciales = {}) {
+  const usuario = credenciales.usuario || process.env.GP_USUARIO;
+  const password = credenciales.password || process.env.GP_PASSWORD;
+  if (!usuario || !password) throw new Error("faltan las credenciales de GP (GP_USUARIO / GP_PASSWORD)");
+
+  const filas = await pedirTodoGP(usuario, password);
+  const cat = catalogoDeRenglonesGP(filas);
+  // Un catálogo vacío pisaría el bueno y dejaría el alta de obra sin lista —que
+  // es justo el defecto que este documento viene a cerrar. Credencial mala,
+  // respuesta rara o formato cambiado tienen que terminar en una corrida en
+  // rojo con el catálogo de la semana pasada intacto, no en una lista vacía que
+  // parece una lista.
+  if (cat.obras.length === 0) {
+    throw new Error(`el recorrido trajo ${cat.renglonesLeidos} renglones y ` +
+      "ninguna obra con clave de 4 dígitos: no se pisa el catálogo anterior");
+  }
+
+  await admin.firestore().doc("global/gp_catalogo").set({
+    catalogoVersion: CATALOGO_GP_VERSION,
+    ultimaActualizacion: new Date().toISOString(),
+    fuente: "api-gp-completo",
+    totalObras: cat.obras.length,
+    renglonesLeidos: cat.renglonesLeidos,
+    renglonesSinClave: cat.renglonesSinClave,
+    obrasRenombradas: cat.obrasRenombradas,
+    obras: cat.obras,
+  });
+  return cat;
+}
+
 // ── HEALTH TRACKING ─────────────────────────────────────────────
 // Registra el resultado de cada ejecución de un cron job en Firestore
 // para que el Panel de Salud pueda monitorear el estado del sistema.
@@ -1912,6 +2025,78 @@ exports.refrescarGPDesdeHoja = onCall({
     };
   } catch (e) {
     throw new HttpsError("internal", `Error al leer la hoja de GP: ${e.message}`);
+  }
+});
+
+// ── El catálogo: semanal, porque las obras nuevas no aparecen a diario ──
+//
+// Lunes 7:00, una hora antes del gasto de las 8:00. Separados a propósito: el
+// token de GP es de un solo uso y un login nuevo invalida el anterior, así que
+// dos recorridos que se traslapan se pisan el token. Una hora de distancia es
+// de sobra para los 13 s que tarda éste.
+//
+// Semanal y no diario porque el catálogo cambia cuando FOSMON firma un contrato
+// nuevo —tres obras nuevas en octubre de 2026— no cuando alguien paga un cheque.
+// Si hace falta antes, está el botón.
+exports.actualizarCatalogoGP = onSchedule({
+  schedule: "0 7 * * 1",   // lunes 7:00am
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+  secrets: [GP_USUARIO, GP_PASSWORD],
+  timeoutSeconds: 300,
+  memory: "512MiB",
+}, async () => {
+  const t0 = Date.now();
+  console.log("Iniciando actualización del catálogo de obras de GP…");
+  try {
+    const cat = await descargarYGuardarCatalogoGP({
+      usuario: GP_USUARIO.value(), password: GP_PASSWORD.value(),
+    });
+    const mensaje = `OK: ${cat.obras.length} obras en el catálogo, ` +
+      `${cat.renglonesLeidos} renglones leídos` +
+      (cat.renglonesSinClave ? `, ${cat.renglonesSinClave} sin clave` : "") +
+      (cat.obrasRenombradas.length ? `, ${cat.obrasRenombradas.length} renombrada(s)` : "");
+    console.log(mensaje);
+    await registrarSalud("gp_catalogo", true, mensaje, {
+      duracionMs: Date.now() - t0,
+      totalObras: cat.obras.length,
+      renglonesLeidos: cat.renglonesLeidos,
+      renglonesSinClave: cat.renglonesSinClave,
+      obrasRenombradas: cat.obrasRenombradas,
+    });
+  } catch (e) {
+    console.error("Error al actualizar el catálogo de GP:", e);
+    await registrarFalloDeSalud("gp_catalogo", e, { duracionMs: Date.now() - t0 });
+    throw e;
+  }
+});
+
+// ── CALLABLE: pedir el catálogo ahora mismo ──
+//
+// Lo puede disparar cualquier usuario con sesión, igual que `refrescarGP`. No es
+// un descuido: quien descubre que falta una obra en el catálogo es precisamente
+// quien está intentando darla de alta, y dejarlo esperando al lunes por un
+// documento de 67 renglones sería devolverle el mismo bloqueo con otra cara.
+exports.refrescarCatalogoGP = onCall({
+  region: "us-central1",
+  secrets: [GP_USUARIO, GP_PASSWORD],
+  timeoutSeconds: 300,
+  memory: "512MiB",
+}, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  try {
+    const cat = await descargarYGuardarCatalogoGP({
+      usuario: GP_USUARIO.value(), password: GP_PASSWORD.value(),
+    });
+    return {
+      ok: true,
+      totalObras: cat.obras.length,
+      renglonesLeidos: cat.renglonesLeidos,
+      renglonesSinClave: cat.renglonesSinClave,
+      obrasRenombradas: cat.obrasRenombradas,
+    };
+  } catch (e) {
+    throw new HttpsError("internal", `Error al refrescar el catálogo de GP: ${e.message}`);
   }
 });
 

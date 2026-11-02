@@ -31,18 +31,25 @@
 // quedado en «caché de versión vieja», con la pantalla de Gastos en blanco y
 // la culpa aparentemente en la pantalla. Si el día de mañana no se encuentra,
 // se aborta: sembrar una versión inventada deja el preview mudo.
-const PARSER_VERSION = (() => {
+const versionDeFunciones = (nombre, consecuencia) => {
   const txt = require('fs').readFileSync(
     require('path').join(__dirname, '..', 'functions', 'index.js'), 'utf8');
-  const m = txt.match(/^const PARSER_VERSION = (\d+);/m);
+  const m = txt.match(new RegExp(`^const ${nombre} = (\\d+);`, 'm'));
   if (!m) {
-    console.error('No se encontró `PARSER_VERSION` en functions/index.js.\n' +
-      'Sin ese número la semilla deja el preview en «versión vieja» y la\n' +
-      'pantalla de Gastos sin cifras. Se aborta antes de escribir nada.');
+    console.error(`No se encontró \`${nombre}\` en functions/index.js.\n` +
+      `Sin ese número ${consecuencia}\n` +
+      'Se aborta antes de escribir nada.');
     process.exit(2);
   }
   return Number(m[1]);
-})();
+};
+const PARSER_VERSION = versionDeFunciones('PARSER_VERSION',
+  'la semilla deja el preview en «versión vieja» y la pantalla de Gastos sin cifras.');
+// Y la del catálogo, por lo mismo: si no empata, el alta de obra descarta el
+// catálogo sembrado y vuelve a ofrecer sólo las obras que YA están en CAMPO —
+// que es exactamente el defecto que el catálogo viene a cerrar.
+const CATALOGO_GP_VERSION = versionDeFunciones('CATALOGO_GP_VERSION',
+  'el alta de obra descarta el catálogo y el preview no puede probar el defecto.');
 
 const HOST = '127.0.0.1';
 const PUERTO_FS = Number(process.env.EMU_PORT || 8080);
@@ -99,6 +106,15 @@ const CUENTAS = [
   // tenerlo: es el que debía haber delatado la semana en dos columnas.
   { correo: 'sistema@fosmon.com.mx', nombre: 'Admin Sistema',
     rol: 'admin_sistema', tipo: 'constructora', orgId: 'fosmon' },
+  // La séptima existe por el mismo motivo que la sexta: el alta de obra del
+  // lado constructora la permite `ROLES_ALTA_OBRA_C` —`director_operaciones` y
+  // `gerente_construccion`— y NINGUNA de las seis cuentas anteriores tiene uno
+  // de esos dos roles. El botón «+ Nueva obra» no se pintaba para nadie, así
+  // que el selector de obra de GP que abre ese modal no se podía MIRAR en el
+  // preview: es justo el que se quedó corto cuando el gasto dejó de traer las
+  // 34 obras de la hoja. Un alta que nadie puede abrir se verifica sola.
+  { correo: 'gerencia@fosmon.com.mx', nombre: 'Gerencia de Construcción',
+    rol: 'gerente_construccion', tipo: 'constructora', orgId: 'fosmon' },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
@@ -783,11 +799,102 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       ...o,
     });
   }
+  // ── El catálogo de obras de GP: qué obras EXISTEN, sin dinero ──────────────
+  //
+  // Las 67 obras son las REALES, medidas el 2026-11-02 contra fosedy.org con el
+  // recorrido completo (46,470 renglones). No están inventadas y no se recortan
+  // a dos: el defecto que este documento cierra sólo se ve con la lista larga —
+  // con cinco obras sembradas, un selector que ofrece cinco parece correcto.
+  //
+  // Sin montos a propósito: el catálogo contesta «qué obras hay», y el gasto de
+  // una obra que CAMPO no tiene no le pertenece a nadie todavía.
+  const CATALOGO_GP = [
+    { id: '0001', nombre: "OFICINA CENTRAL", ultimoCheque: '2026-10-30' },
+    { id: '0002', nombre: "TALLER", ultimoCheque: '2026-10-30' },
+    { id: '0011', nombre: "OBRAS ANTERIORES", ultimoCheque: '2020-05-25' },
+    { id: '0013', nombre: "TRANSPORTE FOSMON", ultimoCheque: '2026-10-13' },
+    { id: '0019', nombre: "ACTIVO FIJO FOSMON", ultimoCheque: '2026-03-17' },
+    { id: '0036', nombre: "COMPRAS FOSMON", ultimoCheque: '2026-10-29' },
+    { id: '0037', nombre: "LICITACIONES FOSMON", ultimoCheque: '2026-10-30' },
+    { id: '0038', nombre: "IMPUESTOS FOSMON", ultimoCheque: '2026-10-23' },
+    { id: '0061', nombre: "PARQUE CENTRAL MIGUEL HIDALGO 1era Etapa", ultimoCheque: '2020-08-27' },
+    { id: '0064', nombre: "AMPLIACION ELECTRIFICACION MANANTIAL", ultimoCheque: '2020-10-30' },
+    { id: '0069', nombre: "PARQUE CENTRAL MIGUEL HIDALGO 2da Etapa", ultimoCheque: '2022-01-17' },
+    { id: '0070', nombre: "REHABILITACION AZUFRE 1", ultimoCheque: '2020-10-16' },
+    { id: '0071', nombre: "BACHOCO OLUTA", ultimoCheque: '2021-03-31' },
+    { id: '0072', nombre: "BACHOCO CHINAMECA", ultimoCheque: '2020-07-29' },
+    { id: '0073', nombre: "BACHOCO MONTAJE", ultimoCheque: '2020-12-30' },
+    { id: '0074', nombre: "TUBERIA OLUTA", ultimoCheque: '2022-06-14' },
+    { id: '0076', nombre: "RDB TORRES DE ENFRIAMIENTO (OBRA CIVIL)", ultimoCheque: '2024-08-29' },
+    { id: '0077', nombre: "RDB INGENIERIA TORRES DE ENFRIAMIENTO", ultimoCheque: '2022-11-14' },
+    { id: '0078', nombre: "RDB SUMINISTRO E INSTALACION DE TORRES D", ultimoCheque: '2024-04-19' },
+    { id: '0079', nombre: "RDB SUBESTACION ELECTRICA", ultimoCheque: '2023-02-08' },
+    { id: '0080', nombre: "PROYECTO MALECON", ultimoCheque: '2022-02-03' },
+    { id: '0081', nombre: "RDB COMPLEMENTARIA TORRES", ultimoCheque: '2022-08-18' },
+    { id: '0082', nombre: "TORRE MINATITLAN", ultimoCheque: '2023-09-19' },
+    { id: '0083', nombre: "TORRES DE ENFRIAMIENTO DOS BOCAS", ultimoCheque: '2026-06-09' },
+    { id: '0085', nombre: "SUPERVISION API", ultimoCheque: '2024-07-01' },
+    { id: '0086', nombre: "TE 07 SALINA CRUZ", ultimoCheque: '2024-08-13' },
+    { id: '0087', nombre: "BARDA REFINERIA MINATITLAN", ultimoCheque: '2025-06-25' },
+    { id: '0088', nombre: "PEMEX MINA BARDA 2 0823", ultimoCheque: '2026-05-27' },
+    { id: '0089', nombre: "PROCURA MATAPIONCHE", ultimoCheque: '2024-08-26' },
+    { id: '0090', nombre: "PRO-AGROINDUSTRIA, SAIPEM", ultimoCheque: '2024-11-20' },
+    { id: '0091', nombre: "EX-FABRICA TRIPLAY OAXACA", ultimoCheque: '2026-06-16' },
+    { id: '0093', nombre: "PATIO DE CHATARRA, TAMSA", ultimoCheque: '2026-06-30' },
+    { id: '0094', nombre: "LINDE SAN LUIS POTOSI OBRA CIVIL 0824", ultimoCheque: '2026-10-28' },
+    { id: '0095', nombre: "Ex-Fabrica Triplay Oaxaca B", ultimoCheque: '2024-08-05' },
+    { id: '0096', nombre: "FOSMON NAVE IND. CALZADAS 0824", ultimoCheque: '2026-10-30' },
+    { id: '0097', nombre: "PEMEX MINA TORRE 100 0824", ultimoCheque: '2026-10-26' },
+    { id: '0098', nombre: "COATZACOALCOS LAND DEVELOPMENT - TENARIS", ultimoCheque: '2026-06-09' },
+    { id: '0099', nombre: "PROMOTORA OAXACA ESTADIO 0924", ultimoCheque: '2026-08-31' },
+    { id: '0100', nombre: "TAMSA VER FAT 3 1024", ultimoCheque: '2026-06-16' },
+    { id: '0101', nombre: "DESMANTELAMIENTO CASETA", ultimoCheque: '2025-10-03' },
+    { id: '0102', nombre: "PEMEX MINA REPARACION BARDA 0225", ultimoCheque: '2026-06-16' },
+    { id: '0103', nombre: "OBRA PLUVIAL PUENTE COATZA 1", ultimoCheque: '2026-06-09' },
+    { id: '0104', nombre: "SIOP COATZA BACHEO CANGREJERA 0225", ultimoCheque: '2026-06-09' },
+    { id: '0105', nombre: "TAMSA VER CONALEP T-LAB 0325", ultimoCheque: '2026-10-27' },
+    { id: '0106', nombre: "FOSMON RIO CALZADAS 0325", ultimoCheque: '2026-10-30' },
+    { id: '0107', nombre: "FOSMON BELLAVISTA 0325", ultimoCheque: '2026-10-29' },
+    { id: '0109', nombre: "CENTRO DE CONVENCIONES 0425", ultimoCheque: '2026-10-30' },
+    { id: '0110', nombre: "SIOP NANCHITAL REHAB. 0525", ultimoCheque: '2026-05-25' },
+    { id: '0111', nombre: "TAMSA VER CRIBADO MATERIALES 0525", ultimoCheque: '2026-10-30' },
+    { id: '0112', nombre: "SIOP COATZA MALECON 0526", ultimoCheque: '2026-10-29' },
+    { id: '0113', nombre: "TEN VER DEMOLICIÓN DE OFICINAS DE PATIOS", ultimoCheque: '2025-12-19' },
+    { id: '0114', nombre: "OAXACA PARQUE LINEAL 0825", ultimoCheque: '2026-10-31' },
+    { id: '0115', nombre: "TAMSA VERACRUZ COMEDOR 0825", ultimoCheque: '2026-10-30' },
+    { id: '0116', nombre: "LOSAS COMPLEMENTARIAS VERACRUZ", ultimoCheque: '2026-03-23' },
+    { id: '0117', nombre: "SIOP COATZA REMODELACION CASETA 0925", ultimoCheque: '2026-08-31' },
+    { id: '0119', nombre: "SIOP COATZA ENTRONQUE NANCHITAL 1125", ultimoCheque: '2026-08-31' },
+    { id: '0120', nombre: "TAMSA VER MONTAJE DE ESTRUCTURA 1125", ultimoCheque: '2026-06-26' },
+    { id: '0121', nombre: "SIOP COATZA REHAB. AV. UNIVERSIDAD 0226", ultimoCheque: '2026-10-31' },
+    { id: '0122', nombre: "AYUNTAMIENTO COATZA MANTTO LOPEZ M 03226", ultimoCheque: '2026-03-27' },
+    { id: '0123', nombre: "AYUNTAMIENTO COATZA EDIFICIOS 0226", ultimoCheque: '2026-09-09' },
+    { id: '0124', nombre: "SIOP COATZA REHAB. PUENTE 0226", ultimoCheque: '2026-10-30' },
+    { id: '0125', nombre: "TAMSA VER SERVICIOS ESPECIALIZADOS 0526", ultimoCheque: '2026-10-31' },
+    { id: '0126', nombre: "PEMEX CANGREJERA TECHUMBRE 0526", ultimoCheque: '2026-10-31' },
+    { id: '0127', nombre: "CENTRO DE CONVENCIONES MTTO 0626", ultimoCheque: '2026-10-31' },
+    { id: '0128', nombre: "SIOP COLECTOR MALECON PENTAGONO 0926", ultimoCheque: '2026-10-30' },
+    { id: '0129', nombre: "AYU-COAT-REHABILITACION DEL MALECON 0926", ultimoCheque: '2026-10-30' },
+    { id: '0131', nombre: "SIOP COAT-EMISOR J. SPARK PENTAGONO 1026", ultimoCheque: '2026-10-22' },
+  ];
+  await escribir('global/gp_catalogo', {
+    catalogoVersion: CATALOGO_GP_VERSION,
+    ultimaActualizacion: new Date(Date.now() - 26 * 3600000).toISOString(),
+    fuente: 'api-gp-completo',
+    totalObras: CATALOGO_GP.length,
+    // Los dos números son los medidos el 2026-11-02, no un relleno.
+    renglonesLeidos: 46470,
+    renglonesSinClave: 16,
+    obrasRenombradas: [],
+    obras: CATALOGO_GP,
+  });
+
   console.log('obras de constructora: 0114, 0121 (en la raíz) + global/gp_construct');
   console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
   console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
   console.log(`  fuente api-gp-por-obra · ${gpRenglones + 2} renglones · 1 sin obra ($183,450.75)`);
   console.log('  y su detalle en global/gp_detalle/obras/<id>, que es el que gana');
+  console.log(`  catálogo aparte en global/gp_catalogo: ${CATALOGO_GP.length} obras, sin montos`);
 
   // ── Obras de la dependencia, BAJO SU ORGANIZACIÓN ─────────────────────────
   // Tres obras: una sana, una atrasada y una recién arrancada sin estimaciones

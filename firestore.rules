@@ -610,6 +610,14 @@ service cloud.firestore {
       allow read: if esConstructora() && !esCliente();
       allow write: if false;
     }
+    // Catálogo de obras de GP: id, nombre y fecha del último cheque. No trae
+    // dinero, pero sí la cartera completa de FOSMON —67 obras, con el cliente
+    // dentro del nombre— así que lo lee exactamente quien lee el documento de
+    // gasto y nadie más. La escribe la Cloud Function con el admin SDK.
+    match /global/gp_catalogo {
+      allow read: if esConstructora() && !esCliente();
+      allow write: if false;
+    }
     match /global/historial_obras {
       allow read: if esDirectivoC();
       allow write: if esDirectivoC();
