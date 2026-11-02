@@ -732,7 +732,13 @@ const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/expo
 // pisarse. La caché v3 trae la serie semanal corta y NO se puede reaprovechar:
 // subir el número es lo que hace que el front la rechace y pida Refrescar en
 // vez de seguir pintando cifras que ya se sabe que faltan.
-const PARSER_VERSION = 4;
+//
+// v5 (2026-10-30): el gasto ya no viene de la hoja que Luis refresca a mano,
+// viene de la consulta por obra (ver «GP POR OBRA» más abajo). Las cifras
+// CAMBIAN —la caché v4 está congelada al viernes 23 de octubre y le faltan
+// $6,960,926.22— y el documento ya no trae `colMap`, porque no hay columnas.
+// Por lo mismo que en v4: la caché vieja no se reaprovecha, se rechaza.
+const PARSER_VERSION = 5;
 
 // ── Parser CSV robusto (maneja comillas con comas dentro) ──
 function parseCsvLine(line) {
@@ -1107,7 +1113,11 @@ async function descargarYGuardarGP() {
   const resumen = {
     parserVersion: PARSER_VERSION,
     ultimaActualizacion: new Date().toISOString(),
-    fuente: 'cloud-function',
+    // Quién escribió este número. Antes decía 'cloud-function', que no
+    // distinguía nada: las dos fuentes son cloud functions. Lo que hay que
+    // poder leer en la pantalla es si la cifra vino de la hoja de Luis
+    // —congelada en su último refresco— o de la consulta por obra.
+    fuente: 'hoja-gp',
     semanasDisponibles: parsed.semanasDisponibles,
     ultimaSemana: parsed.ultimaSemana,
     mesesDisponibles: parsed.mesesDisponibles,
@@ -1162,6 +1172,396 @@ async function descargarYGuardarGP() {
   if (batchCount > 0) await batch.commit();
 
   return parsed;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// GP POR OBRA — la consulta viva en lugar del pivote congelado
+// ════════════════════════════════════════════════════════════════════════════
+//
+// POR QUÉ. La hoja de arriba es un pivote que Luis Mayo refresca a mano. Medido
+// el 2026-10-30 contra la misma consulta que la alimenta, la hoja estaba
+// cerrada al VIERNES 23 de octubre: CAMPO no mostraba $6,960,926.22 de gasto
+// del 26 al 29. El 1% que llevábamos semanas persiguiendo no era un error de
+// cuentas, era retraso de captura. Pedir el dato a su origen lo quita de raíz.
+//
+// LA HOJA ES, LITERALMENTE, ESTE PIVOTE. Medido el 2026-11-02 sobre las obras
+// 0126 y 0127, agrupando los renglones por `DesProy` → `AgrConce` →
+// `Nombre_Beneficiario` y sumando `ImporteDisSIva`:
+//
+//   · 0127: $34,863,896.41 contra $34,863,896.41. Los 4 rubros al centavo, los
+//     66 proveedores al centavo, las 20 semanas y los 5 meses al centavo.
+//   · 0126: los 4 rubros y 116 de 117 proveedores al centavo. El único que
+//     difería —NR FINANCE MEXICO, $28,357.66— son cinco renglones con fecha
+//     15-oct que la API YA TENÍA y la hoja nunca vio. La API no sobraba: la
+//     hoja faltaba.
+//
+// Así que esto no es una fuente nueva con otra aritmética. Es la misma cuenta
+// sin el retraso, y por eso el banco `scripts/prueba-agrupador-gp.cjs` exige
+// que las dos den lo mismo renglón por renglón.
+//
+// LO QUE EL SERVIDOR IMPONE AL DISEÑO (medido, no supuesto):
+//
+//   · El token es DE UN SOLO USO y además un login nuevo INVALIDA el anterior.
+//     Pedir dos obras en paralelo devuelve HTTP 500 en la que llegue segunda.
+//     De ahí que el recorrido sea estrictamente EN SERIE, con su propio login
+//     por obra. No es prudencia: es lo único que funciona.
+//   · El servidor PIENSA ~9.8 s y baja en ~2.6 s. Lo que hay que recortar es
+//     trabajo del servidor, no ancho de banda; ya manda brotli y no respeta
+//     `If-None-Match`, así que no hay nada que cachear del lado del cliente.
+//   · Pedir TODO son 52.69 MB y 228 MB de heap: no cabe en una función de
+//     256 MiB. Las cinco obras de CAMPO son 5.07 MB, 32.5 s y 14 MB de heap.
+//
+// LA TRAMPA QUE CUESTA DINERO. El agrupador por obra tiene que ser el PREFIJO
+// DE CUATRO DÍGITOS DE `DesProy`, nunca `ENumProy`. Son dos numeraciones
+// distintas y no se corresponden: medido sobre los 46,367 renglones del
+// 2026-10-30, `ENumProy` 0001 aparece en 21 obras distintas y 29 de los 67
+// valores los comparten varias obras. Agrupar por ahí no deja un hueco que se
+// note: mete el gasto de una obra en otra y la cifra sigue siendo creíble.
+// Eso es lo que la contraprueba del banco pone en rojo.
+
+const GP_API_BASE = "https://fosedy.org";
+const GP_API_EMPRESA = 1;
+// Credenciales de sólo lectura del reporte de cheques por obra. Nunca van en el
+// front —desde el navegador serían públicas— ni en el repositorio. Se cargan con:
+//   firebase functions:secrets:set GP_USUARIO
+//   firebase functions:secrets:set GP_PASSWORD
+const GP_USUARIO = defineSecret("GP_USUARIO");
+const GP_PASSWORD = defineSecret("GP_PASSWORD");
+// Respiro entre obras. El servidor es el de contabilidad de la empresa y lo
+// está usando gente: cinco ráfagas seguidas sin pausa no le hacen falta a nadie
+// cuando el recorrido completo ya dura medio minuto.
+const GP_PAUSA_MS = 400;
+
+const dormirGP = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// `Mes` viene como "10 .- Octubre" en los 46,367 renglones medidos. Se lee el
+// número de adelante, no el nombre: el nombre trae acentos y el número es el
+// que ordena.
+function mesDeRenglonGP(valor) {
+  const m = /^\s*(\d{1,2})\b/.exec(String(valor == null ? "" : valor));
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isInteger(n) || n < 1 || n > 12) return null;
+  return String(n).padStart(2, "0");
+}
+
+function semanaDeRenglonGP(valor) {
+  const n = Number(valor);
+  if (!Number.isInteger(n) || n < 1 || n > 53) return null;
+  return String(n);
+}
+
+// ── EL NÚCLEO: renglones crudos → la misma forma que saca el parser de la hoja ──
+//
+// Devuelve exactamente el contrato de `parsearGPConstruct` (obras, cada una con
+// sus rubros y proveedores, y las series por semana, mes y año), más un bloque
+// `descartes` con lo que no se pudo clasificar. Los descartes se CUENTAN y se
+// publican; callarlos convertiría un renglón ilegible en dinero desaparecido.
+//
+// Es una función pura a propósito: es lo único de este camino que se puede
+// medir sin red y contra la hoja.
+function agruparRenglonesGP(filas) {
+  const lista = Array.isArray(filas) ? filas : [];
+  const monto = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.abs(n) : 0; };
+  const texto = (v) => String(v == null ? "" : v).trim();
+
+  const descartes = {
+    renglones: lista.length,
+    sinObra: 0, montoSinObra: 0,
+    sinRubro: 0, montoSinRubro: 0,
+    sinProveedor: 0,
+    sinAño: 0, sinMes: 0, sinSemana: 0,
+    proveedoresEnCero: 0,
+  };
+
+  // El año más reciente manda, igual que en la hoja: `semanas` y `meses` son
+  // sólo de ese año. Publicar los siete años que arrastra una obra
+  // multiplicaría `gp_detalle` por siete y la pantalla sigue leyendo doce meses.
+  let añoMasReciente = null;
+  for (const fila of lista) {
+    const a = Number(fila && fila.Amo);
+    if (!Number.isInteger(a)) continue;
+    if (añoMasReciente === null || a > añoMasReciente) añoMasReciente = a;
+  }
+
+  const obras = {};
+  const semanasVistas = new Set();
+  const mesesVistos = new Set();
+
+  for (const fila of lista) {
+    if (!fila) continue;
+    const etiquetaObra = texto(fila.DesProy);
+    const importe = monto(fila.ImporteDisSIva);
+    // Sin prefijo de 4 dígitos no hay obra a la que colgar el gasto. Medido:
+    // 16 renglones de 46,367, $69,981.48, todos de 2020-2024 salvo uno de 2026
+    // en cero. Van al contador, no al olvido.
+    if (!/^\d{4}\s/.test(etiquetaObra)) {
+      descartes.sinObra++; descartes.montoSinObra += importe; continue;
+    }
+    const etiquetaRubro = texto(fila.AgrConce);
+    if (!etiquetaRubro) {
+      descartes.sinRubro++; descartes.montoSinRubro += importe; continue;
+    }
+    const nombreProv = texto(fila.Nombre_Beneficiario);
+    if (!nombreProv) { descartes.sinProveedor++; continue; }
+
+    const año = Number(fila.Amo);
+    const tieneAño = Number.isInteger(año);
+    if (!tieneAño) descartes.sinAño++;
+    const esAñoVivo = tieneAño && año === añoMasReciente;
+    const mes = esAñoVivo ? mesDeRenglonGP(fila.Mes) : null;
+    const semana = esAñoVivo ? semanaDeRenglonGP(fila.Semana) : null;
+    if (esAñoVivo && !mes) descartes.sinMes++;
+    if (esAñoVivo && !semana) descartes.sinSemana++;
+    const claveAño = tieneAño ? `Y${año}` : null;
+    const claveMes = mes ? `M${año}-${mes}` : null;
+    const claveSem = semana ? `S${semana}` : null;
+    if (claveMes) mesesVistos.add(claveMes);
+    if (claveSem) semanasVistas.add(claveSem);
+
+    // La clave del rubro es la ETIQUETA COMPLETA, no el código de 3 dígitos.
+    // Mismo motivo que en la hoja: «300 INDIRECTOS» y «300 SUBCONTRATOS»
+    // conviven —medido, 19,374 y 929 renglones— y el código no distingue.
+    let obra = obras[etiquetaObra];
+    if (!obra) {
+      obra = obras[etiquetaObra] = {
+        id: etiquetaObra.slice(0, 4), nombre: etiquetaObra,
+        semanas: {}, meses: {}, años: {},
+        total2026: 0, grandTotal: 0,
+        rubros: {}, proveedores: [],
+      };
+    }
+    let rubro = obra.rubros[etiquetaRubro];
+    if (!rubro) {
+      rubro = obra.rubros[etiquetaRubro] = {
+        id: etiquetaRubro.slice(0, 3), nombre: etiquetaRubro,
+        nombreCorto: etiquetaRubro.slice(4).trim(),
+        semanas: {}, meses: {}, años: {},
+        total2026: 0, grandTotal: 0,
+        proveedores: [],
+      };
+    }
+    // El proveedor cuelga del rubro, no de la obra: el mismo nombre en dos
+    // rubros son dos renglones distintos en la hoja y aquí también.
+    let prov = rubro.proveedores.find((p) => p.nombre === nombreProv);
+    if (!prov) {
+      prov = {
+        nombre: nombreProv, rubroId: rubro.id, rubroNombre: rubro.nombreCorto,
+        semanas: {}, meses: {}, años: {},
+        total2026: 0, grandTotal: 0, total: 0,
+      };
+      rubro.proveedores.push(prov);
+      obra.proveedores.push(prov);
+    }
+
+    for (const n of [obra, rubro, prov]) {
+      n.grandTotal += importe;
+      if (claveAño) n.años[claveAño] = (n.años[claveAño] || 0) + importe;
+      if (claveMes) n.meses[claveMes] = (n.meses[claveMes] || 0) + importe;
+      if (claveSem) n.semanas[claveSem] = (n.semanas[claveSem] || 0) + importe;
+    }
+  }
+
+  // Cierre: el total del año vivo y la poda de los que no movieron dinero.
+  // La hoja tampoco los lista —el parser descarta al proveedor cuyo total es
+  // cero— y hay 170 renglones en cero entre los 46,367, así que un proveedor
+  // que sólo tenga de esos existiría aquí y no allá.
+  const claveAñoVivo = añoMasReciente === null ? null : `Y${añoMasReciente}`;
+  // Un renglón en cero no debe DEJAR UNA CLAVE EN CERO. La hoja descarta la
+  // celda cuyo valor es 0 (`v !== 0` en `extraerValores`), así que publicar
+  // aquí un `S1: 0` que allá no existe haría que las dos fuentes difirieran en
+  // la forma sin diferir en el dinero — y el banco que las compara se pondría
+  // rojo por algo que no le importa a nadie.
+  const podarCeros = (nodo) => {
+    for (const serie of [nodo.años, nodo.meses, nodo.semanas]) {
+      for (const k of Object.keys(serie)) if (serie[k] === 0) delete serie[k];
+    }
+  };
+  for (const obra of Object.values(obras)) {
+    for (const rubro of Object.values(obra.rubros)) {
+      const vivos = rubro.proveedores.filter((p) => p.grandTotal !== 0);
+      descartes.proveedoresEnCero += rubro.proveedores.length - vivos.length;
+      rubro.proveedores = vivos;
+      for (const p of vivos) {
+        podarCeros(p);
+        p.total2026 = claveAñoVivo ? (p.años[claveAñoVivo] || 0) : 0;
+        p.total = p.grandTotal;
+      }
+      podarCeros(rubro);
+      rubro.total2026 = claveAñoVivo ? (rubro.años[claveAñoVivo] || 0) : 0;
+    }
+    obra.proveedores = obra.proveedores.filter((p) => p.grandTotal !== 0);
+    podarCeros(obra);
+    obra.total2026 = claveAñoVivo ? (obra.años[claveAñoVivo] || 0) : 0;
+  }
+
+  const semanasDisponibles = [...semanasVistas]
+    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  const mesesDisponibles = [...mesesVistos].sort();
+
+  return {
+    obras,
+    semanasDisponibles,
+    ultimaSemana: semanasDisponibles[semanasDisponibles.length - 1] || "",
+    mesesDisponibles,
+    ultimoMes: mesesDisponibles[mesesDisponibles.length - 1] || "",
+    totalObras: Object.keys(obras).length,
+    añoVivo: añoMasReciente,
+    descartes,
+  };
+}
+
+// ── Transporte: un login por llamada, porque el token no da para dos ──
+async function entrarGPApi(usuario, password) {
+  const r = await fetch(`${GP_API_BASE}/usuarios/login`, {
+    method: "POST",
+    headers: { usuario, password, Accept: "application/json" },
+  });
+  if (!r.ok) throw new Error(`login en GP: HTTP ${r.status}`);
+  const j = await r.json();
+  if (!j || !j.token) throw new Error("login en GP: respuesta sin token");
+  return j.token;
+}
+
+async function pedirObraGP(clave, usuario, password) {
+  // La ruta quiere el número SIN ceros a la izquierda: /1/126, no /1/0126.
+  const num = Number(clave);
+  if (!Number.isInteger(num) || num <= 0) throw new Error(`clave de obra inválida: ${clave}`);
+  const token = await entrarGPApi(usuario, password);
+  const r = await fetch(`${GP_API_BASE}/reportes/chequesObra/${GP_API_EMPRESA}/${num}`, {
+    headers: { Authorization: token, Accept: "application/json" },
+  });
+  if (!r.ok) throw new Error(`obra ${clave}: HTTP ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error(`obra ${clave}: la respuesta no es una lista`);
+  return j;
+}
+
+// ── Qué obras se piden: las que CAMPO tiene, no las 67 de la contabilidad ──
+// Son 5 contra 67. Pedir las 67 serían ~7 minutos y 52 MB para alimentar cinco
+// pantallas. Una obra de CAMPO sin clave de GP no se inventa: se devuelve en
+// `sinClave` para que el panel pueda decir cuál es.
+async function clavesGPdeCAMPO() {
+  const snap = await admin.firestore().collection("obras").get();
+  const claves = new Set();
+  const sinClave = [];
+  for (const doc of snap.docs) {
+    const info = doc.data() || {};
+    const explicita = String(info.gpId || "").trim();
+    const porId = /^\d{4}/.test(doc.id) ? doc.id.slice(0, 4) : null;
+    const clave = explicita || porId;
+    if (clave && /^\d{4}$/.test(clave)) claves.add(clave);
+    else sinClave.push({ obraId: doc.id, nombre: String(info.nombre || "") });
+  }
+  return { claves: [...claves].sort(), sinClave };
+}
+
+// ── La corrida: en serie, y una obra que falla no borra a las demás ──
+//
+// Si la 0114 se cae a media corrida, lo que NO puede pasar es que su gasto
+// aparezca en cero: cero es una afirmación sobre el dinero, y falsa. Se arrastra
+// lo que esa obra tenía en el resumen anterior y se marca `desactualizadaDesde`,
+// de modo que la pantalla pueda decir «esta obra es de ayer» en vez de mentir.
+async function descargarYGuardarGPPorObra(credenciales = {}) {
+  const usuario = credenciales.usuario || process.env.GP_USUARIO;
+  const password = credenciales.password || process.env.GP_PASSWORD;
+  if (!usuario || !password) throw new Error("faltan las credenciales de GP (GP_USUARIO / GP_PASSWORD)");
+
+  const { claves, sinClave } = await clavesGPdeCAMPO();
+  if (claves.length === 0) throw new Error("ninguna obra de CAMPO tiene clave de GP");
+
+  const db = admin.firestore();
+  const previoSnap = await db.doc("global/gp_construct").get();
+  const previo = previoSnap.exists ? (previoSnap.data() || {}) : {};
+  const obrasPrevias = previo.obras || {};
+
+  const renglones = [];
+  const fallos = [];
+  for (const clave of claves) {
+    try {
+      const filas = await pedirObraGP(clave, usuario, password);
+      for (const f of filas) renglones.push(f);
+    } catch (e) {
+      console.error(`GP por obra: falló ${clave}: ${e.message}`);
+      fallos.push({ clave, error: e.message });
+    }
+    await dormirGP(GP_PAUSA_MS);
+  }
+  if (renglones.length === 0) {
+    throw new Error(`ninguna de las ${claves.length} obras respondió: ` +
+      fallos.map((f) => `${f.clave} ${f.error}`).join(" · "));
+  }
+
+  const agrupado = agruparRenglonesGP(renglones);
+  const ahora = new Date().toISOString();
+
+  // Resumen: lo que el front baja al entrar. Mismas claves que el camino de la
+  // hoja, para que la pantalla no tenga que saber de dónde vino el dato — salvo
+  // `fuente`, que sí tiene que poder decirlo.
+  const obrasResumen = {};
+  for (const [key, val] of Object.entries(agrupado.obras)) {
+    obrasResumen[key] = {
+      id: val.id, nombre: val.nombre,
+      grandTotal: val.grandTotal, total2026: val.total2026,
+      años: val.años, meses: val.meses, semanas: val.semanas,
+      numRubros: Object.keys(val.rubros || {}).length,
+      numProveedores: (val.proveedores || []).length,
+    };
+  }
+  // Arrastre de las que fallaron: su cifra anterior, marcada como vieja.
+  const arrastradas = [];
+  for (const { clave } of fallos) {
+    const anterior = Object.values(obrasPrevias).find((o) => o && o.id === clave);
+    if (!anterior) continue;
+    obrasResumen[anterior.nombre || clave] = {
+      ...anterior,
+      desactualizadaDesde: previo.ultimaActualizacion || null,
+    };
+    arrastradas.push(clave);
+  }
+
+  const resumen = {
+    parserVersion: PARSER_VERSION,
+    ultimaActualizacion: ahora,
+    fuente: "api-gp-por-obra",
+    semanasDisponibles: agrupado.semanasDisponibles,
+    ultimaSemana: agrupado.ultimaSemana,
+    mesesDisponibles: agrupado.mesesDisponibles,
+    ultimoMes: agrupado.ultimoMes,
+    totalObras: Object.keys(obrasResumen).length,
+    añoVivo: agrupado.añoVivo,
+    // Diagnóstico, no adorno: con esto el panel puede decir qué se pidió, qué
+    // contestó y qué se quedó sin clasificar, sin que nadie tenga que suponerlo.
+    obrasPedidas: claves,
+    obrasConError: fallos,
+    obrasArrastradas: arrastradas,
+    obrasSinClaveGP: sinClave,
+    renglonesLeidos: renglones.length,
+    descartes: agrupado.descartes,
+    obras: obrasResumen,
+  };
+  await db.doc("global/gp_construct").set(resumen);
+
+  // Detalle por obra. Sólo se escriben las que SÍ contestaron: el documento de
+  // una obra que falló se deja intacto, que es más honesto que vaciarlo.
+  let batch = db.batch();
+  let pendientes = 0;
+  for (const val of Object.values(agrupado.obras)) {
+    batch.set(db.doc(`global/gp_detalle/obras/${val.id}`), {
+      parserVersion: PARSER_VERSION,
+      ultimaActualizacion: ahora,
+      fuente: "api-gp-por-obra",
+      id: val.id, nombre: val.nombre,
+      grandTotal: val.grandTotal, total2026: val.total2026,
+      años: val.años, meses: val.meses, semanas: val.semanas,
+      rubros: val.rubros, proveedores: val.proveedores,
+    });
+    pendientes++;
+    if (pendientes >= 400) { await batch.commit(); batch = db.batch(); pendientes = 0; }
+  }
+  if (pendientes > 0) await batch.commit();
+
+  return { ...agrupado, obrasPedidas: claves, obrasConError: fallos, renglonesLeidos: renglones.length };
 }
 
 // ── HEALTH TRACKING ─────────────────────────────────────────────
@@ -1401,22 +1801,43 @@ exports.vigilarDenegaciones = onSchedule({
 // Antes era semanal (lunes 9am), pero las facturas se agregan a GP durante
 // toda la semana y CAMPO mostraba snapshots desactualizados hasta el próximo
 // lunes. Ahora refresca diariamente para que la portada siempre esté al día.
+//
+// EL NOMBRE SE QUEDA, AUNQUE YA NO LEA LA HOJA. Renombrarlo a
+// `actualizarGPPorObra` no renombra el trabajo que ya está desplegado: dejaría
+// `actualizarGPSheet` vivo en Cloud Scheduler, leyendo la hoja congelada y
+// pisando cada mañana lo que esta corrida acaba de escribir en los mismos dos
+// documentos. Dos escritores para un número es justo el defecto que estamos
+// quitando. El identificador miente un poco; el dato no.
+//
+// 300 s de plazo porque el recorrido medido son 32.5 s para cinco obras y el
+// servidor piensa ~10 s por llamada: con el plazo de 60 s por omisión, una obra
+// lenta se lleva la corrida completa. 256 MiB porque las cinco obras ocupan
+// 14 MB de heap (la llamada de «todo» ocupaba 228 MB y por eso no se usa).
 exports.actualizarGPSheet = onSchedule({
   schedule: "0 8 * * *",   // diario 8:00am
   timeZone: "America/Mexico_City",
   region: "us-central1",
+  secrets: [GP_USUARIO, GP_PASSWORD],
+  timeoutSeconds: 300,
+  memory: "256MiB",
 }, async () => {
   const t0 = Date.now();
-  console.log("Iniciando actualización programada de GP Sheet…");
+  console.log("Iniciando actualización programada de GP (obra por obra)…");
   try {
-    const parsed = await descargarYGuardarGP();
-    const mensaje = `OK: ${parsed.totalObras} obras, ${parsed.semanasDisponibles.length} semanas`;
+    const r = await descargarYGuardarGPPorObra({
+      usuario: GP_USUARIO.value(), password: GP_PASSWORD.value(),
+    });
+    const mensaje = `OK: ${r.totalObras} obras, ${r.renglonesLeidos} renglones, ` +
+      `${r.semanasDisponibles.length} semanas` +
+      (r.obrasConError.length ? `, ${r.obrasConError.length} con error` : "");
     console.log(mensaje);
-    await registrarSalud("gp_sync", true, mensaje, {
+    await registrarSalud("gp_sync", r.obrasConError.length === 0, mensaje, {
       duracionMs: Date.now() - t0,
-      totalObras: parsed.totalObras,
-      semanas: parsed.semanasDisponibles.length,
-      ultimaSemana: parsed.ultimaSemana,
+      totalObras: r.totalObras,
+      semanas: r.semanasDisponibles.length,
+      ultimaSemana: r.ultimaSemana,
+      renglonesLeidos: r.renglonesLeidos,
+      obrasConError: r.obrasConError,
     });
   } catch (e) {
     console.error("Error en actualización programada de GP:", e);
@@ -1426,7 +1847,12 @@ exports.actualizarGPSheet = onSchedule({
 });
 
 // ── CALLABLE: refrescar manualmente (cualquier admin) ──
-exports.refrescarGP = onCall({ region: "us-central1" }, async (request) => {
+exports.refrescarGP = onCall({
+  region: "us-central1",
+  secrets: [GP_USUARIO, GP_PASSWORD],
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
   }
@@ -1434,16 +1860,58 @@ exports.refrescarGP = onCall({ region: "us-central1" }, async (request) => {
   if (!email) throw new HttpsError("unauthenticated", "Token sin email.");
   // Cualquier usuario autenticado puede pedir refresh (es información útil para todos)
   try {
+    const r = await descargarYGuardarGPPorObra({
+      usuario: GP_USUARIO.value(), password: GP_PASSWORD.value(),
+    });
+    return {
+      ok: true,
+      totalObras: r.totalObras,
+      semanas: r.semanasDisponibles.length,
+      ultimaSemana: r.ultimaSemana,
+      ultimoMes: r.ultimoMes,
+      renglonesLeidos: r.renglonesLeidos,
+      // Una obra que falló tiene que viajar hasta el botón que la pidió. Decir
+      // «ok» sin más dejaría al usuario creyendo que vio las cinco frescas.
+      obrasConError: r.obrasConError,
+    };
+  } catch (e) {
+    throw new HttpsError("internal", `Error al refrescar GP: ${e.message}`);
+  }
+});
+
+// ── CALLABLE: volver a la hoja a mano, cuando la API de GP no contesta ──
+//
+// El 2026-10-28 fosedy.org devolvió 502 durante una tarde. Si eso pasa un día
+// que además importa, la salida es leer la hoja —vieja, pero leíble— y que el
+// documento DIGA que vino de ahí: `fuente: 'hoja-gp'` contra
+// `'api-gp-por-obra'`. Es un escritor a la vez y lo elige una persona.
+//
+// Es `admin_sistema` o dirección porque la hoja está congelada al último
+// refresco manual de Luis: pisar con ella el dato fresco hace que las pantallas
+// enseñen MENOS dinero del que hay, y eso no debería poder dispararlo
+// cualquiera desde un botón.
+exports.refrescarGPDesdeHoja = onCall({
+  region: "us-central1", timeoutSeconds: 120,
+}, async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  const email = (request.auth.token.email || "").toLowerCase();
+  const perfilSnap = await admin.firestore().doc(`usuarios/${emailAId(email)}`).get();
+  const rol = perfilSnap.exists ? perfilSnap.data().rol : null;
+  if (!["director_general", "admin_sistema"].includes(rol)) {
+    throw new HttpsError("permission-denied", "Solo dirección o admin puede volver a la hoja.");
+  }
+  try {
     const parsed = await descargarYGuardarGP();
     return {
       ok: true,
+      fuente: "hoja-gp",
       totalObras: parsed.totalObras,
       semanas: parsed.semanasDisponibles.length,
       ultimaSemana: parsed.ultimaSemana,
       ultimoMes: parsed.ultimoMes,
     };
   } catch (e) {
-    throw new HttpsError("internal", `Error al refrescar GP: ${e.message}`);
+    throw new HttpsError("internal", `Error al leer la hoja de GP: ${e.message}`);
   }
 });
 

@@ -312,17 +312,51 @@ for (const label of ['Gastado', 'Margen']) {
 }
 // El chip: misma píldora que la de frescura (borderRadius 12 + punto de
 // color), texto "no disponible", motivo en `title`.
-let chip = null;
+//
+// Se localiza por lo que la píldora HACE —lleva tooltip con el motivo y ofrece
+// Refrescar— y no por la marca que imprime. Antes se buscaba el literal
+// "GP Sheet ·", y eso ataba este banco al nombre de una fuente: el día que el
+// gasto dejó de salir de la hoja, renombrar el chip ponía en rojo una prueba
+// que no tenía nada que decir sobre la fuente.
+// Se queda con el candidato MÁS CHICO, no con el primero: el recorrido entra
+// por la raíz del componente, y la raíz también «contiene» la píldora. Con el
+// primero, cualquier aserción sobre el chip se estaba midiendo en realidad
+// sobre el archivo entero —comentarios incluidos— y pasaba o fallaba por
+// motivos ajenos.
+// Se separan DOS fuentes: la píldora (lo que se pinta) y la función que la
+// decide (de dónde salen `texto` y `tip`). Antes era una sola y era la raíz
+// del componente, así que «el chip dice no disponible» y «el motivo va en el
+// tooltip» se cumplían porque esas cadenas están en alguna parte del archivo:
+// dos aserciones vacías puestas justo donde importaba que no lo fueran.
+let chip = null, chipLogica = null;
 traverse(ast, {
   JSXElement(p) {
-    if (chip) return;
     const src = fuente(p.node);
-    if (/GP Sheet ·/.test(src) && /borderRadius:12/.test(src)) chip = src;
+    if (!/borderRadius:12/.test(src) || !/title=\{tip\}/.test(src) || !/Refrescar/.test(src)) return;
+    if (!chip || src.length < chip.length) chip = src;
+  },
+  ArrowFunctionExpression(p) {
+    const src = fuente(p.node);
+    if (!/borderRadius:12/.test(src) || !/title=\{tip\}/.test(src)) return;
+    if (!chipLogica || src.length < chipLogica.length) chipLogica = src;
   },
 });
-check(!!chip, 'el estado de GP se muestra en la píldora "GP Sheet ·", no en una caja aparte');
-check(!!chip && /no disponible/.test(chip), 'el chip dice "no disponible"');
-check(!!chip && /title=\{tip\}/.test(chip) && /_GP_NOTA/.test(chip),
+check(!!chip, 'el estado de GP se muestra en una píldora con tooltip, no en una caja aparte');
+check(!!chipLogica, 'la píldora de GP la decide una función propia');
+// Y no nombra la fuente: el chip sólo recibe la fecha, no sabe si escribió la
+// hoja o la consulta por obra, así que afirmarlo sería teclear una fuente.
+check(!!chip && !/Sheet|hoja de GP/i.test(chip),
+  'el chip no nombra la fuente del gasto, que es un dato que no recibe');
+check(!!chipLogica && /texto\s*=\s*['"]no disponible['"]/.test(chipLogica),
+  'el chip dice "no disponible"');
+// El motivo técnico viaja por `tip`, y `tip` sólo entra al `title=`. Si el
+// texto visible de la píldora lo imprimiera, el usuario leería la avería.
+check(!!chipLogica && /tip\s*=\s*_GP_NOTA/.test(chipLogica),
+  'el motivo técnico sale de _GP_NOTA');
+// Se le quita el `title={tip}` y se exige que `tip` NO vuelva a aparecer: el
+// motivo entra por el tooltip y por ningún otro lado. Un «no está entre > y {»
+// no sirve —`Gasto GP · {tip}` lo esquivaba— y ahí la aserción era decorativa.
+check(!!chip && /title=\{tip\}/.test(chip) && !/\btip\b/.test(chip.replace(/title=\{tip\}/g, '')),
   'el motivo técnico del chip va en title (tooltip), no en el texto visible');
 check(!!chip && /Refrescar/.test(chip),
   'el chip ofrece "Refrescar" como enlace al lado');

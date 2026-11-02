@@ -740,41 +740,53 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       ],
     },
   };
-  // `colMap` es lo que mira el panel de diagnóstico del parser, y se siembra
-  // con la forma REAL de la hoja: la S40 repartida en DOS columnas porque cae
-  // a caballo entre septiembre y octubre. Sin un caso partido aquí, el panel
-  // se vería bien en el preview y seguiría sin saber enseñar el único caso que
-  // importa —que es cómo se perdieron $9,719,396.98 sin que nadie lo viera.
-  const gpColMap = {
-    grand_total: 204,
-    total_year_2025: 144, total_year_2026: 203,
-    year_2025: 74, year_2026: 145,
-    total_month_2026_09: 193, total_month_2026_10: 199,
-    week_2026_38: [186], week_2026_39: [188], week_2026_40: [196, 198],
-    week_2026_41: [200], week_2026_42: [201], week_2026_43: [202],
-  };
+  // El documento se siembra con la forma que escribe la CONSULTA POR OBRA, que
+  // es la que corre en producción desde el 2026-10-30. Ya no hay `colMap`
+  // porque no hay columnas: el panel de diagnóstico tiene que enseñar lo otro
+  // —qué se pidió, cuántos renglones vinieron y qué dinero no se pudo
+  // clasificar—. El camino de la hoja quedó como respaldo que un administrador
+  // elige, y su lista de columnas la cubre `prueba-parser-gp.cjs`.
+  //
+  // `renglonesLeidos` se CUENTA de lo sembrado, no se teclea: un número que
+  // contradijera a las semanas de abajo haría que el preview enseñara una
+  // inconsistencia que no existe en el código.
+  const gpRenglones = Object.values(GP).reduce((n, o) =>
+    n + o.proveedores.reduce((m, p) => m + Object.keys(p.semanas).length, 0), 0);
   await escribir('global/gp_construct', {
     parserVersion: PARSER_VERSION,
     ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
+    fuente: 'api-gp-por-obra',
     semanasDisponibles: gpSemanas,
     ultimaSemana: 'S43',
     mesesDisponibles: ['M2026-09', 'M2026-10'],
     ultimoMes: 'M2026-10',
     totalObras: Object.keys(GP).length,
-    colMap: gpColMap,
+    obrasPedidas: Object.keys(GP),
+    obrasConError: [],
+    obrasArrastradas: [],
+    // Una obra de CAMPO sin código de 4 dígitos: no se puede pedir, y el panel
+    // tiene que decirlo en vez de dejarla fuera callando.
+    obrasSinClaveGP: [{ obraId: 'Bodega Minatitlán', nombre: 'Bodega Minatitlán' }],
+    renglonesLeidos: gpRenglones + 2,
+    // Los dos renglones de más son los que NO entraron a ninguna obra: uno sin
+    // obra reconocible, con su importe, y un proveedor que la consulta entrega
+    // en cero. Sembrados a propósito: dinero que está en la contabilidad y no
+    // está en ninguna pantalla es justo lo que el panel existe para enseñar.
+    descartes: { sinObra: 1, montoSinObra: 183450.75, proveedoresEnCero: 1 },
     obras: GP,
   });
   for (const [id, o] of Object.entries(GP)) {
     await escribir(`global/gp_detalle/obras/${id}`, {
       parserVersion: PARSER_VERSION,
       ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
+      fuente: 'api-gp-por-obra',
       ...o,
     });
   }
   console.log('obras de constructora: 0114, 0121 (en la raíz) + global/gp_construct');
   console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
   console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
-  console.log('  colMap con la S40 partida en dos columnas, como la hoja real');
+  console.log(`  fuente api-gp-por-obra · ${gpRenglones + 2} renglones · 1 sin obra ($183,450.75)`);
   console.log('  y su detalle en global/gp_detalle/obras/<id>, que es el que gana');
 
   // ── Obras de la dependencia, BAJO SU ORGANIZACIÓN ─────────────────────────
