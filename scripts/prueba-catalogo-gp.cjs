@@ -32,11 +32,23 @@
 // CONTRAPRUEBA, comprobada, devolviendo cada defecto uno por uno y corriendo
 // este mismo banco:
 //
-//   · agrupar el catálogo por `fila.ENumProy`                  → rojo, salida 1
-//   · el nombre, el más repetido en vez del del cheque reciente → rojo, salida 1
-//   · quitar el corte de catálogo vacío antes de escribir       → rojo, salida 1
-//   · el selector, leyendo `gpData.obras` antes que el catálogo → rojo, salida 1
-//   · el renglón, pintando el gasto sin mirar si fue medido     → rojo, salida 1
+//   · agrupar el catálogo por `fila.ENumProy`                  →  6 rojas, salida 1
+//   · el nombre, el más repetido y no el del cheque reciente    →  1 roja,  salida 1
+//   · quitar el corte de catálogo vacío antes de escribir       →  3 rojas, salida 1
+//   · el selector, leyendo `gpData.obras` antes que el catálogo →  6 rojas, salida 1
+//   · el renglón, pintando el gasto sin mirar si fue medido     →  1 roja,  salida 1
+//   · el gasto, cayendo al difuso cuando la clave no está       →  2 rojas, salida 1
+//   · el nombre, cayendo al difuso cuando la clave no está      →  2 rojas, salida 1
+//
+// Sobre los archivos buenos: 61 en verde, 0 en rojo, salida 0.
+//
+// La cuarta contraprueba es el defecto REAL, devuelto: con el orden invertido el
+// selector vuelve a ofrecer sólo las obras que CAMPO ya tiene. Es la que hay que
+// cuidar que siga en rojo.
+//
+// Las dos últimas también son defectos reales, y se encontraron DANDO DE ALTA la
+// obra en el preview, no leyendo el código: la 0129 apareció en la lista con el
+// nombre de la 0121 y con sus $19,900,000 encima. La sección 9 las cuida.
 
 'use strict';
 
@@ -52,11 +64,14 @@ const FUNCIONES = path.join(RAIZ, 'functions/index.js');
 
 vigilarExcepciones('functions/index.js', 'src/App.jsx');
 
-const { deFunciones, SimboloPerdido } = require('./extraer-de-app.cjs');
+const { deApp, deFunciones, SimboloPerdido } = require('./extraer-de-app.cjs');
 
 let catalogoDeRenglonesGP;
+let resolverGastoGP, resolverNombreCortoObra, limpiarNombreObra;
 try {
   ({ catalogoDeRenglonesGP } = deFunciones('catalogoDeRenglonesGP'));
+  ({ resolverGastoGP, resolverNombreCortoObra, limpiarNombreObra } =
+    deApp('resolverGastoGP', 'resolverNombreCortoObra', 'limpiarNombreObra'));
 } catch (e) {
   if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
   throw e;
@@ -517,6 +532,67 @@ const armarEscritor = (filasQueDevuelve) => {
   exigir(porNombre.gpFiltradas.some(o => o.id === nueva.id),
     `buscar «${trozoNombre}» también la encuentra`,
     ['no salió en los resultados']);
+
+  // ── 9. la obra recién dada de alta no hereda el dinero ni el nombre de otra ──
+  //
+  // Esto es lo que apareció al dar de alta la 0129 en el preview: la lista la
+  // llamó «SIOP Coatza Rehab. Av. Universidad» y le cobró $19,900,000, que son
+  // el nombre y el gasto de la 0121. No es casualidad: con el catálogo aparte,
+  // una obra recién dada de alta tiene `gpId` de una obra que el documento de
+  // gasto todavía no conoce —el gasto se arma obra por obra y esa obra acaba de
+  // existir—, y los dos resolvedores caían a un match DIFUSO por palabras.
+  //
+  // Los dos nombres se derivan del archivo de renglones y se dice cómo: a la
+  // obra del gasto se le añade una palabra de cola y a la obra nueva esa misma
+  // más un sufijo de año. El archivo medido no trae un par de nombres que se
+  // parezcan —son dos obras sin una palabra en común—, y el defecto sólo
+  // aparece con parecido: así el parecido es real, la clave distinta, y lo
+  // único explícito es la variación que se quiere ejercitar.
+  seccion('9. una obra que el gasto todavía no conoce no hereda nada de otra');
+  const enGasto = cat.obras[0];
+  const nombreEnGasto = `${enGasto.nombre} PENTAGONO`;
+  const gpDataGasto = { obras: { [enGasto.id]: {
+    id: enGasto.id, nombre: nombreEnGasto, grandTotal: 19900000,
+  } } };
+  // La palabra de más tiene que SOBREVIVIR a `limpiarNombreObra`: un sufijo de
+  // año no sirve para distinguir los dos nombres porque la limpieza se lo lleva.
+  const nombreParecido = `${nombreEnGasto} MALECON 0926`;
+
+  // Precondición: el difuso tiene que estar VIVO para que esta sección mida
+  // algo. Sin `gpId`, la obra parecida debe seguir pegando con la del gasto; si
+  // ya no pega, la aserción de abajo pasaría por vacía y no por correcta.
+  const sinClave = { id: 'OP-NUEVA', nombre: nombreParecido };
+  if (resolverGastoGP(sinClave, gpDataGasto) !== 19900000) {
+    sinPrecondicion('el match difuso por nombre en `resolverGastoGP`',
+      ['Sin `gpId` la obra parecida ya no toma el gasto de la otra, así que la',
+       'aserción de que CON `gpId` no lo toma no distingue nada.',
+       'Revisar si el difuso se quitó por completo y rehacer esta sección.']);
+  }
+  ok('precondición: sin clave, el difuso por nombre sí pega — la sección mide algo');
+
+  const reciente = { id: '0128', gpId: '0128', nombre: nombreParecido };
+  exigir(resolverGastoGP(reciente, gpDataGasto) === 0,
+    'con clave propia que el gasto no trae, el gasto de la obra nueva es 0',
+    [`dio ${resolverGastoGP(reciente, gpDataGasto)}`,
+     `y el de la ${enGasto.id} es 19900000: le estaría cobrando el de otra`]);
+  exigir(resolverGastoGP(reciente, gpDataGasto) !== 19900000,
+    'y en particular no es la cifra de la obra parecida');
+  exigir(resolverNombreCortoObra(reciente, gpDataGasto) === limpiarNombreObra(nombreParecido),
+    'y la pantalla la llama por su propio nombre, no por el de la obra parecida',
+    [`dijo ${JSON.stringify(resolverNombreCortoObra(reciente, gpDataGasto))}`,
+     `su nombre es ${JSON.stringify(limpiarNombreObra(nombreParecido))}`]);
+  exigir(resolverNombreCortoObra(reciente, gpDataGasto) !== limpiarNombreObra(nombreEnGasto),
+    'y nunca con el nombre de la otra');
+
+  // La clave que SÍ está sigue leyendo lo suyo: el corte de arriba no puede
+  // haberse llevado el camino bueno.
+  const conClaveBuena = { id: enGasto.id, gpId: enGasto.id, nombre: 'NOMBRE QUE NO SE PARECE A NADA' };
+  exigir(resolverGastoGP(conClaveBuena, gpDataGasto) === 19900000,
+    'con clave que el gasto sí trae, lee el gasto de ESA obra',
+    [`dio ${resolverGastoGP(conClaveBuena, gpDataGasto)}`]);
+  exigir(resolverNombreCortoObra(conClaveBuena, gpDataGasto) === limpiarNombreObra(nombreEnGasto),
+    'y la llama como la llama la contabilidad',
+    [`dijo ${JSON.stringify(resolverNombreCortoObra(conClaveBuena, gpDataGasto))}`]);
 
   // ── cierre ───────────────────────────────────────────────────────────────
   console.log('');

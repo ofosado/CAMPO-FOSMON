@@ -5367,7 +5367,18 @@ const resolverGastoGP = (obra, gpData) => {
     if (obra.gpId) {
       const exact = obrasArr.find(o => o.id === obra.gpId);
       if (exact) return extraerGastoTotalGP(exact);
-      console.warn(`[GP] obra "${obra.nombre}" tiene gpId="${obra.gpId}" pero no hay match en el Sheet. Cayendo a fallback por id/nombre.`);
+      // Clave explícita que no aparece en el gasto: NO se busca parecido.
+      //
+      // Con el catálogo de obras aparte, una obra recién dada de alta tiene
+      // `gpId` de una obra que el documento de gasto todavía no conoce —el
+      // gasto se arma por obra y la obra acaba de existir—. Caer al match
+      // difuso aquí le cuelga a la obra nueva el dinero de otra: 0129
+      // («AYU-COAT-REHABILITACION DEL MALECON») comparte «COAT» y «REHAB»
+      // con 0121 («SIOP Coatza Rehab. Av. Universidad») y se llevaba sus
+      // $19.9M. Una clave que no cuadra significa «no hay dato», nunca
+      // «búscale parecido»: el difuso es sólo para obras viejas sin clave.
+      console.warn(`[GP] obra "${obra.nombre}" tiene gpId="${obra.gpId}" y el gasto todavía no trae esa obra. Gasto GP = 0 (no se adivina por nombre).`);
+      return 0;
     }
     // 2) Por id de CAMPO si parece código de 4 dígitos
     if (/^\d{4}/.test(obra.id || "")) {
@@ -5411,7 +5422,12 @@ const resolverNombreCortoObra = (obra, gpData) => {
   const arr = Object.values(gpData.obras);
   let obraGP = null;
   if (obra.gpId) {
+    // Misma regla que en `resolverGastoGP`: con clave explícita se busca esa
+    // obra y nada más. Si el gasto no la trae todavía —obra recién dada de
+    // alta desde el catálogo— la pantalla la llama por su propio nombre, no
+    // por el de la obra que más se le parezca.
     obraGP = arr.find(o => o.id === obra.gpId) || null;
+    return limpiarNombreObra(obraGP ? obraGP.nombre : obra.nombre) || obra.nombre || '';
   }
   if (!obraGP && /^\d{4}/.test(obra.id || '')) {
     obraGP = arr.find(o => o.id === obra.id.slice(0, 4)) || null;
@@ -7621,7 +7637,7 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
               padding:"9px 12px",marginBottom:8}}>
               <div style={{fontSize:10,color:C.yellowDk,marginBottom:6}}>
                 ⚠ El catálogo de obras de GP no está cargado, así que esta lista
-                está incompleta: sólo trae {origenGP==='gasto'?"las obras que CAMPO ya tiene":"una lista de referencia vieja"}.
+                está incompleta: sólo trae {origenGP==='gasto'?"las obras que ya están dadas de alta":"una lista de referencia vieja"}.
                 Si la obra que buscas es nueva, no va a aparecer hasta que el catálogo cargue.
               </div>
               {(catalogoError || gpError) && (
@@ -22036,6 +22052,13 @@ const JOBS_PROGRAMADOS = [
   { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
     que:"Baja la hoja de gastos y la deja lista para el dashboard.",
     cuando:"diario 8:00",    limiteHoras: 36 },
+  // Semanal, y por eso el límite es de diez días y no de treinta y seis horas:
+  // con el límite de la diaria saldría en rojo seis días de cada siete. Lo que
+  // se rompe cuando éste se calla no es una cifra, es el alta de obra: sin
+  // catálogo fresco el selector no ofrece las obras nuevas.
+  { id:"gp_catalogo",       funcion:"actualizarCatalogoGP",   nombre:"Catálogo de obras (GP)",
+    que:"Trae la lista de obras de la contabilidad para poder darlas de alta.",
+    cuando:"lunes 7:00",     limiteHoras: 10*24 },
   // Éste no vigila una tarea: vigila a la app. Cuenta las capturas que las
   // reglas rechazaron cuando el usuario SÍ tenía la obra asignada — el caso
   // que `src/permiso-denegado.js` no sabe explicar y que el usuario no puede

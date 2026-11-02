@@ -106,6 +106,15 @@ const CUENTAS = [
   // tenerlo: es el que debía haber delatado la semana en dos columnas.
   { correo: 'sistema@fosmon.com.mx', nombre: 'Admin Sistema',
     rol: 'admin_sistema', tipo: 'constructora', orgId: 'fosmon' },
+  // La séptima existe por el mismo motivo que la sexta: el alta de obra del
+  // lado constructora la permite `ROLES_ALTA_OBRA_C` —`director_operaciones` y
+  // `gerente_construccion`— y NINGUNA de las seis cuentas anteriores tiene uno
+  // de esos dos roles. El botón «+ Nueva obra» no se pintaba para nadie, así
+  // que el selector de obra de GP que abre ese modal no se podía MIRAR en el
+  // preview: es justo el que se quedó corto cuando el gasto dejó de traer las
+  // 34 obras de la hoja. Un alta que nadie puede abrir se verifica sola.
+  { correo: 'gerencia@fosmon.com.mx', nombre: 'Gerencia de Construcción',
+    rol: 'gerente_construccion', tipo: 'constructora', orgId: 'fosmon' },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
