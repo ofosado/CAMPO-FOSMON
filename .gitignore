@@ -35,3 +35,10 @@ storage-debug.log
 # PDFs sueltos en la raíz (el manual del equipo sí se versiona)
 /*.pdf
 !/CAMPO_Manual_Equipo_Obra.pdf
+
+# Paquete de ENTREGA de la marca (contenedor, no la marca).
+# Los maestros viven rastreados en `src/assets/brand/` y los rasterizados en
+# `public/`. Esto es el zip que se le manda a un tercero: se regenera, no se
+# versiona. Llevaba semanas sin rastrear a propósito y un commit de wip se lo
+# barrió; la línea existe para que no vuelva a pasar sola.
+/paquete/
