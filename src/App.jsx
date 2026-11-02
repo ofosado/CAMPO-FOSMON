@@ -7192,7 +7192,7 @@ function useGPConstruct(activo = true) {
   // y los dos viajan por canales de despliegue distintos. Mientras uno esté
   // arriba y el otro no, esta pantalla dice «version_vieja» y no enseña cifras
   // —que es lo correcto— pero no enseña ninguna. Hay que desplegar los dos.
-  const PARSER_VERSION = 4;
+  const PARSER_VERSION = 5;
   // Reintentos con espera creciente. Tres intentos cubren el corte de red
   // corto y el arranque en frío; más allá de eso el problema no es transitorio
   // y seguir reintentando sólo esconde el fallo.
@@ -10062,11 +10062,17 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           {nombreOrg(marca, usuario) && ` · ${nombreOrg(marca, usuario)}`}
           {' · '}{activas.length} obra(s) activa(s)
         </div>
-        {/* Chip de estado del Sheet GP. UNA sola píldora con dos variantes:
-            frescura cuando hay dato (verde/amarillo/rojo por antigüedad) y
-            ámbar "no disponible" cuando no lo hay. El motivo técnico va en
-            el tooltip, no en pantalla: en el chip sólo cabe el hecho, y
-            "el Sheet nunca se sincronizó" asusta sin ayudar a nadie. */}
+        {/* Chip de frescura del gasto de GP. UNA sola píldora con dos
+            variantes: frescura cuando hay dato (verde/amarillo/rojo por
+            antigüedad) y ámbar "no disponible" cuando no lo hay. El motivo
+            técnico va en el tooltip, no en pantalla: en el chip sólo cabe el
+            hecho, y "el Sheet nunca se sincronizó" asusta sin ayudar a nadie.
+            Decía "GP Sheet" y desde el 2026-10-30 el dato ya no sale de una
+            hoja: sale de la consulta por obra, y la hoja quedó de respaldo que
+            un administrador elige. Un chip que nombra la fuente tiene que
+            saber cuál fue, y éste no lo sabe —sólo recibe la fecha—, así que
+            no la nombra. Quién escribió el número lo dice el panel de
+            diagnóstico, que sí lo lee del documento. */}
         {(() => {
           // En una dependencia el chip no se pinta, y no por pudor: el Sheet
           // GP no se consulta (P5), así que `gpUltActualiz` nunca llega y
@@ -10103,7 +10109,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             padding:"3px 8px",borderRadius:12,background:bg,border:`0.5px solid ${color}`}}>
             <span style={{width:6,height:6,borderRadius:"50%",background:color}}/>
             <span style={{fontSize:9,color:txt,fontWeight:600}}>
-              GP Sheet · {texto}
+              Gasto GP · {texto}
             </span>
             {onRefreshGP && <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
               style={{background:"none",border:"none",padding:0,marginLeft:2,
@@ -15171,13 +15177,30 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
   const obrasDetectadas = gpData?.totalObras || 0;
   const semanasDet = gpData?.semanasDisponibles?.length || 0;
   const mesesDet = gpData?.mesesDisponibles?.length || 0;
+  // DE DÓNDE VINO LA CIFRA. Desde el 2026-10-30 hay dos fuentes posibles y no
+  // dan lo mismo: la consulta por obra está al día y la hoja está congelada en
+  // el último refresco manual de Luis —medido, siete días de retraso y
+  // $6,960,926.22 de gasto que no se veían—. Un panel de diagnóstico que no
+  // dijera cuál escribió el documento sería inútil justo cuando hace falta.
+  //
+  // Y no se cuentan columnas cuando no hay hoja: «0 columnas detectadas» se lee
+  // como «el parser no encontró nada», que es una avería distinta de «esta
+  // fuente no tiene columnas». Cada fuente enseña su propio diagnóstico.
+  const deLaHoja = (gpData?.fuente || 'hoja-gp') !== 'api-gp-por-obra';
+  const descartes = gpData?.descartes || null;
+  const conError = gpData?.obrasConError || [];
+  const sinClave = gpData?.obrasSinClaveGP || [];
   return <Card style={{marginTop:14, background:'#fafafa', border:`0.5px dashed ${C.borderM}`}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}
       onClick={()=>setAbierto(!abierto)}>
       <div>
-        <Tit>Diagnóstico parser GP Construct</Tit>
+        <Tit>Diagnóstico de la fuente de gasto</Tit>
         <div style={{fontSize:9,color:C.textMut,marginTop:-4}}>
-          Visible solo para Administrador de Sistema · {colsCount} columnas detectadas · {obrasDetectadas} obras
+          Visible solo para Administrador de Sistema · {deLaHoja
+            ? `hoja de GP · ${colsCount} columnas detectadas`
+            : `consulta por obra · ${gpData?.renglonesLeidos ?? '—'} renglones leídos`}
+          {' · '}{obrasDetectadas} obras
+          {conError.length > 0 && <b style={{color:C.redDk}}> · {conError.length} obra(s) con error</b>}
         </div>
       </div>
       <span style={{fontSize:14,color:C.textMut}}>{abierto?'▾':'▸'}</span>
@@ -15190,8 +15213,37 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
           <div><b style={{color:C.textPri}}>Meses:</b> {mesesDet}</div>
           <div><b style={{color:C.textPri}}>Última semana:</b> {gpData?.ultimaSemana||'—'}</div>
           <div><b style={{color:C.textPri}}>Último mes:</b> {gpData?.ultimoMes||'—'}</div>
+          <div><b style={{color:C.textPri}}>Fuente:</b> {deLaHoja ? 'hoja de GP (manual)' : 'consulta por obra'}</div>
         </div>
 
+        {!deLaHoja && <>
+          <div style={{fontSize:9,fontWeight:700,color:C.textPri,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+            Lo que trajo la consulta
+          </div>
+          <div style={{border:`0.5px solid ${C.border}`,borderRadius:6,padding:8,fontSize:10,color:C.textSec}}>
+            <div>Obras pedidas: <b style={{fontFamily:"monospace"}}>{(gpData?.obrasPedidas||[]).join(' ')||'—'}</b></div>
+            <div>Renglones leídos: <b>{gpData?.renglonesLeidos ?? '—'}</b></div>
+            {/* Lo que no se pudo clasificar va con su importe. Un renglón sin
+                obra no es un renglón que no existió: es dinero que está en la
+                contabilidad y no está en ninguna pantalla, y eso hay que poder
+                verlo sin abrir los registros de la función. */}
+            {descartes && <div style={{marginTop:4}}>
+              Sin obra reconocible: <b>{descartes.sinObra||0}</b> renglón(es)
+              {(descartes.montoSinObra||0) > 0 && <> por <b style={{color:C.redDk}}>{MXN(descartes.montoSinObra)}</b></>}
+              {(descartes.proveedoresEnCero||0) > 0 && <> · proveedores sin movimiento: <b>{descartes.proveedoresEnCero}</b></>}
+            </div>}
+            {conError.length > 0 && <div style={{marginTop:6,color:C.redDk}}>
+              ⚠ No contestaron: {conError.map(e=>`${e.clave} (${e.error})`).join(' · ')}.
+              {' '}Su cifra es la de la corrida anterior, no la de hoy.
+            </div>}
+            {sinClave.length > 0 && <div style={{marginTop:6,color:C.orange}}>
+              ⚠ Sin clave de GP, no se piden: {sinClave.map(o=>o.obraId).join(' · ')}.
+              {' '}Captura el código de 4 dígitos en Contrato.
+            </div>}
+          </div>
+        </>}
+
+        {deLaHoja && <>
         <div style={{fontSize:9,fontWeight:700,color:C.textPri,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
           Columnas detectadas
         </div>
@@ -15222,6 +15274,7 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
             </div>;
           })}
         </div>
+        </>}
 
         {datosObra && (
           <div style={{marginTop:14,padding:10,background:C.bg,borderRadius:6}}>
@@ -15240,12 +15293,16 @@ function PanelDiagnosticoGP({gpData, obra, datosObra}){
 
         {!datosObra && (
           <div style={{marginTop:14,padding:10,background:`${alfa(C.red, 6.27)}`,borderRadius:6,fontSize:10,color:C.redDk}}>
-            ⚠ Esta obra no fue encontrada en el Sheet. Si esperabas verla, verifica el código de 4 dígitos.
+            ⚠ Esta obra no trae gasto de {deLaHoja ? 'la hoja de GP' : 'la consulta por obra'}.
+            {' '}Si esperabas verla, verifica el código de 4 dígitos.
+            {!deLaHoja && <> Si aparece arriba como «con error» o «sin clave de GP», ésa es la causa.</>}
           </div>
         )}
 
         <div style={{marginTop:12,fontSize:9,color:C.textMut}}>
-          Si el formato del Sheet cambia y dejan de detectarse columnas, este panel ayudará a diagnosticar el problema.
+          {deLaHoja
+            ? 'Si el formato de la hoja cambia y dejan de detectarse columnas, este panel ayudará a diagnosticar el problema.'
+            : 'Si una obra deja de contestar o su gasto se queda sin clasificar, este panel lo dice con su importe.'}
         </div>
       </div>
     )}
