@@ -7326,6 +7326,64 @@ function useGPConstruct(activo = true) {
     return null;
   }, [gpDetalles, activo]);
 
+  // ── El catálogo de obras, que es OTRO documento y otra pregunta ──
+  //
+  // `gpData` contesta «cuánto se gastó en las obras que CAMPO ya tiene»: cinco
+  // obras, las que la Cloud Function pide una por una. `catalogoGP` contesta
+  // «qué obras existen en la contabilidad»: las 67, sin dinero.
+  //
+  // Tienen que ser documentos distintos porque el alta de obra necesita la
+  // segunda respuesta y durante un tiempo la sacó de la primera. Mientras el
+  // gasto venía de la hoja coincidían de casualidad —34 obras— y el día que el
+  // gasto pasó a pedirse obra por obra el selector de alta se quedó con las
+  // cinco que CAMPO ya tenía: la obra nueva no salía en la lista porque no
+  // estaba en CAMPO, y no entraba a CAMPO porque no salía en la lista.
+  const [catalogoGP, setCatalogoGP] = useState(null);
+  const [catalogoEstado, setCatalogoEstado] = useState('cargando');
+  const [catalogoError, setCatalogoError] = useState('');
+  const [catalogoCargando, setCatalogoCargando] = useState(false);
+  // Mismo número que `CATALOGO_GP_VERSION` en `functions/index.js`. Si no
+  // empatan, el catálogo no se usa: una lista con la forma de otra versión
+  // enseñaría campos vacíos y el alta heredaría la basura.
+  const CATALOGO_GP_VERSION = 1;
+
+  const cargarCatalogoGP = useCallback(async (forzar = false) => {
+    if (!activo) { setCatalogoEstado('inactivo'); return; }
+    setCatalogoCargando(true); setCatalogoError('');
+    let mensajeError = '';
+    try {
+      if (forzar) {
+        try {
+          const fn = httpsCallable(fbFn, 'refrescarCatalogoGP');
+          const res = await fn({});
+          console.log('refrescarCatalogoGP OK:', res.data);
+        } catch (e) {
+          mensajeError = `No se pudo pedir el catálogo a GP (${e.code || 'desconocido'}): ${e.message || e}`;
+          console.error('refrescarCatalogoGP falló:', e);
+        }
+      }
+      const snap = await getDoc(doc(fbDb, 'global', 'gp_catalogo'));
+      if (!snap.exists()) {
+        setCatalogoEstado('sin_sincronizar');
+        setCatalogoError(mensajeError || 'El catálogo de obras de GP nunca se ha sincronizado.');
+      } else {
+        const d = snap.data() || {};
+        if (d.catalogoVersion === CATALOGO_GP_VERSION && Array.isArray(d.obras) && d.obras.length) {
+          setCatalogoGP(d);
+          setCatalogoEstado('listo');
+          if (mensajeError) setCatalogoError(mensajeError);
+        } else {
+          setCatalogoEstado('version_vieja');
+          setCatalogoError(mensajeError || 'El catálogo de obras de GP es de otra versión.');
+        }
+      }
+    } catch (e) {
+      setCatalogoEstado('error');
+      setCatalogoError(`Error al leer el catálogo de GP (${e?.code || 'desconocido'}): ${e?.message || e}`);
+    }
+    setCatalogoCargando(false);
+  }, [activo]);
+
   // Se rearma cuando cambia `activo`: al montar no hay sesión todavía, así que
   // el tipo de organización no se conoce hasta que el login resuelve los
   // claims. Sin esta dependencia, un usuario de constructora que entra en una
@@ -7334,6 +7392,11 @@ function useGPConstruct(activo = true) {
     if (!activo) { setGpEstado('inactivo'); return; }
     cargarGP();
   }, [activo, cargarGP]);
+
+  useEffect(() => {
+    if (!activo) { setCatalogoEstado('inactivo'); return; }
+    cargarCatalogoGP();
+  }, [activo, cargarCatalogoGP]);
 
   // Reintento manual: devuelve el presupuesto de reintentos automáticos, que
   // si no quedaría gastado para siempre tras la primera racha de fallos.
@@ -7350,7 +7413,9 @@ function useGPConstruct(activo = true) {
   // absurdo borrarlas de la pantalla. `gpEstado` explica el porqué aparte.
   return { gpData, gpEstado, gpDisponible: !!(gpData && gpData.obras),
            gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP,
-           cargarDetalleObra, gpDetalles };
+           cargarDetalleObra, gpDetalles,
+           catalogoGP, catalogoEstado, catalogoError, catalogoCargando,
+           cargarCatalogoGP };
 }
 
 // Catálogo de obras de GP Construct disponibles para activar en CAMPO
@@ -7409,11 +7474,12 @@ const OBLIGATORIOS_ALTA = {
   dependencia:  ["nombre","contrato","modalidad","empresaEjecutante","presupuesto","inicio","fin"],
 };
 
-function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpError}){
-  // En dependencia no hay catálogo de GP del que escoger —GP es el Sheet de
-  // FOSMON— así que el paso 1 no existe y el id lo genera la app. Del lado
+function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpError,
+  catalogoGP,catalogoEstado,catalogoError,catalogoCargando,onRefreshCatalogo}){
+  // En dependencia no hay catálogo de GP del que escoger —GP es la contabilidad
+  // de FOSMON— así que el paso 1 no existe y el id lo genera la app. Del lado
   // constructora el id tiene que ser el código de 4 dígitos de GP para que
-  // empate con el Sheet, y de ahí sale el paso de selección.
+  // empate con el gasto, y de ahí sale el paso de selección.
   const dep=esDependencia(usuario);
   const campos=dep?camposContrato(usuario).filter(c=>c.key!=="presupuesto"):CAMPOS_ALTA_C;
   const[paso,setPaso]=useState(dep?"completar":"seleccionar"); // seleccionar | completar
@@ -7458,26 +7524,65 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
     setPaso("completar");
   }
 
-  // Usar datos del Sheet si están disponibles, sino el catálogo estático
-  // gastoGP usa Grand Total (acumulado real) - no la semana actual
-  const gpCatalogo = gpData
-    ? Object.entries(gpData.obras).map(([key, val]) => {
-        // Grand Total real, fallback a años+total2026, o suma de meses si nada existe
-        const totalReal = val.grandTotal > 0
-          ? val.grandTotal
-          : Object.values(val.años||{}).reduce((t,v)=>t+v, 0)
-            + (val.total2026 || Object.values(val.meses||{}).reduce((t,v)=>t+v, 0));
-        return {
-          id: val.id || key.slice(0,4),
-          nombre: key.slice(5).trim(),
-          gastoGP: totalReal,
-          semanas: val.semanas,
-          rubros: val.rubros,
-          grandTotal: val.grandTotal,
-          total2026: val.total2026,
-        };
-      }).sort((a,b) => a.id.localeCompare(b.id))
-    : GP_OBRAS_CATALOGO;
+  // ── De dónde sale la lista para escoger ──
+  //
+  // Tres orígenes, en este orden y por esta razón:
+  //
+  //   1. `catalogoGP` — el documento de catálogo. Es el único que contesta la
+  //      pregunta que este paso hace: qué obras EXISTEN en la contabilidad.
+  //      Trae las 67 y no trae dinero.
+  //   2. `gpData.obras` — el documento de GASTO. Sólo trae las obras que CAMPO
+  //      ya tiene, así que como lista de alta está incompleta por construcción:
+  //      la obra que se quiere dar de alta nunca está ahí. Queda de respaldo
+  //      para no dejar el paso en blanco si el catálogo no cargó.
+  //   3. `GP_OBRAS_CATALOGO` — la lista escrita a mano en este archivo, vieja.
+  //
+  // El gasto que se enseña sale SÓLO del documento de gasto. Una obra del
+  // catálogo que CAMPO no tiene no tiene gasto medido, y poner $0.00 ahí sería
+  // teclear una cifra que nadie midió: se enseña la fecha del último cheque,
+  // que es dato y no cuenta.
+  const gastoDeGpData = (val, key) => {
+    const totalReal = val.grandTotal > 0
+      ? val.grandTotal
+      : Object.values(val.años||{}).reduce((t,v)=>t+v, 0)
+        + (val.total2026 || Object.values(val.meses||{}).reduce((t,v)=>t+v, 0));
+    return {
+      id: val.id || key.slice(0,4),
+      nombre: key.slice(5).trim(),
+      gastoGP: totalReal,
+      gastoMedido: true,
+      semanas: val.semanas,
+      rubros: val.rubros,
+      grandTotal: val.grandTotal,
+      total2026: val.total2026,
+    };
+  };
+  const conGasto = {};
+  if (gpData?.obras) {
+    for (const [key, val] of Object.entries(gpData.obras)) {
+      const o = gastoDeGpData(val, key);
+      conGasto[o.id] = o;
+    }
+  }
+  const origenGP = catalogoGP?.obras?.length ? 'catalogo' : (gpData?.obras ? 'gasto' : 'estatico');
+  const gpCatalogo = (
+    origenGP === 'catalogo'
+      ? catalogoGP.obras.map(o => ({
+          ...(conGasto[o.id] || { gastoGP: 0, gastoMedido: false }),
+          id: o.id,
+          // El nombre manda el catálogo: es el del cheque más reciente, o sea
+          // el nombre con el que la obra se llama hoy.
+          nombre: o.nombre,
+          ultimoCheque: o.ultimoCheque || '',
+        }))
+      : origenGP === 'gasto'
+        ? Object.entries(gpData.obras).map(([key, val]) => gastoDeGpData(val, key))
+        : GP_OBRAS_CATALOGO.map(o => ({...o, gastoMedido: true}))
+  // Lo más reciente arriba. Las obras nuevas son justo las que alguien está
+  // buscando en esta lista, y con 67 renglones ordenados por clave quedaban al
+  // final. Sin fecha —los dos respaldos no la traen— manda la clave.
+  ).sort((a,b) => (b.ultimoCheque||'').localeCompare(a.ultimoCheque||'')
+                  || a.id.localeCompare(b.id));
 
   const gpFiltradas = gpCatalogo.filter(o =>
     !busqueda || o.nombre.toLowerCase().includes(busqueda.toLowerCase()) || o.id.includes(busqueda)
@@ -7506,32 +7611,55 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
       {/* PASO 1: Seleccionar de GP Construct */}
       {paso==="seleccionar"&&(
         <>
-          {/* Aviso + botón refresh si el Sheet no está cargado */}
-          {!gpData?.obras && (
+          {/* De dónde viene esta lista, dicho en la pantalla.
+              El aviso ámbar sale cuando la lista NO es el catálogo, porque en
+              ese caso está incompleta por construcción: el respaldo es el
+              documento de gasto, que sólo conoce las obras que CAMPO ya tiene
+              —y la que se busca aquí, por definición, no es una de ésas. */}
+          {origenGP !== 'catalogo' && (
             <div style={{background:`${alfa(C.yellow, 8.24)}`,border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,
               padding:"9px 12px",marginBottom:8}}>
               <div style={{fontSize:10,color:C.yellowDk,marginBottom:6}}>
-                ⚠ El Sheet de GP no está cargado. Estás viendo un catálogo de referencia desactualizado.
+                ⚠ El catálogo de obras de GP no está cargado, así que esta lista
+                está incompleta: sólo trae {origenGP==='gasto'?"las obras que CAMPO ya tiene":"una lista de referencia vieja"}.
+                Si la obra que buscas es nueva, no va a aparecer hasta que el catálogo cargue.
               </div>
-              {gpError && (
+              {(catalogoError || gpError) && (
                 <div style={{fontSize:9,color:C.redDk,marginBottom:6,
                   background:`${alfa(C.red, 6.27)}`,padding:"5px 8px",borderRadius:4}}>
-                  {gpError}
+                  {catalogoError || gpError}
                 </div>
               )}
-              {onRefreshGP && (
-                <button onClick={()=>onRefreshGP(true)} disabled={gpLoading}
+              {onRefreshCatalogo && (
+                <button onClick={()=>onRefreshCatalogo(true)} disabled={catalogoCargando}
                   style={{background:C.caliza,border:"none",borderRadius:6,padding:"5px 12px",
-                    fontSize:10,fontWeight:600,color:C.bg,cursor:gpLoading?"not-allowed":"pointer",
-                    opacity:gpLoading?0.5:1}}>
-                  {gpLoading?"Refrescando…":"Refrescar Sheet ahora"}
+                    fontSize:10,fontWeight:600,color:C.bg,cursor:catalogoCargando?"not-allowed":"pointer",
+                    opacity:catalogoCargando?0.5:1}}>
+                  {catalogoCargando?"Pidiendo el catálogo…":"Pedir el catálogo a GP"}
                 </button>
               )}
             </div>
           )}
-          {gpData?.obras && (
-            <div style={{fontSize:9,color:C.textMut,marginBottom:8}}>
-              Sheet sincronizado: {Object.keys(gpData.obras).length} obras
+          {origenGP === 'catalogo' && (
+            <div style={{fontSize:9,color:C.textMut,marginBottom:8,display:"flex",
+              justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <span>
+                Catálogo de GP: {catalogoGP.obras.length} obras
+                {catalogoGP.ultimaActualizacion
+                  ? ` · al ${new Date(catalogoGP.ultimaActualizacion).toLocaleDateString("es-MX")}`
+                  : ''}
+              </span>
+              {/* Quien descubre que falta una obra es quien la está dando de
+                  alta. El botón está aquí para que no tenga que esperar al
+                  refresco del lunes. */}
+              {onRefreshCatalogo && (
+                <button onClick={()=>onRefreshCatalogo(true)} disabled={catalogoCargando}
+                  style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:5,
+                    padding:"3px 8px",fontSize:9,color:C.textMut,flexShrink:0,
+                    cursor:catalogoCargando?"not-allowed":"pointer",opacity:catalogoCargando?0.5:1}}>
+                  {catalogoCargando?"Pidiendo…":"¿Falta una? Pedir a GP"}
+                </button>
+              )}
             </div>
           )}
           <Inp placeholder="Buscar por nombre o ID..." value={busqueda}
@@ -7547,7 +7675,18 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
                   <div style={{minWidth:0}}>
                     <div style={{fontSize:12,fontWeight:600,color:C.textPri}}>{o.nombre}</div>
-                    <div style={{fontSize:9,color:C.textMut}}>ID: {o.id} · Gasto 2026: {MXN(o.gastoGP)}</div>
+                    {/* El gasto se enseña sólo si lo trajo el documento de
+                        gasto. Para una obra que CAMPO todavía no tiene nadie lo
+                        midió: ahí va la fecha del último cheque, que es un dato
+                        del catálogo, y no un $0.00 que parecería una medición. */}
+                    <div style={{fontSize:9,color:C.textMut}}>
+                      ID: {o.id}
+                      {o.gastoMedido
+                        ? ` · Gasto GP: ${MXN(o.gastoGP)}`
+                        : o.ultimoCheque
+                          ? ` · último movimiento en GP: ${o.ultimoCheque}`
+                          : ''}
+                    </div>
                   </div>
                   <span style={{fontSize:10,color:C.caliza,fontWeight:700,flexShrink:0}}>Activar →</span>
                 </div>
@@ -9782,7 +9921,8 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
   );
 }
 
-function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={},marca=null}){
+function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',gpDisponible=true,gpLoading,gpUltActualiz,onRefreshGP,datosPorObra={},marca=null,
+  catalogoGP=null,catalogoEstado='cargando',catalogoError='',catalogoCargando=false,onRefreshCatalogo=null}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
   const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
@@ -9952,7 +10092,9 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   const veLista = veListaDeTarjetas(usuario.rol, verHistorial);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {modalNueva&&<ModalNuevaObra usuario={usuario} onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}/>}
+    {modalNueva&&<ModalNuevaObra usuario={usuario} onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}
+      catalogoGP={catalogoGP} catalogoEstado={catalogoEstado} catalogoError={catalogoError}
+      catalogoCargando={catalogoCargando} onRefreshCatalogo={onRefreshCatalogo}/>}
 
     {/* Confirmación archivar */}
     {confirmarArchivar&&<div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:200,
@@ -22470,7 +22612,8 @@ export default function App(){
   // soporte es que no la pide; y una lectura negada deja el chip en «no
   // disponible», que es la forma de decir "falló" cuando la verdad es "no me
   // toca".
-  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles } = useGPConstruct(!esDependencia(usuario) && !esPlataforma(usuario));
+  const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles,
+    catalogoGP, catalogoEstado, catalogoError, catalogoCargando, cargarCatalogoGP } = useGPConstruct(!esDependencia(usuario) && !esPlataforma(usuario));
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -23554,7 +23697,9 @@ export default function App(){
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="salud"&&<PantallaSalud/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount} soloContrato={dep}/>}
-      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra} marca={marca}/>}
+      {screen==="obras"&&<PantallaObras onSelect={entrar} usuario={usuario} obras={obras} setObras={setObras} gpData={gpData} gpEstado={gpEstado} gpDisponible={gpDisponible} gpLoading={gpLoading} gpUltActualiz={gpUltActualiz} onRefreshGP={reintentarGP} datosPorObra={datosPorObra} marca={marca}
+        catalogoGP={catalogoGP} catalogoEstado={catalogoEstado} catalogoError={catalogoError}
+        catalogoCargando={catalogoCargando} onRefreshCatalogo={cargarCatalogoGP}/>}
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
