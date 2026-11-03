@@ -115,10 +115,11 @@ auditoria/{autoId}                append-only log de cambios (modulo, entidad,
 
 - **Firestore:** `allow read, write: if request.auth != null` (cualquier usuario autenticado hace todo). **Deuda técnica documentada abajo.**
 - **Storage:** `allow read, write: if request.auth != null` bajo `/obras/{obraId}/**`; todo lo demás bloqueado.
-- **CORS Storage:** `storage.cors.json` lista los dos orígenes, pero **lo vivo
-  en el bucket sigue siendo sólo `campo-fosmon.netlify.app`**: el archivo no se
-  aplica solo, hace falta `gsutil cors set`. Hasta que se aplique, las fotos de
-  evidencia no cargan desde `cotea.com.mx`.
+- **CORS Storage:** `storage.cors.json` aplicado al bucket el 2026-11-03 y
+  releído de él: permite `cotea.com.mx`, `www.cotea.com.mx`, el origen viejo y
+  los dos `localhost`. Comprobado por preflight, incluido que un origen fuera de
+  la lista **no** recibe cabecera. Ojo: el archivo **no se aplica solo** —no lo
+  publica Netlify ni `firebase deploy`—, hace falta `gsutil cors set`.
 
 ---
 

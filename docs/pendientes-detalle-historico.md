@@ -5424,9 +5424,13 @@ resucitarlo es portar el refactor, que es lo que se decidió no hacer. Queda en
 
 ## #86 · `cotea.com.mx`: los pasos de fuera, en orden
 
+**Al 2026-11-03 por la tarde, los pasos 1 a 5 y el 8 están HECHOS y verificados
+desde fuera.** Quedan el 4 (Resend), el 6 (funciones), el 7 (front) y el 9. Lo
+que se aprendió haciéndolos está al final, en «Lo que no estaba en el plan».
+
 El repositorio ya dice `cotea.com.mx` en los cuatro sitios y la suite está
-verde. **Nada de lo de abajo está hecho, y nada de lo de abajo lo hago yo sin
-un OK explícito**: son DNS, consolas de terceros y escrituras a producción.
+verde. **Nada de lo que queda lo hago yo sin un OK explícito**: son DNS,
+consolas de terceros y escrituras a producción.
 
 El orden importa, y el principio que lo ordena es **que en ningún instante se
 rompa nada**: todo lo de fuera es **aditivo**. El origen viejo sigue sirviendo,
@@ -5468,3 +5472,53 @@ su estado local; además el ícono de la app instalada se fija al instalar (#37)
 Quien la tenga en la pantalla de inicio tendría que borrarla y volver a
 agregarla **sin haberlo pedido**. Los dos orígenes conviven hasta que se decida
 el retiro con un aviso de por medio.
+
+### Lo que no estaba en el plan (2026-11-03)
+
+**El orden 1↔2 estaba al revés.** Netlify es quien dice qué registro crear, y
+añadir el dominio ahí no rompe nada: se queda en «Awaiting External DNS». Si se
+empieza por el DNS se adivina la IP. Primero Netlify, se leen los valores, luego
+GoDaddy.
+
+**La zona tenía correo vivo, y eso prohibió el camino fácil.** `cotea.com.mx`
+tiene MX de GoDaddy, `v=spf1 include:secureserver.net -all`, DMARC
+`p=quarantine` y **dos DKIM** (`secureserver1._domainkey`,
+`secureserver2._domainkey`). Por eso **no** se pasó la zona a Netlify DNS: habría
+que recrear todo eso a mano. Se quedó en GoDaddy con el `A` del balanceador.
+También por eso el SPF de Resend va en `send.cotea.com.mx` y nunca en el ápice:
+dos SPF en el mismo nombre dan `permerror` y tumban el correo que ya funciona.
+
+**El `A` del ápice era uno, no dos, y su valor era la palabra `Parked`.** Las dos
+IPs que se ven por `dig` las pone el servicio de GoDaddy detrás de ese registro.
+Editarlo es lo que desactiva el park page; no hay nada que borrar. Y el
+*Forwarding* estaba en «Not set up», así que la trampa de que GoDaddy reescriba
+el registro no aplicaba aquí.
+
+**El primer «Provision certificate» falló y no era un defecto.** Netlify pide el
+certificado para el ápice **y** `www` a la vez. El `CNAME www` viejo se publicaba
+con TTL de 3600, así que el resolvedor de Netlify tenía cacheado el valor que
+apuntaba al parking. Se descartó una por una: CAA vacío en `cotea.com.mx`,
+`com.mx` y la raíz; DNSSEC apagado (ni `DS` ni `DNSKEY`); `/.well-known/acme-challenge/`
+alcanzable en los dos nombres; sin `AAAA` huérfano. **Netlify reintentó solo al
+expirar la caché.** La lección: con el certificado fallando, medir antes de
+reintentar, y bajar el TTL **antes** de mover un registro, no después.
+
+**La cuenta de Resend no era la que parecía.** Al entrar a `resend.com` no
+aparecía `fosmon.com.mx`, porque era una cuenta recién creada. La clave de
+producción es de **envío restringido** (`restricted_api_key`), así que
+`GET /domains` contesta 401 y no sirve para identificar la cuenta. Se identificó
+por otras dos vías de sólo lectura: el DNS de `fosmon.com.mx` tiene los tres
+registros de Resend (DKIM en `resend._domainkey`, `send` con
+`include:amazonses.com` y MX `feedback-smtp.us-east-1.amazonses.com`, o sea
+región **us-east-1**), y el registro de auditoría de Secret Manager dice que
+`ofosado@gmail.com` creó `RESEND_API_KEY` el 2026-06-01 a las 23:22. **La
+verificación de dominios en Resend es por cuenta:** verificar `cotea.com.mx` en
+la cuenta equivocada habría dado 403 igual, y peor — el DKIM de esa cuenta
+ocuparía `resend._domainkey.cotea.com.mx`, que sólo admite un valor, dejando a la
+cuenta de producción sin poder verificarlo.
+
+**El hueco que abrió el propio despliegue.** El dominio empezó a servir antes de
+que el CORS del bucket lo permitiera, así que durante un rato la app se veía
+entera y las fotos de evidencia salían en blanco, sin error. Es el orden del plan
+el que lo permitió: el paso 5 iba después del 2. **Si se repite con otro dominio,
+el CORS va antes de que el nombre nuevo sirva.**
