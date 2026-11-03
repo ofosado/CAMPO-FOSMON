@@ -2184,8 +2184,19 @@ exports.refrescarCatalogoGP = onCall({
 // Usa Resend (https://resend.com) como proveedor de email transaccional.
 // La API key se carga desde Google Secret Manager (no se hardcodea).
 
-const APP_URL = "https://campo-fosmon.netlify.app";
-const FROM_EMAIL = "CAMPO <campo@fosmon.com.mx>";
+// La dirección del producto, no la del contratista. `campo-fosmon.netlify.app`
+// decía de quién era la app antes de que el lector se identificara, y
+// `campo@fosmon.com.mx` hacía lo mismo en el remitente: un municipio recibía el
+// resumen de SUS obras desde el dominio de la constructora que le cobra. Es el
+// mismo caso que la firma del correo (#43) y que el emblema de la pantalla de
+// entrada, por el lado de la dirección.
+//
+// `cotea.com.mx` tiene que estar VERIFICADO en Resend (SPF y DKIM en el DNS)
+// antes de desplegar esto: con el dominio sin verificar Resend contesta 403 y
+// el correo del lunes no sale. No sale en silencio: el `catch` lo registra en
+// salud y relanza, así que Scheduler lo cuenta rojo.
+const APP_URL = "https://cotea.com.mx";
+const FROM_EMAIL = "cotea <no-reply@cotea.com.mx>";
 const ROLES_RESUMEN_SEMANAL = ["director_general", "director_operaciones", "gerente_construccion"];
 
 const MXN_FMT = (n) => `$${Math.abs(Number(n) || 0).toLocaleString("es-MX", {

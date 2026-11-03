@@ -39,6 +39,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { vigilarExcepciones, sinPrecondicion, noArranco } = require('./no-arranco.cjs');
 const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
+// El jsPDF falso vive aparte: lo comparte con el banco de la dirección.
+const { dibujarPDF } = require('./lienzo-pdf.cjs');
 
 vigilarExcepciones('functions/index.js y src/App.jsx');
 
@@ -46,77 +48,6 @@ const RAIZ = path.join(__dirname, '..');
 // La contraprueba apunta estos dos a copias mutadas.
 const ARCH_FN = process.env.ARCH_FUNCIONES || path.join(RAIZ, 'functions/index.js');
 const ARCH_APP = process.env.ARCH_APP || path.join(RAIZ, 'src/App.jsx');
-
-// ── El jsPDF falso ──────────────────────────────────────────────────────────
-//
-// `generarPDFObra` llama decenas de métodos de jsPDF y lo único que aquí
-// interesa es QUÉ TEXTO manda dibujar. Un `Proxy` contesta a cualquier método
-// que no esté previsto —así un método nuevo no tumba el banco— y anota los
-// `text()`. Los que sí están previstos son los que devuelven algo de lo que el
-// generador depende para seguir: si uno de ésos contestara `undefined`, el PDF
-// reventaría a media página y el banco diría «no dibujó la marca» cuando lo
-// que pasó es que no llegó.
-//
-// Se anota PÁGINA y POSICIÓN, no sólo el texto. Tirar las posiciones hacía que
-// este banco dijera más de lo que comprobaba: el dominio se dibuja también en
-// el marco de cada página, así que un `incluye el dominio` se cumplía con el
-// marco incluso si la portada volvía a teclear el suyo. La portada es la
-// página 1 —`pageFrame` corre sólo después de cada `addPage`—, y es ahí donde
-// hay que mirar.
-function lienzo() {
-  const dibujos = [];
-  let pagina = 1;
-  const base = {
-    internal: {
-      pageSize: { getWidth: () => 279, getHeight: () => 216, width: 279, height: 216 },
-      getNumberOfPages: () => 1,
-      pages: [1],
-    },
-    splitTextToSize: (t) => (Array.isArray(t) ? t.map(String) : [String(t)]),
-    getTextWidth: () => 10,
-    getNumberOfPages: () => 1,
-    output: () => 'blob',
-    save: () => {},
-    addImage: () => {},
-    lastAutoTable: { finalY: 50 },
-  };
-  const doc = new Proxy(base, {
-    get(o, k) {
-      if (k === 'addPage') return () => { pagina += 1; };
-      if (k === 'setPage') return (i) => { pagina = Number(i) || pagina; };
-      if (k in o) return o[k];
-      return (...args) => {
-        if (k === 'text') {
-          const [v, x, y, opts] = args;
-          for (const t of (Array.isArray(v) ? v : [v]))
-            dibujos.push({ texto: String(t), x, y, pagina, align: opts && opts.align });
-        }
-        return undefined;
-      };
-    },
-  });
-  return { doc, dibujos };
-}
-
-// Mueve el PDF de verdad y devuelve los textos dibujados. El `window` y el
-// `document` se montan con jsPDF ya cargado para que el generador no intente
-// bajarlo de un CDN: sin eso el banco pediría red, y un banco que pide red da
-// rojo el día que no hay.
-async function dibujarPDF(generarPDFObra, branding, obra) {
-  const { doc, dibujos } = lienzo();
-  const guardados = { window: global.window, document: global.document, alert: global.alert };
-  global.window = { jspdf: { jsPDF: function () { return doc; } }, _atLoaded: true };
-  global.document = { createElement: () => ({}), head: { appendChild: () => {} } };
-  global.alert = () => {};
-  try {
-    await generarPDFObra(obra, [], [], [], [], [], branding, [], null, [], null, [], []);
-  } finally {
-    global.window = guardados.window;
-    global.document = guardados.document;
-    global.alert = guardados.alert;
-  }
-  return dibujos;
-}
 
 // ── Sacar las dos piezas de sus archivos ────────────────────────────────────
 const PIDE_FN = ['correoResumenSemanal', 'correoBienvenida'];
