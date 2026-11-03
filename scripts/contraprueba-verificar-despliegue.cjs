@@ -108,15 +108,26 @@ escenario('un archivo desplegable sin commitear se ve como ATRÁS',
   caja => fs.writeFileSync(path.join(caja, 'src', 'zz-contraprueba.js'), '// nada\n'));
 
 // ── 2. El front vivo compiló otro commit ────────────────────────────────────
-// Se retrocede el clon al commit anterior que tocó `src`: así lo vivo y el
-// HEAD del clon difieren en lo que sí compila el bundle.
+// Se le AÑADE al clon un commit que toca `src`, para que su HEAD esté por
+// delante del commit vivo en las rutas que compilan el bundle.
+//
+// Antes esto retrocedía el clon «un commit de `src` hacia atrás», y eso
+// dependía del azar: el día que el front vivo resulte ser justamente ese
+// commit anterior, el diff sale vacío, el canal dice «sin diferencias» y el
+// escenario se pone rojo sin que nada esté roto. Pasó el 2026-11-03. Un
+// instrumento cuya premisa es «seguramente el front vivo está más atrás» no
+// mide, apuesta — y cuando pierde la apuesta acusa al verificador.
+//
+// Añadir un commit no apuesta nada: cualquier commit vivo que este clon
+// contenga queda por detrás de HEAD en `src`, que es exactamente el estado que
+// el canal tiene que llamar ATRÁS. Es además lo que hacen los escenarios 3, 4
+// y 5, así que los cinco se fabrican igual.
 escenario('un HEAD que no es el commit del bundle vivo se ve como ATRÁS',
   { codigo: 1, canal: 'front', marca: 'ATRÁS' },
   caja => {
-    const previos = correr('git', ['log', '-n', '2', '--format=%H', '--', 'src'], { cwd: caja })
-      .split('\n');
-    if (previos.length < 2) throw new Error('no hay dos commits que toquen src');
-    correr('git', ['checkout', '--detach', '--quiet', previos[1]], { cwd: caja });
+    const p = path.join(caja, 'src', 'main.jsx');
+    fs.writeFileSync(p, fs.readFileSync(p, 'utf8') + '\n// renglón de contraprueba\n');
+    commitear(caja, 'contraprueba: front distinto del desplegado');
   });
 
 // ── 3 y 4. Las reglas del repositorio no son las que están vivas ────────────
