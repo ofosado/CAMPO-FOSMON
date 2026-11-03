@@ -5291,3 +5291,84 @@ alta se consuma **sin avisarle a nadie** — justo lo que el comentario de
 `src/App.jsx:8335` daba por cerrado. No se había visto porque el alta siempre
 se había ejercitado con cuentas de directivo. Es el **#85**, aparte: no es de
 esta clase de defecto y no entra en esta rama.
+
+---
+
+## 87. El renglón sí quedó, y el canal gritaba que no
+
+**Descubierto**: 2026-11-03, en la consola, mientras se verificaba el lote de
+correos. Cuatro renglones iguales:
+
+```
+fsAudit: el renglón NO quedó en la bitácora · logout already-exists — va a la cola
+```
+
+Anotado en el índice ese mismo día **sin diagnóstico**, porque el código no
+cuadraba de ninguna de las dos formas conocidas: `addDoc` genera id automático,
+así que no podía ser colisión de id, y una negación por reglas habría dicho
+`permission-denied`.
+
+**Lo que era.** `addDoc` no manda una escritura cualquiera: manda una escritura
+**con precondición**.
+
+```js
+const mutation = parsed.toMutation(docRef._key, Precondition.exists(false));
+//  @firebase/firestore, dentro de `addDoc`
+```
+
+El id lo genera el cliente —veinte caracteres al azar, nunca reusados—, de modo
+que `already-exists` no puede ser el renglón de otro. Dice que **esa misma
+mutación ya se escribió**: el stream de escritura la reintenta cuando se corta
+sin recibir el acuse, el primer intento sí había quedado, y la precondición del
+segundo rebota contra lo que dejó el primero.
+
+Es decir, el error significaba exactamente lo contrario de lo que la pantalla
+decía con él.
+
+**Por qué importaba, dos veces.** La primera es el canal. El #75 existe para
+que una bitácora que se cae no se caiga callada; un canal que grita por un
+renglón que SÍ está es el #22 al revés, y es el mismo canal con el que
+pensamos enterarnos de los fallos de verdad. La segunda es el expediente: tras
+el grito venía `encolarRastro`, y al drenar la copia aterrizaba como un
+**segundo renglón** con el mismo `ts` —el del momento del fallo, que viaja con
+la fila— y otro id. Así se vio, contando la bitácora del emulador: dos `logout`
+de `gerencia@fosmon.com.mx` con el sello `2026-11-03T17:31:16.543Z`. Un
+duplicado en la bitácora, puesto por nosotros, en el registro cuyo valor entero
+es que diga lo que pasó.
+
+**La causa de que el reintento cayera justo al cerrar sesión.** `logout`
+llamaba a `fsAudit` sin `await` y acto seguido hacía `await signOut`: la
+escritura se quedaba en vuelo y la sesión se iba debajo.
+
+**Medido, no argumentado.** La carrera se reproduce determinista contra el
+emulador: la mutación se retiene en la cola local con `disableNetwork`, se lee
+del cache el id que generó el cliente, **otra conexión ocupa ese id** —que es
+lo que hace el primer intento cuando se pierde el acuse— y al volver la red la
+nuestra sale con su precondición contra lo ya escrito. El rechazo llega con
+`code: 'already-exists'` y en la bitácora hay **un** renglón. Las dos cosas
+juntas son la premisa de toda la clasificación, y por eso están en §1 del
+banco: el día que el SDK deje de mandar la precondición, eso es lo que se pone
+rojo.
+
+**Lo que se arregló.** Tres piezas, porque el patrón estaba repartido:
+
+- `logout` **espera** el renglón antes de `signOut`, con tope de 3 s. El tope no
+  es adorno: en obra sin señal la promesa de escritura no se resuelve, y un
+  `await` pelado dejaría al usuario sin poder salir. Si vence, se cierra igual
+  y la conducta vuelve a ser la de antes — que ya no miente.
+- La clasificación, en los **dos** escritores de la bitácora (`fsAudit` y
+  `dejarRastroDenegacion`): `already-exists` es «quedó». No grita y no encola.
+- El drenado de la cola: la fila que rebota así **sale** de la cola —si se
+  quedara, cada arranque escribiría el duplicado— y se cuenta en `yaEstaban`,
+  **aparte** de `enviados`. Sumarla a `enviados` sería cobrarse una escritura
+  que ese drenado no hizo, y el número está ahí justamente para decir qué pasó.
+
+**Lo que no se tocó.** Los otros trece `fsAudit` siguen sin `await`, y está
+bien: son mejor esfuerzo y no deben retrasar una captura. Ninguno tiene un
+`signOut` detrás, que es lo que creaba la carrera.
+
+**Verificación.** 21 comprobaciones en verde con el emulador, 8 contrapruebas
+—mutando `src/App.jsx` y `src/permiso-denegado.js`— todas en rojo con salida 1.
+En el preview, con los datos sembrados: un cierre de sesión dejó **un** renglón
+(10 → 11), sin nada en la cola, sin error en la consola y sin colgar el botón.
+El único sello duplicado que queda en el emulador es el viejo, el del defecto.
