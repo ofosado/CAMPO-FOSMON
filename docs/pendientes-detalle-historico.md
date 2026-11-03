@@ -5372,3 +5372,52 @@ bien: son mejor esfuerzo y no deben retrasar una captura. Ninguno tiene un
 En el preview, con los datos sembrados: un cierre de sesión dejó **un** renglón
 (10 → 11), sin nada en la cola, sin error en la consola y sin colgar el botón.
 El único sello duplicado que queda en el emulador es el viejo, el del defecto.
+
+---
+
+## `feature/resumen-semanal`: por qué se cierra sin portar
+
+**Qué traía.** El armado del correo del lunes sacado de `functions/index.js` a
+un `functions/resumen-semanal.js` propio, para poder **verlo sin mandarlo**, y
+el guion `scripts/muestra-resumen-semanal.mjs`: un Firestore de sólo lectura
+sobre la API REST —expone exactamente `doc().get()` y `collection().get()`, no
+hay un método de escritura que llamar ni por error— que llama al mismo
+`armarResumenSemanal` que corre el lunes a las 9:07 y deja el HTML en `/tmp`.
+Si la muestra se aprueba, se aprueba el correo.
+
+**Por qué no se porta.** El argumento del refactor era la garantía: que el
+correo y la pantalla no pudieran discrepar. Esa garantía **ya la exige `main`
+por otra vía** — `prueba-avance-sobre-contrato.cjs` y
+`prueba-partidas-extraordinarias.cjs` no comparan texto ni confían en que las
+dos cuentas se parezcan: extraen y **ejecutan** `calcularKpisObra` de los dos
+archivos, `src/App.jsx` y `functions/index.js`, y exigen el mismo número. El
+preámbulo del primero lo dice con el nombre del defecto que lo creó: *el correo
+y la pantalla daban números distintos*. Lo que la rama añadiría es que haya
+**una** copia en vez de dos pinchadas; eso es mejor diseño, no más garantía.
+
+Contra eso: 252 commits de divergencia y +11,777/−2,410 renglones en esos
+mismos dos archivos. No es un rebase, es una reescritura con el riesgo puesto
+sobre el único correo que hoy sale solo y bien (salió el 2026-11-02 con su
+`resendId`). Se reescribe el día que se vaya a tocar el armado por otra razón.
+
+**Lo rescatado.** `scripts/fecha-falsa.cjs`, que fija `new Date()` y
+`Date.now()` con `--require` y contesta «¿es una regresión o es el calendario?»
+—así se encontró el #29—. Se comprobó primero que no duplicara a
+`scripts/reloj.cjs`: no se pisan, una fija el **instante** y la otra la **zona**,
+y están aparte a propósito. Como ningún banco de la suite la carga —se usa a
+mano—, el rescate venía con la muerte callada de #65 incorporada: si deja de
+parchear, el banco corre con el hoy de verdad, da **verde**, y el verde se lee
+como «en ese día del calendario no falla». De ahí
+`prueba-fecha-falsa-sigue-fijando-el-hoy.cjs`: carga la herramienta en un
+proceso aparte y le pregunta al `Date` de ese proceso, incluidas las dos
+promesas negativas de su cabecera —los argumentos pasan intactos, la zona no se
+toca—, que son las que se rompen sin ruido. 8 comprobaciones, 6 mutaciones y
+las 6 vistas en ROJO 1.
+
+**Lo NO rescatado, y por qué.** `muestra-resumen-semanal.mjs` importa
+`functions/resumen-semanal.js`, que sólo existe en la rama. Corrido contra
+`main` muere en el `import`, antes incluso de pedir el `TOKEN`:
+`ERR_MODULE_NOT_FOUND`. Committearlo sería dejar un cadáver en el árbol —
+exactamente el defecto de #65 que acabamos de poner bajo vigilancia — y
+resucitarlo es portar el refactor, que es lo que se decidió no hacer. Queda en
+`feature/resumen-semanal`, que **no se borra ni se rebasa**.
