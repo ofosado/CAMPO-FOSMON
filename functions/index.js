@@ -2433,7 +2433,22 @@ function bloqueFueraDeAlcance({ sinOrg = [], deOtra = [] } = {}) {
 }
 
 // HTML del email semanal — diseño compacto, mobile-friendly
-function buildEmailHTML(kpisObras, fechaCorte, denegaciones, reparto) {
+// `marca` viene de `marcaDeOrg`, el MISMO documento que firma los tres correos
+// de alta y que pinta el encabezado de la app. Antes este correo tecleaba
+// «CAMPO · FOSMON CONSTRUCCIONES» en el encabezado y «CAMPO — FOSMON
+// Construcciones» en el pie: dos copias de una marca que ya se puede leer, y
+// el día que este resumen le salga a una dependencia —`orgDeLaRaiz` ya resuelve
+// de quién son las obras— iría firmado por su contratista. Es el #39 otra vez,
+// entrando por el nombre en vez de por el dinero.
+//
+// Sin marca no se firma con nadie: el encabezado se queda con `cotea`, que es
+// el producto y es cierto para todos. Un correo sin firma es mejor que uno
+// firmado por la empresa equivocada, el mismo criterio que `marcaDeOrg`.
+// Devuelve `{subject, html}`, como `correoBienvenida`, y no sólo el HTML: el
+// asunto se tecleaba en el envío, o sea que el nombre del producto vivía en dos
+// lugares y sólo uno de los dos era alcanzable por quien mide el nombre. El día
+// que el encabezado dijera una cosa y la bandeja otra, nadie lo vería.
+function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marca) {
   const filasObras = kpisObras.map(k => {
     const colorAvance = semaforoColor(k.avancePct, "avance");
     const colorGasto = semaforoColor(k.pctGasto, "gasto");
@@ -2471,15 +2486,24 @@ function buildEmailHTML(kpisObras, fechaCorte, denegaciones, reparto) {
   const cobradoTotal = kpisObras.reduce((t, k) => t + k.cobrado, 0);
   const obrasSinCaptura = kpisObras.filter(k => k.diasDesdeCaptura > 7).length;
 
-  return `<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8"><title>Resumen semanal CAMPO</title></head>
+  const firma = marca?.empresa ? ESC_HTML(marca.empresa).toUpperCase() : "";
+  const casa = marca?.empresa ? ESC_HTML(marca.empresa) : "";
+
+  // El asunto no lleva la casa: este correo sólo sale a la organización dueña
+  // de las obras de la raíz, así que distinguirla en la bandeja no hace falta y
+  // el encabezado ya la nombra. Lo que sí lleva es el conteo, que es lo que se
+  // lee de un vistazo sin abrirlo.
+  const subject = `cotea · Resumen semanal · ${totalObras} obras activas`;
+
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Resumen semanal · cotea</title></head>
 <body style="margin:0;padding:0;background:#F0F2F5;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#0D1619;">
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F0F2F5;padding:24px 12px;">
     <tr><td align="center">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
         <!-- Header -->
         <tr><td style="background:#0D1619;color:#fff;padding:24px 28px;">
-          <div style="font-size:11px;letter-spacing:0.12em;opacity:0.7;">CAMPO · FOSMON CONSTRUCCIONES</div>
+          <div style="font-size:11px;letter-spacing:0.12em;opacity:0.7;">cotea${firma ? ` · ${firma}` : ""}</div>
           <div style="font-size:24px;font-weight:700;margin-top:6px;">Resumen semanal</div>
           <div style="font-size:12px;opacity:0.8;margin-top:4px;">Corte del ${fechaCorte}</div>
         </td></tr>
@@ -2512,17 +2536,19 @@ function buildEmailHTML(kpisObras, fechaCorte, denegaciones, reparto) {
         </td></tr>
         <!-- CTA -->
         <tr><td style="padding:24px 28px;text-align:center;border-top:1px solid #E8EAF0;">
-          <a href="${APP_URL}" style="display:inline-block;background:#0D1619;color:#fff;padding:11px 24px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">Abrir CAMPO</a>
+          <a href="${APP_URL}" style="display:inline-block;background:#0D1619;color:#fff;padding:11px 24px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">Abrir cotea</a>
         </td></tr>
         <!-- Footer -->
         <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
           Este resumen se envía automáticamente cada lunes a las 9 a.m. (CDMX) a Dirección y Gerencia.<br>
-          CAMPO — FOSMON Construcciones · campo-fosmon.netlify.app
+          cotea${casa ? ` — ${casa}` : ""} · ${APP_URL.replace(/^https?:\/\//, "")}
         </td></tr>
       </table>
     </td></tr>
   </table>
 </body></html>`;
+
+  return { subject, html };
 }
 
 // Envía email via Resend API
@@ -3001,13 +3027,18 @@ async function generarYEnviarResumenSemanal(apiKey) {
   const fechaCorte = new Date().toLocaleDateString("es-MX", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
-  const html = buildEmailHTML(kpisValidos, fechaCorte, denegaciones, reparto);
+  // La marca de la dueña de las obras que se acaban de leer. Se lee del mismo
+  // documento que firma los correos de alta, y es la MISMA `orgRaiz` que ya
+  // decidió a quién se le manda: si el correo lo firmara otra, estaría
+  // diciéndole al destinatario que el dinero de adentro es de alguien más.
+  const marca = await marcaDeOrg(orgRaiz);
+  const { subject, html } = correoResumenSemanal(kpisValidos, fechaCorte, denegaciones, reparto, marca);
 
   // 6) Envía
   const resultado = await enviarEmailResend(apiKey, {
     from: FROM_EMAIL,
     to: destinatarios,
-    subject: `CAMPO · Resumen semanal · ${kpisValidos.length} obras activas`,
+    subject,
     html,
   });
   console.log(`Resumen enviado a ${destinatarios.length} destinatarios de ${orgRaiz}. Resend ID: ${resultado.id}`);

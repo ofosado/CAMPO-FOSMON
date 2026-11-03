@@ -288,7 +288,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const nomLines=doc.splitTextToSize(nombreCorto, PW*0.38);
   T(nomLines, ML, 74);
   fs(7.5); fw('normal');
-  T(obra.ubicacion||'FOSMON Construcciones', ML, 82);
+  // Ese renglón es la UBICACIÓN de la obra. Si no se capturó, no se pinta: lo
+  // que había tecleado ahí era «FOSMON Construcciones», o sea el nombre de la
+  // empresa puesto donde el lector espera un lugar — un dato inventado y, con
+  // una marca ajena, el nombre del contratista en la portada del cliente. El
+  // mismo criterio que `nombreOrg`: sin dato, no hay línea.
+  if (obra.ubicacion) T(obra.ubicacion, ML, 82);
 
   // Datos contrato derecha
   const xR=PW*0.44, yR0=22;
@@ -329,8 +334,12 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   sf([232,234,240]); R(0,PH-FTR,PW,FTR);
   sf(K.ng); R(0,PH-FTR,PW,0.6);
   st(K.gmu); fs(6); fw('normal');
-  T("cotea · FOSMON Construcciones", ML, PH-3.5);
-  T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});
+  // Leídos de `B`, no tecleados. El marco de cada página ya firma con
+  // `B.empresa` (líneas de `pageFrame`): esta portada tecleaba la suya, así que
+  // el mismo documento podía decir dos nombres distintos — y `B.dominio` se
+  // calculaba arriba para nada.
+  T(`cotea · ${B.empresa}`, ML, PH-3.5);
+  T(B.dominio, PW-MR, PH-3.5, {align:'right'});
 
   // ════════════════════════════════════════════════════════════════════════
   // PAG 2 — RESUMEN FINANCIERO

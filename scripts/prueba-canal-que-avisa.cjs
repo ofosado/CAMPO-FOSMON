@@ -276,7 +276,7 @@ const FUENTE_4BIS = bloque4bis();
 const faltan = [
   ...['registrarSalud', 'registrarFalloDeSalud', 'coleccionesDeBitacora',
       'contarDenegaciones', 'textoDenegaciones', 'bloqueDenegaciones',
-      'buildEmailHTML', 'TIPO_DENEGACION'].filter(n => !decl[n]),
+      'correoResumenSemanal', 'TIPO_DENEGACION'].filter(n => !decl[n]),
   ...(FUENTE_CRON ? [] : ['el manejador de exports.vigilarDenegaciones']),
   ...(FUENTE_4BIS ? [] : ['el bloque 4bis de generarYEnviarResumenSemanal']),
 ];
@@ -571,11 +571,11 @@ const dbQueRevienta = (porQue) => ({
   // `prueba-correo-no-cruza-organizaciones.cjs`, que arma el HTML completo.
   const email = new Function('semaforoColor', 'APP_URL', 'PCT_FMT', 'MXN_FMT', 'bloqueDenegaciones',
     'bloqueFueraDeAlcance',
-    `${decl.buildEmailHTML}; return buildEmailHTML;`)(
+    `${decl.correoResumenSemanal}; return correoResumenSemanal;`)(
     () => '#000', 'https://ejemplo', n => `${n}%`, n => `$${n}`,
     d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`,
     () => '');
-  const html = email([{ obraId: '0114', nombre: 'Obra', avancePct: 10, pctGasto: 10,
+  const { html } = email([{ obraId: '0114', nombre: 'Obra', avancePct: 10, pctGasto: 10,
     totGasto: 1, presupuesto: 2, cobrado: 1, diasDesdeCaptura: 1 }], 'hoy',
     { error: 'no se pudo' });
   check(html.includes('<!--MARCA:fallo-->'),
