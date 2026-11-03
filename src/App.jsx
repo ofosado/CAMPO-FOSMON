@@ -47,7 +47,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     logoNegro:  branding.logoNegro  || (typeof EMB_NEGRO!=='undefined' ? EMB_NEGRO : null),
     empresa:    branding.empresa    || 'FOSMON Construcciones',
     empresaCorta: branding.empresaCorta || 'FOSMON',
-    dominio:    branding.dominio    || 'campo-fosmon.netlify.app',
+    // Por omisión va la dirección del PRODUCTO, no la del contratista: una
+    // organización sin `dominio` propio llevaba «campo-fosmon.netlify.app»
+    // impreso en el pie de cada página de su PDF.
+    dominio:    branding.dominio    || 'cotea.com.mx',
   };
 
   // ── CONSTANTES DE DISEÑO ──────────────────────────────────────────────────

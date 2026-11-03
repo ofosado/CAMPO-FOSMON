@@ -5421,3 +5421,50 @@ las 6 vistas en ROJO 1.
 exactamente el defecto de #65 que acabamos de poner bajo vigilancia — y
 resucitarlo es portar el refactor, que es lo que se decidió no hacer. Queda en
 `feature/resumen-semanal`, que **no se borra ni se rebasa**.
+
+## #86 · `cotea.com.mx`: los pasos de fuera, en orden
+
+El repositorio ya dice `cotea.com.mx` en los cuatro sitios y la suite está
+verde. **Nada de lo de abajo está hecho, y nada de lo de abajo lo hago yo sin
+un OK explícito**: son DNS, consolas de terceros y escrituras a producción.
+
+El orden importa, y el principio que lo ordena es **que en ningún instante se
+rompa nada**: todo lo de fuera es **aditivo**. El origen viejo sigue sirviendo,
+sigue en el CORS y sigue siendo dominio autorizado hasta que se decida —
+aparte — retirarlo.
+
+1. **DNS de `cotea.com.mx`.** Hoy el dominio contesta el lander del registrador
+   (medido el 2026-11-03: HTTP 200, 114 bytes, un `location.href="/lander"`).
+   Apuntarlo a Netlify: el ápice pide ALIAS/ANAME, o pasar la zona a Netlify
+   DNS. `www` como CNAME.
+2. **Netlify: dominio personalizado + certificado.** Añadirlo al sitio que ya
+   existe; no crear un sitio nuevo, porque un sitio nuevo es otro build y otro
+   origen que nadie está midiendo.
+3. **Firebase Auth: `cotea.com.mx` como dominio autorizado.** Va **antes** de
+   que el origen nuevo sirva la app. Si la app se sirve desde un origen que
+   Auth no autoriza, el `signInWithEmailAndPassword` falla y nadie entra. Se
+   **añade**; `campo-fosmon.netlify.app` se queda.
+4. **Resend: verificar `cotea.com.mx`** (SPF y DKIM en el DNS, y esperar a que
+   el tablero diga verificado). **Esto va antes de desplegar las funciones y no
+   se puede saltar:** con el dominio sin verificar, Resend contesta 403 al
+   `FROM_EMAIL` nuevo y el correo del lunes no sale. No sale en silencio —el
+   `catch` lo registra en salud y relanza, así que Scheduler lo cuenta rojo—,
+   pero no sale.
+5. **CORS de Storage** (`gsutil cors set storage.cors.json gs://…`).
+   **Escritura a producción: pide OK.** El archivo ya suma los dos orígenes.
+6. **Desplegar funciones, por nombre y con canario**, no en bloque. **Pide OK.**
+7. **Empujar el front.** **Pide OK.**
+8. **En el repo, en el mismo paso que el 2:** cambiar el `SITIO` por omisión de
+   `scripts/verificar-despliegue.cjs` a `https://cotea.com.mx`, y la línea de
+   «URL producción» de `CAMPO_CONTEXTO.md` y `docs/CAMPO_BRIEF.md`. Hoy esos
+   tres dicen la verdad; el día 2 dejan de decirla.
+9. **Verificar:** `node scripts/verificar-despliegue.cjs` con los cuatro
+   canales, y el correo del lunes siguiente.
+
+**Lo que NO se hace todavía, y es una decisión, no un olvido:** redirigir
+`campo-fosmon.netlify.app` al origen nuevo con un 301. Un redirect saca a la
+PWA instalada de su origen, y con el origen se va su service worker, su caché y
+su estado local; además el ícono de la app instalada se fija al instalar (#37).
+Quien la tenga en la pantalla de inicio tendría que borrarla y volver a
+agregarla **sin haberlo pedido**. Los dos orígenes conviven hasta que se decida
+el retiro con un aviso de por medio.

@@ -52,6 +52,19 @@ const { execFileSync } = require('child_process');
 
 const raiz = path.resolve(__dirname, '..');
 const PROYECTO = process.env.PROYECTO || 'campo-fosmon';
+// Esto apunta a donde la app SE SIRVE HOY, no a donde va a servirse. El código
+// ya dice `APP_URL = https://cotea.com.mx` (ver `functions/index.js`), pero ese
+// dominio todavía contesta el lander del registrador —medido el 2026-11-03:
+// HTTP 200, 114 bytes, un `location.href="/lander"`—, así que apuntar aquí
+// sería dejar el front en «no se pudo medir» para siempre y, con él, el
+// veredicto de los otros tres canales: el 2 manda. Un verificador que nunca
+// puede dar veredicto es un instrumento muerto, no un instrumento estricto.
+//
+// **Este renglón se cambia a `https://cotea.com.mx` en el mismo paso en que
+// Netlify empiece a servir ese dominio**, y no antes. Mientras tanto la
+// diferencia es deliberada y está apuntada en el índice; lo que sí está medido
+// es que `APP_URL`, el CORS del bucket, el pie del PDF y el remitente no pueden
+// discrepar entre sí (`prueba-la-direccion-del-producto-es-una.cjs`).
 const SITIO = process.env.SITIO || 'https://campo-fosmon.netlify.app';
 
 // Rutas que cambian el bundle. Un commit que sólo toca PENDIENTES.md no deja

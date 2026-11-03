@@ -1,6 +1,8 @@
 [
   {
     "origin": [
+      "https://cotea.com.mx",
+      "https://www.cotea.com.mx",
       "https://campo-fosmon.netlify.app",
       "https://*.netlify.app",
       "http://localhost:5173",

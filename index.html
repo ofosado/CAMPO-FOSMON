@@ -38,8 +38,11 @@
         · Corra antes que /src/main.jsx (que registra el SW).
         · No dependa de librerías (React, Firebase, etc. aún no cargan aquí).
 
-      Uso: mandar por WhatsApp `https://campo-fosmon.netlify.app/?_reset=1`
-      al usuario atrapado. Ver ROLLBACK_PWA.md.
+      Uso: mandar por WhatsApp `https://cotea.com.mx/?_reset=1` al usuario
+      atrapado — pero el `?_reset=1` tiene que ir en el ORIGEN donde él tiene la
+      app, porque el service worker y la caché son por origen. A quien instaló
+      desde `campo-fosmon.netlify.app` hay que mandarle ese, no éste: la liga
+      nueva le limpiaría un origen en el que no está atrapado. Ver ROLLBACK_PWA.md.
     -->
     <script>
       (function () {
