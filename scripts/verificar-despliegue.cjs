@@ -52,20 +52,23 @@ const { execFileSync } = require('child_process');
 
 const raiz = path.resolve(__dirname, '..');
 const PROYECTO = process.env.PROYECTO || 'campo-fosmon';
-// Esto apunta a donde la app SE SIRVE HOY, no a donde va a servirse. El código
-// ya dice `APP_URL = https://cotea.com.mx` (ver `functions/index.js`), pero ese
-// dominio todavía contesta el lander del registrador —medido el 2026-11-03:
-// HTTP 200, 114 bytes, un `location.href="/lander"`—, así que apuntar aquí
-// sería dejar el front en «no se pudo medir» para siempre y, con él, el
-// veredicto de los otros tres canales: el 2 manda. Un verificador que nunca
-// puede dar veredicto es un instrumento muerto, no un instrumento estricto.
+// Esto apunta a donde la app SE SIRVE HOY. Hasta hace unas horas decía
+// `campo-fosmon.netlify.app` a propósito, porque el dominio nuevo contestaba el
+// lander del registrador y apuntar aquí habría dejado el front en «no se pudo
+// medir» para siempre y, con él, el veredicto de los otros tres canales: el 2
+// manda. Un verificador que nunca puede dar veredicto es un instrumento muerto,
+// no un instrumento estricto.
 //
-// **Este renglón se cambia a `https://cotea.com.mx` en el mismo paso en que
-// Netlify empiece a servir ese dominio**, y no antes. Mientras tanto la
-// diferencia es deliberada y está apuntada en el índice; lo que sí está medido
-// es que `APP_URL`, el CORS del bucket, el pie del PDF y el remitente no pueden
-// discrepar entre sí (`prueba-la-direccion-del-producto-es-una.cjs`).
-const SITIO = process.env.SITIO || 'https://campo-fosmon.netlify.app';
+// Ese impedimento ya no existe, medido el 2026-11-03 desde fuera: Netlify sirve
+// `cotea.com.mx` con certificado propio de Let's Encrypt (SAN `cotea.com.mx` y
+// `www.cotea.com.mx`), y el cuerpo que devuelve es byte por byte el mismo que
+// el del origen viejo —5524 bytes, sha256 `30c9b30a1546…` en los dos—. Mover el
+// renglón no cambia ningún veredicto hoy; lo que cambia es a quién se le va a
+// creer mañana, cuando los dos orígenes dejen de ser el mismo sitio.
+//
+// El origen viejo NO se retira: sigue sirviendo, sigue en el CORS del bucket y
+// sigue siendo dominio autorizado en Auth. Para medirlo basta `SITIO=…`.
+const SITIO = process.env.SITIO || 'https://cotea.com.mx';
 
 // Rutas que cambian el bundle. Un commit que sólo toca PENDIENTES.md no deja
 // al front atrasado, y marcarlo sería un rojo falso — que en un verificador
