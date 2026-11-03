@@ -6563,20 +6563,24 @@ const ROLES_PANEL_EJECUTIVO = new Set([
 ]);
 const vePanelEjecutivo = rol => ROLES_PANEL_EJECUTIVO.has(rol);
 
-// ── ¿Quién navega por tarjetas y quién por la tabla? ───────────────────
-// Los roles con panel ejecutivo reciben arriba una tabla con una fila por obra,
-// ordenable, con el atraso y los días sin captura en columnas. Debajo traían
-// además la misma cartera en tarjetas: la segunda mitad de la pantalla repetía
-// la primera con menos datos y sin poder ordenarse, y la tabla —que es la
-// buena— quedaba a veinte tarjetas de distancia de su propia obra.
+// ── Aquí vivía `veListaDeTarjetas`, y la lista vuelve a ser de todos ──────
+// Esconder las tarjetas a los roles con tabla se introdujo el 2026-10-11 en
+// `7dc9bca`, un commit cuyo mensaje habla SÓLO de ordenamiento: el cambio se
+// fue de polizón y nunca se acordó. El comentario que lo justificaba decía
+// «por instrucción expresa» del caso del auditor; esa instrucción no existe.
 //
-// `verHistorial` MANDA sobre esto, y no es un detalle. El panel sólo habla de
-// obras activas, así que en el Historial no se pinta; esconder ahí también las
-// tarjetas dejaría la pantalla de archivadas completamente en blanco, y justo
-// para los dos roles que pueden abrirla (`director_operaciones` y
-// `gerente_construccion`, ambos con panel). La lista se esconde donde la tabla
-// la reemplaza, no donde no hay tabla.
-const veListaDeTarjetas = (rol, verHistorial) => !!verHistorial || !vePanelEjecutivo(rol);
+// El argumento de fondo —que la segunda mitad de la pantalla repetía la
+// primera— sólo es cierto con cartera grande. Con una o dos obras la tabla
+// tiene una o dos filas y no repite nada: nada más borraba media pantalla, y
+// justo a quien menos obras tiene. Entre esas cuentas están el auditor y los
+// tres roles de dependencia, que ven el concentrado ya filtrado a sus obras
+// asignadas. Y la tabla del panel no trae columna de Contrato, mientras el
+// subtítulo del propio panel promete «Contrato, avance y pendientes de
+// captura»: el importe por obra se había ido de la primera pantalla.
+//
+// Si algún día el duplicado estorba de verdad con cartera grande, se cierra
+// por colapso —que el usuario decide y puede abrir— y no por rol, que decide
+// por él y no se puede abrir.
 
 // ── Los roles con la cartera completa y NINGUNA vista que la resuma ────
 // SE DERIVA, no se escribe. Son los que tienen `todas_obras` y no tienen panel
@@ -6769,6 +6773,59 @@ const nivel5 = (valor, umbrales, direccion = 'alto') => {
 // Escalas específicas por indicador (mismos umbrales que el PDF)
 const nivelMargen = (mpct) => nivel5(mpct, [20, 15, 10, 5], 'alto');
 const nivelAvance = (afReal, pctPrograma) => nivel5(afReal - pctPrograma, [0, -3, -8, -15], 'alto');
+
+// ── Cómo se DICE la economía de una obra, decidido una sola vez ───────────
+// Recibe la salida de `calcularKPIsObra` y devuelve las cadenas y los colores
+// ya resueltos. No calcula dinero: traduce.
+//
+// Existe porque la tabla del panel y la tarjeta de la lista hablan de la MISMA
+// obra en la MISMA pantalla, y cada una tenía su propio condicional. La tabla
+// había aprendido a callarse cuando el gasto de GP no está medido; la tarjeta
+// no preguntaba, y pintaba un margen calculado con ese sumando en cero —es
+// decir, inflado— con su semáforo de color al lado. Mientras las tarjetas
+// estuvieron escondidas a los roles con tabla eso no se veía; al devolverlas,
+// la misma obra habría dicho «gasto sin medir» arriba y «Margen 42.3%» justo
+// debajo. Dos vistas de un número con dos condicionales escritos por separado
+// es exactamente cómo se acaba enseñando una cifra inventada.
+//
+// Tres estados, y el color de cada uno dice algo distinto:
+//   · sin medir  → apagado. Falta un sumando del gasto: no es malo ni bueno,
+//                  no se sabe, y ni el porcentaje ni el absoluto son afirmables.
+//   · indefinido → rojo. Hay gasto y no hay ejecución: es pérdida. Aquí el
+//                  absoluto SÍ se enseña, porque esa cifra es real.
+//   · normal     → el nivel de siempre.
+const presentacionEconomiaObra = (kpis) => {
+  const gastoSinMedir = !kpis.gastoGPMedido;
+  const margenIndefinido = kpis.me <= 0 && kpis.gt > 0;
+  const conPresupuesto = kpis.presupuesto > 0;
+  return {
+    gastoSinMedir, margenIndefinido,
+    // El gasto al que le falta GP no se enseña como cifra: le falta dinero.
+    // Y sin él tampoco se puede decir qué porcentaje del contrato va gastado,
+    // ni pintar la barra que lo dibuja.
+    gastoTxt: gastoSinMedir ? 'sin medir' : MXN(kpis.gt),
+    gastoColor: gastoSinMedir ? C.textMut
+      : (conPresupuesto && kpis.pctGasto > 90 ? C.red
+        : conPresupuesto && kpis.pctGasto > 75 ? C.yellowDk : C.textPri),
+    pctGastoTxt: (gastoSinMedir || !conPresupuesto) ? null
+      : `${NUM(kpis.pctGasto, 1)}% del contrato`,
+    barraGasto: gastoSinMedir ? null : Math.min(kpis.pctGasto, 100),
+    margenTxt: (gastoSinMedir || margenIndefinido) ? '—' : `${NUM(kpis.mpct, 1)}%`,
+    margenAbsTxt: gastoSinMedir
+      ? 'gasto sin medir'
+      : `${kpis.diff < 0 ? '−' : ''}${MXN(Math.abs(kpis.diff))}`,
+    margenColor: gastoSinMedir ? C.textMut
+      : (margenIndefinido ? C.redDk : nivelMargen(kpis.mpct).color),
+    margenTitulo: gastoSinMedir
+      ? (kpis.gastoGPMotivo === 'no-pedida'
+          ? 'El gasto de GP de esta obra todavía no se ha medido: se dio de alta después de la última corrida. No se muestra margen para no inventarlo; la corrida del cron lo llena.'
+          : 'El gasto de GP de esta obra no se pudo medir, así que el margen no se puede afirmar.')
+      : (margenIndefinido
+          ? 'Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.'
+          : undefined),
+    margenConFlecha: !gastoSinMedir && !margenIndefinido,
+  };
+};
 
 // ── ATOMS ──────────────────────────────────────────────────────────────────
 function Card({children,style,accent}){
@@ -9588,19 +9645,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const diasCap = diasSinCapturaDe(avSemanas, HOY);
     const ultimaCapturaTxt = diasCap === null ? '—'
       : diasCap === 0 ? 'hoy' : (diasCap === 1 ? 'ayer' : `hace ${diasCap} días`);
-    // Margen indefinido: gasto sin ejecución (ej. obra en arranque con
-    // costos de movilización antes de facturar avance). calcularKPIsObra
-    // fuerza mpct=0 por la guarda contra división entre cero, pero mostrar
-    // 0.0% en pantalla miente: aparenta neutralidad cuando la obra tiene
-    // gasto perdido sin retorno. Marcamos la fila y en la presentación se
-    // pinta guion + margen absoluto (que sí es una cifra real).
-    const margenIndefinido = kpis.me <= 0 && kpis.gt > 0;
-    // Segundo motivo para no poder afirmar el margen, y NO es el mismo que el
-    // de arriba: ahí el margen absoluto sí es una cifra real y se enseña;
-    // aquí falta un sumando del gasto, así que ni el porcentaje ni el absoluto
-    // son afirmables. Se separan para que la presentación no enseñe como real
-    // un número al que le falta dinero.
-    const gastoSinMedir = !kpis.gastoGPMedido;
+    // Cómo se dice el margen —y el gasto— lo decide `presentacionEconomiaObra`,
+    // que es el MISMO traductor que usa la tarjeta de la lista de abajo. Vivía
+    // aquí dentro, y por eso la tarjeta podía contradecir a esta fila hablando
+    // de la misma obra en la misma pantalla.
+    const pres = presentacionEconomiaObra(kpis);
     return {
       obra: o,
       nombre: resolverNombreCortoObra(o, gpData),
@@ -9609,34 +9658,14 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       deltaAvance,
       margenPct: kpis.mpct,
       margenAbs: kpis.diff,
-      margenIndefinido,
-      gastoSinMedir,
+      margenIndefinido: pres.margenIndefinido,
+      gastoSinMedir: pres.gastoSinMedir,
       gastoSinMedirMotivo: kpis.gastoGPMotivo,
-      // El margen, ya resuelto para pintar. Se decide AQUÍ y una sola vez
-      // porque lo pintan dos bloques —la tabla de escritorio y la lista de
-      // móvil— con el mismo condicional escrito por separado, que es
-      // exactamente cómo dos vistas del mismo número acaban discrepando.
-      //
-      // Tres estados, y el color de cada uno dice algo distinto:
-      //   · sin medir  → apagado. No es malo ni bueno: no se sabe.
-      //   · indefinido → rojo. Hay gasto y no hay ejecución: es pérdida.
-      //   · normal     → el nivel de siempre.
-      margenTxt: (gastoSinMedir || margenIndefinido) ? '—' : `${NUM(kpis.mpct, 1)}%`,
-      // El absoluto sí se enseña cuando el margen es indefinido —esa cifra es
-      // real— y NO se enseña cuando falta gasto, porque le falta un sumando.
-      margenAbsTxt: gastoSinMedir
-        ? 'gasto sin medir'
-        : `${kpis.diff < 0 ? '−' : ''}${MXN(Math.abs(kpis.diff))}`,
-      margenColor: gastoSinMedir ? C.textMut
-        : (margenIndefinido ? C.redDk : nivelMargen(kpis.mpct).color),
-      margenTitulo: gastoSinMedir
-        ? (kpis.gastoGPMotivo === 'no-pedida'
-            ? 'El gasto de GP de esta obra todavía no se ha medido: se dio de alta después de la última corrida. No se muestra margen para no inventarlo; la corrida del cron lo llena.'
-            : 'El gasto de GP de esta obra no se pudo medir, así que el margen no se puede afirmar.')
-        : (margenIndefinido
-            ? 'Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.'
-            : undefined),
-      margenConFlecha: !gastoSinMedir && !margenIndefinido,
+      margenTxt: pres.margenTxt,
+      margenAbsTxt: pres.margenAbsTxt,
+      margenColor: pres.margenColor,
+      margenTitulo: pres.margenTitulo,
+      margenConFlecha: pres.margenConFlecha,
       deltaMargen,
       porCobrar: kpis.estPorCob,
       personal,
@@ -10621,11 +10650,6 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
   const listaActual=ordenar(verHistorial?archivadas:activas);
 
-  // El auditor incluido, por instrucción expresa: su concentrado ya viene
-  // filtrado a sus obras asignadas (medido aparte), así que la tabla le dice de
-  // su cartera lo mismo que las tarjetas y además ordenada.
-  const veLista = veListaDeTarjetas(usuario.rol, verHistorial);
-
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {modalNueva&&<ModalNuevaObra usuario={usuario} onSave={agregarObra} onClose={()=>setModalNueva(false)} gpData={gpData} onRefreshGP={onRefreshGP} gpLoading={gpLoading}
       catalogoGP={catalogoGP} catalogoEstado={catalogoEstado} catalogoError={catalogoError}
@@ -10844,55 +10868,40 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           gpDisponible={gpDisponible} onSelectObra={onSelect}/>
     )}
 
-    {/* Lista de obras. El aviso de «no hay ninguna» NO lleva `veLista`: con
-        cero obras, esconderlo deja la pantalla en blanco —el panel de arriba no
-        tiene nada que pintar tampoco— y una pantalla en blanco se lee como una
-        falla de la app, no como una cartera vacía. Es el caso del auditor al
-        que todavía no le asignan obras. */}
+    {/* Lista de obras. Sin cerrojo por rol: la tarjeta de cada obra se pinta
+        siempre, debajo del panel cuando hay panel. El aviso de «no hay
+        ninguna» tampoco lo lleva —con cero obras, esconderlo deja la pantalla
+        en blanco, y una pantalla en blanco se lee como una falla de la app y
+        no como una cartera vacía. */}
     {listaActual.length===0&&<div style={{background:C.card,borderRadius:10,padding:24,
       textAlign:"center",color:C.textMut,fontSize:12}}>
       {verHistorial?"No hay obras archivadas":"No hay obras activas"}
     </div>}
 
-    {veLista&&listaActual.map(o=>{
+    {listaActual.map(o=>{
       const d = datosPorObra[o.id] || {};
-      // Avance físico ponderado
-      const subsO = d.subs || [];
-      const modoVolO = (o?.modoAvance === "volumen");
-      const avanceFisico = (o.presupuesto > 0 && subsO.length > 0)
-        ? avanceFisicoPonderado(subsO, o.presupuesto, modoVolO)
-        : 0;
+      // UNA cuenta por número: los mismos KPIs que alimentan la tabla del
+      // panel de arriba y el tablero de la obra. La tarjeta tenía su propia
+      // versión escrita en línea —misma fórmula, otro código— y de ahí salió
+      // el defecto: la copia no preguntaba si el gasto de GP estaba medido.
+      const kpisO = calcularKPIsObra(o, d.subs || [], d.maquinaria || [],
+        d.materiales || [], d.estimaciones || [], gpData, d.otrosGastos || []);
+      const avanceFisico = kpisO.af;
       // Estimado total (todas las estimaciones sin importar estatus)
-      const estTotalO = (d.estimaciones || []).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-      const amO  = desgloseEjecutado(subsO, modoVolO).total;
+      const estTotalO = kpisO.estTotal;
+      const amO  = kpisO.am;
 
-      // ── Economía interna del contratista: no se calcula en dependencia ──
-      // No es que se pinte y se esconda: si `eco` fuera un objeto de ceros,
-      // la tarjeta diría "Gasto acumulado $0" y "Margen 100%", que son las
-      // dos cifras falsas del P5. En dependencia ni `gpData` ni maquinaria ni
-      // otros gastos se suscriben, así que no hay nada que sumar.
+      // ── Economía interna del contratista: no se ENSEÑA en dependencia ──
+      // No es que se pinte y se esconda: en dependencia ni `gpData` ni
+      // maquinaria ni otros gastos se suscriben, así que el gasto saldría en
+      // cero y la tarjeta diría "Gasto acumulado $0" y "Margen 100%", las dos
+      // cifras falsas del P5. Por eso aquí no hay objeto que pintar.
       //
       // IMPORTANTE (constructora): el ALMACÉN NO se suma al gasto. Almacén son
       // insumos ya reportados en GP que están en tránsito/bodega esperando ser
       // instalados para poder cobrarse al cliente — por eso suman al EJECUTADO
-      // (meO), no al gasto. (Aclaración del usuario ago-2026.)
-      const eco = dep ? null : (() => {
-        const gastoGPLive = resolverGastoGP(o, gpData);
-        const maqTotal = (d.maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-        const matTotal = (d.materiales || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-        const otrosTotal = (d.otrosGastos || []).reduce((t,x) => t + (parseFloat(x.importe)||0), 0);
-        const gastoTotalLive = gastoGPLive + maqTotal + otrosTotal;
-        // Monto ejecutado = avance monetario + almacén. El dinero NO se topa:
-        // lo ejecutado sobre catálogo se ejecutó y cuesta, aunque aún no esté
-        // autorizado como convenio.
-        const meO = amO + matTotal;
-        const margenPct = meO > 0 ? ((meO - gastoTotalLive) / meO) * 100 : 0;
-        return {
-          gastoTotalLive, meO, margenPct,
-          mNiv: nivelMargen(margenPct),
-          pg: o.presupuesto > 0 ? (gastoTotalLive/o.presupuesto)*100 : 0,
-        };
-      })();
+      // (`me`), no al gasto. (Aclaración del usuario ago-2026.)
+      const eco = dep ? null : presentacionEconomiaObra(kpisO);
 
       // Lo que sí es de la dependencia: lo que ya pagó de su propio dinero.
       const pagadoO = dep
@@ -10985,27 +10994,36 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               </div>
               <div>
                 <div title="GP + Maquinaria + Otros gastos (el Almacén ya está incluido en el GP y suma al Ejecutado, no al Gasto)" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Gasto acumulado</div>
-                <div style={{fontSize:12,fontWeight:600,color:o.presupuesto>0 && eco.pg>90?C.red:o.presupuesto>0 && eco.pg>75?C.yellowDk:C.textPri}}>{MXN(eco.gastoTotalLive)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.pg,1)}% del contrato</div>}
+                {/* Cuando a este número le falta el gasto de GP, no se enseña:
+                    le falta dinero, y un total incompleto se lee como total. */}
+                <div title={eco.margenTitulo} style={{fontSize:12,fontWeight:600,color:eco.gastoColor,
+                  ...(eco.gastoSinMedir?{fontStyle:"italic"}:{})}}>{eco.gastoTxt}</div>
+                {eco.pctGastoTxt && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{eco.pctGastoTxt}</div>}
               </div>
               <div>
                 <div title="Avance físico ponderado por importe + almacén" style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Ejecutado</div>
-                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(eco.meO)}</div>
-                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(eco.meO/o.presupuesto*100,1)}% del contrato</div>}
+                <div style={{fontSize:12,fontWeight:600,color:C.blueDk}}>{MXN(kpisO.me)}</div>
+                {o.presupuesto>0 && <div style={{fontSize:9,color:C.textMut,marginTop:1}}>{NUM(kpisO.me/o.presupuesto*100,1)}% del contrato</div>}
               </div>
               <div>
                 <div style={{fontSize:9,color:C.textMut,marginBottom:1,textTransform:"uppercase",letterSpacing:"0.04em"}}>Margen bruto</div>
-                <div style={{fontSize:12,fontWeight:700,color:eco.mNiv.color}}>
-                  {eco.meO>0 ? `${eco.margenPct>=0?'':'-'}${MXN(Math.abs(eco.meO-eco.gastoTotalLive))}` : '—'}
+                {/* Mismas cadenas que la fila de la tabla de arriba, por
+                    construcción: las dos salen de `presentacionEconomiaObra`. */}
+                <div title={eco.margenTitulo} style={{fontSize:12,fontWeight:700,color:eco.margenColor,
+                  ...(eco.gastoSinMedir?{fontStyle:"italic"}:{})}}>
+                  {eco.margenAbsTxt}
                 </div>
-                {eco.meO>0 && <div style={{fontSize:9,color:eco.mNiv.color,marginTop:1,fontWeight:600}}>{NUM(eco.margenPct,1)}% ejec. vs gastado</div>}
+                {!eco.gastoSinMedir && !eco.margenIndefinido &&
+                  <div style={{fontSize:9,color:eco.margenColor,marginTop:1,fontWeight:600}}>{eco.margenTxt} ejec. vs gastado</div>}
               </div>
             </div>
-            <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
-              title={`Gasto total ${NUM(eco.pg,1)}% del presupuesto`}>
-              <div style={{width:`${Math.min(eco.pg,100).toFixed(1)}%`,height:"100%",
-                background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
-            </div>
+            {eco.barraGasto !== null && (
+              <div style={{background:"rgba(0,0,0,0.05)",borderRadius:99,height:3,overflow:"hidden",marginBottom:8}}
+                title={`Gasto total ${NUM(kpisO.pctGasto,1)}% del presupuesto`}>
+                <div style={{width:`${eco.barraGasto.toFixed(1)}%`,height:"100%",
+                  background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
+              </div>
+            )}
           </>
         )}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:10,color:C.textMut}}>

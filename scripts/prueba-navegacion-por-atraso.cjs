@@ -7,8 +7,13 @@
 //   1. «Esta obra está más atrasada que aquélla» — el orden por atraso.
 //   2. «Ésta no se puede ordenar por atraso» — las obras sin desviación medible,
 //      que van al final y NO al lugar que les daría un cero.
-//   3. «A este rol la tabla ya le dice lo que decían las tarjetas» — el cerrojo
-//      que esconde la lista.
+//   3. «Toda obra tiene su tarjeta» — que la lista NO está detrás de un cerrojo
+//      por rol. Esto afirmaba lo contrario hasta el 2026-11-03: que a los roles
+//      con tabla se les escondía, y que al auditor «por instrucción expresa».
+//      La instrucción no existía —el cambio se fue de polizón en `7dc9bca`, un
+//      commit sobre ordenamiento— y el usuario pidió devolverlas a todos. Se
+//      deja escrito aquí porque una prueba que se invierte sin dejar rastro es
+//      una prueba que mañana nadie sabe por qué dice lo que dice.
 //
 // POR QUÉ ESTO ES UN BANCO Y NO UN VISTAZO. El orden por atraso existe para dos
 // roles —`contralor` y `administrativo`— que tienen la cartera completa y
@@ -26,8 +31,11 @@
 //
 //   atrasoDeObra         los días de atraso de una obra
 //   porAtrasoDesc        el orden
-//   veListaDeTarjetas    quién ve las tarjetas
 //   ordenInicialDeLista  con qué orden abre cada rol
+//
+// Quién ve las tarjetas ya no es una función: son todos, y eso se comprueba
+// sobre el ÁRBOL de la pantalla —que `listaActual.map` no cuelgue de ningún
+// `&&`—, no sobre un valor que podría estar bien y no estar cableado.
 //
 // Y la contraprueba es SEMÁNTICA: se vuelve a armar el módulo con
 // `atrasoProyectado` sustituido por una versión que NIEGA el signo, y se exige
@@ -48,11 +56,9 @@
 //   · `atrasoDeObra` arma la resta por su cuenta —`proyeccionDeAvance` directo,
 //     sobre `{...obra}`— en vez de llamar a `atrasoProyectado`
 //       → 2 en rojo, salida 1
-//   · `veListaDeTarjetas` pierde el `verHistorial ||`
-//       → 1 en rojo, salida 1
-//   · la pantalla pinta `listaActual.map` sin el cerrojo `veLista &&`
+//   · la pantalla vuelve a colgar `listaActual.map` de un `&&` por rol
 //       → 1 en rojo, salida 1  (el cableado, que es lo que vuelve esto medible
-//         en vez de cuatro funciones correctas y muertas)
+//         en vez de tres funciones correctas y muertas)
 //   · `ordenar` se queda sin su rama `"atraso"`
 //       → 1 en rojo, salida 1
 //   · `necesitaDatosDeCartera` vuelve a preguntar sólo por el panel ejecutivo
@@ -105,11 +111,11 @@ const DE_MODULO = [
   'avanceFisicoPonderado',
   'atrasoProyectado', 'atrasoDeObra', 'porAtrasoDesc',
   'PERMISOS', 'ROLES_PANEL_EJECUTIVO', 'vePanelEjecutivo',
-  'ROLES_SIN_CONCENTRADO', 'veListaDeTarjetas', 'ordenInicialDeLista',
+  'ROLES_SIN_CONCENTRADO', 'ordenInicialDeLista',
   'CLAVES_BULK', 'CLAVES_BULK_DEPENDENCIA', 'necesitaDatosDeCartera',
 ];
 // Que falten éstas es renombre, no regresión: no hay nada que medir.
-const IMPRESCINDIBLES = ['atrasoDeObra', 'porAtrasoDesc', 'veListaDeTarjetas',
+const IMPRESCINDIBLES = ['atrasoDeObra', 'porAtrasoDesc',
   'ordenInicialDeLista', 'atrasoProyectado', 'avanceFisicoPonderado',
   'PERMISOS', 'ROLES_PANEL_EJECUTIVO', 'necesitaDatosDeCartera',
   'ROLES_SIN_CONCENTRADO', 'CLAVES_BULK_DEPENDENCIA'];
@@ -205,38 +211,31 @@ console.log(`\nArchivo: ${path.relative(raiz, archivo)}`);
 // ════════════════════════════════════════════════════════════════════════════
 // 1) Quién ve la lista y con qué orden abre
 // ════════════════════════════════════════════════════════════════════════════
-seccion('Quién navega por tarjetas y quién por la tabla');
+seccion('La tarjeta de cada obra no depende del rol');
 {
-  // Los que el encargo nombró uno por uno: conservan la lista intacta.
-  const CONSERVAN = ['supervisor_obra', 'superintendente', 'residente', 'administrador_obra'];
-  const sinLista = CONSERVAN.filter(r => !mod.veListaDeTarjetas(r, false));
-  check(sinLista.length === 0,
-    'supervisor, superintendente, residente y administrador de obra conservan las tarjetas',
-    sinLista.length ? `se les quitó a ${sinLista.join(', ')}` : CONSERVAN.join(' · '));
+  // Esto se afirma por AUSENCIA, y por eso se mide sobre el archivo y no sobre
+  // una función: lo que se exige es que no exista ningún cerrojo por rol. Un
+  // `veListaDeTarjetas(...)` que devolviera `true` para todos pasaría igual,
+  // pero dejaría el cerrojo puesto y a un `Set` de distancia de volver.
+  const cerrojos = [...src.matchAll(/veListaDeTarjetas|\bveLista\b/g)]
+    .filter(m => {
+      // Las menciones dentro de un comentario son historia, no código: el
+      // comentario que explica por qué se quitó tiene que poder nombrarlo.
+      const renglon = src.slice(src.lastIndexOf('\n', m.index) + 1,
+                                src.indexOf('\n', m.index));
+      return !/^\s*(\/\/|\*|\/\*)/.test(renglon);
+    });
+  check(cerrojos.length === 0,
+    'no queda ningún cerrojo por rol sobre la lista de tarjetas',
+    cerrojos.length ? `${cerrojos.length} mención(es) vivas de veLista…`
+                    : 'ni `veListaDeTarjetas` ni `veLista` fuera de comentarios');
 
-  // Y los que la pierden son EXACTAMENTE los que tienen tabla. Comparar los dos
-  // conjuntos, no una lista escrita a mano: así el día que un rol entre o salga
-  // del panel, su lista sigue el cambio sola o esto se pone rojo.
-  const roles = Object.keys(mod.PERMISOS);
-  const discrepan = roles.filter(r =>
-    mod.veListaDeTarjetas(r, false) === mod.vePanelEjecutivo(r));
-  check(discrepan.length === 0,
-    'la lista se esconde exactamente donde hay tabla que la reemplace',
-    discrepan.length ? `no cuadran: ${discrepan.join(', ')}` : `${roles.length} roles revisados`);
-
-  check(mod.veListaDeTarjetas('auditor', false) === false
-        && mod.vePanelEjecutivo('auditor') === true,
-    'al auditor se le esconde, por instrucción expresa: tiene tabla',
-    'auditor → tabla, sin tarjetas');
-
-  // El Historial manda. Es el caso que deja la pantalla en blanco si se olvida:
-  // el panel no se pinta ahí, así que si las tarjetas tampoco, no queda nada.
-  const puedenHistorial = ['director_operaciones', 'gerente_construccion'];
-  const ciegos = puedenHistorial.filter(r => !mod.veListaDeTarjetas(r, true));
-  check(ciegos.length === 0,
-    'en el Historial reaparecen: ahí no hay tabla, y sin tarjetas no quedaría nada',
-    ciegos.length ? `${ciegos.join(', ')} verían una pantalla en blanco`
-                  : puedenHistorial.join(' · '));
+  // Y el que tiene panel es el caso que importa: para él la tabla NO sustituye
+  // la tarjeta, porque la tabla no trae columna de Contrato. Con una obra
+  // asignada, esconderla le borraba media pantalla.
+  check(mod.vePanelEjecutivo('auditor') === true,
+    'el auditor sigue teniendo tabla —y ahora además su tarjeta—',
+    'auditor → tabla + tarjetas');
 }
 
 seccion('Con qué orden abre cada rol');
@@ -443,9 +442,6 @@ seccion('La pantalla está cableada a ellas');
     },
   });
 
-  check(/veListaDeTarjetas\s*\(/.test(init.veLista || ''),
-    '`veLista` sale de `veListaDeTarjetas`, no de un condicional en la pantalla',
-    (init.veLista || '(no existe)').replace(/\s+/g, ' ').slice(0, 64));
   check(/ordenInicialDeLista\s*\(/.test(init.orden || ''),
     'el orden de arranque sale de `ordenInicialDeLista`',
     (init.orden || '(no existe)').replace(/\s+/g, ' ').slice(0, 64));
@@ -456,12 +452,15 @@ seccion('La pantalla está cableada a ellas');
     'y el atraso de cada obra sale de `atrasoDeObra`',
     (init.atrasoDe || '(no existe)').replace(/\s+/g, ' ').slice(0, 64));
 
-  // El cerrojo de verdad: la lista de tarjetas detrás de `veLista`.
+  // El cableado, que es lo que vuelve esto medible: `listaActual.map` NO
+  // cuelga de ningún `&&`. Afirmar sobre el árbol y no sobre un valor es lo
+  // que distingue «las tarjetas se pintan» de «hay una función que dice que
+  // sí»: el defecto del 2026-10-11 era exactamente un cerrojo cableado.
   const deLaLista = guardas.filter(g => /listaActual\s*\.\s*map\s*\(/.test(g.der));
-  check(deLaLista.length > 0 && deLaLista.every(g => /\bveLista\b/.test(g.izq)),
-    'las tarjetas se pintan detrás de `veLista`',
-    deLaLista.length === 0 ? '`listaActual.map` no está detrás de ningún `&&`'
-      : deLaLista.map(g => g.izq.replace(/\s+/g, ' ').slice(0, 40)).join(' · '));
+  check(deLaLista.length === 0,
+    'las tarjetas se pintan sin condición: `listaActual.map` no cuelga de ningún `&&`',
+    deLaLista.length === 0 ? 'sin cerrojo'
+      : `detrás de ${deLaLista.map(g => g.izq.replace(/\s+/g, ' ').slice(0, 40)).join(' · ')}`);
 
   // Y el aviso de «no hay ninguna» NO, para que cero obras no deje una pantalla
   // en blanco que se lee como una falla de la app.
