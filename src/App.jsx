@@ -5359,50 +5359,121 @@ const extraerGastoTotalGP = (datosObra) => {
 // Antes se usaba obra.gastoGP (hardcoded en _OBRAS_BASE), que nunca se
 // actualizaba. Ahora prioriza gpData en vivo y cae a obra.gastoGP solo
 // como fallback (obras viejas sin mapeo a GP).
-const resolverGastoGP = (obra, gpData) => {
-  if (!obra) return 0;
-  if (gpData?.obras) {
-    const obrasArr = Object.values(gpData.obras);
-    // 1) Por gpId explícito capturado en Contrato
-    if (obra.gpId) {
-      const exact = obrasArr.find(o => o.id === obra.gpId);
-      if (exact) return extraerGastoTotalGP(exact);
-      // Clave explícita que no aparece en el gasto: NO se busca parecido.
-      //
-      // Con el catálogo de obras aparte, una obra recién dada de alta tiene
-      // `gpId` de una obra que el documento de gasto todavía no conoce —el
-      // gasto se arma por obra y la obra acaba de existir—. Caer al match
-      // difuso aquí le cuelga a la obra nueva el dinero de otra: 0129
-      // («AYU-COAT-REHABILITACION DEL MALECON») comparte «COAT» y «REHAB»
-      // con 0121 («SIOP Coatza Rehab. Av. Universidad») y se llevaba sus
-      // $19.9M. Una clave que no cuadra significa «no hay dato», nunca
-      // «búscale parecido»: el difuso es sólo para obras viejas sin clave.
-      console.warn(`[GP] obra "${obra.nombre}" tiene gpId="${obra.gpId}" y el gasto todavía no trae esa obra. Gasto GP = 0 (no se adivina por nombre).`);
-      return 0;
-    }
-    // 2) Por id de CAMPO si parece código de 4 dígitos
-    if (/^\d{4}/.test(obra.id || "")) {
-      const exact = obrasArr.find(o => o.id === obra.id.slice(0, 4));
-      if (exact) return extraerGastoTotalGP(exact);
-    }
-    // 3) Por nombre normalizado (match si ≥2 palabras significativas)
-    const normalizar = s => (s||"").toString().toUpperCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-      .replace(/[^\w\s]/g," ").replace(/\s+/g," ").trim();
-    const palabrasObra = normalizar(obra.nombre).split(" ").filter(w => w.length > 3);
-    let mejor = null, score = 0;
-    for (const o of obrasArr) {
-      const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/,"").split(" ").filter(w => w.length > 3);
-      const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
-      if (matches > score) { score = matches; mejor = o; }
-    }
-    if (score >= 2 && mejor) return extraerGastoTotalGP(mejor);
-    // Ningún match encontrado en el Sheet → advertir en consola para diagnóstico
-    console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el Sheet — usando fallback obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre||'ninguno'}". Considera capturar el gpId en Planeación → Contrato.`);
+// ── ¿El gasto de GP de ESTA obra es una medición, o es un hueco? ───────────
+//
+// `resolverGastoGP` devolvía un número y nada más, así que la pantalla no
+// podía distinguir dos situaciones que no se parecen en nada:
+//
+//   · GP contestó por esa obra y no tiene ni un cheque → el gasto ES cero.
+//   · el cron todavía no le ha preguntado a GP por esa obra → NO SE SABE.
+//
+// El segundo caso lo creó el alta de obra. Una obra que se acaba de registrar
+// no existía cuando corrió el cron, así que su clave no está en el documento
+// de gasto. Pintar $0 ahí hace que el margen salga cerca del 100% —todo
+// ingreso y ningún costo—, que es la mentira más cara que esta pantalla puede
+// decir, y encima es la que se dice el día que alguien da de alta una obra.
+//
+// El documento YA traía con qué distinguirlas y nadie lo leía: `obras` son las
+// que contestaron con movimientos, y `obrasPedidas` son todas las claves que
+// se pidieron (`clavesGPdeCAMPO` en `functions/index.js`, cadenas de cuatro
+// dígitos). Pedida y sin entrada = cero de verdad. No pedida = sin medir.
+// Si el documento es viejo y no trae `obrasPedidas`, tampoco se sabe: eso se
+// dice, no se rellena.
+//
+// Devuelve el estado completo. `resolverGastoGP` se queda como el acceso al
+// número y sale DE AQUÍ, para que no existan dos cuentas del mismo gasto.
+const estadoGastoGP = (obra, gpData) => {
+  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo });
+  const medido  = (valor, motivo = 'medido', extra = {}) =>
+    ({ valor, medido: true, motivo, ...extra });
+
+  if (!obra) return medido(0, 'sin-obra');
+  if (!gpData?.obras) {
+    // No hay documento de gasto. La pantalla ya lo dice a nivel global con
+    // `gpDisponible`; aquí se repite el veredicto para que quien pregunte por
+    // UNA obra reciba la misma respuesta que quien pregunta por todas.
+    return sinDato('sin-documento', obra?.gastoGP || 0);
   }
-  // Fallback: usar el campo legacy (obras antiguas sin Sheet)
-  return obra?.gastoGP || 0;
+
+  const obrasArr = Object.values(gpData.obras);
+  const pedidas = Array.isArray(gpData.obrasPedidas) ? gpData.obrasPedidas : null;
+  // `null` significa «no se puede saber», que NO es lo mismo que «no se pidió».
+  const sePidio = (clave) => (pedidas === null ? null : pedidas.includes(clave));
+
+  const veredictoDeClaveAusente = (clave, comoSeSupo) => {
+    const pedida = sePidio(clave);
+    if (pedida === true) {
+      // Se le preguntó a GP por esta obra y no trajo movimientos. Cero es el
+      // dato, no un relleno.
+      return medido(0, 'sin-cheques');
+    }
+    if (pedida === false) {
+      console.warn(`[GP] obra "${obra.nombre}" (clave ${clave}, ${comoSeSupo}) no está en la corrida del gasto: el cron no la ha pedido todavía. Gasto SIN MEDIR, no cero.`);
+      return sinDato('no-pedida');
+    }
+    console.warn(`[GP] obra "${obra.nombre}" (clave ${clave}, ${comoSeSupo}) no aparece en el gasto y el documento no dice qué obras se pidieron. Gasto SIN MEDIR.`);
+    return sinDato('no-se-puede-saber');
+  };
+
+  // 1) Por gpId explícito capturado en Contrato
+  if (obra.gpId) {
+    const exact = obrasArr.find(o => o.id === obra.gpId);
+    if (exact) {
+      return medido(extraerGastoTotalGP(exact),
+        exact.desactualizadaDesde ? 'desactualizada' : 'medido',
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+    }
+    // Clave explícita que no aparece en el gasto: NO se busca parecido.
+    //
+    // Con el catálogo de obras aparte, una obra recién dada de alta tiene
+    // `gpId` de una obra que el documento de gasto todavía no conoce —el
+    // gasto se arma por obra y la obra acaba de existir—. Caer al match
+    // difuso aquí le cuelga a la obra nueva el dinero de otra: 0129
+    // («AYU-COAT-REHABILITACION DEL MALECON») comparte «COAT» y «REHAB»
+    // con 0121 («SIOP Coatza Rehab. Av. Universidad») y se llevaba sus
+    // $19.9M. Una clave que no cuadra significa «no hay dato», nunca
+    // «búscale parecido»: el difuso es sólo para obras viejas sin clave.
+    return veredictoDeClaveAusente(obra.gpId, 'capturada en Contrato');
+  }
+
+  // 2) Por id de CAMPO si parece código de 4 dígitos
+  if (/^\d{4}/.test(obra.id || "")) {
+    const clave = obra.id.slice(0, 4);
+    const exact = obrasArr.find(o => o.id === clave);
+    if (exact) {
+      return medido(extraerGastoTotalGP(exact),
+        exact.desactualizadaDesde ? 'desactualizada' : 'medido',
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+    }
+    // Mismo razonamiento que con `gpId`, y aquí estaba latente: el cron
+    // también deriva la clave del prefijo del id (`clavesGPdeCAMPO`), así que
+    // un id de cuatro dígitos ES una clave explícita a efectos del gasto. Si
+    // esa clave se pidió y no trajo nada, caer al difuso le colgaría a esta
+    // obra el dinero de la que más se le parezca por nombre.
+    const pedida = sePidio(clave);
+    if (pedida !== null) return veredictoDeClaveAusente(clave, 'prefijo del id');
+  }
+
+  // 3) Por nombre normalizado (match si ≥2 palabras significativas).
+  //    Sólo para obras viejas que no tienen por dónde cruzarse por clave.
+  const normalizar = s => (s||"").toString().toUpperCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^\w\s]/g," ").replace(/\s+/g," ").trim();
+  const palabrasObra = normalizar(obra.nombre).split(" ").filter(w => w.length > 3);
+  let mejor = null, score = 0;
+  for (const o of obrasArr) {
+    const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/,"").split(" ").filter(w => w.length > 3);
+    const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
+    if (matches > score) { score = matches; mejor = o; }
+  }
+  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');
+  // Ningún match → el campo legacy, que no es una medición de GP y se dice.
+  console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el gasto — cae al campo legacy obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre||'ninguno'}". Captura el gpId en Planeación → Contrato.`);
+  return sinDato('sin-match', obra?.gastoGP || 0);
 };
+
+// El acceso al número. No calcula nada: una cuenta por número.
+const resolverGastoGP = (obra, gpData) => estadoGastoGP(obra, gpData).valor;
 
 // Resuelve el nombre CORTO de una obra a partir del Sheet GP.
 // Reglas: toma el nombre GP (con match igual que resolverGastoGP), quita
@@ -5453,7 +5524,11 @@ const resolverNombreCortoObra = (obra, gpData) => {
 // Datos vacíos (sin Firestore) producen ceros pero no rompe la función.
 const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimaciones=[], gpData=null, otrosGastos=[]) => {
   const presupuesto = obra?.presupuesto || 0;
-  const gastoGP = resolverGastoGP(obra, gpData);
+  // Del estado, no del número: si el gasto de GP de esta obra no está medido,
+  // `gt` está incompleto y todo lo que se divida por él —margen y brecha— no
+  // se puede afirmar. Quien presenta decide cómo decirlo; aquí se declara.
+  const _gpEstado = estadoGastoGP(obra, gpData);
+  const gastoGP = _gpEstado.valor;
   // Gasto total = GP del Sheet + maquinaria propia + otros gastos manuales
   // (mismo cálculo que la vista de Gastos individual, para que Dashboard,
   // Panel Ejecutivo, tarjetas y Gastos siempre muestren el mismo total)
@@ -5509,6 +5584,8 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   const maxAtraso = atrasos.reduce((m,a)=>Math.max(m, a.diasAtraso), 0);
   return {
     presupuesto, gastoGP, gt, am, alm, me, af, diff, mpct,
+    // El gasto de GP de esta obra: ¿medición o hueco? Y por qué.
+    gastoGPMedido: _gpEstado.medido, gastoGPMotivo: _gpEstado.motivo,
     // Desglose del ejecutado: ningún dato capturado se descarta en silencio.
     amCatalogo, amExcedente, modoVol,
     estPag, estPorCob, estProc, estFact, estTotal, porEstimar,
@@ -7467,6 +7544,47 @@ const GP_OBRAS_CATALOGO = [
   {id:"0124",nombre:"SIOP Coatza Rehab. Puente", gastoGP:1770125},
 ];
 
+// ── Alta de una obra que GP todavía no conoce (PENDIENTES #53) ──
+//
+// El catálogo de GP se arma de los CHEQUES. Una obra recién contratada, que
+// todavía no ha pagado nada, no está en el catálogo y por lo tanto no se puede
+// escoger en el paso 1 — y es justo la obra que alguien quiere registrar.
+//
+// La salida es teclear la clave a mano. Lo que NO se puede aflojar es el
+// formato: el job del servidor (`clavesGPdeCAMPO` en functions/index.js) sólo
+// acepta `/^\d{4}$/`; una clave con otra forma manda la obra al montón de
+// `sinClave` y entonces el gasto NUNCA se le va a pegar, sin que nadie se
+// entere. Por eso la validación vive aquí y no es cosmética: es la diferencia
+// entre una obra que algún día tendrá su gasto y una que no lo tendrá jamás.
+//
+// Devuelve un veredicto, no un booleano, porque los tres "no" piden tres
+// cosas distintas al usuario: escribir, corregir el formato, o volver a la
+// lista donde la obra sí está.
+const validarClaveGPManual = (claveCruda, gpCatalogo = []) => {
+  const clave = String(claveCruda ?? '').trim();
+  if (!clave) {
+    return { ok:false, motivo:'vacia',
+      mensaje:'Escribe la clave de 4 dígitos que GP le asignó a la obra.' };
+  }
+  if (!/^\d{4}$/.test(clave)) {
+    // 1 a 3 dígitos es el error de siempre: en GP la clave va rellena con
+    // ceros («0127») y la gente la dice sin ellos («la 127»). Se SUGIERE la
+    // forma rellena, no se acepta sola: rellenar por nuestra cuenta sería
+    // decidir de qué obra se trata.
+    const sugerencia = /^\d{1,3}$/.test(clave) ? clave.padStart(4, '0') : null;
+    return { ok:false, motivo:'formato', sugerencia,
+      mensaje: sugerencia
+        ? `La clave de GP son 4 dígitos, con los ceros de adelante. ¿Querías ${sugerencia}?`
+        : 'La clave de GP son exactamente 4 dígitos (por ejemplo 0127). Con otra forma, el gasto de GP nunca se le va a pegar a la obra.' };
+  }
+  const yaEnCatalogo = (gpCatalogo || []).find(o => o && o.id === clave);
+  if (yaEnCatalogo) {
+    return { ok:false, motivo:'ya-en-catalogo', obra:yaEnCatalogo,
+      mensaje:`La ${clave} sí está en la lista: «${yaEnCatalogo.nombre}». Escógela de ahí para que se dé de alta con su nombre y su gasto de GP.` };
+  }
+  return { ok:true, clave };
+};
+
 // Los campos que pide el alta de CONSTRUCTORA, en la forma de `CAMPOS_CONTRATO`
 // para que el render sea uno solo. No se usa `CAMPOS_CONTRATO.constructora`
 // porque no son la misma lista: ahí está `diasPago`, que este formulario nunca
@@ -7501,6 +7619,13 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
   const[paso,setPaso]=useState(dep?"completar":"seleccionar"); // seleccionar | completar
   const[gpSel,setGpSel]=useState(null);
   const[busqueda,setBusqueda]=useState("");
+  // El alta a mano del #53. `manual` abre el bloque; los otros dos son lo que
+  // se teclea. El veredicto NO se guarda en estado: se recalcula al pintar,
+  // para que no haya forma de que la pantalla enseñe un veredicto viejo de una
+  // clave que ya cambió.
+  const[manual,setManual]=useState(false);
+  const[claveManual,setClaveManual]=useState("");
+  const[nombreManual,setNombreManual]=useState("");
   const[guardando,setGuardando]=useState(false);
   const[errGuardar,setErrGuardar]=useState("");
   const[form,setForm]=useState({
@@ -7537,6 +7662,18 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
       nombre: obra.nombre,
       gastoGP: obra.gastoGP,
     }));
+    setPaso("completar");
+  }
+
+  // Alta a mano: misma forma que `seleccionarGP` —el id ES la clave de GP, que
+  // es lo que hace que el gasto se pegue— pero sin gasto. `gastoGP: 0` aquí no
+  // es una medición: la obra no está en el documento de gasto, así que
+  // `estadoGastoGP` la lee como «no medida» y la pantalla pone «sin medir» en
+  // lugar de un margen. El 0 sólo existe porque el campo legacy es numérico.
+  function altaManual(clave, nombre) {
+    const obra = { id:clave, nombre:nombre.trim(), gastoGP:0, gastoMedido:false, manual:true };
+    setGpSel(obra);
+    setForm(p=>({...p, id:clave, gpId:clave, nombre:obra.nombre, gastoGP:0}));
     setPaso("completar");
   }
 
@@ -7714,6 +7851,107 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
               </div>
             )}
           </div>
+
+          {/* PENDIENTES #53 — la obra que GP todavía no conoce.
+              El catálogo se arma de cheques, así que una obra recién
+              contratada no está en la lista de arriba por construcción. Esta
+              es la salida, y está aquí abajo a propósito: escoger del catálogo
+              sigue siendo el camino bueno —trae el nombre con el que la obra
+              se llama hoy— y teclear la clave es la excepción. */}
+          <div style={{marginTop:10,paddingTop:10,borderTop:`0.5px solid ${C.border}`}}>
+            {!manual ? (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                <span style={{fontSize:9,color:C.textMut,minWidth:0}}>
+                  ¿Obra recién contratada, sin un solo pago en GP? No va a estar en la lista.
+                </span>
+                <button onClick={()=>{setManual(true);
+                    // Lo escrito en el buscador suele ser ya la clave o el
+                    // nombre. Se aprovecha en lugar de pedirlo dos veces.
+                    if(/^\d{1,4}$/.test(busqueda.trim())) setClaveManual(busqueda.trim());
+                    else if(busqueda.trim()) setNombreManual(busqueda.trim());
+                  }}
+                  style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:5,
+                    padding:"3px 8px",fontSize:9,color:C.caliza,flexShrink:0,
+                    cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
+                  Darla de alta con su clave
+                </button>
+              </div>
+            ) : (() => {
+              const ver = validarClaveGPManual(claveManual, gpCatalogo);
+              // El nombre se pide porque el catálogo no lo tiene: sin cheques
+              // no hay nombre que copiar. Es el único dato de esta obra que
+              // sale de una persona y no de la contabilidad.
+              const nombreOk = nombreManual.trim().length >= 3;
+              const listo = ver.ok && nombreOk;
+              return (
+                <div style={{background:C.bg,borderRadius:8,padding:"12px 14px",
+                  border:`0.5px solid ${C.border}`}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textPri,marginBottom:3}}>
+                    Dar de alta una obra que GP no conoce todavía
+                  </div>
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:10,lineHeight:1.5}}>
+                    La clave es la que GP le asignó al contrato: 4 dígitos, con
+                    los ceros de adelante. Es lo que hace que el gasto se le
+                    pegue a esta obra en cuanto se pague el primer cheque.
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"96px 1fr",gap:8,marginBottom:8}}>
+                    <div>
+                      <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Clave GP</div>
+                      <Inp value={claveManual} inputMode="numeric" maxLength={4} placeholder="0127"
+                        onChange={e=>setClaveManual(e.target.value)}/>
+                    </div>
+                    <div>
+                      <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>Nombre en GP</div>
+                      <Inp value={nombreManual} placeholder="Tal cual está en GP"
+                        onChange={e=>setNombreManual(e.target.value)}/>
+                    </div>
+                  </div>
+                  {/* El veredicto, en el tono de cada caso: «vacía» todavía no
+                      es un error —no se ha escrito nada—, los otros dos sí. */}
+                  {!ver.ok && ver.motivo !== 'vacia' && (
+                    <div style={{fontSize:9,color:C.yellowDk,marginBottom:8,
+                      background:`${alfa(C.yellow,8.24)}`,padding:"6px 9px",borderRadius:4,lineHeight:1.5}}>
+                      {ver.mensaje}
+                      {ver.sugerencia && (
+                        <button onClick={()=>setClaveManual(ver.sugerencia)}
+                          style={{marginLeft:6,background:"none",border:`0.5px solid ${alfa(C.yellow,33.33)}`,
+                            borderRadius:4,padding:"1px 6px",fontSize:9,color:C.yellowDk,
+                            cursor:"pointer",fontWeight:700}}>
+                          Usar {ver.sugerencia}
+                        </button>
+                      )}
+                      {ver.motivo === 'ya-en-catalogo' && (
+                        <button onClick={()=>{setManual(false);setBusqueda(ver.obra.id);}}
+                          style={{marginLeft:6,background:"none",border:`0.5px solid ${alfa(C.yellow,33.33)}`,
+                            borderRadius:4,padding:"1px 6px",fontSize:9,color:C.yellowDk,
+                            cursor:"pointer",fontWeight:700}}>
+                          Buscarla en la lista
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {/* Lo que va a pasar con el margen, dicho ANTES de dar de
+                      alta. Si no, la obra aparece en el tablero con «sin
+                      medir» y parece una falla del sistema. */}
+                  <div style={{fontSize:9,color:C.textMut,marginBottom:10,lineHeight:1.5}}>
+                    Hasta que GP registre el primer pago, esta obra va a aparecer
+                    con el gasto <b style={{color:C.textSec}}>sin medir</b> y sin
+                    margen. No es una falla: es que todavía no hay nada que medir.
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <SecBtn onClick={()=>setManual(false)} style={{flex:1}}>← Volver a la lista</SecBtn>
+                    <button onClick={()=>altaManual(ver.clave, nombreManual)} disabled={!listo}
+                      style={{flex:2,background:listo?C.caliza:"rgba(255,254,249,0.2)",border:"none",
+                        borderRadius:6,padding:"8px 0",fontSize:11,fontWeight:700,
+                        color:listo?C.bg:C.textMut,cursor:listo?"pointer":"not-allowed"}}>
+                      Continuar
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
           <div style={{marginTop:12}}>
             <SecBtn onClick={onClose} style={{width:"100%"}}>Cancelar</SecBtn>
           </div>
@@ -7737,12 +7975,23 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
                       Identificador asignado: <b style={{color:C.textSec}}>{form.id}</b>
                     </div>
                   </>
-                : <div style={{background:"rgba(255,254,249,0.05)",border:`0.5px solid ${C.border}`,
-                    borderRadius:6,padding:"7px 10px",fontSize:12,fontWeight:600,color:C.caliza,
-                    display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span>{form.nombre}</span>
-                    <span style={{fontSize:9,color:C.textMut,flexShrink:0,marginLeft:8}}>ID {gpSel?.id}</span>
-                  </div>}
+                : <>
+                    <div style={{background:"rgba(255,254,249,0.05)",border:`0.5px solid ${C.border}`,
+                      borderRadius:6,padding:"7px 10px",fontSize:12,fontWeight:600,color:C.caliza,
+                      display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span>{form.nombre}</span>
+                      <span style={{fontSize:9,color:C.textMut,flexShrink:0,marginLeft:8}}>ID {gpSel?.id}</span>
+                    </div>
+                    {/* De dónde salió este renglón. En el alta normal lo manda
+                        el catálogo de GP; en la del #53 lo escribió quien está
+                        dando de alta, y eso cambia quién responde por él. */}
+                    {gpSel?.manual && (
+                      <div style={{fontSize:9,color:C.textMut,marginTop:4,lineHeight:1.5}}>
+                        Clave y nombre capturados a mano: GP todavía no tiene
+                        esta obra. El gasto va a aparecer <b style={{color:C.textSec}}>sin medir</b> hasta el primer pago.
+                      </div>
+                    )}
+                  </>}
             </div>
             {campos.map(c=>(
               <div key={c.key}>
@@ -9008,6 +9257,16 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     : consolidado.margenPct;
   const arrastreMargenPP = margenPctSinEsasObras - consolidado.margenPct;   // siempre >= 0
 
+  // Obras cuyo gasto de GP NO se pudo medir. Su `gt` entra al consolidado
+  // corto —les falta el gasto de GP entero—, así que el margen consolidado
+  // sale MEJOR de lo que es. No se puede corregir la cifra: no sabemos
+  // cuánto falta; eso es justo lo que significa "sin medir". Lo único
+  // honesto es declararlo junto al número y no inventar un ajuste.
+  const obrasGastoSinMedir = kpisPorObra.filter(x => !x.kpis.gastoGPMedido);
+  const sinMedirTxt = obrasGastoSinMedir.length > 0
+    ? `${obrasGastoSinMedir.length} obra${obrasGastoSinMedir.length !== 1 ? 's' : ''} sin medir su gasto de GP: el margen sale alto`
+    : null;
+
   // ── BLOQUE 2 — Excepciones ──
   // Milisegundos, no `Date`: las tres cuentas que lo usan abajo son restas, y
   // una de ellas entra a `diasSinCapturaDe`, que recibe una marca de tiempo.
@@ -9055,7 +9314,21 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     //     El detector de CAÍDA temporal se recupera cuando podamos
     //     snapshotear gt por semana (pendiente ligado a PENDIENTES #1 y
     //     al pendiente de "capturas retrasadas" registrado en esta rama).
-    if (kpisObra && kpisObra.me > 0) {
+    //
+    //     Si el gasto de GP de la obra no se midió, NO se emite el aviso de
+    //     margen: el renglón cita un porcentaje, y ése porcentaje le falta
+    //     un sumando del gasto. En su lugar se avisa de lo que de verdad
+    //     pasa —que el gasto no está medido—, que es accionable (esperar la
+    //     corrida del cron) y no afirma ninguna cifra.
+    if (kpisObra && !kpisObra.gastoGPMedido) {
+      excepciones.push({
+        obraId: o.id,
+        tipo: 'gasto_sin_medir',
+        texto: kpisObra.gastoGPMotivo === 'no-pedida'
+          ? `${nombre} — su gasto de GP todavía no se mide: se dio de alta después de la última corrida`
+          : `${nombre} — su gasto de GP no se pudo medir, el margen no se puede afirmar`,
+      });
+    } else if (kpisObra && kpisObra.me > 0) {
       const niv = nivelMargen(kpisObra.mpct);
       if (niv.nivel === 'Crítico' || niv.nivel === 'Atención') {
         const signo = kpisObra.mpct < 0 ? '−' : '';
@@ -9141,6 +9414,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     // gasto perdido sin retorno. Marcamos la fila y en la presentación se
     // pinta guion + margen absoluto (que sí es una cifra real).
     const margenIndefinido = kpis.me <= 0 && kpis.gt > 0;
+    // Segundo motivo para no poder afirmar el margen, y NO es el mismo que el
+    // de arriba: ahí el margen absoluto sí es una cifra real y se enseña;
+    // aquí falta un sumando del gasto, así que ni el porcentaje ni el absoluto
+    // son afirmables. Se separan para que la presentación no enseñe como real
+    // un número al que le falta dinero.
+    const gastoSinMedir = !kpis.gastoGPMedido;
     return {
       obra: o,
       nombre: resolverNombreCortoObra(o, gpData),
@@ -9150,6 +9429,33 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       margenPct: kpis.mpct,
       margenAbs: kpis.diff,
       margenIndefinido,
+      gastoSinMedir,
+      gastoSinMedirMotivo: kpis.gastoGPMotivo,
+      // El margen, ya resuelto para pintar. Se decide AQUÍ y una sola vez
+      // porque lo pintan dos bloques —la tabla de escritorio y la lista de
+      // móvil— con el mismo condicional escrito por separado, que es
+      // exactamente cómo dos vistas del mismo número acaban discrepando.
+      //
+      // Tres estados, y el color de cada uno dice algo distinto:
+      //   · sin medir  → apagado. No es malo ni bueno: no se sabe.
+      //   · indefinido → rojo. Hay gasto y no hay ejecución: es pérdida.
+      //   · normal     → el nivel de siempre.
+      margenTxt: (gastoSinMedir || margenIndefinido) ? '—' : `${NUM(kpis.mpct, 1)}%`,
+      // El absoluto sí se enseña cuando el margen es indefinido —esa cifra es
+      // real— y NO se enseña cuando falta gasto, porque le falta un sumando.
+      margenAbsTxt: gastoSinMedir
+        ? 'gasto sin medir'
+        : `${kpis.diff < 0 ? '−' : ''}${MXN(Math.abs(kpis.diff))}`,
+      margenColor: gastoSinMedir ? C.textMut
+        : (margenIndefinido ? C.redDk : nivelMargen(kpis.mpct).color),
+      margenTitulo: gastoSinMedir
+        ? (kpis.gastoGPMotivo === 'no-pedida'
+            ? 'El gasto de GP de esta obra todavía no se ha medido: se dio de alta después de la última corrida. No se muestra margen para no inventarlo; la corrida del cron lo llena.'
+            : 'El gasto de GP de esta obra no se pudo medir, así que el margen no se puede afirmar.')
+        : (margenIndefinido
+            ? 'Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.'
+            : undefined),
+      margenConFlecha: !gastoSinMedir && !margenIndefinido,
       deltaMargen,
       porCobrar: kpis.estPorCob,
       personal,
@@ -9160,9 +9466,13 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   });
 
   // Comparador según ordenTabla. Reglas:
-  //   - Cuando se ordena POR MARGEN, obras con margen indefinido (me=0,
-  //     gt>0) van primero SIEMPRE (asc o desc), agrupadas. Dentro del
-  //     grupo por margenAbs ascendente (más pérdida primero).
+  //   - Cuando se ordena POR MARGEN, obras con el gasto sin medir van al
+  //     FINAL siempre: su margenPct no es una cifra, así que ordenarlas por
+  //     él las coloca en una posición que afirma algo. Es la misma regla de
+  //     "dato faltante al final" que ya rige las demás columnas.
+  //   - Luego, obras con margen indefinido (me=0, gt>0) van primero SIEMPRE
+  //     (asc o desc), agrupadas. Dentro del grupo por margenAbs ascendente
+  //     (más pérdida primero).
   //   - Otras columnas: obras con dato faltante (personal null, avance
   //     0 sin captura) al final independientemente de dir.
   //   - Nombre alfabético (localeCompare).
@@ -9171,6 +9481,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const { col, dir } = ordenTabla;
     const signo = dir === 'asc' ? 1 : -1;
     if (col === 'margen') {
+      if (a.gastoSinMedir && !b.gastoSinMedir) return 1;
+      if (!a.gastoSinMedir && b.gastoSinMedir) return -1;
+      if (a.gastoSinMedir && b.gastoSinMedir) {
+        return (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' });
+      }
       if (a.margenIndefinido && !b.margenIndefinido) return -1;
       if (!a.margenIndefinido && b.margenIndefinido) return 1;
       if (a.margenIndefinido && b.margenIndefinido) return a.margenAbs - b.margenAbs;
@@ -9273,10 +9588,21 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             disponible": un $0 o un 100% de margen se leen como dato bueno y
             son mentira. Principio P2, ver PENDIENTES. El motivo del fallo
             no se repite aquí — vive en el tooltip del chip de la portada. */}
+        {/* Si alguna obra no tiene su gasto de GP medido, estas dos cifras
+            están cortas y el margen sale alto. Se declara en el renglón de
+            abajo —el que ya se usa para el arrastre— y se prefiere a la nota
+            de "sin ejecución": aquélla matiza un total correcto, ésta avisa
+            que al total le FALTA dinero. No se ajusta la cifra porque no se
+            sabe cuánto falta; inventar el ajuste sería peor que declararlo. */}
         <_KpiConDelta
           label="Gastado"
           valor={gpDisponible ? MXN(consolidado.gastado) : 'no disponible'}
           valorSub={gpDisponible ? "GP + maquinaria + otros" : 'sin dato de GP'}
+          deltaValor={null}
+          deltaSub={gpDisponible && sinMedirTxt ? 'incompleto: falta el gasto de GP de alguna obra' : null}
+          nota={gpDisponible && sinMedirTxt
+            ? `${obrasGastoSinMedir.map(x => resolverNombreCortoObra(x.obra, gpData)).join(', ')}: su gasto de GP no se pudo medir, así que no entra a este total.`
+            : null}
           color={gpDisponible ? C.textPri : C.textMut}
         />
         <_KpiConDelta
@@ -9286,9 +9612,13 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             : 'no disponible'}
           valorSub={gpDisponible ? `${NUM(consolidado.margenPct, 1)}%` : 'requiere el gasto de GP'}
           deltaValor={null}
-          deltaSub={!gpDisponible ? null : (obrasSinEjec.length > 0
-            ? `incluye ${obrasSinEjec.length} obra${obrasSinEjec.length !== 1 ? 's' : ''} sin ejecución (−${NUM(arrastreMargenPP, 1)}pp)`
-            : null)}
+          deltaSub={!gpDisponible ? null : (sinMedirTxt
+            || (obrasSinEjec.length > 0
+              ? `incluye ${obrasSinEjec.length} obra${obrasSinEjec.length !== 1 ? 's' : ''} sin ejecución (−${NUM(arrastreMargenPP, 1)}pp)`
+              : null))}
+          nota={gpDisponible && sinMedirTxt
+            ? `${obrasGastoSinMedir.map(x => resolverNombreCortoObra(x.obra, gpData)).join(', ')}: sin su gasto, el margen consolidado está por encima del real.`
+            : null}
           color={gpDisponible ? nivelMargen(consolidado.margenPct).color : C.textMut}
         />
         {/* Lo de «rayó su semana en varios archivos» salió del renglón visible
@@ -9333,6 +9663,9 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                          borderLeft:`3px solid ${
                            e.tipo === 'sin_captura' ? C.yellow :
                            e.tipo === 'caida_margen' ? C.red :
+                           // Un gasto sin medir no es una mala noticia: es una
+                           // noticia ausente. Gris, no naranja.
+                           e.tipo === 'gasto_sin_medir' ? C.textMut :
                            C.orange
                          }`}}>
               <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
@@ -9396,9 +9729,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                 </Sel>
               </div>
               {filas.map(f => {
-                // Margen indefinido (me=0, gt>0) → color rojo (Crítico) y
-                // rótulo "—" en vez de "0.0%". Se muestra el $ absoluto.
-                const margenColor = f.margenIndefinido ? C.redDk : nivelMargen(f.margenPct).color;
+                // La presentación del margen (texto, color, importe, tooltip)
+                // se armó UNA vez en filas.map. Aquí sólo se pinta: móvil y
+                // escritorio son dos vistas del mismo número y no pueden
+                // discrepar si no reescriben la condición cada una.
+                const margenColor = f.margenColor;
                 const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
                 return (
                   <div key={f.obra.id}
@@ -9415,13 +9750,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                       <span style={{fontSize:12,fontWeight:600,color:C.textPri,minWidth:0,
                                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.nombre}</span>
                       <span style={{fontSize:14,fontWeight:700,color:margenColor,flexShrink:0,whiteSpace:"nowrap"}}
-                            title={f.margenIndefinido
-                              ? "Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno."
-                              : undefined}>
-                        {f.margenIndefinido ? '—' : `${NUM(f.margenPct, 1)}%`}
-                        {!f.margenIndefinido && _flecha(f.deltaMargen, true, 'pp')}
+                            title={f.margenTitulo}>
+                        {f.margenTxt}
+                        {f.margenConFlecha && _flecha(f.deltaMargen, true, 'pp')}
                         <span style={{color:C.textMut,fontWeight:400,fontSize:10,marginLeft:5}}>
-                          · {f.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(f.margenAbs))}
+                          · {f.margenAbsTxt}
                         </span>
                       </span>
                     </div>
@@ -9508,10 +9841,8 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
               </thead>
               <tbody>
                 {filas.map(f => {
-                  // Ver comentario en el sort: margenIndefinido = gasto sin
-                  // ejecución. Se rotula como "—" (no "0.0%") y se muestra
-                  // el $ absoluto abajo. Color: rojo (Crítico) siempre.
-                  const margenColor = f.margenIndefinido ? C.redDk : nivelMargen(f.margenPct).color;
+                  // Misma presentación preparada que usa la tarjeta móvil.
+                  const margenColor = f.margenColor;
                   const capAlerta = f.diasSinCaptura !== null && f.diasSinCaptura >= 7;
                   return (
                     <tr key={f.obra.id}
@@ -9523,17 +9854,16 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                       </td>
                       {/* Margen: "% · $abs" en UNA sola línea. El % pesa,
                           el importe entra en pequeño y gris para dar contexto
-                          sin competir. Para margen indefinido (me=0 & gt>0)
-                          el % es "—" (no miente) y el importe absoluto ES
-                          real (−$X gastados sin retorno). */}
+                          sin competir. Tres estados, armados en filas.map:
+                          sin medir (gris, "— · gasto sin medir"), indefinido
+                          (rojo, "—" con el $ real gastado sin retorno) y
+                          normal. */}
                       <td style={{padding:"7px 4px",textAlign:"right",color:margenColor,fontWeight:600,whiteSpace:"nowrap"}}
-                          title={f.margenIndefinido
-                            ? "Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno."
-                            : undefined}>
-                        {f.margenIndefinido ? '—' : `${NUM(f.margenPct, 1)}%`}
-                        {!f.margenIndefinido && _flecha(f.deltaMargen, true, 'pp')}
+                          title={f.margenTitulo}>
+                        {f.margenTxt}
+                        {f.margenConFlecha && _flecha(f.deltaMargen, true, 'pp')}
                         <span style={{color:C.textMut,fontWeight:400,marginLeft:6}}>
-                          · {f.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(f.margenAbs))}
+                          · {f.margenAbsTxt}
                         </span>
                       </td>
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>

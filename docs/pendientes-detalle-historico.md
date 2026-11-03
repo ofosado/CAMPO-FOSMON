@@ -4994,3 +4994,191 @@ Qué revisar en esa rama antes de mezclarla, al menos:
 
 El barrido se repite **sobre esa rama**, no sobre main: el código del informe
 no existe aquí, y que main esté limpio no dice nada sobre él.
+
+## 53. Conexión en vivo con el servidor de gastos — DESPLEGADA 2026-11-02
+
+Retira el Google Sheet GP que Luis Mayo actualizaba los domingos. **La conexión
+está cerrada y desplegada; el pendiente sigue vivo por el hueco del final de
+esta entrada.** El detalle se movió aquí el 2026-11-02 porque el renglón del
+índice había crecido a 5,114 caracteres, y un índice de un renglón no admite
+un ensayo.
+
+### El endpoint
+
+Llegó el 2026-10-26 (Luis Mayo, vía Omar). Base `https://fosedy.org`.
+
+- `POST /usuarios/login` — usuario y contraseña **en los encabezados**, no en
+  el cuerpo. Devuelve un objeto `{token, idUsuario}`.
+- `GET /reportes/chequesObra/1/{N}` — `Authorization: <token>` **a secas**, sin
+  `Bearer`.
+
+Dos condiciones que no se negociaron: la credencial como secreto de Cloud
+Functions, nunca en el front; y **no migrar a ciegas**.
+
+### Las tres incógnitas, medidas el 2026-10-30
+
+1. **La ruta.** `1` es la empresa y `N` el prefijo de cuatro dígitos **como
+   entero sin ceros** — 126, no 0126. `N=0` devuelve todo.
+2. **El token es de un solo uso**, y además un login nuevo invalida el
+   anterior: las obras se piden **en serie**. En paralelo el servidor
+   contesta 500.
+3. **La respuesta trae `DesProy` con el prefijo**, así que no hay que casar por
+   nombre — que es justo lo que hacía frágil al parser de la hoja.
+
+### Lo decisivo: la hoja de Luis ES esta consulta pivoteada
+
+`DesProy` → `AgrConce` → `Nombre_Beneficiario`, sumando `ImporteDisSIva` por
+`Semana` / `Mes` / `Amo`. Comprobado **al centavo** contra la hoja real: la
+0127 exacta; el único hueco de la 0126, $28,357.66, son cinco renglones del 15
+de octubre que la hoja nunca vio.
+
+El agrupador es el prefijo de `DesProy`, **no `ENumProy`**. Son numeraciones
+distintas: `ENumProy 0001` aparece en 21 obras y 29 de 67 valores los comparten
+varias. Confundirlas asigna el gasto de una obra a otra **sin dar error**.
+
+### Cómo quedó construido
+
+En `fuente/gp-por-obra`: `agruparRenglonesGP` pura, con banco
+`prueba-agrupador-gp.cjs` —87 aserciones, 5 contrapruebas en ROJO salida 1—
+que no compara contra números míos sino contra lo que el parser de la hoja
+saca de los mismos movimientos.
+
+- Se piden **sólo las obras que CAMPO tiene**, no las 67.
+- Una obra que no contesta **arrastra su cifra anterior marcada
+  `desactualizadaDesde`**, porque cero es una afirmación falsa sobre el dinero.
+- El dinero sin obra reconocible sale publicado en `descartes` con su importe:
+  no desaparece.
+
+**Desviación consciente de la condición de «documento aparte»:** escribe el
+MISMO `global/gp_construct`, porque dos escritores del mismo número es el
+defecto que el #82 acababa de pagar. Lo que sustituye a la comparación en
+paralelo es el campo `fuente` dentro del documento, la hoja degradada a
+respaldo que un administrador elige a mano (`refrescarGPDesdeHoja`, sólo
+director o admin) y la equivalencia probada al centavo.
+
+### La secuela: el gasto por obra cerró el alta de obra
+
+Al pedir el gasto obra por obra, el documento pasó de 34 obras a 5 — y el
+**alta de obra**, que obliga a escoger primero una obra de GP, leía esa misma
+lista. La obra que falta no está en la lista porque no está en CAMPO, y no
+entra a CAMPO porque no está en la lista. **Sin una sola excepción en
+consola.**
+
+Arreglo: catálogo aparte en `global/gp_catalogo` —clave, nombre y fecha del
+último cheque, **cero dinero**—, job semanal los lunes a las 7:00 (una hora
+antes del de gasto, porque el token es de un solo uso) y recorrido vacío que
+**lanza excepción** en vez de pisar el catálogo bueno. 67 obras medidas.
+
+### Y el defecto que sólo apareció usándolo
+
+Verificado **dando de alta la 0128 y la 0129 en el preview**, no leyendo el
+código. Con clave explícita que el documento de gasto todavía no trae,
+`resolverGastoGP` y `resolverNombreCortoObra` caían a un match **difuso por
+palabras** y le colgaban a la obra nueva el nombre y los $19,900,000 de la
+0121: el consolidado daba −78 % en vez de −21.1 %. Una clave que no cuadra
+significa «no hay dato», nunca «búscale parecido»; el difuso quedó sólo para
+obras viejas sin clave. Lo cuida la sección 9 de `prueba-catalogo-gp.cjs`, con
+la precondición del difuso hecha explícita para que la aserción no pueda pasar
+en vacío.
+
+### El despliegue, y lo que descubrió
+
+Desplegado el 2026-11-02 en orden reglas → funciones (canario) → front.
+
+- Reglas: ruleset `ad025da8`, idéntico byte por byte al archivo del repo.
+- Funciones: las 20. Canario — `listarUsuarios` sin autenticar contestó HTTP
+  401 con su propio mensaje, o sea que el módulo cargó.
+- Front: bundle con `d2bb45d`, verificado por frases presentes y ausentes, no
+  sólo por el hash.
+- Catálogo en producción: 67 obras, 46,470 renglones leídos, 16 sin clave;
+  campos exactamente `id,nombre,ultimoCheque` y **cero valores no-cadena**.
+- `gp_construct`: `parserVersion` 4→5, `fuente cloud-function` →
+  `api-gp-por-obra`, S43→S44. Las cinco obras subieron y **ninguna bajó**:
+  0112 +$256,808.89 · 0114 +$2,680,090.62 · 0125 +$1,732,750.85 ·
+  0126 +$2,976,901.94 · 0127 +$1,432,034.29. Descartes en cero en los tres
+  conceptos.
+
+**Lo que el despliegue descubrió, y es la lección que sobrevive al pendiente:**
+todo el trabajo de gasto-por-obra estaba mezclado desde días antes pero
+**nunca había llegado a producción**. `actualizarGPSheet` corrió ese mismo día
+a las 17:11 todavía con el código viejo, escribiendo «34 obras, 43 semanas»
+sobre `parserVersion 4`. Publicar sólo el front habría **escondido el gasto
+entero**: el front v5 leyendo un documento v4 lo marca `version_vieja` y no lo
+pinta.
+
+Regla que queda: cuando `PARSER_VERSION` sube, front y funciones van **juntos
+o ninguno**, y después hay que **forzar una corrida del cron** — el documento
+no cambia de versión hasta que el escritor vuelva a escribir. Y no creerle al
+índice sobre qué está en producción: este renglón decía que sólo faltaba el
+front.
+
+### Lo que queda vivo
+
+- A Luis hay que pedirle dos cosas y ninguna urge: un **parámetro de
+  fecha-desde** y un **token que no sea de un solo uso**.
+- El catálogo se arma de los cheques, así que **sólo conoce obras que ya
+  movieron dinero**. Una obra recién contratada, sin un pago, no aparece en el
+  selector del alta. **Eso es lo que sigue siendo el #53 en la lista viva**, y
+  aplica sólo del lado constructora; del lado gobierno **no hay catálogo** —
+  ver el #41.
+
+### El último hueco: dar de alta una obra que GP no conoce (2026-11-02)
+
+El alta abre un estado que antes no existía: **una obra de CAMPO que el
+documento del gasto no conoce**. Lo caro no era el formulario; era que una obra
+así, sin veredicto, se pinta con un margen de ~98–100 % —el ingreso completo
+contra un gasto de cero—, que es la cifra más convincente y más falsa del
+tablero.
+
+**No hizo falta un dato nuevo.** El documento del gasto ya traía la asimetría:
+`obrasPedidas` son todas las claves que el cron **pidió**, y `obras` sólo las
+que **contestaron renglones**. Entonces:
+
+- pedida y sin renglones → **cero medido**: la obra existe en GP y no ha pagado
+  nada.
+- ni pedida ni contestada → **desconocido**: se dio de alta después de la
+  última corrida.
+- documento sin `obrasPedidas` → **desconocido**, y se dice por qué.
+
+Los dos ceros dejan de ser el mismo número sin inventar ninguno.
+
+`estadoGastoGP` es la única que emite el veredicto; `resolverGastoGP` quedó
+como delegado puro (`estadoGastoGP(...).valor`), así que sus cinco llamadas no
+cambiaron y hay **una cuenta por número**. El renglón de la tabla decide la
+presentación del margen **una sola vez** en `filas.map` —texto, importe, color
+y tooltip— y las dos pinturas (móvil y escritorio) sólo la consumen; el banco
+lo comprueba por AST: ninguna de las dos vuelve a tocar `margenAbs`,
+`margenPct`, `nivelMargen` ni `margenIndefinido`. Un margen que se deriva dos
+veces es un margen que algún día discrepa consigo mismo.
+
+**La clave se valida contra la regla del servidor, no contra una propia.**
+`clavesGPdeCAMPO` (`functions/index.js`) deriva la clave de `gpId || id` y
+exige `/^\d{4}$/`; con cualquier otra forma la obra cae en `sinClave` y **nunca
+se le pide el gasto a GP**, en silencio y para siempre. `validarClaveGPManual`
+usa esa misma expresión, y el banco lo prueba corriendo la función del servidor
+—troceada del archivo por AST, con un `admin` falso— sobre los documentos que
+el alta crearía. `127` **no se rellena solo**: rellenarlo decidiría de qué obra
+se trata, así que se sugiere `0127` con un botón de un clic. Y una clave que sí
+está en el catálogo devuelve a la lista, porque de ahí sale con su nombre y su
+gasto.
+
+Lo que la pantalla dice, y lo que calla: la obra sin medir va en **gris**, con
+«— · gasto sin medir» y sin porcentaje ni importe; se ordena **al final** del
+ranking por margen, porque colocarla entre las medidas ya sería afirmar algo;
+aparece en Requiere atención con borde gris —un gasto sin medir no es una mala
+noticia, es una noticia ausente—; y el consolidado **declara** cuántas obras le
+faltan y hacia dónde miente («el margen sale alto») en vez de corregir el total
+con una cifra que nadie puede conocer.
+
+Verificado en el preview con la cuenta `gerente_construccion` —los dos únicos
+roles que pueden dar de alta— recorriendo los tres veredictos (`127` → sugiere
+`0127`; `0127` → «sí está en la lista»; `0777` → pasa) hasta ver la obra nueva
+en el tablero. 12 contrapruebas medidas, todas en rojo con salida 1.
+
+**Lo que el recorrido descubrió de paso:** al activar la obra, `notifARoles`
+se cayó con `permission-denied` y el `catch` se lo tragó. La regla de
+`usuarios` pide `esAdminDeOrg` y `gerente_construccion` no lo es, así que el
+alta se consuma **sin avisarle a nadie** — justo lo que el comentario de
+`src/App.jsx:8335` daba por cerrado. No se había visto porque el alta siempre
+se había ejercitado con cuentas de directivo. Es el **#85**, aparte: no es de
+esta clase de defecto y no entra en esta rama.
