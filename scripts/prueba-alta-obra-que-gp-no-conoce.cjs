@@ -375,51 +375,42 @@ const CASOS_CLAVE = [
   // ══════════════════════════════════════════════════════════════════════════
   seccion('5. LA TABLA NO AFIRMA UN MARGEN QUE NO MIDIÓ');
   // ══════════════════════════════════════════════════════════════════════════
-  // Se ejecutan las expresiones VIVAS del renglón —las propiedades que la fila
-  // prepara para pintar— sacadas de `src/App.jsx`. No es una copia: si alguien
-  // cambia el condicional, este banco ejercita el nuevo.
-  let objRenglon = null;
+  // Se ejecuta el traductor VIVO —`presentacionEconomiaObra`, sacado de
+  // `src/App.jsx`— que es de donde salen las cadenas y los colores que pinta
+  // la fila. No es una copia: si alguien cambia el condicional, este banco
+  // ejercita el nuevo.
+  //
+  // Hasta el 2026-11-03 estas expresiones vivían dentro del objeto que prepara
+  // el renglón, y este banco las extraía una por una de ahí. Se movieron a una
+  // función de módulo porque la TARJETA de la lista de obras —que volvió a
+  // pintarse para todos los roles— habla de la misma obra en la misma pantalla
+  // y tenía su propio condicional, que no preguntaba si el gasto estaba medido.
+  // La sección 6 comprueba que las dos vistas cuelguen de este mismo traductor.
+  let presFn = null;
   let mapasDeFilas = [];
   traverse(astApp, {
+    VariableDeclaration(p) {
+      if (p.parent.type !== 'Program') return;
+      const d = p.node.declarations[0];
+      if (d?.id?.name === 'presentacionEconomiaObra') presFn = srcApp.slice(p.node.start, p.node.end);
+    },
     FunctionDeclaration(p) {
       if (p.node.id?.name !== 'DashboardPrincipal') return;
       p.traverse({
-        ObjectExpression(q) {
-          if (!q.node.properties.some(pr =>
-            pr.type === 'ObjectProperty' && pr.key?.name === 'margenTxt')) return;
-          objRenglon = q.node;
-        },
         CallExpression(q) {
           const s = srcApp.slice(q.node.start, q.node.end);
-          if (!/^filas\.map\(/.test(s)) return;
-          mapasDeFilas.push(s);
+          if (/^filas\.map\(/.test(s)) mapasDeFilas.push(s);
         },
       });
     },
   });
-  if (!objRenglon) {
-    noArranco(['el renglón preparado de la tabla (el objeto con `margenTxt`)'], 'src/App.jsx');
+  if (!presFn) {
+    noArranco(['`presentacionEconomiaObra`, el traductor de la economía de una obra'], 'src/App.jsx');
   }
-  const propDeRenglon = (nombre) => {
-    const pr = objRenglon.properties.find(x =>
-      x.type === 'ObjectProperty' && x.key?.name === nombre);
-    if (!pr) noArranco([`la propiedad \`${nombre}\` del renglón de la tabla`], 'src/App.jsx');
-    return srcApp.slice(pr.value.start, pr.value.end);
-  };
-  // Se evalúa cada expresión con sus insumos atados a mano. Los nombres son los
-  // que el renglón usa; si cambiaran, el `new Function` revienta y el banco no
-  // arranca, que es lo correcto.
-  const ARGS = ['kpis', 'gastoSinMedir', 'margenIndefinido', 'C', 'MXN', 'NUM', 'nivelMargen'];
-  const evaluar = (nombre, kpis, gastoSinMedir, margenIndefinido) =>
-    new Function(...ARGS, `"use strict";\nreturn (${propDeRenglon(nombre)});`)(
-      kpis, gastoSinMedir, margenIndefinido, C, MXN, NUM, nivelMargen);
-  const renglonDe = (kpis, gastoSinMedir, margenIndefinido) => ({
-    margenTxt:       evaluar('margenTxt', kpis, gastoSinMedir, margenIndefinido),
-    margenAbsTxt:    evaluar('margenAbsTxt', kpis, gastoSinMedir, margenIndefinido),
-    margenColor:     evaluar('margenColor', kpis, gastoSinMedir, margenIndefinido),
-    margenTitulo:    evaluar('margenTitulo', kpis, gastoSinMedir, margenIndefinido),
-    margenConFlecha: evaluar('margenConFlecha', kpis, gastoSinMedir, margenIndefinido),
-  });
+  // Los nombres son los que el traductor usa; si cambiaran, el `new Function`
+  // revienta y el banco no arranca, que es lo correcto.
+  const renglonDe = new Function('C', 'MXN', 'NUM', 'nivelMargen',
+    `"use strict";\n${presFn}\nreturn presentacionEconomiaObra;`)(C, MXN, NUM, nivelMargen);
 
   // a) gasto sin medir: ni porcentaje ni importe. Las DOS cosas, porque al
   //    importe también le falta el sumando que no se midió.
@@ -428,7 +419,7 @@ const CASOS_CLAVE = [
     // el número más convincente del tablero, y falso.
     const kpis = { mpct: 98.2, diff: 10800000, me: 11000000, gt: 200000,
                    gastoGPMedido: false, gastoGPMotivo: 'no-pedida' };
-    const r = renglonDe(kpis, true, false);
+    const r = renglonDe(kpis);
     exigir(r.margenTxt === '—',
       'sin gasto medido, el porcentaje NO se pinta (ni 98.2% ni 0.0%)',
       [`pintó ${JSON.stringify(r.margenTxt)}`]);
@@ -453,8 +444,8 @@ const CASOS_CLAVE = [
   //    la corrida), «no se pudo medir» es otra cosa.
   {
     const base = { mpct: 98.2, diff: 1, me: 2, gt: 1, gastoGPMedido: false };
-    const t1 = renglonDe({ ...base, gastoGPMotivo: 'no-pedida' }, true, false).margenTitulo;
-    const t2 = renglonDe({ ...base, gastoGPMotivo: 'sin-match' }, true, false).margenTitulo;
+    const t1 = renglonDe({ ...base, gastoGPMotivo: 'no-pedida' }).margenTitulo;
+    const t2 = renglonDe({ ...base, gastoGPMotivo: 'sin-match' }).margenTitulo;
     exigir(t1 !== t2,
       'una obra recién dada de alta y una que no se pudo medir no dicen lo mismo',
       [`las dos dicen ${JSON.stringify(t1)}`]);
@@ -466,7 +457,7 @@ const CASOS_CLAVE = [
   //    Ahí el importe sí es real y se enseña: ese dinero se gastó.
   {
     const kpis = { mpct: 0, diff: -300000, me: 0, gt: 300000, gastoGPMedido: true, gastoGPMotivo: 'medido' };
-    const r = renglonDe(kpis, false, true);
+    const r = renglonDe(kpis);
     exigir(r.margenTxt === '—', 'margen indefinido: el porcentaje sigue siendo guion');
     exigir(r.margenAbsTxt === `−${MXN(300000)}`,
       'pero el importe SÍ se pinta: ese dinero se gastó de verdad',
@@ -474,14 +465,14 @@ const CASOS_CLAVE = [
     exigir(r.margenColor === C.redDk,
       'y el color es rojo, porque es pérdida — no «no se sabe»',
       [`pintó ${JSON.stringify(r.margenColor)}`]);
-    exigir(r.margenColor !== renglonDe({ ...kpis, gastoGPMedido: false }, true, true).margenColor,
+    exigir(r.margenColor !== renglonDe({ ...kpis, gastoGPMedido: false }).margenColor,
       'los dos casos no se pintan igual: uno es pérdida y el otro es ignorancia');
   }
   // d) el caso normal, que es el que no se puede haber roto.
   {
     const kpis = { mpct: 18.4, diff: 1840000, me: 10000000, gt: 8160000,
                    gastoGPMedido: true, gastoGPMotivo: 'medido' };
-    const r = renglonDe(kpis, false, false);
+    const r = renglonDe(kpis);
     exigir(r.margenTxt === `${NUM(18.4, 1)}%`, 'margen medido: el porcentaje de siempre',
       [`pintó ${JSON.stringify(r.margenTxt)}`]);
     exigir(r.margenAbsTxt === MXN(1840000), 'y el importe de siempre',
@@ -514,6 +505,52 @@ const CASOS_CLAVE = [
       `${cual} no toca las cifras crudas del margen (\`margenAbs\`, \`margenPct\`)`,
       ['las usa: ese bloque está decidiendo por su cuenta qué pintar']);
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  seccion('   y la TARJETA de la lista cuelga del mismo traductor');
+  // ──────────────────────────────────────────────────────────────────────────
+  // Ésta es la razón de ser de la sección desde el 2026-11-03. La tarjeta de
+  // cada obra volvió a pintarse para TODOS los roles —antes se escondía a los
+  // que tienen tabla—, así que la fila de arriba y la tarjeta de abajo hablan
+  // de la misma obra en la misma pantalla. La tarjeta tenía su propio cálculo
+  // en línea y NO preguntaba por `gastoGPMedido`: para una obra que GP no
+  // conoce, la tabla decía «gasto sin medir» y la tarjeta, cuatro dedos más
+  // abajo, un margen inflado con su semáforo de color. Un número que la
+  // pantalla se negó a afirmar arriba no puede afirmarlo abajo.
+  {
+    let cuerpoTarjeta = null;
+    traverse(astApp, {
+      FunctionDeclaration(p) {
+        if (p.node.id?.name !== 'PantallaObras') return;
+        p.traverse({
+          CallExpression(q) {
+            const s = srcApp.slice(q.node.start, q.node.end);
+            if (/^listaActual\s*\.\s*map\s*\(/.test(s)) cuerpoTarjeta = s;
+          },
+        });
+      },
+    });
+    if (!cuerpoTarjeta) {
+      noArranco(['`listaActual.map`, la tarjeta de cada obra en la lista'], 'src/App.jsx');
+    }
+    exigir(/presentacionEconomiaObra\s*\(/.test(cuerpoTarjeta),
+      'la tarjeta saca su economía de `presentacionEconomiaObra`, el mismo traductor que la fila',
+      ['no lo llama: la tarjeta está decidiendo por su cuenta qué pintar']);
+    exigir(/calcularKPIsObra\s*\(/.test(cuerpoTarjeta),
+      'y sus cifras de `calcularKPIsObra`, la misma cuenta que la fila y que el tablero de la obra',
+      ['no la llama: hay una segunda cuenta del mismo dinero']);
+    exigir(!/resolverGastoGP\s*\(/.test(cuerpoTarjeta),
+      'la tarjeta ya NO pide el gasto de GP por su cuenta — pedirlo es saltarse el veredicto',
+      ['lo pide: `resolverGastoGP` devuelve el número sin decir si se midió']);
+    exigir(!/nivelMargen\s*\(/.test(cuerpoTarjeta),
+      'ni vuelve a elegir el color del margen con `nivelMargen`',
+      ['lo elige: un 98.2% sin medir se pintaría verde']);
+    for (const prop of ['margenAbsTxt', 'gastoTxt', 'margenColor', 'gastoSinMedir']) {
+      exigir(new RegExp(`eco\\s*\\.\\s*${prop}`).test(cuerpoTarjeta),
+        `y consume \`${prop}\` ya preparado`,
+        [`no lo usa: esa cifra de la tarjeta puede discrepar de la fila`]);
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   seccion('6. EL ORDEN POR MARGEN NO COLOCA UNA OBRA SIN MEDIR ENTRE LAS MEDIDAS');
