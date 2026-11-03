@@ -4,7 +4,9 @@
 
 App web (SPA + PWA) para control operativo de obras: avance físico, gastos, estimaciones, subcontratos, maquinaria, almacén y nómina. Reemplaza el flujo manual de Excel + WhatsApp con captura centralizada y multi-usuario.
 
-- **Producción:** https://campo-fosmon.netlify.app
+- **Producción:** https://cotea.com.mx (desde el 2026-11-03)
+- **Origen anterior, todavía vivo:** https://campo-fosmon.netlify.app — mismo
+  sitio, otro nombre. No se retira: hay PWA instaladas en ese origen.
 - **Repo:** https://github.com/ofosado/CAMPO-FOSMON
 - **Archivo principal:** `src/App.jsx` (~15,000 líneas, monolito deliberado para iterar rápido)
 - **Cloud Functions:** `functions/index.js` (~1,440 líneas)
@@ -113,7 +115,10 @@ auditoria/{autoId}                append-only log de cambios (modulo, entidad,
 
 - **Firestore:** `allow read, write: if request.auth != null` (cualquier usuario autenticado hace todo). **Deuda técnica documentada abajo.**
 - **Storage:** `allow read, write: if request.auth != null` bajo `/obras/{obraId}/**`; todo lo demás bloqueado.
-- **CORS Storage:** configurado para permitir peticiones desde `campo-fosmon.netlify.app`.
+- **CORS Storage:** `storage.cors.json` lista los dos orígenes, pero **lo vivo
+  en el bucket sigue siendo sólo `campo-fosmon.netlify.app`**: el archivo no se
+  aplica solo, hace falta `gsutil cors set`. Hasta que se aplique, las fotos de
+  evidencia no cargan desde `cotea.com.mx`.
 
 ---
 
