@@ -201,8 +201,15 @@ function declaraciones(mod, nombres) {
   return [...halladas.values()].sort((a, b) => a[0] - b[0]).map(x => x[1]).join('\n');
 }
 
-// El manejador de una Cloud Function: el único argumento de `onCall(...)` en
-// `exports.NOMBRE = onCall(handler)`.
+// El manejador de una Cloud Function: el ÚLTIMO argumento de `onCall(...)` en
+// `exports.NOMBRE = onCall(handler)` o `onCall(opciones, handler)`.
+//
+// El último y no el primero. Con el primero, el día que una de estas funciones
+// necesite opciones —`crearUsuario` necesitó `secrets: [RESEND_API_KEY]` para
+// poder mandar el correo de bienvenida— lo que se extrae es el objeto de
+// opciones, el montaje revienta y el banco entero se queda MUDO. Eso pasó el
+// 2026-11-03, y muda es la peor de las tres salidas: no afirma nada y no se
+// ve. El otro banco que monta estas funciones ya lo hacía así.
 function manejador(mod, nombre) {
   let src = null;
   traverse(mod.ast, {
@@ -212,7 +219,8 @@ function manejador(mod, nombre) {
             && iz.property.name === nombre)) return;
       const de = p.node.right;
       if (de.type !== 'CallExpression' || !de.arguments.length) return;
-      src = mod.codigo.slice(de.arguments[0].start, de.arguments[0].end);
+      const ultimo = de.arguments[de.arguments.length - 1];
+      src = mod.codigo.slice(ultimo.start, ultimo.end);
     },
   });
   if (!src) noArranco(`no se encontró \`exports.${nombre} = onCall(…)\` en ${path.basename(mod.archivo)}`);
@@ -487,6 +495,17 @@ class HttpsErrorFalso extends Error {
     'ROLES_POR_TIPO', 'ROLES_CROSS', 'ROLES_VALIDOS', 'ROLES_ADMIN', 'ROLES_TODAS_OBRAS',
     'emailAId', 'requireAdmin', 'ambitoDe', 'exigirMismaOrg', 'validarRolEnOrg',
     'exigirPuedeOtorgarRol', 'leerOrg',
+    // Desde el 2026-11-03 el alta manda el correo de bienvenida con la
+    // contraseña temporal, y la edición el de obra asignada. Aquí no se mide
+    // el correo —eso es `prueba-correos-de-alta.cjs`— pero sin estos símbolos
+    // las funciones no corren, y lo que este banco mide es la frontera entre
+    // organizaciones. Que la lista esté tecleada es el defecto conocido de
+    // este banco: ver el preámbulo de `extraer-de-app.cjs`.
+    'APP_URL', 'FROM_EMAIL', 'ESC_HTML', 'sobreCorreo', 'botonHTML', 'tablaDatos',
+    'pasosHTML', 'parrafoHTML', 'avisoHTML', 'marcaDeOrg', 'ALFABETO_PASS',
+    'generarPasswordTemporal', 'rolVisible', 'rutaObrasDeOrg', 'nombresDeObras',
+    'PASOS_CAMBIO_PASS', 'PASOS_INSTALAR', 'correoBienvenida', 'correoObraAsignada',
+    'enviarEmailResend', 'mandarCorreoDeAlta',
   ]);
   const NOMBRES_FN = ['crearUsuario', 'actualizarUsuario', 'eliminarUsuario',
                       'cambiarPassword', 'listarUsuarios'];
@@ -512,14 +531,25 @@ class HttpsErrorFalso extends Error {
   // limpio: una prueba que arrastra estado mide el orden, no la conducta.
   const montar = () => {
     const base = baseFalsa(DOCS_BASE);
+    // El `fetch` de mentira existe para que ESTE banco no mande correos de
+    // verdad. Node trae `fetch` global, así que sin esto `mandarCorreoDeAlta`
+    // saldría a api.resend.com con una llave falsa cada vez que se mide un
+    // alta: la prueba dependería de la red y le pegaría a un tercero.
+    const correos = [];
+    const fetchFalso = async (url, opciones) => {
+      correos.push({ url, ...JSON.parse(opciones.body || '{}') });
+      return { ok: true, status: 200, json: async () => ({ id: `re_${correos.length}` }) };
+    };
     let fns;
     try {
-      fns = new Function('admin', 'HttpsError', 'FieldValue',
-        `"use strict";${fuenteF}\nreturn {\n${fuentesFn}\n};`)(base.admin, HttpsErrorFalso, FieldValue);
+      fns = new Function('admin', 'HttpsError', 'FieldValue', 'RESEND_API_KEY', 'fetch',
+        `"use strict";${fuenteF}\nreturn {\n${fuentesFn}\n};`)(
+        base.admin, HttpsErrorFalso, FieldValue,
+        { value: () => 'clave-de-mentira' }, fetchFalso);
     } catch (e) {
       noArranco(`las funciones de ${path.basename(ARCH_FUNCS)} no se pudieron montar — ${e.message}`);
     }
-    return { base, fns };
+    return { base, fns, correos };
   };
   const pedir = (correo, data) => ({ auth: { token: { email: correo } }, data });
   const intentar = async (fn, req) => {
@@ -530,7 +560,7 @@ class HttpsErrorFalso extends Error {
   {
     const { base, fns } = montar();
     const r = await intentar(fns.crearUsuario, pedir('dir@coatza.gob.mx', {
-      email: 'sup@coatza.gob.mx', password: 'demo1234', nombre: 'Supervisor',
+      email: 'sup@coatza.gob.mx', nombre: 'Supervisor',
       rol: 'supervisor_obra', obras_asignadas: ['OP-2026-001'],
     }));
     const perfil = base.docs.get('usuarios/sup_coatza_gob_mx');
@@ -543,7 +573,7 @@ class HttpsErrorFalso extends Error {
   {
     const { base, fns } = montar();
     const r = await intentar(fns.crearUsuario, pedir('dg@fosmon.com.mx', {
-      email: 'colado@fosmon.com.mx', password: 'demo1234', nombre: 'Colado',
+      email: 'colado@fosmon.com.mx', nombre: 'Colado',
       rol: 'residente', orgId: ORG_D,          // ← el intento
     }));
     const perfil = base.docs.get('usuarios/colado_fosmon_com_mx');
@@ -558,7 +588,7 @@ class HttpsErrorFalso extends Error {
   {
     const { base, fns } = montar();
     const r = await intentar(fns.crearUsuario, pedir('dir@coatza.gob.mx', {
-      email: 'raro@coatza.gob.mx', password: 'demo1234', nombre: 'Raro',
+      email: 'raro@coatza.gob.mx', nombre: 'Raro',
       rol: 'director_general',                 // rol de constructora en una dependencia
     }));
     check(!!r.err, 'un rol de constructora en una dependencia se rechaza',
@@ -572,7 +602,7 @@ class HttpsErrorFalso extends Error {
   {
     const { fns } = montar();
     const r = await intentar(fns.crearUsuario, pedir('dg@fosmon.com.mx', {
-      email: 'falso@cotea.com.mx', password: 'demo1234', nombre: 'Falso', rol: 'soporte',
+      email: 'falso@cotea.com.mx', nombre: 'Falso', rol: 'soporte',
     }));
     check(r.err && r.err.code === 'permission-denied',
       'un director general no puede crear una cuenta de soporte',
