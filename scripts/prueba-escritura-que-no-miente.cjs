@@ -92,6 +92,18 @@ if (process.argv[2] === '--contraprueba') {
           '              setSaved(true); setTimeout(()=>setSaved(false),2500);\n            }',
       a:  '            dispararNotifsCambios(estimaciones);\n' +
           '            setSaved(true); setTimeout(()=>setSaved(false),2500);' },
+    // Las tres de la §6 son el defecto de verdad, tal como estaba escrito:
+    // un campo del servidor leído del sobre. Ninguna explota al correr, y
+    // ésa es toda la gracia.
+    { nombre: 'la alerta de «nadie tiene la contraseña» vuelve a leerse del sobre',
+      de: 'if (r.data?.correo && r.data.correo.ok === false) {',
+      a:  'if (r.correo && r.correo.ok === false) {' },
+    { nombre: 'las obras recién asignadas vuelven a leerse del sobre',
+      de: 'Array.isArray(r.data?.obrasAgregadas) ? r.data.obrasAgregadas : []',
+      a:  'Array.isArray(r.obrasAgregadas) ? r.obrasAgregadas : []' },
+    { nombre: 'la lista de usuarios se lee del sobre y queda siempre vacía',
+      de: 'if(r.ok) setUsuarios(r.data.usuarios||[]);',
+      a:  'if(r.ok) setUsuarios(r.usuarios||[]);' },
   ];
 
   const base = fs.readFileSync(ARCH_APP, 'utf8');
@@ -363,6 +375,76 @@ const check = (cond, que, detalle) => {
     check(mentiras.length === 0,
       'ninguna bandera de «guardado» se enciende tras una escritura cuyo resultado se tiró',
       mentiras.length ? mentiras.join(' · ') : 'ninguna');
+  }
+
+  // ── §6 · nadie lee la respuesta del servidor del SOBRE ───────────────────
+  //
+  // Misma clase de defecto que las §1–§5 —un resultado que no está y la
+  // pantalla sigue adelante—, en el otro canal: las Cloud Functions.
+  //
+  // `callFn` devuelve un SOBRE, `{ok, data}` o `{ok, error, code}`, y lo que
+  // trae el servidor va dentro de `data`. Leer `r.correo` en vez de
+  // `r.data.correo` no explota: da `undefined`, el `if` no entra y la pantalla
+  // calla. Pasó dos veces en el mismo lote de correos: la alerta de «la cuenta
+  // existe y NADIE tiene su contraseña» no podía dispararse nunca, y
+  // `obrasAgregadas` se leía `undefined` → `[]`, así que el correo del
+  // servidor nombraba las obras recién asignadas y la campana no nombraba
+  // ninguna. Dos cuentas para un número.
+  //
+  // También sobre el AST, y por la misma razón que la §5: lo que se afirma es
+  // de la FORMA —de dónde se lee—, no de un valor que se pueda ejecutar. El
+  // nombre `callFn` es la dirección para llegar al código, no la aserción.
+  console.log('\n── Nadie lee la respuesta del servidor del sobre de `callFn` ──');
+  {
+    // Lo único que el SOBRE tiene de suyo. Todo lo demás lo puso el servidor
+    // y vive dentro de `data`.
+    const DEL_SOBRE = new Set(['ok', 'data', 'error', 'code']);
+    const delSobre = [];
+    let sobres = 0;
+
+    traverse(ast, {
+      VariableDeclarator(p) {
+        const init = p.node.init;
+        if (!init || init.type !== 'AwaitExpression') return;
+        const llamada = init.argument;
+        if (!llamada || llamada.type !== 'CallExpression') return;
+        if (llamada.callee.type !== 'Identifier' || llamada.callee.name !== 'callFn') return;
+        if (p.node.id.type !== 'Identifier') return;
+
+        sobres++;
+        const nombre = p.node.id.name;
+        const fn = llamada.arguments[0];
+        const cual = fn && fn.type === 'StringLiteral' ? fn.value : '?';
+        const binding = p.scope.getBinding(nombre);
+        if (!binding) return;
+
+        for (const ref of binding.referencePaths) {
+          const padre = ref.parentPath;
+          if (!padre || !padre.isMemberExpression()) continue;
+          if (padre.node.object !== ref.node) continue;
+          const prop = padre.node.property;
+          const leido = padre.node.computed
+            ? (prop.type === 'StringLiteral' ? prop.value : null)
+            : (prop.type === 'Identifier' ? prop.name : null);
+          // Un acceso calculado que no es cadena literal no se puede juzgar
+          // desde aquí; se deja pasar en vez de inventar un rojo.
+          if (leido === null || DEL_SOBRE.has(leido)) continue;
+          delSobre.push(`${nombre}.${leido} en L${padre.node.loc.start.line} ` +
+            `· callFn("${cual}") lo entrega en ${nombre}.data.${leido}`);
+        }
+      },
+    });
+
+    // Si no apareció ni un sobre, la forma del envoltorio cambió y esta
+    // comprobación se quedó midiendo el vacío: eso es NO ARRANCÓ, no verde.
+    if (sobres === 0) {
+      noArranco(['ninguna llamada `await callFn(...)` asignada a una variable'],
+        path.relative(raiz, ARCH_APP));
+    }
+
+    check(delSobre.length === 0,
+      `las ${sobres} respuestas de Cloud Functions se leen de \`data\`, no del sobre`,
+      delSobre.length ? delSobre.join(' · ') : 'ninguna lectura fuera de `data`');
   }
 
   console.log('');

@@ -1832,6 +1832,115 @@ envío falla la creación del usuario NO se revierte, y agrega la
 recuperación de contraseña, que hoy no existe. Aquí se queda el
 **manual**.
 
+### El correo quedó el 2026-11-02; el manual sigue abierto
+
+Lo pidió Omar así: que al dar de alta una obra o un usuario salga un aviso
+por correo —al gerente de construcción y a quien se le asigne la obra— y
+que al usuario nuevo le llegue el instructivo. Y cuatro decisiones suyas:
+la contraseña temporal **se genera sola** cuando sale el correo, con los
+pasos para cambiarla; lo básico va en el cuerpo del correo; el aviso de
+obra nueva va «al gerente y a quienes estén asignados a esa obra»; y a una
+dependencia se le manda su propio correo de acceso, con su marca, sin
+pasos de captura y **nunca** el manual de FOSMON.
+
+**Lo que se construyó.** Tres avisos que no salían de la app:
+
+- `crearUsuario` sortea la contraseña **antes de tocar Auth**, para que sea
+  la MISMA cadena la que se registra y la que viaja en el correo. Sortearla
+  dos veces —una para cada cosa— es cómo se manda una clave que no abre
+  nada, y es el tipo de defecto que no se ve hasta que alguien intenta
+  entrar. El banco mide exactamente eso: compara la contraseña que recibió
+  el Auth de mentira contra la que trae el HTML.
+- `actualizarUsuario` avisa de las obras **agregadas**, y cuáles son lo
+  dice el servidor comparando contra el documento vivo. En el cliente se
+  comparaba contra la copia de la última recarga de la lista: si alguien
+  más editaba al usuario en medio, la campanita nombraba unas obras y el
+  correo otras.
+- Los disparadores `obraNuevaRaiz` y `obraNuevaDeOrg` mandan el aviso de
+  obra nueva (ver #85). El tipo de organización **se lee**, no se adivina:
+  una obra en `orgs/limbo/obras/*` cuya organización no declara `tipo` no
+  manda nada, en vez de inventar una marca y unos destinatarios.
+
+**La frontera, que es la parte que no se negocia.** El correo de la
+constructora dice «Presupuesto» y lleva el monto; el de la dependencia dice
+«Monto contratado» y nombra a la empresa ejecutante. `cliente` y
+`contratista` quedan **fuera** del aviso interno con su monto aunque estén
+asignados a la obra — es el mismo principio por el que una dependencia no
+lee la economía del contratista, aplicado al revés. Y una obra sin
+presupuesto capturado **no imprime ninguna cifra**: dice «no se puede
+medir» y la campanita dice «sin capturar», nunca `$0`. El banco lo mide con
+`/\$\s?[\d]/` y no buscando el signo suelto, para que una hoja de estilos
+no pueda hacer pasar la comprobación por accidente.
+
+**Lo que ya no se hace a mano.** `CORREO_Aldo_Torres.md` y
+`CORREO_Julian_Islas.txt` eran eso: correos de alta escritos uno por uno,
+con contraseñas repetidas y adivinables. También se construyó la pantalla
+para cambiar la propia contraseña, que **no existía** mientras el correo ya
+la señalaba, y se quitó el campo de contraseña del alta: no la teclea nadie.
+
+**Lo que falta.** El manual. No hay generador en el repo, y el contenido
+viejo sigue diciendo CAMPO/FOSMON cuando la app es `cotea` con marca por
+organización. Va en lote aparte, y el correo de bienvenida sólo lo adjunta
+para los roles de campo de una constructora.
+
+---
+
+## 86. La respuesta del servidor leída del sobre: `undefined`, y la pantalla sigue
+
+**Descubierto**: 2026-11-02, en el preview, persiguiendo por qué el alta de
+un usuario no avisaba de nada. El emulador no tiene llave de Resend, así que
+el correo con la contraseña temporal **no podía salir**; la alerta escrita
+para justamente ese caso no apareció.
+
+**Qué pasa**: `callFn` devuelve un SOBRE —`{ok, data}`, o `{ok, error, code}`
+si el transporte falló— y lo que trae el servidor va dentro de `data`. Leer
+`r.correo` en vez de `r.data.correo` no explota: da `undefined`, el `if` no
+entra y la pantalla calla. Hay dos `ok` en juego, el del transporte y el del
+servidor, y ahí está la trampa: `r.ok` existe y es cierto, así que el código
+parece estar leyendo lo correcto.
+
+**Los tres sitios**, todos en `src/App.jsx`:
+
+1. La alerta de «la cuenta de X quedó creada, pero el correo con su
+   contraseña temporal NO salió» **no podía dispararse nunca**. Esa alerta
+   es la razón de ser del arreglo del #14: la cuenta existe y NADIE tiene la
+   contraseña, y eso tiene que verse en la interfaz, no en un log de Cloud
+   Functions que nadie lee.
+2. `obrasAgregadas` se leía `undefined`, el `Array.isArray` lo volvía `[]` y
+   el aviso de campanita de «te asignaron a nueva(s) obra(s)» no se mandaba
+   nunca — mientras el correo del servidor sí las nombraba. Dos cuentas para
+   un número, rota en silencio.
+3. El alta que hace soporte desde el panel de plataforma ni miraba el correo:
+   pintaba el aviso **en verde** y soporte se iba creyendo que el usuario ya
+   tenía su acceso. Ahora va en rojo cuando el correo no salió, aunque el
+   alta sí se hizo, porque lo que pide es una acción: ponerle contraseña
+   desde el panel de usuarios.
+
+**Por qué es de los que fallan en silencio, y no de los que se ven**: las
+tres variantes son código que corre sin error. Nada en la consola, nada en
+el registro de salud, nada en la pantalla. Lo único que se nota es la
+ausencia de un aviso, y la ausencia de un aviso es exactamente lo que nadie
+está mirando.
+
+**Cómo se cerró el patrón**, no los tres renglones: la §6 de
+`prueba-escritura-que-no-miente.cjs`. Es el mismo banco que ya medía las
+escrituras que no quedan, porque es la misma clase de defecto —un resultado
+que no está y la pantalla sigue adelante— en el otro canal. Recorre el AST
+buscando cada `await callFn(...)` asignado a una variable, sigue las
+referencias de esa variable y exige que todo lo que se lea de ella esté en
+`{ok, data, error, code}`; cualquier otra cosa la puso el servidor y vive en
+`data`. Hoy encuentra 7 sobres y ninguna lectura fuera de `data`. **Si no
+encuentra ni un sobre, sale NO ARRANCÓ (2), no verde**: la forma del
+envoltorio habría cambiado y la comprobación estaría midiendo el vacío. Tres
+mutaciones nuevas en la contraprueba, que son el defecto tal como estaba
+escrito, y las tres salen en ROJO 1.
+
+Se consideró y se descartó aplanar el sobre (`{ok: true, ...res.data}`):
+quitaría la trampa, pero funde el `ok` del transporte con el del servidor, y
+el día que un manejador devuelva `ok:false` con significado la pantalla
+diría «Error: undefined». La convención de dos capas está bien; lo que
+faltaba era que romperla se viera.
+
 ---
 
 ## 15. Distinguir "obra que avanzó" de "residente que se puso al corriente"

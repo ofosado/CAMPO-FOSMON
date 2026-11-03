@@ -16,7 +16,7 @@
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
@@ -428,25 +428,39 @@ exports.crearOrganizacion = onCall(async (request) => {
 // ──────────────────────────────────────────────────────────────────────────
 // CREAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
-exports.crearUsuario = onCall(async (request) => {
+// La contraseña ya NO viene de la pantalla: se sortea aquí y sale en el correo
+// de bienvenida. Lo que había antes era un campo de texto donde quien daba el
+// alta tecleaba una, y después la copiaba a un correo escrito a mano. Las dos
+// mitades de ese trámite fallaban: las contraseñas que quedaron en el repo son
+// adivinables, y si el correo no se escribía, el usuario tenía cuenta y no lo
+// sabía.
+//
+// `secrets` enlaza la llave de Resend a ESTA función. Sin eso
+// `RESEND_API_KEY.value()` sale vacío en producción y el correo no saldría —y
+// `mandarCorreoDeAlta` lo registraría como error, pero el usuario ya existiría
+// sin forma de entrar.
+exports.crearUsuario = onCall({ secrets: [RESEND_API_KEY] }, async (request) => {
   const { perfil: perfilLlamador } = await requireAdmin(request.auth);
   const ambito = ambitoDe(perfilLlamador);
 
-  const { email, password, nombre, rol, obras_asignadas, orgId: orgIdPedido } = request.data || {};
+  const { email, nombre, rol, rolLabel, obras_asignadas, orgId: orgIdPedido } = request.data || {};
 
-  if (!email || !password || !nombre || !rol) {
+  if (!email || !nombre || !rol) {
     throw new HttpsError(
       "invalid-argument",
-      "Faltan datos requeridos: email, password, nombre y rol."
+      "Faltan datos requeridos: email, nombre y rol."
     );
   }
   if (!ROLES_VALIDOS.includes(rol)) {
     throw new HttpsError("invalid-argument", `Rol inválido: ${rol}`);
   }
-  if (password.length < 6) {
-    throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
-  }
   exigirPuedeOtorgarRol(ambito, rol);
+
+  // Se sortea antes de tocar Auth para que sea la MISMA cadena la que se
+  // registra en Auth y la que viaja en el correo. Generarla dos veces —una
+  // para cada cosa— es cómo se manda un correo con una contraseña que no
+  // abre nada.
+  const password = generarPasswordTemporal();
 
   // ── La organización del usuario nuevo ──
   // Sale del perfil de quien da el alta. Si se aceptara de `request.data`, un
@@ -520,13 +534,42 @@ exports.crearUsuario = onCall(async (request) => {
     ...(reparado ? { reparadoDeAuth: true } : {}),
   });
 
-  return { ok: true, uid: userRecord.uid, email: emailNorm, reparado };
+  // ── EL CORREO DE BIENVENIDA ──
+  // Va DESPUÉS de escribir el perfil, nunca antes: si se mandara primero y la
+  // escritura rebotara, habría una contraseña circulando para una cuenta que
+  // no existe. En este orden, lo peor que puede pasar es una cuenta que existe
+  // y un correo que no salió — y eso se arregla desde la pantalla, con el
+  // botón de resetear contraseña.
+  const marca = await marcaDeOrg(orgId);
+  const tipoOrg = orgId ? (await leerOrg(orgId))?.tipo || null : null;
+  const obrasTxt = await nombresDeObras(
+    orgId, tipoOrg,
+    Array.isArray(obras_asignadas) ? obras_asignadas : []
+  );
+  const { subject, html } = correoBienvenida({
+    marca,
+    nombre,
+    email: emailNorm,
+    password,
+    rol,
+    rolLabel,
+    obras: obrasTxt,
+    dioElAlta: request.auth.token.email || "",
+  });
+  const correo = await mandarCorreoDeAlta(RESEND_API_KEY.value(), {
+    to: emailNorm, subject, html, concepto: "bienvenida",
+  });
+
+  // `correo` se devuelve para que la pantalla pueda decir la verdad. Si el
+  // correo no salió, el alta sí se hizo pero NADIE tiene la contraseña: ese
+  // caso tiene que verse en la interfaz, no sólo en un log que nadie lee.
+  return { ok: true, uid: userRecord.uid, email: emailNorm, reparado, correo };
 });
 
 // ──────────────────────────────────────────────────────────────────────────
 // ACTUALIZAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
-exports.actualizarUsuario = onCall(async (request) => {
+exports.actualizarUsuario = onCall({ secrets: [RESEND_API_KEY] }, async (request) => {
   const { perfil: perfilLlamador } = await requireAdmin(request.auth);
   const ambito = ambitoDe(perfilLlamador);
 
@@ -569,6 +612,18 @@ exports.actualizarUsuario = onCall(async (request) => {
   update.actualizadoEn = FieldValue.serverTimestamp();
   update.actualizadoPor = request.auth.token.email || "";
 
+  // Qué obras se AGREGARON. Se calcula antes de escribir, con el documento que
+  // ya se leyó: después de `set` el valor viejo se perdió. Y se calcula aquí y
+  // no en el cliente —ahí existía, en el `onConfirm` del modal— porque el
+  // cliente comparaba contra la copia que tenía en memoria, que es la de la
+  // última recarga de la lista: si alguien más había editado al usuario en
+  // medio, la diferencia salía mal y el correo nombraba obras equivocadas.
+  const obrasAntes = Array.isArray(perfilObjetivo.obras_asignadas) ? perfilObjetivo.obras_asignadas : [];
+  const obrasAhora = Array.isArray(update.obras_asignadas) ? update.obras_asignadas : null;
+  const obrasAgregadas = obrasAhora === null
+    ? []
+    : obrasAhora.filter(o => o && !obrasAntes.includes(o));
+
   await ref.set(update, { merge: true });
 
   // Reflejar cambios en Auth
@@ -583,7 +638,28 @@ exports.actualizarUsuario = onCall(async (request) => {
     }
   }
 
-  return { ok: true };
+  // ── EL CORREO DE OBRA ASIGNADA ──
+  // No sale si la cuenta se está desactivando en el mismo acto: avisarle de
+  // una obra nueva a quien acaba de perder el acceso es una contradicción, y
+  // el correo lo mandaría a una app que lo va a rechazar.
+  let correo = null;
+  const quedaActivo = ("activo" in update) ? update.activo !== false : perfilObjetivo.activo !== false;
+  if (obrasAgregadas.length > 0 && quedaActivo) {
+    const orgObjetivo = String(perfilObjetivo.orgId || "") || null;
+    const marca = await marcaDeOrg(orgObjetivo);
+    const tipoOrg = orgObjetivo ? (await leerOrg(orgObjetivo))?.tipo || null : null;
+    const nombres = await nombresDeObras(orgObjetivo, tipoOrg, obrasAgregadas);
+    const { subject, html } = correoObraAsignada({
+      marca,
+      nombre: ("nombre" in update ? update.nombre : perfilObjetivo.nombre) || "",
+      obras: nombres,
+    });
+    correo = await mandarCorreoDeAlta(RESEND_API_KEY.value(), {
+      to: emailNorm, subject, html, concepto: "obra-asignada",
+    });
+  }
+
+  return { ok: true, obrasAgregadas, correo };
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -2466,6 +2542,402 @@ async function enviarEmailResend(apiKey, { from, to, subject, html }) {
   return data;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// CORREOS DE ALTA — obra nueva, obra asignada, usuario nuevo (2026-11-03)
+// ════════════════════════════════════════════════════════════════════════════
+// Hasta hoy estos tres avisos sólo existían DENTRO de la app: la campana.
+// Quien no entraba no se enteraba, y el alta de un usuario se acompañaba de un
+// correo escrito a mano (CORREO_Aldo_Torres.md, CORREO_Julian_Islas.txt).
+//
+// ── POR QUÉ VIVEN EN EL SERVIDOR Y NO EN EL CLIENTE ──
+// El aviso en app lo creaba el navegador con `notifARoles`, que para saber a
+// quién avisar necesita LISTAR `usuarios`. La regla sólo se lo permite a un
+// admin de la organización, y `gerente_construccion` —uno de los dos roles que
+// pueden dar de alta una obra— no lo es: la lectura se denegaba, el `catch` se
+// tragaba el error y el alta se consumaba sin avisarle a nadie. Desde el
+// servidor no hay regla que denegar, así que el aviso deja de depender del rol
+// de quien dio el alta. Es el #85.
+
+// `empresa` es el nombre que la organización enseña como suyo. Se lee de
+// `orgs/{oid}/config/branding`, el MISMO documento que pinta el encabezado de
+// la app: si el correo trajera su propio nombre, un día diría uno y la pantalla
+// otro. Sin marca —organización vieja, anterior al branding— se cae al nombre
+// de la organización, y si tampoco hay, a nada: es preferible un correo sin
+// firma que uno firmado por la empresa equivocada.
+async function marcaDeOrg(orgId) {
+  if (!orgId) return { empresa: "", empresaCorta: "" };
+  const db = admin.firestore();
+  try {
+    const b = await db.doc(`orgs/${orgId}/config/branding`).get();
+    if (b.exists) {
+      const d = b.data() || {};
+      const empresa = String(d.empresa || "").trim();
+      if (empresa) return { empresa, empresaCorta: String(d.empresaCorta || "").trim() || empresa };
+    }
+    const o = await db.doc(`orgs/${orgId}`).get();
+    const nombre = o.exists ? String((o.data() || {}).nombre || "").trim() : "";
+    return { empresa: nombre, empresaCorta: nombre };
+  } catch (e) {
+    console.warn(`marcaDeOrg(${orgId}): no se pudo leer la marca:`, e.message);
+    return { empresa: "", empresaCorta: "" };
+  }
+}
+
+const ESC_HTML = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+// El sobre común de los tres correos. Lo único que cambia entre uno y otro es
+// el cuerpo; el encabezado, el pie y la marca son los mismos para que un
+// usuario reconozca de dónde viene el correo antes de leerlo.
+function sobreCorreo({ marca, titulo, entradilla, cuerpoHTML, pie }) {
+  const firma = marca?.empresa ? ESC_HTML(marca.empresa) : "";
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F8F9FB;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F8F9FB;padding:24px 12px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border-radius:10px;overflow:hidden;border:1px solid #E8EAF0;">
+        <tr><td style="padding:20px 28px;background:#0D1619;">
+          <div style="font-size:17px;font-weight:700;color:#FFFFFF;letter-spacing:0.06em;">cotea</div>
+          ${firma ? `<div style="font-size:10px;color:#9AA0AC;letter-spacing:0.08em;text-transform:uppercase;margin-top:3px;">${firma}</div>` : ""}
+        </td></tr>
+        <tr><td style="padding:26px 28px 8px 28px;">
+          <div style="font-size:18px;font-weight:700;color:#0D1619;line-height:1.35;">${ESC_HTML(titulo)}</div>
+          ${entradilla ? `<div style="font-size:13px;color:#4A5160;line-height:1.6;margin-top:10px;">${entradilla}</div>` : ""}
+        </td></tr>
+        <tr><td style="padding:8px 28px 26px 28px;">${cuerpoHTML}</td></tr>
+        <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
+          ${ESC_HTML(pie || "Este aviso lo manda cotea automáticamente.")}<br>
+          <a href="${APP_URL}" style="color:#9AA0AC;">${APP_URL.replace(/^https?:\/\//, "")}</a>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+const botonHTML = (texto, url) =>
+  `<a href="${url}" style="display:inline-block;background:#0D1619;color:#FFFFFF;text-decoration:none;` +
+  `font-size:13px;font-weight:700;padding:11px 20px;border-radius:7px;">${ESC_HTML(texto)}</a>`;
+
+// Una tabla de dos columnas para los datos. Los renglones se arman de pares
+// [etiqueta, valor] y los vacíos se caen solos: un renglón con la etiqueta y
+// nada al lado se lee como un dato que falta, no como uno que no aplica.
+const tablaDatos = (pares) => {
+  const filas = pares.filter(([, v]) => String(v ?? "").trim() !== "");
+  if (!filas.length) return "";
+  return `<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:4px 0 18px 0;">` +
+    filas.map(([k, v]) => `<tr>
+      <td style="padding:7px 10px 7px 0;font-size:11px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.04em;white-space:nowrap;vertical-align:top;">${ESC_HTML(k)}</td>
+      <td style="padding:7px 0;font-size:13px;color:#0D1619;font-weight:600;">${ESC_HTML(v)}</td>
+    </tr>`).join("") + `</table>`;
+};
+
+// Un bloque de pasos numerados. Los pasos son texto ya escapado por quien los
+// arma, porque algunos llevan un <b> dentro.
+const pasosHTML = (titulo, pasos) =>
+  `<div style="font-size:12px;font-weight:700;color:#0D1619;margin:18px 0 8px 0;">${ESC_HTML(titulo)}</div>` +
+  `<ol style="margin:0;padding-left:20px;font-size:13px;color:#4A5160;line-height:1.75;">` +
+  pasos.map(p => `<li>${p}</li>`).join("") + `</ol>`;
+
+const parrafoHTML = (txt) =>
+  `<div style="font-size:13px;color:#4A5160;line-height:1.65;margin:14px 0;">${txt}</div>`;
+
+const avisoHTML = (txt) =>
+  `<div style="font-size:12px;color:#8A5A00;background:#FFF8E6;border:1px solid #FFE9B0;` +
+  `border-radius:7px;padding:11px 13px;line-height:1.6;margin:14px 0;">${txt}</div>`;
+
+// ── LA CONTRASEÑA TEMPORAL ──────────────────────────────────────────────────
+// Antes la escribía a mano quien daba el alta, en un campo del formulario, y
+// de ahí la copiaba a un correo escrito a mano. Dos consecuencias medidas en
+// los correos que existen en el repo: las contraseñas eran adivinables
+// (nombre + año) y las mismas para varios usuarios.
+//
+// `getRandomValues` y no `Math.random()`. No es purismo: `Math.random()` se
+// puede predecir a partir de salidas anteriores, y aquí la salida es la llave
+// de una cuenta. Es el mismo sorteo que `nuevoIdObra` en la app —hasta el
+// descarte—, y a propósito: el sesgo del módulo se quita igual en los dos
+// sitios, descartando lo que cae en el tramo incompleto en vez de recortarlo.
+// Recortar sale gratis y sesga siempre.
+//
+// Y es `globalThis.crypto`, no `require("crypto")`: el `randomInt` del módulo
+// no existe en el objeto `crypto` global, que es el que hay cuando este código
+// se monta en un banco de pruebas. Una contraseña que sólo se puede sortear en
+// producción es una contraseña que no se puede medir.
+//
+// El alfabeto excluye lo que se confunde al dictar por teléfono o al leer en
+// la pantalla de un celular bajo el sol: O y 0, l y 1 y I. Una contraseña que
+// se teclea mal tres veces acaba en una llamada, y entonces se pasa de viva voz.
+const ALFABETO_PASS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+function generarPasswordTemporal(largo = 12) {
+  const n = ALFABETO_PASS.length;
+  const TOPE = Math.floor(256 / n) * n;   // 228 de 256: lo de arriba se descarta
+  const buf = new Uint8Array(1);
+  let s = "";
+  while (s.length < largo) {
+    globalThis.crypto.getRandomValues(buf);
+    if (buf[0] >= TOPE) continue;
+    s += ALFABETO_PASS[buf[0] % n];
+  }
+  return s;
+}
+
+// El nombre del rol en palabras. Lo manda el cliente porque `ROL_LABEL` vive
+// en `src/App.jsx` y es lo que el usuario YA vio en la pantalla del alta:
+// una segunda tabla aquí diría "Auditor" donde la app dice "Auditor Interno",
+// y el día que un rol se renombre —`supervisor` → `auditor` ya pasó— el correo
+// seguiría llamándolo como se llamaba antes.
+//
+// Se sanea igual: es texto que entra de fuera y sale en un correo. Se recorta,
+// se limita a 40 caracteres y se le quita todo lo que no sea letra, espacio o
+// guion. Si no viene o no sobrevive al filtro, se cae al identificador del
+// rol: feo pero cierto, que es el orden correcto de preferencias.
+function rolVisible(rol, rolLabel) {
+  const limpio = String(rolLabel || "")
+    .trim().slice(0, 40)
+    .replace(/[^\p{L}\p{M} .\-]/gu, "")
+    .trim();
+  return limpio || String(rol || "");
+}
+
+// Dónde viven las obras de una organización. Es el `conOrg` del servidor, y la
+// razón de la asimetría está en `src/rutas-org.js`: las de la constructora en
+// la raíz, las de una dependencia bajo su organización. El discriminante es
+// `tipo` y no la presencia de `orgId`, por lo mismo que allá.
+const rutaObrasDeOrg = (orgId, tipo) =>
+  tipo === "dependencia" ? `orgs/${orgId}/obras` : "obras";
+
+// Cómo se llama una obra en un correo. El mismo orden que usa la bitácora de
+// la app (`contrato || nombre`), para que el renglón del correo y el de la
+// bitácora nombren igual a la misma obra. Si no se puede leer el documento se
+// devuelve el identificador: un correo que dice "OB-2026-XXXXXX" es incómodo,
+// uno que dice "una obra" no sirve para nada.
+async function nombresDeObras(orgId, tipo, ids) {
+  const limpios = [...new Set((ids || []).map(x => String(x || "").trim()).filter(Boolean))];
+  if (!limpios.length) return [];
+  const base = rutaObrasDeOrg(orgId, tipo);
+  const db = admin.firestore();
+  return Promise.all(limpios.map(async id => {
+    try {
+      const s = await db.doc(`${base}/${id}`).get();
+      if (!s.exists) return id;
+      const d = s.data() || {};
+      return String(d.contrato || d.nombre || "").trim() || id;
+    } catch { return id; }
+  }));
+}
+
+// ── LOS PASOS PARA CAMBIAR LA CONTRASEÑA ────────────────────────────────────
+// Esta lista describe una pantalla que existe: el nombre del usuario en la
+// barra de arriba abre `ModalMiPassword` (src/App.jsx). Si esa pantalla se
+// mueve, estos pasos mienten — y un correo que manda a alguien a tocar algo
+// que no está es peor que no mandar el correo.
+const PASOS_CAMBIO_PASS = [
+  `Entra a cotea con el usuario y la contraseña de arriba.`,
+  `Toca <b>tu nombre</b>, arriba a la derecha.`,
+  `Escribe la contraseña temporal, luego la nueva dos veces, y <b>Cambiar</b>.`,
+];
+
+// Instalarla en el teléfono. Es una PWA de verdad —hay service worker y
+// manifest—, así que estos pasos son los del sistema operativo y no una
+// promesa nuestra.
+const PASOS_INSTALAR = [
+  `<b>iPhone</b>: ábrela en Safari, toca Compartir y «Añadir a pantalla de inicio».`,
+  `<b>Android</b>: ábrela en Chrome, toca ⋮ y «Instalar app».`,
+];
+
+// ── CORREO DE BIENVENIDA ────────────────────────────────────────────────────
+// Lo que este correo NO lleva, y por qué:
+//
+//  · Los pasos del rol. Los pone la app: `PASOS_BIENVENIDA` y `WelcomeBanner`
+//    en src/App.jsx le pintan a cada usuario los suyos al entrar, y cambian
+//    solos cuando su rol cambia. Copiarlos aquí sería una segunda versión que
+//    se desfasa, y la forma en que se desfasa es la peor: diciéndole a un
+//    residente que capture algo que su rol no le deja capturar.
+//  · El manual en PDF. Va aparte, y sólo a quien captura en campo: el
+//    instructivo de un contratista no es material de la dependencia que lo
+//    contrata.
+//  · Cifras. Un correo de acceso no lleva presupuesto, gasto ni margen de
+//    ninguna obra. Las obras se nombran, y nada más.
+function correoBienvenida({ marca, nombre, email, password, rol, rolLabel, obras, dioElAlta }) {
+  const rolTxt = rolVisible(rol, rolLabel);
+  const casa = marca?.empresaCorta || marca?.empresa || "";
+  const obrasTxt = (obras && obras.length)
+    ? obras.join(" · ")
+    // No se dice "todas las obras": quién ve qué lo deciden los claims y el
+    // rol, no este correo. Que la lista esté vacía significa que no se
+    // marcaron obras en el alta, y eso se dice tal cual.
+    : "";
+
+  const cuerpo =
+    tablaDatos([
+      ["Dirección", APP_URL],
+      ["Usuario", email],
+      ["Contraseña temporal", password],
+      ["Rol", rolTxt],
+      ["Obras", obrasTxt],
+    ]) +
+    avisoHTML(
+      `Esa contraseña es <b>temporal</b> y viajó por correo. Mientras no la cambies, ` +
+      `la sabe cualquiera que tenga acceso a este mensaje.`
+    ) +
+    pasosHTML("Cámbiala en cuanto entres", PASOS_CAMBIO_PASS) +
+    pasosHTML("Instálala en el teléfono", PASOS_INSTALAR) +
+    parrafoHTML(
+      `Al entrar vas a ver una tarjeta de bienvenida con los pasos de tu rol. ` +
+      `Esos pasos los pone la app según lo que puedes hacer como ${ESC_HTML(rolTxt)}, ` +
+      `así que son los tuyos y se actualizan si tu rol cambia.`
+    ) +
+    parrafoHTML(`<b>Entra siempre con tu propia cuenta.</b> Lo que se captura queda firmado ` +
+      `con el usuario que lo capturó; una contraseña compartida convierte la bitácora en adivinanza.`) +
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Entrar a cotea", APP_URL)}</div>` +
+    (dioElAlta
+      ? parrafoHTML(`Si algo no te deja entrar, escríbele a ${ESC_HTML(dioElAlta)}, que fue quien te dio de alta.`)
+      : "");
+
+  return {
+    subject: casa ? `Tu acceso a cotea · ${casa}` : `Tu acceso a cotea`,
+    html: sobreCorreo({
+      marca,
+      titulo: `Ya tienes acceso a cotea`,
+      entradilla: `${ESC_HTML(String(nombre || "").split(" ")[0] || "Hola")}, te dieron de alta` +
+        (casa ? ` en ${ESC_HTML(casa)}` : "") + ` como <b>${ESC_HTML(rolTxt)}</b>.`,
+      cuerpoHTML: cuerpo,
+      pie: "Este correo lo manda cotea al dar de alta una cuenta.",
+    }),
+  };
+}
+
+// ── CORREO DE OBRA ASIGNADA ─────────────────────────────────────────────────
+// Sólo las obras que se AGREGARON. Mandar la lista completa cada vez que se
+// edita un usuario haría que el correo pareciera un alta nueva, y a la tercera
+// vez nadie lo abre.
+function correoObraAsignada({ marca, nombre, obras }) {
+  const casa = marca?.empresaCorta || marca?.empresa || "";
+  const una = obras.length === 1;
+  const cuerpo =
+    tablaDatos(obras.map((o, i) => [obras.length > 1 ? `Obra ${i + 1}` : "Obra", o])) +
+    parrafoHTML(una
+      ? `Ya la ves al entrar a cotea, en tu lista de obras.`
+      : `Ya las ves al entrar a cotea, en tu lista de obras.`) +
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Abrir cotea", APP_URL)}</div>`;
+  return {
+    subject: una ? `Te asignaron una obra en cotea` : `Te asignaron ${obras.length} obras en cotea`,
+    html: sobreCorreo({
+      marca,
+      titulo: una ? `Te asignaron una obra` : `Te asignaron ${obras.length} obras`,
+      entradilla: `${ESC_HTML(String(nombre || "").split(" ")[0] || "Hola")}, ` +
+        (casa ? `en ${ESC_HTML(casa)} ` : "") + `te acaban de asignar ` +
+        (una ? `una obra` : `${obras.length} obras`) + `.`,
+      cuerpoHTML: cuerpo,
+      pie: "Este correo lo manda cotea al asignarte una obra.",
+    }),
+  };
+}
+
+// ── CORREO DE OBRA NUEVA ────────────────────────────────────────────────────
+// La cifra sale del MISMO documento que leyó el aviso de la campana —el que
+// acaba de escribir el alta— y se etiqueta como la etiqueta la app: en una
+// constructora es su presupuesto, en una dependencia el monto que contrató.
+// No son el mismo número con dos nombres: son dos números distintos, y es por
+// eso que la etiqueta no se puede dejar fija.
+function correoObraNueva({ marca, tipo, obraId, obra, dioElAlta }) {
+  const dep = tipo === "dependencia";
+  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;
+  const contraparte = dep
+    ? String(obra.empresaEjecutante || "").trim()
+    : String(obra.cliente || "").trim();
+  const monto = Number(obra.presupuesto) || 0;
+
+  const cuerpo =
+    tablaDatos([
+      ["Obra", nombreObra],
+      ["Identificador", obraId],
+      [dep ? "Empresa ejecutante" : "Cliente", contraparte],
+      // Un monto en cero no se pinta como "$0": en el alta el presupuesto se
+      // puede dejar en blanco, y "$0" es una cifra inventada donde no hubo
+      // captura. `tablaDatos` tira el renglón vacío.
+      [dep ? "Monto contratado" : "Presupuesto", monto > 0 ? MXN_FMT(monto) : ""],
+    ]) +
+    (monto > 0 ? "" : avisoHTML(
+      `La obra se dio de alta <b>sin ${dep ? "monto contratado" : "presupuesto"}</b>. ` +
+      `Hasta que se capture, el avance financiero de esta obra no se puede medir.`
+    )) +
+    parrafoHTML(`Una obra sin catálogo no acepta captura de avance todavía. ` +
+      `El siguiente paso es cargarle el ${dep ? "catálogo de conceptos" : "presupuesto"}.`) +
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Abrir la obra", `${APP_URL}/?obra=${encodeURIComponent(obraId)}`)}</div>` +
+    (dioElAlta ? parrafoHTML(`La dio de alta ${ESC_HTML(dioElAlta)}.`) : "");
+
+  return {
+    subject: `Obra nueva en cotea · ${nombreObra}`,
+    html: sobreCorreo({
+      marca,
+      titulo: `Obra nueva: ${nombreObra}`,
+      entradilla: `Se dio de alta una obra` + (contraparte ? ` de ${ESC_HTML(contraparte)}` : "") + `.`,
+      cuerpoHTML: cuerpo,
+      pie: "Este correo lo manda cotea al dar de alta una obra.",
+    }),
+  };
+}
+
+// ── MANDAR SIN TUMBAR EL ACTO ───────────────────────────────────────────────
+// Un correo que no sale NO deshace el alta. El usuario ya existe en Auth y su
+// perfil ya está escrito; lanzar aquí le devolvería un error a quien dio el
+// alta por algo que ya se consumó, y volvería a intentarlo creando el
+// desorden. Pero tampoco se calla: el fallo se registra con lo que hace falta
+// para repararlo a mano —a quién no le llegó y por qué— porque un correo de
+// acceso que no llega deja a un usuario sin contraseña y sin saberlo.
+async function mandarCorreoDeAlta(apiKey, { to, subject, html, concepto }) {
+  const destinos = (Array.isArray(to) ? to : [to]).map(x => String(x || "").trim()).filter(Boolean);
+  if (!destinos.length) {
+    console.warn(`[correo:${concepto}] no se mandó: no quedó ningún destinatario.`);
+    return { ok: false, motivo: "sin-destinatarios", enviados: 0 };
+  }
+  if (!apiKey) {
+    console.error(`[correo:${concepto}] NO SE MANDÓ a ${destinos.join(", ")}: falta RESEND_API_KEY.`);
+    return { ok: false, motivo: "sin-llave", enviados: 0 };
+  }
+  try {
+    await enviarEmailResend(apiKey, { from: FROM_EMAIL, to: destinos, subject, html });
+    console.log(`[correo:${concepto}] enviado a ${destinos.join(", ")}`);
+    return { ok: true, enviados: destinos.length };
+  } catch (e) {
+    console.error(`[correo:${concepto}] NO SE MANDÓ a ${destinos.join(", ")}: ${e.message}`);
+    return { ok: false, motivo: e.message, enviados: 0 };
+  }
+}
+
+// ── A QUIÉN LE TOCA EL AVISO ────────────────────────────────────────────────
+// A quién se le avisa de una obra nueva, por tipo de organización. Es la misma
+// lista que `ROLES_AVISO_OBRA_NUEVA` en la app —la de la campana— MÁS el
+// gerente de construcción del lado de la constructora, que estaba fuera: es el
+// rol que da de alta las obras y el que las opera, y era el único al que el
+// alta no le avisaba. Lo pidió Omar por su nombre.
+const ROLES_CORREO_OBRA_NUEVA = {
+  constructora: ["director_general", "director_operaciones", "gerente_construccion", "admin_sistema"],
+  dependencia: ["director_obras", "subdirector", "jefe_supervision", "contralor"],
+};
+
+// Roles que están DENTRO de una obra y FUERA de la casa que la dio de alta:
+// `cliente` es el cliente de la constructora y `contratista` la empresa que
+// ejecuta para la dependencia. Si uno de ellos queda asignado a la obra —que
+// es justo para lo que existen esos roles— el aviso interno del alta, con su
+// monto, NO le toca. Es el mismo principio por el que una dependencia no lee
+// la economía del contratista, aplicado al revés.
+const ROLES_AJENOS_A_LA_CASA = ["cliente", "contratista"];
+
+// Los perfiles de UNA organización que están activos y tienen correo.
+// La consulta filtra por `orgId` en Firestore y los roles se cruzan en
+// memoria, igual que `notifARoles` en la app y por la misma razón: `usuarios`
+// es una colección raíz compartida, y un `where(in)` de roles junto al
+// `where(==)` de organización exigiría un índice compuesto.
+async function perfilesDeOrg(orgId) {
+  if (!orgId) return [];
+  const snap = await admin.firestore().collection("usuarios").where("orgId", "==", orgId).get();
+  return snap.docs.map(d => d.data() || {}).filter(u => u.activo !== false);
+}
+
 // Función principal: arma y envía el resumen semanal
 async function generarYEnviarResumenSemanal(apiKey) {
   const db = admin.firestore();
@@ -3352,6 +3824,156 @@ exports.sincronizarClaims = onDocumentWritten(
       // Log para investigar.
       console.error(`sincronizarClaims [${event.params.docId}] no pudo incrementar claimsVersion:`, e.message);
     }
+    return null;
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+// OBRA NUEVA — el aviso que el cliente no podía mandar  (#85)
+// ════════════════════════════════════════════════════════════════════════════
+// El alta de una obra la hace el NAVEGADOR: `agregarObra` escribe
+// `obras/{id}` directo (src/App.jsx). El aviso lo intentaba ahí mismo con
+// `notifARoles`, que para saber a quién avisarle tiene que LISTAR `usuarios`;
+// la regla de esa colección sólo se lo permite a un admin de la organización,
+// y `gerente_construccion` —uno de los dos roles que pueden dar de alta una
+// obra— no lo es. El `catch` se tragaba el permission-denied y el alta se
+// consumaba sin que nadie se enterara. Medido en el preview el 2026-11-02.
+//
+// Desde un disparador no hay regla que denegar, así que el aviso dejó de
+// depender del rol de quien dio el alta. Y de paso sale por correo, que es lo
+// que se pidió: quien no abre la app no se enteraba nunca.
+//
+// ── DOS DISPARADORES Y NO UNO ──
+// Las obras de la constructora viven en `obras/{id}` y las de una dependencia
+// en `orgs/{oid}/obras/{id}` (ver `src/rutas-org.js`). Un solo disparador en
+// la raíz habría dejado a todas las dependencias sin aviso, y el defecto se
+// vería como "a unos les llega y a otros no", que es el más difícil de
+// atribuir. Los dos llaman al mismo cuerpo: lo único que cambia es de dónde
+// sale el `orgId`.
+async function avisarObraNueva({ orgId, obraId, obra, apiKey }) {
+  if (!orgId || !obraId || !obra) {
+    console.error(`[obra-nueva] falta algo: orgId=${orgId} obraId=${obraId}`);
+    return { ok: false, motivo: "datos-incompletos" };
+  }
+  // El tipo se LEE, no se supone. De él dependen tres cosas que no se pueden
+  // adivinar: a qué roles les toca el aviso, cómo se llama la cifra, y dónde
+  // están las obras. Si no se puede leer, no se manda nada — el mismo criterio
+  // que `orgDeLaRaiz`: un destinatario adivinado es una cifra inventada.
+  const org = await leerOrg(orgId);
+  const tipo = org?.tipo || null;
+  if (!tipo) {
+    console.error(`[obra-nueva] ${obraId}: no se pudo leer el tipo de \`${orgId}\`; no se avisa a nadie.`);
+    return { ok: false, motivo: "tipo-desconocido" };
+  }
+
+  const marca = await marcaDeOrg(orgId);
+  const perfiles = await perfilesDeOrg(orgId);
+  const porRol = ROLES_CORREO_OBRA_NUEVA[tipo] || [];
+
+  // Dos vías para entrar en la lista, y la unión de las dos es lo que pidió
+  // Omar: "al gerente y a quienes estén asignados a esa obra". El gerente
+  // entra por su rol; los asignados entran aunque su rol no esté en la lista,
+  // porque la obra es suya. Lo que ninguna de las dos vías puede meter es un
+  // rol ajeno a la casa — ver `ROLES_AJENOS_A_LA_CASA`.
+  const destinatarios = perfiles.filter(u => {
+    if (ROLES_AJENOS_A_LA_CASA.includes(u.rol)) return false;
+    const asignado = Array.isArray(u.obras_asignadas) && u.obras_asignadas.includes(obraId);
+    return porRol.includes(u.rol) || asignado;
+  });
+
+  const { subject, html } = correoObraNueva({
+    marca, tipo, obraId, obra,
+    dioElAlta: String(obra.creadaPor || "").trim(),
+  });
+  const correo = await mandarCorreoDeAlta(apiKey, {
+    to: destinatarios.map(u => u.email),
+    subject, html, concepto: `obra-nueva:${obraId}`,
+  });
+
+  // Y el aviso en la campana, que es el que se perdía. Se crea aquí por la
+  // misma razón por la que se perdía allá: el servidor no tiene que pedirle
+  // permiso a una regla para saber a quién avisarle.
+  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;
+  const contraparte = tipo === "dependencia"
+    ? String(obra.empresaEjecutante || "").trim()
+    : String(obra.cliente || "").trim();
+  const monto = Number(obra.presupuesto) || 0;
+  const notifs = await crearNotifServidor(destinatarios.map(u => u.uid), {
+    categoria: "gestion", tipo: "obra_nueva",
+    titulo: `Nueva obra · ${nombreObra}`,
+    mensaje: `${contraparte || (tipo === "dependencia" ? "Sin empresa ejecutante" : "Sin cliente")} · ` +
+      `${tipo === "dependencia" ? "Monto contratado" : "Presupuesto"}: ` +
+      // El mismo criterio que el correo: sin captura no se pinta "$0".
+      `${monto > 0 ? MXN_FMT(monto) : "sin capturar"} · ID ${obraId}`,
+    link: { obraId, tab: "dash" },
+    creadaPor: String(obra.creadaPor || "").trim() || "sistema",
+  });
+
+  console.log(`[obra-nueva] ${obraId} (${tipo}/${orgId}): ${destinatarios.length} destinatario(s), ` +
+    `correo=${correo.ok ? "enviado" : correo.motivo}, campana=${notifs}`);
+  return { ok: true, destinatarios: destinatarios.length, correo, notifs };
+}
+
+// `crearNotifPara` de la app, del lado del servidor. No se comparte código con
+// el cliente —son dos paquetes, uno ESM empacado por Vite y otro CommonJS— así
+// que lo que se comparte es la FORMA del documento, y por eso está escrita en
+// un solo sitio aquí: `notificaciones/{uid}/items/{autoId}` con los campos que
+// `CentroNotificaciones` lee.
+async function crearNotifServidor(uids, { categoria, tipo, titulo, mensaje, link, creadaPor }) {
+  const limpios = [...new Set((uids || []).filter(Boolean))];
+  if (!limpios.length) return 0;
+  const db = admin.firestore();
+  const batch = db.batch();
+  for (const uid of limpios) {
+    batch.set(db.collection(`notificaciones/${uid}/items`).doc(), {
+      categoria, tipo, titulo,
+      mensaje: mensaje || "",
+      link: link || {},
+      leida: false,
+      archivada: false,
+      fecha: FieldValue.serverTimestamp(),
+      creadaPor: creadaPor || "sistema",
+    });
+  }
+  try {
+    await batch.commit();
+    return limpios.length;
+  } catch (e) {
+    console.error("crearNotifServidor: no quedó el aviso en la campana:", e.message);
+    return 0;
+  }
+}
+
+// La raíz es de la constructora, y de cuál se pregunta —no se supone. Ver
+// `orgDeLaRaiz`: si hubiera dos constructoras lanza, y entonces este aviso no
+// sale en lugar de salirle a la organización equivocada con el monto de la
+// otra.
+exports.obraNuevaRaiz = onDocumentCreated(
+  { document: "obras/{obraId}", region: "us-central1", secrets: [RESEND_API_KEY] },
+  async (event) => {
+    const obra = event.data?.data();
+    if (!obra) return null;
+    let orgId;
+    try {
+      orgId = await orgDeLaRaiz(admin.firestore());
+    } catch (e) {
+      console.error(`[obra-nueva] ${event.params.obraId}: ${e.message}`);
+      return null;
+    }
+    await avisarObraNueva({ orgId, obraId: event.params.obraId, obra, apiKey: RESEND_API_KEY.value() });
+    return null;
+  }
+);
+
+exports.obraNuevaDeOrg = onDocumentCreated(
+  { document: "orgs/{orgId}/obras/{obraId}", region: "us-central1", secrets: [RESEND_API_KEY] },
+  async (event) => {
+    const obra = event.data?.data();
+    if (!obra) return null;
+    await avisarObraNueva({
+      orgId: event.params.orgId, obraId: event.params.obraId, obra,
+      apiKey: RESEND_API_KEY.value(),
+    });
     return null;
   }
 );

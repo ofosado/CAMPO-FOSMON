@@ -106,7 +106,11 @@ const depModalSrc = dentroDe('ModalNuevaObra', 'dep');
 const NECESARIOS = [
   'esDependencia', 'ROLES_ALTA_OBRA_C', 'ROLES_EDITAN_CONTRATO_D', 'puedeAltaObra',
   'CAMPOS_CONTRATO', 'camposContrato', 'CAMPOS_ALTA_C', 'OBLIGATORIOS_ALTA',
-  'MODALIDADES_ADJUDICACION', 'nuevoIdObra', 'ROLES_AVISO_OBRA_NUEVA',
+  // `ROLES_AVISO_OBRA_NUEVA` ya no está en la lista: la lista de destinatarios
+  // se fue al servidor (`ROLES_CORREO_OBRA_NUEVA`) y en el cliente no quedó
+  // copia a propósito — dos listas de destinatarios es cómo un aviso sale para
+  // menos gente sin que nadie lo note. Ver el §4 de abajo.
+  'MODALIDADES_ADJUDICACION', 'nuevoIdObra',
   'ModalNuevaObra', 'MXN',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'TABS_DEPENDENCIA', 'TABS_POR_ROL',
   'tabsDe', 'LEXICO', 'SUBTABS_PLANEACION_DEPENDENCIA', 'SUBTABS_OPERACION_DEPENDENCIA',
@@ -400,7 +404,6 @@ const correrAlta = async ({ dep, form, yaExiste = false, fsSetFalla = null }) =>
     const { dep, yaExiste, fsSetFalla } = entorno;
     const usuario = { correo: 'quien.captura@coatza.gob.mx', rol: 'director_obras' };
     const MXN = ${decl['MXN']};
-    const ROLES_AVISO_OBRA_NUEVA = ${decl['ROLES_AVISO_OBRA_NUEVA']};
     const fsGet = async (p) => { reg.gets.push(p); return yaExiste ? { nombre: 'la que ya estaba' } : null; };
     const fsSet = async (p, d) => { reg.sets.push([p, d]); return !(fsSetFalla && fsSetFalla.test(p)); };
     const fsAudit = (a, d) => reg.audits.push([a, d]);
@@ -442,18 +445,31 @@ check(okD.sets[0]?.[1]?.modalidad === 'Licitación pública'
 check(okD.obras === 1 && okD.cerrado, 'la obra entra a la lista y el modal se cierra');
 check(okD.audits.length === 1 && okD.audits[0][0] === 'crear', 'queda una entrada de auditoría');
 
-// El aviso: roles del lado correcto y el texto que corresponde. Antes nombraba
-// tres roles de constructora, así que no le llegaba a nadie.
-const [rolesD, notifD] = okD.notifs[0] || [[], {}];
-check(rolesD.includes('director_obras') && rolesD.includes('contralor')
-   && !rolesD.includes('director_general') && !rolesD.includes('admin_sistema'),
-  'se le avisa a los directivos de la dependencia, no a los de constructora',
-  rolesD.join(' · '));
-check(/Constructora del Golfo/.test(notifD.mensaje || '')
-   && /Monto contratado/.test(notifD.mensaje || '')
-   && !/Sin cliente/.test(notifD.mensaje || ''),
-  'y el aviso nombra a la empresa ejecutante y al monto contratado',
-  notifD.mensaje);
+// ── EL AVISO YA NO SE MANDA DE AQUÍ (#85, 2026-11-03) ──
+// Esta prueba medía a qué roles les avisaba `notifARoles` desde el navegador, y
+// esa conducta ya no existe en el cliente: NO se movió de lugar por gusto. Para
+// saber a quién avisarle hay que LISTAR `usuarios`, y la regla sólo se lo
+// permite a un admin de la organización; `gerente_construccion` —uno de los dos
+// roles que pueden dar de alta una obra— no lo es, así que la lectura se
+// denegaba, el `catch` se tragaba el error y el alta se consumaba sin avisarle
+// a nadie. Hoy el aviso lo manda el servidor, y a quién le llega se mide en
+// `prueba-correos-de-alta.cjs` (§4 y §6), donde además se comprueba el correo.
+//
+// Lo que queda por medir AQUÍ son las dos mitades que son del cliente:
+//
+//  · que no vuelva a intentarlo. Si alguien repone el `notifARoles`, el aviso
+//    se duplica para quien sí tiene permiso y se pierde en silencio para quien
+//    no, que es el defecto original.
+//  · que el documento de la obra guarde `creadaPor`. Un disparador de Firestore
+//    no trae autor: si este campo no se escribe, el correo del servidor no
+//    puede decir quién dio de alta la obra, y nadie se enteraría de que dejó de
+//    decirlo.
+check(okD.notifs.length === 0,
+  'el navegador NO intenta avisar: el aviso lo manda el servidor (#85)',
+  okD.notifs.length ? `llamó a notifARoles con ${JSON.stringify(okD.notifs[0][0])}` : 'no lo intenta');
+check(okD.sets[0]?.[1]?.creadaPor === 'quien.captura@coatza.gob.mx',
+  'y el documento de la obra guarda quién la dio de alta, que el disparador no lo sabe',
+  String(okD.sets[0]?.[1]?.creadaPor));
 
 // Y se entra directo al catálogo: una obra sin catálogo no acepta captura, así
 // que dejar al usuario en la lista es dejarlo a un paso de una obra inservible.
@@ -464,13 +480,11 @@ check(okD.selects.length === 1 && okD.selects[0][0] === FORM_D.id
 
 // ── El camino bueno, constructora: no se rompió ──
 const okC = await correrAlta({ dep: false, form: FORM_C });
-const [rolesC, notifC] = okC.notifs[0] || [[], {}];
 check(okC.resultado === null && okC.obras === 1 && okC.sets.length === 2,
   'el alta de constructora sigue funcionando igual');
-check(rolesC.includes('director_general') && !rolesC.includes('contralor'),
-  'con sus propios destinatarios', rolesC.join(' · '));
-check(/SCT Veracruz/.test(notifC.mensaje || '') && /Presupuesto/.test(notifC.mensaje || ''),
-  'y su propio texto', notifC.mensaje);
+check(okC.notifs.length === 0 && okC.sets[0]?.[1]?.creadaPor === 'quien.captura@coatza.gob.mx',
+  'y por el mismo camino: sin avisar desde el navegador y firmando quién la creó',
+  okC.notifs.length ? 'intentó avisar' : String(okC.sets[0]?.[1]?.creadaPor));
 
 // ── EL ID REPETIDO ──────────────────────────────────────────────────────────
 // La peor de las cinco, porque no da error: `fsSet` escribe con `merge`, así que

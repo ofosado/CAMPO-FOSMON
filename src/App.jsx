@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion, rutaAuditoria } from "./rutas-org.js";
 import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola } from "./permiso-denegado.js";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult } from "firebase/auth";
+import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult,
+         updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -8315,7 +8316,7 @@ function GestionUsuarios({usuario, obras, onClose}){
 
     {/* MODAL NUEVO */}
     {modalNuevo && <ModalUsuario titulo="Nuevo usuario" obras={obras} tipoOrg={usuario?.tipo}
-      onCancel={()=>setModalNuevo(false)} pedirPassword={true}
+      onCancel={()=>setModalNuevo(false)} esAlta={true}
       onConfirm={async (form)=>{
         setBusy(true);
         const r = await callFn("crearUsuario", form);
@@ -8323,11 +8324,24 @@ function GestionUsuarios({usuario, obras, onClose}){
         if(!r.ok){ alert("Error: "+r.error); return; }
         setModalNuevo(false);
         recargar();
+        // Si el correo NO salió, la cuenta existe y NADIE tiene la contraseña:
+        // ya no la teclea nadie aquí. Ese caso tiene que verse, no quedarse en
+        // un log de Cloud Functions — y se dice cómo salir de él.
+        // `r.data`, no `r`: `callFn` devuelve el sobre `{ok, data}` y lo que
+        // trae el servidor va DENTRO. Leerlo del sobre daba `undefined` y esta
+        // alerta no podía dispararse nunca — la pantalla callaba justo el caso
+        // para el que se escribió.
+        if (r.data?.correo && r.data.correo.ok === false) {
+          alert(`La cuenta de ${form.email} quedó creada, pero el correo con su `
+            + `contraseña temporal NO salió (${r.data.correo.motivo}).\n\n`
+            + `Nadie tiene esa contraseña. Usa el botón «Pass» de su renglón `
+            + `para ponerle una y pásasela tú.`);
+        }
         // Notif al usuario nuevo y a directivos
         await notifAEmail(form.email, {
           categoria: 'gestion', tipo: 'bienvenida',
           titulo: `Bienvenido a cotea`,
-          mensaje: `Tu cuenta fue creada con rol ${ROL_LABEL[form.rol]||form.rol}. Cambia tu contraseña al ingresar.`,
+          mensaje: `Tu cuenta quedó como ${ROL_LABEL[form.rol]||form.rol}. Tu contraseña temporal te llegó por correo: cámbiala tocando tu nombre, arriba a la derecha.`,
           creadaPor: usuario?.correo || 'sistema',
         });
         // El aviso va a la cabeza de la organización, que no se llama igual en
@@ -8350,10 +8364,16 @@ function GestionUsuarios({usuario, obras, onClose}){
         const r = await callFn("actualizarUsuario", {email:modalEditar.email, cambios});
         setBusy(false);
         if(!r.ok){ alert("Error: "+r.error); return; }
-        // Detectar cambios y notif
-        const obrasAntes = modalEditar.obras_asignadas || [];
-        const obrasNuevas = form.obras_asignadas || [];
-        const obrasAgregadas = obrasNuevas.filter(o => !obrasAntes.includes(o));
+        // Qué obras se agregaron lo dice el SERVIDOR, que comparó contra el
+        // documento vivo. Aquí se comparaba contra `modalEditar`, que es la
+        // copia de la última recarga de la lista: si alguien más había editado
+        // al usuario en medio, el aviso de la campana nombraba unas obras y el
+        // correo del servidor otras. Una cuenta por número.
+        // `r.data.obrasAgregadas`, no `r.obrasAgregadas`: leído del sobre daba
+        // `undefined`, el `Array.isArray` lo volvía `[]` y el aviso de la
+        // campana no se mandaba nunca. El correo del servidor sí nombraba las
+        // obras: una cuenta por número, rota en silencio.
+        const obrasAgregadas = Array.isArray(r.data?.obrasAgregadas) ? r.data.obrasAgregadas : [];
         if (modalEditar.rol !== form.rol) {
           await notifAEmail(modalEditar.email, {
             categoria: 'gestion', tipo: 'cambio_rol',
@@ -8429,7 +8449,12 @@ function GestionUsuarios({usuario, obras, onClose}){
 // ── MODAL FORMULARIO USUARIO (nuevo o editar) ──
 // `tipoOrg` es el tipo de la organización donde se está dando de alta, no el
 // del usuario que se edita: un alta siempre cae en la org de quien la hace.
-function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirPassword, tipoOrg}){
+// `esAlta` distingue crear de editar. Antes se llamaba `pedirPassword` y era
+// literal: el formulario pedía la contraseña inicial y quien daba el alta se
+// la inventaba. Ahora la sortea el servidor y sale en el correo de bienvenida
+// (`generarPasswordTemporal` en functions/index.js), así que lo que este
+// campo decide ya no es si se pide una contraseña sino si esto es un alta.
+function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, esAlta, tipoOrg}){
   const esDep = tipoOrg === "dependencia";
 
   // Roles agrupados por jerarquía. Los ejecutivos ven todas las obras; los que
@@ -8481,7 +8506,6 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
     rol: usuario?.rol || (esDep ? "supervisor_obra" : "administrador_obra"),
     obras_asignadas: usuario?.obras_asignadas||[],
     activo: usuario?.activo!==false,
-    password: "",
   });
 
   const toggleObra = (id) => setForm(f=>{
@@ -8492,8 +8516,10 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
 
   const submit = () => {
     if(!form.email || !form.nombre || !form.rol) { alert("Email, nombre y rol son requeridos"); return; }
-    if(pedirPassword && (!form.password || form.password.length<6)) { alert("Contraseña mínimo 6 caracteres"); return; }
-    onConfirm(form);
+    // `rolLabel` viaja al servidor para que el correo llame al rol como lo
+    // llama la app. No es el rol —ése es `form.rol`, el que se valida— sino
+    // su nombre en palabras: ver `rolVisible` en functions/index.js.
+    onConfirm({...form, rolLabel: ROL_LABEL[form.rol] || form.rol});
   };
 
   return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
@@ -8514,11 +8540,16 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, pedirP
           onChange={e=>setForm({...form, nombre:e.target.value})}/>
       </div>
 
-      {pedirPassword && <div style={{marginBottom:10}}>
-        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Contraseña inicial</div>
-        <Inp type="text" value={form.password} placeholder="mínimo 6 caracteres"
-          onChange={e=>setForm({...form, password:e.target.value})}/>
-        <div style={{fontSize:9,color:C.textMut,marginTop:3}}>El usuario debería cambiarla al entrar.</div>
+      {/* Donde estaba el campo de la contraseña inicial. Se quitó porque la
+          contraseña que se teclea aquí hay que pasársela al usuario por algún
+          lado, y ese «algún lado» era un correo escrito a mano: si no se
+          escribía, el usuario tenía cuenta y no lo sabía. Ahora se sortea en
+          el servidor y sale en el correo, y esta nota lo dice en vez de
+          dejar que quien da el alta se pregunte dónde quedó el campo. */}
+      {esAlta && <div style={{marginBottom:10,fontSize:10,color:C.textSec,lineHeight:1.55,
+        background:alfa(C.caliza,6),border:`0.5px solid ${alfa(C.caliza,18)}`,borderRadius:6,padding:"9px 11px"}}>
+        Al guardar, cotea le manda un correo con su <b>contraseña temporal</b> y
+        los pasos para cambiarla. No hace falta escribirle nada aparte.
       </div>}
 
       <div style={{marginBottom:10}}>
@@ -8599,6 +8630,122 @@ function ModalPassword({usuario, onCancel, onConfirm, busy}){
           {busy?"Guardando…":"Guardar"}
         </button>
       </div>
+    </div>
+  </div>;
+}
+
+// ── CAMBIAR MI PROPIA CONTRASEÑA ───────────────────────────────────────────
+// Hasta hoy la contraseña de un usuario sólo la podía cambiar un administrador
+// desde la gestión de usuarios (`ModalPassword`, el botón "Pass"). El alta ya
+// le decía al usuario nuevo "cambia tu contraseña al ingresar" —y no había
+// dónde. Con el correo de bienvenida mandando una contraseña TEMPORAL, esa
+// frase pasa de incómoda a falsa: la contraseña con la que entra viajó por
+// correo, así que tiene que poder dejar de usarla sin pedirle permiso a nadie.
+//
+// El cambio no pasa por el servidor. `reauthenticateWithCredential` +
+// `updatePassword` son del SDK de Auth y corren con las credenciales del
+// propio usuario: la contraseña nueva no toca ninguna función nuestra, no
+// queda en un log de Cloud Functions, y la vieja se exige en el acto. Si
+// esto se hubiera hecho con una función `onCall`, un usuario tendría que
+// mandarnos su contraseña nueva para que nosotros la pusiéramos, y el
+// servidor pasaría a ser un sitio donde hay contraseñas en claro.
+//
+// Pide la actual aunque Auth ya tenga sesión: una sesión abierta en un
+// teléfono de obra que alguien más levanta no debería poder quedarse con la
+// cuenta cambiándole la contraseña al dueño.
+function ModalMiPassword({ correo, onCerrar }){
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva]   = useState("");
+  const [otra, setOtra]     = useState("");
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState("");
+  const [listo, setListo]   = useState(false);
+
+  // El botón no se habilita hasta que las dos coinciden, pero el motivo se
+  // dice antes de intentarlo: "no coinciden" no es un error del servidor.
+  const cortas    = nueva.length > 0 && nueva.length < 6;
+  const distintas = otra.length > 0 && nueva !== otra;
+  const igualQueLaVieja = nueva.length >= 6 && nueva === actual;
+  const puede = !busy && actual.length > 0 && nueva.length >= 6 && nueva === otra && !igualQueLaVieja;
+
+  const guardar = async () => {
+    setBusy(true); setError("");
+    try {
+      const u = fbAuth.currentUser;
+      if (!u) throw { code: "sin-sesion" };
+      await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, actual));
+      await updatePassword(u, nueva);
+      try { fsAudit("editar", { modulo:"sesion", entidad:"cambio de contraseña propia" }); } catch {}
+      setListo(true);
+    } catch (e) {
+      // Los códigos de Auth se traducen a algo que se pueda accionar. Un
+      // `auth/invalid-credential` crudo en pantalla no le dice a nadie que lo
+      // que está mal es la contraseña de arriba y no la de abajo.
+      const cod = e?.code || "";
+      setError(
+        cod === "auth/wrong-password" || cod === "auth/invalid-credential"
+          ? "La contraseña actual no es ésa. Si la recibiste por correo, cópiala tal cual."
+        : cod === "auth/weak-password"      ? "La contraseña nueva es demasiado corta: mínimo 6 caracteres."
+        : cod === "auth/too-many-requests"  ? "Demasiados intentos. Espera un par de minutos y vuelve a probar."
+        : cod === "auth/requires-recent-login" ? "Por seguridad, vuelve a entrar a la app e inténtalo de nuevo."
+        : cod === "sin-sesion"              ? "Se cerró la sesión. Entra otra vez para cambiar tu contraseña."
+        : `No se pudo cambiar la contraseña: ${e?.message || cod || "error desconocido"}`
+      );
+    }
+    setBusy(false);
+  };
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:380}}>
+      <div style={{fontSize:13,fontWeight:600,color:C.caliza,marginBottom:6}}>Cambiar mi contraseña</div>
+      <div style={{fontSize:11,color:C.textSec,marginBottom:14}}>{correo}</div>
+
+      {listo ? <>
+        <div style={{fontSize:11,color:C.green,background:alfa(C.green,10),border:`0.5px solid ${alfa(C.green,30)}`,
+          borderRadius:6,padding:"10px 12px",lineHeight:1.5}}>
+          Listo. Tu contraseña nueva ya quedó. Úsala la próxima vez que entres —
+          si tenías la app abierta en otro teléfono, ahí sigue la sesión vieja.
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+          <button onClick={onCerrar}
+            style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+              fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer"}}>Cerrar</button>
+        </div>
+      </> : <>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Contraseña actual</div>
+          <Inp type="password" value={actual} autoComplete="current-password"
+            onChange={e=>setActual(e.target.value)}/>
+        </div>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Contraseña nueva</div>
+          <Inp type="password" value={nueva} autoComplete="new-password" placeholder="mínimo 6 caracteres"
+            onChange={e=>setNueva(e.target.value)}/>
+        </div>
+        <div style={{marginBottom:4}}>
+          <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Repítela</div>
+          <Inp type="password" value={otra} autoComplete="new-password"
+            onChange={e=>setOtra(e.target.value)}/>
+        </div>
+
+        {(cortas||distintas||igualQueLaVieja||error) && <div style={{fontSize:10,lineHeight:1.5,marginTop:8,
+          color: error ? C.red : C.yellow}}>
+          {error ? error
+            : cortas    ? "Mínimo 6 caracteres."
+            : distintas ? "Las dos de abajo no coinciden."
+            :             "La nueva es la misma que ya tenías."}
+        </div>}
+
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+          <SecBtn onClick={onCerrar} disabled={busy}>Cancelar</SecBtn>
+          <button disabled={!puede} onClick={guardar}
+            style={{background:C.caliza,border:"none",borderRadius:6,padding:"7px 14px",
+              fontSize:11,fontWeight:700,color:C.bg,cursor:"pointer",opacity:puede?1:0.5}}>
+            {busy?"Guardando…":"Cambiar"}
+          </button>
+        </div>
+      </>}
     </div>
   </div>;
 }
@@ -8830,7 +8977,7 @@ function PantallaPlataforma({ usuario, onLogout }) {
          cuando la lista viene vacía. */
       obras={[]}
       tipoOrg={altaEn.tipo}
-      pedirPassword={true}
+      esAlta={true}
       busy={busy}
       onCancel={()=>setAltaEn(null)}
       onConfirm={async (f)=>{
@@ -8843,7 +8990,19 @@ function PantallaPlataforma({ usuario, onLogout }) {
         fsAudit("crear", { oid: altaEn.id,
                            modulo:"plataforma", entidad:f.email,
                            despues:{ rol:f.rol, orgId:altaEn.id } });
-        setAviso({ ok:true, texto:`${f.email} dado de alta en «${altaEn.id}» como ${ROL_LABEL[f.rol]||f.rol}.` });
+        // El mismo caso que en el alta de la organización dueña: la cuenta
+        // quedó y el correo con su contraseña NO salió, así que nadie puede
+        // entrar con ella. Va en rojo aunque el alta sí se hizo, porque lo que
+        // pide es una acción: ponerle contraseña desde el panel de usuarios.
+        // En verde, soporte se iba creyendo que el usuario ya tiene su acceso.
+        if (r.data?.correo && r.data.correo.ok === false) {
+          setAviso({ ok:false, texto:`${f.email} quedó dado de alta en «${altaEn.id}», `
+            + `pero el correo con su contraseña temporal NO salió `
+            + `(${r.data.correo.motivo}). Nadie tiene esa contraseña: hay que `
+            + `ponerle una desde el panel de usuarios de la organización.` });
+        } else {
+          setAviso({ ok:true, texto:`${f.email} dado de alta en «${altaEn.id}» como ${ROL_LABEL[f.rol]||f.rol}.` });
+        }
         setAltaEn(null);
       }}/>}
   </div>;
@@ -10394,7 +10553,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   // peor que un error: `fsSet` escribe con `merge`, así que se FUNDE con la
   // obra que ya estaba — campo por campo, sin aviso. Se comprueba antes.
   const agregarObra=async(form)=>{
-    const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0};
+    // `creadaPor` queda en el documento de la obra y no sólo en la bitácora,
+    // porque el aviso de obra nueva lo manda un disparador del servidor
+    // (`obraNuevaRaiz` / `obraNuevaDeOrg`) y desde allá no hay forma de saber
+    // quién escribió el documento: un disparador de Firestore no trae autor.
+    const nueva={...form,presupuesto:parseFloat(form.presupuesto)||0,
+      creadaPor: usuario?.correo || ''};
     if(!nueva.id) return 'La obra no tiene identificador. No se guardó nada.';
     if(await fsGet(`obras/${nueva.id}`))
       return `Ya existe una obra con el identificador ${nueva.id}. No se guardó nada.`;
@@ -10412,16 +10576,19 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       obraId: nueva.id, obraNombre: nueva.contrato || nueva.nombre || "",
       despues: nueva, path: `obras/${nueva.id}` });
     setModalNueva(false);
-    // Notif a directivos sobre la nueva obra. La lista y la segunda línea del
-    // mensaje cambian con el tipo: en dependencia el que ejecuta es la empresa
-    // contratada, no un «cliente», y los roles de constructora no existen.
-    notifARoles(ROLES_AVISO_OBRA_NUEVA[dep?'dependencia':'constructora'], {
-      categoria: 'gestion', tipo: 'obra_nueva',
-      titulo: `Nueva obra · ${nueva.nombre}`,
-      mensaje: `${(dep ? nueva.empresaEjecutante : nueva.cliente) || (dep ? 'Sin empresa ejecutante' : 'Sin cliente')} · ${dep?'Monto contratado':'Presupuesto'}: ${MXN(nueva.presupuesto)} · ID ${nueva.id}`,
-      link: { obraId: nueva.id, tab: 'dash' },
-      creadaPor: usuario?.correo || 'sistema',
-    });
+    // ── EL AVISO YA NO SE MANDA DE AQUÍ ──  (#85)
+    // Aquí había un `notifARoles`, y no funcionaba. Para saber a quién
+    // avisarle tiene que LISTAR `usuarios`, y la regla de esa colección sólo
+    // se lo permite a un admin de la organización: `gerente_construccion` —uno
+    // de los dos roles que SÍ pueden dar de alta una obra, ver
+    // `ROLES_ALTA_OBRA_C`— no lo es. La lectura se denegaba, el `catch` de
+    // `notifARoles` se tragaba el error, y el alta se consumaba sin avisarle a
+    // nadie. No se veía porque el alta terminaba bien: lo que faltaba era algo
+    // que nunca apareció.
+    //
+    // Lo manda el servidor, que no tiene regla que le denieguen: los
+    // disparadores `obraNuevaRaiz` y `obraNuevaDeOrg` escriben la campana Y
+    // mandan el correo. Por eso no queda nada en su lugar.
     // Y se entra a la obra directo al catálogo: una obra sin catálogo no acepta
     // captura de avance, así que dejar al usuario en la lista es dejarlo a un
     // paso de una obra que no sirve todavía. `onSelect` traduce el destino al
@@ -20903,15 +21070,16 @@ const nuevoIdObra = () => {
   return `OB-${new Date().getFullYear()}-${n[0].toString(36).toUpperCase().padStart(6, "0")}`;
 };
 
-// A quién se le avisa de una obra nueva. La lista de constructora no sirve del
-// otro lado: `director_general` y `admin_sistema` no existen en una
-// dependencia, así que el aviso no le llegaba a nadie. El contralor entra
-// porque su alcance es de lectura amplia y el monto contratado es el contrato,
-// no el costo del contratista (P5).
-const ROLES_AVISO_OBRA_NUEVA = {
-  constructora: ["director_general", "director_operaciones", "admin_sistema"],
-  dependencia:  ["director_obras", "subdirector", "jefe_supervision", "contralor"],
-};
+// Aquí vivía `ROLES_AVISO_OBRA_NUEVA`, la lista de a quién se le avisa de una
+// obra nueva. Se fue al servidor como `ROLES_CORREO_OBRA_NUEVA`
+// (functions/index.js) junto con el aviso, porque el aviso desde el cliente no
+// se podía mandar: ver el #85 en `agregarObra`. Allá se le agregó
+// `gerente_construccion` del lado de la constructora, que estaba fuera siendo
+// el rol que da de alta las obras.
+//
+// No se deja una copia aquí. Dos listas de destinatarios es cómo se manda un
+// aviso a medias: la del cliente se actualiza, la del servidor no, y nadie se
+// entera porque el correo sigue llegando — sólo que a menos gente.
 
 // ── PESTAÑA CONTRATO ───────────────────────────────────────────────────────
 function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
@@ -22929,6 +23097,7 @@ export default function App(){
   // (fix/refresh-token 2026-09-16). null = oculto.
   const[toastPermisos,setToastPermisos]=useState(null);
   const[mostrarBienvenida,setMostrarBienvenida]=useState(false);
+  const[miPassword,setMiPassword]=useState(false);
   const[screen,setScreen]=useState("obras");
   const[obraId,setObraId]=useState(null);
   const[tab,setTab]=useState("dash");
@@ -23940,6 +24109,7 @@ export default function App(){
       setMostrarBienvenida(false);
       setUsuario(u=>u?{...u,bienvenidaVista:true}:u);
     }}/>}
+    {miPassword && <ModalMiPassword correo={usuario.correo} onCerrar={()=>setMiPassword(false)}/>}
     {/* HEADER */}
     <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"8px 14px",
       display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
@@ -23962,10 +24132,15 @@ export default function App(){
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         {screen==="obra"&&obra&&<span title={obra.contrato||obra.nombre} style={{fontSize:10,fontWeight:600,color:C.textPri,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{resolverNombreCortoObra(obra, gpData)}</span>}
-        <div style={{textAlign:"right"}}>
+        {/* El nombre abre el cambio de contraseña propia. Es el único sitio de
+            la app donde un usuario puede tocar su propia cuenta, y tiene que
+            estar donde el correo de bienvenida dice que está: "toca tu nombre,
+            arriba a la derecha". Si esto se mueve, se mueve esa frase. */}
+        <button onClick={()=>setMiPassword(true)} title="Cambiar mi contraseña"
+          style={{textAlign:"right",background:"none",border:"none",padding:0,cursor:"pointer"}}>
           <div style={{fontSize:9,color:C.textSec}}>{usuario.nombre.split(" ")[0]}</div>
           <div style={{fontSize:8,color:C.textMut}}>{ROL_LABEL[usuario.rol]}</div>
-        </div>
+        </button>
         {/* Campana de notificaciones — para todos los usuarios autenticados */}
         <CentroNotificaciones usuario={usuario} notificaciones={notificaciones}
           onNavTab={(t,st)=>{ setScreen("obra"); navTab(t,st); }}
