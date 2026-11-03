@@ -230,6 +230,36 @@ export function leerCola(almacen) {
 }
 
 /**
+ * ¿Este error significa que la fila YA ESTÁ escrita?
+ *
+ * Sí, y es la única lectura posible, por cómo escribe `addDoc`:
+ *
+ *   const mutation = parsed.toMutation(docRef._key, Precondition.exists(false));
+ *   —  @firebase/firestore, implementación de `addDoc`
+ *
+ * El id lo genera el cliente —20 caracteres al azar— y nunca se reusa, así que
+ * `already-exists` no puede ser una colisión con el renglón de otro. Lo que
+ * dice es que ESA MISMA mutación ya se había escrito: el stream de escritura
+ * la reintenta cuando se corta sin recibir el acuse, el primer intento sí
+ * había quedado, y la precondición del segundo rebota contra lo que escribió
+ * el primero.
+ *
+ * O sea: el renglón está en la bitácora. Tratarlo como fallo es lo que
+ * producía el #87 — el canal gritaba que no quedó y encolaba una copia, que
+ * al drenar aterrizaba como un SEGUNDO renglón con el mismo `ts` y otro id.
+ * Dos defectos de un solo error mal leído: un canal que grita en falso, y un
+ * duplicado en el expediente puesto por nosotros.
+ *
+ * Esto vale sólo para `addDoc`. `setDoc` no manda precondición y no puede
+ * devolver `already-exists`; si algún día algo escribe con id propio y
+ * precondición, este error dejaría de significar lo mismo y habría que
+ * distinguir aquí.
+ */
+export function yaEstabaEscrito(e) {
+  return e?.code === 'already-exists';
+}
+
+/**
  * Intenta escribir lo encolado. Lo que se escribe se saca de la cola; lo que
  * no, se queda para el próximo arranque.
  *
@@ -247,13 +277,19 @@ export function leerCola(almacen) {
  * dando vueltas sería una cola que nunca se vacía. Se descarta, pero el
  * número SALE en el resultado: perder filas en silencio es el defecto que
  * esta pieza entera existe para no tener.
+ *
+ * `yaEstaban` va aparte de `enviados` por la misma razón: una fila que ya
+ * estaba escrita sale de la cola —no tiene nada que esperar— pero no la
+ * escribió este drenado, y sumarla a `enviados` sería cobrarse una escritura
+ * que no se hizo. Separada, además dice algo que hace falta saber: que el
+ * intento original SÍ había quedado y la cola traía una copia (#87).
  */
 export async function drenarCola(almacen, escribir, nuevoCentinela) {
   const cola = leerCola(almacen);
-  if (!cola.length) return { enviados: 0, pendientes: 0, descartados: 0 };
+  if (!cola.length) return { enviados: 0, pendientes: 0, descartados: 0, yaEstaban: 0 };
 
   const quedan = [];
-  let enviados = 0, descartados = 0;
+  let enviados = 0, descartados = 0, yaEstaban = 0;
   for (const entrada of cola) {
     if (!entrada?.ruta || !entrada?.fila) { descartados++; continue; }
     try {
@@ -261,7 +297,11 @@ export async function drenarCola(almacen, escribir, nuevoCentinela) {
         ? { ...entrada.fila, tsServidor: nuevoCentinela() }
         : entrada.fila);
       enviados++;
-    } catch {
+    } catch (e) {
+      // Reintentarla en el próximo arranque escribiría un duplicado: la fila
+      // ya está allá. Sale de la cola, y no se cuenta como entregada por
+      // nosotros. Ver `yaEstabaEscrito`.
+      if (yaEstabaEscrito(e)) { yaEstaban++; continue; }
       quedan.push(entrada);
     }
   }
@@ -270,5 +310,5 @@ export async function drenarCola(almacen, escribir, nuevoCentinela) {
     else almacen.removeItem(LLAVE);
   } catch { /* ver `encolarRastro`: aquí tampoco se promete nada */ }
 
-  return { enviados, pendientes: quedan.length, descartados };
+  return { enviados, pendientes: quedan.length, descartados, yaEstaban };
 }

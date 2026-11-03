@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, orgIdSesion, rutaAuditoria } from "./rutas-org.js";
-import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola } from "./permiso-denegado.js";
+import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola, yaEstabaEscrito } from "./permiso-denegado.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult,
          updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
@@ -2323,6 +2323,12 @@ async function fsAudit(tipo, opciones = {}) {
     await addDoc(collection(fbDb, ruta), entry);
     return true;
   } catch(e) {
+    // `already-exists` NO es que no quedó: es que quedó dos veces de nuestro
+    // lado y la segunda rebotó. Ver `yaEstabaEscrito`. Decir aquí que falló
+    // sería gritar en falso, y encolarlo metería la copia en el expediente
+    // —que es como se vio el #87, con dos renglones de `logout` del mismo
+    // sello y distinto id—.
+    if (yaEstabaEscrito(e)) return true;
     console.error("fsAudit: el renglón NO quedó en la bitácora ·", tipo,
       e?.code || e?.message, "— va a la cola");
     return encolarRastro(ruta, entry, almacenLocal());
@@ -2384,6 +2390,9 @@ async function dejarRastroDenegacion(rastro) {
     await escribirRastroDenegacion(ruta, rastro);
     return true;
   } catch (e) {
+    // Mismo error mal leído que en `fsAudit`, mismo remedio: el rastro ya
+    // está escrito. Ver `yaEstabaEscrito`.
+    if (yaEstabaEscrito(e)) return true;
     console.error('rastro de denegación: no se pudo escribir, va a la cola', e?.code || e?.message);
     return encolarRastro(ruta, rastro, almacenLocal());
   }
@@ -7128,8 +7137,9 @@ function Login({onLogin}){
       // debe retrasar la entrada ni impedirla si falla.
       drenarCola(almacenLocal(), escribirRastroDenegacion, serverTimestamp)
         .then(r => {
-          if (r.enviados || r.descartados)
-            console.info(`cola: ${r.enviados} entregados, ${r.pendientes} pendientes, ${r.descartados} descartados`);
+          if (r.enviados || r.descartados || r.yaEstaban)
+            console.info(`cola: ${r.enviados} entregados, ${r.pendientes} pendientes, `
+              + `${r.descartados} descartados, ${r.yaEstaban} ya estaban escritos`);
         })
         .catch(e => console.error('drenado de la cola:', e?.message));
       onLogin({
@@ -24020,7 +24030,26 @@ export default function App(){
   };
   const volver=()=>{setScreen("obras");setObraId(null); setAuditObra(null, ""); setPermisosObraOverride(null);};
   const logout=async()=>{
-    try { fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }); } catch {}
+    // Se ESPERA el renglón antes de cerrar la sesión. Sin `await` la escritura
+    // quedaba en vuelo y `signOut` le quitaba la sesión debajo: el stream se
+    // cortaba sin acuse, el SDK reintentaba la mutación y el intento tardío
+    // caía sin credencial. De ahí salían las dos formas del #87 —rebotar con
+    // `already-exists` cuando el primer intento sí había quedado, o con
+    // `permission-denied` cuando no—, y en la segunda el único respaldo era la
+    // cola de `localStorage`, que en iOS Safari se purga a los 7 días. El acto
+    // de cerrar sesión es justo el que no puede depender de eso.
+    //
+    // Con tope, porque esto es un botón: en obra sin señal la promesa de
+    // escritura no se resuelve, y un `await` pelado dejaría al usuario sin
+    // poder salir. Si el tope vence se cierra igual, y entonces vuelve a ser
+    // la conducta de antes — que ya no miente, porque ambos desenlaces están
+    // clasificados arriba.
+    try {
+      await Promise.race([
+        fsAudit("logout", { modulo: "sesion", entidad: usuario?.correo || "" }),
+        new Promise(r => setTimeout(r, 3000)),
+      ]);
+    } catch {}
     try { await signOut(fbAuth); } catch {}
     // El prefijo es estado de módulo, no de React: si no se borra aquí, la
     // siguiente sesión arrancaría apuntando a la organización de la anterior.
