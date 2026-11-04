@@ -11,13 +11,26 @@
 // correos de cotea, este anuncio cambia con él; una copia se habría quedado
 // vieja el primer día.
 //
-// POR QUÉ EL ÍCONO Y NO EL LOGO HORIZONTAL. El logo bueno
-// (`src/assets/brand/cotea-horizontal.svg`) no se sirve por URL pública, y en
-// correo un SVG remoto no se ve en casi ningún cliente. `/icon-192.png` sí
-// está publicado y medido (200, 4,853 bytes). Y el correo está escrito para
-// leerse **con las imágenes apagadas**, que es como llega por omisión en
-// Outlook y en Gmail de escritorio: el ícono es un adorno, el nombre va en
-// texto.
+// EL LOGO, NO EL EMBLEMA. Antes iba `/icon-192.png`, que es el emblema suelto:
+// se veía el ícono, no la marca. El logo bueno es
+// `src/assets/brand/cotea-horizontal.svg`, pero en correo un SVG remoto no lo
+// pinta casi ningún cliente, así que se rasterizó a `public/cotea-horizontal.png`
+// (480×136, 3× para pantalla retina) con el mismo Chrome que ya usa
+// `prueba-puente-color.cjs`.
+//
+// Servirlo es el problema: `public/` no llega al aire hasta que se despliegue
+// el front, y hoy `app.cotea.com.mx/cotea-horizontal.png` responde 404 —
+// medido—. Así que el guion MIDE la URL antes de armar: si contesta 200 la usa,
+// y si no, manda el PNG incrustado como adjunto `inline` con `content_id` y lo
+// referencia con `cid:`. Resend acepta las dos formas (probado, 200). El correo
+// sigue escrito para leerse **con las imágenes apagadas**: el nombre va en
+// texto en el título, el logo es la marca, no el mensaje.
+//
+// LOS COLORES SON LOS DE LA MARCA, NO LOS DE LA APP. El header iba en
+// `#0D1619`, que se ve negro, y no es cotea: es la paleta vieja de la interfaz.
+// `src/styles/tokens.css` lo dice con todas sus letras —«hoy vale exactamente
+// lo que valía la paleta C», la marca todavía no entra al puente—. Los colores
+// de cotea están en el logo y son dos: pizarra `#4A5560` y naranja `#FF6B35`.
 //
 // Uso:
 //   node scripts/correo-cotea-se-presenta.cjs                      (sólo arma)
@@ -96,9 +109,12 @@ try {
 }
 
 // ── el formato, extraído del código vivo ────────────────────────────────────
-const PEDIDOS = ['sobreCorreo', 'botonHTML', 'parrafoHTML', 'avisoHTML',
-  'pasosHTML', 'ESC_HTML', 'marcaDeOrg', 'orgDeLaRaiz', 'rolVisible',
-  'enviarEmailResend', 'FROM_EMAIL', 'APP_URL'];
+// Lo que se extrae son los HECHOS, no el adorno: a quién se le llama cómo, de
+// dónde sale el correo y a dónde apunta. Si mañana cambia el remitente o la
+// dirección de la app, este anuncio cambia con ellos. La pinta es propia —ver
+// la nota de arriba—, así que `sobreCorreo` y sus ayudantes ya no se piden.
+const PEDIDOS = ['ESC_HTML', 'marcaDeOrg', 'orgDeLaRaiz', 'rolVisible',
+  'FROM_EMAIL', 'APP_URL'];
 const { cuerpo, faltan } = fuenteDe(ARCH_FN, PEDIDOS);
 if (faltan.length) {
   console.error(`NO ARRANCÓ: a functions/index.js le faltan ${faltan.join(', ')}`);
@@ -124,11 +140,65 @@ const requireFalso = (m) => (m === 'firebase-admin'
   ? { ...admin, initializeApp: () => {}, firestore: () => db }
   : require(m));
 const fn = new Function('require',
-  `"use strict";\n${cuerpo}\nreturn { sobreCorreo, botonHTML, parrafoHTML, avisoHTML,
-     pasosHTML, ESC_HTML, marcaDeOrg, orgDeLaRaiz, rolVisible, enviarEmailResend,
-     FROM_EMAIL, APP_URL };`)(requireFalso);
+  `"use strict";\n${cuerpo}\nreturn { ${PEDIDOS.join(', ')} };`)(requireFalso);
 
-const { sobreCorreo, botonHTML, parrafoHTML, pasosHTML, ESC_HTML, APP_URL } = fn;
+const { ESC_HTML, APP_URL } = fn;
+
+// ── la marca ────────────────────────────────────────────────────────────────
+// Los dos colores de cotea, sacados del logo —son los únicos dos que trae
+// `cotea-horizontal.svg`—, no de `tokens.css`, que todavía es la paleta vieja.
+const PIZARRA = '#4A5560';
+const NARANJA = '#FF6B35';
+const TINTA   = '#14181C';  // el caliza de cotea: el del manifiesto, el de identidad
+const GRIS    = '#6B7480';
+const BORDE   = '#E8EAF0';
+
+// Este anuncio NO usa `sobreCorreo`. Los demás correos son avisos: el sobre
+// gris con el header oscuro está hecho para no estorbar, y está bien que así
+// sea. Éste es el único correo cuyo tema ES la marca, y pintarlo con la
+// plantilla de los avisos fue el defecto: salía un anuncio de cambio de marca
+// sin la marca. Lo que sí se extrae del código vivo son los HECHOS —la
+// dirección, el remitente, el nombre del rol, la empresa—, que es donde una
+// copia se pudre.
+const LOGO_ALTO = 46;   // 160×46 en el correo; el PNG va a 3× para retina
+const LOGO_ANCHO = 160;
+
+function sobreDeMarca({ marca, titulo, entradilla, cuerpoHTML, pie, logoSrc }) {
+  const firma = marca?.empresa ? ESC_HTML(marca.empresa) : '';
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F4F5F7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F4F5F7;padding:28px 12px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border-radius:12px;overflow:hidden;border:1px solid ${BORDE};">
+        <tr><td style="height:4px;background:${NARANJA};font-size:0;line-height:0;">&nbsp;</td></tr>
+        <tr><td style="padding:26px 30px 20px 30px;background:#FFFFFF;">
+          <img src="${logoSrc}" width="${LOGO_ANCHO}" height="${LOGO_ALTO}" alt="cotea"
+               style="display:block;border:0;">
+          ${firma ? `<div style="font-size:10px;color:${GRIS};letter-spacing:0.1em;text-transform:uppercase;margin-top:12px;">${firma}</div>` : ''}
+        </td></tr>
+        <tr><td style="padding:0 30px 6px 30px;">
+          <div style="font-size:21px;font-weight:700;color:${TINTA};line-height:1.3;">${ESC_HTML(titulo)}</div>
+          ${entradilla ? `<div style="font-size:14px;color:${PIZARRA};line-height:1.6;margin-top:11px;">${entradilla}</div>` : ''}
+        </td></tr>
+        <tr><td style="padding:6px 30px 28px 30px;">${cuerpoHTML}</td></tr>
+        <tr><td style="padding:18px 30px;background:#FAFBFC;font-size:11px;color:${GRIS};text-align:center;border-top:1px solid ${BORDE};">
+          ${ESC_HTML(pie)}<br>
+          <a href="${APP_URL}" style="color:${NARANJA};text-decoration:none;font-weight:600;">${APP_URL.replace(/^https?:\/\//, '')}</a>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+const parrafo = (html) =>
+  `<p style="font-size:14px;color:${PIZARRA};line-height:1.68;margin:0 0 14px 0;">${html}</p>`;
+
+const boton = (texto, url) =>
+  `<a href="${url}" style="display:inline-block;background:${NARANJA};color:#FFFFFF;` +
+  `text-decoration:none;font-size:14px;font-weight:700;padding:13px 26px;border-radius:8px;">` +
+  `${ESC_HTML(texto)}</a>`;
 
 // ── el contenido ────────────────────────────────────────────────────────────
 // Todo lo que este correo afirma del producto está en la app: los cuatro tabs
@@ -136,52 +206,63 @@ const { sobreCorreo, botonHTML, parrafoHTML, pasosHTML, ESC_HTML, APP_URL } = fn
 // no existan — un correo a todo el padrón que promete de más es una cifra
 // inventada con otra ropa.
 const SECCION = (titulo, renglones) =>
-  `<div style="margin:18px 0 0 0;">` +
-  `<div style="font-size:11px;font-weight:700;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.07em;">${ESC_HTML(titulo)}</div>` +
+  `<div style="margin:22px 0 4px 0;">` +
+  `<div style="font-size:11px;font-weight:700;color:${NARANJA};text-transform:uppercase;letter-spacing:0.09em;">${ESC_HTML(titulo)}</div>` +
   renglones.map(([que, para]) =>
-    `<div style="margin-top:9px;">` +
-    `<span style="font-size:13px;font-weight:700;color:#0D1619;">${ESC_HTML(que)}</span>` +
-    `<span style="font-size:13px;color:#4A5160;"> — ${ESC_HTML(para)}</span>` +
+    `<div style="margin-top:10px;">` +
+    `<span style="font-size:14px;font-weight:700;color:${TINTA};">${ESC_HTML(que)}</span>` +
+    `<span style="font-size:14px;color:${PIZARRA};"> — ${ESC_HTML(para)}</span>` +
     `</div>`).join('') +
   `</div>`;
 
-function armar({ nombre, rol, rolLabel, marca }) {
+// Los pasos del final. Sin numerito: son tres recordatorios, no un
+// procedimiento, y numerarlos los hacía ver más pesados de lo que son.
+const APUNTES = (titulo, renglones) =>
+  `<div style="margin:26px 0 0 0;padding:16px 18px;background:#FAFBFC;border:1px solid ${BORDE};border-radius:9px;">` +
+  `<div style="font-size:11px;font-weight:700;color:${GRIS};text-transform:uppercase;letter-spacing:0.09em;">${ESC_HTML(titulo)}</div>` +
+  renglones.map((t) =>
+    `<div style="font-size:13px;color:${PIZARRA};line-height:1.6;margin-top:9px;">${t}</div>`).join('') +
+  `</div>`;
+
+function armar({ nombre, rol, rolLabel, marca, logoSrc }) {
   const pila = String(nombre || '').trim().split(' ')[0] || 'Hola';
   const soyCliente = rol === 'cliente' || rol === 'contratista';
+  const dir = APP_URL.replace(/^https?:\/\//, '');
 
   const cuerpoHTML =
-    // El ícono, arriba y chico. Si el cliente de correo bloquea imágenes
-    // —lo normal—, queda el `alt` y no se pierde nada: el nombre va en texto
-    // en el encabezado y en el título.
-    `<div style="margin:0 0 18px 0;">` +
-    `<img src="${APP_URL}/icon-192.png" width="52" height="52" alt="cotea"` +
-    ` style="display:block;border:0;border-radius:11px;">` +
-    `</div>` +
-
-    parrafoHTML(`Es el mismo sistema que ya usas. Las mismas obras, el mismo ` +
+    parrafo(`Es el mismo sistema que ya usas. Las mismas obras, el mismo ` +
       `histórico, tu misma cuenta y tu misma contraseña. Lo que cambió es el ` +
-      `nombre y la dirección.`) +
+      `nombre, y vale la pena contar por qué.`) +
 
-    parrafoHTML(`<b>CAMPO</b> era una sigla —Control de Avance, Maquinaria, ` +
-      `Personal y Obra— y describía los módulos que tenía el primer día. ` +
-      `<b>cotea</b> no describe módulos: describe para qué sirve.`) +
+    parrafo(`<b>CAMPO</b> era un acrónimo: Control de Avance, Maquinaria, ` +
+      `Personal y Obra. Cuatro módulos, cuatro cajones. Nombraba bien lo que ` +
+      `el sistema tenía el primer día, pero una obra no se lleva en cajones ` +
+      `separados.`) +
 
-    `<div style="margin:20px 0;padding:16px 18px;background:#0D1619;border-radius:9px;">` +
-    `<div style="font-size:19px;font-weight:700;color:#FFFFFF;letter-spacing:0.04em;">cotea</div>` +
-    `<div style="font-size:13px;color:#C9CED6;margin-top:4px;">Tu obra, al momento.</div>` +
+    parrafo(`<b>cotea</b> viene de <b>cotejar</b>: poner una cosa junto a la ` +
+      `otra para ver si cuadran. Lo planeado contra lo ejecutado. El ` +
+      `presupuesto contra el gasto. Lo que se vio en campo contra lo que llegó ` +
+      `a la oficina. Eso es llevar una obra, y es justamente lo que cuatro ` +
+      `cajones separados no pueden hacer solos.`) +
+
+    `<div style="margin:22px 0;padding:20px 22px;background:${TINTA};border-radius:10px;border-left:4px solid ${NARANJA};">` +
+    `<div style="font-size:15px;color:#FFFFFF;line-height:1.6;font-weight:600;">` +
+    `Ya no son cuatro módulos. Es la obra entera en un solo lugar, ` +
+    `en la palma de tu mano, a cualquier hora.</div>` +
+    `<div style="font-size:13px;color:${NARANJA};margin-top:10px;font-weight:700;letter-spacing:0.03em;">` +
+    `cotea · Tu obra, al momento.</div>` +
     `</div>` +
 
-    parrafoHTML(`Antes una obra se llevaba entre un Excel que vivía en una ` +
-      `computadora y un WhatsApp donde las cosas se decían una vez y se ` +
-      `perdían. Para saber cómo iba una obra había que preguntarle a alguien, ` +
-      `y la respuesta dependía de a quién le preguntaras y de qué tan ` +
-      `actualizado estuviera su archivo.`) +
+    parrafo(`Una obra se gana o se pierde en los días que nadie miró. Cuando ` +
+      `el avance se sabe el martes y no el viernes, todavía se puede hacer ` +
+      `algo; cuando una desviación se ve mientras está pasando, se corrige en ` +
+      `vez de explicarse. Esa diferencia —entre enterarse a tiempo y ` +
+      `enterarse después— es la que separa una obra que se controla de una ` +
+      `que sólo se documenta.`) +
 
-    parrafoHTML(`La idea de cotea es que esa pregunta tenga <b>una sola ` +
-      `respuesta</b> y que esté a la mano: lo que se captura en campo se ve en ` +
-      `la oficina en el momento, con el nombre de quien lo capturó. Una cifra ` +
-      `que no se capturó no se rellena con un cero — se dice que falta. Eso es ` +
-      `todo el proyecto.`) +
+    parrafo(`Para eso es cotea: para que la obra se vea completa mientras ` +
+      `todavía se puede decidir sobre ella. No al cierre, cuando ya nada más ` +
+      `queda justificar.`) +
 
     (soyCliente
       ? SECCION('Lo que ves en cotea', [
@@ -190,37 +271,35 @@ function armar({ nombre, rol, rolLabel, marca }) {
         ['Estimaciones', 'lo estimado y su estatus'],
         ['Plazos', 'las fechas del contrato y sus ampliaciones'],
       ])
-      : SECCION('Lo que tienes adentro', [
+      : SECCION('Todo junto, en un solo lugar', [
         ['Dashboard', 'los indicadores de la obra y los riesgos que el sistema detecta solo'],
         ['Operación', 'el reporte de la semana: avance físico, almacén, maquinaria, nómina, estimaciones y subcontratos'],
         ['Gastos', 'lo que se gastó, por proveedor, por rubro y por semana'],
         ['Planeación', 'el contrato con sus plazos y documentos, y el presupuesto'],
       ])) +
 
-    `<div style="margin:22px 0 4px 0;">${botonHTML('Entrar a cotea', APP_URL)}</div>` +
-    `<div style="font-size:12px;color:#9AA0AC;margin-bottom:4px;">${APP_URL.replace(/^https?:\/\//, '')}</div>` +
+    `<div style="margin:26px 0 6px 0;">${boton('Entrar a cotea', APP_URL)}</div>` +
+    `<div style="font-size:12px;color:${GRIS};">${dir}</div>` +
 
-    pasosHTML('Tres cosas que conviene hacer hoy', [
-      `Guarda la dirección nueva: <b>${APP_URL.replace(/^https?:\/\//, '')}</b>. ` +
-      `La de antes sigue funcionando, no se va a apagar de golpe.`,
-      `Si tienes cotea instalada en el teléfono, <b>bórrala y vuélvela a ` +
-      `agregar</b> desde la dirección nueva. No es que se rompa: iOS se queda ` +
-      `con el ícono y el nombre que guardó al instalarla, así que si no lo ` +
-      `haces va a seguir diciendo CAMPO en tu pantalla de inicio.`,
-      `Los correos de cotea ahora llegan de <b>no-reply@cotea.com.mx</b>. ` +
-      `Si alguno cae en spam, márcalo como correo deseado para que los ` +
-      `siguientes lleguen bien.`,
+    APUNTES('Antes de entrar', [
+      `Guarda la dirección nueva: <b style="color:${TINTA};">${dir}</b>. La ` +
+      `anterior va a seguir funcionando por tiempo limitado.`,
+      `Si tienes la app instalada en el teléfono, bórrala y vuélvela a agregar ` +
+      `desde la dirección nueva para que quede con el nombre y el ícono de cotea.`,
+      `Los correos ahora llegan de <b style="color:${TINTA};">no-reply@cotea.com.mx</b>. ` +
+      `Si alguno cae en spam, márcalo como correo deseado.`,
     ]) +
 
-    parrafoHTML(`Si algo no te cuadra o ves un número que no deberías estar ` +
-      `viendo, dilo. Un dato mal puesto que nadie reporta se vuelve el dato ` +
-      `con el que se decide.`);
+    parrafo(`<span style="display:block;margin-top:24px;">El nombre es nuevo. ` +
+      `Las obras que hay detrás, y el trabajo que costaron, no. Gracias por ` +
+      `eso.</span>`);
 
   return {
-    subject: 'CAMPO ahora se llama cotea',
-    html: sobreCorreo({
+    subject: 'CAMPO ahora es cotea',
+    html: sobreDeMarca({
       marca,
-      titulo: 'CAMPO ahora se llama cotea',
+      logoSrc,
+      titulo: 'CAMPO ahora es cotea',
       entradilla: `${ESC_HTML(pila)}, el sistema con el que llevas las obras ` +
         `cambió de nombre` + (rolLabel ? `. Tu acceso sigue siendo el de <b>${ESC_HTML(rolLabel)}</b>` : '') + `.`,
       cuerpoHTML,
@@ -230,6 +309,26 @@ function armar({ nombre, rol, rolLabel, marca }) {
 }
 
 // ── armar y, si se pidió, mandar ────────────────────────────────────────────
+// El identificador del logo dentro del mensaje. Cualquier cadena sirve
+// mientras el `src="cid:…"` y el `content_id` digan lo mismo.
+const CID_LOGO = 'logo-cotea';
+
+// `enviarEmailResend` del código vivo desestructura `{from,to,subject,html}` y
+// tira todo lo demás, así que por ahí no pasa un adjunto. No se ensancha: ese
+// es el camino por donde salen TODOS los correos de la app y abrirlo para un
+// anuncio que se manda una vez sería mover la pieza de en medio por la orilla.
+// Esta es la misma llamada, con `attachments`.
+async function mandar(apiKey, cuerpo) {
+  const resp = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(cuerpo),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`Resend error ${resp.status}: ${JSON.stringify(data)}`);
+  return data;
+}
+
 const leerLlaveResend = () => require('child_process')
   .execFileSync('gcloud', ['secrets', 'versions', 'access', 'latest',
     '--secret=RESEND_API_KEY', '--project=campo-fosmon'], { encoding: 'utf8' }).trim();
@@ -262,13 +361,37 @@ const leerLlaveResend = () => require('child_process')
     gente = [{ ...(perfil || { nombre: buscado.split('@')[0] }), email: DESTINO }];
   }
 
+  // ── cómo va a viajar el logo ──────────────────────────────────────────────
+  // No se adivina: se MIDE. Si `public/cotea-horizontal.png` ya está en el
+  // aire, se referencia por URL y el correo pesa 6 KB. Si todavía no se
+  // despliega el front, viaja incrustado. Las dos formas pintan el mismo PNG;
+  // la diferencia es que la incrustada no depende de un despliegue y la de URL
+  // no suma 16 KB a cada copia.
+  const PNG = path.join(RAIZ, 'public/cotea-horizontal.png');
+  if (!fs.existsSync(PNG)) {
+    console.error(`NO ARRANCÓ: falta ${PNG}, que es el logo del correo.`);
+    process.exit(2);
+  }
+  const urlLogo = `${APP_URL}/cotea-horizontal.png`;
+  const enElAire = await fetch(urlLogo, { method: 'HEAD' })
+    .then((r) => r.ok).catch(() => false);
+  const logoSrc = enElAire ? urlLogo : `cid:${CID_LOGO}`;
+  const adjuntos = enElAire ? [] : [{
+    filename: 'cotea.png',
+    content: fs.readFileSync(PNG).toString('base64'),
+    content_id: CID_LOGO,
+    disposition: 'inline',
+  }];
+
   console.log('');
-  console.log(`CAMPO ahora se llama cotea — ${gente.length} destinatario(s)`);
+  console.log(`CAMPO ahora es cotea — ${gente.length} destinatario(s)`);
   console.log(`   marca:   ${marca.empresa || '(sin marca)'}`);
+  console.log(`   logo:    ${enElAire ? `por URL (${urlLogo} contesta 200)`
+    : `incrustado — ${urlLogo} todavía no está en el aire`}`);
   const armados = gente.map((u) => {
     const rolLabel = u.rol
       ? fn.rolVisible(u.rol, u.rolLabel || ROL_LABEL[u.rol]) : '';
-    const { subject, html } = armar({ nombre: u.nombre, rol: u.rol, rolLabel, marca });
+    const { subject, html } = armar({ nombre: u.nombre, rol: u.rol, rolLabel, marca, logoSrc });
     return { to: u.email, subject, html, nombre: u.nombre || u.email, rolLabel };
   });
   for (const a of armados) {
@@ -292,8 +415,9 @@ const leerLlaveResend = () => require('child_process')
   const apiKey = leerLlaveResend();
   let mandados = 0;
   for (const a of armados) {
-    const r = await fn.enviarEmailResend(apiKey, {
+    const r = await mandar(apiKey, {
       from: fn.FROM_EMAIL, to: [a.to], subject: a.subject, html: a.html,
+      attachments: adjuntos,
     });
     if (!r.id) {
       console.error(`ROJO  ${a.to}  →  NO SALIÓ: ${JSON.stringify(r)}`);
