@@ -38,11 +38,21 @@
         · Corra antes que /src/main.jsx (que registra el SW).
         · No dependa de librerías (React, Firebase, etc. aún no cargan aquí).
 
-      Uso: mandar por WhatsApp `https://cotea.com.mx/?_reset=1` al usuario
+      Uso: mandar por WhatsApp `https://app.cotea.com.mx/?_reset=1` al usuario
       atrapado — pero el `?_reset=1` tiene que ir en el ORIGEN donde él tiene la
-      app, porque el service worker y la caché son por origen. A quien instaló
-      desde `campo-fosmon.netlify.app` hay que mandarle ese, no éste: la liga
-      nueva le limpiaría un origen en el que no está atrapado. Ver ROLLBACK_PWA.md.
+      app, porque el service worker y la caché son por origen. Son tres y hay
+      gente en los tres: `app.cotea.com.mx` (desde el 2026-11-04),
+      `cotea.com.mx` (del 2026-11-03 al 2026-11-04) y `campo-fosmon.netlify.app`
+      (antes de eso). Mandar la liga equivocada limpia un origen en el que el
+      usuario no está atrapado y lo deja igual, creyendo que ya se intentó.
+
+      Y OJO con la raíz: desde que `cotea.com.mx` es un rebote 302 a `app.`,
+      su propio `?_reset=1` ya NO limpia la raíz. El navegador se va antes de
+      cargar este script, así que lo que termina limpiándose es `app.`. A quien
+      haya quedado atrapado en la raíz no se le puede desatorar con una liga:
+      hay que pedirle que borre los datos del sitio a mano, o esperar a que la
+      landing (#90, la página pública) ocupe la raíz con un documento real.
+      Ver ROLLBACK_PWA.md.
     -->
     <script>
       (function () {

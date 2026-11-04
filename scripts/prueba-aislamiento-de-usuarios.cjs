@@ -501,7 +501,12 @@ class HttpsErrorFalso extends Error {
     // las funciones no corren, y lo que este banco mide es la frontera entre
     // organizaciones. Que la lista esté tecleada es el defecto conocido de
     // este banco: ver el preámbulo de `extraer-de-app.cjs`.
-    'APP_URL', 'FROM_EMAIL', 'ESC_HTML', 'sobreCorreo', 'botonHTML', 'tablaDatos',
+    // `SITIO_PUBLICO` entró el 2026-11-04 con el #89 (la mudanza al
+    // subdominio): el pie de `sobreCorreo` dejó de usar `APP_URL`. Es
+    // exactamente el defecto que el comentario de arriba anuncia — se cayó con
+    // un `is not defined` a media suite, no en silencio, que es lo único bueno
+    // de tener la lista tecleada.
+    'APP_URL', 'SITIO_PUBLICO', 'FROM_EMAIL', 'ESC_HTML', 'sobreCorreo', 'botonHTML', 'tablaDatos',
     'pasosHTML', 'parrafoHTML', 'avisoHTML', 'marcaDeOrg', 'ALFABETO_PASS',
     'generarPasswordTemporal', 'rolVisible', 'rutaObrasDeOrg', 'nombresDeObras',
     'PASOS_CAMBIO_PASS', 'PASOS_INSTALAR', 'correoBienvenida', 'correoObraAsignada',

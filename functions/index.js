@@ -2194,8 +2194,29 @@ exports.refrescarCatalogoGP = onCall({
 // `cotea.com.mx` tiene que estar VERIFICADO en Resend (SPF y DKIM en el DNS)
 // antes de desplegar esto: con el dominio sin verificar Resend contesta 403 y
 // el correo del lunes no sale. No sale en silencio: el `catch` lo registra en
-// salud y relanza, así que Scheduler lo cuenta rojo.
-const APP_URL = "https://cotea.com.mx";
+// salud y relanza, así que Scheduler lo cuenta rojo. Verificar el dominio cubre
+// también a `app.`: Resend mira el dominio del REMITENTE, que sigue siendo
+// `cotea.com.mx`, no a dónde apunten los enlaces del cuerpo.
+//
+// ── Dos direcciones, dos oficios (#89, la mudanza al subdominio) ────────────
+// Dejaron de ser una sola el 2026-11-04, y la distinción no es cosmética:
+//
+//   · `app.cotea.com.mx` es donde VIVE la aplicación. Ahí apunta todo enlace
+//     que espera una sesión: el botón de entrar y, sobre todo, los enlaces
+//     profundos `/?obra=…`. Mandarlos a la raíz sería mandarlos a un rebote, y
+//     un rebote que pierda lo que va después del `?` abre la obra equivocada
+//     —o ninguna— sin decir que se perdió nada.
+//   · `cotea.com.mx` es la cara PÚBLICA: hoy un redirect temporal, mañana la
+//     landing (#90, la página pública con capturas). Es la que se imprime donde
+//     el lector puede no tener cuenta —el pie del PDF que el cliente archiva,
+//     el pie de este correo—, porque mandar a la pantalla de contraseña a quien
+//     no la tiene es una puerta cerrada en la cara.
+//
+// Que las dos vivan bajo el mismo dominio registrable es lo que sostiene el
+// resto: el remitente sigue siendo `no-reply@cotea.com.mx` y el correo no se
+// parece a una suplantación.
+const APP_URL = "https://app.cotea.com.mx";
+const SITIO_PUBLICO = "https://cotea.com.mx";
 const FROM_EMAIL = "cotea <no-reply@cotea.com.mx>";
 const ROLES_RESUMEN_SEMANAL = ["director_general", "director_operaciones", "gerente_construccion"];
 
@@ -2552,7 +2573,7 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
         <!-- Footer -->
         <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
           Este resumen se envía automáticamente cada lunes a las 9 a.m. (CDMX) a Dirección y Gerencia.<br>
-          cotea${casa ? ` — ${casa}` : ""} · ${APP_URL.replace(/^https?:\/\//, "")}
+          cotea${casa ? ` — ${casa}` : ""} · ${SITIO_PUBLICO.replace(/^https?:\/\//, "")}
         </td></tr>
       </table>
     </td></tr>
@@ -2646,7 +2667,7 @@ function sobreCorreo({ marca, titulo, entradilla, cuerpoHTML, pie }) {
         <tr><td style="padding:8px 28px 26px 28px;">${cuerpoHTML}</td></tr>
         <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
           ${ESC_HTML(pie || "Este aviso lo manda cotea automáticamente.")}<br>
-          <a href="${APP_URL}" style="color:#9AA0AC;">${APP_URL.replace(/^https?:\/\//, "")}</a>
+          <a href="${SITIO_PUBLICO}" style="color:#9AA0AC;">${SITIO_PUBLICO.replace(/^https?:\/\//, "")}</a>
         </td></tr>
       </table>
     </td></tr>
