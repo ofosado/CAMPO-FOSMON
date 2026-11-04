@@ -3007,14 +3007,15 @@ const hoyLocalISO = () => fechaEnZonaObra(new Date());
 // Medido el 2026-11-04 sobre los tres programas reales de producción, pasados
 // por el parser de la app (`scripts/medir-programa-real-se-lee.cjs`): donde
 // más se separan, la recta y el programa difieren +27.3 puntos en el emisor,
-// −9.9 en el colector y +14.1 en la Cangrejera. No es un matiz.
+// −9.9 en el colector y −17.2 en la Cangrejera. No es un matiz.
 //
 // EL SIGNO IMPORTA y son dos defectos distintos. Con la recta por debajo del
 // programa, una obra atrasada se publica como al día; con la recta por encima,
 // una obra al día se publica como atrasada. Y la separación NO se mide a mitad
-// del plazo: ahí dio 0.3 y 1.1 puntos en dos de las tres, porque una curva S
-// cruza la recta por el centro por construcción. Medir en el punto medio
-// habría dado la conclusión contraria a la correcta.
+// del plazo: ahí dio +17.4, +0.3 y −5.9, o sea que en el colector el punto
+// medio dice 0.3 donde el máximo dice −9.9 — una curva S cruza la recta por el
+// centro por construcción, así que medir en el punto medio habría dado la
+// conclusión contraria a la correcta.
 //
 // ── QUÉ TRAE UN PROGRAMA DE VERDAD ─────────────────────────────────────────
 //
@@ -3212,6 +3213,106 @@ const ROTULO_PROGRAMADO = {
   programa: { kpi: 'Avance programado', sub: 'del programa contractual cargado' },
   recta: { kpi: 'Avance lineal', sub: 'sin programa cargado: reparto lineal del plazo' },
   sin_datos: { kpi: 'Avance programado', sub: 'sin programa ni fechas capturadas' },
+};
+
+// ── EL ANEXO CONTRA EL ALTA — #96 ──────────────────────────────────────────
+//
+// El anexo del contrato trae el monto, el arranque y el fin. El alta de la obra
+// los trae tecleados. Nadie los enfrentaba, y esto es lo que costó:
+//
+// La obra 0128 —el colector— se dio de alta copiando la 0131 —el emisor—, y se
+// quedó con el presupuesto del emisor ($27,489,778.08 contra $12,890,541.86,
+// $14,599,236.22 de más, el 53% del contrato que tenía cargado) y con su plazo
+// (180 días contra 120). El avance
+// físico de esa obra salía a la mitad y su desviación se medía contra un plazo
+// 60 días más largo, durante meses. Se encontró el 2026-11-04 abriendo los tres
+// anexos a mano, uno por uno, para otra cosa. Nada en la app lo dijo nunca.
+//
+// NO ES UNA VALIDACIÓN QUE BLOQUEE, y la distinción es el diseño entero. El
+// anexo puede ser el equivocado —una versión vieja, el archivo de otra obra— y
+// un convenio modificatorio hace que el monto del alta se separe del anexo con
+// toda razón. Quien sabe cuál de los dos manda es quien está mirando la
+// pantalla, no el código. Así que esto pone las dos cifras lado a lado y la
+// diferencia; no corrige, no impide guardar y no supone cuál es la buena.
+//
+// LAS TOLERANCIAS SALEN DE MEDIR, no de elegir un número redondo. Los tres
+// anexos reales de producción cuadran AL CENTAVO con el presupuesto de su obra
+// (27,489,778.08 · 12,890,541.86 · 75,635,416.41), así que un peso de
+// tolerancia no produce un solo aviso falso en las obras que están bien, y en
+// la 0128 habría gritado $14.6M. Las fechas se comparan exactas: en la 0128 la
+// diferencia era de dos días en el arranque, y dos días de arranque con dos
+// meses de fin es justo la forma que tiene un copiado.
+//
+// El fin se compara contra `obra.fin`, el del contrato, y NO contra
+// `finVigenteDe`: una ampliación mueve legítimamente el fin vigente y el anexo
+// sigue siendo el del plazo original, así que medir contra el vigente avisaría
+// de una diferencia que es correcta. Cuando hay ampliación se dice, para que
+// nadie lea el renglón al revés.
+//
+// El arranque se compara con `prog.inicio`, el que el archivo DECLARA, nunca el
+// heredado por `programaConArranque`: el heredado ES `obra.inicio`, así que
+// compararlo sería comparar el alta consigo misma y salir siempre cuadrado.
+//
+// No lleva guarda contra un `{ok:false}` del parser. La llevaba, y la
+// contraprueba demostró que era código muerto: quitarla no puso roja ninguna
+// aserción, porque un resultado rechazado no trae `total` ni fechas y las tres
+// comparaciones se callan solas. Y el único sitio que llama a esto ya exige
+// `resultado?.ok`. Una guarda que no puede fallar se lee como si protegiera de
+// algo y lo que hace es esconder dónde está la protección de verdad.
+const cuadreDelAnexo = (prog, obra) => {
+  if (!prog || !obra) return [];
+  const hallazgos = [];
+  const dias = (a, b) => {
+    const da = fechaLocalDeISO(a); const db = fechaLocalDeISO(b);
+    if (!da || !db) return null;
+    return Math.round((da - db) / 86400000);
+  };
+
+  const presupuesto = Number(obra.presupuesto);
+  const total = Number(prog.total);
+  if (presupuesto > 0 && total > 0 && Math.abs(total - presupuesto) > 1) {
+    const dif = total - presupuesto;
+    const pct = Math.abs(dif) / presupuesto * 100;
+    hallazgos.push({
+      campo: 'monto',
+      archivo: total,
+      alta: presupuesto,
+      // `NUM(…, 1)` de una diferencia de dos pesos sobre trece millones imprime
+      // «0», y «el 0% del contrato» junto a una diferencia que existe es la
+      // pantalla contradiciéndose en la misma frase.
+      dice: `El programa suma ${MXN(total)} y el contrato cargado dice ` +
+        `${MXN(presupuesto)}: ${dif > 0 ? 'el programa pide' : 'al programa le faltan'} ` +
+        `${MXN(Math.abs(dif))}, ` +
+        (pct < 0.1 ? 'menos del 0.1% del contrato.' : `el ${NUM(pct, 1)}% del contrato.`),
+    });
+  }
+
+  if (prog.inicio && obra.inicio && prog.inicio !== obra.inicio) {
+    const d = dias(prog.inicio, obra.inicio);
+    hallazgos.push({
+      campo: 'inicio',
+      archivo: prog.inicio,
+      alta: obra.inicio,
+      dice: `El programa arranca el ${prog.inicio} y la obra tiene capturado el ` +
+        `${obra.inicio}` + (d === null ? '.' : `: ${Math.abs(d)} día(s) de diferencia.`),
+    });
+  }
+
+  if (prog.fin && obra.fin && prog.fin !== obra.fin) {
+    const d = dias(prog.fin, obra.fin);
+    hallazgos.push({
+      campo: 'fin',
+      archivo: prog.fin,
+      alta: obra.fin,
+      dice: `El programa termina el ${prog.fin} y la obra tiene capturado el ` +
+        `${obra.fin}` + (d === null ? '.' : `: ${Math.abs(d)} día(s) de diferencia.`) +
+        (obra.finAmpliado
+          ? ` Esta obra tiene una ampliación al ${obra.finAmpliado}; el anexo es el del plazo original.`
+          : ''),
+    });
+  }
+
+  return hallazgos;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -17858,11 +17959,10 @@ function CargaDelPrograma({obra, editar}) {
   //
   // NO se mide a mitad del plazo, y eso costó una corrección. La primera
   // versión comparaba ahí, y contra los tres programas reales de producción
-  // dio 0.3 puntos en el colector y 1.1 en la Cangrejera — o sea, «la recta
-  // estaba bien». No lo está: una curva S CRUZA la recta por el centro por
-  // construcción, así que el punto medio es el único sitio donde las dos
-  // siempre coinciden. Medido como máximo sobre el plazo, los mismos tres
-  // programas dan +27.3, −9.9 y +14.1 puntos.
+  // dio 0.3 puntos en el colector — o sea, «la recta estaba bien». No lo está:
+  // una curva S CRUZA la recta por el centro por construcción, así que el
+  // punto medio es el sitio donde las dos más se parecen. Medido como máximo
+  // sobre el plazo, los mismos tres programas dan +27.3, −9.9 y −17.2 puntos.
   //
   // El signo se conserva porque las dos direcciones son defectos distintos:
   // con la recta por debajo, una obra al día se publica como atrasada; con la
@@ -17896,6 +17996,11 @@ function CargaDelPrograma({obra, editar}) {
 
   const resumen = (prog, titulo) => {
     const cr = contraLaRecta(prog);
+    // Se enfrenta aquí, en el resumen, y no sólo al confirmar: así sale tanto
+    // para el archivo que se acaba de leer —antes de guardarlo— como para el
+    // que ya está guardado, que es el caso de la 0128. Si sólo saliera al
+    // cargar, una obra ya dada de alta mal se quedaría callada para siempre.
+    const cuadre = cuadreDelAnexo(prog, obra);
     return (
       <>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginBottom:10}}>
@@ -17918,6 +18023,21 @@ function CargaDelPrograma({obra, editar}) {
               ? <>Con la recta, ese día la obra se publicaba <b>atrasada</b> estando al día.</>
               : <>Con la recta, ese día la obra se publicaba <b>al día</b> estando atrasada.</>}
             {cr.heredado && <> El arranque se tomó de la obra porque el archivo no lo declara.</>}
+          </div>
+        )}
+        {cuadre.length > 0 && (
+          <div style={{padding:'10px 12px',background:C.redBg,
+            border:`0.5px solid ${alfa(C.red, 40)}`,borderRadius:6,fontSize:11,
+            color:C.textPri,lineHeight:1.5,marginBottom:8}}>
+            <div style={{fontWeight:700,marginBottom:4}}>
+              Este anexo y el alta de la obra no dicen lo mismo
+            </div>
+            {cuadre.map(h => <div key={h.campo} style={{marginBottom:3}}>· {h.dice}</div>)}
+            <div style={{fontSize:10,color:C.textSec,marginTop:5}}>
+              No se corrige nada ni se impide guardar: puede mandar el anexo —y entonces hay
+              que arreglar el alta— o puede mandar el alta, si hubo convenio o si este archivo
+              no es el de esta obra. Quien lo sabe es usted.
+            </div>
           </div>
         )}
         {prog.totalDeclarado !== null && prog.totalDeclarado !== undefined && (

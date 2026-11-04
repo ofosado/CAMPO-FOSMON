@@ -7,14 +7,14 @@
 // el plazo. Medido el 2026-11-04 sobre tres programas reales de producción,
 // pasados por el parser de la app (`scripts/medir-programa-real-se-lee.cjs`),
 // donde más se separan la recta y el programa difieren +27.3 puntos en el
-// emisor, −9.9 en el colector y +14.1 en la Cangrejera. O sea que la
+// emisor, −9.9 en el colector y −17.2 en la Cangrejera. O sea que la
 // «desviación» que la app publicaba era la distancia a una recta inventada, y
 // el art. 61 manda medir contra el programa CONTRACTUAL.
 //
 // Las cifras son el MÁXIMO a lo largo del plazo, no el punto medio. A mitad del
-// plazo dieron 0.3 y 1.1 puntos en dos de las tres, porque una curva S cruza la
-// recta por el centro por construcción: medir ahí habría dado la conclusión
-// contraria a la correcta.
+// plazo dieron +17.4, +0.3 y −5.9: en el colector el punto medio dice 0.3 donde
+// el máximo dice −9.9, porque una curva S cruza la recta por el centro por
+// construcción. Medir ahí habría dado la conclusión contraria a la correcta.
 //
 // Lo que se afirma aquí es CONDUCTA: los pesos y el por ciento que la cuenta
 // devuelve ante un programa con forma real. No se afirma que exista ningún

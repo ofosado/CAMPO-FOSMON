@@ -594,7 +594,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       inicio: pr.inicio,
       fin: pr.fin,
       duracion: null,
-      obraDelArchivo: obra.contrato,
+      obraDelArchivo: pr.obraDelArchivo || obra.contrato,
       meses: pr.montos.length,
       total: pr.montos.reduce((t, m) => t + m, 0),
       totalDeclarado: pr.montos.reduce((t, m) => t + m, 0),
@@ -730,6 +730,34 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
                5390000, 6545000, 6930000, 5775000, 4620000],
     },
   }, { conEconomia: true, gpId: '0114' });
+  // EL CASO DEL #96, CON LAS CIFRAS DE VERDAD. Esta obra es el colector real
+  // como estaba dado de alta: se capturó copiando el emisor (la 0131) y se
+  // quedó con SU presupuesto —$27,489,778.08 en vez de $12,890,541.86— y con su
+  // plazo —2026-08-29→2027-02-24 en vez de 2026-08-27→2026-12-24—. El programa
+  // que se le siembra es el de su propio anexo, con las tres cifras buenas.
+  //
+  // Va del lado CONSTRUCTORA porque la pantalla de carga del programa sólo
+  // existe de este lado; sembrarla en una obra de dependencia pondría el
+  // desacuerdo donde nadie puede verlo. Y va aparte de la 0114 —que cuadra al
+  // peso— y de la 0121 —que no tiene programa— para que una sola sesión enseñe
+  // los tres casos: el que grita, el que se calla y el que no tiene con qué.
+  //
+  // Las cifras del anexo salen de pasarlo por el parser de la app
+  // (`scripts/medir-programa-real-se-lee.cjs`), no de leerlas a ojo. Los montos
+  // mensuales son la forma de ese programa —arranca fuerte y cierra flojo, que
+  // es lo que lo separa 9.9 puntos de la recta— y suman el total al peso.
+  await sembrarObra('', '0128', {
+    nombre: 'SIOP Colector Malecón', contrato: 'SIOP-2026-0128',
+    contratado: 27489778.08,
+    cliente: 'SIOP Veracruz', ubicacion: 'Coatzacoalcos, Ver.',
+    inicio: '2026-08-29', fin: '2027-02-24', semilla: 53, nPartidas: 9,
+    estimaciones: EST_C.slice(0, 1), semanas: 3, diasSinCaptura: 4, fotosSemanas: 2,
+    programa: {
+      inicio: '2026-08-27', fin: '2026-12-24',
+      obraDelArchivo: 'AE11 PROGRAMA GENERAL MONTOS COLECTOR',
+      montos: [1289054.19, 3867162.56, 3222635.47, 2578108.37, 1933581.27],
+    },
+  });
   await sembrarObra('', '0121', {
     nombre: 'SIOP Coatza Rehab. Av. Universidad', contrato: 'SIOP-2026-0121', contratado: 24800000,
     cliente: 'SIOP Veracruz', ubicacion: 'Coatzacoalcos, Ver.',
@@ -932,7 +960,8 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     obras: CATALOGO_GP,
   });
 
-  console.log('obras de constructora: 0114, 0121 (en la raíz) + global/gp_construct');
+  console.log('obras de constructora: 0114, 0128, 0121 (en la raíz) + global/gp_construct');
+  console.log('  programa: 0114 cuadra al peso · 0128 NO cuadra (#96) · 0121 sin programa');
   console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
   console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
   console.log(`  fuente api-gp-por-obra · ${gpRenglones + 2} renglones · 1 sin obra ($183,450.75)`);

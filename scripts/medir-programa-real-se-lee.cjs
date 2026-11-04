@@ -42,9 +42,20 @@ const DIR = process.env.DIR_PROGRAMAS ||
   path.join(os.homedir(), 'Desarrollo', 'CAMPO-datos-produccion', 'programas');
 
 // `obra.inicio` del sistema, para el caso del DE-5, que no declara arranque en
-// el archivo. Sale de la medición del 2026-11-04 contra producción, no de una
-// suposición: es el `inicio` que la obra 0126 tiene cargado.
-const ARRANQUE_DEL_SISTEMA = { '0126': '2026-02-16' };
+// el archivo. Es el `inicio` que la obra 0126 tiene cargado en producción:
+// 2026-05-07, en `obras/0126` y en `obras/0126/config/info`, los dos sin tocar
+// desde el 2026-05-22.
+//
+// CORREGIDO el 2026-11-04. Aquí decía `2026-02-16`, y el comentario afirmaba
+// que salía de medir producción. No salía de ahí —producción no ha dicho eso
+// nunca— así que era una cifra tecleada con un respaldo falso encima, que es
+// peor que una cifra sin respaldo: nadie la vuelve a comprobar. Se descubrió
+// midiendo las cinco obras para el #96 (cuadrar el alta contra su anexo).
+//
+// No es inofensivo: de este arranque sale la separación de la Cangrejera
+// contra la recta, y esa cifra está citada en tres sitios del repositorio. Con
+// el arranque corregido hay que volver a medirla y corregirlos.
+const ARRANQUE_DEL_SISTEMA = { '0126': '2026-05-07' };
 const MAPA = [
   ['AE11 PROGRAMA GENERAL MONTOS EMISOR.xlsx', '0131', 'el emisor'],
   ['AE11 PROGRAMA GENERAL MONTOS COLECTOR.xlsx', '0128', 'el colector'],
