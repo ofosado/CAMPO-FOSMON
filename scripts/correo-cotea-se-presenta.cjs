@@ -253,16 +253,13 @@ function armar({ nombre, rol, rolLabel, marca, logoSrc }) {
     `cotea · Tu obra, al momento.</div>` +
     `</div>` +
 
-    parrafo(`Una obra se gana o se pierde en los días que nadie miró. Cuando ` +
-      `el avance se sabe el martes y no el viernes, todavía se puede hacer ` +
-      `algo; cuando una desviación se ve mientras está pasando, se corrige en ` +
-      `vez de explicarse. Esa diferencia —entre enterarse a tiempo y ` +
-      `enterarse después— es la que separa una obra que se controla de una ` +
-      `que sólo se documenta.`) +
-
-    parrafo(`Para eso es cotea: para que la obra se vea completa mientras ` +
-      `todavía se puede decidir sobre ella. No al cierre, cuando ya nada más ` +
-      `queda justificar.`) +
+    // Aquí iban dos párrafos de retórica —«una obra se gana o se pierde en los
+    // días que nadie miró», «la que se controla contra la que se documenta»—.
+    // Decían una sola cosa con el doble de palabras y se notaba el esfuerzo.
+    // La cosa cabe en dos renglones.
+    parrafo(`Una desviación que se ve el martes se corrige; la que se ve al ` +
+      `cierre, nada más se explica. cotea es para que la obra se vea mientras ` +
+      `todavía se puede decidir sobre ella.`) +
 
     (soyCliente
       ? SECCION('Lo que ves en cotea', [
