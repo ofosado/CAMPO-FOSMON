@@ -46,11 +46,9 @@
 //     node scripts/prueba-avance-sobre-contrato.cjs /tmp/antes.jsx /tmp/antes-functions.js
 
 const path = require('path');
-const fs = require('fs');
 
 const raiz = path.resolve(__dirname, '..');
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const { fuenteDe } = require('./extraer-de-app.cjs');
 
 const noArranco = require('./no-arranco.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
@@ -60,11 +58,6 @@ const ARCH_APP = process.argv[2]
   ? path.resolve(process.argv[2]) : path.join(raiz, 'src/App.jsx');
 const ARCH_FN = process.argv[3]
   ? path.resolve(process.argv[3]) : path.join(raiz, 'functions/index.js');
-
-const OPTS = {
-  sourceType: 'module',
-  plugins: ['jsx', 'classProperties', 'optionalChaining', 'nullishCoalescingOperator', 'dynamicImport'],
-};
 
 const fallos = [];
 const check = (cond, m) => {
@@ -79,29 +72,16 @@ const PCT = v => (typeof v === 'number') ? v.toFixed(2) + '%' : String(v);
 // ── Extracción del código real ─────────────────────────────────────────
 // Se toman los helpers de nivel de módulo tal cual están escritos. Si alguno
 // cambia, esta prueba usa la versión nueva: no hay copias del cálculo aquí.
+//
+// Antes esto recortaba sólo los nombres de la lista, y la lista se mantenía a
+// mano. Cada vez que una función de producción estrenaba una dependencia, el
+// banco reventaba por un símbolo que no le faltaba a nadie —pasó con
+// `estadoGastoGP` al traer el veredicto del gasto al correo—. `fuenteDe` cierra
+// transitivamente sobre lo que el código usa, así que la lista deja de ser algo
+// que alguien tiene que recordar actualizar.
 function preludioDe(archivo, nombres) {
-  const src = fs.readFileSync(archivo, 'utf8');
-  const ast = parse(src, OPTS);
-  const trozos = [];
-  const vistos = new Set();
-  traverse(ast, {
-    VariableDeclaration(p) {
-      if (p.parent.type !== 'Program') return;
-      const d = p.node.declarations[0];
-      if (d?.id?.type === 'Identifier' && nombres.includes(d.id.name)) {
-        trozos.push(src.slice(p.node.start, p.node.end));
-        vistos.add(d.id.name);
-      }
-    },
-    FunctionDeclaration(p) {
-      const n = p.node.id?.name;
-      if (p.parent.type === 'Program' && nombres.includes(n)) {
-        trozos.push(src.slice(p.node.start, p.node.end));
-        vistos.add(n);
-      }
-    },
-  });
-  return { fuente: trozos.join('\n'), vistos, src, ast };
+  const { cuerpo, presentes } = fuenteDe(archivo, nombres, { tolerante: true });
+  return { fuente: cuerpo, vistos: new Set(presentes) };
 }
 
 const NOMBRES_APP = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseEjecutado',
@@ -114,25 +94,33 @@ const faltanApp = NOMBRES_APP.filter(n => !APP.vistos.has(n));
 // aserción que lo use falla, que es lo correcto contra la versión vieja.
 const app = new Function(`${APP.fuente}\n;return {${[...APP.vistos].join(',')}};`)();
 
-// `calcularKpisObra` lee Firestore. Se le pasa un `admin` de mentira con los
-// documentos del escenario: así se ejerce la función COMPLETA, la misma que
-// llena el correo del lunes, no una reescritura suya.
+// `calcularKpisObra` lee Firestore. Lo que se sustituye es el CARGADOR DE
+// MÓDULOS, no el `admin` que el archivo declara: el cierre trae su propio
+// `const admin = require("firebase-admin")`, así que inyectar un parámetro
+// llamado `admin` choca con la declaración real. Así se ejerce la función
+// COMPLETA, la misma que llena el correo del lunes, no una reescritura suya.
 const NOMBRES_FN = [...NOMBRES_APP, 'calcularKpisObra'];
 const FN = preludioDe(ARCH_FN, NOMBRES_FN);
-const adminFalso = (docs) => ({
-  firestore: () => ({
-    doc: (ruta) => ({
-      get: async () => ({
-        exists: Object.prototype.hasOwnProperty.call(docs, ruta),
-        data: () => docs[ruta],
+const requireFalso = (docs) => (m) => {
+  if (m === 'firebase-admin') {
+    return {
+      initializeApp: () => {},
+      firestore: () => ({
+        doc: (ruta) => ({
+          get: async () => ({
+            exists: Object.prototype.hasOwnProperty.call(docs, ruta),
+            data: () => docs[ruta],
+          }),
+        }),
       }),
-    }),
-  }),
-});
+    };
+  }
+  return new Proxy({}, { get: () => () => {} });
+};
 function kpisDelCorreo(obraId, docs) {
-  const fabricar = new Function('admin',
+  const fabricar = new Function('require',
     `${FN.fuente}\n;return calcularKpisObra;`);
-  return fabricar(adminFalso(docs))(obraId, null);
+  return fabricar(requireFalso(docs))(obraId, null);
 }
 // Documentos mínimos que `calcularKpisObra` espera para una obra.
 const docsDe = (obraId, { presupuesto, modoAvance, subs }) => ({

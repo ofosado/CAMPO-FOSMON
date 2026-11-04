@@ -2276,6 +2276,108 @@ const avanceFisicoPonderado = (subs = [], contrato = 0, modoVol = false) => {
   return Math.min(100, (desgloseEjecutado(subs, modoVol).total / contrato) * 100);
 };
 
+// ── ¿El gasto de GP de ESTA obra es una medición, o es un hueco? ───────────
+// Copia literal de `extraerGastoTotalGP` / `estadoGastoGP` de src/App.jsx, con
+// la misma advertencia que el bloque de arriba: si se toca una copia hay que
+// tocar la otra, y `prueba-el-gasto-sin-medir-no-es-cero.cjs` EJECUTA las dos
+// sobre las mismas entradas y exige que den el mismo veredicto.
+//
+// Por qué existe esta copia y no sólo un número: hasta hoy este archivo tenía
+// `let totGP = 0` y, si la obra no aparecía en el documento de gasto, se
+// quedaba en cero sin decirlo. Cero y «no se pudo medir» salían idénticos por
+// el correo del lunes — misma cifra, mismo color, misma tipografía— y el
+// margen de una obra sin medir sale cerca del 100%: todo ingreso y ningún
+// costo. Esa es la mentira más cara que este correo puede decir, y le toca
+// justo a la obra recién dada de alta, que es la que más se mira.
+//
+// El documento ya traía con qué distinguirlas y este archivo, que es quien lo
+// ESCRIBE (`obrasPedidas`, abajo en el agrupado del Sheet), era el único que
+// no lo leía.
+const extraerGastoTotalGP = (datosObra) => {
+  if (!datosObra) return 0;
+  if (datosObra.grandTotal > 0) return datosObra.grandTotal;
+  const sumaAños = datosObra.años
+    ? Object.values(datosObra.años).reduce((t, v) => t + (v || 0), 0)
+    : 0;
+  const totalAñoActual = datosObra.total2026
+    || (datosObra.meses ? Object.values(datosObra.meses).reduce((t, v) => t + (v || 0), 0) : 0);
+  return sumaAños + totalAñoActual || datosObra.totalGeneral || datosObra.total || 0;
+};
+
+const estadoGastoGP = (obra, gpData) => {
+  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo });
+  const medido = (valor, motivo = 'medido', extra = {}) =>
+    ({ valor, medido: true, motivo, ...extra });
+
+  if (!obra) return medido(0, 'sin-obra');
+  if (!gpData?.obras) return sinDato('sin-documento', obra?.gastoGP || 0);
+
+  const obrasArr = Object.values(gpData.obras);
+  const pedidas = Array.isArray(gpData.obrasPedidas) ? gpData.obrasPedidas : null;
+  // `null` significa «no se puede saber», que NO es lo mismo que «no se pidió».
+  const sePidio = (clave) => (pedidas === null ? null : pedidas.includes(clave));
+
+  const veredictoDeClaveAusente = (clave, comoSeSupo) => {
+    const pedida = sePidio(clave);
+    // Se le preguntó a GP por esta obra y no trajo movimientos. Cero es el
+    // dato, no un relleno.
+    if (pedida === true) return medido(0, 'sin-cheques');
+    // El aviso no es adorno: en un cron, la consola es el ÚNICO sitio donde
+    // alguien puede diagnosticar por qué una obra salió sin gasto. El correo
+    // ya lo dice a los directivos; esto lo dice a quien lo tiene que arreglar.
+    if (pedida === false) {
+      console.warn(`[GP] obra "${obra.nombre}" (clave ${clave}, ${comoSeSupo}) no está en la corrida del gasto: el cron no la ha pedido todavía. Gasto SIN MEDIR, no cero.`);
+      return sinDato('no-pedida');
+    }
+    console.warn(`[GP] obra "${obra.nombre}" (clave ${clave}, ${comoSeSupo}) no aparece en el gasto y el documento no dice qué obras se pidieron. Gasto SIN MEDIR.`);
+    return sinDato('no-se-puede-saber');
+  };
+
+  // 1) Por gpId explícito capturado en Contrato
+  if (obra.gpId) {
+    const exact = obrasArr.find((o) => o.id === obra.gpId);
+    if (exact) {
+      return medido(extraerGastoTotalGP(exact),
+        exact.desactualizadaDesde ? 'desactualizada' : 'medido',
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+    }
+    // Clave explícita que no aparece en el gasto: NO se busca parecido. El
+    // difuso le colgaría a la obra nueva el dinero de la que más se le parezca
+    // por nombre. Una clave que no cuadra significa «no hay dato».
+    return veredictoDeClaveAusente(obra.gpId, 'capturada en Contrato');
+  }
+
+  // 2) Por id de CAMPO si parece código de 4 dígitos
+  if (/^\d{4}/.test(obra.id || "")) {
+    const clave = obra.id.slice(0, 4);
+    const exact = obrasArr.find((o) => o.id === clave);
+    if (exact) {
+      return medido(extraerGastoTotalGP(exact),
+        exact.desactualizadaDesde ? 'desactualizada' : 'medido',
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+    }
+    const pedida = sePidio(clave);
+    if (pedida !== null) return veredictoDeClaveAusente(clave, 'prefijo del id');
+  }
+
+  // 3) Por nombre normalizado (match si ≥2 palabras significativas).
+  //    Sólo para obras viejas que no tienen por dónde cruzarse por clave.
+  const normalizar = (s) => (s || "").toString().toUpperCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  const palabrasObra = normalizar(obra.nombre).split(" ").filter((w) => w.length > 3);
+  let mejor = null; let score = 0;
+  for (const o of obrasArr) {
+    const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/, "").split(" ").filter((w) => w.length > 3);
+    const matches = palabrasObra.filter((p) => palObra.some((g) => g.includes(p) || p.includes(g))).length;
+    if (matches > score) { score = matches; mejor = o; }
+  }
+  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');
+  // Ningún match → el campo legacy, que no es una medición de GP y se dice.
+  console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el gasto — cae al campo legacy obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre || 'ninguno'}". Captura el gpId en Planeación → Contrato.`);
+  return sinDato('sin-match', obra?.gastoGP || 0);
+};
+
 // ── Días sin captura ───────────────────────────────────────────────────────
 // Copia literal de `fechaUltimaCapturaDe` / `diasSinCapturaDe` de src/App.jsx,
 // por la misma razón que las tres de arriba: `recordatorioLunes` le manda al
@@ -2343,40 +2445,16 @@ async function calcularKpisObra(obraId, gpData) {
   // Avance físico — la misma función que la app.
   const avancePct = avanceFisicoPonderado(subs, presupuesto, modoVol);
 
-  // Gasto: GP del Sheet (si existe match) + maquinaria propia + otros
-  // Matching robusto (igual que resolverGastoGP del frontend):
-  //   1) Por gpId explícito capturado en Contrato
-  //   2) Por primeros 4 dígitos del id de CAMPO
-  //   3) Por nombre normalizado (≥2 palabras significativas)
-  let totGP = 0;
-  if (gpData && gpData.obras) {
-    const obrasArr = Object.values(gpData.obras);
-    const gpId = info.gpId;
-    let obraGP = null;
-    // 1) Por gpId
-    if (gpId) obraGP = obrasArr.find(o => o.id === gpId);
-    // 2) Por id de 4 dígitos
-    if (!obraGP && /^\d{4}/.test(obraId || "")) {
-      obraGP = obrasArr.find(o => o.id === obraId.slice(0, 4));
-    }
-    // 3) Por nombre normalizado
-    if (!obraGP) {
-      const normalizar = (s) => (s || "").toString().toUpperCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
-      const palabrasObra = normalizar(info.nombre).split(" ").filter(w => w.length > 3);
-      let mejor = null, score = 0;
-      for (const o of obrasArr) {
-        const palObra = normalizar(o.nombre).replace(/^\d{4}\s*/, "").split(" ").filter(w => w.length > 3);
-        const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
-        if (matches > score) { score = matches; mejor = o; }
-      }
-      if (score >= 2 && mejor) obraGP = mejor;
-    }
-    if (obraGP) {
-      totGP = obraGP.grandTotal || obraGP.totalGeneral || obraGP.total || 0;
-    }
-  }
+  // Gasto: GP del Sheet + maquinaria propia + otros.
+  //
+  // Del ESTADO, no del número: `estadoGastoGP` separa «GP midió cero» de «GP
+  // no midió», que es la distinción que este archivo perdía. El valor se usa
+  // igual —maquinaria y otros sí están medidos y sumarlos no inventa nada—,
+  // pero viaja con la bandera para que quien presenta decida cómo decirlo.
+  const gpEstado = estadoGastoGP(
+    { id: obraId, nombre: info.nombre, gpId: info.gpId, gastoGP: info.gastoGP },
+    gpData);
+  const totGP = gpEstado.valor;
   const totMaq = maquinaria.reduce((t, m) => t + (Number(m.imp) || 0), 0);
   const totOtros = otros.reduce((t, o) => t + (Number(o.importe) || 0), 0);
   const totGasto = totGP + totMaq + totOtros;
@@ -2397,6 +2475,10 @@ async function calcularKpisObra(obraId, gpData) {
     obraId, nombre: info.nombre || obraId, contrato: info.contrato || "",
     cliente: info.cliente || "", presupuesto,
     avancePct, pctGasto, totGasto, cobrado,
+    // ¿`totGasto` es el gasto, o le falta el sumando de GP entero? Y por qué.
+    // Mismos nombres que en `calcularKPIsObra` de src/App.jsx a propósito: el
+    // día que alguien compare las dos salidas, que las compare por el campo.
+    gastoGPMedido: gpEstado.medido, gastoGPMotivo: gpEstado.motivo,
     diasDesdeCaptura, modoVol,
   };
 }
@@ -2480,10 +2562,31 @@ function bloqueFueraDeAlcance({ sinOrg = [], deOtra = [] } = {}) {
 // asunto se tecleaba en el envío, o sea que el nombre del producto vivía en dos
 // lugares y sólo uno de los dos era alcanzable por quien mide el nombre. El día
 // que el encabezado dijera una cosa y la bandeja otra, nadie lo vería.
+// Por qué no se pudo medir, en el renglón de 10px que queda debajo de la
+// cifra. Decir «sin medir» a secas invita a pensar que la app está rota; el
+// caso normal es que la obra se dio de alta después de la última corrida del
+// cron y se arregla solo. Las frases son las de `presentacionEconomiaObra` en
+// src/App.jsx, recortadas al ancho del correo. Un motivo desconocido NO se
+// traduce a nada tranquilizador: se dice que no se pudo y ya.
+const motivoSinMedir = (motivo) => {
+  switch (motivo) {
+    case "no-pedida": return "alta posterior a la última corrida de GP";
+    case "sin-documento": return "no hay corrida de gasto";
+    case "sin-match": return "sin clave de GP capturada";
+    case "no-se-puede-saber": return "la corrida no dice qué obras pidió";
+    default: return "el gasto de GP no se pudo medir";
+  }
+};
+
 function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marca) {
   const filasObras = kpisObras.map(k => {
     const colorAvance = semaforoColor(k.avancePct, "avance");
-    const colorGasto = semaforoColor(k.pctGasto, "gasto");
+    // El semáforo del gasto es la trampa fina: `semaforoColor` pinta VERDE lo
+    // que va por debajo del 70% del contrato, así que una obra sin medir —cuyo
+    // porcentaje sale bajísimo justamente porque le falta el gasto— se pintaba
+    // de verde tranquilizador. Sin medición no hay semáforo: gris.
+    const sinMedir = k.gastoGPMedido === false;
+    const colorGasto = sinMedir ? "#9AA0AC" : semaforoColor(k.pctGasto, "gasto");
     const linkObra = `${APP_URL}/?obra=${encodeURIComponent(k.obraId)}`;
     const alertaCaptura = k.diasDesdeCaptura > 7
       ? `<span style="background:#FCEBEB;color:#A32D2D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">Sin captura ${k.diasDesdeCaptura}d</span>`
@@ -2502,8 +2605,8 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
         <div style="font-size:10px;color:#9AA0AC;">avance</div>
       </td>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
-        <div style="font-size:14px;font-weight:600;color:${colorGasto};">${MXN_FMT(k.totGasto)}</div>
-        <div style="font-size:10px;color:#9AA0AC;">${PCT_FMT(k.pctGasto, 0)} de ${MXN_FMT(k.presupuesto)}</div>
+        <div style="font-size:14px;font-weight:600;color:${colorGasto};${sinMedir ? "font-style:italic;" : ""}">${sinMedir ? "sin medir" : MXN_FMT(k.totGasto)}</div>
+        <div style="font-size:10px;color:#9AA0AC;">${sinMedir ? motivoSinMedir(k.gastoGPMotivo) : `${PCT_FMT(k.pctGasto, 0)} de ${MXN_FMT(k.presupuesto)}`}</div>
       </td>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
         <div style="font-size:13px;color:#0D1619;">${MXN_FMT(k.cobrado)}</div>
@@ -2517,6 +2620,22 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
   const gastoTotal = kpisObras.reduce((t, k) => t + k.totGasto, 0);
   const cobradoTotal = kpisObras.reduce((t, k) => t + k.cobrado, 0);
   const obrasSinCaptura = kpisObras.filter(k => k.diasDesdeCaptura > 7).length;
+
+  // El total de gasto suma obras a las que les falta el sumando de GP entero,
+  // así que sale CORTO y nadie lo nota: es un número redondo, con su etiqueta,
+  // al lado de otros tres que sí están completos.
+  //
+  // No se corrige la cifra y no se excluyen esas obras. No se puede corregir
+  // —no sabemos cuánto falta, eso es exactamente lo que significa «sin medir»—
+  // y excluirlas inventaría un total distinto del que ya enseña el dashboard,
+  // que incluye y declara (`obrasGastoSinMedir` en src/App.jsx). Dos totales
+  // del mismo dinero es el defecto que íbamos a arreglar, al revés.
+  //
+  // Lo único honesto es declararlo pegado al número.
+  const sinMedirN = kpisObras.filter(k => k.gastoGPMedido === false).length;
+  const avisoGastoCorto = sinMedirN > 0
+    ? `${sinMedirN} obra${sinMedirN !== 1 ? "s" : ""} sin medir: va corto`
+    : null;
 
   const firma = marca?.empresa ? ESC_HTML(marca.empresa).toUpperCase() : "";
   const casa = marca?.empresa ? ESC_HTML(marca.empresa) : "";
@@ -2545,7 +2664,7 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
             <tr>
               <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:#0D1619;">${totalObras}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div></td>
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#185FA5;">${MXN_FMT(presupuestoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Presupuesto</div></td>
-              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div>${avisoGastoCorto ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoGastoCorto}</div>` : ""}</td>
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
             </tr>
           </table>
