@@ -112,6 +112,29 @@ if (process.argv[2] === '--contraprueba') {
     { nombre: 'el tipo de la organización se adivina en vez de leerse',
       de: '  const tipo = org?.tipo || null;',
       a:  '  const tipo = org?.tipo || "constructora";' },
+    // Las cuatro siguientes devuelven el correo de obra nueva a como estaba
+    // antes del 2026-11-04, una repetición cada una.
+    { nombre: 'el título vuelve a preferir el contrato: «Obra nueva: N/A»',
+      de: '  const nombreObra = String(obra.nombre || "").trim() || obraId;',
+      a:  '  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;' },
+    { nombre: 'y la tabla vuelve a repetir el nombre que ya es el título',
+      de: '      ["Identificador", obraId],\n      [dep ? "Empresa ejecutante" : "Cliente", contraparte],',
+      a:  '      ["Obra", nombreObra],\n      ["Identificador", obraId],\n      [dep ? "Empresa ejecutante" : "Cliente", contraparte],' },
+    { nombre: 'y la entradilla vuelve a repetir el cliente que está en la tabla',
+      de: '      entradilla: dioElAlta ? `La dio de alta ${ESC_HTML(dioElAlta)}.` : "",',
+      a:  '      entradilla: `Se dio de alta una obra` + (contraparte ? ` de ${ESC_HTML(contraparte)}` : "") + `.`,' },
+    { nombre: 'el contrato se tira en vez de decirse una vez: se pierde el oficio',
+      de: '      ["Contrato", contrato],',
+      a:  '      ["Contrato", ""],' },
+    // Y los otros dos sitios donde una obra se nombra: la campana del alta y la
+    // lista de obras de los correos de acceso y de asignación. Eran el mismo
+    // `contrato || nombre`, y una mutación por sitio porque son tres textos.
+    { nombre: 'la campana del alta vuelve a titularse con la descripción legal',
+      de: '  const nombreObra = String(obra.nombre || "").trim() || obraId;\n  const contraparte = tipo === "dependencia"',
+      a:  '  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;\n  const contraparte = tipo === "dependencia"' },
+    { nombre: '`nombresDeObras` vuelve a nombrar la obra por su contrato',
+      de: '      return String(d.nombre || "").trim() || id;',
+      a:  '      return String(d.contrato || d.nombre || "").trim() || id;' },
   ];
   let malas = 0;
   for (const m of MUTACIONES) {
@@ -465,9 +488,12 @@ const mensajesCampana = (base) => base.escrituras
       'dos altas seguidas no comparten contraseña',
       dos[0] === dos[1] ? 'LA MISMA PARA LOS DOS' : 'distintas');
 
-    check(/FOS-2026-0112/.test(html),
-      'el correo nombra la obra asignada como la nombra la bitácora, por su contrato',
-      /0112 ?CANGREJERA|FOS-2026-0112/.test(html) ? 'por su contrato' : 'NO LA NOMBRA');
+    // Por su apodo, no por su contrato. Hasta el 2026-11-04 era al revés —el
+    // mismo orden que la bitácora de la app—, y en producción eso ponía 236
+    // caracteres de descripción legal en un renglón de tabla.
+    check(/CANGREJERA/.test(html) && !/FOS-2026-0112/.test(html),
+      'el correo nombra la obra asignada por su apodo, no por su contrato',
+      /FOS-2026-0112/.test(html) ? 'POR SU CONTRATO' : 'CANGREJERA');
     check(!traeCifra(html),
       'y no lleva una sola cifra de dinero: un correo de acceso no trae presupuestos',
       traeCifra(html) ? `TRAE CIFRA: ${(html.match(/\$\s?[\d,]+/) || [])[0]}` : 'sin cifras');
@@ -531,9 +557,9 @@ const mensajesCampana = (base) => base.escrituras
     }));
     const html = (correos[0] || {}).html || '';
 
-    check(/MUN-0112/.test(html) && !/FOS-2026-0112/.test(html),
+    check(/PARQUE INDEPENDENCIA/.test(html) && !/CANGREJERA/.test(html),
       'nombra la obra del municipio, no la de la raíz que tiene el mismo id',
-      /FOS-2026-0112/.test(html) ? 'NOMBRÓ LA OBRA DE LA CONSTRUCTORA' : 'MUN-0112');
+      /CANGREJERA/.test(html) ? 'NOMBRÓ LA OBRA DE LA CONSTRUCTORA' : 'PARQUE INDEPENDENCIA');
     check(/Coatzacoalcos/.test(html) && !/FOSMON/.test(html),
       'va firmado por el municipio y en ninguna parte dice FOSMON',
       /FOSMON/.test(html) ? 'DICE FOSMON' : 'Coatzacoalcos');
@@ -552,9 +578,9 @@ const mensajesCampana = (base) => base.escrituras
     }));
     const html = (correos[0] || {}).html || '';
     check(correos.length === 1, 'sale un correo', `${correos.length} envío(s)`);
-    check(/FOS-2026-0126/.test(html) && !/FOS-2026-0112/.test(html),
+    check(/MALECON/.test(html) && !/CANGREJERA/.test(html),
       'nombra la obra nueva y NO la que ya tenía',
-      /FOS-2026-0112/.test(html) ? 'NOMBRÓ LAS DOS — parece un alta nueva' : 'sólo la nueva');
+      /CANGREJERA/.test(html) ? 'NOMBRÓ LAS DOS — parece un alta nueva' : 'sólo la nueva');
     check(JSON.stringify(r.obrasAgregadas) === JSON.stringify(['0126']),
       'y la diferencia que devuelve el servidor es la misma que nombró el correo',
       JSON.stringify(r.obrasAgregadas));
@@ -724,6 +750,111 @@ const mensajesCampana = (base) => base.escrituras
     check(correos.length === 0,
       'con dos constructoras no se sabe de quién es la raíz, y el aviso tampoco sale',
       correos.length ? `SE MANDÓ a ${[].concat(correos[0].to).join(', ')}` : 'no salió');
+  }
+
+  // ═══ §8 · Cada cosa se dice una vez, y el título se puede leer ════════════
+  // Las tres obras de aquí son copias literales de producción al 2026-11-04.
+  // `nombre` es el apodo con que la obra se nombra en la casa y mide entre 24 y
+  // 40 caracteres en las siete obras vivas. `contrato` no es un nombre: en una
+  // vale «N/A», en otra un número de pedido, y en la del pantallazo 236
+  // caracteres de descripción legal. Preferir `contrato` para el título daba
+  // «Obra nueva: N/A» en dos de las tres.
+  console.log('\n§8 · el nombre largo se dice una vez, y el título se puede leer');
+  const P_0128 = {
+    nombre: 'SIOP COLECTOR MALECON PENTAGONO 0926',
+    contrato: 'REHABILITACIÓN DE RED DE DRENAJE SANITARIO (COLECTOR SANITARIO JOHN SPARK 2 ' +
+      'ENTRE CALLE JOSÉ AZUETA Y CÁRCAMO SANITARIO No. 1)  EN LA LOCALIDAD DE COATZACOALCOS, ' +
+      'MUNICIPIO DE COATZACOALCOS, DEL ESTADO DE VERACRUZ DE IGNACIO DE LA LLAVE.',
+    cliente: 'SECRETARÍA DE INFRAESTRUCTURA Y OBRAS PÚBLICAS DEL ESTADO DE VERACRUZ',
+    presupuesto: 18500000, creadaPor: 'ger@fosmon.com.mx',
+  };
+  {
+    const base = baseFalsa(siembra());
+    const correos = [];
+    const fn = montar('obraNuevaRaiz', base, { correos });
+    await fn(evento({ obraId: '0128' }, { ...P_0128 }));
+    const c = correos[0] || {};
+    const html = c.html || '';
+    const asunto = c.subject || '';
+
+    // El cuerpo del sobre, sin la cabecera ni el pie: es lo que se lee de
+    // corrido al abrir. El asunto se mide aparte porque vive en la bandeja.
+    const veces = (aguja, donde) => donde.split(aguja).length - 1;
+
+    check(veces(P_0128.contrato, html) === 1,
+      'la descripción legal de 236 caracteres aparece una sola vez',
+      `${veces(P_0128.contrato, html)} vez/veces — en el pantallazo venían dos`);
+    check(veces(P_0128.nombre, html) === 1,
+      'y el nombre de la obra también: el título, y ya',
+      `${veces(P_0128.nombre, html)} vez/veces`);
+    check(veces(P_0128.cliente, html) === 1,
+      'y el cliente, que antes salía en la entradilla y otra vez en la tabla',
+      `${veces(P_0128.cliente, html)} vez/veces`);
+    // Decir una vez no es tirar: para una obra de gobierno el contrato es como
+    // se identifica en el oficio, y el presupuesto es el dato por el que el
+    // correo existe.
+    check(/Contrato/.test(html) && veces(P_0128.contrato, html) > 0,
+      'la descripción no se tiró: sigue en el cuerpo, etiquetada como contrato',
+      /Contrato/.test(html) ? 'está' : 'SE PERDIÓ EL DATO');
+    check(/\$18,500,000/.test(html),
+      'y el presupuesto sigue ahí, que es el dato por el que el correo existe',
+      /\$18,500,000/.test(html) ? 'con cifra' : 'SIN CIFRA');
+    check(/ger@fosmon\.com\.mx/.test(html),
+      'y quién la dio de alta, que subió al principio desde un párrafo suelto al final',
+      /ger@fosmon/.test(html) ? 'nombrado' : 'NO SE DICE');
+    check(asunto.includes(P_0128.nombre) && !asunto.includes(P_0128.contrato),
+      'el asunto nombra la obra por su apodo, no por su descripción legal',
+      asunto.slice(0, 70));
+    // La campana es un título de una línea. El correo y la campana nombran la
+    // misma obra: si discreparan, serían dos nombres para un mismo hecho.
+    const titCampana = base.escrituras
+      .filter(e => e.ruta.startsWith('notificaciones/'))
+      .map(e => e.d.titulo || '')[0] || '';
+    check(titCampana.includes(P_0128.nombre) && !titCampana.includes(P_0128.contrato),
+      'y la campana usa el mismo apodo: un título de una línea no recorta 236 caracteres, los corta',
+      titCampana.slice(0, 70) || 'SIN TÍTULO');
+  }
+  {
+    // El tercer sitio donde una obra se nombra en un correo: la lista de obras
+    // del alta y de la asignación, que sale de `nombresDeObras`. Era el mismo
+    // `contrato || nombre`, así que la 0128 llegaba de 236 caracteres a un
+    // renglón de tabla.
+    const base = baseFalsa(siembra());
+    base.docs.set('obras/0128', { ...P_0128 });
+    const correos = [];
+    const fn = montar('actualizarUsuario', base, { correos });
+    await fn(llamada('dg@fosmon.com.mx', {
+      email: 'res@fosmon.com.mx', cambios: { obras_asignadas: [OBRA, '0128'] },
+    }));
+    const html = (correos[0] || {}).html || '';
+    check(html.includes(P_0128.nombre) && !html.includes(P_0128.contrato),
+      'la obra asignada se nombra por su apodo también en la lista del correo',
+      html.includes(P_0128.contrato) ? 'LLEGÓ LA DESCRIPCIÓN LEGAL de 236 caracteres' : 'por su apodo');
+  }
+  {
+    // La 0114 y la 0125: `contrato` no es un nombre, y en producción lo
+    // demuestran. Un título de «Obra nueva: N/A» no se puede leer, y uno de
+    // «Obra nueva: 6700388901» tampoco dice qué obra es.
+    for (const caso of [
+      { id: '0114', nombre: 'OAXACA PARQUE LINEAL 0825', contrato: 'N/A',
+        cliente: 'DISEÑO Y ARQUITECTURA ATQ S.A. DE C.V.', presupuesto: 101533303 },
+      { id: '0125', nombre: 'TAMSA VER SERVICIOS ESPECIALIZADOS 0526', contrato: '6700388901',
+        cliente: 'TUBOS DE ACERO DE MEXICO S.A.', presupuesto: 3200000 },
+    ]) {
+      const base = baseFalsa(siembra());
+      const correos = [];
+      const fn = montar('obraNuevaRaiz', base, { correos });
+      const { id, ...obra } = caso;
+      await fn(evento({ obraId: id }, { ...obra, creadaPor: 'ger@fosmon.com.mx' }));
+      const c = correos[0] || {};
+      const html = c.html || '';
+      // El título es el `<div>` grande de `sobreCorreo`, no cualquier texto.
+      const titulo = (html.match(/font-size:18px;font-weight:700;[^"]*">([^<]*)</) || [])[1] || '';
+      check(titulo.includes(obra.nombre),
+        `la ${id} se titula con su nombre`, titulo || 'SIN TÍTULO');
+      check(!new RegExp(`${obra.contrato.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`).test(titulo),
+        `y no con «${obra.contrato}», que no nombra ninguna obra`, titulo || 'SIN TÍTULO');
+    }
   }
 
   console.log(`\n${fallas === 0 ? 'VERDE' : 'ROJO'} — ${fallas === 0
