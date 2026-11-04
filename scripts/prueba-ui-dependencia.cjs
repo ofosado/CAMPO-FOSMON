@@ -526,7 +526,18 @@ const montarGP = () => {
   // "margen 100%" o "brecha 0", y eso es información falsa.
   seccion('Los motores de riesgo');
 
+  // La regla «avance_bajo_programa» mide contra el programa de obra cargado
+  // (PENDIENTES #51, el avance contra una recta), y esa cuenta arrastra media
+  // docena de auxiliares. Enumerarlos a mano aquí sería una lista que se rompe
+  // sola cada vez que la cuenta cambie de forma; `fuenteDe` calcula la
+  // cerradura transitiva. Se le pasa `archivo` y no la ruta fija, para que la
+  // contraprueba —que corre este banco sobre una copia mutada— siga midiendo
+  // la copia y no el original.
+  const { cuerpo: cuentaProgramado } =
+    require('./extraer-de-app.cjs').fuenteDe(archivo, ['avanceProgramadoA', 'fechaEnZonaObra']);
+
   const motor = new Function(`"use strict";
+    ${cuentaProgramado}
     const MXN = ${decl['MXN']};
     const SEVERIDADES = ${decl['SEVERIDADES']};
     const heImporte = ${decl['heImporte']};

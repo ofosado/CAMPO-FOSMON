@@ -24,7 +24,13 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = []) {
+// `programa` es el programa de obra guardado (`obras/{id}/config/programa`), o
+// null si esta obra no tiene uno cargado. Entra como parámetro y no se lee aquí
+// adentro a propósito: este generador no toca Firestore, lo llama quien ya tiene
+// los datos. Cuando viene null, el PDF cae a la recta del plazo Y LO DICE —ver
+// `avanceProgramadoA` y `ROTULO_PROGRAMADO`—, que es la diferencia entre una
+// cifra con respaldo contractual y un reparto lineal que nadie firmó.
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -843,19 +849,24 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const subsCompletadas = subsConAv.filter(s=>s.a>=100).length;
   const subsEnProgreso  = subsConAv.filter(s=>s.a>0 && s.a<100).length;
   const subsSinIniciar  = subsConAv.filter(s=>s.a===0).length;
-  // % "programado" = avance ideal en función del plazo transcurrido
-  let pctProgIdeal = 0;
-  if (obra.inicio && obra.fin) {
-    const ini = new Date(obra.inicio), fn = new Date(obra.fin), hoy_ = new Date();
-    const total = (fn - ini) / 86400000;
-    const transc = Math.max(0, Math.min(total, (hoy_ - ini) / 86400000));
-    pctProgIdeal = total > 0 ? (transc / total * 100) : 0;
-  }
+  // El avance programado a hoy. Sale de `avanceProgramadoA` —la única cuenta
+  // del repositorio— y no de una recta calculada aquí, que era la cuarta
+  // copia. El rótulo cambia con la fuente: este PDF se le entrega al cliente,
+  // y entregarle «Avance programado: 50%» cuando la cifra es el reparto lineal
+  // del plazo es afirmarle que su programa decía 50% ese día.
+  const progPdf = avanceProgramadoA(obra, programa, hoyLocalISO(), obra.fin);
+  const pctProgIdeal = progPdf.pct ?? 0;
+  const rotPdf = ROTULO_PROGRAMADO[progPdf.fuente] || ROTULO_PROGRAMADO.sin_datos;
   const desviacion = af - pctProgIdeal;
   y=kpiRow([
     ['Avance real',     PCT(af),              `${subsConAv.length} partidas activas`, af>=75?K.vk:af>=40?K.am:K.rd],
-    ['Avance programado', PCT(pctProgIdeal),  pctProgIdeal>0?'según plazo contractual':'sin fechas capturadas', K.ak],
-    ['Desviación',      `${desviacion>=0?'+':''}${desviacion.toFixed(1)}%`,  desviacion>=0?'sobre programa':'bajo programa', desviacion>=0?K.vk:K.rk],
+    [rotPdf.kpi, progPdf.pct === null ? 'n/d' : PCT(pctProgIdeal), rotPdf.sub, K.ak],
+    ['Desviación',      progPdf.pct === null ? 'n/d' : `${desviacion>=0?'+':''}${desviacion.toFixed(1)}%`,
+      progPdf.pct === null ? 'no hay contra qué medir'
+        : (progPdf.fuente === 'programa'
+          ? (desviacion>=0?'sobre el programa':'bajo el programa')
+          : (desviacion>=0?'sobre la recta del plazo':'bajo la recta del plazo')),
+      desviacion>=0?K.vk:K.rk],
     ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
   ], y)+3;
 
@@ -951,8 +962,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       sf(K.vd); R(ML+4, yy+3, 3, 3, 'F'); T('Avance ≥ 75%', ML+9, yy+5.3);
       sf(K.am); R(ML+42, yy+3, 3, 3, 'F'); T('40 a 74%', ML+47, yy+5.3);
       sf(K.rd); R(ML+70, yy+3, 3, 3, 'F'); T('< 40%', ML+75, yy+5.3);
-      sf(K.na); doc.triangle(ML+96, yy+3, ML+99.5, yy+3, ML+97.7, yy+5.5, 'F');
-      T('Programado según plazo', ML+102, yy+5.3);
+      // El triángulo sólo se explica si se dibujó, y se nombra por lo que es.
+      // «Programado según plazo» era cierto únicamente cuando la marca salía de
+      // la recta; con un programa cargado la marca es el programa contractual y
+      // llamarla «según plazo» la desmerece. Sin cifra no hay marca ni leyenda:
+      // una leyenda que nombra algo que no está en el dibujo es una afirmación
+      // sin respaldo.
+      if (progPdf.pct !== null) {
+        sf(K.na); doc.triangle(ML+96, yy+3, ML+99.5, yy+3, ML+97.7, yy+5.5, 'F');
+        T(progPdf.fuente === 'programa' ? 'Programa contractual' : 'Programado según plazo',
+          ML+102, yy+5.3);
+      }
       st(K.gmu); fs(6.5);
       T(`Top ${topAll.length} partidas por importe · ${MXN(topAll.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)}`,
         PW-MR, yy+5.3, {align:'right'});
@@ -1332,14 +1352,24 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       `Ejecutado ${MXN(me)} · Gasto ${MXN(totGast)} · Margen ${MXN(mg)}`]);
   }
 
-  // 2. AVANCE vs PLAZO — más alto es mejor (avance real - avance programado)
-  if (hayFechas) {
-    const desv = af - pctPlazo;   // positivo = adelantado, negativo = atrasado
+  // 2. AVANCE vs PROGRAMA — más alto es mejor (avance real - avance programado)
+  //
+  // Este renglón se llamaba «Avance vs programa» pero restaba la RECTA DEL
+  // PLAZO, y en el detalle escribía «Programado», que es lo que un residente
+  // entiende como el programa de obra autorizado. Ahora resta lo que de verdad
+  // haya: el programa cargado si lo hay, y si no, la recta diciendo que es la
+  // recta. El nombre del renglón cambia con la fuente, porque un semáforo que
+  // dice «vs programa» cuando no hay programa es una cifra inventada con otro
+  // nombre.
+  if (progPdf.pct !== null) {
+    const desv = af - progPdf.pct;   // positivo = adelantado, negativo = atrasado
     // Umbrales: ≥0 Bien, -3 Normal, -8 Aceptable, -15 Atención, <-15 Crítico
     const n = clasificarMasAltoMejor(desv, [0, -3, -8, -15]);
-    rsgBodyCalc.push([idxRiesgo++, 'Avance vs programa',
+    rsgBodyCalc.push([idxRiesgo++,
+      progPdf.fuente === 'programa' ? 'Avance vs programa' : 'Avance vs recta del plazo',
       `${desv >= 0 ? '+' : ''}${desv.toFixed(1)}pp`, n,
-      `Real ${PCT(af)} · Programado ${PCT(pctPlazo)} · ${diasRest} días restantes`]);
+      `Real ${PCT(af)} · ${progPdf.fuente === 'programa' ? 'Programa' : 'Recta'} ` +
+      `${PCT(progPdf.pct)}${hayFechas ? ` · ${diasRest} días restantes` : ''}`]);
   }
 
   // 3. GASTO vs AVANCE — proporción sana: por cada $ ejecutado, cuánto se gastó
@@ -1455,13 +1485,19 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     if (porRecuperar > 0) obs.push([{nivel:'FINANCIERO', tc:K.mk, bg:K.mb},
       `Anticipo por recuperar: ${MXN(porRecuperar)}`]);
   }
-  // Desviación de plazo
-  if (hayFechas) {
-    const desv = af - pctPlazo;
+  // Desviación contra lo programado — contra el programa si hay, contra la
+  // recta si no, y nombrando cuál de las dos. Declarar «atraso significativo»
+  // es la afirmación más fuerte del reporte: va a una junta. Si sale de un
+  // reparto lineal que nadie autorizó, el lector tiene derecho a saberlo.
+  if (progPdf.pct !== null) {
+    const desv = af - progPdf.pct;
+    const contra = progPdf.fuente === 'programa'
+      ? `programa ${PCT(progPdf.pct)}`
+      : `recta del plazo ${PCT(progPdf.pct)} (no hay programa cargado)`;
     if (desv < -15) obs.push([NIVELES.critico,
-      `Atraso significativo: avance real ${PCT(af)} vs programado ${PCT(pctPlazo)} (${desv.toFixed(1)}pp).`]);
+      `Atraso significativo: avance real ${PCT(af)} vs ${contra} (${desv.toFixed(1)}pp).`]);
     else if (desv < -8) obs.push([NIVELES.atencion,
-      `Retraso: avance real ${PCT(af)} vs programado ${PCT(pctPlazo)} (${desv.toFixed(1)}pp).`]);
+      `Retraso: avance real ${PCT(af)} vs ${contra} (${desv.toFixed(1)}pp).`]);
   }
   if (obs.length === 0) obs.push([NIVELES.bien,
     'No se detectaron alertas automáticas con los datos actuales de la obra.']);
@@ -3130,6 +3166,52 @@ const programaConArranque = (prog, obra) => {
   if (!inicio) return null;
   if (prog.inicio === inicio) return prog;
   return { ...prog, inicio, inicioHeredado: true };
+};
+
+// ── EL AVANCE PROGRAMADO A UNA FECHA — UNA CUENTA POR NÚMERO ───────────────
+//
+// Antes de esto, CINCO sitios calculaban la recta por su cuenta: la hoja 1 del
+// PDF con su marcador vertical, la Curva S, el KPI «Avance ideal», el
+// veredicto del PDF y el evaluador de alertas. Cinco copias de la misma
+// cuenta, y el KPI y el renglón de su propia tabla podían discrepar — que es
+// un defecto esperando, no un riesgo teórico.
+//
+// LO IMPORTANTE ES LA `fuente`, no el `pct`. Devuelve de dónde salió el
+// número, y quien lo pinte tiene que DECIRLO:
+//
+//   'programa'  del anexo AE11 o DE-5 cargado. Es el programa contractual y
+//               el art. 61 lo hace la base para medir.
+//   'recta'     no hay anexo. Es el reparto lineal del 100% sobre el plazo.
+//               Sigue sirviendo —es mejor que una pantalla en blanco— pero NO
+//               es el programa, y la pantalla no puede llamarlo «programado».
+//               Medido contra los tres anexos reales, la recta se aparta hasta
+//               27 puntos del programa, en los dos sentidos.
+//   'sin_datos' ni programa ni fechas. `pct` es `null`, y un null se dice; no
+//               se rellena con un cero, que afirmaría «no había nada
+//               programado».
+const avanceProgramadoA = (obra, programa, fechaISO, finISO = null) => {
+  const p = programaConArranque(programa, obra);
+  if (p) {
+    const pct = pctProgramadoEnFecha(p, fechaISO);
+    if (pct !== null) return { pct, fuente: 'programa', heredado: !!p.inicioHeredado };
+  }
+  const ini = fechaLocalDeISO(obra?.inicio);
+  const fin = fechaLocalDeISO(finISO || obra?.finAmpliado || obra?.fin);
+  const corte = fechaLocalDeISO(fechaISO);
+  if (!ini || !fin || !corte || fin <= ini) return { pct: null, fuente: 'sin_datos' };
+  return {
+    pct: Math.min(Math.max(((corte - ini) / (fin - ini)) * 100, 0), 100),
+    fuente: 'recta',
+  };
+};
+
+// Cómo se le dice al usuario de dónde salió la cifra. En un solo sitio: si la
+// etiqueta vive junto a cada gráfica, una de ellas se queda diciendo
+// «programado» el día que alguien cambie las otras.
+const ROTULO_PROGRAMADO = {
+  programa: { kpi: 'Avance programado', sub: 'del programa contractual cargado' },
+  recta: { kpi: 'Avance lineal', sub: 'sin programa cargado: reparto lineal del plazo' },
+  sin_datos: { kpi: 'Avance programado', sub: 'sin programa ni fechas capturadas' },
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -13987,6 +14069,21 @@ function NotasDeSemanas({estados = [], notas = {}, cuantas = 6, onGuardar = null
 }
 
 function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, notasSemana={}, onGuardarNota=null}){
+  // El programa de obra cargado (#51). Se lee aquí y no se recibe por prop
+  // porque es este tablero el que lo necesita, y `null` es una respuesta
+  // válida y frecuente: la obra sin anexo cargado cae en la recta, dicho con
+  // ese nombre. Mientras la lectura viaja, `undefined` ≠ `null`: con
+  // `undefined` todavía no se sabe, y afirmar la recta en ese hueco sería
+  // publicar la cifra vieja como si fuera la respuesta.
+  const [programa, setPrograma] = useState(undefined);
+  useEffect(() => {
+    let vivo = true;
+    setPrograma(undefined);
+    fsGet(`obras/${obra.id}/config/programa`)
+      .then(d => { if (vivo) setPrograma(d || null); })
+      .catch(() => { if (vivo) setPrograma(null); });
+    return () => { vivo = false; };
+  }, [obra.id]);
   // Avance actual ponderado — FÍSICO sobre CONTRATO, compensado.
   const modoVol = (obra?.modoAvance === "volumen");
   const contratoObra = parseFloat(obra?.presupuesto) || 0;
@@ -14069,21 +14166,19 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   const sinIniciar = subs.filter(s => aFis(s) === 0).slice(0,5);
 
   // ── GRÁFICA: Curva S — avance acumulado real vs programado ──
-  // Por cada snapshot oficial calculamos qué % deberíamos tener en esa fecha (lineal del 0 al 100% sobre el plazo)
   // Las fechas se arman en LOCAL (`fechaLocalDeISO`): `new Date("2026-03-01")`
   // es UTC, y aquí se restan contra `Date.now()`, que es local. El error de
   // seis horas no se ve en un plazo de meses, pero es el mismo patrón que
   // adelantaba un día la fecha de una foto, y no se deja sembrado.
   const inicio = fechaLocalDeISO(obra.inicio);
   const fin = fechaLocalDeISO(finContrato);
-  const plazoTotalDias = (inicio && fin) ? (fin - inicio) / 86400000 : null;
-  const programadoEnFecha = (fechaISO) => {
-    if (!plazoTotalDias || plazoTotalDias <= 0) return null;
-    const f = fechaLocalDeISO(fechaISO);
-    if (!f) return null;
-    const trans = (f - inicio) / 86400000;
-    return Math.min(Math.max((trans / plazoTotalDias) * 100, 0), 100);
-  };
+  // La cuenta ya no vive aquí. Vive en `avanceProgramadoA`, que es la única
+  // del repositorio, y lo que esta pantalla recibe además del número es de
+  // DÓNDE salió — para poder rotularlo. Mientras el programa viaja no se
+  // calcula nada: ver el `undefined` del estado.
+  const programadoEnFecha = (fechaISO) => programa === undefined
+    ? null
+    : avanceProgramadoA(obra, programa, fechaISO, finContrato).pct;
   // El eje X lleva el año cuando la obra cruza de año. Sin él, una obra de
   // noviembre a marzo pinta dos marcas "S48" —una de cada año— y la gráfica
   // deja de decir cuándo pasó cada cosa.
@@ -14101,14 +14196,15 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   const idxFronteraS = puntos.findIndex(p => p.esquema >= ESQUEMA_AVANCE);
   const hayTramoViejoS = idxFronteraS > 0
     && puntos.slice(0, idxFronteraS).some(p => p.esquema < ESQUEMA_AVANCE);
-  // % ideal a fecha actual
-  let idealActual = null;
-  if (inicio && fin) {
-    const total = (fin - inicio) / 86400000;
-    const trans = Math.max(0, (Date.now() - inicio) / 86400000);
-    idealActual = Math.min((trans / total) * 100, 100);
-  }
-  // Desviación vs ideal
+  // El programado A HOY, y de dónde salió. Antes era una tercera copia de la
+  // recta, calculada aquí mismo con `Date.now()`; hoy es la misma cuenta que
+  // la curva, para que el KPI y la gráfica de abajo no puedan discrepar.
+  const progHoy = programa === undefined
+    ? { pct: null, fuente: 'cargando' }
+    : avanceProgramadoA(obra, programa, hoyLocalISO(), finContrato);
+  const idealActual = progHoy.pct;
+  const rotProg = ROTULO_PROGRAMADO[progHoy.fuente] || ROTULO_PROGRAMADO.sin_datos;
+  // Desviación contra lo programado
   const desvIdeal = idealActual !== null ? avanceActual - idealActual : null;
 
   return <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:10}}>
@@ -14137,9 +14233,15 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
           usa el tablero de plazo de la dependencia. */}
       <Kpi label="Contra el plazo" value={desvPlazo.valor}
         sub={desvPlazo.sub} color={desvPlazo.color} size={12}/>
+      {/* Se llamaba «Avance ideal» y era siempre la recta. Ahora el rótulo
+          dice de dónde sale el número: «Avance programado» cuando hay anexo
+          cargado, «Avance lineal» cuando no — porque una recta no es el
+          programa y llamarla así era la afirmación falsa del #51. */}
       {idealActual!==null && (
-        <Kpi label="Avance ideal" value={`${NUM(idealActual,1)}%`}
-          sub={desvIdeal!==null?(desvIdeal<0?`${NUM(desvIdeal,1)}pp atrasado`:`+${NUM(desvIdeal,1)}pp adelantado`):"—"}
+        <Kpi label={rotProg.kpi} value={`${NUM(idealActual,1)}%`}
+          sub={desvIdeal!==null
+            ? `${desvIdeal<0?'':'+'}${NUM(desvIdeal,1)}pp ${desvIdeal<0?'atrasado':'adelantado'} · ${rotProg.sub}`
+            : rotProg.sub}
           color={desvIdeal===null?C.textMut:desvIdeal<-5?C.red:desvIdeal<0?C.yellow:C.greenDk} size={12}/>
       )}
     </div>
@@ -14227,7 +14329,7 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
     {oficiales.length >= 2 && (
       <Card>
         <Tit>Tendencia de avance — últimas {puntos.length} semanas</Tit>
-        <GraficaTendencia puntos={puntos} idealActual={idealActual}
+        <GraficaTendencia puntos={puntos} idealActual={idealActual} fuenteProg={progHoy.fuente}
           idxFrontera={hayTramoViejoS ? idxFronteraS : -1}/>
       </Card>
     )}
@@ -14272,7 +14374,11 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
 }
 
 // ── Curva S: real vs programado a lo largo del plazo ──
-function GraficaTendencia({puntos=[], idealActual=null, idxFrontera=-1}){
+//
+// `fuenteProg` rotula la serie punteada. La leyenda ya decía «(lineal)», que
+// era honesto mientras SIEMPRE lo fuera; ahora que puede salir del anexo
+// cargado, dejarla fija haría lo contrario: llamaría lineal a la curva real.
+function GraficaTendencia({puntos=[], idealActual=null, idxFrontera=-1, fuenteProg='recta'}){
   const W = 540, H = 200, P = 32;
   const maxY = 100;
   const xs = puntos.map((p,i) => P + (i*(W-2*P)/Math.max(puntos.length-1,1)));
@@ -14339,7 +14445,8 @@ function GraficaTendencia({puntos=[], idealActual=null, idxFrontera=-1}){
       )}
       {tieneProgramado && (
         <div style={{display:"flex",alignItems:"center",gap:4}}>
-          <div style={{width:12,height:1.5,background:C.textMut,borderTop:`1.5px dashed ${C.textMut}`}}/> <span>Programado (lineal)</span>
+          <div style={{width:12,height:1.5,background:C.textMut,borderTop:`1.5px dashed ${C.textMut}`}}/>{' '}
+          <span>{fuenteProg === 'programa' ? 'Programa contractual' : 'Programado (lineal, sin programa cargado)'}</span>
         </div>
       )}
     </div>
@@ -22984,18 +23091,28 @@ const ALERTA_REGLAS = [
     id: "avance_bajo_programa",
     titulo: "Avance físico más de 15% bajo programa",
     severidad: "alto",
+    // Esta regla decía «bajo programa» y restaba la RECTA DEL PLAZO: repartía
+    // el presupuesto en partes iguales por día y llamaba a eso el programa. En
+    // los tres programas reales de producción la separación entre las dos
+    // llega a 27 puntos, muchísimo más que el umbral de 15 que dispara la
+    // alerta — o sea que el disparo lo decidía el error, no la obra. Ahora
+    // resta el programa cargado cuando lo hay, y cuando no, lo dice en el
+    // título y en el detalle. Ver PENDIENTES #51 (el avance contra una recta).
     evaluar: (obra, datos, hoy) => {
-      if (!obra.inicio || !obra.fin) return null;
-      const ini = new Date(obra.inicio).getTime();
-      const fin = new Date(obra.fin).getTime();
-      if (isNaN(ini) || isNaN(fin) || fin <= ini) return null;
-      const total = (fin - ini) / 86400000;
-      const transc = Math.max(0, Math.min(total, (hoy - ini) / 86400000));
-      const programado = total > 0 ? (transc / total * 100) : 0;
+      const p = avanceProgramadoA(obra, datos.programa, fechaEnZonaObra(new Date(hoy)), obra.fin);
+      if (p.pct === null) return null;
       const real = datos.avancePct || 0;
-      const desviacion = programado - real;
+      const desviacion = p.pct - real;
       if (desviacion <= 15) return null;
-      return { detalle: `Real ${real.toFixed(1)}% vs programado ${programado.toFixed(0)}% — desviación ${desviacion.toFixed(1)}%` };
+      const esProg = p.fuente === 'programa';
+      return {
+        titulo: esProg
+          ? "Avance físico más de 15% bajo programa"
+          : "Avance físico más de 15% bajo la recta del plazo",
+        detalle: `Real ${real.toFixed(1)}% vs ${esProg ? 'programa' : 'recta del plazo'} ` +
+          `${p.pct.toFixed(0)}% — desviación ${desviacion.toFixed(1)}%` +
+          (esProg ? '' : ' (esta obra no tiene programa cargado)'),
+      };
     },
   },
 ];
@@ -23038,12 +23155,18 @@ function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
         // los use. En dependencia no hay ninguna, y pedir una ruta que no se
         // va a mirar es exactamente lo que el P5 prohíbe: la lectura falla,
         // deja vacío, y el vacío se suma como cero.
-        const [subsD, maqD, otrosD, histD, infoD] = await Promise.all([
+        // El programa de obra SÍ se pide en los dos lados —la dependencia ve
+        // el programa igual que la constructora, porque es la vara con la que
+        // se la mide— y lleva `catch` propio para que una denegación no tumbe
+        // el `Promise.all` y con él las alertas de todas las obras. Sin
+        // programa queda null y la regla cae a la recta, diciéndolo.
+        const [subsD, maqD, otrosD, histD, infoD, progD] = await Promise.all([
           fsGet(`obras/${obra.id}/avance/subs`),
           soloContrato ? null : fsGet(`obras/${obra.id}/avance/maquinaria`),
           soloContrato ? null : fsGet(`obras/${obra.id}/config/otros_gastos`),
           fsGet(`obras/${obra.id}/avance/historial`),
           fsGet(`obras/${obra.id}/config/info`),
+          fsGet(`obras/${obra.id}/config/programa`).catch(() => null),
         ]);
         const info = infoD || {};
         const subsArr = subsD?.data || [];
@@ -23080,7 +23203,7 @@ function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
           s.semana === semHoy && s.año === añoHoy && s.tipo === "oficial");
 
         const datosObra = { fechaUltCaptura, totGasto, avancePct, tieneOficialEstaSemana,
-          ejecutado, ejecCatalogo, ejecExcedente };
+          ejecutado, ejecCatalogo, ejecExcedente, programa: progD || null };
 
         for (const regla of ALERTA_REGLAS) {
           if (soloContrato && regla.soloConstructora) continue;
@@ -23093,7 +23216,10 @@ function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
             obraNombre: info.nombre || obra.nombre || obra.id,
             obraContrato: info.contrato || obra.contrato || "",
             reglaId: regla.id,
-            titulo: regla.titulo,
+            // Una regla puede corregir su propio título cuando el título fijo
+            // mentiría. Es el caso de «bajo programa» cuando no hay programa y
+            // la cuenta salió de la recta del plazo.
+            titulo: r.titulo || regla.titulo,
             severidad: regla.severidad,
             detalle: r.detalle,
             leida: !!leidasMap[id],
@@ -24897,11 +25023,18 @@ export default function App(){
             const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
             if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
           } catch (e) { console.warn('gpDetalle no disponible', e); }
+          // El programa de obra, igual que el detalle: una lectura, aquí, antes
+          // de armar el PDF. Si falla o no hay, queda null y el reporte cae a la
+          // recta del plazo diciéndolo. Lo que NO puede pasar es que un error de
+          // lectura se vuelva un «Avance programado» que en realidad es la recta.
+          let programaObra = null;
+          try { programaObra = await fsGet(`obras/${obra.id}/config/programa`); }
+          catch (e) { console.warn('programa de obra no disponible', e); }
           // Aquí se leía el historial semanal de cada subcontrato para las
           // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
           // lecturas —una por sub— de documentos que nunca existieron, porque
           // las reglas denegaban la escritura. Ver PENDIENTES #31.
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia);
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
