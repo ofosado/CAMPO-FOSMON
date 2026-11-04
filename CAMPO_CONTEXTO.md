@@ -8,10 +8,15 @@
 
 App web React (SPA + PWA) para gestión integral de obras de construcción de FOSMON. Reemplaza el flujo manual de Excel + WhatsApp con control centralizado, multi-usuario, multi-obra y por roles.
 
-**URL producción:** https://cotea.com.mx (desde el 2026-11-03)
-**Origen anterior, todavía vivo:** https://campo-fosmon.netlify.app — el mismo
-sitio de Netlify servido por otro nombre. No se retira ni se redirige: hay PWA
-instaladas en ese origen, y un 301 se las llevaría con su caché y su estado.
+**URL producción (la app):** https://app.cotea.com.mx (desde el 2026-11-04)
+**Cara pública:** https://cotea.com.mx — hoy un rebote **302** a `app.`, mañana
+la landing. El 302 es deliberado: un 301 se cachea en disco y la landing nacería
+invisible para quien ya pasó por aquí.
+**Orígenes anteriores, todavía vivos:** https://cotea.com.mx (sirvió la app del
+2026-11-03 al 2026-11-04) y https://campo-fosmon.netlify.app — el mismo sitio de
+Netlify servido por otros nombres. Ninguno se retira del CORS del bucket ni de
+los dominios autorizados de Auth: hay PWA instaladas en esos orígenes, y su
+service worker, su caché y sus fotos viven ahí.
 **Repositorio:** https://github.com/ofosado/CAMPO-FOSMON
 **Deploy:** Netlify (auto-deploy desde GitHub `main`)
 **Archivo principal:** `src/App.jsx` (~9,000 líneas, single-file deliberado para iterar rápido)

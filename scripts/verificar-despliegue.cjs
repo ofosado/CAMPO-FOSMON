@@ -68,7 +68,15 @@ const PROYECTO = process.env.PROYECTO || 'campo-fosmon';
 //
 // El origen viejo NO se retira: sigue sirviendo, sigue en el CORS del bucket y
 // sigue siendo dominio autorizado en Auth. Para medirlo basta `SITIO=…`.
-const SITIO = process.env.SITIO || 'https://cotea.com.mx';
+//
+// Y el 2026-11-04 volvió a moverse, por #89 (la mudanza al subdominio): la app
+// vive en `app.cotea.com.mx` y la raíz quedó rebotando con un 302. Este renglón
+// tiene que apuntar a donde está EL BUNDLE, no a la cara pública. Si se quedara
+// en la raíz, lo que mediríamos sería el HTML de dos renglones del rebote: no
+// trae el hash del build, así que el front daría «atrasado» todos los días
+// —rojo falso— o, peor, «al día» si alguna vez el rebote llegara a contener por
+// accidente la cadena que buscamos. El verificador mide origen, no marca.
+const SITIO = process.env.SITIO || 'https://app.cotea.com.mx';
 
 // Rutas que cambian el bundle. Un commit que sólo toca PENDIENTES.md no deja
 // al front atrasado, y marcarlo sería un rojo falso — que en un verificador

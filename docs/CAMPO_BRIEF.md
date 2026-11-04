@@ -4,9 +4,12 @@
 
 App web (SPA + PWA) para control operativo de obras: avance físico, gastos, estimaciones, subcontratos, maquinaria, almacén y nómina. Reemplaza el flujo manual de Excel + WhatsApp con captura centralizada y multi-usuario.
 
-- **Producción:** https://cotea.com.mx (desde el 2026-11-03)
-- **Origen anterior, todavía vivo:** https://campo-fosmon.netlify.app — mismo
-  sitio, otro nombre. No se retira: hay PWA instaladas en ese origen.
+- **Producción (la app):** https://app.cotea.com.mx (desde el 2026-11-04)
+- **Cara pública:** https://cotea.com.mx — rebote 302 a `app.` hasta que la
+  landing la ocupe.
+- **Orígenes anteriores, todavía vivos:** https://cotea.com.mx (sirvió la app un
+  día) y https://campo-fosmon.netlify.app — mismo sitio, otros nombres. No se
+  retiran: hay PWA instaladas en esos orígenes.
 - **Repo:** https://github.com/ofosado/CAMPO-FOSMON
 - **Archivo principal:** `src/App.jsx` (~15,000 líneas, monolito deliberado para iterar rápido)
 - **Cloud Functions:** `functions/index.js` (~1,440 líneas)
@@ -115,11 +118,15 @@ auditoria/{autoId}                append-only log de cambios (modulo, entidad,
 
 - **Firestore:** `allow read, write: if request.auth != null` (cualquier usuario autenticado hace todo). **Deuda técnica documentada abajo.**
 - **Storage:** `allow read, write: if request.auth != null` bajo `/obras/{obraId}/**`; todo lo demás bloqueado.
-- **CORS Storage:** `storage.cors.json` aplicado al bucket el 2026-11-03 y
-  releído de él: permite `cotea.com.mx`, `www.cotea.com.mx`, el origen viejo y
-  los dos `localhost`. Comprobado por preflight, incluido que un origen fuera de
-  la lista **no** recibe cabecera. Ojo: el archivo **no se aplica solo** —no lo
-  publica Netlify ni `firebase deploy`—, hace falta `gsutil cors set`.
+- **CORS Storage:** `storage.cors.json` permite `app.cotea.com.mx` (donde vive
+  la app desde el 2026-11-04), `cotea.com.mx`, `www.cotea.com.mx`, el origen
+  viejo de Netlify y los dos `localhost`. Los orígenes que ya no sirven la app
+  **no se quitan**: hay PWA instaladas ahí y sus fotos se piden desde ahí.
+  Aplicado y releído del bucket el 2026-11-03, comprobado por preflight —
+  incluido que un origen fuera de la lista **no** recibe cabecera. Ojo: el
+  archivo **no se aplica solo** —no lo publica Netlify ni `firebase deploy`—,
+  hace falta `gsutil cors set`. **El renglón de `app.` está en el archivo pero
+  todavía no en el bucket.**
 
 ---
 

@@ -1,0 +1,17 @@
+# La cara pública de cotea — hoy un rebote, mañana la landing (#90, la página
+# con capturas y el botón de instalar).
+#
+# ── Por qué 302 y no 301 ───────────────────────────────────────────────────────
+# Un 301 es permanente y los navegadores lo CACHEAN en disco, a veces hasta que
+# el usuario limpia el perfil. El día que esta raíz deje de rebotar y empiece a
+# servir la landing, quien haya pasado por aquí antes seguiría cayendo en la app
+# sin volver a preguntar: la landing existiría y nadie la vería. El 302 dice
+# "por ahora", que es exactamente lo que es.
+#
+# ── Por qué :splat ────────────────────────────────────────────────────────────
+# Los enlaces profundos del correo del lunes son `/?obra=…`. Netlify conserva la
+# cadena de consulta cuando el destino no trae una propia, y `:splat` lleva la
+# ruta. Un rebote que perdiera cualquiera de las dos abriría la obra equivocada
+# —o ninguna— sin avisar que se perdió algo, que es la peor forma de fallar: la
+# que se ve bien.
+/*   https://app.cotea.com.mx/:splat   302

@@ -569,10 +569,18 @@ const dbQueRevienta = (porQue) => ({
   // mide que el armado MONTE el renglón de denegaciones, no lo que digan sus
   // vecinos. A quién dejó fuera el correo por no tener organización lo mide
   // `prueba-correo-no-cruza-organizaciones.cjs`, que arma el HTML completo.
-  const email = new Function('semaforoColor', 'APP_URL', 'PCT_FMT', 'MXN_FMT', 'bloqueDenegaciones',
-    'bloqueFueraDeAlcance',
+  // Las DOS direcciones se inyectan, y distintas entre sí: desde el #89 (la
+  // mudanza al subdominio) el armado del correo usa `APP_URL` para los enlaces
+  // con sesión y `SITIO_PUBLICO` para el pie. Dejar una de las dos sin inyectar
+  // revienta el armado con un `is not defined` —ruidoso, que es lo que se
+  // quiere— pero inyectar las dos con el mismo valor sería peor: taparía el día
+  // que una se use en el sitio de la otra. Cuál va dónde lo mide
+  // `prueba-las-dos-direcciones-del-producto.cjs`; aquí sólo tienen que existir.
+  const email = new Function('semaforoColor', 'APP_URL', 'SITIO_PUBLICO', 'PCT_FMT',
+    'MXN_FMT', 'bloqueDenegaciones', 'bloqueFueraDeAlcance',
     `${decl.correoResumenSemanal}; return correoResumenSemanal;`)(
-    () => '#000', 'https://ejemplo', n => `${n}%`, n => `$${n}`,
+    () => '#000', 'https://ejemplo-app', 'https://ejemplo-publico',
+    n => `${n}%`, n => `$${n}`,
     d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`,
     () => '');
   const { html } = email([{ obraId: '0114', nombre: 'Obra', avancePct: 10, pctGasto: 10,
