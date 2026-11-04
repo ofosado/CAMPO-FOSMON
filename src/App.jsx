@@ -2959,6 +2959,150 @@ const fechaEnZonaObra = (fecha) => {
 const hoyLocalISO = () => fechaEnZonaObra(new Date());
 
 // ════════════════════════════════════════════════════════════════════════════
+// EL PROGRAMA DE OBRA — PENDIENTES #51
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hasta hoy el «avance programado» se repartía en LÍNEA RECTA sobre el plazo:
+// transcurrido/plazo × 100. Ninguna obra avanza en línea recta —arranca lenta,
+// se acelera, cierra lenta— así que esa cifra no era el programa, era una
+// recta, y la «desviación» que la app publicaba era la distancia a una recta
+// inventada. El art. 61 hace del programa CONTRACTUAL la base para medir.
+//
+// Medido el 2026-11-04 sobre tres programas reales de producción
+// (`scripts/medir-programas-de-obra.py`): la recta se separa del programa
+// entre 14 y 23 puntos de avance. No es un matiz.
+//
+// ── QUÉ TRAE UN PROGRAMA DE VERDAD ─────────────────────────────────────────
+//
+// Los formatos oficiales —el AE11 de la SIOP y el DE-5 de Pemex— son MENSUALES
+// por monto, con el código de la partida. Debajo de cada partida va una fila
+// `Barra=` que codifica su barra de Gantt:
+//
+//     Barra=90.32-100,0-70,0-0,0-0,0-0,0-0,0-0
+//
+// Es un `inicio-fin` por mes, en PORCENTAJE DEL DÍA DEL MES DE CALENDARIO. Eso
+// no se supuso: quedó verificado contra dos anclas del propio archivo del
+// emisor, que declara su arranque y su fin por separado:
+//
+//     mes 1 = agosto 2026 (31 días) · 90.32% = 28/31 → arranca el día 29
+//                                     y «Inicio obra» del archivo es el 29
+//     mes 7 = febrero 2027 (28 días) · 85.71% = 24/28 → termina el día 24
+//                                     y «Fin obra» del archivo es el 24
+//
+// La consecuencia de diseño es la importante: los meses son meses de
+// CALENDARIO —no bloques de 30 días desde el arranque— y la barra da
+// resolución INTRA-MES. Por eso un programa mensual se puede leer un martes
+// cualquiera sin inventar cómo se reparte el dinero dentro del mes: los dos
+// extremos del reparto son datos del archivo.
+//
+// ── LO QUE NO SE GUARDA ────────────────────────────────────────────────────
+//
+// El documento guarda lo que el archivo DIJO —montos por mes y la barra tal
+// como viene, en texto— y nada derivado. El acumulado a una fecha se calcula
+// al leer. Guardar el acumulado sería una segunda copia de la cuenta, y la
+// regla de la casa es una cuenta por número.
+
+// «90.32-100,0-70,0-0» → [[90.32,100],[0,70],[0,0]]
+//
+// Un tramo que no se entiende entra como `null` y NO como [0,0): la diferencia
+// importa, porque [0,0) significa «este mes no hay barra» y `null` significa
+// «no se pudo leer». Lo segundo tiene que poder caerse al mes completo en vez
+// de desaparecer el dinero de ese mes.
+const tramosDeBarra = (txt) => {
+  const crudo = String(txt || '');
+  const cuerpo = crudo.includes('=') ? crudo.slice(crudo.indexOf('=') + 1) : crudo;
+  if (!cuerpo.trim()) return [];
+  return cuerpo.split(',').map((t) => {
+    const m = /^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*$/.exec(t);
+    if (!m) return null;
+    const a = Number(m[1]); const b = Number(m[2]);
+    if (!isFinite(a) || !isFinite(b) || b < a) return null;
+    return [Math.min(a, 100), Math.min(b, 100)];
+  });
+};
+
+// Cuántos días tiene el mes `mes` (1-12) del año `año`.
+const diasDelMes = (año, mes) => new Date(año, mes, 0).getDate();
+
+// Los `n` meses de calendario a partir del mes en que arranca el programa.
+// Devuelve [[año, mes], …] con el mes en 1-12.
+const mesesDelPrograma = (inicioISO, n) => {
+  const ini = fechaLocalDeISO(inicioISO);
+  if (!ini || !(n > 0)) return [];
+  const out = [];
+  let año = ini.getFullYear(); let mes = ini.getMonth() + 1;
+  for (let i = 0; i < n; i++) {
+    out.push([año, mes]);
+    if (mes === 12) { año += 1; mes = 1; } else { mes += 1; }
+  }
+  return out;
+};
+
+// El porcentaje de la barra → el día de ese mes, como `Date` local.
+//
+// 0% es el primer instante del mes y 100% el primer instante del siguiente, de
+// modo que un tramo `0-100` cubre el mes entero sin dejar ni sobrar un día.
+const diaDeBarra = (año, mes, pct) => {
+  const d = diasDelMes(año, mes);
+  const offset = Math.round((Math.min(Math.max(pct, 0), 100) / 100) * d);
+  return new Date(año, mes - 1, 1 + offset);
+};
+
+// Pesos del programa acumulados hasta `fechaISO`, o `null` si no se puede.
+//
+// Devuelve `null` —y no 0— cuando falta el programa, su arranque o sus meses.
+// Un cero diría «no había nada programado», que es una afirmación distinta.
+const acumuladoProgramado = (prog, fechaISO) => {
+  const corte = fechaLocalDeISO(fechaISO);
+  const partidas = prog?.partidas;
+  const meses = mesesDelPrograma(prog?.inicio, prog?.meses);
+  if (!corte || !Array.isArray(partidas) || !meses.length) return null;
+  const arranque = fechaLocalDeISO(prog.inicio);
+  let total = 0;
+  for (const p of partidas) {
+    const montos = Array.isArray(p?.montos) ? p.montos : [];
+    const barra = tramosDeBarra(p?.barra);
+    for (let i = 0; i < meses.length; i++) {
+      const monto = Number(montos[i]);
+      if (!isFinite(monto) || monto === 0) continue;
+      const [año, mes] = meses[i];
+      const tr = barra[i];
+      let d0; let d1;
+      if (tr && !(tr[0] === 0 && tr[1] === 0)) {
+        d0 = diaDeBarra(año, mes, tr[0]);
+        d1 = diaDeBarra(año, mes, tr[1]);
+      } else {
+        // Sin barra legible para este mes, el dinero se reparte a lo largo del
+        // mes entero. El primer mes se recorta al arranque del programa: la
+        // obra que empieza el 29 de agosto no gastó nada el 3 de agosto.
+        d0 = new Date(año, mes - 1, 1);
+        d1 = new Date(año, mes - 1, 1 + diasDelMes(año, mes));
+        if (i === 0 && arranque && arranque > d0) d0 = arranque;
+      }
+      if (d1 <= d0) d1 = new Date(d0.getTime() + 86400000);
+      if (corte >= d1) { total += monto; continue; }
+      if (corte > d0) total += monto * ((corte - d0) / (d1 - d0));
+    }
+  }
+  return total;
+};
+
+// El avance PROGRAMADO a una fecha, en por ciento del programa. `null` si no
+// hay programa cargado — y entonces la pantalla dice que no lo hay, en vez de
+// dibujar una recta.
+//
+// El denominador es el total que el programa declara, no el contrato: si los
+// dos difieren eso es un defecto del dato que se ve en otro lado (el #95 es
+// justo ese caso), y taparlo aquí lo esconde.
+const pctProgramadoEnFecha = (prog, fechaISO) => {
+  const total = Number(prog?.total);
+  if (!isFinite(total) || total <= 0) return null;
+  const acum = acumuladoProgramado(prog, fechaISO);
+  if (acum === null) return null;
+  return Math.min(Math.max((acum / total) * 100, 0), 100);
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // LA EVIDENCIA, CON UN DOCUMENTO PROPIO POR FOTO
 // ════════════════════════════════════════════════════════════════════════════
 //
