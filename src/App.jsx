@@ -16958,6 +16958,215 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
 // ── RIESGO ─────────────────────────────────────────────────────────────────
 // ── APP PRINCIPAL ──────────────────────────────────────────────────────────
 
+// ── CARGA DEL PROGRAMA DE OBRA — PENDIENTES #51 ────────────────────────────
+//
+// Al revés que `parsearPresupuesto`, este parser NO adivina. El presupuesto
+// llega en veinte dialectos —Opus, Neodata, hojas a mano— y allá las heurísticas
+// se ganaron su lugar. El programa de obra no: es un anexo con formato oficial,
+// el AE11 de la obra pública estatal y el DE-5 de Pemex, y los dos se
+// autodescriben. El encabezado trae `Código`, `Descripción` y una columna
+// `Mes N` por mes. Eso es un ancla dura, no una pista.
+//
+// Por eso la regla aquí es NEGARSE antes que adivinar: si no aparecen el
+// `Código` y al menos dos `Mes N`, devuelve por qué y no un programa a medias.
+// Un programa mal leído no se nota —sale una curva plausible— y contra esa
+// curva se decide si una obra va atrasada.
+//
+// ── LAS DOS FORMAS QUE SÍ CAMBIAN ──────────────────────────────────────────
+//
+// El AE11 pone UN renglón por partida, con los pesos del mes. El DE-5 pone DOS:
+// arriba el VOLUMEN del mes y abajo el IMPORTE. Distinguirlos por «el de abajo
+// trae números más grandes» sería adivinar otra vez. El discriminador es
+// estructural y se puede medir: en el renglón de volumen los meses suman la
+// CANTIDAD de la partida, y en el de importe suman su TOTAL. Si los meses del
+// renglón de la partida suman su cantidad, los pesos están en el de abajo.
+//
+// Y debajo de cada partida, en los dos formatos, va su fila `Barra=`. Qué
+// significa está escrito en el preámbulo de `acumuladoProgramado`.
+
+// El serial de Excel cuenta los días desde el 30 de diciembre de 1899.
+const EPOCA_EXCEL_MS = Date.UTC(1899, 11, 30);
+const fechaISODeSerialExcel = (v) => {
+  const n = Number(v);
+  // Por debajo de ~1960 un serial no es una fecha de obra, es una cantidad que
+  // cayó en la celda de al lado. 20000 es mayo de 1954.
+  if (!isFinite(n) || n < 20000 || n > 80000) return null;
+  const d = new Date(EPOCA_EXCEL_MS + Math.round(n) * 86400000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+};
+
+// Para comparar rótulos: sin acentos, sin puntuación, en mayúsculas.
+const rotuloPlano = (v) => String(v ?? '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^A-Za-z0-9]+/g, '').toUpperCase();
+
+function parsearPrograma(data) {
+  const filas = (data || []).map(f => Array.isArray(f) ? f : []);
+  const txt = (v) => String(v ?? '').trim();
+  const numero = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = parseFloat(String(v).replace(/[$,\s]/g, ''));
+    return isFinite(n) ? n : null;
+  };
+
+  // ── El encabezado ────────────────────────────────────────────────────────
+  let hr = -1; let cCod = -1; let cDesc = -1; let cUni = -1; let cCant = -1;
+  let cols = []; let cImporte = -1;
+  for (let i = 0; i < filas.length; i++) {
+    const f = filas[i];
+    const meses = [];
+    let cod = -1; let desc = -1; let uni = -1; let cant = -1;
+    const totales = [];
+    f.forEach((c, j) => {
+      const p = rotuloPlano(c);
+      if (p === 'CODIGO' && cod < 0) cod = j;
+      else if (p === 'DESCRIPCION' && desc < 0) desc = j;
+      else if (p === 'UNIDAD' && uni < 0) uni = j;
+      else if (p === 'CANTIDAD' && cant < 0) cant = j;
+      else if (p === 'TOTAL') totales.push(j);
+      if (/^MES\d+$/.test(p)) meses.push(j);
+    });
+    if (cod >= 0 && meses.length >= 2) {
+      hr = i; cCod = cod; cDesc = desc; cUni = uni; cCant = cant;
+      cols = meses.sort((a, b) => a - b);
+      // «Total» sale dos veces en el AE11 y una sola en el DE-5, y las dos NO
+      // dicen lo mismo. El de la DERECHA es la suma de los meses: contra él la
+      // comprobación «¿los meses suman el Total?» es vacua, porque por
+      // construcción sí. El de la IZQUIERDA —antes de los meses— es el importe
+      // de la partida en el catálogo, y contra él la comprobación sí muerde:
+      // delata una partida que el programa dejó a medio calendarizar.
+      //
+      // Esto salió de la contraprueba: con el de la derecha, la mutación que
+      // cambiaba de columna no la detectaba nadie. Una aserción que no puede
+      // fallar no estaba midiendo nada.
+      cImporte = totales.filter(j => j < cols[0]).pop() ?? -1;
+      break;
+    }
+  }
+  if (hr < 0) {
+    return { ok: false, porQue: 'No se halló el encabezado del programa. Se esperaba una fila con «Código» y al menos dos columnas «Mes 1», «Mes 2», … como en el anexo AE11 o el DE-5.' };
+  }
+
+  // ── El bloque de datos de arriba: arranque, fin, duración ────────────────
+  const cab = {};
+  for (let i = 0; i < hr; i++) {
+    filas[i].forEach((c, j) => {
+      const p = rotuloPlano(c);
+      if (!['INICIOOBRA', 'FINOBRA', 'DURACION', 'OBRA'].includes(p)) return;
+      if (cab[p] !== undefined) return;
+      // El valor va en la celda de al lado; a veces hay una vacía en medio.
+      for (const k of [j + 1, j + 2]) {
+        if (txt(filas[i][k])) { cab[p] = filas[i][k]; return; }
+      }
+    });
+  }
+
+  // ── Las partidas ─────────────────────────────────────────────────────────
+  const partidas = [];
+  const avisos = [];
+  let totalDeclarado = null;
+  const RESUMEN = ['TOTALDELPRESUPUESTOMOSTRADO', 'ACUMULADO', 'PORCENTAJEPERIODO',
+    'PORCENTAJEACUMULADO'];
+  const barraDe = (f) => {
+    for (const c of f) {
+      const s = txt(c);
+      if (/^Barra\s*=/i.test(s)) return s;
+    }
+    return null;
+  };
+  const montosDe = (f) => cols.map(c => numero(f[c]) ?? 0);
+
+  for (let i = hr + 1; i < filas.length; i++) {
+    const f = filas[i];
+    const p0 = rotuloPlano(f[0]);
+    if (RESUMEN.includes(p0)) {
+      if (p0 === 'ACUMULADO') {
+        const v = montosDe(f).filter(x => x !== 0);
+        if (v.length) totalDeclarado = v[v.length - 1];
+      }
+      continue;
+    }
+    const bar = barraDe(f);
+    if (bar) {
+      if (partidas.length) partidas[partidas.length - 1].barra = bar;
+      else avisos.push(`Una fila «Barra=» (renglón ${i + 1}) no tiene partida arriba; se ignoró.`);
+      continue;
+    }
+    const codigo = cCod >= 0 ? txt(f[cCod]) : '';
+    const unidad = cUni >= 0 ? txt(f[cUni]) : '';
+    const cant = cCant >= 0 ? numero(f[cCant]) : null;
+    // Un renglón de partida trae código, unidad y cantidad. Los renglones de
+    // sección («1.-», «1000 00 RUPTURA Y DEMOLICIÓN DE:») traen código y
+    // descripción pero no unidad, y no llevan dinero propio.
+    if (!codigo || !unidad || cant === null) continue;
+
+    let montos = montosDe(f);
+    const suma = montos.reduce((a, b) => a + b, 0);
+    // El DE-5: si los meses de este renglón suman la CANTIDAD, aquí va el
+    // volumen y los pesos están en el renglón de abajo.
+    const sig = filas[i + 1] || [];
+    const sigTieneCodigo = cCod >= 0 && txt(sig[cCod]);
+    const sigTieneMontos = montosDe(sig).some(x => x !== 0);
+    const pareceVolumen = cant !== 0 && Math.abs(suma - cant) < Math.max(0.01, Math.abs(cant) * 1e-6);
+    if (pareceVolumen && !sigTieneCodigo && sigTieneMontos && !barraDe(sig)) {
+      montos = montosDe(sig);
+      i += 1;
+    }
+
+    partidas.push({
+      sec: codigo,
+      desc: cDesc >= 0 ? txt(f[cDesc]) : '',
+      unidad,
+      cant,
+      // El importe que la partida tiene en el catálogo, cuando el formato lo
+      // trae. No es la suma de los meses: es contra qué se comprueba.
+      importe: cImporte >= 0 ? numero(f[cImporte]) : null,
+      montos,
+      barra: null,
+    });
+  }
+
+  if (!partidas.length) {
+    return { ok: false, porQue: `Se halló el encabezado en el renglón ${hr + 1} pero ninguna partida debajo. Un renglón de partida necesita código, unidad y cantidad.` };
+  }
+
+  // ── Lo que no cuadra se dice, no se corrige en silencio ──────────────────
+  const total = partidas.reduce((a, p) => a + p.montos.reduce((x, y) => x + y, 0), 0);
+  const sinBarra = partidas.filter(p => !p.barra).length;
+  if (sinBarra) {
+    avisos.push(`${sinBarra} de ${partidas.length} partidas no traen fila «Barra=». El importe de cada mes se repartirá a lo largo del mes entero.`);
+  }
+  const descuadradas = partidas.filter(p =>
+    p.importe !== null && Math.abs(p.montos.reduce((a, b) => a + b, 0) - p.importe) > 0.5);
+  if (descuadradas.length) {
+    avisos.push(`${descuadradas.length} partida(s) cuyos meses no suman el importe de la partida: el programa no las calendariza completas (la primera: ${descuadradas[0].sec}).`);
+  }
+  if (totalDeclarado !== null && Math.abs(totalDeclarado - total) > 1) {
+    avisos.push(`El programa declara un acumulado final de ${MXN(totalDeclarado)} y sus partidas suman ${MXN(total)}.`);
+  }
+
+  const inicio = fechaISODeSerialExcel(cab.INICIOOBRA);
+  const fin = fechaISODeSerialExcel(cab.FINOBRA);
+  if (!inicio) {
+    avisos.push('El archivo no declara «Inicio obra». Se usará el arranque que tiene la obra en el sistema; si no coincide, la curva se corre.');
+  }
+
+  return {
+    ok: true,
+    esquema: 1,
+    inicio,
+    fin,
+    duracion: txt(cab.DURACION) || null,
+    obra: txt(cab.OBRA) || null,
+    meses: cols.length,
+    total,
+    totalDeclarado,
+    partidas,
+    avisos,
+    filaEncabezado: hr + 1,
+  };
+}
+
 // ── CARGA DE PRESUPUESTO / CATÁLOGO ────────────────────────────────────────
 // Parser inteligente: detecta columnas por patrón, no por posición fija
 function parsearPresupuesto(data, importeContrato) {
