@@ -229,6 +229,104 @@ const CATALOGO = { obraId: OBRA, importeContrato: 2000, totalLeido: 2000,
     'y sigue sin ver la maquinaria: abrirle el calendario no abrió el costo',
     cMaq ? 'rebotó' : 'LEYÓ la maquinaria — la frontera del margen se rompió');
 
+  // ── 5. LA DEPENDENCIA CARGA EL MISMO ANEXO, EN SU PROPIA RUTA ───────────
+  // Se le añadió al banco el 2026-11-04, al descubrir que la pantalla del
+  // programa NO es de constructora: `CargaDelPrograma` no lleva guarda por
+  // tipo de organización, y la dependencia llega a ella por «Contrato →
+  // Catálogo de conceptos» (`SUBTABS_PLANEACION_DEPENDENCIA`). O sea que un
+  // supervisor municipal ve el cargador, arrastra su DE-5 y oprime confirmar.
+  //
+  // Su ruta NO es la misma: `conOrg` antepone `orgs/{oid}/`, así que el
+  // documento es `orgs/{oid}/obras/{id}/config/programa`. El bloque de
+  // dependencia de las reglas tiene `config/info`, `parametros`, `catalogo`,
+  // `estimaciones`, `permisos` y `evidencia` — y NO tenía `config/programa`.
+  //
+  // El señuelo que hizo que esto pasara inadvertido: sí existe un
+  // `match /programa/{pid}` unos renglones más arriba. Es una SUBCOLECCIÓN
+  // documental de las cinco del modelo viejo, y no cubre un documento que se
+  // llama `programa` dentro de `config`. Leyendo las reglas de corrido parece
+  // que la ruta está contemplada. Por eso esto se mide con operaciones y no
+  // comprobando que el `match` exista: un `match` puede existir y no aplicar.
+  console.log('\n5. El supervisor de la dependencia carga el programa de SU obra');
+  const dep = (rol, obras, todas = false) => ({
+    tipo: 'dependencia', rol, orgId: 'coatza', todas, obras });
+  const OID = 'coatza';
+  const rutaD = (db, docu) => doc(db, 'orgs', OID, 'obras', OBRA, 'config', docu);
+
+  const supervisor = await abrir(`sup-${sello}`, `sup-${OBRA}`, dep('supervisor_obra', [OBRA]));
+  const e5 = await intentar(() => setDoc(rutaD(supervisor, 'programa'), PROGRAMA));
+  check(!e5, 'el supervisor asignado escribe `config/programa` en su organización',
+    e5 ? `DENEGADA: ${e5.message} — la pantalla diría «no se pudo guardar» y el ` +
+         'avance seguiría midiéndose contra la recta' : 'queda guardado');
+
+  // Que el catálogo sí pase y el programa no es la prueba de que no es un
+  // problema de claims ni de la obra: es esa ruta y ninguna otra.
+  const e5cat = await intentar(() => setDoc(rutaD(supervisor, 'catalogo'), CATALOGO));
+  check(!e5cat && !e5,
+    'y el catálogo de la misma obra pasa por la misma sesión: si uno pasa y el otro no, es la RUTA',
+    `catalogo ${e5cat ? 'DENEGADO' : 'pasa'} · programa ${e5 ? 'DENEGADO' : 'pasa'}`);
+
+  const leidoD = await leerODenegada(rutaD(supervisor, 'programa'));
+  check(leidoD?.partidas?.[0]?.montos?.[1] === 900,
+    'y sus meses vuelven como se guardaron, igual que del lado de la constructora',
+    JSON.stringify(leidoD?.partidas?.[0]?.montos));
+
+  // ── 6. LAS MISMAS LLAVES QUE `config/catalogo`, TAMBIÉN AQUÍ ────────────
+  // Mismo principio que §3: el catálogo dice QUÉ y el programa CUÁNDO. Si las
+  // llaves se separan, alguien ve el alcance sin el plazo o al revés.
+  console.log('\n6. En la dependencia el programa se gobierna igual que el catálogo');
+  const actoresD = [
+    ['el director de Obras', await abrir(`dob-${sello}`, 'dob', dep('director_obras', [], true))],
+    ['el contralor', await abrir(`ctr-${sello}`, 'ctr', dep('contralor', [], true))],
+    ['el contratista de la obra', await abrir(`ctt-${sello}`, 'ctt', dep('contratista', [OBRA]))],
+    ['un supervisor de otra obra', await abrir(`sup2-${sello}`, 'sup2', dep('supervisor_obra', [OTRA]))],
+  ];
+  for (const [quien, db] of actoresD) {
+    const rC = await intentar(() => getDoc(rutaD(db, 'catalogo')));
+    const rP = await intentar(() => getDoc(rutaD(db, 'programa')));
+    const wC = await intentar(() => setDoc(rutaD(db, 'catalogo'), CATALOGO));
+    const wP = await intentar(() => setDoc(rutaD(db, 'programa'), PROGRAMA));
+    check(!!rC === !!rP && !!wC === !!wP,
+      `${quien}: lo mismo en las dos rutas`,
+      `catalogo lee ${rC ? 'no' : 'sí'}/escribe ${wC ? 'no' : 'sí'} · ` +
+      `programa lee ${rP ? 'no' : 'sí'}/escribe ${wP ? 'no' : 'sí'}`);
+  }
+
+  // ── 7. EL CONTRATISTA VE LA VARA, Y EL CONTRALOR NO RECALENDARIZA ───────
+  // El espejo de §4. Allá el que paga es el cliente de la constructora; aquí
+  // el que ejecuta es el contratista del municipio, y la decisión es la misma
+  // por la misma razón: se le publica su desviación, tiene que poder ver
+  // contra qué. Y el contralor fiscaliza: lee todo y no corrige nada.
+  console.log('\n7. El contratista ve el programa; el contralor no lo mueve');
+  const contratista = actoresD[2][1];
+  let vistaCtt = null;
+  const cttLee = await intentar(async () => {
+    vistaCtt = (await getDoc(rutaD(contratista, 'programa'))).data();
+  });
+  check(!cttLee, 'el contratista lee el programa de su obra',
+    cttLee ? `DENEGADA: ${cttLee.message}` : 'lo ve');
+  check(vistaCtt?.partidas?.[0]?.montos?.[1] === 900,
+    'y ve el reparto por mes, no sólo el total',
+    JSON.stringify(vistaCtt?.partidas?.[0]?.montos));
+  const cttEsc = await intentar(() => setDoc(rutaD(contratista, 'programa'), PROGRAMA));
+  check(cttEsc && denegado(cttEsc), 'pero no lo escribe',
+    cttEsc ? 'rebotó' : 'ESCRIBIÓ — el contratista se recalendarizaría a sí mismo');
+  const ctrEsc = await intentar(() => setDoc(rutaD(actoresD[1][1], 'programa'), PROGRAMA));
+  check(ctrEsc && denegado(ctrEsc), 'y el contralor tampoco: quien fiscaliza no corrige',
+    ctrEsc ? 'rebotó' : 'ESCRIBIÓ — la decisión de 2026-09 dice lectura amplia sin edición');
+
+  // ── 8. LA FRONTERA DEL MARGEN NO SE MOVIÓ ───────────────────────────────
+  // Abrirle el calendario a la dependencia no le abre la economía del
+  // contratista. Es el mismo principio que la maquinaria en §4, y aquí vale
+  // doble: las seis rutas de costo NO tienen equivalente en este bloque a
+  // propósito, y el programa es plazo, no costo.
+  console.log('\n8. El programa es plazo, no economía del contratista');
+  const dirObras = actoresD[0][1];
+  const dMaq = await intentar(() => getDoc(doc(dirObras, 'orgs', OID, 'obras', OBRA, 'avance', 'maquinaria')));
+  check(dMaq && denegado(dMaq),
+    'el director de Obras lee el programa y NO la maquinaria de quien ejecuta',
+    dMaq ? 'rebotó' : 'LEYÓ la maquinaria — la frontera del margen se rompió');
+
   veredicto();
 })().catch(e => { console.error(e); process.exit(2); });
 
@@ -244,7 +342,29 @@ const DERIVACIONES = [
   ['la escritura se abre a cualquiera que pueda VER la obra',
     s => s.replace(/(match \/config\/programa \{\n\s*allow read: if puedeVerObraC\(obraId\);\n\s*allow write: if )puedeEditarObraC\(obraId\)/,
                    '$1puedeVerObraC(obraId)')],
+
+  // Las tres de la dependencia. Se distinguen del bloque de constructora por
+  // `puedeVerObraD`, que sólo aparece en el de abajo: el `match` se llama
+  // igual en los dos y una derivación que apuntara al nombre mutaría el que
+  // no es, saldría roja por §1 y parecería que vigila algo que no vigila.
+  ['la ruta de la DEPENDENCIA no tiene regla (es el defecto que se midió)',
+    s => s.replace(/      match \/config\/programa \{\n        allow read:  if oid == orgId\(\) && puedeVerObraD\(obraId\);\n        allow write: if oid == orgId\(\) && puedeEditarObraD\(obraId\);\n      \}\n/, '')],
+  ['al contratista se le esconde el programa contra el que se le mide',
+    s => s.replace(/(match \/config\/programa \{\n\s*allow read:  if oid == orgId\(\) && puedeVerObraD\(obraId\))/,
+                   '$1 && !esContratista()')],
+  ['el contralor recalendariza la obra que fiscaliza',
+    s => s.replace(/(match \/config\/programa \{\n\s*allow read:  if oid == orgId\(\) && puedeVerObraD\(obraId\);\n\s*allow write: if oid == orgId\(\) && )puedeEditarObraD\(obraId\)/,
+                   '$1esDirectivoD()')],
+  // El señuelo, puesto a prueba. Si `match /programa/{pid}` cubriera
+  // `config/programa`, quitar la regla nueva daría igual y la derivación de
+  // arriba saldría VERDE. Ésta afirma lo contrario desde el otro lado:
+  // borrado el señuelo, nada cambia, porque nunca cubrió esta ruta. Una
+  // derivación que NO debe poner nada en rojo no sirve como contraprueba, así
+  // que se comprueba aquí mismo y aparte.
 ];
+
+const SENUELO = ['borrar `match /programa/{pid}`, que parecía cubrir esta ruta',
+  s => s.replace(/      match \/programa\/\{pid\} \{\n[^}]*\n      \}\n/, '')];
 
 function contraprueba() {
   if (process.env.SIN_CONTRAPRUEBA || REGLAS_DERIVADAS) return 0;
@@ -269,6 +389,28 @@ function contraprueba() {
       malas++;
       console.log(`   ✗ «${nombre}» → salió ${r.status} ` +
         `(${r.status === 0 ? 'VERDE: la prueba no lo detecta' : 'NO ARRANCÓ: el banco revienta'})`);
+      if (r.status === 2) console.log((r.stdout || '') + (r.stderr || '').slice(0, 600));
+    }
+  }
+
+  // El señuelo, al revés que las demás: ésta tiene que salir VERDE.
+  const [nomSen, derSen] = SENUELO;
+  const derSenuelo = derSen(original);
+  if (derSenuelo === original) {
+    console.log(`   ✗ «${nomSen}»: la derivación no aplicó — el señuelo ya no está donde se creía`);
+    malas++;
+  } else {
+    const tmp = path.join(os.tmpdir(),
+      `contraprueba-senuelo-${Math.random().toString(36).slice(2)}.rules`);
+    fs.writeFileSync(tmp, derSenuelo);
+    const r = require('child_process').spawnSync(process.execPath, [__filename],
+      { encoding: 'utf8', env: { ...process.env, ARCH_REGLAS: tmp } });
+    fs.unlinkSync(tmp);
+    if (r.status === 0) console.log(`   ✓ «${nomSen}» → VERDE, que es lo correcto: nunca cubrió \`config/programa\``);
+    else {
+      malas++;
+      console.log(`   ✗ «${nomSen}» → salió ${r.status}: entonces SÍ cubría algo de lo que este banco juzga, ` +
+        'y la regla nueva puede estar de más o mal puesta');
       if (r.status === 2) console.log((r.stdout || '') + (r.stderr || '').slice(0, 600));
     }
   }

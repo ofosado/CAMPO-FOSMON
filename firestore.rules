@@ -537,6 +537,29 @@ service cloud.firestore {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
         allow write: if oid == orgId() && puedeEditarObraD(obraId);
       }
+      // El anexo del contrato, del lado del municipio. Mismas llaves que
+      // `config/catalogo`: el catálogo dice QUÉ se contrató y el programa
+      // CUÁNDO, y separarlas deja a alguien viendo el alcance sin el plazo.
+      //
+      // Faltaba, y la pantalla ya estaba puesta. `CargaDelPrograma` no lleva
+      // guarda por tipo de organización y la dependencia llega a ella por
+      // «Contrato → Catálogo de conceptos»: el supervisor veía el cargador,
+      // arrastraba su DE-5 y la escritura se iba contra el
+      // `match /{document=**}` final. Medido contra el emulador, no deducido.
+      //
+      // EL SEÑUELO, que es lo que hizo que no se viera: unos renglones arriba
+      // hay un `match /programa/{pid}`. Es una SUBCOLECCIÓN documental de las
+      // cinco del modelo viejo, y no cubre un documento llamado `programa`
+      // DENTRO de `config`. Leído de corrido parece que la ruta ya estaba.
+      //
+      // El contratista LO LEE, por lo mismo que el cliente del lado de la
+      // constructora: es el calendario que firmó y la vara con la que se le
+      // publica el atraso. Escribe quien edita la obra — el contralor no,
+      // que fiscaliza y no corrige.
+      match /config/programa {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId);
+        allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
       // Lee todo el que ve la obra —el avance financiero es parte del
       // expediente—, pero escribe sólo quien tiene la autoridad del pago.
       match /config/estimaciones {
