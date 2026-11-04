@@ -16,8 +16,8 @@
 //     con severidad alta— dispara contra el programa cuando lo hay.
 //
 // EL RÓTULO ES LA MITAD DEL DEFECTO. Medido el 2026-11-04 sobre los tres
-// programas reales de producción, la recta se separa del programa hasta 27.3
-// puntos (emisor), −9.9 (colector) y +14.1 (la Cangrejera). Una app que publica
+// programas reales de producción, la recta se separa del programa hasta +27.3
+// puntos (emisor), −9.9 (colector) y −17.2 (la Cangrejera). Una app que publica
 // la recta llamándola «Avance programado» no da una cifra aproximada: da una
 // cifra con un respaldo contractual que no tiene. Y el signo importa, porque
 // son dos defectos distintos: con la recta por debajo del programa una obra
