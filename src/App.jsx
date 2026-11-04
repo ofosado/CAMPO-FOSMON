@@ -2968,9 +2968,17 @@ const hoyLocalISO = () => fechaEnZonaObra(new Date());
 // recta, y la «desviación» que la app publicaba era la distancia a una recta
 // inventada. El art. 61 hace del programa CONTRACTUAL la base para medir.
 //
-// Medido el 2026-11-04 sobre tres programas reales de producción
-// (`scripts/medir-programas-de-obra.py`): la recta se separa del programa
-// entre 14 y 23 puntos de avance. No es un matiz.
+// Medido el 2026-11-04 sobre los tres programas reales de producción, pasados
+// por el parser de la app (`scripts/medir-programa-real-se-lee.cjs`): donde
+// más se separan, la recta y el programa difieren +27.3 puntos en el emisor,
+// −9.9 en el colector y +14.1 en la Cangrejera. No es un matiz.
+//
+// EL SIGNO IMPORTA y son dos defectos distintos. Con la recta por debajo del
+// programa, una obra atrasada se publica como al día; con la recta por encima,
+// una obra al día se publica como atrasada. Y la separación NO se mide a mitad
+// del plazo: ahí dio 0.3 y 1.1 puntos en dos de las tres, porque una curva S
+// cruza la recta por el centro por construcción. Medir en el punto medio
+// habría dado la conclusión contraria a la correcta.
 //
 // ── QUÉ TRAE UN PROGRAMA DE VERDAD ─────────────────────────────────────────
 //
@@ -3100,6 +3108,28 @@ const pctProgramadoEnFecha = (prog, fechaISO) => {
   const acum = acumuladoProgramado(prog, fechaISO);
   if (acum === null) return null;
   return Math.min(Math.max((acum / total) * 100, 0), 100);
+};
+
+// El programa guardado, listo para calcular, o `null` si no sirve.
+//
+// POR QUÉ EL ARRANQUE SE RESUELVE AL LEER Y NO AL GUARDAR. El AE11 declara
+// «Inicio obra» en su encabezado; el DE-5 no lo trae. Sustituir ahí la fecha
+// de la obra ANTES de guardar dejaría un documento que afirma que el archivo
+// traía una fecha que no traía, y de ahí en adelante nadie podría distinguir
+// el dato del relleno. Así que el documento guarda lo que el archivo dijo, y
+// la sustitución se hace aquí, marcada con `inicioHeredado`, cada vez.
+//
+// Si no hay arranque por ningún lado devuelve `null`: un programa mensual sin
+// saber en qué mes empieza no se puede fechar, y adivinar el mes lo correría
+// entero.
+const programaConArranque = (prog, obra) => {
+  if (!prog || prog.ok === false) return null;
+  if (!Array.isArray(prog.partidas) || !prog.partidas.length) return null;
+  if (!(Number(prog.total) > 0)) return null;
+  const inicio = prog.inicio || obra?.inicio || null;
+  if (!inicio) return null;
+  if (prog.inicio === inicio) return prog;
+  return { ...prog, inicio, inicioHeredado: true };
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -17630,6 +17660,277 @@ function parsearPresupuesto(data, importeContrato) {
   };
 }
 
+// ── LA PANTALLA DEL PROGRAMA DE OBRA — PENDIENTES #51 ──────────────────────
+//
+// Vive junto al catálogo porque son el mismo trámite: los dos salen del mismo
+// expediente de concurso y el segundo no significa nada sin el primero. El
+// catálogo dice QUÉ se contrató; el programa, CUÁNDO.
+//
+// Dos cosas que esta pantalla hace al revés que la del catálogo, a propósito:
+//
+//   · Si el archivo no se entiende, NO ofrece guardar nada. El catálogo tiene
+//     botones de «dividir entre 2» y «ajustar al contratado» porque un
+//     presupuesto mal leído se nota —claves raras, total que no cuadra— y
+//     corregirlo a mano es razonable. Un programa mal leído no se nota: sale
+//     una curva plausible. Aquí sólo se puede cargar lo que se leyó entero.
+//
+//   · Antes de guardar enseña LA CIFRA QUE JUSTIFICA EL CAMBIO: a mitad del
+//     plazo, cuánto dice el programa de verdad contra el 50% que decía la
+//     recta. Si el programa cargado fuera el equivocado, ese número lo delata
+//     antes de que se guarde, no tres semanas después en una estimación.
+function CargaDelPrograma({obra, editar}) {
+  const [guardado, setGuardado] = useState(null);
+  const [resultado, setResultado] = useState(null);
+  const [nombreArchivo, setNombreArchivo] = useState('');
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+  const [reemplazar, setReemplazar] = useState(false);
+  const fileRef = useRef();
+
+  useEffect(() => { ensureXLSX().catch(() => {}); }, []);
+  useEffect(() => {
+    let vivo = true;
+    fsGet(`obras/${obra.id}/config/programa`).then(d => { if (vivo && d) setGuardado(d); });
+    return () => { vivo = false; };
+  }, [obra.id]);
+
+  function procesar(file) {
+    if (!file) return;
+    setCargando(true); setError(''); setResultado(null);
+    setNombreArchivo(file.name);
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try {
+        const XLSX = await ensureXLSX();
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        // El programa es la PRIMERA hoja en los dos formatos oficiales. Si
+        // algún día no lo es, el parser se niega y lo dice; no se busca a
+        // ciegas en todas las hojas para que «alguna» cuele.
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+        setResultado(parsearPrograma(rows));
+      } catch (err) {
+        setError('No se pudo abrir el archivo: ' + err.message);
+      }
+      setCargando(false);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  async function confirmar() {
+    if (!resultado?.ok) return;
+    const doc = {
+      obraId: obra.id,
+      esquema: resultado.esquema,
+      inicio: resultado.inicio,
+      fin: resultado.fin,
+      duracion: resultado.duracion,
+      obraDelArchivo: resultado.obra || null,
+      meses: resultado.meses,
+      total: resultado.total,
+      totalDeclarado: resultado.totalDeclarado,
+      partidas: resultado.partidas,
+      avisos: resultado.avisos,
+      filaEncabezado: resultado.filaEncabezado,
+      archivo: nombreArchivo,
+      fechaCarga: hoyLocalISO(),
+    };
+    const ok = await fsSetA(`obras/${obra.id}/config/programa`, doc,
+      { modulo: 'presupuesto', entidad: `programa de obra ${doc.meses} meses`,
+        obraId: obra.id, obraNombre: obra.contrato || obra.nombre,
+        meta: { totalProgramado: doc.total, partidas: doc.partidas.length } });
+    if (!ok) {
+      setError('No se pudo guardar el programa. No se cambió nada; revisa la conexión y vuelve a intentar.');
+      return;
+    }
+    setGuardado(doc); setResultado(null); setReemplazar(false);
+  }
+
+  // La cifra que justifica el cambio: cuánto se separa este programa de la
+  // recta que lo sustituía, y QUÉ DÍA.
+  //
+  // NO se mide a mitad del plazo, y eso costó una corrección. La primera
+  // versión comparaba ahí, y contra los tres programas reales de producción
+  // dio 0.3 puntos en el colector y 1.1 en la Cangrejera — o sea, «la recta
+  // estaba bien». No lo está: una curva S CRUZA la recta por el centro por
+  // construcción, así que el punto medio es el único sitio donde las dos
+  // siempre coinciden. Medido como máximo sobre el plazo, los mismos tres
+  // programas dan +27.3, −9.9 y +14.1 puntos.
+  //
+  // El signo se conserva porque las dos direcciones son defectos distintos:
+  // con la recta por debajo, una obra al día se publica como atrasada; con la
+  // recta por encima, una obra atrasada se publica como al día.
+  //
+  // El plazo es el DEL PROGRAMA —su arranque y su número de meses—, no el que
+  // la obra tiene capturado: lo que se compara es el programa contra la recta
+  // de ESE programa, y mezclar los dos plazos compararía dos cosas distintas.
+  const contraLaRecta = (prog) => {
+    const p = programaConArranque(prog, obra);
+    const meses = mesesDelPrograma(p?.inicio, p?.meses);
+    if (!p || !meses.length) return null;
+    const ini = fechaLocalDeISO(p.inicio);
+    const [aF, mF] = meses[meses.length - 1];
+    const dias = Math.round((new Date(aF, mF, 1) - ini) / 86400000);
+    if (!(dias > 0)) return null;
+    // Un paso por semana y no por día: la gráfica de la app es semanal, así
+    // que la separación que alguien puede llegar a ver es la de un corte
+    // semanal. Recorrer 180 días en el render para afinar décimas sería pagar
+    // por una precisión que ninguna pantalla muestra.
+    let peor = null;
+    for (let k = 0; k <= dias; k += 7) {
+      const f = fechaEnZonaObra(new Date(ini.getTime() + k * 86400000));
+      const pct = pctProgramadoEnFecha(p, f);
+      if (pct === null) continue;
+      const sep = pct - (k / dias) * 100;
+      if (!peor || Math.abs(sep) > Math.abs(peor.sep)) peor = { f, pct, sep };
+    }
+    return peor ? { ...peor, heredado: !!p.inicioHeredado } : null;
+  };
+
+  const resumen = (prog, titulo) => {
+    const cr = contraLaRecta(prog);
+    return (
+      <>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginBottom:10}}>
+          <Kpi label="Meses" value={prog.meses} sub={`encabezado en el renglón ${prog.filaEncabezado}`} color={C.blue}/>
+          <Kpi label="Partidas" value={prog.partidas.length} sub="calendarizadas" color={C.blue}/>
+          <Kpi label="Total programado" value={MXN(prog.total)} sub="suma de los meses" color={C.green} size={12}/>
+          <Kpi label="Arranque" value={prog.inicio || obra.inicio || '—'}
+            sub={prog.inicio ? 'del archivo' : (obra.inicio ? 'de la obra: el archivo no lo trae' : 'sin arranque')}
+            color={prog.inicio ? C.green : C.yellow} size={12}/>
+        </div>
+        {cr && (
+          <div style={{padding:'10px 12px',background:C.blueBg,
+            border:`0.5px solid ${alfa(C.blue, 33.33)}`,borderRadius:6,fontSize:11,
+            color:C.textPri,lineHeight:1.5,marginBottom:8}}>
+            Donde más se separan, el <b>{cr.f}</b>, este programa pide{' '}
+            <b>{NUM(cr.pct, 1)}%</b> y la recta que se usaba antes pedía{' '}
+            <b>{NUM(cr.pct - cr.sep, 1)}%</b>: <b>{NUM(Math.abs(cr.sep), 1)} puntos</b> de avance.
+            {' '}
+            {cr.sep < 0
+              ? <>Con la recta, ese día la obra se publicaba <b>atrasada</b> estando al día.</>
+              : <>Con la recta, ese día la obra se publicaba <b>al día</b> estando atrasada.</>}
+            {cr.heredado && <> El arranque se tomó de la obra porque el archivo no lo declara.</>}
+          </div>
+        )}
+        {prog.totalDeclarado !== null && prog.totalDeclarado !== undefined && (
+          <div style={{fontSize:10,color:C.textMut,marginBottom:6}}>
+            El archivo declara un acumulado final de {MXN(prog.totalDeclarado)}.
+          </div>
+        )}
+        {(prog.avisos || []).map((a, i) => (
+          <div key={i} style={{padding:'7px 10px',background:C.yellowBg,
+            border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,fontSize:10,
+            color:C.textPri,marginBottom:5}}>{a}</div>
+        ))}
+        {titulo}
+      </>
+    );
+  };
+
+  return (
+    <>
+      <Card>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+          <Tit>Programa de obra — {obra.nombre}</Tit>
+          {guardado && !reemplazar && <Bdg color={C.green}>Cargado el {guardado.fechaCarga}</Bdg>}
+        </div>
+        <div style={{fontSize:10,color:C.textMut}}>
+          El anexo mensual del contrato (AE11 o DE-5). Es la vara contra la que se mide el atraso.
+          Sin él, el «avance programado» se reparte en línea recta sobre el plazo, y ninguna obra avanza en línea recta.
+        </div>
+      </Card>
+
+      {guardado && !reemplazar && (
+        <Card>
+          {resumen(guardado, null)}
+          <div style={{fontSize:10,color:C.textMut,marginBottom:8}}>
+            Archivo: {guardado.archivo || '—'}
+          </div>
+          {editar && (
+            <button onClick={() => setReemplazar(true)}
+              style={{background:C.yellow,border:'none',borderRadius:7,padding:'8px 14px',
+                fontSize:11,fontWeight:700,color:C.caliza,cursor:'pointer'}}>
+              Reemplazar programa con archivo nuevo
+            </button>
+          )}
+        </Card>
+      )}
+
+      {(!guardado || reemplazar) && editar && !resultado && (
+        <Card>
+          <div style={{border:`1.5px dashed ${C.borderM}`,borderRadius:10,padding:24,textAlign:'center',cursor:'pointer'}}
+            onClick={() => fileRef.current?.click()}
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = C.caliza; }}
+            onDragLeave={e => { e.currentTarget.style.borderColor = C.borderM; }}
+            onDrop={e => { e.preventDefault(); e.currentTarget.style.borderColor = C.borderM; procesar(e.dataTransfer.files[0]); }}>
+            {cargando
+              ? <div style={{fontSize:13,color:C.caliza}}>Leyendo el programa…</div>
+              : <>
+                  <div style={{fontSize:13,fontWeight:600,color:C.textSec,marginBottom:4}}>
+                    Arrastra aquí el Excel del programa
+                  </div>
+                  <div style={{fontSize:10,color:C.textMut}}>
+                    Anexo AE11 o DE-5, tal como viene. Se lee la primera hoja.
+                  </div>
+                </>}
+          </div>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:'none'}}
+            onChange={e => procesar(e.target.files[0])}/>
+          {reemplazar && (
+            <button onClick={() => { setReemplazar(false); setError(''); }}
+              style={{background:'none',border:`0.5px solid ${C.borderM}`,borderRadius:7,
+                padding:'6px 12px',fontSize:10,color:C.textSec,cursor:'pointer',marginTop:8}}>
+              Cancelar
+            </button>
+          )}
+        </Card>
+      )}
+
+      {resultado && !resultado.ok && (
+        <Card accent={C.red}>
+          <Tit>Este archivo no se pudo leer como programa</Tit>
+          <div style={{fontSize:11,color:C.textPri,lineHeight:1.5,margin:'6px 0 10px'}}>
+            {resultado.porQue}
+          </div>
+          <div style={{fontSize:10,color:C.textMut,marginBottom:10}}>
+            No se guardó nada. Un programa a medias dibujaría una curva creíble y equivocada,
+            así que aquí no se carga lo que no se entendió completo.
+          </div>
+          <button onClick={() => { setResultado(null); setError(''); }}
+            style={{background:'none',border:`0.5px solid ${C.borderM}`,borderRadius:7,
+              padding:'6px 12px',fontSize:10,color:C.textSec,cursor:'pointer'}}>
+            Probar con otro archivo
+          </button>
+        </Card>
+      )}
+
+      {resultado?.ok && (
+        <Card accent={C.green}>
+          <Tit>Revisa antes de guardar — {nombreArchivo}</Tit>
+          <div style={{height:8}}/>
+          {resumen(resultado, null)}
+          {error && <div style={{background:'rgba(220,38,38,0.12)',
+            border:'0.5px solid rgba(220,38,38,0.3)',borderRadius:7,padding:'8px 12px',
+            fontSize:11,color:C.red,margin:'8px 0'}}>{error}</div>}
+          <div style={{display:'flex',gap:8,marginTop:10}}>
+            <button onClick={confirmar}
+              style={{background:C.green,border:'none',borderRadius:7,padding:'8px 14px',
+                fontSize:11,fontWeight:700,color:'#fff',cursor:'pointer'}}>
+              {guardado ? 'Reemplazar el programa guardado' : 'Guardar este programa'}
+            </button>
+            <button onClick={() => { setResultado(null); setError(''); }}
+              style={{background:'none',border:`0.5px solid ${C.borderM}`,borderRadius:7,
+                padding:'8px 14px',fontSize:11,color:C.textSec,cursor:'pointer'}}>
+              Cancelar
+            </button>
+          </div>
+        </Card>
+      )}
+    </>
+  );
+}
+
 function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
   // Pre-cargar SheetJS al montar (fire-and-forget; procesarArchivo
   // vuelve a llamar ensureXLSX() para garantizar disponibilidad antes de usarlo)
@@ -18269,6 +18570,14 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             </>;
           })()}
         </Card>
+      )}
+
+      {/* El programa va debajo del catálogo, y sólo cuando el catálogo no está
+          a medio revisar: en la fase de revisión la página mide varias
+          pantallas y un segundo cargador ahí invita a confundir los archivos
+          —el del catálogo y el del programa salen del mismo expediente—. */}
+      {(fase === 'inicio' || fase === 'confirmado') && (
+        <CargaDelPrograma obra={obra} editar={editar}/>
       )}
     </div>
   );

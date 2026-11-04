@@ -56,7 +56,7 @@ noArranco.vigilarExcepciones('src/App.jsx');
 
 const PEDIDOS = [
   'tramosDeBarra', 'diasDelMes', 'mesesDelPrograma', 'diaDeBarra',
-  'acumuladoProgramado', 'pctProgramadoEnFecha',
+  'acumuladoProgramado', 'pctProgramadoEnFecha', 'programaConArranque',
 ];
 
 const { cuerpo, faltan } = fuenteDeApp(PEDIDOS, { tolerante: true });
@@ -267,6 +267,31 @@ function correr(fuente) {
     'y si el programa arranca restando, no sale un por ciento negativo',
     `dio ${pct(DESCUADRADO, '2026-03-05')}`);
 
+  // 8 · EL ARRANQUE QUE EL ARCHIVO NO TRAE
+  // El AE11 declara «Inicio obra»; el DE-5 no. La sustitución se hace al LEER
+  // y no al guardar, para que el documento no afirme que el archivo traía una
+  // fecha que no traía. Lo que se exige aquí es que la sustitución no mienta
+  // en ninguna de las dos direcciones: ni pisa el dato del archivo, ni se
+  // inventa un mes cuando no hay por dónde.
+  const pca = fn.programaConArranque;
+  const SIN_INICIO = { ...EMISOR, inicio: null };
+  check(pca(EMISOR, { inicio: '2020-01-01' }) === EMISOR,
+    'cuando el archivo declara su arranque, la obra NO lo pisa',
+    `quedó ${pca(EMISOR, { inicio: '2020-01-01' })?.inicio}`);
+  const heredado = pca(SIN_INICIO, { inicio: '2026-08-29' });
+  check(heredado?.inicio === '2026-08-29' && heredado.inicioHeredado === true,
+    'cuando no lo declara, se toma el de la obra y queda MARCADO como heredado',
+    `${heredado?.inicio} · heredado ${heredado?.inicioHeredado}`);
+  check(cerca(pct(heredado, '2026-09-01'), pct(EMISOR, '2026-09-01')),
+    'y con el arranque heredado la cuenta sale igual que si el archivo lo trajera',
+    `heredado ${pct(heredado, '2026-09-01')} · del archivo ${pct(EMISOR, '2026-09-01')}`);
+  check(pca(SIN_INICIO, { inicio: null }) === null,
+    'sin arranque por ningún lado devuelve null: adivinar el mes correría el programa entero');
+  check(pca({ ...EMISOR, partidas: [] }, null) === null &&
+    pca({ ...EMISOR, total: 0 }, null) === null &&
+    pca(null, null) === null && pca({ ok: false, porQue: 'x' }, null) === null,
+    'un programa vacío, sin total, ausente o rechazado tampoco pasa por aquí');
+
   return fallos;
 }
 
@@ -288,6 +313,12 @@ const MUTACIONES = [
   ['no topa en cien al pasarse del plazo',
     'return Math.min(Math.max((acum / total) * 100, 0), 100);',
     'return (acum / total) * 100;'],
+  ['el arranque de la obra le gana al que declara el archivo',
+    'const inicio = prog.inicio || obra?.inicio || null;',
+    'const inicio = obra?.inicio || prog.inicio || null;'],
+  ['se inventa un mes cuando nadie declara el arranque',
+    "if (!inicio) return null;\n  if (prog.inicio === inicio) return prog;",
+    "if (!inicio) return { ...prog, inicio: '2026-01-01' };\n  if (prog.inicio === inicio) return prog;"],
 ];
 
 if (process.argv.includes('--contraprueba')) {
@@ -315,7 +346,7 @@ if (process.argv.includes('--contraprueba')) {
     console.error(`\nROJO: ${sobrevivieron} mutación(es) sobrevivieron. Las aserciones no muerden.`);
     process.exit(1);
   }
-  console.log('\nverde: las cinco mutaciones salieron en rojo.');
+  console.log(`\nverde: las ${MUTACIONES.length} mutaciones salieron en rojo.`);
   process.exit(0);
 }
 
