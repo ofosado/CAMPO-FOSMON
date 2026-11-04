@@ -606,7 +606,11 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       }],
       avisos: [],
       filaEncabezado: 18,
-      archivo: 'AE11 PROGRAMA GENERAL MONTOS (sembrado).xlsx',
+      // El rótulo sigue al formato del anexo. Estaba fijo en «AE11» y la obra
+      // de dependencia, cuyo anexo es un DE-5, se presentaba en pantalla como
+      // AE11: la demo contaba algo que no era. `(sembrado)` se queda, para que
+      // nadie confunda este archivo con uno de verdad.
+      archivo: `${pr.formato || 'AE11'} PROGRAMA GENERAL MONTOS (sembrado).xlsx`,
       fechaCarga: new Date().toISOString().slice(0, 10),
     });
   }
@@ -736,11 +740,18 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // plazo —2026-08-29→2027-02-24 en vez de 2026-08-27→2026-12-24—. El programa
   // que se le siembra es el de su propio anexo, con las tres cifras buenas.
   //
-  // Va del lado CONSTRUCTORA porque la pantalla de carga del programa sólo
-  // existe de este lado; sembrarla en una obra de dependencia pondría el
-  // desacuerdo donde nadie puede verlo. Y va aparte de la 0114 —que cuadra al
-  // peso— y de la 0121 —que no tiene programa— para que una sola sesión enseñe
-  // los tres casos: el que grita, el que se calla y el que no tiene con qué.
+  // Va del lado CONSTRUCTORA porque es una obra de constructora, y aparte de
+  // la 0114 —que cuadra al peso— y de la 0121 —que no tiene programa— para que
+  // una sola sesión enseñe los tres casos: el que grita, el que se calla y el
+  // que no tiene con qué. El caso de la dependencia está en la OP-2026-002.
+  //
+  // Aquí decía que la pantalla del programa «sólo existe de este lado». Es
+  // FALSO y lo escribí yo el 2026-11-04: di por hecho que no existía porque
+  // en el preview abrí la pestaña «Contrato» de la dependencia y me quedé en
+  // su primera sub-pestaña. La ruta es «Contrato → Catálogo de conceptos», y
+  // ahí está. De esa conclusión apresurada salió un pendiente inventado —el
+  // #98 original— y, al ir a comprobarlo, el defecto de verdad: la ruta de la
+  // dependencia no tenía regla en Firestore (ver #98).
   //
   // Las cifras del anexo salen de pasarlo por el parser de la app
   // (`scripts/medir-programa-real-se-lee.cjs`), no de leerlas a ojo. Los montos
@@ -962,6 +973,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
 
   console.log('obras de constructora: 0114, 0128, 0121 (en la raíz) + global/gp_construct');
   console.log('  programa: 0114 cuadra al peso · 0128 NO cuadra (#96) · 0121 sin programa');
+  console.log('            OP-2026-002 NO cuadra del lado dependencia (#98): monto y fin, arranque sí');
   console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
   console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
   console.log(`  fuente api-gp-por-obra · ${gpRenglones + 2} renglones · 1 sin obra ($183,450.75)`);
@@ -1007,6 +1019,23 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     // suelta: las dos formas que tiene producción de no poder fechar una
     // foto. Van en una sola obra para poder ver ese grupo sin que domine.
     semanas: 2, diasSinCaptura: 19, fotosSemanas: 3, fotosSinFecha: true,
+    // EL #98: el cuadre del anexo, del lado del municipio. La pantalla del
+    // programa NO es de constructora —se llega por «Contrato → Catálogo de
+    // conceptos»— y hasta el 2026-11-04 su ruta no tenía regla en Firestore,
+    // así que el supervisor veía el cargador y la escritura rebotaba contra
+    // el `match /{document=**}` final. Esta siembra existe para que la ruta se
+    // recorra con datos, no sólo en el banco de reglas.
+    //
+    // El desacuerdo es DISTINTO al de la 0128 a propósito: aquí el arranque
+    // SÍ coincide y sólo discrepan el monto y el fin. Así se ve que el aviso
+    // enumera lo que no cuadra y se calla lo que sí, en vez de soltar las tres
+    // líneas siempre. La historia es la del convenio: el alta se capturó con
+    // el monto y el plazo ampliados, y el anexo que se cargó es el original.
+    programa: {
+      inicio: '2026-06-15', fin: '2026-10-15', formato: 'DE-5',
+      obraDelArchivo: 'DRENAJE SANITARIO COL. BENITO JUAREZ',
+      montos: [765000, 1530000, 2295000, 1912500, 1147500],
+    },
   });
   await sembrarObra(P, 'OP-2026-003', {
     nombre: 'OBRA DEMO 3 — Alumbrado público', contrato: 'MC-OP-2026-003',
