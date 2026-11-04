@@ -55,6 +55,13 @@ const OBRA = arg('--obra') || '0128';
 // así que se puede quitar para separar «no llega por la marca» de «no llega
 // por el remitente»: dos causas que se ven igual desde el buzón vacío.
 const SIN_MARCA = process.argv.includes('--sin-marca');
+// Con qué remitente sale. Por omisión el que trae la función desplegada. Se
+// puede forzar otro porque el 2026-11-04 el remitente cambió de
+// `campo@fosmon.com.mx` a `no-reply@cotea.com.mx` y dejaron de llegar los
+// correos: mandar el MISMO cuerpo con los dos remitentes al mismo buzón mide
+// si la causa es el dominio nuevo. Leerlo en el tablero de Resend no se puede,
+// la llave de producción sólo sabe mandar.
+const DE = arg('--de');
 
 if (!DESTINO || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(DESTINO)) {
   console.error('Falta `--a correo@dominio`. La dirección se teclea completa a '
@@ -292,8 +299,9 @@ const guardar = (nombre, html) => {
   let mandados = 0;
   for (const s of salidas) {
     const asunto = SIN_MARCA ? s.subject : `[PRUEBA] ${s.subject}`;
+    const remitente = DE || s.from;
     const r = await transporte.enviarEmailResend(apiKey, {
-      from: s.from, to: [DESTINO], subject: asunto, html: s.html,
+      from: remitente, to: [DESTINO], subject: asunto, html: s.html,
     });
     // Un `id` con la marca del interceptor adentro significa que el envío
     // volvió a caer en el espía. Eso no es un envío, y este guion no puede
@@ -303,7 +311,7 @@ const guardar = (nombre, html) => {
         + `${JSON.stringify(r)} — el envío cayó en el interceptor, no en Resend.`);
       process.exit(1);
     }
-    console.log(`mandado  ${s.nombre}  →  ${DESTINO}   (Resend id ${r.id})`);
+    console.log(`mandado  ${s.nombre}  →  ${DESTINO}   de ${remitente}   (Resend id ${r.id})`);
     mandados++;
   }
   console.log('');
