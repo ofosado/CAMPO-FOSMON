@@ -577,6 +577,40 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     data: (obra.estimaciones || []).map(estimacionComoLaApp),
   });
 
+  // El programa de obra (#51, el avance contra una recta). Se siembra SÓLO
+  // donde se pasa, y eso es el punto: con una obra que lo tiene y otra que no,
+  // el preview enseña los dos rótulos lado a lado —«Avance programado» contra
+  // «Avance lineal»— que es la mitad del cambio. Una prueba dice que los
+  // rótulos son distintos; sólo la pantalla dice si se entiende la diferencia.
+  //
+  // La forma del documento es la que escribe `confirmar()` en
+  // `CargaDelPrograma`, no una inventada: si no empatara, el preview diría que
+  // la pantalla no lee el programa cuando lo que no empata es la semilla.
+  if (obra.programa) {
+    const pr = obra.programa;
+    await escribir(`${prefijo}obras/${id}/config/programa`, {
+      obraId: id,
+      esquema: 1,
+      inicio: pr.inicio,
+      fin: pr.fin,
+      duracion: null,
+      obraDelArchivo: obra.contrato,
+      meses: pr.montos.length,
+      total: pr.montos.reduce((t, m) => t + m, 0),
+      totalDeclarado: pr.montos.reduce((t, m) => t + m, 0),
+      partidas: [{
+        sec: '1000 00', sub: 'PROGRAMA GENERAL',
+        importe: pr.montos.reduce((t, m) => t + m, 0),
+        montos: pr.montos,
+        barra: 'Barra=' + pr.montos.map(() => '0-100').join(','),
+      }],
+      avisos: [],
+      filaEncabezado: 18,
+      archivo: 'AE11 PROGRAMA GENERAL MONTOS (sembrado).xlsx',
+      fechaCarga: new Date().toISOString().slice(0, 10),
+    });
+  }
+
   // Sólo del lado constructora: es exactamente lo que una dependencia no pide.
   if (opciones.conEconomia) {
     await escribir(`${prefijo}obras/${id}/avance/maquinaria`, {
@@ -686,6 +720,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     cliente: 'Gobierno de Oaxaca', ubicacion: 'Oaxaca de Juárez, Oax.',
     inicio: '2026-03-01', fin: '2026-12-15', semilla: 11, nPartidas: 14,
     estimaciones: EST_C, semanas: 4, diasSinCaptura: 2, fotosSemanas: 5,
+    // Diez meses, marzo a diciembre, con arranque lento: 1% el primer mes y el
+    // pico en el octavo. Es la forma de una curva S de verdad y suma los
+    // $38.5M del contrato. La 0121 se queda SIN programa a propósito, para que
+    // las dos pantallas se puedan comparar en la misma sesión.
+    programa: {
+      inicio: '2026-03-01', fin: '2026-12-15',
+      montos: [385000, 770000, 1540000, 2695000, 3850000,
+               5390000, 6545000, 6930000, 5775000, 4620000],
+    },
   }, { conEconomia: true, gpId: '0114' });
   await sembrarObra('', '0121', {
     nombre: 'SIOP Coatza Rehab. Av. Universidad', contrato: 'SIOP-2026-0121', contratado: 24800000,

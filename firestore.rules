@@ -244,6 +244,27 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId);
         allow write: if puedeEditarObraC(obraId);
       }
+      // EL PROGRAMA DE OBRA — PENDIENTES #51. El anexo AE11 o DE-5 leído, que
+      // dice cuánto dinero toca en cada mes de cada partida. Mismo permiso que
+      // el catálogo porque es su gemelo: el catálogo dice QUÉ se contrató y
+      // éste CUÁNDO. Un documento por obra, se reemplaza completo.
+      //
+      // El cliente SÍ lo lee —no lleva `!esCliente()`, al revés que la
+      // maquinaria o la nómina—. Es el calendario que él mismo firmó, y la
+      // razón entera de guardarlo es que la pantalla pueda decirle si la obra
+      // va al día contra SU programa en vez de contra una recta inventada.
+      // Esconderle la vara con la que se le mide sería la media verdad que
+      // este expediente no puede contar.
+      //
+      // Sin esta regla la ruta caería en el `match /{document=**}` final, `fsGet`
+      // se tragaría la denegación y devolvería `null` — y `null` aquí significa
+      // «esta obra no tiene programa», que es justo la respuesta que hace que la
+      // pantalla vuelva a la recta. O sea: el programa se podría leer del Excel,
+      // nunca guardarse, y la pantalla seguiría mintiendo sin una señal.
+      match /config/programa {
+        allow read: if puedeVerObraC(obraId);
+        allow write: if puedeEditarObraC(obraId);
+      }
       match /config/otros_gastos {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow write: if puedeEditarObraC(obraId);
