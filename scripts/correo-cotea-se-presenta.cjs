@@ -411,15 +411,34 @@ const leerLlaveResend = () => require('child_process')
 
   const apiKey = leerLlaveResend();
   let mandados = 0;
-  for (const a of armados) {
-    const r = await mandar(apiKey, {
-      from: fn.FROM_EMAIL, to: [a.to], subject: a.subject, html: a.html,
-      attachments: adjuntos,
-    });
-    if (!r.id) {
-      console.error(`ROJO  ${a.to}  →  NO SALIÓ: ${JSON.stringify(r)}`);
-      process.exit(1);
+  // Resend limita a 2 por segundo. En un bucle apretado el 429 llega a mitad
+  // del padrón, y como este correo no se puede retirar, reintentar duplicaría
+  // a quien ya lo recibió: el que se pasa no se puede «despasar». 600 ms deja
+  // margen de sobra y quince correos siguen saliendo en diez segundos.
+  const respirar = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Si uno truena, el guion para pero deja dicho EXACTAMENTE quién sí recibió,
+  // que es lo único que permite retomar sin mandar dos veces.
+  const yaRecibieron = [];
+  const rendirse = (quien, por) => {
+    console.error(`\nROJO  ${quien}  →  ${por}`);
+    console.error(`Ya recibieron (NO volver a mandarles): ${yaRecibieron.join(', ') || '(nadie)'}`);
+    process.exit(1);
+  };
+  for (const [i, a] of armados.entries()) {
+    if (i) await respirar(600);
+    let r;
+    try {
+      r = await mandar(apiKey, {
+        from: fn.FROM_EMAIL, to: [a.to], subject: a.subject, html: a.html,
+        attachments: adjuntos,
+      });
+    } catch (e) {
+      rendirse(a.to, e.message);
     }
+    if (!r.id) {
+      rendirse(a.to, `NO SALIÓ: ${JSON.stringify(r)}`);
+    }
+    yaRecibieron.push(a.to);
     console.log(`mandado  ${String(a.to).padEnd(30)} (Resend id ${r.id})`);
     mandados++;
   }
