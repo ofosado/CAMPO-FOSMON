@@ -2885,11 +2885,15 @@ function rolVisible(rol, rolLabel) {
 const rutaObrasDeOrg = (orgId, tipo) =>
   tipo === "dependencia" ? `orgs/${orgId}/obras` : "obras";
 
-// Cómo se llama una obra en un correo. El mismo orden que usa la bitácora de
-// la app (`contrato || nombre`), para que el renglón del correo y el de la
-// bitácora nombren igual a la misma obra. Si no se puede leer el documento se
-// devuelve el identificador: un correo que dice "OB-2026-XXXXXX" es incómodo,
-// uno que dice "una obra" no sirve para nada.
+// Cómo se llama una obra en un correo: por su `nombre`, que es el apodo con el
+// que se nombra en la casa y mide entre 24 y 40 caracteres en las siete obras
+// vivas. Antes iba `contrato || nombre`, igual que la bitácora de la app, para
+// que las dos nombraran igual a la misma obra. Esa simetría costaba más de lo
+// que valía: `contrato` no es un nombre —en producción vale «N/A», un número
+// de pedido y 236 caracteres de descripción legal— y una bitácora se consulta
+// mientras un correo se lee de corrido. Si no se puede leer el documento se
+// devuelve el identificador: un correo que dice "0128" es incómodo, uno que
+// dice "una obra" no sirve para nada.
 async function nombresDeObras(orgId, tipo, ids) {
   const limpios = [...new Set((ids || []).map(x => String(x || "").trim()).filter(Boolean))];
   if (!limpios.length) return [];
@@ -2900,7 +2904,7 @@ async function nombresDeObras(orgId, tipo, ids) {
       const s = await db.doc(`${base}/${id}`).get();
       if (!s.exists) return id;
       const d = s.data() || {};
-      return String(d.contrato || d.nombre || "").trim() || id;
+      return String(d.nombre || "").trim() || id;
     } catch { return id; }
   }));
 }
@@ -2991,22 +2995,20 @@ function correoBienvenida({ marca, nombre, email, password, rol, rolLabel, obras
 // edita un usuario haría que el correo pareciera un alta nueva, y a la tercera
 // vez nadie lo abre.
 function correoObraAsignada({ marca, nombre, obras }) {
-  const casa = marca?.empresaCorta || marca?.empresa || "";
   const una = obras.length === 1;
   const cuerpo =
     tablaDatos(obras.map((o, i) => [obras.length > 1 ? `Obra ${i + 1}` : "Obra", o])) +
-    parrafoHTML(una
-      ? `Ya la ves al entrar a cotea, en tu lista de obras.`
-      : `Ya las ves al entrar a cotea, en tu lista de obras.`) +
     `<div style="margin:18px 0 4px 0;">${botonHTML("Abrir cotea", APP_URL)}</div>`;
   return {
     subject: una ? `Te asignaron una obra en cotea` : `Te asignaron ${obras.length} obras en cotea`,
     html: sobreCorreo({
       marca,
       titulo: una ? `Te asignaron una obra` : `Te asignaron ${obras.length} obras`,
+      // El título ya dice qué pasó y la cabecera de `sobreCorreo` ya dice en
+      // qué casa, así que la entradilla no los repite: saluda y dice dónde
+      // mirar, que era el párrafo suelto de abajo.
       entradilla: `${ESC_HTML(String(nombre || "").split(" ")[0] || "Hola")}, ` +
-        (casa ? `en ${ESC_HTML(casa)} ` : "") + `te acaban de asignar ` +
-        (una ? `una obra` : `${obras.length} obras`) + `.`,
+        (una ? `ya la ves` : `ya las ves`) + ` en tu lista al entrar a cotea.`,
       cuerpoHTML: cuerpo,
       pie: "Este correo lo manda cotea al asignarte una obra.",
     }),
@@ -3021,21 +3023,34 @@ function correoObraAsignada({ marca, nombre, obras }) {
 // eso que la etiqueta no se puede dejar fija.
 function correoObraNueva({ marca, tipo, obraId, obra, dioElAlta }) {
   const dep = tipo === "dependencia";
-  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;
+  // `nombre` es el apodo corto con el que la obra se nombra en la casa —«SIOP
+  // COLECTOR MALECON PENTAGONO 0926», 36 caracteres—. `contrato` NO es un
+  // nombre, y preferirlo era el defecto: en producción vale `"N/A"` en la
+  // 0114, un número de pedido —`"6700388901"`— en la 0125, y 236 caracteres
+  // de descripción legal en la 0128. Las tres acababan de título. Dos de esas
+  // tres ni siquiera se podían leer: «Obra nueva: N/A».
+  const nombreObra = String(obra.nombre || "").trim() || obraId;
+  const contrato = String(obra.contrato || "").trim();
   const contraparte = dep
     ? String(obra.empresaEjecutante || "").trim()
     : String(obra.cliente || "").trim();
   const monto = Number(obra.presupuesto) || 0;
 
   const cuerpo =
+    // Sin el renglón «Obra»: el nombre ya es el título. Repetirlo tres veces
+    // —asunto, título y tabla— hacía que un aviso de cuatro datos ocupara
+    // veinte renglones, y lo que se repite se deja de leer.
     tablaDatos([
-      ["Obra", nombreObra],
       ["Identificador", obraId],
       [dep ? "Empresa ejecutante" : "Cliente", contraparte],
       // Un monto en cero no se pinta como "$0": en el alta el presupuesto se
       // puede dejar en blanco, y "$0" es una cifra inventada donde no hubo
       // captura. `tablaDatos` tira el renglón vacío.
       [dep ? "Monto contratado" : "Presupuesto", monto > 0 ? MXN_FMT(monto) : ""],
+      // La descripción legal se dice UNA vez y aquí, que es donde se busca
+      // cuando se busca. No se tira: para una obra de gobierno es como se
+      // identifica en el oficio.
+      ["Contrato", contrato],
     ]) +
     (monto > 0 ? "" : avisoHTML(
       `La obra se dio de alta <b>sin ${dep ? "monto contratado" : "presupuesto"}</b>. ` +
@@ -3043,15 +3058,18 @@ function correoObraNueva({ marca, tipo, obraId, obra, dioElAlta }) {
     )) +
     parrafoHTML(`Una obra sin catálogo no acepta captura de avance todavía. ` +
       `El siguiente paso es cargarle el ${dep ? "catálogo de conceptos" : "presupuesto"}.`) +
-    `<div style="margin:18px 0 4px 0;">${botonHTML("Abrir la obra", `${APP_URL}/?obra=${encodeURIComponent(obraId)}`)}</div>` +
-    (dioElAlta ? parrafoHTML(`La dio de alta ${ESC_HTML(dioElAlta)}.`) : "");
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Abrir la obra", `${APP_URL}/?obra=${encodeURIComponent(obraId)}`)}</div>`;
 
   return {
     subject: `Obra nueva en cotea · ${nombreObra}`,
     html: sobreCorreo({
       marca,
-      titulo: `Obra nueva: ${nombreObra}`,
-      entradilla: `Se dio de alta una obra` + (contraparte ? ` de ${ESC_HTML(contraparte)}` : "") + `.`,
+      titulo: `Obra nueva · ${nombreObra}`,
+      // La entradilla trae algo que no esté ya arriba. Antes repetía al
+      // cliente, que está en la tabla dos renglones más abajo; ahora dice
+      // quién la dio de alta, que era un párrafo suelto al final — el sitio
+      // donde ya nadie llega.
+      entradilla: dioElAlta ? `La dio de alta ${ESC_HTML(dioElAlta)}.` : "",
       cuerpoHTML: cuerpo,
       pie: "Este correo lo manda cotea al dar de alta una obra.",
     }),
@@ -4075,7 +4093,9 @@ async function avisarObraNueva({ orgId, obraId, obra, apiKey }) {
   // Y el aviso en la campana, que es el que se perdía. Se crea aquí por la
   // misma razón por la que se perdía allá: el servidor no tiene que pedirle
   // permiso a una regla para saber a quién avisarle.
-  const nombreObra = String(obra.contrato || obra.nombre || "").trim() || obraId;
+  // El mismo nombre que el correo. La campana es un título de una línea: ahí
+  // 236 caracteres de descripción legal no se recortan, se cortan.
+  const nombreObra = String(obra.nombre || "").trim() || obraId;
   const contraparte = tipo === "dependencia"
     ? String(obra.empresaEjecutante || "").trim()
     : String(obra.cliente || "").trim();

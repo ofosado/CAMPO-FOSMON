@@ -20,7 +20,8 @@
 // Uso:
 //   node scripts/muestra-correo-a-un-buzon.cjs --a correo@dominio
 //   node scripts/muestra-correo-a-un-buzon.cjs --a correo@dominio --enviar
-//   ... --tipo resumen | obra-asignada | los-dos        (por omisión: los-dos)
+//   ... --tipo resumen | obra-asignada | obra-nueva | los-dos   (por omisión: los-dos)
+//   ... --obra 0128          (con qué obra REAL se arma `obra-nueva`)
 //
 // **Por omisión NO manda nada**: arma, guarda el HTML en /tmp y dice a quién
 // se lo habría mandado el cron. Hace falta `--enviar` para que salga.
@@ -48,13 +49,19 @@ const arg = (nombre) => {
 const DESTINO = arg('--a');
 const ENVIAR = process.argv.includes('--enviar');
 const TIPO = arg('--tipo') || 'los-dos';
+const OBRA = arg('--obra') || '0128';
+// `[PRUEBA]` en el asunto evita que un correo de prueba se confunda con el
+// real tres días después. Pero los corchetes son disparador clásico de filtro,
+// así que se puede quitar para separar «no llega por la marca» de «no llega
+// por el remitente»: dos causas que se ven igual desde el buzón vacío.
+const SIN_MARCA = process.argv.includes('--sin-marca');
 
 if (!DESTINO || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(DESTINO)) {
   console.error('Falta `--a correo@dominio`. La dirección se teclea completa a '
     + 'propósito: este correo lleva el dinero de todas las obras adentro.');
   process.exit(2);
 }
-if (!['resumen', 'obra-asignada', 'los-dos'].includes(TIPO)) {
+if (!['resumen', 'obra-asignada', 'obra-nueva', 'los-dos'].includes(TIPO)) {
   console.error(`--tipo desconocido: ${TIPO}`);
   process.exit(2);
 }
@@ -123,7 +130,7 @@ const fetchEspia = async (url, opciones) => {
 };
 
 const PEDIDOS = ['generarYEnviarResumenSemanal', 'correoObraAsignada',
-  'marcaDeOrg', 'orgDeLaRaiz', 'enviarEmailResend', 'FROM_EMAIL'];
+  'avisarObraNueva', 'marcaDeOrg', 'orgDeLaRaiz', 'enviarEmailResend', 'FROM_EMAIL'];
 const { cuerpo, faltan } = fuenteDe(ARCH_FN, PEDIDOS);
 if (faltan.length) {
   console.error(`NO ARRANCÓ: a functions/index.js le faltan ${faltan.join(', ')}`);
@@ -131,7 +138,7 @@ if (faltan.length) {
 }
 const fabricar = new Function('require', 'fetch',
   `"use strict";\n${cuerpo}\nreturn { generarYEnviarResumenSemanal, correoObraAsignada,
-     marcaDeOrg, orgDeLaRaiz, enviarEmailResend, FROM_EMAIL };`);
+     avisarObraNueva, marcaDeOrg, orgDeLaRaiz, enviarEmailResend, FROM_EMAIL };`);
 
 // DOS cierres del MISMO cuerpo, y la diferencia es sólo cuál `fetch` ven.
 // `vivo` lleva el espía, porque de ahí se saca el sobre. **El transporte lleva
@@ -224,7 +231,57 @@ const guardar = (nombre, html) => {
       nombre: 'obra asignada' });
   }
 
-  // ── 3) Mandar, si se pidió ────────────────────────────────────────────────
+  // ── 3) El de obra nueva ───────────────────────────────────────────────────
+  // Este sí se intercepta de verdad: se llama al MISMO `avisarObraNueva` que
+  // corre el disparador, con una obra REAL, y el sobre se atrapa antes de
+  // Resend. Como el disparador escribe la campana después de mandar el correo,
+  // la guarda de sólo lectura revienta justo ahí — y ese estallido es la prueba
+  // de que no se escribió nada. El sobre ya está atrapado cuando pasa.
+  if (TIPO === 'obra-nueva' || TIPO === 'los-dos') {
+    const orgRaiz = await vivo.orgDeLaRaiz(db);
+    const snap = await db.doc(`obras/${OBRA}`).get();
+    if (!snap.exists) {
+      console.error(`NO ARRANCÓ: no existe \`obras/${OBRA}\` en producción. `
+        + 'El previo se arma con una obra de verdad: con una inventada no se '
+        + 'vería el caso que importa, que es el nombre largo.');
+      process.exit(2);
+    }
+    const obra = snap.data();
+    sobres = [];
+    let campanaBloqueada = false;
+    try {
+      await vivo.avisarObraNueva({ orgId: orgRaiz, obraId: OBRA, obra,
+        apiKey: '(llave no usada: interceptado)' });
+    } catch (e) {
+      if (!/ESCRITURA BLOQUEADA/.test(e.message)) throw e;
+      campanaBloqueada = true;
+    }
+    if (sobres.length !== 1) {
+      console.error(`NO ARRANCÓ: se esperaba 1 sobre de obra nueva y se atraparon ${sobres.length}.`);
+      process.exit(2);
+    }
+    const sobre = sobres[0];
+    const reales = [].concat(sobre.to);
+    console.log('');
+    console.log(`OBRA NUEVA — el sobre que sale al dar de alta la ${OBRA}`);
+    console.log(`   asunto:    ${sobre.subject}`);
+    console.log(`   iría a:    ${reales.length} destinatario(s) — ${reales.join(', ')}`);
+    console.log(`   nombre:    ${obra.nombre} (${String(obra.nombre || '').length} caracteres)`);
+    console.log(`   contrato:  ${String(obra.contrato || '').length} caracteres`);
+    // Lo que se midió en el banco, dicho otra vez sobre el dato real: cada
+    // cosa una vez. Si aquí saliera «2», el arreglo no llegó a producción.
+    const vecesNombre = sobre.html.split(obra.nombre).length - 1;
+    const vecesContrato = obra.contrato
+      ? sobre.html.split(obra.contrato).length - 1 : 0;
+    console.log(`   el nombre aparece ${vecesNombre} vez/veces y el contrato ${vecesContrato}`);
+    console.log(`   campana:   ${campanaBloqueada
+      ? 'la escritura se bloqueó — no quedó nada en producción'
+      : 'NO SE INTENTÓ ESCRIBIR (revisar: el disparador debería hacerlo)'}`);
+    console.log(`   HTML:      ${guardar('obra-nueva.html', sobre.html)} (${sobre.html.length} bytes)`);
+    salidas.push({ ...sobre, reales, nombre: 'obra nueva' });
+  }
+
+  // ── 4) Mandar, si se pidió ────────────────────────────────────────────────
   console.log('');
   if (!ENVIAR) {
     console.log(`Nada se mandó. Falta \`--enviar\`. Destino que se usaría: ${DESTINO}`);
@@ -234,9 +291,7 @@ const guardar = (nombre, html) => {
   const apiKey = leerLlaveResend();
   let mandados = 0;
   for (const s of salidas) {
-    // El asunto va marcado: un correo de prueba indistinguible del real es un
-    // correo real para quien lo abre tres días después.
-    const asunto = `[PRUEBA] ${s.subject}`;
+    const asunto = SIN_MARCA ? s.subject : `[PRUEBA] ${s.subject}`;
     const r = await transporte.enviarEmailResend(apiKey, {
       from: s.from, to: [DESTINO], subject: asunto, html: s.html,
     });
