@@ -3215,6 +3215,33 @@ const ROTULO_PROGRAMADO = {
   sin_datos: { kpi: 'Avance programado', sub: 'sin programa ni fechas capturadas' },
 };
 
+// Quién lee el anexo. Una sola vez, aquí, porque son ya tres los tableros que
+// lo necesitan —el de la constructora, el del municipio y el de avance— y la
+// lectura no es un `getDoc` cualquiera: lleva dentro una distinción que se
+// pierde al copiarla.
+//
+// `undefined` NO es `null`. Con `undefined` la respuesta todavía viaja y no se
+// sabe si hay anexo; con `null` ya se sabe que no lo hay y toca la recta,
+// dicha con ese nombre. Quien trate los dos igual publica la recta durante el
+// viaje y la rotula «programado», que es el #51 (el avance contra una recta)
+// reapareciendo por una rendija de milisegundos — visible en cada recarga.
+//
+// `vivo` corta el camino de vuelta cuando la obra cambia antes de que llegue
+// la respuesta: sin él, el anexo de la obra anterior aterriza sobre la nueva.
+const useProgramaDeObra = (obraId) => {
+  const [programa, setPrograma] = useState(undefined);
+  useEffect(() => {
+    let vivo = true;
+    setPrograma(undefined);
+    if (!obraId) { setPrograma(null); return; }
+    fsGet(`obras/${obraId}/config/programa`)
+      .then(d => { if (vivo) setPrograma(d || null); })
+      .catch(() => { if (vivo) setPrograma(null); });
+    return () => { vivo = false; };
+  }, [obraId]);
+  return programa;
+};
+
 // ── EL ANEXO CONTRA EL ALTA — #96 ──────────────────────────────────────────
 //
 // El anexo del contrato trae el monto, el arranque y el fin. El alta de la obra
@@ -5134,20 +5161,49 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'avc_004', categoria: 'avance',
-    titulo: 'Avance vs plazo desbalanceado',
-    descripcion: 'El % de plazo transcurrido supera mucho al % de avance',
+    titulo: 'Avance rezagado contra el programa',
+    descripcion: 'El avance real va por debajo del programa contractual',
     tab: 'operacion', subTab: 'avance',
-    detect: ({obra, kpis}) => {
-      const finVigente = finVigenteDe(obra);
-      if (!obra.inicio || !finVigente || !kpis) return null;
-      const total = (new Date(finVigente) - new Date(obra.inicio))/86400000;
-      const trans = Math.max((Date.now() - new Date(obra.inicio))/86400000, 0);
-      const pctPlazo = Math.min(trans/total*100, 100);
-      const desv = pctPlazo - kpis.af;
-      if (desv > 30) return {severidad:'critico', valor:`-${desv.toFixed(0)}pp`, detalle:'Plazo muy adelantado al avance', extra:`${pctPlazo.toFixed(0)}% plazo vs ${kpis.af.toFixed(0)}% avance`};
-      if (desv > 20) return {severidad:'alto', valor:`-${desv.toFixed(0)}pp`, detalle:'Avance rezagado vs plazo'};
-      if (desv > 10) return {severidad:'medio', valor:`-${desv.toFixed(0)}pp`, detalle:'Avance ligeramente rezagado'};
-      return null;
+    // Esta regla repartía el 100% en línea recta sobre el plazo y publicaba la
+    // distancia a esa recta como el atraso de la obra. `ALERTA_REGLAS` tenía
+    // el mismo defecto y se arregló en el #51 (el avance contra una recta);
+    // ésta se quedó, porque son DOS motores de reglas y sólo se recortó uno.
+    //
+    // Lo que costaba, medido en la 0114 el 2026-11-04: aquí salía −29pp y en
+    // Operación −17pp, el mismo día y la misma obra. Doce puntos entre dos
+    // pantallas a dos clics.
+    //
+    // Y le llega al MUNICIPIO: `avc_004` no está en
+    // `RIESGOS_SOLO_CONSTRUCTORA`, así que la dependencia leía el atraso de su
+    // contratista medido contra una recta que nadie firmó, teniendo el anexo
+    // cargado. Es la única cifra que una dependencia le reclama a su
+    // contratista, y era la mal medida.
+    detect: ({obra, kpis, programa}) => {
+      if (!kpis) return null;
+      // Mientras la lectura viaja no se afirma nada. Disparar aquí con
+      // `undefined` sería publicar la recta y llamarla programa durante el
+      // viaje, que es el defecto que esta regla acaba de dejar de tener.
+      if (programa === undefined) return null;
+      const p = avanceProgramadoA(obra, programa, hoyLocalISO());
+      if (p.pct === null) return null;
+      const desv = p.pct - kpis.af;
+      if (desv <= 10) return null;
+      // El nombre de la vara va en el título, no sólo en el detalle: un
+      // semáforo que dice «contra el programa» cuando restó la recta es la
+      // misma afirmación falsa, más chica.
+      const esProg = p.fuente === 'programa';
+      const vara = esProg ? 'el programa' : 'la recta del plazo';
+      const titulo = `Avance rezagado contra ${vara}`;
+      const extra = `${p.pct.toFixed(0)}% ${esProg ? 'programa' : 'plazo'} ` +
+        `vs ${kpis.af.toFixed(0)}% avance` +
+        (esProg ? '' : ' · esta obra no tiene programa cargado');
+      const valor = `-${desv.toFixed(0)}pp`;
+      if (desv > 30) return {severidad:'critico', valor, titulo,
+        detalle:`Muy por debajo de ${vara}`, extra};
+      if (desv > 20) return {severidad:'alto', valor, titulo,
+        detalle:`Avance rezagado contra ${vara}`, extra};
+      return {severidad:'medio', valor, titulo,
+        detalle:`Avance ligeramente rezagado contra ${vara}`, extra};
     },
   },
   // ── NÓMINA ──
@@ -5486,6 +5542,11 @@ const detectarRiesgos = (contexto) => {
         detectados.push({
           ...plantilla,
           severidad: r.severidad,
+          // El título puede depender del dato y no sólo de la regla: cuando la
+          // vara cambia —programa cargado o recta—, el nombre tiene que
+          // cambiar con ella, o el semáforo nombra una medición que no hizo.
+          // `ALERTA_REGLAS`, el otro motor, ya lo permitía.
+          titulo: r.titulo || plantilla.titulo,
           valor: r.valor,
           detalle: r.detalle,
           extra: r.extra,
@@ -13107,13 +13168,17 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
 
   // ── ALERTAS desde la biblioteca de riesgos ──
+  // El anexo, para que `avc_004` mida contra lo que se firmó y no contra una
+  // recta. Se lee con el mismo hook que el tablero de avance, que es lo que
+  // impide que las dos pantallas acaben con dos cifras del mismo atraso.
+  const programaObra = useProgramaDeObra(obra?.id);
   const pctGasto = obra.presupuesto > 0 ? gt/obra.presupuesto*100 : 0;
   const brecha = pctGasto - af;
   // KPIs consolidados que el motor de detección usa
   const kpisCtx = {gt, am, alm, me, af, diff, mpct, pctGasto, brecha};
   const riesgos = detectarRiesgos({
     obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx,
-    nominaHistorial,
+    nominaHistorial, programa: programaObra,
   });
   // Para el banner principal, solo mostramos críticos+altos (los medios y bajos van al panel completo)
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
@@ -13540,6 +13605,9 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   // "ejecutado" es exactamente el pendiente #8.
   const ejecutado = desgloseEjecutado(subs, modoVol).total;
   const avance    = avanceFisicoPonderado(subs, contrato, modoVol);
+  // El anexo, con el mismo hook que los otros dos tableros. Ver la nota de
+  // `useProgramaDeObra` sobre por qué `undefined` no es `null`.
+  const programaObra = useProgramaDeObra(obra?.id);
 
   // Normalizador de estatus igual al de `Dashboard`: los estatus se capturaron
   // a mano durante meses y conviven "Pagada", "pagada" y "PAGADA".
@@ -13606,10 +13674,17 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   // Riesgos: la misma biblioteca, recortada por `tipo`. Sin `kpis` de gasto —
   // las reglas que los necesitan están fuera de la lista para dependencia, y
   // pasarle un gasto en cero haría que las de brecha dispararan solas.
+  //
+  // El programa SÍ va, y es el que más falta hacía aquí: `avc_004` no está en
+  // `RIESGOS_SOLO_CONSTRUCTORA` —no tiene por qué estarlo, el plazo es del
+  // municipio tanto como del contratista— pero sin el anexo medía el atraso
+  // contra una recta. El anexo no es economía del contratista: es el
+  // calendario que las dos partes firmaron, y la frontera no lo toca.
   const riesgos = detectarRiesgos({
     tipo: 'dependencia',
     obra, subs, estimaciones, historialAvance,
     kpis: { af: avance, me: ejecutado },
+    programa: programaObra,
   });
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
 
@@ -14170,21 +14245,12 @@ function NotasDeSemanas({estados = [], notas = {}, cuantas = 6, onGuardar = null
 }
 
 function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, notasSemana={}, onGuardarNota=null}){
-  // El programa de obra cargado (#51). Se lee aquí y no se recibe por prop
-  // porque es este tablero el que lo necesita, y `null` es una respuesta
-  // válida y frecuente: la obra sin anexo cargado cae en la recta, dicho con
-  // ese nombre. Mientras la lectura viaja, `undefined` ≠ `null`: con
-  // `undefined` todavía no se sabe, y afirmar la recta en ese hueco sería
-  // publicar la cifra vieja como si fuera la respuesta.
-  const [programa, setPrograma] = useState(undefined);
-  useEffect(() => {
-    let vivo = true;
-    setPrograma(undefined);
-    fsGet(`obras/${obra.id}/config/programa`)
-      .then(d => { if (vivo) setPrograma(d || null); })
-      .catch(() => { if (vivo) setPrograma(null); });
-    return () => { vivo = false; };
-  }, [obra.id]);
+  // El programa de obra cargado (#51). La lectura vivía aquí dentro; se subió
+  // a `useProgramaDeObra` cuando los dos Dashboards pasaron a necesitarla. Lo
+  // que se evitó al subirla: tres copias del mismo `getDoc`, cada una con su
+  // propia versión de la distinción `undefined` ≠ `null`, que es justo la que
+  // se pierde al copiar y pegar.
+  const programa = useProgramaDeObra(obra?.id);
   // Avance actual ponderado — FÍSICO sobre CONTRATO, compensado.
   const modoVol = (obra?.modoAvance === "volumen");
   const contratoObra = parseFloat(obra?.presupuesto) || 0;
