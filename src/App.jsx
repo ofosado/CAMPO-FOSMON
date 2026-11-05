@@ -122,8 +122,20 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
 
   // KPIs derivados — con campos reales del app
-  const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
-  const maqActivos = maquinaria.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
+  // Se filtra por IMPORTE, nunca por descripción. Antes pedía además
+  // `m.desc.trim()`, y un renglón con importe pero sin describir desaparecía
+  // del documento: no se listaba y —peor— no entraba en `totMaq`/`totAlm`, o
+  // sea que el margen del PDF salía MEJOR que el de la pantalla, porque el
+  // tablero (`calcularKPIsObra`) suma esos renglones sin preguntar por la
+  // descripción. De las cuatro sumas de maquinaria del archivo, tres no
+  // filtran; ésta era la única, y era la del papel que se entrega.
+  //
+  // Un renglón sin describir es un hueco de captura, y así se ve: sale con su
+  // importe y la celda de descripción vacía. Dinero sin explicar se señala, no
+  // se descuenta. El importe en cero sí se omite —ese renglón no mueve ningún
+  // total y en blanco sólo estorba—.
+  const matActivos = materiales.filter(m=>pf(m.imp)>0);
+  const maqActivos = maquinaria.filter(m=>pf(m.imp)>0);
   const totAlm  = matActivos.reduce((t,m)=>t+pf(m.imp),0);
   const totMaq  = maqActivos.reduce((t,m)=>t+pf(m.imp),0);
   // Gasto GP: el valor del veredicto. Cuando no está medido vale 0 y el
@@ -3925,6 +3937,46 @@ const leyendaSemanaSubida = (clave) => {
 // quien registra o borra una ampliación (ver GestionPlazos), así que ésta es
 // la autoridad; la lista de ampliaciones es el detalle, no la fuente.
 const finVigenteDe = (obra) => obra?.finAmpliado || obra?.fin || null;
+
+// ── LOS DÍAS DE PLAZO, UNA SOLA VEZ ────────────────────────────────────────
+//
+// Esta cuenta estaba escrita dos veces y las dos copias no decían lo mismo en
+// la misma pantalla:
+//
+//   · La tarjeta de la dependencia medía contra `finVigenteDe` y tomaba el hoy
+//     del calendario de la OBRA (`hoyLocalISO`).
+//   · La proyección del tablero del contratista hacía `new Date(obra.fin)` —el
+//     fin del CONTRATO, ignorando la ampliación— y `Date.now()`, el instante
+//     del aparato.
+//
+// O sea que con una obra ampliada la dependencia veía un plazo más veraz que
+// el contratista dueño de la obra, y el contratista se veía más atrasado de lo
+// que estaba: el porcentaje de plazo transcurrido se dividía entre un plazo
+// corto, y las semanas restantes salían de un fin que ya se había movido.
+//
+// Lo del `new Date` de forma corta está documentado arriba en
+// `fechaLocalDeISO`: "2026-05-27" se interpreta como UTC, que en México es el
+// 26 a las 18:00. Para una DIFERENCIA entre dos fechas eso se cancela —las dos
+// se corren igual—, pero `Date.now()` no es una fecha corta y no se corre, así
+// que restarle una fecha UTC metía hasta un día de error en los transcurridos.
+//
+// Devuelve `null` en los días cuando falta una punta, nunca 0: un plazo que no
+// se puede medir no es un plazo de cero días.
+const plazoDeObra = (obra, hoyISO = hoyLocalISO()) => {
+  const finVigente = finVigenteDe(obra);
+  const ampliado = !!finVigente && !!obra?.fin && finVigente !== obra.fin;
+  const dias = (ini, fin) => {
+    const a = fechaLocalDeISO(ini), b = fechaLocalDeISO(fin);
+    return (a && b) ? Math.round((b - a) / 86400000) : null;
+  };
+  const totalDias = dias(obra?.inicio, finVigente);
+  const transcurridos = obra?.inicio
+    ? Math.max(dias(obra.inicio, hoyISO) ?? 0, 0) : 0;
+  const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
+  const pctPlazo = (totalDias && totalDias > 0)
+    ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+  return { finVigente, ampliado, totalDias, transcurridos, restantes, pctPlazo };
+};
 
 // "3 de mar de 2027". El año va SIEMPRE: estas frases comparan fechas que en
 // una obra multianual caen en años distintos, y "3 de mar" no dice cuál.
@@ -13567,7 +13619,11 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             color={pres.gastoColor} size={12} title={pres.margenTitulo}/>
         </div>
         <div {...clickableCard("operacion","avance")}>
-          <Kpi label="Ejecutado" value={MXN(me)}
+          {/* El almacén va en el NOMBRE, no sólo en el subtítulo: el subtítulo
+              lo decía únicamente cuando no había presupuesto, o sea casi
+              nunca, y entonces este KPI y la tarjeta de estimaciones enseñaban
+              dos cifras distintas llamadas igual. */}
+          <Kpi label="Ejecutado + almacén" value={MXN(me)}
             sub={obra.presupuesto>0 ? `${NUM(pctEjec,1)}% del contrato · ver avance ›` : "avance + almacén"}
             color={C.blueDk} size={12}/>
         </div>
@@ -13628,7 +13684,16 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     <Card accent={pres.margenColor} {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Monto ejecutado − Gasto total</div></div>
+          {/* «Monto ejecutado» era el nombre de DOS cifras distintas en este
+              mismo tablero: aquí valía `me` (avance + almacén) y en la tarjeta
+              de estimaciones valía `am` (sólo lo avanzado en campo). En la obra
+              del Parque Lineal la diferencia eran $1,040,000 de almacén, y
+              quien comparaba las dos tarjetas no tenía cómo saber que no era
+              un error de captura. Las dos cuentas son correctas donde están
+              —el margen se mide contra todo el dinero puesto, y sólo se puede
+              facturar lo ejecutado—, así que lo que se separó son los nombres.
+              Pendiente #8 (las tres fórmulas de ejecutado). */}
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Ejecutado + almacén − Gasto total</div></div>
         <div style={{background: pres.gastoSinMedir ? C.bg : mNiv.bg,
           border:`0.5px solid ${pres.margenColor}55`, borderRadius:4,
           padding:"3px 9px", fontSize:10, fontWeight:700, color:pres.margenColor,
@@ -13637,7 +13702,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             : me === 0 ? 'Sin avance' : mNiv.nivel.toUpperCase()}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
-        {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],
+        {[[MXN(me),"Ejecutado + almacén",C.blue,"avance+almacén"],
           [pres.gastoTxt,"Gasto total",pres.gastoColor,
            pres.gastoMotivoTxt || "GP+maquinaria+otros"],
           [pres.gastoSinMedir ? pres.margenAbsTxt : MXND(diff),"Diferencia",pres.margenColor,
@@ -13733,15 +13798,20 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div>
-          <Tit>Monto ejecutado vs Estimaciones</Tit>
+          {/* «Obra ejecutada» y no «Monto ejecutado»: ese nombre lo usa la
+              tarjeta del margen para `me`, que trae el almacén encima. Aquí la
+              cifra es `am`, lo avanzado en campo, porque es lo único que se
+              puede facturar: material en bodega no se estima. */}
+          <Tit>Obra ejecutada vs Estimaciones</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
             Obra ejecutada en campo comparada con lo facturado al cliente
+            · sin almacén
           </div>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
         <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.blue}`}}>
-          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Monto ejecutado</div>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Obra ejecutada</div>
           <div style={{fontSize:13,fontWeight:700,color:C.blue}}>{MXN(am)}</div>
           <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{NUM(am/obra.presupuesto*100,1)}% del presupuesto</div>
         </div>
@@ -13759,7 +13829,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </div>
       <div style={{marginBottom:10}}>
         {[
-          ["Monto ejecutado", am, C.blue],
+          ["Obra ejecutada", am, C.blue],
           ["Estimado acumulado", totalEst, C.purple],
         ].map(([lbl,val,col])=><div key={lbl} style={{marginBottom:6}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
@@ -13780,15 +13850,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         </div>
       </div>
       {(()=>{
-        const inicioMs=new Date(obra.inicio).getTime();
-        const finMs=new Date(obra.fin).getTime();
-        // FIX: antes estaba hardcoded "2026-05-27" — usar la fecha real de hoy
-        // para que la proyección se mueva con el tiempo real de la obra.
-        const hoyMs=Date.now();
-        const plazoTotal=(finMs-inicioMs)/(1000*60*60*24);
-        const plazoTrans=Math.max((hoyMs-inicioMs)/(1000*60*60*24),1);
-        const plazoRest=Math.max((finMs-hoyMs)/(1000*60*60*24),0);
-        const pctPlazo=Math.min(plazoTrans/plazoTotal*100,100);
+        // El plazo sale de `plazoDeObra`, la MISMA cuenta que la tarjeta de la
+        // dependencia. Aquí había una segunda copia que medía contra
+        // `obra.fin` en vez del fin vigente, así que en una obra ampliada esta
+        // proyección mostraba la obra más atrasada de lo que estaba.
+        const _pz=plazoDeObra(obra);
+        const plazoTotal=_pz.totalDias;
+        const plazoTrans=Math.max(_pz.transcurridos,1);
+        const plazoRest=_pz.restantes ?? 0;
+        const pctPlazo=_pz.pctPlazo;
         const ritmoSem=am>0&&plazoTrans>0?am/(plazoTrans/7):0;
         const semRest=plazoRest/7;
         const proyFin=am+ritmoSem*semRest;
@@ -13806,11 +13876,25 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             letterSpacing:"0.05em",marginBottom:8}}>Proyección al término de obra</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
             {[
-              ["Plazo transcurrido", `${NUM(pctPlazo,0)}%`, `${Math.round(plazoTrans)} de ${plazoTotal} días`, C.caliza],
+              // Un plazo sin medir dice que falta la fecha, no «0%»: sin una de
+              // las dos puntas `plazoDeObra` devuelve `null`, y un cero aquí
+              // afirmaría que la obra acaba de arrancar.
+              ["Plazo transcurrido", pctPlazo!=null?`${NUM(pctPlazo,0)}%`:"—",
+                plazoTotal!=null?`${plazoTrans} de ${plazoTotal} días`:"falta una fecha del plazo",
+                C.caliza],
               ["Ritmo semanal", MXN(ritmoSem), "avance / semana", C.blue],
               ["Proyección al fin", `${NUM(pctProy,1)}%`, MXN(proyFin)+" proyectado",
                 rebasa?C.yellow:pctProy>=95?C.green:pctProy>=75?C.yellow:C.red],
-              ["Semanas p/ estimar", semsParaEst?`~${semsParaEst} sem`:"—", MXN(faltaEst)+" por estimar", semsParaEst&&semsParaEst<=semRest?C.green:C.yellow],
+              // Esta tarjeta decía «por estimar» y la de arriba también, con
+              // DOS cifras distintas: arriba es `am − estimado` (obra ya
+              // ejecutada que todavía no se factura) y aquí es
+              // `presupuesto − estimado` (todo el contrato que falta por
+              // facturar, ejecutado o no). Las dos cuentas son legítimas y por
+              // eso no se unifican; lo que no puede es que compartan el nombre
+              // en la misma tarjeta.
+              ["Semanas p/ facturar todo", semsParaEst?`~${semsParaEst} sem`:"—",
+                MXN(faltaEst)+" del contrato sin facturar",
+                semsParaEst&&semsParaEst<=semRest?C.green:C.yellow],
             ].map(([l,v,s,c])=><div key={l} style={{background:C.bg,borderRadius:7,padding:"8px 10px"}}>
               <div style={{fontSize:8,color:C.textMut,marginBottom:3}}>{l}</div>
               <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
@@ -13996,11 +14080,12 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
   const fechaUltima = fechaUltimaCapturaDe(historialAvance);
   const diasSinCaptura = diasSinCapturaDe(historialAvance);
 
-  // Plazo. El fin vigente sale de `finVigenteDe`, la misma cuenta que usan la
-  // proyección y la pantalla de plazos. Derivarlo aquí de la lista de
-  // ampliaciones abría una segunda cuenta: quien captura el fin ampliado en la
-  // ficha de la obra sin registrar la ampliación movía la proyección pero no
-  // esta tarjeta, y las dos cifras se contradecían en la misma pantalla.
+  // Plazo. Sale de `plazoDeObra`, que es la MISMA función que usa la proyección
+  // del tablero del contratista. Derivarlo aquí de la lista de ampliaciones
+  // abría una segunda cuenta: quien captura el fin ampliado en la ficha de la
+  // obra sin registrar la ampliación movía la proyección pero no esta tarjeta,
+  // y las dos cifras se contradecían en la misma pantalla. La copia que estaba
+  // escrita aquí era correcta y la del tablero no; ahora no hay copia.
   const [ampliaciones, setAmpliaciones] = useState([]);
   useEffect(() => {
     let cancel = false;
@@ -14009,16 +14094,8 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
     });
     return () => { cancel = true; };
   }, [obra.id]);
-  const dias = (ini, fin) => (!ini || !fin) ? null
-    : Math.round((new Date(fin) - new Date(ini)) / 86400000);
-  const finVigente   = finVigenteDe(obra);
-  const ampliado     = !!finVigente && !!obra?.fin && finVigente !== obra.fin;
-  const totalDias    = dias(obra?.inicio, finVigente);
-  const transcurridos = obra?.inicio
-    ? Math.max(dias(obra.inicio, hoyLocalISO()) || 0, 0) : 0;
-  const restantes    = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
-  const pctPlazo     = (totalDias && totalDias > 0)
-    ? Math.min((transcurridos / totalDias) * 100, 100) : null;
+  const { finVigente, ampliado, totalDias, transcurridos, restantes, pctPlazo } =
+    plazoDeObra(obra);
 
   // El arranque que le falta al expediente, con la misma cuenta que la
   // pantalla de avance. Aquí importa más que allá: ésta es la pantalla desde

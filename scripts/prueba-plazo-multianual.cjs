@@ -87,6 +87,11 @@ const RAIZ_NOMBRES = [
   // módulo justo porque las comparten varias pantallas. `tok` entra porque la
   // paleta `C` se arma con él y sin él el color no se puede leer.
   'tok', 'C', 'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
+  // La cuenta única del plazo. Entra al nivel de módulo porque ahí vive desde
+  // que se juntaron las tres copias —tablero, tarjeta de la dependencia y
+  // proyección—: §8 mide su conducta, no la de una expresión suelta metida
+  // dentro de un componente.
+  'plazoDeObra',
 ];
 // Dentro de qué componente buscar cada declarador anidado. El nombre solo no
 // basta: `transcurridos` existe en dos componentes distintos y el de más
@@ -94,13 +99,15 @@ const RAIZ_NOMBRES = [
 // Se guarda bajo `Componente.nombre` porque el mismo nombre se calcula en
 // varias pantallas y cada una es una cuenta distinta hasta que se demuestre
 // lo contrario: eso es justo lo que se mide.
+// `DashboardDependencia.finVigente` y `.ampliado` SALIERON de esta lista: el
+// tablero ya no deriva ninguno de los dos, los desestructura de `plazoDeObra`.
+// Buscarlos aquí medía la forma vieja y dejaba §8 en rojo por la refactorización
+// que lo arregló, no por un defecto. Lo que §8 mide ahora está abajo.
 const ANIDADOS = [
   'PlazosCliente.finVigente',
   'PlazosCliente.ampliado',
   'PlazosCliente.transcurridos',
   'PlazosCliente.diasPlazo',
-  'DashboardDependencia.finVigente',
-  'DashboardDependencia.ampliado',
 ];
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
@@ -113,6 +120,26 @@ const ast = parse(src, OPTS);
 // `tolerante` conserva la conducta que el banco quiere a propósito: un nombre
 // ausente deja la aserción en ROJO, no al banco sin arrancar.
 const { fuenteDeApp } = require('./extraer-de-app.cjs');
+// `sinComentarios` viene del taller porque §8 mide una FORMA sobre el texto de
+// un componente, y un comentario que nombra el defecto cuenta como si el
+// defecto estuviera. Ya pasó una vez: la explicación que escribí arriba de una
+// corrección se contó como la cuenta mala.
+const { sinComentarios } = require('./taller-de-app.cjs');
+// El texto de un componente de nivel superior, para esas guardas de forma. Se
+// corta la declaración ENTERA, no el bloque del cuerpo: un `{ … return … }`
+// suelto no es código válido y `sinComentarios` revienta al parsearlo —lo que
+// convierte un rojo en un NO ARRANCÓ.
+const cuerpoDeComponente = (nombre) => {
+  let out = '';
+  traverse(ast, {
+    FunctionDeclaration(p) {
+      if (p.parent.type !== 'Program' || p.node.id?.name !== nombre) return;
+      out = src.slice(p.node.start, p.node.end);
+      p.stop();
+    },
+  });
+  return out;
+};
 const { cuerpo: cuerpoModulo, presentes: vistos } =
   fuenteDeApp(RAIZ_NOMBRES, { tolerante: true });
 const anidados = {};
@@ -134,7 +161,7 @@ traverse(ast, {
 const app = new Function(`${cuerpoModulo}\n;return {${[...vistos].join(',')}};`)();
 const {
   estadoPorSemana, cruzaAños, etiquetaSemanaRiel, proyeccionDeAvance,
-  finVigenteDe, snapshotId, hoyLocalISO, fechaLocalDeISO, fechaEnPalabras, NUM,
+  finVigenteDe, plazoDeObra, snapshotId, hoyLocalISO, fechaLocalDeISO, fechaEnPalabras, NUM,
   SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES, SIN_PROY_POCOS_CIERRES,
   SIN_DELTA_NO_COMPARABLES,
 } = app;
@@ -420,43 +447,50 @@ if (!anidados["PlazosCliente.transcurridos"] || !anidados["PlazosCliente.diasPla
 //
 // Y además callaba: sin ampliaciones no escribía nada bajo la fecha, así que
 // un plazo ampliado se leía como si fuera el que se firmó.
+// CÓMO SE MIDE AHORA. Hasta el 2026-11-05 esta sección extraía la expresión
+// local `finVigente` de dentro del componente y la ejecutaba. Esa expresión ya
+// no existe: el tablero desestructura el plazo entero de `plazoDeObra`, que es
+// exactamente lo que la sección pedía —ninguna cuenta propia—. Seguir
+// buscándola dejaba §8 en rojo por la corrección, no por el defecto.
+// Así que se parte en dos: la CONDUCTA se afirma sobre `plazoDeObra`
+// ejecutada, y que el tablero sea quien la pide se afirma sobre su molde.
 console.log('\n8. El tablero de la dependencia mide contra el mismo fin vigente, y lo dice');
-if (!anidados["DashboardDependencia.finVigente"]) {
-  fallos.push('el tablero de la dependencia no calcula ningún fin vigente');
-  console.log('   ✗ el tablero de la dependencia no calcula ningún fin vigente');
-} else {
-  const enTablero = (obra, ampliaciones) => new Function(
-    'obra', 'ampliaciones', 'finVigenteDe',
-    `"use strict"; return ${anidados["DashboardDependencia.finVigente"]};`)(obra, ampliaciones, finVigenteDe);
+{
+  // `plazoDeObra` se llama dentro de un `try` a propósito: si el archivo no la
+  // trae, esto tiene que quedar en ROJO —la conducta no está— y no en NO
+  // ARRANCÓ por un nombre ausente. Ésa es la diferencia entre 1 y 2.
+  const plazo = (obra) => { try { return plazoDeObra(obra) || {}; } catch { return {}; } };
   const obraDisc = { fin: '2026-04-14', finAmpliado: '2026-12-01' };
-  const dio = enTablero(obraDisc, [{ fecha: '2026-06-01' }]);
+  const dio = plazo(obraDisc).finVigente;
   check(dio === '2026-12-01',
     `el tablero da el 1 de diciembre, el fin vigente de la obra (dio ${dio})`);
   check(typeof finVigenteDe === 'function' && dio === finVigenteDe(obraDisc),
     `el tablero y la proyección dan la misma fecha (tablero ${dio}, proyección ${typeof finVigenteDe === 'function' ? finVigenteDe(obraDisc) : 'no existe'})`);
 
+  // El molde: la fecha se PIDE, no se deriva. Contra la versión vieja estas dos
+  // salen rojas —ahí no había `plazoDeObra` y el fin era la última ampliación
+  // de la lista—, que es para lo que nació la sección.
+  const cuerpoDep = sinComentarios(cuerpoDeComponente('DashboardDependencia'));
+  check(/plazoDeObra\s*\(/.test(cuerpoDep),
+    'el tablero pide el plazo por la misma puerta que las otras pantallas');
+  check(!/ampliaciones\s*\[\s*ampliaciones\.length\s*-\s*1\s*\]/.test(cuerpoDep),
+    'y no se queda con la última ampliación de la lista como si fuera la autoridad');
+
   // La leyenda que va debajo de la fecha. Se mide la frase, no la variable:
   // lo que importa es lo que alcanza a leer quien abre la pantalla.
-  if (!anidados["DashboardDependencia.ampliado"]) {
-    fallos.push('el tablero no distingue un plazo ampliado de uno original');
-    console.log('   ✗ el tablero no distingue un plazo ampliado de uno original');
-  } else {
-    const leyenda = (obra, ampliaciones) => {
-      const amp = new Function('obra', 'finVigente', 'finVigenteDe',
-        `"use strict"; return ${anidados["DashboardDependencia.ampliado"]};`
-      )(obra, finVigenteDe(obra), finVigenteDe);
-      return amp
-        ? `ampliado${ampliaciones.length > 0 ? ` ${ampliaciones.length} ${ampliaciones.length === 1 ? 'vez' : 'veces'}` : ''}; el original era ${obra?.fin || '—'}`
-        : 'sin ampliaciones: es el plazo original';
-    };
-    const sinAmp = leyenda({ inicio: '2026-06-15', fin: '2026-10-30' }, []);
-    check(/sin ampliaciones/.test(sinAmp) && /plazo original/.test(sinAmp),
-      `una obra sin ampliar declara que la fecha es la original (dijo: "${sinAmp}")`);
-    const conAmp = leyenda(obraDisc, [{ fecha: '2026-06-01' }]);
-    check(/ampliado/.test(conAmp) && /2026-04-14/.test(conAmp),
-      `una obra ampliada lo declara Y dice cuál era el original (dijo: "${conAmp}")`);
-    check(sinAmp !== conAmp, 'las dos situaciones no se dicen con la misma frase');
-  }
+  const leyenda = (obra, ampliaciones) => {
+    const amp = plazo(obra).ampliado;
+    return amp
+      ? `ampliado${ampliaciones.length > 0 ? ` ${ampliaciones.length} ${ampliaciones.length === 1 ? 'vez' : 'veces'}` : ''}; el original era ${obra?.fin || '—'}`
+      : 'sin ampliaciones: es el plazo original';
+  };
+  const sinAmp = leyenda({ inicio: '2026-06-15', fin: '2026-10-30' }, []);
+  check(/sin ampliaciones/.test(sinAmp) && /plazo original/.test(sinAmp),
+    `una obra sin ampliar declara que la fecha es la original (dijo: "${sinAmp}")`);
+  const conAmp = leyenda(obraDisc, [{ fecha: '2026-06-01' }]);
+  check(/ampliado/.test(conAmp) && /2026-04-14/.test(conAmp),
+    `una obra ampliada lo declara Y dice cuál era el original (dijo: "${conAmp}")`);
+  check(sinAmp !== conAmp, 'las dos situaciones no se dicen con la misma frase');
 }
 
 // ── Resultado ──────────────────────────────────────────────────────────
