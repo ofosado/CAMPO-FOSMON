@@ -65,8 +65,17 @@ if (process.argv.includes('--contraprueba')) {
       /Math\.max\(10_000, Number\(process\.env\.PLAZO_BANCO\) \|\| 240_000\)/,
       'Number(process.env.PLAZO_BANCO) || 240_000'],
     ['callar cuánto esperó',
-      /\? `sin contestar en \$\{Math\.round\(tardó \/ 1000\)\} s`/,
-      "? 'no contestó'"],
+      /\? `sin contestar en \$\{Math\.round\(tardó \/ 1000\)\} s`\n/,
+      "? 'no contestó'\n"],
+    // El defecto del reloj, exacto: creerle al reloj de pared contra el plazo.
+    ['creerle al reloj aunque contradiga al plazo',
+      /const relojCreible = \(plazo, tardó\) => tardó <= plazo \* 1\.25 \+ 10_000;/,
+      'const relojCreible = (plazo, tardó) => true;'],
+    // Y el otro lado: desconfiar de todo deja a las colgadas de verdad sin su
+    // número, que es el dato con el que se decide si subir el plazo.
+    ['desconfiar del reloj siempre, hasta de una colgada de verdad',
+      /const relojCreible = \(plazo, tardó\) => tardó <= plazo \* 1\.25 \+ 10_000;/,
+      'const relojCreible = (plazo, tardó) => false;'],
   ];
 
   let vistas = 0;
@@ -258,6 +267,82 @@ else
   falla('un plazo ridículo no mata a los bancos sanos',
     '2 en verde (el suelo del plazo los protege)',
     resumen1.trim() || '(no hubo resumen)');
+
+// ── El reloj con el que mide no puede contradecir al plazo ─────────────────
+//
+// Las secciones de arriba miden conducta poniéndole bancos delante. Esta no
+// puede: para que el reloj de pared se separe del plazo hay que suspender la
+// máquina, y eso no se teclea en una prueba. Así que se SACAN las dos cuentas
+// del corredor y se EJECUTAN con los números de la corrida real. No se lee el
+// archivo buscando palabras: se corre lo que corre la suite.
+//
+// El caso: el 2026-11-05 salieron cuatro bancos «sin contestar en 901 s» con
+// un plazo de 240. Es imposible —a los 240 el banco ya estaba muerto— y el
+// número manda al sitio equivocado: 901 s dice «súbele el plazo o arregla ese
+// banco», cuando lo que había que hacer era repetirla con la máquina despierta.
+console.log('\n── El reloj no puede contradecir al plazo ──');
+// Se lee la copia DEL TALLER, no `scripts/pruebas.cjs`. Son el mismo archivo
+// en una corrida normal, pero bajo la contraprueba el del taller es el mutado:
+// leer el de verdad haría que esta sección saliera verde contra un corredor
+// roto, que es la prueba comprobándose contra sí misma.
+const fuenteCorredor = fs.readFileSync(path.join(dentro, 'pruebas.cjs'), 'utf8');
+const saca = (nombre) => {
+  const m = fuenteCorredor.match(
+    new RegExp(`^const ${nombre} = [\\s\\S]*?;$`, 'm'));
+  return m && m[0];
+};
+const textoReloj = saca('relojCreible');
+const textoFrase = saca('frasePorNoContestar');
+if (!textoReloj || !textoFrase) {
+  sinPrecondicion('no se pudieron sacar las cuentas del reloj de pruebas.cjs',
+    ['`relojCreible` y `frasePorNoContestar` son las que deciden qué se',
+     'publica de una colgada. Si se renombraron, esta sección no midió nada:',
+     'eso no es verde.']);
+}
+const { relojCreible, frasePorNoContestar } =
+  new Function(`${textoReloj}\n${textoFrase}\n` +
+    'return { relojCreible, frasePorNoContestar };')();
+
+// El caso real, con sus cifras.
+const PLAZO = 240_000, SALTO = 901_000;
+if (!relojCreible(PLAZO, SALTO))
+  ok('901 s sobre un plazo de 240 no se cree', 'el de la corrida del 2026-11-05');
+else
+  falla('901 s sobre un plazo de 240 no se cree',
+    'que la cuenta lo declarara increíble',
+    'lo dio por bueno: el corredor seguiría publicando los 901 s');
+
+// Y lo que publica NO puede ser un número de segundos esperados, porque no se
+// esperaron. Esta es la mentira que se vino a quitar.
+const fraseSalto = frasePorNoContestar(PLAZO, SALTO);
+if (!/sin contestar en \d+ s/.test(fraseSalto) && /no se pudo medir/.test(fraseSalto))
+  ok('y lo dice como lo que es, no como una espera', fraseSalto);
+else
+  falla('y lo dice como lo que es, no como una espera',
+    'que no afirmara «sin contestar en N s»', fraseSalto);
+
+// El otro lado: una colgada de verdad tiene que seguir diciendo sus segundos.
+// Sin esto, la cuenta podría declarar increíble TODO y quedarse verde: sería
+// cambiar una mentira por otra.
+const fraseReal = frasePorNoContestar(PLAZO, 241_500);
+if (/sin contestar en 24[12] s/.test(fraseReal))
+  ok('una colgada de verdad sigue diciendo sus segundos', fraseReal);
+else
+  falla('una colgada de verdad sigue diciendo sus segundos',
+    '«sin contestar en ~241 s» (vencer el plazo por poco es lo normal)',
+    fraseReal);
+
+// Matar el proceso y recoger su salida cuesta milisegundos: medido el
+// 2026-11-05, 12 ms sobre un plazo de 1200. Con el piso del plazo —10 s— ese
+// sobrecosto no puede volverse sospecha, o la sección de arriba, que espera
+// 12.3 s reales, se publicaría como «no se pudo medir».
+if (relojCreible(10_000, 12_300))
+  ok('el sobrecosto de matar al banco no se confunde con un salto',
+    'los 12.3 s de la primera sección, con plazo de 10 s');
+else
+  falla('el sobrecosto de matar al banco no se confunde con un salto',
+    'que 12.3 s sobre un plazo de 10 s se creyeran',
+    'los declaró increíbles: la primera sección se volvería «no se pudo medir»');
 
 try { fs.rmSync(taller, { recursive: true, force: true }); } catch {}
 
