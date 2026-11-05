@@ -151,15 +151,22 @@ function taller(codigo) {
                  .map(c => c.fuente).join('\n');
   };
 
-  // Dobles: React fuera de React, y el gasto del Sheet cableado a 0 para que el
-  // único dinero del escenario sea el que la prueba inyecta.
+  // Dobles: React fuera de React, y nada más.
+  //
+  // Aquí estaba cableado `resolverGastoGP: () => 0`, para que el único dinero
+  // del escenario fuera el que la prueba inyecta. Eso doblaba una CUENTA, no
+  // un hook, y con #100 se volvió una mentira: el cero que devolvía no traía
+  // consigo el veredicto, así que la prueba creía estar mirando un gasto de
+  // cero cuando el archivo —que resuelve el veredicto aparte, con
+  // `estadoGastoGP`— estaba diciendo SIN MEDIR. El escenario de abajo dice
+  // ahora que GP sí contestó y contestó cero, que es la misma cifra pero
+  // afirmada, y la cuenta real la saca el archivo.
   const STUBS = () => ({
     useState: (v) => [v, () => {}],
     useRef: () => ({ current: null }),
     useEffect: () => {},
     useMemo: (f) => (typeof f === 'function' ? f() : f),
     useCallback: (f) => f,
-    resolverGastoGP: () => 0,
     C: new Proxy({}, { get: () => '#000000' }),
     React: {},
   });
@@ -281,9 +288,18 @@ const HISTORIAL = [
 // Props del municipio: las cuatro que recibe, más el dinero que NO recibe.
 // El dinero va a propósito, para que una mutación que se lo quiera leer tenga
 // de dónde leerlo y la aserción muerda.
+// La corrida del gasto preguntó por la 0199 —el prefijo del id de la obra— y
+// no trajo un peso. Es un cero MEDIDO, y hace falta decirlo: `gpData: null`
+// significa «no hay documento de gasto», o sea SIN MEDIR, y una serie sin
+// medir sale en `null`. Toda esta prueba va de que el renglón de la tabla
+// cuadre —margen = ejecutado − gasto—, y con el gasto sin medir no hay
+// renglón que cuadrar. El dinero del escenario sigue siendo sólo el que la
+// prueba inyecta; lo único que cambia es que ahora está afirmado.
+const GP_CONTESTO_CERO = { obras: {}, obrasPedidas: ['0199'] };
+
 const PROPS_DEP = (extra = {}) => ({
   obra: OBRA, historialAvance: HISTORIAL, subs: SUBS, programa: PROGRAMA,
-  gpData: null, datosObraGP: null, estimaciones: [],
+  gpData: GP_CONTESTO_CERO, datosObraGP: null, estimaciones: [],
   otrosGastos: [{ fecha: iso(semanasAtras(5)), importe: GASTO_SELLADO },
                 { importe: GASTO_SIN_FECHA }],
   maquinaria: [{ fecha: iso(semanasAtras(3)), imp: MAQ_SELLADA }],
@@ -297,8 +313,12 @@ const PROPS_CON = (extra = {}) => PROPS_DEP(extra);
 // avance: trae `montoEjecutado` por semana, pero es también de donde sale la
 // curva de avance, y vaciarlo apagaría la curva entera y haría que la
 // comparación de abajo pasara por la razón equivocada.
+// La corrida sigue siendo la misma —preguntó y contestó cero—: lo que se
+// quita es el dinero capturado a mano. Dejar aquí `gpData: null` apagaría el
+// gasto por SIN MEDIR en vez de por no haber gasto, y la comparación de abajo
+// pasaría por la razón equivocada.
 const SIN_DINERO = {
-  gpData: null, datosObraGP: null, estimaciones: [],
+  gpData: GP_CONTESTO_CERO, datosObraGP: null, estimaciones: [],
   otrosGastos: [], maquinaria: [], materiales: [],
 };
 
@@ -558,8 +578,8 @@ const MUTACIONES = [
     'if (fronteraAvance.hay && i === fronteraAvance.idx) return null;',
     ''],
   ['el gasto acumulado de la tabla no se ancla al del KPI',
-    'const serie = semanas.map((s, i) =>\n    (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null));',
-    'const serie = semanas.map((s) => porSem[s.key] ?? null);'],
+    'return (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null);',
+    'return porSem[s.key] ?? null;'],
   ['el margen se saca su propia cuenta del gasto en vez de leer la serie',
     'const g = gastoAcumSeries[i];\n    if (typeof g !== \'number\') return null;\n    // Ejecutado ya viene con arrastre desde ejecutadoSeries\n    return ejecutadoSeries[i] - g;',
     'let g = 0;\n    for (let j = i; j >= 0; j--) {\n      const x = gastoAcumPorSem[semanas[j].key];\n      if (x && x > 0) { g = x; break; }\n    }\n    return ejecutadoSeries[i] - g;'],
