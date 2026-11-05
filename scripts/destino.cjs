@@ -51,7 +51,13 @@ const emuladorApuntado = () => (
 // Devuelve `{ prod, escribir, emulador, projectId }`. Nunca devuelve un destino
 // ambiguo: si no se puede decir con certeza, sale con 2 (NO ARRANCÓ) en lugar
 // de elegir por el usuario.
-function resolverDestino({ escribe, projectIdProd = 'campo-fosmon' } = {}) {
+// `soloLectura` es para los guiones que NO pueden escribir —los que sólo hacen
+// GET—. Sin él un guion así tenía dos salidas y las dos malas: pasar por aquí y
+// anunciar «agrega `--escribir` para aplicar» cuando no hay nada que aplicar, o
+// saltarse el portón y deducir el destino por su cuenta, que es exactamente el
+// hábito que costó los 270 documentos. La pregunta del destino se sigue
+// haciendo; la del permiso de escritura deja de tener sentido y se cierra.
+function resolverDestino({ escribe, soloLectura = false, projectIdProd = 'campo-fosmon' } = {}) {
   const args = process.argv.slice(2);
   const guion = path.basename(process.argv[1] || 'guion.cjs');
 
@@ -70,8 +76,11 @@ function resolverDestino({ escribe, projectIdProd = 'campo-fosmon' } = {}) {
     '',
     `  Emulador:    FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 \\`,
     `                 node scripts/${guion} …`,
-    `  Producción:  node scripts/${guion} --prod …            (ensayo, no escribe)`,
-    `               node scripts/${guion} --prod --escribir …  (escribe de verdad)`,
+    soloLectura
+      ? `  Producción:  node scripts/${guion} --prod …            (sólo lee)`
+      : `  Producción:  node scripts/${guion} --prod …            (ensayo, no escribe)`,
+    ...(soloLectura ? [] :
+      [`               node scripts/${guion} --prod --escribir …  (escribe de verdad)`]),
     '',
     'Producción se pide con `--prod` y escribir se pide con `--escribir`. Antes',
     'las dos eran lo que salía por omisión, y el 2026-10-09 eso escribió 270',
@@ -95,12 +104,22 @@ function resolverDestino({ escribe, projectIdProd = 'campo-fosmon' } = {}) {
   if (dryRunViejo) console.log(
     '`--dry-run` ya no hace falta: sin `--escribir` este guion no escribe nada.\n');
 
+  // Un guion de sólo lectura que recibe `--escribir` no puede cumplirlo. Decir
+  // «lo ignoro» sería peor que pararse: quien lo tecleó cree que pidió algo.
+  if (soloLectura && escribir) parar(
+    '`--escribir` a un guion que sólo lee.',
+    '',
+    'Este guion no tiene ninguna escritura: sólo hace GET. La bandera no se',
+    'ignora porque quien la teclea cree haber pedido algo que va a pasar.');
+
   console.log(prod
     ? `DESTINO: PRODUCCIÓN (${projectIdProd})`
     : `DESTINO: emulador (${emulador})`);
-  console.log(escribir
-    ? `MODO:    ESCRITURA — ${escribe || 'esto escribe de verdad'}`
-    : 'MODO:    ensayo — no se escribe nada (agrega `--escribir` para aplicar)');
+  console.log(soloLectura
+    ? 'MODO:    SÓLO LECTURA — este guion no escribe, no tiene con qué'
+    : escribir
+      ? `MODO:    ESCRITURA — ${escribe || 'esto escribe de verdad'}`
+      : 'MODO:    ensayo — no se escribe nada (agrega `--escribir` para aplicar)');
   if (prod && escribir) console.log(
     '\n*** Esto toca PRODUCCIÓN y escribe. Es de las cosas que en este\n' +
     '*** proyecto necesitan un OK explícito.');
