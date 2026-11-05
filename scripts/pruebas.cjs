@@ -131,6 +131,35 @@ console.log(`reloj de la suite: TZ=${ZONA}` +
 // puede quitar con una variable vacía es el defecto otra vez.
 const PLAZO_BANCO = Math.max(10_000, Number(process.env.PLAZO_BANCO) || 240_000);
 
+// ── EL RELOJ CON EL QUE SE MIDE LA ESPERA ──────────────────────────────────
+//
+// `Date.now()` es reloj de pared: cuenta el tiempo que la máquina pasó
+// suspendida. El plazo del `spawnSync` no, así que las dos cifras pueden
+// contradecirse — y cuando lo hacen, la del reloj es la que miente.
+//
+// El 2026-11-05 la suite salió con cuatro bancos «sin contestar en 901 s»
+// teniendo un plazo de 240: imposible, porque a los 240 el banco ya estaba
+// muerto. La máquina se durmió cruzando la medianoche. Las corridas de antes y
+// de después salieron 85/85, y una de las cuatro ni lanza subprocesos ni toca
+// la red —sólo recorre un AST—, o sea que no había nada que esperar.
+//
+// Importa porque el número manda a un sitio distinto: 901 s dice «súbele el
+// plazo o arregla ese banco», y la verdad era «repítela con la máquina
+// despierta». Media tarde de diferencia.
+//
+// Un rebase legítimo del reloj es chico: matar el proceso y recoger su salida
+// costó 12 ms sobre un plazo de 1200 en la medición del 2026-11-05. El margen
+// es multiplicativo con un piso, porque un plazo de 10 s y uno de 240 no
+// toleran lo mismo en términos absolutos.
+const relojCreible = (plazo, tardó) => tardó <= plazo * 1.25 + 10_000;
+
+// Lo que se publica de una colgada. No es cosmético: cuando el reloj saltó, lo
+// que NO se puede decir es un número de segundos, porque no se esperó eso.
+const frasePorNoContestar = (plazo, tardó) => relojCreible(plazo, tardó)
+  ? `sin contestar en ${Math.round(tardó / 1000)} s`
+  : `no se pudo medir · el reloj saltó ${Math.round(tardó / 1000)} s ` +
+    `sobre un plazo de ${Math.round(plazo / 1000)} s`;
+
 const verdes = [], rojas = [], mudas = [], sinEmulador = [], colgadas = [];
 
 for (const f of archivos) {
@@ -156,7 +185,7 @@ for (const f of archivos) {
   else { estado = 'ROJO'; rojas.push([f, salida, rojasAqui]); }
 
   const detalle = seColgó
-    ? `sin contestar en ${Math.round(tardó / 1000)} s`
+    ? frasePorNoContestar(PLAZO_BANCO, tardó)
     : (rojasAqui > 0 ? `${rojasAqui} comprobación(es)` : '');
   console.log(`${estado.padEnd(12)} ${f.replace(/^prueba-|\.cjs$/g, '').padEnd(34)} ${detalle}`);
 }
@@ -168,11 +197,20 @@ console.log(`${verdes.length} en verde · ${rojas.length} en rojo · ` +
             `(de ${archivos.length})`);
 
 for (const [f, tardó, salida] of colgadas) {
-  console.log(`\n──────── ${f} no contestó en ${Math.round(tardó / 1000)} s ────────`);
+  console.log(`\n──────── ${f}: ${frasePorNoContestar(PLAZO_BANCO, tardó)} ────────`);
   console.log('Se le dio muerte. No se comprobó nada: no es verde ni rojo.');
-  console.log('Suele ser una conexión a un puerto que no contesta — un emulador');
-  console.log('caído, o un puerto cambiado— sin plazo propio. El banco debería');
-  console.log('ponerle plazo a lo que espera y salir 2 si no llega.');
+  if (!relojCreible(PLAZO_BANCO, tardó)) {
+    // El consejo de abajo mandaría a buscar un banco lento que no existe.
+    console.log('Y el reloj no cuadra con el plazo, así que esta medición NO vale:');
+    console.log('el banco murió al vencer el plazo, no a los segundos que dice el');
+    console.log('reloj de pared. Lo que pasó es que la máquina se suspendió a mitad');
+    console.log('de la corrida. Repítela despierta —`caffeinate -i npm test`— antes');
+    console.log('de tocar este banco: lo más probable es que no tenga nada.');
+  } else {
+    console.log('Suele ser una conexión a un puerto que no contesta — un emulador');
+    console.log('caído, o un puerto cambiado— sin plazo propio. El banco debería');
+    console.log('ponerle plazo a lo que espera y salir 2 si no llega.');
+  }
   const cola = salida.trim().split('\n').slice(-8).join('\n');
   if (cola) console.log('\nLo último que alcanzó a decir:\n' + cola);
 }
