@@ -407,10 +407,15 @@ const CASOS_CLAVE = [
   if (!presFn) {
     noArranco(['`presentacionEconomiaObra`, el traductor de la economía de una obra'], 'src/App.jsx');
   }
-  // Los nombres son los que el traductor usa; si cambiaran, el `new Function`
-  // revienta y el banco no arranca, que es lo correcto.
-  const renglonDe = new Function('C', 'MXN', 'NUM', 'nivelMargen',
-    `"use strict";\n${presFn}\nreturn presentacionEconomiaObra;`)(C, MXN, NUM, nivelMargen);
+  // El traductor se pide por el PORTÓN, que le resuelve sus dependencias.
+  // Aquí estaban tecleadas —`C`, `MXN`, `NUM`, `nivelMargen`— y eso era una
+  // copia del grafo: el día que el traductor empezó a decir el signo con
+  // `MXNS` en vez de escribirlo a mano, la lista se quedó corta y el banco
+  // murió con `MXNS is not defined` a media corrida, después de 30 aserciones
+  // verdes. El comentario de antes decía que reventar era «lo correcto»: no lo
+  // es, un banco que no arranca no afirma nada. `deApp` lee del archivo qué
+  // necesita el traductor y lo trae.
+  const { presentacionEconomiaObra: renglonDe } = deApp('presentacionEconomiaObra');
 
   // a) gasto sin medir: ni porcentaje ni importe. Las DOS cosas, porque al
   //    importe también le falta el sumando que no se midió.

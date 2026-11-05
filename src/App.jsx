@@ -93,51 +93,43 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ── HELPERS ───────────────────────────────────────────────────────────────
   const doc = new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});
   const pf   = n => parseFloat(n)||0;
-  const MXN  = n => `$${Math.abs(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+  // `MXN` NO se redefine aquí. Había una copia local idéntica en salida a la de
+  // arriba —se comprobó caso por caso, incluido `NaN` y el redondeo de 0.5— y
+  // su único efecto era TAPAR a `MXNS` y `MXND`: con `MXN` local a la vista,
+  // nadie dentro de este archivo podía usar las variantes con signo sin
+  // escribir el menos a mano. Y se escribió a mano: el margen de la 0121 se
+  // entregaba como `$8,612,920` en el reporte donde la pantalla dice
+  // −$8,612,920. Quitada la copia, este documento usa las mismas tres
+  // funciones que el resto, y el signo se decide en un solo sitio.
   const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;
   const hoy  = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
 
   // ── Resolver obra GP del Sheet (para tomar nombre corto + gasto en vivo) ──
-  // Prioriza gpId explícito, luego id de 4 dígitos, luego match por nombre.
-  const obraGP = (() => {
-    if (!gpData?.obras) return null;
-    const arr = Object.values(gpData.obras);
-    if (obra?.gpId) {
-      const m = arr.find(o => o.id === obra.gpId);
-      if (m) return m;
-    }
-    if (/^\d{4}/.test(obra?.id || '')) {
-      const m = arr.find(o => o.id === obra.id.slice(0, 4));
-      if (m) return m;
-    }
-    const norm = s => (s||'').toString().toUpperCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
-    const palabrasObra = norm(obra?.nombre).split(' ').filter(w => w.length > 3);
-    let mejor = null, score = 0;
-    for (const o of arr) {
-      const palGP = norm(o.nombre).replace(/^\d{4}\s*/,'').split(' ').filter(w => w.length > 3);
-      const matches = palabrasObra.filter(p => palGP.some(g => g.includes(p) || p.includes(g))).length;
-      if (matches > score) { score = matches; mejor = o; }
-    }
-    return score >= 2 ? mejor : null;
-  })();
+  // Lo resuelve `estadoGastoGP`, que es la única respuesta a «¿qué obra del GP
+  // es ésta?» con las guardas puestas. Aquí había una CUARTA copia, y era la
+  // peor de todas: caía al match difuso aunque `gpId` estuviera capturado y no
+  // cuadrara, que es justo el caso de una obra recién dada de alta. La 0129
+  // «AYU-COAT-REHABILITACION DEL MALECON» comparte «COAT» y «REHAB» con la 0121
+  // «SIOP Coatza Rehab. Av. Universidad» —score 2, el umbral— así que el
+  // reporte que se ENTREGA le colgaba a la obra nueva los $19.9M de la otra.
+  // El resto del archivo tenía la guarda desde el incidente; este documento no.
+  const _gpEstado = estadoGastoGP(obra, gpData);
+  const obraGP = _gpEstado.obraGP;
+  const gastoGPMedido = _gpEstado.medido;
 
   // Nombre corto: quita el prefijo de 4 dígitos y el sufijo tipo "0526".
   // Ej: "0125 TAMSA VER SERVICIOS ESPECIALIZADOS 0526" → "TAMSA VER SERVICIOS ESPECIALIZADOS".
-  const nombreCorto = ((obraGP?.nombre) || obra?.nombre || '')
-    .replace(/^\d{4}\s+/, '')
-    .replace(/\s+\d{4}\s*$/, '')
-    .trim() || (obra?.nombre || 'Obra');
+  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
 
   // KPIs derivados — con campos reales del app
   const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
   const maqActivos = maquinaria.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);
   const totAlm  = matActivos.reduce((t,m)=>t+pf(m.imp),0);
   const totMaq  = maqActivos.reduce((t,m)=>t+pf(m.imp),0);
-  // Gasto GP: preferir grandTotal en vivo del Sheet; fallback al legacy.
-  const totGP = obraGP
-    ? (obraGP.grandTotal || obraGP.total2026 || pf(obra.gastoGP))
-    : pf(obra.gastoGP);
+  // Gasto GP: el valor del veredicto. Cuando no está medido vale 0 y el
+  // documento tiene que DECIRLO donde publique gasto o margen, no imprimir el
+  // cero: ver `gastoGPMedido`.
+  const totGP = _gpEstado.valor;
   // Otros gastos manuales (Gastos → Otros gastos)
   const totOtros = (otrosGastos || []).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
   // Gasto total = GP + maquinaria propia + otros gastos
@@ -152,6 +144,25 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const mg      = me - totGast;
   const mpct    = me>0 ? mg/me*100 : 0;
   const PPTO    = obra.presupuesto||1;
+
+  // ── Lo que este documento puede AFIRMAR sobre el gasto ───────────────────
+  //
+  // Cuando `estadoGastoGP` no midió, `totGP` vale cero, y entonces `totGast`
+  // es un gasto parcial —sólo maquinaria y otros— y `mg` es un margen
+  // INFLADO: `me` menos casi nada. En la pantalla eso ya se resolvió (el KPI
+  // dice «sin medir» y la tarjeta de margen trae «SIN VEREDICTO»); aquí
+  // importa más, porque este PDF es lo que se ENTREGA y nadie que lo lea
+  // tiene cómo saber que el cero era un hueco.
+  //
+  // Se decide una vez y los sitios de abajo sólo imprimen. El nivel del
+  // semáforo también se apaga: un margen que no se pudo medir no es verde ni
+  // rojo, y pintarlo verde es la forma más silenciosa de afirmar algo falso.
+  const gpTxt        = gastoGPMedido ? MXN(totGP)   : 'sin medir';
+  const gastoTxt     = gastoGPMedido ? MXN(totGast) : 'sin medir';
+  const margenTxt    = gastoGPMedido ? MXNS(mg)     : 'sin medir';
+  const margenPctTxt = gastoGPMedido ? PCT(mpct)    : 'sin medir';
+  const gastoPctTxt  = gastoGPMedido ? PCT(totGast/PPTO*100)+' presup.'
+                                     : 'la corrida no la incluye';
   const te      = estimaciones.reduce((t,e)=>t+e.monto,0);
   // Normalizar estatus para comparación robusta (sin importar acentos o mayúsculas)
   const normEst = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
@@ -329,8 +340,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const kpY=PH-28, kpW=(PW*0.50)/4-2, kpX=PW*0.44;
   [[`Avance`,PCT(af),'del presupuesto', af>=75?K.vk:af>=40?K.am:K.rd],
    ['Ejecutado',MXN(me),PCT(me/PPTO*100)+' contrato',K.ak],
-   ['Gasto GP',MXN(totGast),PCT(totGast/PPTO*100)+' presup.',K.rk],
-   ['Margen',PCT(mpct),MXN(mg),mpct<10?K.rk:mpct<15?K.ak2:K.vk],
+   ['Gasto GP',gastoTxt,gastoPctTxt,gastoGPMedido?K.rk:K.gmu],
+   ['Margen',margenPctTxt,margenTxt,
+    !gastoGPMedido?K.gmu:mpct<10?K.rk:mpct<15?K.ak2:K.vk],
   ].forEach(([lbl,val,sub,col],i)=>{
     const x=kpX+i*(kpW+2);
     sf(K.wh); sd(col); lw(0.3); R(x,kpY,kpW,16,'FD');
@@ -369,8 +381,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Por ejecutar',    MXN(porEjecutar),PCT(porEjecutar/PPTO*100)+' rest.', K.gtx],
   ], y)+2;
   y=kpiRow([
-    ['Gasto total GP',  MXN(totGast),    PCT(totGast/PPTO*100)+' presup.',K.rk],
-    ['Margen bruto',    PCT(mpct),       MXN(mg),                       mpct<10?K.rk:mpct<15?K.ak2:K.vk],
+    ['Gasto total GP',  gastoTxt,        gastoPctTxt,  gastoGPMedido?K.rk:K.gmu],
+    ['Margen bruto',    margenPctTxt,    margenTxt,
+     !gastoGPMedido?K.gmu:mpct<10?K.rk:mpct<15?K.ak2:K.vk],
     ['Total estimado',  MXN(te),         PCT(te/PPTO*100)+' contrato', K.mk],
     ['Por estimar',     MXN(PPTO-te),    PCT((PPTO-te)/PPTO*100)+' rest.',K.gtx],
   ], y)+2;
@@ -398,12 +411,13 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Columna derecha: KPIs financieros clave, sin rubros (los rubros ahora
   // viven en su propia hoja "Desglose por rubro" con pie chart).
   const kpiSummary = [
-    ['GASTO GP',       MXN(totGP)],
+    ['GASTO GP',       gpTxt],
     ['MAQUINARIA',     MXN(totMaq)],
     ['OTROS GASTOS',   MXN(totOtros)],
-    ['GASTO TOTAL',    MXN(totGast)],
+    ['GASTO TOTAL',    gastoTxt],
     ['ESTIMADO',       MXN(te)],
-    ['MARGEN BRUTO',   `${MXN(mg)} · ${PCT(mpct)}`],
+    ['MARGEN BRUTO',   gastoGPMedido ? `${margenTxt} · ${margenPctTxt}`
+                                     : 'sin medir'],
   ];
   const yAfterRub = autoT(
     ['Concepto','Monto'], kpiSummary,
@@ -417,7 +431,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
        if(d.row.index === 3){
          d.cell.styles.fillColor=K.ab2; d.cell.styles.textColor=K.ak2;
        }
-       if(d.row.index === 5){
+       // Sin gasto medido la fila del margen se queda en gris: el color de
+       // este renglón ES el veredicto, y no hay veredicto que dar.
+       if(d.row.index === 5 && gastoGPMedido){
          const val = mpct;
          const bg = val<10?K.rb : val<15?K.ab2 : K.vb;
          const tc = val<10?K.rk : val<15?K.ak2 : K.vk;
@@ -1105,13 +1121,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     const proyGpFin  = totGP/1e6 + ritmoG_dia * diasRest;
     const proyMeFin  = me/1e6    + ritmoM_dia * diasRest;
 
-    // GP (rojo): real y proyectada
-    sd(K.rk); lw(0.9); doc.setLineDashPattern([],0);
-    L(gxT(fIni), gyV(0), gxT(hoyD), gyV(totGP/1e6));
-    sd(K.rk); lw(0.6); doc.setLineDashPattern([3,3],0);
-    L(gxT(hoyD), gyV(totGP/1e6), gxT(fFin), gyV(Math.min(proyGpFin, maxV)));
-    doc.setLineDashPattern([],0);
-    sf(K.rk); doc.circle(gxT(hoyD), gyV(totGP/1e6), 1.5, 'F');
+    // GP (rojo): real y proyectada. Sin gasto medido NO se dibuja: una recta
+    // pegada al cero es la afirmación «esta obra no ha gastado nada», y la
+    // proyección punteada que sale de ella dice además que no gastará.
+    if (gastoGPMedido) {
+      sd(K.rk); lw(0.9); doc.setLineDashPattern([],0);
+      L(gxT(fIni), gyV(0), gxT(hoyD), gyV(totGP/1e6));
+      sd(K.rk); lw(0.6); doc.setLineDashPattern([3,3],0);
+      L(gxT(hoyD), gyV(totGP/1e6), gxT(fFin), gyV(Math.min(proyGpFin, maxV)));
+      doc.setLineDashPattern([],0);
+      sf(K.rk); doc.circle(gxT(hoyD), gyV(totGP/1e6), 1.5, 'F');
+    }
 
     // Monto ejecutado (azul): real y proyectada
     sd(K.ak); lw(0.9); doc.setLineDashPattern([],0);
@@ -1122,8 +1142,10 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     sf(K.ak); doc.circle(gxT(hoyD), gyV(me/1e6), 1.5, 'F');
 
     // Etiquetas con valor de HOY
-    st(K.rk); fs(6.5); fw('bold');
-    T(`$${(totGP/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(totGP/1e6)-1.5);
+    if (gastoGPMedido) {
+      st(K.rk); fs(6.5); fw('bold');
+      T(`$${(totGP/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(totGP/1e6)-1.5);
+    }
     st(K.ak); fs(6.5); fw('bold');
     T(`$${(me/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(me/1e6)+2.5);
 
@@ -1131,9 +1153,16 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
     // Leyenda compacta
     st(K.gtx); fs(7); fw('normal');
-    sf(K.rk); R(GX, y, 5, 2.5, 'F'); T('Gasto GP',   GX+7,  y+2.2);
-    sf(K.ak); R(GX+35, y, 5, 2.5, 'F'); T('Monto ejecutado', GX+42, y+2.2);
-    st(K.gmu); T('— — proyección al plazo',  GX+95, y+2.2);
+    if (gastoGPMedido) {
+      sf(K.rk); R(GX, y, 5, 2.5, 'F'); T('Gasto GP',   GX+7,  y+2.2);
+    } else {
+      // La leyenda no nombra una serie que no está en la gráfica, y dice por
+      // qué falta — si no, se lee como una gráfica a la que le falló el dibujo.
+      st(K.gmu); T('Gasto GP: la corrida no incluye esta obra', GX, y+2.2);
+      st(K.gtx);
+    }
+    sf(K.ak); R(GX+70, y, 5, 2.5, 'F'); T('Monto ejecutado', GX+77, y+2.2);
+    st(K.gmu); T('— — proyección al plazo',  GX+125, y+2.2);
     y += 6;
   } else {
     // Sin fechas capturadas
@@ -1146,6 +1175,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // ── Indicadores esenciales del plazo (una sola tabla, sin duplicados) ──
   const ritmoG_semanal = diasTransc > 0 ? (totGP / diasTransc * 7) : 0;
   const ritmoM_semanal = diasTransc > 0 ? (me    / diasTransc * 7) : 0;
+  // Sin gasto medido `totGP` vale 0, así que `ritmoG_semanal` vale 0 y esto ya
+  // sale `null` — no hace falta preguntar aquí por el veredicto. Pero sale
+  // `null` por el MISMO camino que «no hay fechas capturadas», y ahí sí se
+  // distinguen: quien decide qué se imprime es el renglón de abajo, que es el
+  // único sitio donde está escrito qué significa cada hueco.
   const finProyGP = hayFechas && ritmoG_semanal > 0
     ? new Date(hoyD.getTime() + ((PPTO - totGP) / ritmoG_semanal) * 7 * 86400000)
     : null;
@@ -1160,9 +1194,13 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     ['Corte actual',       fmtDDMMMYYY(hoyD),   `Semana ISO ${(() => { const t=new Date(hoyD); t.setDate(t.getDate()+4-(t.getDay()||7)); const s=Math.ceil((((t-new Date(t.getFullYear(),0,1))/86400000)+1)/7); return s; })()}`],
     ['Días transcurridos', `${diasTransc}`,     `de ${diasTot} · ${PCT(pctPlazo)}`],
     ['Días restantes',     `${diasRest}`,       diasRest > 0 ? `hasta ${fmtDDMMMYYY(fFin)}` : 'Plazo vencido'],
-    ['Ritmo GP semanal',   `$${(ritmoG_semanal/1e6).toFixed(2)}M`, 'al ritmo actual'],
+    ['Ritmo GP semanal',
+     gastoGPMedido ? `$${(ritmoG_semanal/1e6).toFixed(2)}M` : 'sin medir',
+     gastoGPMedido ? 'al ritmo actual' : 'la corrida no incluye esta obra'],
     ['Ritmo avance semanal',`$${(ritmoM_semanal/1e6).toFixed(2)}M`,'al ritmo actual'],
-    ['Fin proy. por gasto',fmtDDMMMYYY(finProyGP),
+    ['Fin proy. por gasto',
+     gastoGPMedido ? fmtDDMMMYYY(finProyGP) : 'sin medir',
+     !gastoGPMedido ? 'no se puede proyectar sin el gasto' :
      finProyGP && finProyGP > fFin ? `${Math.round((finProyGP-fFin)/86400000)} días tarde` :
      finProyGP ? `${Math.round((fFin-finProyGP)/86400000)} días holgura` : '—'],
     ['Fin proy. por avance',fmtDDMMMYYY(finProyME),
@@ -1346,10 +1384,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   // 1. MARGEN BRUTO — más alto es mejor
   // Umbrales: ≥20 Bien, 15-20 Normal, 10-15 Aceptable, 5-10 Atención, <5 Crítico
+  // Sin gasto medido el renglón se queda SIN nivel y lo dice. Clasificarlo
+  // daría «Bien»: `mg` sería `me` menos casi nada, o sea el margen más alto
+  // posible, justo en la obra de la que menos se sabe. El renglón no se omite
+  // —un indicador que desaparece no se nota— se publica sin veredicto.
   if (me > 0) {
-    const n = clasificarMasAltoMejor(mpct, [20, 15, 10, 5]);
-    rsgBodyCalc.push([idxRiesgo++, 'Margen bruto', PCT(mpct), n,
-      `Ejecutado ${MXN(me)} · Gasto ${MXN(totGast)} · Margen ${MXN(mg)}`]);
+    const n = gastoGPMedido ? clasificarMasAltoMejor(mpct, [20, 15, 10, 5])
+                            : {nivel:'—', tc:K.gmu, bg:K.glt};
+    rsgBodyCalc.push([idxRiesgo++, 'Margen bruto', margenPctTxt, n,
+      gastoGPMedido
+        ? `Ejecutado ${MXN(me)} · Gasto ${gastoTxt} · Margen ${margenTxt}`
+        : `Ejecutado ${MXN(me)} · el gasto de GP no incluye esta obra`]);
   }
 
   // 2. AVANCE vs PROGRAMA — más alto es mejor (avance real - avance programado)
@@ -1375,11 +1420,17 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // 3. GASTO vs AVANCE — proporción sana: por cada $ ejecutado, cuánto se gastó
   // Ideal: gasto/ejecución ≈ 1 - margen_esperado (ej. 0.8 para margen 20%)
   // Umbrales: <=0.75 Bien, <=0.85 Normal, <=0.95 Aceptable, <=1.05 Atención, >1.05 Crítico
+  // Misma razón que el margen: el cociente con el gasto sin medir sale ~0 y
+  // eso es «Bien» por el camino más corto.
   if (me > 0) {
     const ratio = totGast / me;
-    const n = clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05]);
-    rsgBodyCalc.push([idxRiesgo++, 'Gasto vs ejecución', `${ratio.toFixed(2)}x`, n,
-      `Por cada $1 ejecutado se ha gastado $${ratio.toFixed(2)}`]);
+    const n = gastoGPMedido ? clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05])
+                            : {nivel:'—', tc:K.gmu, bg:K.glt};
+    rsgBodyCalc.push([idxRiesgo++, 'Gasto vs ejecución',
+      gastoGPMedido ? `${ratio.toFixed(2)}x` : 'sin medir', n,
+      gastoGPMedido
+        ? `Por cada $1 ejecutado se ha gastado $${ratio.toFixed(2)}`
+        : 'El gasto de GP no incluye esta obra: no hay cociente que publicar']);
   }
 
   // 4. ESTIMACIONES SIN COBRAR — más bajo es mejor
@@ -1466,7 +1517,15 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Observaciones alineadas a la nueva escala de 5 niveles.
   const obs = [];
   // Margen (mismos umbrales de la tabla)
-  if (me > 0) {
+  // El caso sin medir va ARRIBA y con nivel: si se cae por los umbrales,
+  // `mpct` sale altísimo —`me` menos casi nada— y el documento no dice NADA
+  // del margen, que es peor que decir un número malo. El silencio en una
+  // sección de alertas se lee como «aquí no hay nada que ver».
+  if (me > 0 && !gastoGPMedido) {
+    obs.push([NIVELES.atencion,
+      'El margen bruto no se pudo medir: la corrida de gasto de GP no incluye ' +
+      'esta obra. Verifica la clave de GP en Planeación → Contrato.']);
+  } else if (me > 0) {
     if (mpct < 5) obs.push([NIVELES.critico, `Margen bruto ${PCT(mpct)} — muy bajo, revisar productividad y sobrecostos.`]);
     else if (mpct < 10) obs.push([NIVELES.atencion, `Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`]);
     else if (mpct < 15) obs.push([NIVELES.aceptable, `Margen bruto ${PCT(mpct)} — dentro de rango aceptable pero mejorable.`]);
@@ -1706,7 +1765,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         st(K.gmu); fs(6.5); fw('normal');
         doc.text(explicacion, ML + 3, ySub + 12.5);
         st(col); fs(FS_KV - 2); fw('bold');
-        doc.text(`${positivo ? '+' : ''}${MXN(Math.abs(deltaMonto))}`, ML + CW - 3, ySub + 6, { align: 'right' });
+        doc.text(MXND(deltaMonto), ML + CW - 3, ySub + 6, { align: 'right' });
         fs(FS_KL); doc.text(`${positivo ? '+' : ''}${deltaPct.toFixed(1)} pp`, ML + CW - 3, ySub + 11, { align: 'right' });
         ySub += bloqueH + 3;
       }
@@ -3517,7 +3576,7 @@ const cuadreDelAnexo = (prog, obra) => {
       // pantalla contradiciéndose en la misma frase.
       dice: `El programa suma ${MXN(total)} y el contrato cargado dice ` +
         `${MXN(presupuesto)}: ${dif > 0 ? 'el programa pide' : 'al programa le faltan'} ` +
-        `${MXN(Math.abs(dif))}, ` +
+        `${MXN(dif)}, ` +
         (pct < 0.1 ? 'menos del 0.1% del contrato.' : `el ${NUM(pct, 1)}% del contrato.`),
     });
   }
@@ -6159,7 +6218,9 @@ const resolverGastoGP = (obra, gpData) => estadoGastoGP(obra, gpData).valor;
 // usar la MISMA respuesta, no volver a decidirlo.
 const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
                                otrosGastos = [], maquinaria = [] }) => {
-  const obraGP = estadoGastoGP(obra, gpData).obraGP;
+  const _gpEstado = estadoGastoGP(obra, gpData);
+  const obraGP = _gpEstado.obraGP;
+  const medido = _gpEstado.medido;
 
   // El Sheet guarda el gasto DE cada semana (delta) y sólo del año en curso;
   // los años cerrados vienen en `años`. El acumulado se arma sumando los
@@ -6227,9 +6288,22 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   const totMaq   = (maquinaria || []).reduce((t, m) => t + (parseFloat(m.imp) || 0), 0);
   const gtActual = resolverGastoGP(obra, gpData) + totMaq + totOtros;
 
-  const anclada = semanas.length > 0 && gtActual > 0;
-  const serie = semanas.map((s, i) =>
-    (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null));
+  // ── EL CERO DE LA SEMANA NO ES EL HUECO DE LA CORRIDA ────────────────────
+  // Si el gasto de GP de esta obra no está medido, `ultimoGPHasta` devuelve 0
+  // para todas las semanas y la serie sale plana en cero: la gráfica dibujaba
+  // «Gasto total $0» y la columna Margen publicaba el ejecutado entero como
+  // ganancia, en la misma pantalla cuyo KPI acababa de decir «sin medir». Un
+  // `null` por semana es lo único afirmable: la tabla lo dice con su `vacio` y
+  // la línea no se dibuja.
+  //
+  // Los gastos manuales no rescatan la serie: maquinaria y otros gastos son
+  // sumandos del MISMO total, y publicar un acumulado con uno de tres sumandos
+  // ausente es la cifra incompleta con cara de medida.
+  const anclada = medido && semanas.length > 0 && gtActual > 0;
+  const serie = semanas.map((s, i) => {
+    if (!medido) return null;
+    return (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null);
+  });
 
   // ¿El ancla movió el número? Entonces hay gasto que el KPI suma y el reparto
   // por semana no ve —llegó sin fecha—, y el salto del último punto no es gasto
@@ -6237,7 +6311,7 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   const sinFechar = anclada
     && Math.abs((porSem[semanas[semanas.length - 1].key] ?? 0) - gtActual) > 1;
 
-  return { obraGP, porSem, serie, gtActual, anclada, sinFechar };
+  return { obraGP, porSem, serie, gtActual, anclada, sinFechar, medido };
 };
 
 // Resuelve el nombre CORTO de una obra a partir del Sheet GP.
@@ -7479,6 +7553,33 @@ const css = `
 
 // ── HELPERS ────────────────────────────────────────────────────────────────
 const MXN = n=>(Math.abs(n)||0).toLocaleString("es-MX",{style:"currency",currency:"MXN",maximumFractionDigits:0});
+// ── El signo del dinero se pone una sola vez ───────────────────────────────
+//
+// `MXN` descarta el signo, y seguirá haciéndolo: decenas de llamadores le
+// pasan una magnitud que no puede ser negativa y la colorean aparte. Lo que no
+// puede seguir es que el signo se escriba a mano en cada sitio. Estaba copiado
+// en ocho, con DOS caracteres distintos para el mismo menos (`−` U+2212 y el
+// guion `-`), y en varios la copia estaba MAL: ponían `+` al positivo y NADA
+// al negativo, así que el valor pasaba por `Math.abs` y −$8,612,920 se
+// publicaba como `$8,612,920`.
+//
+// Se vio primero en la columna Margen de la tabla por semanas (la 0121 decía
+// `$9,652,920` donde el margen es −$9,652,920) y el barrido encontró el mismo
+// patrón en la tarjeta «Diferencia» y en cinco deltas de nómina y avance.
+// **El color no es el signo**: en esa misma tabla hay cifras positivas en rojo
+// por otro motivo, así que un rojo no se lee como un menos.
+//
+//   · MXNS — magnitud con signo: menos si es negativa, nada si no.
+//   · MXND — delta: dice siempre para qué lado se movió, también el `+`.
+//
+// Y queda una regla que `prueba-el-numero-con-su-calificativo` exige: **nunca
+// `MXN(Math.abs(x))`**. `MXN` ya toma magnitud, así que ese `Math.abs` es la
+// segunda copia del absoluto, y era la señal de que alguien estaba escribiendo
+// el signo a mano al lado. Donde la dirección la lleva la etiqueta —«Rezago de
+// pago», «Diferencia»— se pasa el valor pelado; donde la lleva la cifra, MXNS
+// o MXND.
+const MXNS = n => `${(Number(n)||0) < 0 ? '−' : ''}${MXN(n)}`;
+const MXND = n => { const v = Number(n)||0; return `${v > 0 ? '+' : v < 0 ? '−' : ''}${MXN(v)}`; };
 const NUM = (n,d=1)=>Number(n||0).toLocaleString("es-MX",{maximumFractionDigits:d});
 const semA = p=>p>=85?C.green:p>=55?C.yellow:C.red;
 const semM = p=>p>15?C.green:p>=6?C.yellow:C.red;
@@ -7552,11 +7653,18 @@ const presentacionEconomiaObra = (kpis) => {
         : conPresupuesto && kpis.pctGasto > 75 ? C.yellowDk : C.textPri),
     pctGastoTxt: (gastoSinMedir || !conPresupuesto) ? null
       : `${NUM(kpis.pctGasto, 1)}% del contrato`,
+    // Cuando no hay cifra, debajo va el MOTIVO, no un hueco. Vive aquí y no en
+    // la pantalla porque es la misma frase para la tarjeta, la tabla y el
+    // tablero, y un condicional por pantalla es cómo empiezan a discrepar.
+    gastoMotivoTxt: !gastoSinMedir ? null
+      : (kpis.gastoGPMotivo === 'no-pedida'
+          ? 'la corrida del gasto todavía no la incluye'
+          : 'el gasto de GP no se pudo medir'),
     barraGasto: gastoSinMedir ? null : Math.min(kpis.pctGasto, 100),
     margenTxt: (gastoSinMedir || margenIndefinido) ? '—' : `${NUM(kpis.mpct, 1)}%`,
     margenAbsTxt: gastoSinMedir
       ? 'gasto sin medir'
-      : `${kpis.diff < 0 ? '−' : ''}${MXN(Math.abs(kpis.diff))}`,
+      : MXNS(kpis.diff),
     margenColor: gastoSinMedir ? C.textMut
       : (margenIndefinido ? C.redDk : nivelMargen(kpis.mpct).color),
     margenTitulo: gastoSinMedir
@@ -7586,8 +7694,8 @@ function Tit({children}){
 // 12, 15, 15—, la omisión no se leía como "tamaño por omisión": se leía como
 // una fila despareja. Poner el default donde ya está la mayoría empareja las
 // diecisiete sin tocar diecisiete renglones.
-function Kpi({label,value,sub,color,size=12}){
-  return <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,
+function Kpi({label,value,sub,color,size=12,title}){
+  return <div title={title} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,
     padding:"8px 10px",borderLeft:`3px solid ${color}`,boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
     <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>{label}</div>
     <div style={{fontSize:size,fontWeight:600,color,lineHeight:1.2}}>{value}</div>
@@ -10531,7 +10639,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
           valor={MXN(consolidado.ejecutado)}
           deltaValor={deltaEjecutado}
           deltaSub={deltaEjecutado !== null
-            ? `${deltaEjecutado >= 0 ? '+' : '−'}${MXN(Math.abs(deltaEjecutado))} vs semana previa`
+            ? `${MXND(deltaEjecutado)} vs semana previa`
             : (obrasSinPrevEjec > 0
                 ? `${obrasSinPrevEjec} obra${obrasSinPrevEjec > 1 ? 's' : ''} sin captura en la semana previa`
                 : 'sin comparación disponible')}
@@ -10565,7 +10673,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
         <_KpiConDelta
           label="Margen"
           valor={gpDisponible
-            ? `${consolidado.margenAbs >= 0 ? '' : '−'}${MXN(Math.abs(consolidado.margenAbs))}`
+            ? MXNS(consolidado.margenAbs)
             : 'no disponible'}
           valorSub={gpDisponible ? `${NUM(consolidado.margenPct, 1)}%` : 'requiere el gasto de GP'}
           deltaValor={null}
@@ -10739,7 +10847,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                         title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100">
                     {NUM(totMargenPct, 1)}%
                     <span style={{color:C.textMut,fontWeight:400,fontSize:10,marginLeft:5}}>
-                      · {consolidado.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(consolidado.margenAbs))}
+                      · {MXNS(consolidado.margenAbs)}
                     </span>
                   </span>
                 </div>
@@ -10851,7 +10959,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                       title="Margen consolidado = (∑ Ejecutado − ∑ Gastado) / ∑ Ejecutado × 100. Cuadra con el KPI de Margen arriba.">
                     {NUM(totMargenPct, 1)}%
                     <span style={{color:C.textMut,fontWeight:400,marginLeft:6}}>
-                      · {consolidado.margenAbs < 0 ? '−' : ''}{MXN(Math.abs(consolidado.margenAbs))}
+                      · {MXNS(consolidado.margenAbs)}
                     </span>
                   </td>
                   <td style={{padding:"8px 4px",textAlign:"right",whiteSpace:"nowrap"}}>{MXN(totPorCobrar)}</td>
@@ -12135,6 +12243,11 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
     serie: gastoAcumSeries,
     gtActual,
     sinFechar: gastoSinFechar,
+    // Si el gasto de GP de esta obra no está medido, la respuesta se PIDE aquí
+    // y no se vuelve a deducir: `porSem` sigue trayendo un número por semana
+    // —cero— y cualquier consumidor que lo lea sin esta bandera publica ceros
+    // con cara de medidos, que es el defecto un piso más abajo del KPI.
+    medido: gastoMedido,
   } = serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
 
   // ── Estimaciones acumuladas COBRADAS (pagadas) por semana
@@ -12314,9 +12427,14 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
   //      el promedio de las semanas con gasto real de la ventana. Esto
   //      refleja mejor la realidad: aunque no haya factura ese día, hay
   //      nómina, renta de equipos, etc.
+  //   3) Y si el gasto de GP no está medido NO hay delta que calcular: la resta
+  //      de dos ceros da cero, y ese cero se leería como «esta semana no se
+  //      gastó nada». Por eso la serie entera queda en null, igual que el
+  //      acumulado del que sale.
   let gastoAcumRef = gastoAcumPorSem[semanas[0]?.key] || 0;
   const deltasRaw = semanas.map((s, i) => {
     if (i === 0) return null;   // se calcula después
+    if (!gastoMedido) return null;
     const act = gastoAcumPorSem[s.key] || gastoAcumRef;
     const prev = gastoAcumPorSem[semanas[i-1].key] || gastoAcumRef;
     if (act >= prev) gastoAcumRef = act;
@@ -12516,7 +12634,12 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
             ejeAbajo={true}
             altura={135}
             fmt={fmtDineroCorto}
-            pie={'El margen es la resta de las otras dos líneas: la misma del KPI de arriba' +
+            pie={(gastoMedido
+                ? 'El margen es la resta de las otras dos líneas: la misma del KPI de arriba'
+                // Ni gasto ni margen se dibujan, y el pie tiene que decir por
+                // qué: un panel con una sola línea y el pie hablando de tres
+                // se lee como una gráfica rota.
+                : 'Sin el gasto de GP no se dibujan ni el gasto ni el margen') +
               (fronteraDinero.hay
                 ? ' · el tramo punteado del dinero se guardó recortado por partida'
                 : '') +
@@ -12543,9 +12666,10 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
             {titulo:'Contra el programa', valores:desviacionSeries, fmt:pp,
              color:colorDelta, vacio:'sin dato'},
             {titulo:'Ejecutado', valores:ejecutadoSeries, fmt:MXN, vacio:'no disponible'},
-            {titulo:'Gasto acumulado', valores:gastoAcumSeries, fmt:MXN},
-            {titulo:'Gasto de la semana', valores:gastoDeltaMedido, fmt:MXN, vacio:'—'},
-            {titulo:'Margen', valores:margenSeries, fmt:MXN,
+            {titulo:'Gasto acumulado', valores:gastoAcumSeries, fmt:MXN,
+             vacio:'sin medir'},
+            {titulo:'Gasto de la semana', valores:gastoDeltaMedido, fmt:MXNS, vacio:'—'},
+            {titulo:'Margen', valores:margenSeries, fmt:MXNS,
              color:(v)=>v>=0?C.greenDk:C.redDk, vacio:'no disponible'},
           ]}/>
         </div>}
@@ -12759,7 +12883,10 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   // código: `serieGastoDeSemanas`. Estaba duplicada aquí, y la copia perdía el
   // gasto manual fechado antes de la firma del contrato —esta ventana arranca
   // ahí— sin decirlo. También ancla el último punto al KPI del Dashboard.
-  const { serie: gastoAcum, gtActual } =
+  // `medido` viaja con la serie por la misma razón que en la tabla: sin él,
+  // una serie vacía se lee como una serie de ceros y este panel publica un
+  // ritmo de gasto, un gasto a hoy y un margen al cierre que nadie midió.
+  const { serie: gastoAcum, gtActual, medido: gastoMedido } =
     serieGastoDeSemanas({ semanas: semanasHist, obra, gpData, otrosGastos, maquinaria });
 
   // ── EJECUTADO ACUMULADO por semana (leído del snapshot) ───────────────
@@ -12850,8 +12977,10 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
     const cambio = serie[serie.length - 1] - serie[idxIni];
     return cambio > 0 ? cambio / nVentana : 0;
   };
-  // El gasto viene del GP: no depende del esquema de los snapshots.
-  const ritmoGasto = calcularRitmo(gastoAcum);
+  // El gasto viene del GP: no depende del esquema de los snapshots. Si no está
+  // medido no hay ritmo: `calcularRitmo` sobre una serie vacía devuelve 0, y un
+  // «$0 /sem» afirma que la obra no está gastando.
+  const ritmoGasto = gastoMedido ? calcularRitmo(gastoAcum) : null;
   // Cada ritmo se acota a SU propia frontera: el del dinero a la del dinero y
   // el del avance a la del avance. Mezclarlas alargaría o acortaría una ventana
   // por un cambio de definición que no le tocó.
@@ -12873,7 +13002,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   // un 100% que alcanzar y este criterio no aplica: la proyección debería
   // cortarse por la fecha de término del contrato. Se resuelve cuando exista
   // `tipoContrato`; hoy el modelo no distingue.
-  const gastoUlt = gastoAcum[gastoAcum.length - 1] || 0;
+  const gastoUlt = gastoMedido ? (gastoAcum[gastoAcum.length - 1] || 0) : null;
   const ejecUlt = ejecAcum[ejecAcum.length - 1] || 0;
   const avanceUlt = avancePctAcum[avancePctAcum.length - 1] || 0;
   const semanasProy = [];
@@ -12893,7 +13022,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
       dCursor = new Date(dCursor);
       dCursor.setDate(dCursor.getDate() + 7);
       const iso = semanaISOLocal(dCursor);
-      gAcum += ritmoGasto;
+      // Sin gasto medido no hay nada que proyectar: `null` deja la línea sin
+      // dibujar en vez de prolongar un cero.
+      gAcum = gastoMedido ? gAcum + ritmoGasto : null;
       // Sin Math.min: el dinero proyectado puede rebasar el contrato, y si lo
       // hace hay que verlo, no esconderlo bajo un tope.
       eAcum += ritmoEjec;
@@ -12921,7 +13052,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   const finProyectado = semanasProy.length > 0
     ? semanasProy[semanasProy.length - 1].fecha
     : null;
-  const gastoFinProy = gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt;
+  const gastoFinProy = !gastoMedido ? null
+    : (gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt);
   const ejecFinProy = ejecProy.length > 0 ? ejecProy[ejecProy.length - 1] : ejecUlt;
   // MARGEN PROYECTADO AL CIERRE — contra el EJECUTADO proyectado, sin topar.
   //
@@ -12936,7 +13068,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   // Si mañana entra `tipoContrato` y un contrato resulta ser cerrado de
   // verdad, ahí el tope vuelve a tener sentido; mientras no se sepa, el
   // sistema no debe inventar un recorte (PENDIENTES #27).
-  const margenFinProy = ejecFinProy - gastoFinProy;
+  // Restar contra un gasto que no se midió publica el ejecutado entero como
+  // ganancia — exactamente lo que hacía la tabla de arriba.
+  const margenFinProy = gastoFinProy === null ? null : ejecFinProy - gastoFinProy;
   // Cuánto del ejecutado proyectado va por encima del contrato. Es un dato,
   // no una alarma: se enseña junto al contrato para dar la escala.
   const excedenteSobreContrato = (presupuesto > 0 && ejecFinProy > presupuesto)
@@ -12951,11 +13085,18 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   const yPos = (v) => PT + ch - (v / maxValor) * ch;
   const idxHoy = semanasHist.length - 1;
 
+  // Mismo criterio que `MXNS`: el signo lo pone el formateador, una vez. El
+  // «Margen proyectado al cierre» lo escribía a mano al lado y con el guion del
+  // teclado, y además partía de `Math.abs`, que es la señal de siempre.
+  // Y `null` no es cero: es «no se midió», y se dice con palabras.
   const fmtCompacto = (v) => {
-    const abs = Math.abs(v || 0);
-    if (abs >= 1e6) return `$${(v/1e6).toFixed(1)}M`;
-    if (abs >= 1e3) return `$${(v/1e3).toFixed(0)}k`;
-    return `$${(v||0).toFixed(0)}`;
+    if (v === null || v === undefined) return 'sin medir';
+    const n = Number(v) || 0;
+    const abs = Math.abs(n);
+    const signo = n < 0 ? '\u2212' : '';
+    if (abs >= 1e6) return `${signo}$${(abs/1e6).toFixed(1)}M`;
+    if (abs >= 1e3) return `${signo}$${(abs/1e3).toFixed(0)}k`;
+    return `${signo}$${abs.toFixed(0)}`;
   };
   const fmtFecha = (d) => d ? `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}` : '—';
 
@@ -12978,7 +13119,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   };
 
   // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
-  const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);
+  // Sin gasto medido no hay puntos: `yPos(null)` cae en la línea base y
+  // dibujaría una recta en cero, que es la misma mentira de la tabla.
+  const ptsGastoHist = gastoMedido ? gastoAcum.map((v, i) => [xPos(i), yPos(v)]) : [];
   const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
   // ── TRAMOS DE LA LÍNEA HISTÓRICA ──────────────────────────────────────
   // La línea no se traza sobre los valores arrastrados: se traza de medición a
@@ -13187,8 +13330,8 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
           <g pointerEvents="none">
             <line x1={xPos(hover)} y1={PT} x2={xPos(hover)} y2={PT + ch}
               stroke={C.caliza} strokeWidth={0.7} strokeDasharray="2,3" opacity={0.5}/>
-            <circle cx={xPos(hover)} cy={yPos(todosGasto[hover])} r={5}
-              fill="none" stroke={C.redDk} strokeWidth={1.8}/>
+            {gastoMedido && <circle cx={xPos(hover)} cy={yPos(todosGasto[hover])} r={5}
+              fill="none" stroke={C.redDk} strokeWidth={1.8}/>}
             <circle cx={xPos(hover)} cy={yPos(todosEjec[hover])} r={5}
               fill="none" stroke={C.blueDk} strokeWidth={1.8}/>
           </g>
@@ -13199,14 +13342,14 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
       {hover !== null && todasSemanas[hover] && (() => {
         const s = todasSemanas[hover];
         const esProy = hover > idxHoy;
-        const g = todosGasto[hover] || 0;
+        const g = gastoMedido ? (todosGasto[hover] || 0) : null;
         const e = todosEjec[hover] || 0;
         const pctAv = todosAvance[hover];
         // Margen de la semana: ejecutado − gasto, sin topar. Tiene que salir
         // del mismo criterio que el margen proyectado del pie; si uno topa al
         // contrato y el otro no, la misma gráfica da dos márgenes distintos
         // según dónde se pose el cursor.
-        const margen = e - g;
+        const margen = g === null ? null : e - g;
         const excedenteSem = presupuesto > 0 ? Math.max(0, e - presupuesto) : 0;
         const dd = String(s.fecha.getDate()).padStart(2,'0');
         const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
@@ -13251,8 +13394,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
           </div>
           <div style={{display:"flex",justifyContent:"space-between",gap:8,marginTop:2}}>
             <span style={{color:C.textSec}}>Margen</span>
-            <span style={{fontWeight:700,color: margen >= 0 ? C.greenDk : C.red}}>
-              {margen >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margen))}
+            <span style={{fontWeight:700,color: margen === null ? C.textMut
+              : margen >= 0 ? C.greenDk : C.red}}>
+              {fmtCompacto(margen)}
             </span>
           </div>
         </div>;
@@ -13262,7 +13406,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
     {/* Leyenda + KPIs proyección */}
     <div style={{display:"flex",gap:14,marginTop:6,fontSize:10,color:C.textSec,flexWrap:"wrap",justifyContent:"center"}}>
       {!soloGasto && <span><span style={{display:"inline-block",width:10,height:2,background:C.blueDk,verticalAlign:"middle",marginRight:4}}/>Ejecutado</span>}
-      <span><span style={{display:"inline-block",width:10,height:2,background:C.redDk,verticalAlign:"middle",marginRight:4}}/>Gasto</span>
+      {gastoMedido && <span><span style={{display:"inline-block",width:10,height:2,background:C.redDk,verticalAlign:"middle",marginRight:4}}/>Gasto</span>}
       {!soloGasto && <span style={{color:C.textMut}}>· · · Proyección</span>}
     </div>
     {soloGasto && (
@@ -13281,11 +13425,11 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
       )}
       <div>
         <div style={{fontSize:9,color:C.textMut}}>Ritmo gasto</div>
-        <div style={{fontSize:12,fontWeight:700,color:C.redDk}}>{fmtCompacto(ritmoGasto)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
+        <div style={{fontSize:12,fontWeight:700,color: ritmoGasto === null ? C.textMut : C.redDk}}>{fmtCompacto(ritmoGasto)}{ritmoGasto !== null && <span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span>}</div>
       </div>
       <div>
         <div style={{fontSize:9,color:C.textMut}}>Gasto acumulado a hoy</div>
-        <div style={{fontSize:12,fontWeight:700,color:C.caliza}}>{fmtCompacto(gastoUlt)}</div>
+        <div style={{fontSize:12,fontWeight:700,color: gastoUlt === null ? C.textMut : C.caliza}}>{fmtCompacto(gastoUlt)}</div>
       </div>
       {!soloGasto && (
         <>
@@ -13295,10 +13439,12 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
           </div>
           <div>
             <div style={{fontSize:9,color:C.textMut}}>Margen proyectado al cierre</div>
-            <div style={{fontSize:12,fontWeight:700,color: margenFinProy >= 0 ? C.greenDk : C.red}}>
-              {margenFinProy >= 0 ? '' : '-'}{fmtCompacto(Math.abs(margenFinProy))}
+            <div style={{fontSize:12,fontWeight:700,color: margenFinProy === null ? C.textMut
+              : margenFinProy >= 0 ? C.greenDk : C.red}}>
+              {fmtCompacto(margenFinProy)}
             </div>
-            <div style={{fontSize:8,color:C.textMut}}>ejecutado proyectado − gasto</div>
+            <div style={{fontSize:8,color:C.textMut}}>{margenFinProy === null
+              ? 'no se puede afirmar sin el gasto' : 'ejecutado proyectado − gasto'}</div>
           </div>
         </>
       )}
@@ -13337,18 +13483,23 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
 
 function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],nominaHistorial=[],evidencia=[],onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
-  // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
-  const gastoGPLive = resolverGastoGP(obra, gpData);
-  const totOtros = (otrosGastos||[]).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
-  const gt=gastoGPLive+maquinaria.reduce((t,m)=>t+(parseFloat(m.imp)||0),0)+totOtros;
-  // Misma fuente única de verdad que calcularKPIsObra — esta pantalla tenía
-  // su propia copia de la fórmula y era una de las que se contradecían.
-  const modoVolObra = (obra?.modoAvance === "volumen");
-  const am = desgloseEjecutado(subs, modoVolObra).total;
-  const alm=materiales.reduce((t,m)=>t+(parseFloat(m.imp)||0),0);
-  const me=am+alm;
-  const af=avanceFisicoPonderado(subs, obra.presupuesto, modoVolObra);
-  const diff=me-gt; const mpct=me>0?(diff/me)*100:0;
+  // ── Una cuenta por número: el bundle de la obra se PIDE, no se rehace ─────
+  // Este prólogo era otra copia de `calcularKPIsObra`: volvía a resolver el
+  // gasto, el ejecutado, el almacén, el margen y las estimaciones con las
+  // mismas fórmulas tecleadas de nuevo. Lo que se veía en pantalla no era el
+  // costo de mantenerla, sino lo que la copia había perdido: llamaba a
+  // `resolverGastoGP`, que devuelve el NÚMERO y tira el calificativo. Por eso
+  // «Gasto acumulado» publicaba una cifra y un «% del contrato» para una obra
+  // cuyo gasto de GP todavía no se ha medido — un cero medido y un hueco se
+  // ven iguales si lo único que pasa es el número. La tabla del panel ya sabía
+  // callarse; esta tarjeta no tenía con qué preguntar.
+  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones, gpData, otrosGastos);
+  // Y cómo se DICE tampoco se decide aquí: `presentacionEconomiaObra` ya lo
+  // resolvió para la tabla y la tarjeta de la lista.
+  const pres = presentacionEconomiaObra(kpis);
+  const {gt, am, alm, me, af, diff, mpct, estPag, estPorCob, estTotal, pctGasto, brecha} = kpis;
+  const modoVolObra = kpis.modoVol;
+  const totalEst = estTotal;
   // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
   const mNiv = nivelMargen(mpct);
   const mc = mNiv.color;
@@ -13361,29 +13512,15 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const _ultNom = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
   const dir = _ultNom?.totalDir || 0;
   const ind = _ultNom?.totalInd || 0;
-  const cE=e=>{const a=e.monto*obra.pctAnticipo/100,fg=e.monto*obra.pctFondoGar/100;return{a,fg,ef:e.monto-a-fg};};
-  // Normalizador de estatus (case-insensitive, sin acentos)
-  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const estPag    = estimaciones.filter(e => _ne(e.estatus) === 'pagada').reduce((t,e) => t + (e.monto||0), 0);
-  // Por cobrar = En proceso + Facturada + Aprobada (todo lo que no está pagado)
-  const estPorCob = estimaciones.filter(e => {
-    const s = _ne(e.estatus);
-    return s === 'facturada' || s === 'aprobada' || s.includes('proceso');
-  }).reduce((t,e) => t + (e.monto||0), 0);
-  // Total estimado = TODAS las estimaciones sin importar estatus
-  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
-  const totalEst  = estTotal;
-  // (estProc / estFact / estRet / estAmort dejaron de mostrarse en el
-  //  dashboard según el nuevo diseño de 3 KPIs.)
-  const top4=subs.slice(0,4); const maxI=top4[0]?.imp||1;
+  // (estPag / estPorCob / estTotal salen del bundle de arriba; estProc,
+  //  estFact, estRet y estAmort dejaron de mostrarse en el dashboard según el
+  //  nuevo diseño de 3 KPIs.)
 
   // ── ALERTAS desde la biblioteca de riesgos ──
   // El anexo, para que `avc_004` mida contra lo que se firmó y no contra una
   // recta. Se lee con el mismo hook que el tablero de avance, que es lo que
   // impide que las dos pantallas acaben con dos cifras del mismo atraso.
   const programaObra = useProgramaDeObra(obra?.id);
-  const pctGasto = obra.presupuesto > 0 ? gt/obra.presupuesto*100 : 0;
-  const brecha = pctGasto - af;
   // KPIs consolidados que el motor de detección usa
   const kpisCtx = {gt, am, alm, me, af, diff, mpct, pctGasto, brecha};
   const riesgos = detectarRiesgos({
@@ -13409,24 +13546,25 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         para consistencia. Presupuesto Total / Gasto Acumulado / Ejecutado /
         Margen Bruto + Personal. */}
     {(() => {
-      const pctGP    = obra.presupuesto > 0 ? (gt / obra.presupuesto) * 100 : 0;
       const pctEjec  = obra.presupuesto > 0 ? (me / obra.presupuesto) * 100 : 0;
       // Trío que sustituye al excedente: Contratado · Ejecutado · Por ejecutar.
       // No puede ser negativo — si se ejecutó de más, lo que falta es cero. El
       // excedente sobre contrato se enseña en la proyección, junto al contrato
       // y sin color de alarma.
       const porEjecutar = Math.max((obra.presupuesto || 0) - me, 0);
-      const margenAbs = me - gt;   // ejecutado - gastado
-      const colGasto  = pctGP > 90 ? C.red : pctGP > 75 ? C.yellowDk : C.textPri;
       return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
         <div>
           <Kpi label="Presupuesto total" value={MXN(obra.presupuesto)}
             sub="contrato base" color={C.caliza} size={12}/>
         </div>
         <div {...clickableCard("gastos")}>
-          <Kpi label="Gasto acumulado" value={MXN(gt)}
-            sub={obra.presupuesto>0 ? `${NUM(pctGP,1)}% del contrato · ver ›` : "GP + Maq + Otros"}
-            color={colGasto} size={12}/>
+          {/* Sin el gasto de GP esta tarjeta NO dice una cifra: dice que falta
+              medirlo, y por qué. El cero de una obra recién dada de alta y el
+              cero de una obra sin gastos se veían idénticos. */}
+          <Kpi label="Gasto acumulado" value={pres.gastoTxt}
+            sub={pres.gastoMotivoTxt
+              || (pres.pctGastoTxt ? `${pres.pctGastoTxt} · ver ›` : "GP + Maq + Otros")}
+            color={pres.gastoColor} size={12} title={pres.margenTitulo}/>
         </div>
         <div {...clickableCard("operacion","avance")}>
           <Kpi label="Ejecutado" value={MXN(me)}
@@ -13443,9 +13581,12 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             color={C.textSec} size={12}/>
         </div>
         <div>
-          <Kpi label="Margen bruto" value={`${margenAbs>=0?'':'-'}${MXN(Math.abs(margenAbs))}`}
-            sub={me>0 ? `${NUM(mpct,1)}% ejec. vs gastado — ${mNiv.nivel}` : 'sin avance ejecutado'}
-            color={mc} size={12}/>
+          {/* El margen se calcula con el gasto: si al gasto le falta un
+              sumando, el margen sale inflado. Mismo criterio que la tabla. */}
+          <Kpi label="Margen bruto" value={pres.margenAbsTxt}
+            sub={pres.gastoSinMedir ? 'no se puede afirmar sin el gasto'
+              : (me>0 ? `${pres.margenTxt} ejec. vs gastado — ${mNiv.nivel}` : 'sin avance ejecutado')}
+            color={pres.margenColor} size={12} title={pres.margenTitulo}/>
         </div>
         <div {...clickableCard("operacion","nomina")}>
           <Kpi label="Personal campo" value={dir+ind}
@@ -13479,31 +13620,47 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     {totalRiesgos > 0 && (
       <BannerRiesgos riesgos={riesgos} onNavTab={onNavTab}/>
     )}
-    <Card accent={mc} {...clickableCard("operacion","estimaciones")}>
+    {/* Esta tarjeta era la que peor mentía: con el gasto sin medir decía
+        «Gasto total $0», «Diferencia +$13,684,113 · margen 100%» y un sello
+        verde de BIEN. Un veredicto de salud sobre una resta a la que le falta
+        el sustraendo. Las tres cifras y el sello salen ahora del mismo bundle
+        que el KPI de arriba. */}
+    <Card accent={pres.margenColor} {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
           <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Monto ejecutado − Gasto total</div></div>
-        <div style={{background:mNiv.bg, border:`0.5px solid ${mc}55`, borderRadius:4,
-          padding:"3px 9px", fontSize:10, fontWeight:700, color:mc, whiteSpace:"nowrap"}}>
-          {me === 0 ? 'Sin avance' : mNiv.nivel.toUpperCase()}</div>
+        <div style={{background: pres.gastoSinMedir ? C.bg : mNiv.bg,
+          border:`0.5px solid ${pres.margenColor}55`, borderRadius:4,
+          padding:"3px 9px", fontSize:10, fontWeight:700, color:pres.margenColor,
+          whiteSpace:"nowrap"}} title={pres.margenTitulo}>
+          {pres.gastoSinMedir ? 'SIN VEREDICTO'
+            : me === 0 ? 'Sin avance' : mNiv.nivel.toUpperCase()}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
-        {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],[MXN(gt),"Gasto total",C.red,"GP+maquinaria+otros"],
-          [`${diff>=0?"+":""}${MXN(diff)}`,"Diferencia",mc,`margen ${NUM(mpct,1)}%`]].map(([v,l,c,s])=>
+        {[[MXN(me),"Monto ejecutado",C.blue,"avance+almacén"],
+          [pres.gastoTxt,"Gasto total",pres.gastoColor,
+           pres.gastoMotivoTxt || "GP+maquinaria+otros"],
+          [pres.gastoSinMedir ? pres.margenAbsTxt : MXND(diff),"Diferencia",pres.margenColor,
+           pres.gastoSinMedir ? 'no se puede afirmar sin el gasto' : `margen ${NUM(mpct,1)}%`]]
+          .map(([v,l,c,s])=>
           <div key={l} style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${c}`}}>
             <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>{l}</div>
             <div style={{fontSize:13,fontWeight:600,color:c}}>{v}</div>
             <div style={{fontSize:9,color:C.textMut}}>{s}</div>
           </div>)}
       </div>
-      <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:9,overflow:"hidden",position:"relative"}}>
-        <div style={{width:`${Math.min((gt/obra.presupuesto)*100,100).toFixed(1)}%`,height:"100%",
-          background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
-        <div style={{position:"absolute",top:0,height:"100%",left:"85%",width:1.5,background:C.yellow}}/>
-      </div>
-      <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginTop:3}}>
-        <span>$0</span><span style={{color:C.yellow}}>↑ umbral 15%</span><span>{MXN(obra.presupuesto)}</span>
-      </div>
+      {/* La barra dibuja qué parte del contrato va gastada. Sin gasto medido no
+          hay nada que dibujar, y una barra vacía se lee como «no ha gastado». */}
+      {pres.barraGasto !== null && <>
+        <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:9,overflow:"hidden",position:"relative"}}>
+          <div style={{width:`${pres.barraGasto.toFixed(1)}%`,height:"100%",
+            background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
+          <div style={{position:"absolute",top:0,height:"100%",left:"85%",width:1.5,background:C.yellow}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginTop:3}}>
+          <span>$0</span><span style={{color:C.yellow}}>↑ umbral 15%</span><span>{MXN(obra.presupuesto)}</span>
+        </div>
+      </>}
     </Card>
     <Card {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -14752,7 +14909,7 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
             color={compensacion.cortas>0?C.blueDk:C.textMut} size={12}/>
           <Kpi label="Partidas completas" value={String(compensacion.completas)}
             sub={`de ${compensacion.partidas} en el catálogo`} color={C.greenDk} size={12}/>
-          <Kpi label="Neto" value={`${compensacion.neto>=0?'+':'-'}${MXN(Math.abs(compensacion.neto))}`}
+          <Kpi label="Neto" value={MXND(compensacion.neto)}
             sub={Math.abs(compensacion.neto) < 1 ? "la obra se compensó sola"
               : compensacion.neto > 0 ? "ejecutado por encima del contrato"
               : "falta por ejecutar para cerrar el contrato"}
@@ -16006,7 +16163,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
         sub={`GP + maquinaria${totalOtrosGastos>0?` + otros (${MXN(totalOtrosGastos)})`:""}`}
         color={C.red} size={12}/>
       <Kpi label="Última semana" value={MXN(gastoUltimaSem)}
-        sub={deltaUltSem===null?"sin semana anterior contigua":`${deltaUltSem>=0?"+":""}${MXN(deltaUltSem)} vs sem ant.`}
+        sub={deltaUltSem===null?"sin semana anterior contigua":`${MXND(deltaUltSem)} vs sem ant.`}
         color={deltaUltSem!==null && deltaUltSem > gastoPromedioSem ? C.red : C.caliza} size={12}/>
       <Kpi label="Velocidad prom." value={velocidadProm===null?"—":MXN(velocidadProm)}
         sub={velocidadProm===null?"faltan semanas seguidas":`últimas ${semanasBase} semanas`}
@@ -18733,7 +18890,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
             <Kpi label="Conceptos" value={catalogoGuardado.conceptos.length} sub="partidas en catálogo" color={C.blue}/>
             <Kpi label="Total contrato" value={MXN(catalogoGuardado.importeContrato)} sub="capturado manualmente" color={C.caliza} size={12}/>
             <Kpi label="Total leído" value={MXN(catalogoGuardado.totalLeido)} sub="suma del archivo" color={C.green} size={12}/>
-            <Kpi label="Diferencia" value={MXN(Math.abs(catalogoGuardado.importeContrato - catalogoGuardado.totalLeido))}
+            <Kpi label="Diferencia" value={MXN(catalogoGuardado.importeContrato - catalogoGuardado.totalLeido)}
               sub={pctLeido >= 98 ? ' Cuadra' : 'Revisar'} color={pctLeido >= 98 ? C.green : C.yellow} size={12}/>
           </div>
           {editar && (
@@ -20094,11 +20251,11 @@ function Nomina({obra, rol, onHistorialCambio}) {
           <Kpi label="Directo" value={semanaActual.totalDir} sub="mano de obra" color={C.blue}/>
           <Kpi label="Indirecto" value={semanaActual.totalInd} sub="administración" color={C.purple}/>
           <Kpi label="Total nómina" value={MXN(semanaActual.totalNomina)}
-            sub={deltaNomina!==0?`${deltaNomina>0?'+':''}${MXN(deltaNomina)} vs sem. ant.`:'sin cambio'}
+            sub={deltaNomina!==0?`${MXND(deltaNomina)} vs sem. ant.`:'sin cambio'}
             color={deltaNomina>0?C.yellow:C.caliza} size={12}/>
           <Kpi label="Horas extra" value={MXN(heActual)}
             sub={`${NUM(pctHE,1)}% del total` +
-              (deltaHE!==0?` · ${deltaHE>0?'+':''}${MXN(deltaHE)} vs sem. ant.`:'')}
+              (deltaHE!==0?` · ${MXND(deltaHE)} vs sem. ant.`:'')}
             color={pctHE > 15 ? C.yellowDk : deltaHE > 0 ? C.orange : C.caliza} size={12}/>
           {altas.length>0&&<Kpi label="Altas" value={altas.length} sub="nuevos esta semana" color={C.green}/>}
           {bajas.length>0&&<Kpi label="Bajas" value={bajas.length} sub="salieron esta semana" color={C.red}/>}
@@ -20233,7 +20390,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                         </td>
                         <td style={{padding:'5px 8px',textAlign:'right',fontSize:10}}>
                           {delta!==0
-                            ? <span style={{color:delta>0?C.yellow:C.green}}>{delta>0?'+':''}{MXN(delta)}</span>
+                            ? <span style={{color:delta>0?C.yellow:C.green}}>{MXND(delta)}</span>
                             : <span style={{color:C.textMut}}>—</span>}
                         </td>
                       </tr>
@@ -20424,7 +20581,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                       ['Personal',sem.totalDir+sem.totalInd,deltaP!==0?`${deltaP>0?'+':''}${deltaP}`:'',C.caliza],
                       ['Directo',sem.totalDir,'',C.blue],
                       ['Indirecto',sem.totalInd,'',C.purple],
-                      ['Total nómina',MXN(sem.totalNomina),deltaTot!==0?`${deltaTot>0?'+':''}${MXN(deltaTot)}`:'',deltaTot>0?C.yellow:C.caliza],
+                      ['Total nómina',MXN(sem.totalNomina),deltaTot!==0?MXND(deltaTot):'',deltaTot>0?C.yellow:C.caliza],
                       ['Horas extra',MXN(heImporte(sem)),'',C.orange],
                     ].map(([l,v,sub,col])=>(
                       <div key={l} style={{background:C.card,borderRadius:6,padding:'6px 8px'}}>
@@ -21615,7 +21772,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       {/* 5 KPIs (mismo lenguaje visual que el Dashboard de obra) */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(108px,1fr))",gap:7}}>
         <Kpi label="Monto contrato" value={MXN(montoContrato)} sub="contratado con el sub" color={C.caliza} size={12}/>
-        <Kpi label="Catálogo"       value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(Math.abs(difMonto))} (${NUM(pctDif,2)}%)` : "suma de conceptos"} color={validacion?.color || C.blue} size={12}/>
+        <Kpi label="Catálogo"       value={MXN(totalCat)}    sub={validacion ? `dif ${MXN(difMonto)} (${NUM(pctDif,2)}%)` : "suma de conceptos"} color={validacion?.color || C.blue} size={12}/>
         <Kpi label="Ejecutado"      value={MXN(ejecutado)}
           sub={`${NUM(pctAvance,1)}% del contrato`} color={C.blueDk} size={12}/>
         <Kpi label="Por ejecutar"   value={MXN(Math.max(montoContrato - ejecutado, 0))}
@@ -21632,7 +21789,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
             <span style={{fontSize:14,fontWeight:700,color:validacion.color}}>{validacion.icon}</span>
             <div>
               <div style={{fontSize:11,fontWeight:600,color:validacion.color}}>
-                {validacion.txt}: {difMonto > 0 ? "+" : ""}{MXN(difMonto)} ({NUM(pctDif,2)}%)
+                {validacion.txt}: {MXND(difMonto)} ({NUM(pctDif,2)}%)
               </div>
               <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                 {difMonto > 0 ? "Catálogo excede el monto contratado — ajusta cantidades o P.U." :
@@ -21672,7 +21829,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
           </div>
           <div style={{textAlign:"right",flexShrink:0}}>
             <div style={{fontSize:14,fontWeight:700,color:col,lineHeight:1}}>
-              {positivo ? "+" : ""}{MXN(Math.abs(deltaMonto))}
+              {MXND(deltaMonto)}
             </div>
             <div style={{fontSize:10,color:col,marginTop:2,fontWeight:600}}>
               {positivo ? "+" : ""}{NUM(deltaPct,1)} pp
@@ -22940,7 +23097,7 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
               color:C.textMut,paddingTop:5,borderTop:`0.5px solid ${C.border}`}}>
               <span>Diferencia</span>
               <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textMut : C.redDk}}>
-                {cambioModo.delta >= 0 ? "+" : "−"}{MXN(Math.abs(cambioModo.delta))}
+                {MXND(cambioModo.delta)}
               </b>
             </div>
           </div>

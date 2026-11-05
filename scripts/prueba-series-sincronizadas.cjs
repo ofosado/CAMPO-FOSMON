@@ -177,9 +177,17 @@ function libresDe(src) {
 }
 
 // Dobles: React fuera de React, y nada más. El gasto del Sheet NO se dobla —
-// `resolverGastoGP` entra por HELPERS, copiada del archivo—: los escenarios de
-// aquí pasan `gpData: null` y la cuenta real contesta 0 por sí sola, que es la
-// respuesta que hay que vigilar, no una que la prueba se cablea.
+// entra por HELPERS, sacado del archivo—: los escenarios de aquí dicen qué
+// contestó GP y la cuenta real saca sus conclusiones sola, que es la respuesta
+// que hay que vigilar, no una que la prueba se cablea.
+//
+// OJO con qué significa `gpData: null`. Hasta #100 significaba «el gasto de
+// esta obra es cero», porque `resolverGastoGP` devolvía un número y cero era
+// el único número que podía devolver sin documento. Ya no: sin documento de
+// gasto el veredicto es SIN MEDIR, y una serie sin medir sale en `null` para
+// que nadie reste contra ella. Por eso el escenario que quiera afirmar algo
+// sobre el gasto tiene que decir que GP SÍ contestó —ver `gpContestoCero`—;
+// `gpData: null` sigue sirviendo para los escenarios que no hablan de gasto.
 const STUBS = () => ({
   useState: (v) => [v, () => {}],
   useRef: () => ({ current: null }),
@@ -281,6 +289,15 @@ const vacios = (extra) => {
               maquinaria: [], materiales: [], subs: [], historialAvance: [] };
   return { ...o, ...extra };
 };
+
+// Una corrida del gasto que SÍ preguntó por esta clave y no trajo un peso.
+// Eso es un cero MEDIDO —distinto del hueco de «no se le preguntó»— y es lo
+// que le hace falta a un escenario cuyo gasto es todo manual: sin esto el
+// gasto de GP queda sin medir, y con un sumando de tres sin medir el total
+// tampoco es afirmable. El par va junto: la clave en la obra y la clave en
+// `obrasPedidas`, que es exactamente lo que el cron escribe.
+const CLAVE_GP = '0199';
+const gpContestoCero = () => ({ obras: {}, obrasPedidas: [CLAVE_GP] });
 
 // `fronteraDinero` / `fronteraAvance` son las dos fronteras que quedan. El par
 // `idxFrontera` / `hayTramoViejo` ya no existe: resolvía la frontera de la
@@ -472,8 +489,16 @@ console.log('\n6. Proyección: termina al 100% de avance FÍSICO, y el dinero no
     snap(8, { av: 20, me: 2_000_000, esquema: 2 }),
     snap(0, { av: 60, me: 9_000_000, esquema: 2 }),
   ];
+  // Esta sección SÍ afirma cifras de gasto, así que el escenario tiene que
+  // decir qué contestó GP. Contesta cero —pedida y sin cheques—, que deja el
+  // gasto entero en los dos manuales de abajo y no mueve ninguna de las
+  // cuentas de esta sección. Sin esto el gasto queda SIN MEDIR y la
+  // proyección se niega a publicar un margen, que es lo correcto pero no es
+  // lo que esta sección vino a medir.
   const props = vacios({
-    obra: obraBase(), historialAvance: hist,
+    obra: { ...obraBase(), gpId: CLAVE_GP },
+    gpData: gpContestoCero(),
+    historialAvance: hist,
     otrosGastos: [
       { fecha: fechaISO(haceSemanas(8)), importe: 1_000_000 },
       { fecha: fechaISO(haceSemanas(1)), importe: 3_000_000 },
