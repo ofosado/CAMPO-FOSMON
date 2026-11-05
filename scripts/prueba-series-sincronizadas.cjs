@@ -81,7 +81,29 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // de la obra, y si la prueba se las imitara con un `new Date`
                  // propio dejaría de ver justamente el defecto que encontró: el
                  // lunes que se iba a la semana de antes.
-                 'fechaLocalDeISO', 'jueveDeSemanaISO', 'semanaISO'];
+                 'fechaLocalDeISO', 'jueveDeSemanaISO', 'semanaISO',
+                 // El eje de semanas y las dos series salieron de dentro del
+                 // componente a nivel de módulo cuando el tablero del municipio
+                 // pasó a dibujar la misma Curva S. Entran por aquí, copiadas
+                 // del archivo, y NO como dobles: si `serieAvanceDeSemanas`
+                 // dejara de anclar la última semana al avance de hoy, esta
+                 // prueba lo tiene que ver. Un doble que devolviera la serie
+                 // «correcta» convertiría el guardián de los $2.7M en un
+                 // examen de la prueba a sí misma.
+                 'claveSemanaISO', 'semanasDeVentana', 'serieAvanceDeSemanas',
+                 'serieProgramadaDeSemanas',
+                 // El programado y su rótulo: `serieProgramadaDeSemanas` llama
+                 // a `avanceProgramadoA`, que arrastra el resto de la cadena
+                 // del anexo. Con `programa` undefined ninguna de estas se
+                 // ejecuta —la serie sale toda en `null` y la fuente es
+                 // `cargando`—, pero tienen que EXISTIR o el prólogo revienta.
+                 'avanceProgramadoA', 'programaConArranque', 'pctProgramadoEnFecha',
+                 'acumuladoProgramado', 'mesesDelPrograma', 'diaDeBarra', 'diasDelMes',
+                 'tramosDeBarra', 'hoyLocalISO', 'ROTULO_PROGRAMADO',
+                 'finVigenteDe',
+                 // El formateador real, no un doble: los pp de la tabla salen
+                 // de él y un `String(v)` escondería un redondeo distinto.
+                 'NUM'];
 const fuentesHelper = [];
 const funcs = {};
 traverse(ast, {
@@ -131,7 +153,7 @@ function sinJSX(src) {
 }
 
 const BUILTINS = new Set(['Object','Math','Date','Number','String','Array','JSON','Boolean',
-  'isNaN','parseFloat','parseInt','console','Map','Set','NaN','undefined','Infinity',
+  'isNaN','isFinite','parseFloat','parseInt','console','Map','Set','NaN','undefined','Infinity',
   'RegExp','Error','Promise','Intl','Symbol','globalThis']);
 
 // Variables libres del prólogo, detectadas por ámbito. No se listan a mano:
@@ -248,12 +270,20 @@ const vacios = (extra) => {
   return { ...o, ...extra };
 };
 
-// `fronteraDinero` / `fronteraAvance` sustituyen al par `idxFrontera` /
-// `hayTramoViejo`, que sigue existiendo pero ya sólo resuelve la frontera de la
-// métrica que el usuario tenga seleccionada en la pestaña.
+// `fronteraDinero` / `fronteraAvance` son las dos fronteras que quedan. El par
+// `idxFrontera` / `hayTramoViejo` ya no existe: resolvía la frontera de la
+// métrica seleccionada en la pestaña, y la tarjeta ya no tiene pestañas —
+// dibuja los dos paneles a la vez, cada serie con su propia frontera.
+//
+// `gastoAcumSeries` y `gastoDeltaMedido` van aquí porque son columnas de la
+// tabla y la tabla es donde una cifra se lee como medida: `gastoSemanalSeries`
+// rellena las semanas sin GP con el promedio de la ventana, que sirve para la
+// forma de la curva y miente en un renglón.
 const QUIERO_TEND = ['ejecutadoSeries','margenSeries','avanceSeries','esquemaPorSemana',
-                     'fronteraDinero','fronteraAvance','idxFrontera','hayTramoViejo',
-                     'semanas','idxPrimerAvance','ejecutadoPorSem'];
+                     'fronteraDinero','fronteraAvance',
+                     'semanas','idxPrimerAvance','ejecutadoPorSem',
+                     'programadoSeries','gastoAcumSeries','gastoDeltaMedido',
+                     'avanceDeltaSeries'];
 const QUIERO_PROY = ['ejecAcum','avancePctAcum','gastoAcum','ejecProy','gastoProy','avanceProy',
                      'semanasProy','semanasHist','ritmoEjec','ritmoAvance','ritmoGasto',
                      'idxFrontDinero','hayTramoViejoDinero','idxFrontAvance','hayTramoViejoAvance',
