@@ -92,6 +92,16 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // examen de la prueba a sí misma.
                  'claveSemanaISO', 'semanasDeVentana', 'serieAvanceDeSemanas',
                  'serieProgramadaDeSemanas',
+                 // El gasto por semana salió también a nivel de módulo, y con
+                 // él la pregunta «¿qué obra del GP es ésta?»: la contestan
+                 // `estadoGastoGP` y nadie más. Entran copiadas, NO como
+                 // dobles, por la misma razón que las de arriba: el defecto que
+                 // provocó el cambio fue que las dos copias de esta cuenta
+                 // resolvían la obra del GP por su lado, sin la guarda contra el
+                 // match difuso, y la tarjeta le colgaba a una obra el dinero de
+                 // otra. Un doble que devolviera la serie «correcta» taparía eso.
+                 'serieGastoDeSemanas', 'estadoGastoGP', 'resolverGastoGP',
+                 'extraerGastoTotalGP',
                  // El programado y su rótulo: `serieProgramadaDeSemanas` llama
                  // a `avanceProgramadoA`, que arrastra el resto de la cadena
                  // del anexo. Con `programa` undefined ninguna de estas se
@@ -166,15 +176,16 @@ function libresDe(src) {
   return globals.filter(n => !BUILTINS.has(n));
 }
 
-// Dobles: React fuera de React, y el gasto del Sheet cableado a 0 para que el
-// único gasto del escenario sea el que la prueba inyecta.
+// Dobles: React fuera de React, y nada más. El gasto del Sheet NO se dobla —
+// `resolverGastoGP` entra por HELPERS, copiada del archivo—: los escenarios de
+// aquí pasan `gpData: null` y la cuenta real contesta 0 por sí sola, que es la
+// respuesta que hay que vigilar, no una que la prueba se cablea.
 const STUBS = () => ({
   useState: (v) => [v, () => {}],
   useRef: () => ({ current: null }),
   useEffect: () => {},
   useMemo: (f) => (typeof f === 'function' ? f() : f),
   useCallback: (f) => f,
-  resolverGastoGP: () => 0,
   MXN: (v) => String(v),
   fmtMXN: (v) => String(v),
   C: new Proxy({}, { get: () => '#000000' }),
@@ -262,10 +273,11 @@ const SUBS_CON_EXCEDENTE = [
 const EJEC_REAL = 7_200_000;      // lo que muestra el KPI
 const EJEC_RECONSTRUIDO = 6_000_000;  // lo que mostraba la gráfica
 
-const PROPS_TEND = ['obra','historialAvance','gpData','estimaciones','datosObraGP',
-                    'otrosGastos','maquinaria','materiales','subs'];
+// `datosObraGP` ya no existe como prop: la obra del GP se resuelve DENTRO, con
+// `estadoGastoGP`. Inyectarla por prop era justamente la rendija por la que
+// cada componente se armaba su propio match.
 const vacios = (extra) => {
-  const o = { gpData: null, datosObraGP: null, estimaciones: [], otrosGastos: [],
+  const o = { gpData: null, estimaciones: [], otrosGastos: [],
               maquinaria: [], materiales: [], subs: [], historialAvance: [] };
   return { ...o, ...extra };
 };
@@ -542,8 +554,12 @@ console.log('   qué día se corra la prueba.');
     otrosGastos: [{ fecha: lunes4, importe: 500_000 }],
     estimaciones: [{ estatus: 'cobrada', fechaCobro: lunes4, monto: 900_000 }],
   });
+  // Se mira el ACUMULADO por semana y no el incremental: el incremental vivía
+  // dentro del componente y ahora es interno a `serieGastoDeSemanas`. El
+  // acumulado es además lo que la tabla publica, así que la aserción pasa a
+  // morder sobre la cifra que alguien lee.
   const t = correr('TendenciasMensuales', props,
-    [...QUIERO_TEND, 'gastoManualIncrem', 'estPorSem']);
+    [...QUIERO_TEND, 'gastoAcumPorSem', 'estPorSem']);
 
   // a) El arranque de la obra. La ventana no puede tener 11 semanas en lunes.
   check(t.semanas?.length === 10,
@@ -552,10 +568,10 @@ console.log('   qué día se corra la prueba.');
     `la primera semana es la del arranque, no la de antes (${t.semanas?.[0]?.key}, esperado ${kDe(9)})`);
 
   // b) Un gasto manual capturado en lunes.
-  check(t.gastoManualIncrem?.[kDe(4)] === 500_000,
-    `el gasto del lunes se suma a su propia semana ${kDe(4)} (${t.gastoManualIncrem?.[kDe(4)]})`);
-  check(t.gastoManualIncrem?.[kDe(5)] === undefined,
-    `y NO a la semana anterior ${kDe(5)} (${t.gastoManualIncrem?.[kDe(5)]})`);
+  check(t.gastoAcumPorSem?.[kDe(4)] === 500_000,
+    `el gasto del lunes se suma a su propia semana ${kDe(4)} (${t.gastoAcumPorSem?.[kDe(4)]})`);
+  check(t.gastoAcumPorSem?.[kDe(5)] === 0,
+    `y la semana anterior ${kDe(5)} sigue en cero (${t.gastoAcumPorSem?.[kDe(5)]})`);
 
   // c) Una estimación cobrada en lunes.
   check(t.estPorSem?.[kDe(4)] === 900_000,
@@ -573,9 +589,11 @@ console.log('   qué día se corra la prueba.');
     otrosGastos: [{ fecha: finDeSemana, importe: 700_000 }],
   });
   const t2 = correr('TendenciasMensuales', props2,
-    [...QUIERO_TEND, 'gastoManualIncrem']);
-  check(t2.gastoManualIncrem?.[kDe(5)] === 700_000,
-    `un sello de tiempo completo del sábado anterior sigue en ${kDe(5)} (${t2.gastoManualIncrem?.[kDe(5)]})`);
+    [...QUIERO_TEND, 'gastoAcumPorSem']);
+  check(t2.gastoAcumPorSem?.[kDe(5)] === 700_000,
+    `un sello de tiempo completo del sábado anterior sigue en ${kDe(5)} (${t2.gastoAcumPorSem?.[kDe(5)]})`);
+  check(t2.gastoAcumPorSem?.[kDe(6)] === 0,
+    `y no se va una semana más atrás ${kDe(6)} (${t2.gastoAcumPorSem?.[kDe(6)]})`);
 
   // e) Y la función de la que cuelga todo lo demás —fotos, nómina, alertas,
   //    el id del snapshot— con fechas FIJAS, que no dependen de hoy.

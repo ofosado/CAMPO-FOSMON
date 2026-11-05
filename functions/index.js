@@ -2305,9 +2305,14 @@ const extraerGastoTotalGP = (datosObra) => {
 };
 
 const estadoGastoGP = (obra, gpData) => {
-  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo });
+  // `obraGP` —la obra del Sheet con la que se cruzó, o null— no la usa nadie en
+  // este archivo: aquí sólo se publica el total. Va igual porque la copia de
+  // `src/App.jsx` la necesita para que quien dibuja el gasto semana por semana
+  // use el MISMO match que quien publica el total, y las dos copias tienen que
+  // contestar lo mismo, no sólo en el número.
+  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo, obraGP: null });
   const medido = (valor, motivo = 'medido', extra = {}) =>
-    ({ valor, medido: true, motivo, ...extra });
+    ({ valor, medido: true, motivo, obraGP: null, ...extra });
 
   if (!obra) return medido(0, 'sin-obra');
   if (!gpData?.obras) return sinDato('sin-documento', obra?.gastoGP || 0);
@@ -2339,7 +2344,8 @@ const estadoGastoGP = (obra, gpData) => {
     if (exact) {
       return medido(extraerGastoTotalGP(exact),
         exact.desactualizadaDesde ? 'desactualizada' : 'medido',
-        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde, obraGP: exact }
+                                  : { obraGP: exact });
     }
     // Clave explícita que no aparece en el gasto: NO se busca parecido. El
     // difuso le colgaría a la obra nueva el dinero de la que más se le parezca
@@ -2354,7 +2360,8 @@ const estadoGastoGP = (obra, gpData) => {
     if (exact) {
       return medido(extraerGastoTotalGP(exact),
         exact.desactualizadaDesde ? 'desactualizada' : 'medido',
-        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde, obraGP: exact }
+                                  : { obraGP: exact });
     }
     const pedida = sePidio(clave);
     if (pedida !== null) return veredictoDeClaveAusente(clave, 'prefijo del id');
@@ -2372,7 +2379,8 @@ const estadoGastoGP = (obra, gpData) => {
     const matches = palabrasObra.filter((p) => palObra.some((g) => g.includes(p) || p.includes(g))).length;
     if (matches > score) { score = matches; mejor = o; }
   }
-  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');
+  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre',
+    { obraGP: mejor });
   // Ningún match → el campo legacy, que no es una medición de GP y se dice.
   console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el gasto — cae al campo legacy obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre || 'ninguno'}". Captura el gpId en Planeación → Contrato.`);
   return sinDato('sin-match', obra?.gastoGP || 0);
