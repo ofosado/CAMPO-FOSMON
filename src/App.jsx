@@ -6031,9 +6031,14 @@ const extraerGastoTotalGP = (datosObra) => {
 // Devuelve el estado completo. `resolverGastoGP` se queda como el acceso al
 // número y sale DE AQUÍ, para que no existan dos cuentas del mismo gasto.
 const estadoGastoGP = (obra, gpData) => {
-  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo });
+  // `obraGP` es la obra del Sheet con la que se cruzó, o null. Va en el
+  // veredicto porque quien dibuja el gasto SEMANA POR SEMANA necesita el mismo
+  // match que quien publica el total, y antes lo resolvía por su cuenta: había
+  // tres respuestas a «¿qué obra del GP es esta?» en el archivo y sólo ésta
+  // tenía las guardas. Ver la nota del paso 1.
+  const sinDato = (motivo, valor = 0) => ({ valor, medido: false, motivo, obraGP: null });
   const medido  = (valor, motivo = 'medido', extra = {}) =>
-    ({ valor, medido: true, motivo, ...extra });
+    ({ valor, medido: true, motivo, obraGP: null, ...extra });
 
   if (!obra) return medido(0, 'sin-obra');
   if (!gpData?.obras) {
@@ -6069,7 +6074,8 @@ const estadoGastoGP = (obra, gpData) => {
     if (exact) {
       return medido(extraerGastoTotalGP(exact),
         exact.desactualizadaDesde ? 'desactualizada' : 'medido',
-        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde, obraGP: exact }
+                                  : { obraGP: exact });
     }
     // Clave explícita que no aparece en el gasto: NO se busca parecido.
     //
@@ -6091,7 +6097,8 @@ const estadoGastoGP = (obra, gpData) => {
     if (exact) {
       return medido(extraerGastoTotalGP(exact),
         exact.desactualizadaDesde ? 'desactualizada' : 'medido',
-        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde } : {});
+        exact.desactualizadaDesde ? { desde: exact.desactualizadaDesde, obraGP: exact }
+                                  : { obraGP: exact });
     }
     // Mismo razonamiento que con `gpId`, y aquí estaba latente: el cron
     // también deriva la clave del prefijo del id (`clavesGPdeCAMPO`), así que
@@ -6114,7 +6121,8 @@ const estadoGastoGP = (obra, gpData) => {
     const matches = palabrasObra.filter(p => palObra.some(g => g.includes(p) || p.includes(g))).length;
     if (matches > score) { score = matches; mejor = o; }
   }
-  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');
+  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre',
+    { obraGP: mejor });
   // Ningún match → el campo legacy, que no es una medición de GP y se dice.
   console.warn(`[GP] obra "${obra.nombre}" (id=${obra.id}) sin match en el gasto — cae al campo legacy obra.gastoGP=${obra.gastoGP}. Score máximo=${score}, mejor candidato: "${mejor?.nombre||'ninguno'}". Captura el gpId en Planeación → Contrato.`);
   return sinDato('sin-match', obra?.gastoGP || 0);
@@ -6122,6 +6130,115 @@ const estadoGastoGP = (obra, gpData) => {
 
 // El acceso al número. No calcula nada: una cuenta por número.
 const resolverGastoGP = (obra, gpData) => estadoGastoGP(obra, gpData).valor;
+
+// ── El gasto acumulado semana por semana ───────────────────────────────────
+//
+// Esto vivía DOS veces dentro de componentes —tendencias y proyección— y las
+// dos copias empezaban resolviendo por su cuenta «¿qué obra del GP es ésta?».
+// Ahí estaba el defecto: ninguna de las dos tenía la guarda contra el match
+// difuso que `estadoGastoGP` lleva desde el incidente de la 0129, así que la
+// obra recién dada de alta —clave capturada, gasto todavía sin correr— dibujaba
+// una curva semanal con el dinero de la 0121, mientras su propio KPI, arriba en
+// la misma pantalla, decía $0 medido. Tres respuestas a la misma pregunta y
+// sólo una con las guardas.
+//
+// Ahora el match lo da `estadoGastoGP.obraGP` y la cuenta por semana vive aquí.
+// Dos detalles que no se heredaron tal cual de las copias:
+//
+//  · El acarreo PRE-VENTANA de los gastos manuales se aplica siempre. La copia
+//    de la proyección no lo tenía, y su ventana arranca en la firma del
+//    contrato: un gasto fechado antes de ese día desaparecía de la curva sin
+//    que nada lo dijera.
+//  · El ancla del último punto NO depende de que haya catálogo. El gasto de una
+//    obra no se mide con sus partidas; condicionarlo a `subs` hacía que la
+//    última semana de la gráfica y el KPI del Dashboard publicaran dos gastos
+//    distintos en las obras sin catálogo cargado.
+//
+// `anclada` dice si el último punto se sobrescribió con `gtActual`. Quien
+// compare contra esa serie —el margen, el aviso de gasto sin fechar— tiene que
+// usar la MISMA respuesta, no volver a decidirlo.
+const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
+                               otrosGastos = [], maquinaria = [] }) => {
+  const obraGP = estadoGastoGP(obra, gpData).obraGP;
+
+  // El Sheet guarda el gasto DE cada semana (delta) y sólo del año en curso;
+  // los años cerrados vienen en `años`. El acumulado se arma sumando los
+  // deltas sobre esa base.
+  const gpAcumPorSem = {};
+  if (obraGP?.semanas) {
+    const añoActual = new Date().getFullYear();
+    let base = 0;
+    if (obraGP.años) {
+      Object.entries(obraGP.años).forEach(([kAño, v]) => {
+        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
+        if (!isNaN(y) && y < añoActual) base += (parseFloat(v) || 0);
+      });
+    }
+    const deltas = Object.entries(obraGP.semanas)
+      .map(([k, v]) => {
+        const m = String(k).match(/S?(\d{1,2})/);
+        return m ? { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.sem - b.sem);
+    let acum = base;
+    deltas.forEach(({ sem, delta }) => {
+      acum += delta;
+      gpAcumPorSem[claveSemanaISO(sem, añoActual)] = acum;
+    });
+  }
+
+  // Manuales (maquinaria y otros gastos) por semana ISO de su fecha, estos sí
+  // incrementales. Almacén NO: ese gasto ya viene en el GP y suma al Ejecutado.
+  const manualIncrem = {};
+  const sumarManual = (fecha, monto) => {
+    if (!fecha || !monto) return;
+    const s = semanaISO(fecha);
+    if (!s || !isFinite(s.semana) || !isFinite(s.año)) return;
+    const key = claveSemanaISO(s.semana, s.año);
+    manualIncrem[key] = (manualIncrem[key] || 0) + monto;
+  };
+  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
+  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura,
+    parseFloat(m.imp) || 0));
+
+  const gpKeys = Object.keys(gpAcumPorSem).sort();
+  const ultimoGPHasta = (semKey) => {
+    let ult = 0;
+    for (const k of gpKeys) { if (k <= semKey) ult = gpAcumPorSem[k]; else break; }
+    return ult;
+  };
+
+  const porSem = {};
+  let acumManual = 0;
+  const primera = semanas[0]?.key;
+  if (primera) {
+    Object.keys(manualIncrem).forEach(k => {
+      if (k < primera) acumManual += manualIncrem[k];
+    });
+  }
+  semanas.forEach(s => {
+    acumManual += manualIncrem[s.key] || 0;
+    porSem[s.key] = ultimoGPHasta(s.key) + acumManual;
+  });
+
+  // El total vivo: el mismo que publica el KPI del Dashboard.
+  const totOtros = (otrosGastos || []).reduce((t, o) => t + (parseFloat(o.importe) || 0), 0);
+  const totMaq   = (maquinaria || []).reduce((t, m) => t + (parseFloat(m.imp) || 0), 0);
+  const gtActual = resolverGastoGP(obra, gpData) + totMaq + totOtros;
+
+  const anclada = semanas.length > 0 && gtActual > 0;
+  const serie = semanas.map((s, i) =>
+    (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null));
+
+  // ¿El ancla movió el número? Entonces hay gasto que el KPI suma y el reparto
+  // por semana no ve —llegó sin fecha—, y el salto del último punto no es gasto
+  // de esa semana.
+  const sinFechar = anclada
+    && Math.abs((porSem[semanas[semanas.length - 1].key] ?? 0) - gtActual) > 1;
+
+  return { obraGP, porSem, serie, gtActual, anclada, sinFechar };
+};
 
 // Resuelve el nombre CORTO de una obra a partir del Sheet GP.
 // Reglas: toma el nombre GP (con match igual que resolverGastoGP), quita
@@ -9771,7 +9888,11 @@ const _semISOKey = (fecha) => {
 // EXCLUYE maquinaria (no tiene fecha por movimiento hoy).
 // Devuelve un mapa {key: gastoAcumulado} y también valorEnKey(k) helper.
 const _serieGastoAcumulado = (obra, gpData, otrosGastos = []) => {
-  const gpObra = gpData?.obras && Object.values(gpData.obras).find(o => o.id === obra.id);
+  // La obra del GP con el MISMO match que el KPI. Era `o.id === obra.id`: una
+  // cuarta respuesta a «¿qué obra del GP es ésta?» que no mira `gpId` ni el
+  // prefijo, así que la columna de Δ margen se quedaba en «—» en cuanto el id
+  // de CAMPO no era literalmente la clave del Sheet, sin decir por qué.
+  const gpObra = estadoGastoGP(obra, gpData).obraGP;
   const añoActual = new Date().getFullYear();
   // Base = años previos al actual (suma de Y2024, Y2025, ...)
   let base = 0;
@@ -11966,49 +12087,28 @@ function TablaSemanas({semanas, columnas, maxAlto = 230}) {
 //   [MISMA fórmula que el Dashboard, no "avance% × presupuesto"]
 // - Necesita 'subs' para calcular el monto ejecutado real por semana; si no
 //   se pasan, cae a "avance% × presupuesto" como aproximación.
-function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datosObraGP, otrosGastos, maquinaria, materiales, subs, programa}) {
-  // Si el caller no pasa datosObraGP (bug histórico: el Dashboard llamaba
-  // con datosObraGP={null}), lo resolvemos aquí con la misma lógica que
-  // el resto de la app.
-  if (!datosObraGP && gpData?.obras && obra) {
-    const arr = Object.values(gpData.obras);
-    let match = null;
-    if (obra.gpId) match = arr.find(o => o.id === obra.gpId);
-    if (!match && /^\d{4}/.test(obra.id || '')) {
-      match = arr.find(o => o.id === obra.id.slice(0, 4));
-    }
-    if (!match) {
-      const norm = s => (s||'').toString().toUpperCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-        .replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
-      const palabras = norm(obra.nombre).split(' ').filter(w => w.length > 3);
-      let mejor = null, score = 0;
-      for (const o of arr) {
-        const palGP = norm(o.nombre).replace(/^\d{4}\s*/,'').split(' ').filter(w => w.length > 3);
-        const m = palabras.filter(p => palGP.some(g => g.includes(p) || p.includes(g))).length;
-        if (m > score) { score = m; mejor = o; }
-      }
-      if (score >= 2) match = mejor;
-    }
-    datosObraGP = match;
-  }
+// No recibe `datosObraGP`: la obra del GP se resuelve DENTRO, con
+// `estadoGastoGP`, igual que el KPI. El prop existía porque este componente
+// traía su propio match difuso —sin la guarda de la 0129— y el Dashboard, que
+// nunca lo pasó, dejaba que decidiera por su cuenta. Ver `serieGastoDeSemanas`.
+function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otrosGastos, maquinaria, materiales, subs, programa}) {
   // UN SOLO SELECTOR para los dos paneles. Antes había además una fila de
   // pestañas —avance / gasto / margen— y se veía una métrica a la vez: para
   // saber si el gasto corría más rápido que el avance había que acordarse de la
   // otra pestaña. Ahora van apiladas sobre el mismo eje.
   const [rango, setRango] = useState(12);          // últimas N semanas
 
-  // El mapeo fecha → semana ISO del dinero. Es `semanaISO`, la única del
-  // repositorio; aquí sólo se le cambia la forma del resultado a `{sem, año}`
-  // porque así lo leen las líneas de abajo. La copia que vivía aquí —con su
-  // propio `new Date` y su propia versión del corrimiento del lunes— se fue:
-  // dos copias de la cuenta de semanas en el mismo archivo es cómo se llega a
-  // que un gasto capturado el lunes caiga en la semana que ya cerró.
+  // El mapeo fecha → semana ISO de las estimaciones cobradas. Es `semanaISO`,
+  // la única del repositorio; aquí sólo se le cambia la forma del resultado a
+  // `{sem, año}` porque así lo leen las líneas de abajo. La copia que vivía
+  // aquí —con su propio `new Date` y su propia versión del corrimiento del
+  // lunes— se fue: dos copias de la cuenta de semanas en el mismo archivo es
+  // cómo se llega a que un cobro registrado el lunes caiga en la semana que ya
+  // cerró.
   const semanaISOLocal = (fecha) => {
     const s = semanaISO(fecha);
     return (s && isFinite(s.semana) && isFinite(s.año)) ? { sem: s.semana, año: s.año } : null;
   };
-  const skey = claveSemanaISO;
 
   // ── El eje de semanas y la serie de avance ────────────────────────────────
   // Las dos cuentas viven en `semanasDeVentana` y `serieAvanceDeSemanas`, a
@@ -12025,93 +12125,17 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
   } = serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
 
   // ── Gasto TOTAL acumulado por semana ──────────────────────────────────
-  // IMPORTANTE (agosto 2026): el GP del Sheet ya viene como GASTO
-  // ACUMULADO por semana ISO (no incremental). Antes lo estábamos
-  // sumando como si fuera incremental, lo que producía escalones
-  // artificiales en obras con historial largo. Además el mapeo sin año
-  // asumía año actual → gastos 2024/2025 se acumulaban en 2026.
-  //
-  // Nueva lógica:
-  //   Gasto total por semana = último GP acumulado conocido para esa
-  //                            semana o anterior
-  //                          + almacén + maquinaria + otros gastos
-  //                            manuales acumulados hasta esa semana.
-
-  // IMPORTANTE (agosto 2026 iter 5): `datosObraGP.semanas["S22"]` es el
-  // gasto DE esa semana (delta), NO el acumulado. Además solo cubre el
-  // año actual (2026); los años anteriores están en `datosObraGP.años`.
-  //
-  // Para obtener el acumulado real semana a semana:
-  //   1) Base = suma de todos los años anteriores al año actual
-  //   2) Ordenar semanas del año actual cronológicamente
-  //   3) Sumar deltas acumulando desde la base
-  const gastoGPAcumPorSem = {};    // "YYYY-Wnn" → GP acumulado real
-  if (datosObraGP?.semanas) {
-    const añoActual = new Date().getFullYear();
-    // Base: sumar años PREVIOS al actual
-    let baseAcumulada = 0;
-    if (datosObraGP.años) {
-      Object.entries(datosObraGP.años).forEach(([kAño, v]) => {
-        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
-        if (!isNaN(y) && y < añoActual) baseAcumulada += (parseFloat(v) || 0);
-      });
-    }
-    // Semanas del año actual, ordenadas cronológicamente
-    const semanasDelta = Object.entries(datosObraGP.semanas)
-      .map(([k, v]) => {
-        const m = String(k).match(/S?(\d{1,2})/);
-        if (!m) return null;
-        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.sem - b.sem);
-    // Acumular deltas desde la base
-    let acum = baseAcumulada;
-    semanasDelta.forEach(({ sem, delta }) => {
-      acum += delta;
-      gastoGPAcumPorSem[skey(sem, añoActual)] = acum;
-    });
-  }
-
-  // Gastos manuales por semana (INCREMENTALES): almacén + maquinaria + otros
-  const gastoManualIncrem = {};
-  const sumarManual = (fecha, monto) => {
-    if (!fecha || !monto) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    const key = skey(iso.sem, iso.año);
-    gastoManualIncrem[key] = (gastoManualIncrem[key] || 0) + monto;
-  };
-  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
-  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
-  // NOTA: Almacén (materiales) NO se suma al gasto. Ese gasto ya viene
-  // en GP; los materiales en tránsito/bodega suman al EJECUTADO, no aquí.
-
-  // Combinar: gasto total acumulado = GP acumulado más reciente ≤ semana
-  //                                 + manuales incrementales acumulados hasta semana
-  const gastoAcumPorSem = {};
-  // Ordenar keys de GP para poder buscar la más reciente ≤ semana visible
-  const gpKeysOrdenadas = Object.keys(gastoGPAcumPorSem).sort();
-  let acumManual = 0;
-  const primeraKey = semanas[0]?.key;
-  if (primeraKey) {
-    Object.keys(gastoManualIncrem).forEach(k => {
-      if (k < primeraKey) acumManual += gastoManualIncrem[k];
-    });
-  }
-  const ultimoGPAcumHasta = (semKey) => {
-    // Devuelve el último GP acumulado con key ≤ semKey.
-    let ult = 0;
-    for (const k of gpKeysOrdenadas) {
-      if (k <= semKey) ult = gastoGPAcumPorSem[k];
-      else break;
-    }
-    return ult;
-  };
-  semanas.forEach(s => {
-    acumManual += gastoManualIncrem[s.key] || 0;
-    gastoAcumPorSem[s.key] = ultimoGPAcumHasta(s.key) + acumManual;
-  });
+  // La cuenta vive en `serieGastoDeSemanas`, a nivel de módulo, por la misma
+  // razón que el eje y la curva de avance: la proyección dibuja el MISMO gasto
+  // semanal y mientras cada una lo armaba por su cuenta podían publicar dos
+  // gastos distintos de la misma obra. La nota larga —qué trae el Sheet, qué
+  // es delta y qué acumulado, y por qué el almacén NO suma aquí— está allá.
+  const {
+    porSem: gastoAcumPorSem,
+    serie: gastoAcumSeries,
+    gtActual,
+    sinFechar: gastoSinFechar,
+  } = serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
 
   // ── Estimaciones acumuladas COBRADAS (pagadas) por semana
   const estPorSem = {};
@@ -12262,21 +12286,21 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     ejecutadoSeries.push(ejecAcarreo);
   });
 
-  // ── Valores ACTUALES del Dashboard (para anclar la semana MÁS RECIENTE) ─
-  const _gastoGPLive = (subs && obra) ? resolverGastoGP(obra, gpData) : 0;
-  const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
-  const _totMaq   = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-  const gtActual  = _gastoGPLive + _totMaq + _totOtros;
+  // ── Ancla del EJECUTADO en la semana más reciente ───────────────────────
+  // El del gasto lo decide `serieGastoDeSemanas`; éste es otra serie y lleva su
+  // propia condición: sin catálogo no hay ejecutado que anclar.
+  //
+  // Las dos colgaban de un solo `hayDatosDash` que pedía `gtActual > 0`, y por
+  // ahí el ejecutado quedaba atado al gasto: una obra con catálogo capturado y
+  // sin un peso gastado no anclaba su ejecutado, así que el último renglón de la
+  // tabla publicaba el valor arrastrado del snapshot mientras el KPI de arriba
+  // publicaba el vivo. Son dos series y son dos preguntas.
+  //
   // Ejecutado actual con la MISMA función que alimenta el KPI del Dashboard
   // (`desgloseEjecutado`). Antes era avance% × presupuesto, que es el dinero
   // topado: el último punto de la gráfica no cuadraba con el KPI de arriba.
-  const meActual  = ejecutadoActualParaFallback;
-  const hayDatosDash = gtActual > 0 && subs && subs.length > 0;
-
-  // Ancla suave: sobrescribir el último punto del ejecutado con el
-  // valor "avance actual × presupuesto" para que coincida con la fila
-  // de avance físico y con el KPI del Dashboard.
-  if (semanas.length > 0 && hayDatosDash && meActual > 0) {
+  const meActual = ejecutadoActualParaFallback;
+  if (semanas.length > 0 && subs && subs.length > 0 && meActual > 0) {
     ejecutadoSeries[semanas.length - 1] = meActual;
   }
 
@@ -12344,19 +12368,16 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     // Si el ejecutado de esa semana no está disponible, el margen tampoco.
     // Restar contra un cero inventado dibujaría una pérdida que no existe (P2).
     if (typeof ejecutadoSeries[i] !== 'number') return null;
-    const esUltimo = i === semanas.length - 1;
-    // Gasto acumulado con arrastre del último GP conocido
-    let gastoAcumSem = 0;
-    if (esUltimo && hayDatosDash) {
-      gastoAcumSem = gtActual;
-    } else {
-      for (let j = i; j >= 0; j--) {
-        const g = gastoAcumPorSem[semanas[j].key];
-        if (g && g > 0) { gastoAcumSem = g; break; }
-      }
-    }
+    // El gasto que se resta es EL MISMO que se dibuja, leído de la serie, no
+    // recalculado aquí. Es lo que dice el pie del panel: el margen es la resta
+    // de las otras dos líneas. Tenía su propia cuenta —un barrido hacia atrás
+    // buscando el último acumulado > 0 y su propia decisión de anclar— y dos
+    // cuentas del mismo número es cómo la línea morada deja de ser la distancia
+    // entre las otras dos.
+    const g = gastoAcumSeries[i];
+    if (typeof g !== 'number') return null;
     // Ejecutado ya viene con arrastre desde ejecutadoSeries
-    return ejecutadoSeries[i] - gastoAcumSem;
+    return ejecutadoSeries[i] - g;
   });
 
   // ── FRONTERA DE ESQUEMA ───────────────────────────────────────────────
@@ -12414,25 +12435,6 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, datos
     if (typeof a !== 'number' || typeof b !== 'number') return null;
     return a - b;
   });
-
-  // El gasto acumulado que se dibuja y se tabula. La última semana se ancla a
-  // `gtActual` —el gasto que publica el KPI del Dashboard— con el MISMO
-  // criterio que usa `margenSeries` abajo. Si no se anclara, el último renglón
-  // de la tabla diría margen = ejecutado − gasto con tres números que no
-  // cuadran entre sí, que es el defecto de «una cuenta por número» puesto por
-  // escrito en la misma fila.
-  const gastoAcumSeries = semanas.map((s, i) => {
-    if (i === semanas.length - 1 && hayDatosDash) return gtActual;
-    return gastoAcumPorSem[s.key] ?? null;
-  });
-
-  // ¿El ancla movió el número? Si lo movió es que hay gasto que el KPI suma y
-  // el acumulado por semana no ve, porque llegó sin fecha —el total vivo del
-  // GP y los gastos capturados sin día—. Entonces la columna semanal de arriba
-  // está incompleta y el salto del último renglón no es gasto de esa semana.
-  const ultimaSem = semanas[semanas.length - 1]?.key;
-  const gastoSinFechar = semanas.length > 0 && hayDatosDash
-    && Math.abs((gastoAcumPorSem[ultimaSem] ?? 0) - gtActual) > 1;
 
   // ── El gasto de la semana, MEDIDO ─────────────────────────────────────────
   // `gastoSemanalSeries` rellena las semanas sin actualización del GP con el
@@ -12666,33 +12668,28 @@ function CurvaSDelContrato({obra, historialAvance = [], subs = [], programa}) {
 //     verde = ejecutado > gasto (margen positivo)
 //     rojo  = gasto > ejecutado (margen negativo, sobregasto)
 // - Marca vertical: "Hoy" y "Fin proyectado".
-function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otrosGastos, maquinaria, subs}) {
-  // Resolver datosObraGP igual que TendenciasMensuales
-  if (!datosObraGP && gpData?.obras && obra) {
-    const arr = Object.values(gpData.obras);
-    let match = null;
-    if (obra.gpId) match = arr.find(o => o.id === obra.gpId);
-    if (!match && /^\d{4}/.test(obra.id || '')) {
-      match = arr.find(o => o.id === obra.id.slice(0, 4));
-    }
-    datosObraGP = match;
-  }
-
+// Tampoco recibe `datosObraGP`: ver la nota de `TendenciasMensuales`. Aquí el
+// match difuso ni siquiera estaba —sólo clave explícita y prefijo—, así que
+// contestaba bien la 0129 por no haber llegado al paso que falla, no por
+// saberlo. Ahora la obra del GP la da `estadoGastoGP`, como el KPI.
+function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maquinaria, subs}) {
   const [ritmoBase, setRitmoBase] = useState(8); // semanas para promediar el ritmo
   const [hover, setHover] = useState(null);       // índice de semana con cursor encima
   const svgRef = useRef();
 
+  // `semanaISO`, la única del repositorio, con la forma `{sem, año}` que leen
+  // las líneas de abajo. La copia privada que vivía aquí se fue por la misma
+  // razón que la de tendencias: dos cuentas de la semana ISO en el mismo
+  // archivo acaban poniendo el mismo gasto en dos semanas distintas.
   const semanaISOLocal = (fecha) => {
-    // La cadena corta, en LOCAL. La explicación completa está en `semanaISO`.
-    const _s = typeof fecha === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(fecha.trim()) : null;
-    const d = _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(fecha);
-    if (isNaN(d)) return null;
-    d.setHours(0,0,0,0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const inicioAño = new Date(d.getFullYear(), 0, 1);
-    return { sem: Math.ceil(((d - inicioAño)/86400000 + 1) / 7), año: d.getFullYear() };
+    const s = semanaISO(fecha);
+    return (s && isFinite(s.semana) && isFinite(s.año)) ? { sem: s.semana, año: s.año } : null;
   };
-  const skey = (sem, año) => `${año}-W${String(sem).padStart(2,'0')}`;
+  const skey = claveSemanaISO;
+
+  // La obra del GP, con el MISMO match que el KPI. Se necesita antes del eje
+  // porque de ella sale el arranque cuando el contrato no trae fecha.
+  const obraGP = estadoGastoGP(obra, gpData).obraGP;
 
   const presupuesto = parseFloat(obra?.presupuesto) || 0;
   // `fechaLocalDeISO` y no `new Date(...)`: ver la nota larga en la gráfica de
@@ -12705,9 +12702,9 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   // Fallback fecha de inicio: si no está en contrato pero hay datos de GP,
   // usar la primera semana con gasto reportado. Así TAMSA (u obras sin
   // fecha de inicio capturada) sí ven la gráfica de gasto.
-  if (!inicioValido && datosObraGP?.semanas) {
+  if (!inicioValido && obraGP?.semanas) {
     const añoActual = new Date().getFullYear();
-    const semanasNums = Object.keys(datosObraGP.semanas)
+    const semanasNums = Object.keys(obraGP.semanas)
       .map(k => { const m = String(k).match(/S?(\d{1,2})/); return m ? parseInt(m[1],10) : null; })
       .filter(n => n !== null)
       .sort((a,b) => a-b);
@@ -12721,7 +12718,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   }
 
   // ¿Hay algo de gasto reportado? (GP o manuales)
-  const hayGasto = (datosObraGP?.grandTotal || 0) > 0
+  const hayGasto = (obraGP?.grandTotal || 0) > 0
     || (otrosGastos && otrosGastos.length > 0)
     || (maquinaria && maquinaria.length > 0);
 
@@ -12758,66 +12755,12 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   }
 
   // ── GASTO ACUMULADO por semana ────────────────────────────────────────
-  // Mismo cálculo que TendenciasMensuales: deltas del Sheet año actual +
-  // años previos como base + manuales incrementales.
-  const gastoGPAcumPorSem = {};
-  if (datosObraGP?.semanas) {
-    const añoActual = new Date().getFullYear();
-    let baseAcumulada = 0;
-    if (datosObraGP.años) {
-      Object.entries(datosObraGP.años).forEach(([kAño, v]) => {
-        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
-        if (!isNaN(y) && y < añoActual) baseAcumulada += (parseFloat(v) || 0);
-      });
-    }
-    const semanasDelta = Object.entries(datosObraGP.semanas)
-      .map(([k, v]) => {
-        const m = String(k).match(/S?(\d{1,2})/);
-        if (!m) return null;
-        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.sem - b.sem);
-    let acum = baseAcumulada;
-    semanasDelta.forEach(({ sem, delta }) => {
-      acum += delta;
-      gastoGPAcumPorSem[skey(sem, añoActual)] = acum;
-    });
-  }
-
-  const gastoManualIncrem = {};
-  const sumarManual = (fecha, monto) => {
-    if (!fecha || !monto) return;
-    const iso = semanaISOLocal(fecha);
-    if (!iso) return;
-    const key = skey(iso.sem, iso.año);
-    gastoManualIncrem[key] = (gastoManualIncrem[key] || 0) + monto;
-  };
-  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
-  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura, parseFloat(m.imp) || 0));
-
-  const gpKeysOrdenadas = Object.keys(gastoGPAcumPorSem).sort();
-  const ultimoGPAcumHasta = (semKey) => {
-    let ult = 0;
-    for (const k of gpKeysOrdenadas) {
-      if (k <= semKey) ult = gastoGPAcumPorSem[k]; else break;
-    }
-    return ult;
-  };
-  let acumManual = 0;
-  const gastoAcum = semanasHist.map(s => {
-    acumManual += gastoManualIncrem[s.key] || 0;
-    return ultimoGPAcumHasta(s.key) + acumManual;
-  });
-
-  // Ancla último punto con Dashboard
-  const _gpLive = resolverGastoGP(obra, gpData);
-  const _totOtros = (otrosGastos || []).reduce((t,o) => t + (parseFloat(o.importe)||0), 0);
-  const _totMaq = (maquinaria || []).reduce((t,m) => t + (parseFloat(m.imp)||0), 0);
-  const gtActual = _gpLive + _totMaq + _totOtros;
-  if (semanasHist.length > 0 && gtActual > 0) {
-    gastoAcum[gastoAcum.length - 1] = gtActual;
-  }
+  // La misma cuenta que dibuja la tarjeta de tendencias, y ahora el mismo
+  // código: `serieGastoDeSemanas`. Estaba duplicada aquí, y la copia perdía el
+  // gasto manual fechado antes de la firma del contrato —esta ventana arranca
+  // ahí— sin decirlo. También ancla el último punto al KPI del Dashboard.
+  const { serie: gastoAcum, gtActual } =
+    serieGastoDeSemanas({ semanas: semanasHist, obra, gpData, otrosGastos, maquinaria });
 
   // ── EJECUTADO ACUMULADO por semana (leído del snapshot) ───────────────
   const avancePorSem = {};
@@ -13392,7 +13335,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, datosObraGP, otro
   </Card>;
 }
 
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],datosObraGP,nominaHistorial=[],evidencia=[],onNavTab}){
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],nominaHistorial=[],evidencia=[],onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   // Gasto GP en VIVO desde el Sheet (no usar obra.gastoGP que es legacy hardcoded)
   const gastoGPLive = resolverGastoGP(obra, gpData);
@@ -13517,7 +13460,6 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       historialAvance={historialAvance}
       gpData={gpData}
       estimaciones={estimaciones}
-      datosObraGP={datosObraGP}
       otrosGastos={otrosGastos}
       maquinaria={maquinaria}
       materiales={materiales}
@@ -13529,7 +13471,6 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       obra={obra}
       historialAvance={historialAvance}
       gpData={gpData}
-      datosObraGP={datosObraGP}
       otrosGastos={otrosGastos}
       maquinaria={maquinaria}
       subs={subs}/>
