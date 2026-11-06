@@ -24,14 +24,17 @@
 // —la foto no sabe a qué volumen corresponde— y repartir el importe entre las
 // fotos sería inventar la cifra.
 //
-// LAS CUENTAS SE EXTRAEN DE LA APP, NO SE REESCRIBEN. `evidenciaDeObra` es la
-// única puerta a las fotos y ya sabe que una obra sin migrar las guarda en el
-// arreglo viejo y una migrada en la subcolección; `evidenciaVigente` quita las
-// anuladas, que el §7.7 conserva en el expediente pero no cuentan como
-// evidencia; `importeCatalogoPartida` es el importe de una partida; `idDePartida`
-// es el id con el que la foto encuentra a su partida. Si cualquiera de esas
-// cuentas se tecleara aquí, este guion mediría una cobertura y la pantalla
-// publicaría otra.
+// LA CUENTA SE EXTRAE DE LA APP, NO SE REESCRIBE. La cobertura la calcula
+// `coberturaDeEvidencia` —la misma función que publica el expediente— y
+// `frasesDeCobertura` redacta el veredicto. Este guion nació con su propia
+// copia, que estuvo bien el primer día porque la cuenta todavía no existía en
+// la app; en cuanto existió, la copia se retiró. Dos cuentas del mismo número
+// es lo que aquí se llama un defecto esperando: el día que el techo se mueva,
+// se mueve en un solo lado.
+//
+// `evidenciaDeObra` es la única puerta a las fotos y ya sabe que una obra sin
+// migrar las guarda en el arreglo viejo y una migrada en la subcolección;
+// `idDePartida` es el id con el que la foto encuentra a su partida.
 //
 // SÓLO LEE, Y POR CONSTRUCCIÓN. La única función de red es `leer()` y hace GET.
 // No hay PATCH, ni POST, ni DELETE, ni `firebase-admin`.
@@ -49,16 +52,17 @@ const DESTINO = resolverDestino({ soloLectura: true });
 
 const { deApp } = require('./extraer-de-app.cjs');
 const {
-  evidenciaDeObra, evidenciaVigente, idDePartida,
-  importeCatalogoPartida, soloCatalogo,
-} = deApp('evidenciaDeObra', 'evidenciaVigente', 'idDePartida',
-         'importeCatalogoPartida', 'soloCatalogo');
+  evidenciaDeObra, idDePartida, importeCatalogoPartida, soloCatalogo,
+  coberturaDeEvidencia, frasesDeCobertura, COBERTURA_TECHO, COBERTURA_PISO,
+} = deApp('evidenciaDeObra', 'idDePartida', 'importeCatalogoPartida', 'soloCatalogo',
+         'coberturaDeEvidencia', 'frasesDeCobertura',
+         'COBERTURA_TECHO', 'COBERTURA_PISO');
 
-// Las dos fronteras que se decidieron. Viven aquí como constantes con nombre
-// porque la medición las usa para CLASIFICAR, y un número suelto en un
-// `if` es el que después nadie encuentra cuando hay que moverlo.
-const TECHO = 80;   // arriba de aquí ya no se pide más evidencia
-const PISO  = 50;   // debajo de aquí no se publica el número: se dice que no alcanza
+// Las dos fronteras también vienen de la app. Teclearlas aquí haría que mover
+// el techo en un lado dejara la medición clasificando con el viejo, y la
+// medición es justo lo que uno consulta para decidir si moverlo.
+const TECHO = COBERTURA_TECHO;
+const PISO  = COBERTURA_PISO;
 
 const PROYECTO = DESTINO.prod ? 'campo-fosmon' : (process.env.GCLOUD_PROJECT || 'campo-fosmon');
 const BASE = DESTINO.prod
@@ -170,60 +174,37 @@ const pct = n => n.toFixed(1) + '%';
     const migrada = cfgEvidencia.migrada === true;
     const docsEvidencia = migrada ? await coleccion(`obras/${obraId}/evidencia`) : [];
 
-    const fotos = evidenciaVigente(evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs }));
+    const evidencia = evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs });
 
-    // Qué partidas tienen al menos una foto vigente. Un conjunto de ids, no
-    // una cuenta de fotos: la segunda foto de la misma partida no cubre nada
-    // nuevo, y sumarla sería publicar esfuerzo en lugar de cobertura.
-    const conFoto = new Set(fotos.map(f => f.partidaId));
+    // AQUÍ VA LA CUENTA DE LA APP, ENTERA. Lee en condiciones de lectura buena
+    // —`evidenciaCargada: true`— porque `leer()` para el guion si Firestore no
+    // contesta: si llegamos a esta línea, se leyó.
+    const c = coberturaDeEvidencia({ subs, evidencia, evidenciaCargada: true });
+    const frase = frasesDeCobertura(c);
 
     // Las huérfanas: fotos cuyo `partidaId` no corresponde a ninguna partida
-    // viva. No es cosmética — una foto huérfana es una que el expediente no
-    // puede acreditar, y si son muchas la cobertura real es menor de lo que
-    // parece por una razón que no es «falta tomar fotos».
+    // viva. La cuenta de cobertura no las reporta porque no las necesita —no
+    // suman y ya— pero medirlas sí hace falta: una foto huérfana es una que el
+    // expediente no puede acreditar, y si son muchas la cobertura es baja por
+    // una razón que no es «falta tomar fotos».
+    const vigentes = evidencia.filter(e => !e.anulada);
     const idsTodos = new Set(subs.map((s, i) => idDePartida(s, i)));
-    const huerfanas = fotos.filter(f => f.partidaId && !idsTodos.has(f.partidaId)).length;
-    const sinClave = fotos.filter(f => !f.partidaId).length;
-
-    // El universo es el CATÁLOGO. Las extraordinarias no están en el contrato
-    // que se firmó, así que no entran en el denominador: meterlas haría que
-    // autorizar una extraordinaria BAJARA la cobertura del expediente sin que
-    // nadie dejara de tomar fotos.
-    //
-    // El id se resuelve UNA vez, sobre el arreglo completo y con su índice
-    // original. `idDePartida` usa el índice de último recurso, así que
-    // numerarlo después de filtrar daría un `#i` distinto del que vio la foto
-    // y esas partidas saldrían sin cubrir sin que les falte nada.
-    const cat = soloCatalogo(subs)
-      .map((s, i) => ({ s, id: idDePartida(s, i), imp: importeCatalogoPartida(s) }))
-      .filter(x => x.imp > 0);
-    const total = cat.reduce((t, x) => t + x.imp, 0);
-    const cubierto = cat.filter(x => conFoto.has(x.id)).reduce((t, x) => t + x.imp, 0);
-    const cobertura = total > 0 ? (cubierto / total) * 100 : null;
-
-    // Lo que el criterio pide de verdad: ordenadas de mayor a menor, cuántas
-    // partidas hay que fotografiar para llegar al techo. Esta es la lista de
-    // trabajo que el residente necesita, y es corta por construcción.
-    const porImporte = [...cat].sort((a, b) => b.imp - a.imp);
-    let acum = 0, hastaTecho = 0;
-    for (const x of porImporte) {
-      if (total > 0 && (acum / total) * 100 >= TECHO) break;
-      acum += x.imp; hastaTecho++;
-    }
-    const faltanParaTecho = porImporte
-      .slice(0, hastaTecho)
-      .filter(x => !conFoto.has(x.id));
+    const huerfanas = vigentes.filter(f => f.partidaId && !idsTodos.has(f.partidaId)).length;
+    const sinClave = vigentes.filter(f => !f.partidaId).length;
 
     medidas.push({
+      cobertura: c.pct, total: c.total, cubierto: c.cubierto,
+      medible: c.medible, razon: c.razon, frase,
+      hastaTecho: c.hastaTecho, faltanParaTecho: c.faltan,
+      partidasConFoto: c.partidasConFoto, fotos: vigentes.length,
       obraId, nombre: (o.nombre || '—'), estado, migrada, idsDerivados,
       // «No hay catálogo» y «hay catálogo sin importes» son dos cosas, y la
       // segunda es peor: la pantalla tiene partidas que enseñar y ninguna
       // forma de ponderarlas. Un solo rótulo para las dos escondería que a esa
       // obra le falta el precio, no el catálogo.
       renglones: subs.length,
-      partidas: cat.length, total, cubierto, cobertura, fotos: fotos.length,
-      partidasConFoto: cat.filter(x => conFoto.has(x.id)).length,
-      huerfanas, sinClave, hastaTecho, faltanParaTecho,
+      partidas: c.partidas,
+      huerfanas, sinClave,
       presupuesto: o.presupuesto || null,
     });
   }
@@ -247,13 +228,6 @@ const pct = n => n.toFixed(1) + '%';
   console.log('DETALLE DE LAS OBRAS VIVAS');
   console.log('');
   for (const m of vivas) {
-    const veredicto = m.cobertura === null
-      ? (m.renglones
-          ? `${m.renglones} partidas y ninguna con importe: no hay con qué ponderar`
-          : 'sin catálogo que medir')
-      : m.cobertura >= TECHO ? `≥ ${TECHO}% · el techo ya se alcanzó`
-      : m.cobertura >= PISO ? `entre ${PISO}% y ${TECHO}% · se publica el número`
-      : `< ${PISO}% · el expediente tiene que decir que NO ALCANZA`;
     // La brecha va con su TAMAÑO, no con un «NO CUADRA» a secas. Un peso es el
     // redondeo de los importes y nueve millones es otro número con el mismo
     // nombre; el mismo rótulo para los dos hace que el grande se lea como ruido.
@@ -265,7 +239,12 @@ const pct = n => n.toFixed(1) + '%';
                     `, ${MXN(Math.abs(brecha))} de diferencia` : ''}`);
     console.log(`         con foto ${MXN(m.cubierto)} en ${m.partidasConFoto} partidas` +
                 ` → ${m.cobertura === null ? 'n/d' : pct(m.cobertura)}`);
-    console.log(`         ${veredicto}`);
+    // El veredicto es el QUE VA A IMPRIMIR EL EXPEDIENTE, palabra por palabra.
+    // Aquí estaba redactado aparte y era otra copia: el guion podía decir «se
+    // publica el número» mientras el PDF decía otra cosa, y lo que uno quiere
+    // de una medición es poder leer lo que va a salir impreso.
+    console.log(`         ${m.frase.titulo}`);
+    console.log(`         ${m.frase.detalle}`);
     console.log(`         evidencia ${m.migrada ? 'en subcolección (migrada)' : 'en el arreglo viejo'}` +
                 `${m.idsDerivados ? ' · ids de partida DERIVADOS del índice' : ''}`);
     if (m.huerfanas) console.log(`         ${m.huerfanas} foto(s) HUÉRFANAS: su partida ya no existe`);
