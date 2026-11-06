@@ -76,6 +76,14 @@ if (process.argv.includes('--contraprueba')) {
     ['desconfiar del reloj siempre, hasta de una colgada de verdad',
       /const relojCreible = \(plazo, tardó\) => tardó <= plazo \* 1\.25 \+ 10_000;/,
       'const relojCreible = (plazo, tardó) => false;'],
+    // Tirar la medición de un rojo y dejar sólo el titular: el estado exacto
+    // en el que un fallo irreproducible dejó de poder clasificarse.
+    ['publicar el titular del rojo y tirar lo que midió',
+      /\/\^FALLA\.\*\(\?:\\n\[ \\t\]\+\.\*\)\*\$\/gm/, '/^FALLA.*$/gm'],
+    // Y por el otro lado: vaciar el informe entero de un rojo.
+    ['no publicar nada de lo que dijo el rojo',
+      /console\.log\(\(salida\.match\(\/\^FALLA[\s\S]*?\.join\('\\n'\)\);/,
+      "console.log('(en rojo)');"],
   ];
 
   let vistas = 0;
@@ -130,8 +138,15 @@ setTimeout(() => { console.log('esto no se alcanza a imprimir'); }, 600000);
 `);
 fs.writeFileSync(path.join(dentro, 'prueba-de-mentira-verde.cjs'),
   `console.log(' ok   nada que ver'); process.exit(0);\n`);
+// El rojo trae su medición DEBAJO y sangrada, como la traen los bancos de
+// verdad. Importa que sea así y no en el mismo renglón: lo que el informe
+// tiene que arrastrar hasta arriba es el número, no sólo el titular.
 fs.writeFileSync(path.join(dentro, 'prueba-de-mentira-roja.cjs'),
-  `console.log('FALLA algo que sí se midió y no se sostiene'); process.exit(1);\n`);
+  `console.log('FALLA algo que sí se midió y no se sostiene');
+console.log('        esperaba: 2 en verde');
+console.log('        obtuvo:   1 en verde · 2 colgada(s)');
+console.log('una línea sin sangrar que no es parte de la falla');
+process.exit(1);\n`);
 // Lenta pero sana: tarda dos segundos y pasa. Existe para la sección del
 // suelo, donde se comprueba que un plazo ridículo no la convierte en colgada.
 fs.writeFileSync(path.join(dentro, 'prueba-de-mentira-lenta.cjs'),
@@ -235,7 +250,31 @@ else
   falla('el rojo de al lado sigue siendo rojo',
     '1 en rojo', resumen.trim() || '(no hubo resumen)');
 
-// 6. Y dice cuánto esperó. Sin el número, quien lo lea no sabe si subir el
+// 6. De un rojo publica la MEDICIÓN, no sólo el titular. El 2026-11-06 salió
+//    un rojo que no se reprodujo, y el número que lo habría explicado —el
+//    banco lo midió y lo imprimió— se había quedado en el informe del
+//    corredor. Un fallo irreproducible cuya medición se tiró no se puede
+//    clasificar: ni máquina ni banco, y se acaba volviendo a correr hasta que
+//    salga verde, que es como un defecto se vuelve ruido tolerado.
+const bloqueRojo = (salida.match(/──+ prueba-de-mentira-roja\.cjs en rojo ──+\n([\s\S]*?)(?=\n──|\n*$)/) || ['', ''])[1];
+if (/obtuvo:\s+1 en verde · 2 colgada\(s\)/.test(bloqueRojo))
+  ok('del rojo publica lo que midió, no sólo el renglón de FALLA',
+    (bloqueRojo.match(/obtuvo:.*/) || [''])[0].trim());
+else
+  falla('del rojo publica lo que midió, no sólo el renglón de FALLA',
+    'el renglón «obtuvo:» que el banco imprimió debajo de su FALLA',
+    bloqueRojo.trim().split('\n').join(' ⏎ ') || '(no publicó nada)');
+
+// Y corta donde deja de estar sangrado: si arrastrara el archivo entero, el
+// informe de una suite con varios rojos sería ilegible y nadie lo leería —
+// que es la misma pérdida de la medición, por exceso en vez de por defecto.
+if (!/una línea sin sangrar/.test(bloqueRojo))
+  ok('y corta donde el banco deja de sangrar, sin arrastrar su salida entera');
+else
+  falla('y corta donde el banco deja de sangrar, sin arrastrar su salida entera',
+    'que la línea sin sangrar quedara fuera', 'se publicó también');
+
+// 7. Y dice cuánto esperó. Sin el número, quien lo lea no sabe si subir el
 //    plazo o arreglar el banco.
 if (/sin contestar en \d+ s/.test(salida))
   ok('dice cuánto esperó antes de rendirse',
