@@ -9177,6 +9177,38 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
 // ════════════════════════════════════════════════════════════════════════════
 // CENTRO DE NOTIFICACIONES (campana en header con dropdown)
 // ════════════════════════════════════════════════════════════════════════════
+// El tope de la campana. Vive en una sola constante porque la consulta lo pide
+// y la pantalla afirma sobre él: si fueran dos números, el día que uno cambie
+// la campana diría «entre las últimas 100» sobre una lectura de 50.
+const NOTIF_TOPE = 100;
+
+// La campana es el mismo defecto que la bitácora en chico. Lee las últimas
+// NOTIF_TOPE por fecha y RECIÉN DESPUÉS descarta las archivadas, así que con la
+// ventana llena «3 sin leer» puede ser 3 de 11, y «Todo al día» puede ser «al
+// día entre las que alcancé a mirar».
+//
+// Una cota inferior presentada como cuenta exacta miente igual que una lista
+// vacía presentada como ausencia de hechos. Con la ventana llena la insignia
+// lleva «+», que es lo que un número con cota significa en todas partes.
+//
+// Las tres cadenas salen de la misma función por lo mismo que en la bitácora:
+// la insignia, el encabezado y el vacío hablan de UNA lectura y no pueden
+// decir cosas distintas sobre ella.
+const frasesDeCampana = ({ leidas = 0, sinLeer = 0, tope = NOTIF_TOPE } = {}) => {
+  const topada = tope > 0 && leidas >= tope;
+  return {
+    topada,
+    insignia: sinLeer > 9 ? '9+' : topada ? `${sinLeer}+` : String(sinLeer),
+    encabezado: sinLeer > 0
+      ? `${sinLeer}${topada ? '+' : ''} sin leer`
+      : topada ? `Sin pendientes entre las últimas ${tope}` : 'Todo al día',
+    vacio: topada
+      ? `Las últimas ${tope} notificaciones ya están archivadas. `
+        + `Puede haber más atrás: se consultan en la bitácora.`
+      : 'Sin notificaciones por el momento.',
+  };
+};
+
 function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra}){
   const[abierto,setAbierto]=useState(false);
   const dropdownRef = useRef(null);
@@ -9197,6 +9229,13 @@ function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra})
     .sort((a,b) => (b.fecha?.toMillis?.()||0) - (a.fecha?.toMillis?.()||0));
   const noLeidas = activas.filter(n => !n.leida);
   const noLeidasCount = noLeidas.length;
+  // Lo que la campana puede afirmar sobre esta lectura. `leidas` es lo que
+  // LLEGÓ —archivadas incluidas—, no `activas`: el tope se midió antes de
+  // descartar, y es ahí donde se pierde lo de más atrás.
+  const frasesC = frasesDeCampana({
+    leidas: (notificaciones||[]).length,
+    sinLeer: noLeidasCount,
+  });
 
   const COLOR_CAT = {
     actividad: C.blue,
@@ -9250,7 +9289,7 @@ function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra})
       {noLeidasCount > 0 && (
         <span style={{position:'absolute', top:-4, right:-4, background:C.red, color:'#fff',
           borderRadius:99, padding:'1px 5px', fontSize:8, fontWeight:700, minWidth:14, textAlign:'center'}}>
-          {noLeidasCount > 9 ? '9+' : noLeidasCount}
+          {frasesC.insignia}
         </span>
       )}
     </button>
@@ -9266,7 +9305,7 @@ function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra})
           <div>
             <div style={{fontSize:12, fontWeight:700, color:C.caliza}}>Notificaciones</div>
             <div style={{fontSize:9, color:C.textMut}}>
-              {noLeidasCount > 0 ? `${noLeidasCount} sin leer` : 'Todo al día'}
+              {frasesC.encabezado}
             </div>
           </div>
           {noLeidasCount > 0 && (
@@ -9281,8 +9320,8 @@ function CentroNotificaciones({usuario, notificaciones, onNavTab, onSelectObra})
         {/* Lista */}
         <div style={{overflow:'auto', flex:1}}>
           {activas.length === 0 && (
-            <div style={{padding:30, textAlign:'center', color:C.textMut, fontSize:11}}>
-              Sin notificaciones por el momento.
+            <div style={{padding:30, textAlign:'center', color:C.textMut, fontSize:11, lineHeight:1.5}}>
+              {frasesC.vacio}
             </div>
           )}
           {activas.map(n => {
@@ -24298,6 +24337,82 @@ function PantallaSalud(){
   </div>;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// LA VENTANA QUE SE LLAMA REGISTRO
+// ════════════════════════════════════════════════════════════════════════════
+// La bitácora no preguntaba a Firestore por los filtros. Leía las últimas
+// `tope` filas por `ts desc` y filtraba en memoria. Medido en producción el
+// 2026-11-05 (`scripts/medir-la-ventana-de-la-bitacora.cjs`): 4,603 filas, de
+// 2026-05-23 a hoy. La ventana por omisión —200— cubre SEIS DÍAS; la más
+// grande que ofrece el desplegable —1000— cubre 41 y deja 3,603 filas sin
+// leer.
+//
+// Sobre esa ventana la pantalla ofrecía dos campos de fecha y, al no encontrar
+// nada, contestaba «Ningún registro coincide con los filtros». A una pregunta
+// que no había leído —«¿quién tocó esta obra en junio?»— respondía «nadie».
+// Ésa es la respuesta que alguien se lleva por escrito.
+//
+// SON DOS ARREGLOS Y HACEN FALTA LOS DOS. Las fechas ahora las contesta
+// Firestore (ver la consulta), así que la pregunta por un periodo se responde
+// con los datos y no con lo que cupo. Pero el tope sigue existiendo para todo
+// lo demás —usuario, obra, tipo, módulo se siguen filtrando en memoria—, y
+// mientras exista hay que decir hasta dónde se leyó.
+//
+// QUÉ SE AFIRMA Y QUÉ NO. Si llegaron menos filas que el tope, la lectura
+// agotó la colección y «ningún registro» es cierto de TODOS los hechos. Si
+// llegaron justo las del tope ya no consta qué hay más atrás, y la pantalla
+// sólo puede afirmar sobre lo que leyó. El tope no se deduce de que haya 200
+// filas en ningún otro lado: se compara con el `tope` que pidió la consulta
+// —mismo criterio que `huecoDeArranque`, por la misma razón—.
+const VENTANA_COMPLETA = 'completa';   // se leyó la colección entera
+const VENTANA_TOPADA   = 'topada';     // hay más atrás de lo que se leyó
+
+// El piso se MIDE, no se toma de `items[items.length-1]`: el orden lo pone la
+// consulta y esto tiene que seguir siendo cierto si algún día se ordena de
+// otro modo. Cadena y no `Date` porque así compara la propia pantalla.
+const ventanaDeBitacora = ({ items = [], tope = 0 } = {}) => {
+  const leidas = items.length;
+  const piso = items.reduce((m, it) => {
+    const t = String(it.ts || '');
+    return t && (!m || t < m) ? t : m;
+  }, '');
+  return {
+    estado: tope > 0 && leidas >= tope ? VENTANA_TOPADA : VENTANA_COMPLETA,
+    tope, leidas,
+    piso: piso || null,
+    alcanza: piso ? fechaEnPalabras(fechaLocalDeISO(piso)) : null,
+  };
+};
+
+// Las frases viven junto a la cuenta para que el encabezado y el vacío no
+// puedan decir cosas distintas sobre la misma lectura. `coinciden` es lo que
+// pasó los filtros de memoria.
+//
+// Ninguna frase de `VENTANA_TOPADA` afirma ausencia: dice que entre lo leído
+// no hay coincidencias, que no es lo mismo. «No hay registros aún» sólo puede
+// salir cuando la lectura fue completa.
+const frasesDeVentanaBitacora = (v, coinciden = 0) => {
+  if (!v) return null;
+  if (v.estado === VENTANA_COMPLETA) {
+    return {
+      encabezado: `${coinciden} de ${v.leidas} registro${v.leidas === 1 ? '' : 's'}`,
+      aviso: null,
+      vacio: v.leidas === 0
+        ? 'No hay registros aún.'
+        : 'Ningún registro coincide con los filtros.',
+    };
+  }
+  const hasta = v.alcanza ? `, hasta el ${v.alcanza}` : '';
+  return {
+    encabezado: `${coinciden} de los últimos ${v.tope} movimientos${hasta}`,
+    aviso: `Se leyeron los últimos ${v.tope} movimientos${hasta}. Hay bitácora `
+      + `más atrás: para alcanzarla, filtra por fecha o amplía la ventana.`,
+    vacio: `Entre los últimos ${v.tope} movimientos${hasta} ninguno coincide con `
+      + `los filtros. Más atrás no se leyó, así que desde aquí no consta si hubo `
+      + `movimientos o no: filtra por fecha o amplía la ventana.`,
+  };
+};
+
 function Bitacora({obras}){
   const [items, setItems] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -24319,7 +24434,23 @@ function Bitacora({obras}){
         // `conOrg` y no `"auditoria"` a secas (#73): cada organización lee la
         // suya. Para la constructora resuelve a la raíz, que es donde están
         // las 4200 filas de hoy; para una dependencia, a la de su org.
-        const q = query(collection(fbDb,conOrg("auditoria")), orderBy("ts","desc"), limit(maxItems));
+        //
+        // Las fechas se preguntan a Firestore. Antes se filtraban en memoria
+        // sobre las últimas `maxItems` filas, que en producción son seis días:
+        // preguntar por junio devolvía vacío y la pantalla lo llamaba «ningún
+        // registro». Los operandos son LOS MISMOS que usaba el filtro de
+        // memoria —la cadena `ts` contra `fDesde` y contra `fHasta`+fin de
+        // día—, así que mover la comparación al servidor no cambia qué filas
+        // casan, sólo cuántas se tuvieron que leer para saberlo.
+        //
+        // No necesita índice compuesto: el rango y el `orderBy` son del mismo
+        // campo `ts`, que ya tiene índice de un campo por omisión. Eso es lo
+        // que #29 (el índice que faltaba) daba por imposible.
+        const rango = [];
+        if (fDesde) rango.push(where("ts", ">=", fDesde));
+        if (fHasta) rango.push(where("ts", "<=", fHasta + "T23:59:59"));
+        const q = query(collection(fbDb,conOrg("auditoria")), ...rango,
+          orderBy("ts","desc"), limit(maxItems));
         const snap = await getDocs(q);
         const arr = snap.docs.map(d=>({id:d.id, ...d.data()}));
         if(!cancel){ setItems(arr); setCargando(false); }
@@ -24328,18 +24459,26 @@ function Bitacora({obras}){
       }
     })();
     return ()=>{cancel=true;};
-  },[maxItems]);
+    // Las fechas entran en las dependencias porque ahora viajan a la consulta.
+    // Mientras la nueva lectura va en camino `cargando` está arriba, así que
+    // la pantalla dice «Cargando» y no afirma nada sobre el periodo nuevo con
+    // las filas del anterior.
+  },[maxItems, fDesde, fHasta]);
 
+  // Las fechas ya NO se vuelven a filtrar aquí. Dos copias de la misma
+  // comparación —una en la consulta y otra en memoria— son dos cuentas que
+  // pueden discrepar; la de la consulta es la que manda.
   const filtrados = items.filter(it => {
     if(fUsuario && !(it.usuario||"").toLowerCase().includes(fUsuario.toLowerCase())
        && !(it.nombre||"").toLowerCase().includes(fUsuario.toLowerCase())) return false;
     if(fObra && it.obraId !== fObra) return false;
     if(fTipo && it.tipo !== fTipo) return false;
     if(fModulo && it.modulo !== fModulo) return false;
-    if(fDesde && it.ts < fDesde) return false;
-    if(fHasta && it.ts > fHasta + "T23:59:59") return false;
     return true;
   });
+
+  const ventana = ventanaDeBitacora({ items, tope: maxItems });
+  const frasesV = frasesDeVentanaBitacora(ventana, filtrados.length);
 
   const modulos = [...new Set(items.map(i=>i.modulo).filter(Boolean))].sort();
 
@@ -24348,7 +24487,7 @@ function Bitacora({obras}){
       <div>
         <h2 style={{fontSize:16,fontWeight:600,color:C.textPri,margin:0}}>Bitácora del sistema</h2>
         <div style={{fontSize:11,color:C.textMut,marginTop:2}}>
-          {cargando ? "Cargando…" : `${filtrados.length} de ${items.length} registros`}
+          {cargando ? "Cargando…" : frasesV.encabezado}
         </div>
       </div>
       <select value={maxItems} onChange={e=>setMaxItems(Number(e.target.value))}
@@ -24363,6 +24502,16 @@ function Bitacora({obras}){
     {error && <div style={{background:C.redBg,color:C.redDk,padding:10,borderRadius:6,marginBottom:10,fontSize:12}}>
       {error}
     </div>}
+
+    {/* El aviso de la ventana no es sólo para la lista vacía: una lista CON
+        filas también está recortada, y quien la lee se lleva la idea de que
+        eso es todo lo que pasó. */}
+    {!cargando && frasesV.aviso && (
+      <div style={{fontSize:10,color:C.textMut,background:"rgba(0,0,0,0.03)",
+        border:`1px solid ${C.border}`,borderRadius:6,padding:"7px 9px",marginBottom:10,lineHeight:1.45}}>
+        {frasesV.aviso}
+      </div>
+    )}
 
     <Card style={{marginBottom:12}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
@@ -24413,8 +24562,9 @@ function Bitacora({obras}){
       {cargando ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>Cargando bitácora…</div>
       ) : filtrados.length === 0 ? (
-        <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:12}}>
-          {items.length === 0 ? "No hay registros aún." : "Ningún registro coincide con los filtros."}
+        <div style={{padding:"30px 20px",textAlign:"center",color:C.textMut,fontSize:12,
+          maxWidth:520,margin:"0 auto",lineHeight:1.5}}>
+          {frasesV.vacio}
         </div>
       ) : (
         <div style={{overflowX:"auto"}}>
@@ -25326,7 +25476,7 @@ export default function App(){
     const q = query(
       collection(fbDb, `notificaciones/${usuario.uid}/items`),
       orderBy('fecha', 'desc'),
-      limit(100)
+      limit(NOTIF_TOPE)
     );
     const unsub = onSnapshot(q, (snap) => {
       const items = snap.docs.map(d => ({id: d.id, ...d.data()}));
