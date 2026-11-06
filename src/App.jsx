@@ -3128,6 +3128,31 @@ const snapshotId = (semana, año) => `S${String(semana).padStart(2,'0')}-${año}
 // local, y `semanaISO` —que trabaja en local— lo mete en la semana anterior.
 // Un lunes se contaba como domingo y se iba a la semana de antes. Por eso la
 // fecha se arma por partes.
+// ── CUÁL DE DOS CAPTURAS DE LA MISMA SEMANA ES LA BUENA ────────────────────
+//
+// Cuando una semana trae más de un snapshot se queda el de captura más
+// reciente. Eso estaba escrito dos veces, idéntico y sin guarda, como
+// `new Date(a.fechaCaptura) > new Date(b.fechaCaptura)`: una vez en la serie
+// que arma el PDF y otra en la del tablero. Si a alguno le faltara
+// `fechaCaptura` la comparación daría NaN, y `NaN > x` es falso, así que el
+// snapshot nuevo se descartaba EN SILENCIO y la curva seguía dibujando el
+// viejo. Dos copias de la misma decisión pueden divergir; peor, aquí las dos
+// fallaban hacia el dato rancio sin decirlo.
+//
+// Hoy, con fecha en los dos, gana el más reciente. Si a uno le falta, gana el
+// que SÍ la tiene —de ése se sabe cuándo se capturó—. Y el EMPATE lo gana el
+// que ya estaba, igual que antes: el `>` era estricto, y cambiarlo a `>=`
+// habría alterado en silencio qué snapshot se dibuja cuando dos comparten
+// instante de captura. En ningún caso se prefiere el viejo por un NaN.
+const capturaMasReciente = (quedaba, llega) => {
+  if (!quedaba) return llega;
+  const tq = Date.parse(quedaba.fechaCaptura ?? '');
+  const tl = Date.parse(llega?.fechaCaptura ?? '');
+  if (!Number.isFinite(tl)) return quedaba;
+  if (!Number.isFinite(tq)) return llega;
+  return tl > tq ? llega : quedaba;
+};
+
 const fechaLocalDeISO = (txt) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(txt || ''));
   if (!m) return null;
@@ -3503,10 +3528,7 @@ const serieAvanceDeSemanas = ({ semanas = [], historialAvance = [], subs = [], o
   const avancePorSem = {};
   (historialAvance || []).forEach(snap => {
     const key = claveSemanaISO(snap.semana, snap.año);
-    if (!avancePorSem[key] ||
-        new Date(snap.fechaCaptura) > new Date(avancePorSem[key].fechaCaptura)) {
-      avancePorSem[key] = snap;
-    }
+    avancePorSem[key] = capturaMasReciente(avancePorSem[key], snap);
   });
 
   const primera = semanas[0]?.key;
@@ -5521,15 +5543,22 @@ const BIBLIOTECA_RIESGOS = [
     detect: ({obra, estimaciones}) => {
       if (!estimaciones?.length) return null;
       const diasPago = obra.diasPago || 30;
-      const hoy = new Date();
-      const atrasadas = estimaciones.filter(e => {
-        if (e.estatus !== 'Facturada' || !e.fechaFact) return false;
-        const dias = Math.floor((hoy - new Date(e.fechaFact))/86400000);
-        return dias > diasPago;
-      });
+      // La cuenta de atraso sale de `atrasoDeEstimacion`, que es la misma que
+      // pinta el semáforo de cada renglón en la pantalla de Estimaciones.
+      // Aquí estaba escrita otra vez, y con dos diferencias que importaban:
+      // leía la fecha con `new Date("2026-07-16")`, o sea medianoche UTC, que
+      // al oeste de Greenwich adelanta un día; y decidía «atrasada» con su
+      // propio umbral. Resultado posible, y el peor de los dos: el renglón
+      // marcado «Dentro de plazo» en verde mientras esta alerta publicaba su
+      // monto como «sin cobrar fuera de plazo». Un día de diferencia en un
+      // plazo de pago es un reclamo al cliente que no procede.
+      const conAtraso = estimaciones
+        .map(e => ({ e, a: atrasoDeEstimacion(e, diasPago) }))
+        .filter(({ a }) => a && a.color === C.red);
+      const atrasadas = conAtraso.map(({ e }) => e);
       if (atrasadas.length === 0) return null;
       const totalAtras = atrasadas.reduce((t,e)=>t+(e.monto||0), 0);
-      const maxDias = Math.max(...atrasadas.map(e => Math.floor((hoy - new Date(e.fechaFact))/86400000) - diasPago));
+      const maxDias = Math.max(...conAtraso.map(({ a }) => a.diasAtraso));
       const sev = maxDias > 30 ? 'critico' : maxDias > 15 ? 'alto' : 'medio';
       return {severidad: sev, valor: `${atrasadas.length}`, detalle: `${MXN(totalAtras)} sin cobrar fuera de plazo`, extra: `Máximo atraso: ${maxDias} días vs plazo de ${diasPago}`};
     },
@@ -6685,18 +6714,13 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   const brecha = pctGasto - af;
   // Por estimar (obra ejecutada sin facturar al cliente)
   const porEstimar = Math.max(am - estTotal, 0);
-  // ── ATRASO DE COBRO ──
-  // Para cada estimación "Facturada", calcular días desde fechaFact y comparar contra diasPago del contrato
-  const diasPago = obra?.diasPago || 30;
-  const hoy = new Date();
-  const atrasos = estimaciones
-    .filter(e => e.estatus === "Facturada" && e.fechaFact)
-    .map(e => {
-      const dias = Math.floor((hoy - new Date(e.fechaFact))/(1000*60*60*24));
-      return { ...e, diasTrans: dias, diasAtraso: Math.max(dias - diasPago, 0) };
-    });
-  const montoAtrasado = atrasos.filter(a=>a.diasAtraso>0).reduce((t,a)=>t+(a.monto||0), 0);
-  const maxAtraso = atrasos.reduce((m,a)=>Math.max(m, a.diasAtraso), 0);
+  // El ATRASO DE COBRO no se calcula aquí. Vivía en estas líneas una tercera
+  // copia de «días desde fechaFact» —con su propio `new Date(iso)` a
+  // medianoche UTC, su propio umbral y su propio `montoAtrasado`— y NADIE la
+  // leía: `atrasos`, `montoAtrasado` y `maxAtraso` salían en este `return` y
+  // no tenían un solo consumidor en el repo. Una cuenta de dinero que nadie
+  // lee no es inofensiva: es la que mañana alguien conecta a una pantalla
+  // creyendo que es la buena. La que manda es `atrasoDeEstimacion`.
   return {
     presupuesto, gastoGP, gt, am, alm, me, af, diff, mpct,
     // El gasto de GP de esta obra: ¿medición o hueco? Y por qué.
@@ -6705,7 +6729,6 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
     amCatalogo, amExcedente, modoVol,
     estPag, estPorCob, estProc, estFact, estTotal, porEstimar,
     pctGasto, brecha,
-    diasPago, atrasos, montoAtrasado, maxAtraso,
   };
 };
 
@@ -8219,9 +8242,13 @@ const atrasoDeEstimacion = (e, diasPago) => {
   const diasTrans = Math.floor((Date.now() - f) / 86400000);
   const diasAtraso = diasTrans - diasPago;
   const sub = `${diasTrans}d desde facturación vs plazo ${diasPago}d`;
-  if (diasAtraso > 0)              return {color:C.red,    texto:`${diasAtraso}d de atraso`,   sub};
-  if (diasTrans >= diasPago - 7)   return {color:C.yellow, texto:`${-diasAtraso}d para vencer`, sub};
-  return {color:C.green, texto:'Dentro de plazo', sub};
+  // Los números viajan junto al texto. Quien necesite «cuántos días» los toma
+  // de aquí; sacarlos de vuelta del rótulo —con una expresión regular sobre
+  // `texto`— sería volver a medir sobre lo ya impreso, que es justo cómo la
+  // insignia de GP acabó diciendo «hace un momento» para siempre.
+  if (diasAtraso > 0)              return {color:C.red,    texto:`${diasAtraso}d de atraso`,   sub, diasTrans, diasAtraso};
+  if (diasTrans >= diasPago - 7)   return {color:C.yellow, texto:`${-diasAtraso}d para vencer`, sub, diasTrans, diasAtraso};
+  return {color:C.green, texto:'Dentro de plazo', sub, diasTrans, diasAtraso};
 };
 // Los cuatro estados del trámite de dependencia (ver ESTATUS_ESTIMACION_DEPENDENCIA).
 // «Pagada» conserva el verde que ya tiene arriba: es el mismo estado.
@@ -8560,7 +8587,10 @@ function useGPConstruct(activo = true) {
         const resumen = extraerResumen(snap.data());
         if (resumen && resumen.parserVersion === PARSER_VERSION) {
           setGpData(resumen);
-          setGpUltActualiz(new Date(resumen.ultimaActualizacion).toLocaleString('es-MX'));
+          // El INSTANTE, no su forma legible. Guardarlo ya formateado obligaba
+          // a quien necesitara la antigüedad a reparsear el texto, y
+          // `toLocaleString('es-MX')` produce algo que `new Date` no sabe leer.
+          setGpUltActualiz(resumen.ultimaActualizacion || '');
           setGpEstado('listo');
           if (mensajeError) setGpError(mensajeError);
         } else {
@@ -11964,17 +11994,22 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
             texto = 'no disponible';
             tip   = _GP_NOTA[gpEstado] || 'GP no disponible';
           } else {
-            const ms = Date.now() - new Date(gpUltActualiz.replace(',',' ')).getTime();
-            const horas = Math.floor(ms / 3600000);
-            const dias = Math.floor(horas / 24);
-            texto = dias >= 1
-              ? `hace ${dias} día${dias!==1?'s':''}`
-              : horas >= 1 ? `hace ${horas} h` : 'hace un momento';
-            // Color: verde <30h, amarillo 30-72h, rojo >72h
-            color = horas > 72 ? C.red : horas > 30 ? C.yellow : C.green;
-            bg    = horas > 72 ? C.redBg : horas > 30 ? C.yellowBg : C.greenBg;
-            txt   = horas > 72 ? C.redDk : horas > 30 ? C.yellowDk : C.greenDk;
-            tip   = `Última sincronización: ${gpUltActualiz}`;
+            // El instante entra como instante. Quién decide el texto y quién
+            // decide el color es la MISMA llamada, así que no pueden
+            // discrepar: antes el color salía de `horas` y el texto de `dias`,
+            // dos lecturas del mismo NaN que casualmente coincidían en mentir.
+            const f = frescuraDeGP(gpUltActualiz, Date.now());
+            texto = f.texto;
+            const paleta = {
+              fresco:   [C.green,  C.greenBg,  C.greenDk],
+              tibio:    [C.yellow, C.yellowBg, C.yellowDk],
+              viejo:    [C.red,    C.redBg,    C.redDk],
+              sinMedir: [C.borderM, C.surface, C.textMut],
+            };
+            [color, bg, txt] = paleta[f.nivel];
+            tip = f.nivel === 'sinMedir'
+              ? 'El documento de GP no trae una fecha de sincronización que se pueda leer.'
+              : `Última sincronización: ${fechaHoraLegible(gpUltActualiz)}`;
           }
           return <div title={tip} style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:4,
             padding:"3px 8px",borderRadius:12,background:bg,border:`0.5px solid ${color}`}}>
@@ -13208,9 +13243,7 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   const avancePorSem = {};
   (historialAvance || []).forEach(snap => {
     const key = skey(snap.semana, snap.año);
-    if (!avancePorSem[key] || new Date(snap.fechaCaptura) > new Date(avancePorSem[key].fechaCaptura)) {
-      avancePorSem[key] = snap;
-    }
+    avancePorSem[key] = capturaMasReciente(avancePorSem[key], snap);
   });
   const modoVolObra = (obra?.modoAvance === "volumen");
   // Avance FÍSICO actual (topado, P1) — es el que marca cuándo termina la obra.
@@ -15485,34 +15518,13 @@ function MiniDashNomina({ historial = [] }){
 }
 
 // ── ESTIMACIONES ──
-// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Sus cifras estaban en
-// BRUTO y contradecían al "Resumen económico" de la misma pantalla, que las
-// da netas de retenciones. Se conserva un ciclo por si hay que volver atrás
-// rápido; si al siguiente pase nadie la echó de menos, se borra.
-function MiniDashEstimaciones({obra, estimaciones}){
-  const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
-  const pagado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto||0), 0);
-  const porCobrar = estimaciones.filter(e=>['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
-  const enProceso = estimaciones.filter(e=>e.estatus==='En proceso').reduce((t,e)=>t+(e.monto||0), 0);
-  const porEstimar = Math.max(obra.presupuesto - totalEst, 0);
-  const diasPago = obra.diasPago || 30;
-  const hoy = new Date();
-  const atrasadas = estimaciones.filter(e => {
-    if (e.estatus !== 'Facturada' || !e.fechaFact) return false;
-    return Math.floor((hoy - new Date(e.fechaFact))/86400000) > diasPago;
-  });
-  const montoAtrasado = atrasadas.reduce((t,e)=>t+(e.monto||0), 0);
-  return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
-      <Kpi label="Total estimado" value={MXN(totalEst)} sub={`${NUM(totalEst/obra.presupuesto*100,1)}% del contrato`} color={C.caliza} size={12}/>
-      <Kpi label="Pagado" value={MXN(pagado)} sub="cobrado y liquidado" color={C.greenDk} size={12}/>
-      <Kpi label="Por cobrar" value={MXN(porCobrar)} sub={atrasadas.length > 0 ? `${atrasadas.length} atrasada(s)` : "facturado+aprobado"} color={atrasadas.length > 0 ? C.red : C.purpleDk} size={12}/>
-      <Kpi label="En proceso" value={MXN(enProceso)} sub="en elaboración" color={C.yellowDk} size={12}/>
-      <Kpi label="Por estimar" value={MXN(porEstimar)} sub="saldo del contrato" color={C.blueDk} size={12}/>
-      {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)} sub={`plazo: ${diasPago}d`} color={C.red} size={12}/>}
-    </div>
-  </div>;
-}
+// Aquí vivía `MiniDashEstimaciones`, retirada de la pantalla por el #11
+// (2026-09-22) y conservada «un ciclo por si hay que volver atrás rápido».
+// Nadie la echó de menos en mes y medio, y mientras estuvo guardada siguió
+// cargando la CUARTA copia de «días desde fechaFact» —con su propio umbral y
+// su propio `montoAtrasado` en bruto, que es justo por lo que se retiró—.
+// Código que no se renderiza no se audita, y una cuenta de dinero sin auditar
+// esperando a que alguien la vuelva a enchufar es peor que no tenerla.
 
 // ── SUBCONTRATOS ──
 function MiniDashSubcontratos({obra, subcontratos}){
@@ -16542,7 +16554,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
           {!gpLoading && gpData?.obras && Object.keys(gpData.obras).length > 0 && (
             <div style={{fontSize:10,color:C.textSec,marginTop:2}}>
               {Object.keys(gpData.obras).length} obras · {gpData.semanasDisponibles?.length||0} semanas detectadas
-              {gpUltActualiz && <span style={{color:C.textMut}}> · {gpUltActualiz}</span>}
+              {fechaHoraLegible(gpUltActualiz) && <span style={{color:C.textMut}}> · {fechaHoraLegible(gpUltActualiz)}</span>}
             </div>
           )}
           {!gpLoading && (!gpData?.obras || Object.keys(gpData.obras).length === 0) && (
@@ -24331,6 +24343,47 @@ function haceCuanto(iso, ahora){
   const dias = Math.floor(horas / 24);
   return { horas, texto: dias >= 1 ? `hace ${dias} día${dias !== 1 ? "s" : ""}`
     : horas >= 1 ? `hace ${horas} h` : "hace un momento" };
+}
+
+// ── QUÉ TAN FRESCO ES EL GASTO DE GP, Y DESDE DÓNDE SE SABE ────────────────
+//
+// La insignia del panel decía «Gasto GP · hace un momento» en verde, y lo
+// decía SIEMPRE. No por un hueco en los datos: por un viaje de ida y vuelta
+// por una cadena. El instante llegaba bien de Firestore
+// —`2026-11-05T14:01:04.174Z`—, se guardaba en el estado ya convertido a
+// texto legible con `toLocaleString('es-MX')` —`"5/11/2026, 8:01:04 a.m."`— y
+// la insignia volvía a leer ESE texto con `new Date(...)`, que no sabe
+// interpretarlo. Daba Invalid Date, la resta daba NaN, y `NaN > 72` y
+// `NaN > 30` son las dos falsas, así que todos los umbrales fallaban hacia el
+// lado tranquilizador: verde, y «hace un momento» porque `dias >= 1` y
+// `horas >= 1` también son falsas con NaN. Un Sheet sin sincronizar en una
+// semana se veía igual que uno recién sincronizado.
+//
+// La regla de la que esto es un caso: un instante se guarda como instante y
+// se formatea al imprimirlo. Formatear y volver a leer es escribir la misma
+// fecha dos veces, y las dos escrituras pueden —aquí, sí— discrepar.
+//
+// Lo otro que cambia es qué se dice cuando NO se puede medir. Antes no había
+// ese caso porque el NaN se iba por verde; ahora `null` tiene su propio
+// nivel, y dice que no se sabe en vez de afirmar lo más tranquilizador.
+// El instante, legible, para cuando hay que IMPRIMIRLO. Se formatea aquí, al
+// final, y nadie vuelve a leer lo que esto devuelve: ésa era la avería.
+// Devuelve null —no «Invalid Date»— cuando no hay instante que imprimir.
+function fechaHoraLegible(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(t) ? new Date(t).toLocaleString('es-MX') : null;
+}
+
+function frescuraDeGP(iso, ahora) {
+  const h = haceCuanto(iso, ahora);
+  if (!h) return { nivel: 'sinMedir', texto: 'sin fecha de sincronización' };
+  // Una fecha futura tampoco es frescura: es un reloj mal puesto en algún
+  // lado, y de ahí no se puede concluir que el dato esté al día.
+  if (h.horas < 0) return { nivel: 'sinMedir', texto: h.texto };
+  return {
+    nivel: h.horas > 72 ? 'viejo' : h.horas > 30 ? 'tibio' : 'fresco',
+    texto: h.texto,
+  };
 }
 
 // Clasifica un job a partir de lo que dejó escrito. Vive fuera del componente

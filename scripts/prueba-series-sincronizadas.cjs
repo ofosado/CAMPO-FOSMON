@@ -92,6 +92,14 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // examen de la prueba a sí misma.
                  'claveSemanaISO', 'semanasDeVentana', 'serieAvanceDeSemanas',
                  'serieProgramadaDeSemanas',
+                 // Cuál de dos snapshots de la misma semana se dibuja. Entra
+                 // copiada y NO como doble por la misma razón que las de
+                 // arriba: esta decisión estaba escrita dos veces —en la serie
+                 // del PDF y en la del tablero— y las dos descartaban el
+                 // snapshot nuevo en silencio cuando le faltaba
+                 // `fechaCaptura`, porque `NaN > x` es falso. Un doble que
+                 // siempre eligiera «el bueno» taparía exactamente eso.
+                 'capturaMasReciente',
                  // El gasto por semana salió también a nivel de módulo, y con
                  // él la pregunta «¿qué obra del GP es ésta?»: la contestan
                  // `estadoGastoGP` y nadie más. Entran copiadas, NO como
