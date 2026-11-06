@@ -1889,62 +1889,44 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // enseñando en lugar de desaparecer con el porcentaje.
   // ════════════════════════════════════════════════════════════════════════
 
-  const cobertura = coberturaDeEvidencia({ subs, evidencia, evidenciaCargada });
+  // EL CRITERIO NO SE DECIDE AQUÍ. `seleccionFotografica` es la misma función
+  // que usa el tablero: quiénes entran, cuántas le tocan a cada una y quién
+  // aparece sin fotos se deciden una vez. Antes esto era un reparto propio de
+  // dos pases con un tope de 12 tecleado cuatro veces, y el tablero tenía otro
+  // reparto distinto al lado de un comentario que afirmaba que era el mismo.
+  const seleccion = seleccionFotografica({
+    subs, evidencia, evidenciaCargada, tope: TOPE_FOTOS });
+  const cobertura = seleccion.cobertura;
   const fraseCobertura = frasesDeCobertura(cobertura);
 
-  const ordenDeCobertura = new Map(cobertura.porImporte.map((x, i) => [x.id, i]));
-  const subsConFotos = (subs || [])
-    .map((s, i) => {
-      const id = idDePartida(s, i);
-      return { s, id, imp: importeCatalogoPartida(s),
-               fotos: evidenciaDePartida(evidencia, id) };
-    })
-    .filter(x => x.fotos.length > 0)
-    .sort((a, b) => {
-      const ra = ordenDeCobertura.has(a.id) ? ordenDeCobertura.get(a.id) : Infinity;
-      const rb = ordenDeCobertura.has(b.id) ? ordenDeCobertura.get(b.id) : Infinity;
-      if (ra !== rb) return ra - rb;
-      return b.imp - a.imp;
-    });
-
-  // Construir lista de hasta 12 fotos, distribuyendo entre partidas
-  // (para no llenarlo todo con 12 fotos de una sola partida)
-  const fotosAll = [];
-  const MAX_FOTOS_POR_PARTIDA_PRIMER_PASE = 2;
   // El pie de cada foto. La fecha NO se rellena con la de hoy: antes decía
   // `f.fecha || hoy`, así que una foto sin fecha salía impresa, en un reporte
   // firmado, con la fecha del día en que se generó el PDF. Es inventar un dato
   // de campo. Si no hay fecha, lo dice.
+  //
+  // El `% avance` va en el pie porque el resumen fotográfico afirma dos cosas a
+  // la vez —esto es lo que pesa y así va— y la segunda no se puede leer de una
+  // foto. Sale de `s.a`, el mismo campo que pinta la barra de la partida: no es
+  // una cifra nueva.
   const pieDeFoto = (s, f) => ({
     sec: s.sec, sub: s.sub || '',
     conc: f.sub || s.sub || '',
+    pct: Number.isFinite(parseFloat(s?.a)) ? parseFloat(s.a) : null,
     fecha: f.fechaServidor || f.fechaDeclarada || '',
     sello: selloDeEvidencia(f).texto,
     url: f.url || null,
   });
-  // Primer pase: hasta 2 fotos por partida
-  subsConFotos.forEach(({s, fotos}) => {
-    if (fotosAll.length >= 12) return;
-    fotos.slice(0, MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
-      if (fotosAll.length >= 12) return;
-      fotosAll.push(pieDeFoto(s, f));
-    });
-  });
-  // Segundo pase: si queda espacio, rellenar con fotos adicionales
-  // de las mismas partidas (más recientes)
-  if (fotosAll.length < 12) {
-    subsConFotos.forEach(({s, fotos}) => {
-      if (fotosAll.length >= 12) return;
-      fotos.slice(MAX_FOTOS_POR_PARTIDA_PRIMER_PASE).forEach(f => {
-        if (fotosAll.length >= 12) return;
-        fotosAll.push(pieDeFoto(s, f));
-      });
-    });
+
+  // El orden en que salen es el del reparto: las del corte del 80% de mayor a
+  // menor importe, y después las que no ponderan con el sitio que haya sobrado.
+  const fotosAll = [];
+  for (const p of [...seleccion.partidas, ...seleccion.fuera]) {
+    for (const f of p.fotos) fotosAll.push(pieDeFoto(p.s, f));
   }
 
   // Si NO hay fotos reales, mostrar placeholders informativos (sin datos DEMO)
   const fotos12 = fotosAll.length > 0 ? fotosAll : Array.from({length:6}, (_,i) => ({
-    sec:'—', sub:'', conc:'Sin fotos capturadas', fecha:'', sello:'', url:null,
+    sec:'—', sub:'', conc:'Sin fotos capturadas', pct:null, fecha:'', sello:'', url:null,
   }));
 
   // ── PRE-CARGAR fotos de Storage a base64 ──
@@ -2001,11 +1983,42 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     return yf + h + 3;
   }
 
+  // LAS PARTIDAS GRANDES QUE NO TIENEN CON QUÉ RESPALDARSE. Hasta el 2026-11-06
+  // esto no se imprimía en ningún sitio: la rejilla de fotos filtraba por
+  // `fotos.length > 0`, así que una partida del corte del 80% sin una sola foto
+  // simplemente no aparecía. El dato existía —`cobertura.faltan`— y la hoja lo
+  // callaba. **Omitir del expediente justo a la partida que más pesa y menos
+  // respaldo tiene convierte el hueco en silencio donde más importa.**
+  //
+  // Va en TABLA y no en recuadros vacíos, y no por estética: tres obras de
+  // producción están en 0% de cobertura, y ahí el corte entero son huecos. Media
+  // docena de páginas de cajas grises se hojean sin leerse; una tabla con el
+  // importe y el peso de cada una se lee.
+  function drawHuecosDeEvidencia(yf) {
+    if (!seleccion.sinEvidencia.length) return yf;
+    const filas = seleccion.sinEvidencia.map(p => [
+      p.s?.sec || '—',
+      (p.s?.sub || '').slice(0, 64),
+      MXN(p.imp),
+      NUM(p.pesoPct, 1) + '%',
+      Number.isFinite(parseFloat(p.s?.a)) ? NUM(parseFloat(p.s.a), 0) + '%' : 'sin avance',
+    ]);
+    st(K.rk); fs(8.5); fw('bold');
+    T(`Partidas de mayor importe SIN evidencia fotográfica: ` +
+      `${seleccion.sinEvidencia.length} de ${seleccion.partidas.length}`, ML, yf + 3.5);
+    yf += 6;
+    return autoT(
+      ['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
+      filas, [24, 125, 44, 28, 30], ML, yf,   // suma 251 = CW, igual que las otras tablas
+      { bodyStyles: { fontSize: FS_SM },
+        columnStyles: { 2: {halign:'right'}, 3: {halign:'right'}, 4: {halign:'right'} } }) + 3;
+  }
+
   function drawFotoPage(fotos6, title, conBanda = false) {
     doc.addPage(); pageFrame();
     let yf=CY0;
     yf=secHead(title, yf)+2;
-    if (conBanda) yf = drawBandaCobertura(yf);
+    if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));
     // 2 filas × 3 fotos
     for(let row=0;row<2;row++){
       const rowF=fotos6.slice(row*3,(row+1)*3);
@@ -2030,7 +2043,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
         }
         // Pie de foto
         sf(K.ng); R(fx,fy+FH,FW,7,'F');
-        st(K.wh); fs(7); fw('bold'); T(foto.sec,fx+2,fy+FH+4.5);
+        st(K.wh); fs(7); fw('bold');
+        T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`,
+          fx+2,fy+FH+4.5);
         // El sello va en el pie del reporte impreso por la misma razón que en la
         // pantalla: una foto de archivo no tiene autor y nunca lo va a tener, y
         // el PDF lo firma un residente. Si saliera igual que una captura en
@@ -2050,8 +2065,20 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     return yf+6;
   }
 
-  let yF2=drawFotoPage(fotos12.slice(0,6), '8  EVIDENCIA FOTOGRÁFICA (1 de 2)', true);
-  drawFotoPage(fotos12.slice(6,12), '9  EVIDENCIA FOTOGRÁFICA (2 de 2)');
+  // Las páginas salen de cuántas fotos haya, no de un dos tecleado. Con el tope
+  // en 15 y seis por hoja son tres; con una obra de cuatro fotos es una. Antes
+  // eran siempre dos, así que una obra con cinco fotos imprimía una hoja entera
+  // de recuadros grises que se leen como «aquí falta algo» cuando lo que pasaba
+  // es que no había más que enseñar.
+  const POR_HOJA = 6;
+  const hojas = Math.max(1, Math.ceil(fotos12.length / POR_HOJA));
+  let yF2 = CY0;
+  for (let h = 0; h < hojas; h++) {
+    const titulo = `${8 + h}  EVIDENCIA FOTOGRÁFICA` +
+      (hojas > 1 ? ` (${h + 1} de ${hojas})` : '');
+    const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, h === 0);
+    if (h === 0) yF2 = y;
+  }
 
   // Firmas al final de pág 8
   const yFirmas=PH-FTR-38;
@@ -3967,6 +3994,13 @@ const evidenciaDePartida = (lista, partidaId) =>
 const COBERTURA_TECHO = 80;  // arriba de aquí ya no se pide más evidencia
 const COBERTURA_PISO  = 50;  // debajo de aquí no se publica el número
 
+// Cuántas fotografías entran en el reparto. Vive aquí, y no dentro del PDF,
+// porque el tablero reparte las MISMAS: si cada sitio llevara su propio tope,
+// el reparto proporcional daría dos listas distintas y la tarjeta enseñaría
+// una partida que el expediente no imprime. Lo que cambia entre los dos es
+// cuántas partidas caben en pantalla, no cuáles son.
+const TOPE_FOTOS = 15;
+
 // `evidenciaCargada` NO es un detalle: `fsColl` devuelve `[]` cuando la regla
 // niega o la red falla, así que una lectura fallida y una obra sin fotos llegan
 // aquí con la misma lista vacía. Publicar «0% · la evidencia no alcanza» por una
@@ -4047,6 +4081,157 @@ const frasesDeCobertura = (c) => {
     detalle: `Sólo ${c.partidasConFoto} de ${c.partidas} partidas tienen fotografía, y ` +
              `no llegan al ${COBERTURA_PISO}% del importe contratado. Faltan ` +
              `${c.faltan.length} de las ${c.hastaTecho} partidas de mayor importe.` };
+};
+
+// ── QUÉ FOTOS SE ENSEÑAN, Y POR QUÉ ESAS ──────────────────────────────────
+//
+// LA REGLA ES LA MISMA QUE LA DE LA COBERTURA, Y POR ESO VIVE AQUÍ. El
+// porcentaje de cobertura se pondera por importe y se mide contra el techo del
+// 80%; las fotos que lo sostienen se enseñan en ese mismo orden. Hasta el
+// 2026-11-06 había DOS criterios con un solo nombre: el PDF ordenaba por
+// `cobertura.porImporte` y el tablero por DELTA DE AVANCE DE LA SEMANA
+// (`App.jsx:14411`), con un comentario al lado que afirmaba «mismo criterio que
+// el PDF». No lo era. Dos pantallas del mismo expediente enseñaban fotos
+// distintas y las dos decían estar enseñando lo que pesa.
+//
+// TRES COSAS QUE ESTA FUNCIÓN DECIDE, Y QUE ANTES SE DECIDÍAN DOS VECES:
+//
+//   1. QUIÉNES ENTRAN. Las partidas que acumulan el `COBERTURA_TECHO` del
+//      importe contratado, de mayor a menor. No es «las que se movieron»: la
+//      partida de diez millones no desaparece del expediente por no haberse
+//      tocado esta semana.
+//   2. CUÁNTAS LE TOCAN A CADA UNA. En proporción a su peso, no una a cada
+//      quien. Una partida del 25% representada por una sola foto mientras una
+//      del 5% se lleva seis es un expediente que enseña lo que sobra.
+//   3. QUIÉN APARECE SIN FOTOS. Una partida grande SIN evidencia aparece
+//      igual, diciendo que no la tiene. Omitirla por no tener qué enseñar es
+//      el error exacto: el hueco se vuelve invisible justo donde más pesa.
+//
+// EL REPARTO ES POR DÉFICIT MAYOR, y no por elegancia: reparte de una en una y
+// cada vuelta se la da a la partida más lejos de su cuota ideal (`peso × tope`).
+// Eso garantiza la monotonía —a igual número de fotos disponibles, la partida
+// que pesa más nunca se queda con menos— que es justo la propiedad que se
+// pidió, y además hace que el sobrante de una partida con pocas fotos se
+// redistribuya en lugar de perderse.
+//
+// LAS QUE NO PONDERAN NO DESPLAZAN A NADIE, PERO NO SE PIERDEN. Las
+// extraordinarias y las partidas sin importe no entran en el denominador de la
+// cobertura, y pueden tener fotos reales. Entran en `fuera` y sólo consumen el
+// cupo que el corte del 80% no alcanzó a usar. Esto también es lo que salva el
+// caso de que la cobertura NO SEA MEDIBLE: ahí el corte queda vacío, todo cae a
+// `fuera`, y las fotos se siguen enseñando en lugar de desaparecer junto con el
+// porcentaje que no se pudo calcular.
+//
+// EL TOPE Y CUÁNTAS PARTIDAS CABEN SON DE LA PANTALLA, NO DE LA REGLA. Una hoja
+// de PDF y una tarjeta del tablero no tienen el mismo sitio, y quince fotos
+// diminutas no son un expediente. Lo que NO es de la pantalla es a quién le
+// tocan: por eso el tope es un argumento y el criterio no. Cuando algo se queda
+// fuera por falta de sitio, el que llama tiene con qué DECIRLO —`partidas` trae
+// el corte completo y `recortadas` cuántas no se pintaron—, porque enseñar
+// cuatro de doce en silencio se lee como que eran cuatro.
+const seleccionFotografica = ({ subs, evidencia, evidenciaCargada = true,
+                                tope = 15, topePartidas = Infinity } = {}) => {
+  const cobertura = coberturaDeEvidencia({ subs, evidencia, evidenciaCargada });
+
+  // El id se resuelve con el índice del arreglo COMPLETO, igual que en la
+  // cobertura: `idDePartida` cae al índice cuando la partida no trae `id` ni
+  // `sec`, y numerar después de filtrar apuntaría a la evidencia de otra.
+  //
+  // Las anuladas NO se filtran aquí, y es a propósito: `evidenciaDePartida` ya
+  // lo hace en su primer renglón. Un `evidenciaVigente` de más en este sitio
+  // daba la impresión de ser lo que protege el expediente de una foto retirada
+  // —la contraprueba lo desmintió: quitarlo no rompía una sola aserción— y una
+  // guarda que no guarda es peor que ninguna, porque el día que la de abajo se
+  // afloje nadie va a buscar aquí.
+  const porId = new Map((subs || []).map((s, i) => [idDePartida(s, i), s]));
+  const fotosDe = (id) => evidenciaDePartida(evidencia, id);
+
+  const total = cobertura.total;
+  const enCorte = cobertura.porImporte.slice(0, cobertura.hastaTecho);
+  const idsEnCorte = new Set(enCorte.map(x => x.id));
+
+  const partidas = enCorte.map(x => {
+    const fotos = fotosDe(x.id);
+    return {
+      id: x.id, s: porId.get(x.id) || x.s, imp: x.imp,
+      pesoPct: total > 0 ? (x.imp / total) * 100 : 0,
+      disponibles: fotos.length, todas: fotos,
+      sinEvidencia: fotos.length === 0,
+      fotos: [],   // lo llena el reparto
+    };
+  });
+
+  // Las que tienen fotos y NO ponderan. En orden de importe, igual que arriba,
+  // para que el desempate no dependa del orden en que vinieron del documento.
+  //
+  // Y EL CONTRATO ANTES QUE LAS EXTRAORDINARIAS, aunque la extraordinaria pese
+  // más. El importe solo no basta: ordenando por puro importe, una
+  // extraordinaria de $400 se metía delante de una partida contratada de $40 y
+  // el expediente abría su apéndice antes de terminar lo que ampara el
+  // contrato. Las extraordinarias se enseñan —existen, se ejecutaron— pero
+  // después, porque lo que este documento respalda es el contrato firmado.
+  const fuera = (subs || [])
+    .map((s, i) => ({ id: idDePartida(s, i), s, imp: importeCatalogoPartida(s) }))
+    .filter(x => !idsEnCorte.has(x.id))
+    .map(x => ({ ...x, todas: fotosDe(x.id) }))
+    .filter(x => x.todas.length > 0)
+    .sort((a, b) => (esExtraordinaria(a.s) ? 1 : 0) - (esExtraordinaria(b.s) ? 1 : 0)
+                 || b.imp - a.imp)
+    .map(x => ({ ...x, pesoPct: total > 0 ? (x.imp / total) * 100 : 0,
+                 disponibles: x.todas.length, sinEvidencia: false, fotos: [] }));
+
+  // ── EL REPARTO ──────────────────────────────────────────────────────────
+  // Se reparte sobre el corte del 80% primero y, con lo que sobre, sobre las
+  // de fuera. Las dos listas se recorren con el mismo procedimiento.
+  const repartir = (lista, cupo) => {
+    const vivas = lista.filter(p => p.disponibles > 0);
+    if (!vivas.length || cupo <= 0) return 0;
+    const peso = vivas.reduce((t, p) => t + p.imp, 0);
+    const asignado = new Map(vivas.map(p => [p.id, 0]));
+    let dado = 0;
+    while (dado < cupo) {
+      let mejor = null, mejorDeficit = -Infinity;
+      for (const p of vivas) {
+        const tiene = asignado.get(p.id);
+        if (tiene >= p.disponibles) continue;
+        // La cuota ideal de esta partida sobre el cupo que se está repartiendo.
+        // Sin peso medible —puede pasar en `fuera`, donde hay partidas de
+        // importe 0— todas valen igual y el desempate lo da el orden.
+        const ideal = peso > 0 ? (p.imp / peso) * cupo : cupo / vivas.length;
+        const deficit = ideal - tiene;
+        if (deficit > mejorDeficit) { mejorDeficit = deficit; mejor = p; }
+      }
+      if (!mejor) break;                       // ya no cabe una foto más
+      asignado.set(mejor.id, asignado.get(mejor.id) + 1);
+      dado++;
+    }
+    for (const p of lista) {
+      const n = asignado.get(p.id) || 0;
+      p.fotos = p.todas.slice(0, n);           // `evidenciaDePartida` ya las trae de la más reciente a la más vieja
+    }
+    return dado;
+  };
+
+  const dadasDentro = repartir(partidas, tope);
+  const dadasFuera  = repartir(fuera, tope - dadasDentro);
+
+  // Lo que la pantalla alcanza a pintar. El corte completo se devuelve igual:
+  // decir «4 de 12» necesita el 12.
+  const pintables = partidas.filter(p => p.fotos.length > 0 || p.sinEvidencia);
+  const mostradas = Number.isFinite(topePartidas)
+    ? pintables.slice(0, topePartidas) : pintables;
+
+  return {
+    cobertura,
+    medible: cobertura.medible,
+    tope, topePartidas,
+    partidas,                                  // el corte del 80%, completo
+    mostradas,                                 // las que caben en esta pantalla
+    recortadas: pintables.length - mostradas.length,
+    fuera,
+    sinEvidencia: partidas.filter(p => p.sinEvidencia),
+    elegidas: dadasDentro + dadasFuera,
+  };
 };
 
 // ── ANULAR, QUE NO ES BORRAR ──────────────────────────────────────────────
@@ -13973,7 +14158,11 @@ function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maqu
   </Card>;
 }
 
-function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],nominaHistorial=[],evidencia=[],onNavTab}){
+// `evidenciaCargada` entra como prop propia por la misma razón que en el PDF:
+// una lectura denegada y una obra sin fotos llegan las dos como `[]`, y la
+// tarjeta de evidencia publicaría «0% · la evidencia no alcanza» por un permiso
+// que falló. Sin lectura no hay cobertura, y eso se dice con palabras.
+function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[],historialAvance=[],gpData,otrosGastos=[],nominaHistorial=[],evidencia=[],evidenciaCargada=true,onNavTab}){
   const[lbFoto,setLbFoto]=useState(null);
   // ── Una cuenta por número: el bundle de la obra se PIDE, no se rehace ─────
   // Este prólogo era otra copia de `calcularKPIsObra`: volvía a resolver el
@@ -14379,15 +14568,33 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     </Card>
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
     <Card {...clickableCard("operacion","avance")}>
-      <Tit>Top subsecciones — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
+      <Tit>Lo que pesa — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
       {(() => {
-        // Las fotos salen de `evidenciaDePartida`, igual que la galería y el
-        // PDF. Era la tercera copia del mismo aplanado: ver PENDIENTES #32,
-        // donde la copia de la galería perdió su `.flat()` y dejó invisible
-        // toda la evidencia de producción sin que ninguna prueba lo notara.
-        // Elegir top 4: primero las que tienen delta de avance en el corte
-        // semanal actual (mismo criterio que el PDF); si no hay historial,
-        // por importe descendente.
+        // La selección sale de `seleccionFotografica`, la MISMA función que arma
+        // el resumen fotográfico del PDF: el corte del 80% del contrato por
+        // importe y un reparto de fotos proporcional al peso de cada partida.
+        //
+        // Hasta hoy esta tarjeta ordenaba por delta de avance de la última
+        // semana y su comentario decía «mismo criterio que el PDF». Eran DOS
+        // criterios con UN nombre: una partida podía encabezar el tablero por
+        // haberse movido dos puntos y no aparecer en el expediente impreso, y
+        // la que respaldaba el 30% del contrato podía no salir en ninguno de
+        // los dos. El tope de fotos es el mismo que el del PDF para que el
+        // reparto sea idéntico; lo que cambia es cuántas partidas caben en una
+        // tarjeta, y eso se declara.
+        const sel = seleccionFotografica({
+          subs, evidencia, evidenciaCargada, tope: TOPE_FOTOS, topePartidas: 4 });
+        const frases = frasesDeCobertura(sel.cobertura);
+
+        if (!sel.medible) {
+          return <div style={{padding:"12px 0"}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.textSec,textAlign:"center"}}>{frases.titulo}</div>
+            <div style={{fontSize:9,color:C.textMut,textAlign:"center",marginTop:4,lineHeight:1.4}}>{frases.detalle}</div>
+          </div>;
+        }
+
+        // El delta semanal se sigue enseñando porque es un hecho de la obra,
+        // pero ya NO decide quién entra: es una etiqueta, no un orden.
         const semanasOrd = (historialAvance || []).slice()
           .sort((a,b) => (a.año - b.año) || (a.semana - b.semana));
         const sActual = semanasOrd[semanasOrd.length - 1];
@@ -14400,34 +14607,18 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             if (d > 0.01) deltaMap.set(sa.sec, d * (sa.imp||0) / 100);
           });
         }
-        // El id de la partida se saca ANTES de filtrar: `idDePartida` cae al
-        // índice cuando la partida no tiene `id` ni `sec`, y el índice de la
-        // lista filtrada no es el mismo que el de `subs`. Tomarlo después
-        // apuntaría a la evidencia de otra partida.
-        const conFotos = subs
-          .map((s, i) => ({ s, delta: deltaMap.get(s.sec) || 0,
-                            fotos: evidenciaDePartida(evidencia, idDePartida(s, i)) }))
-          .filter(x => (x.s.imp||0) > 0);
-        conFotos.sort((a,b) => {
-          if (a.delta > 0 && b.delta === 0) return -1;
-          if (a.delta === 0 && b.delta > 0) return 1;
-          if (a.delta > 0 && b.delta > 0) return b.delta - a.delta;
-          if (a.fotos.length !== b.fotos.length) return b.fotos.length - a.fotos.length;
-          return (b.s.imp||0) - (a.s.imp||0);
-        });
-        const top4Real = conFotos.slice(0, 4);
-        const maxImpTop = Math.max(...top4Real.map(x => x.s.imp||0), 1);
-        if (top4Real.length === 0) {
-          return <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"16px 0"}}>
-            No hay partidas con presupuesto cargado.
-          </div>;
-        }
-        return <>{top4Real.map(({s, fotos, delta}, i) => {
-          const mostrar = fotos.slice(0, 2);
+
+        const maxImpTop = Math.max(...sel.mostradas.map(x => x.imp||0), 1);
+        return <>
+          <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:9,lineHeight:1.4}}>
+            {frases.titulo} · {frases.detalle}
+          </div>
+          {sel.mostradas.map((p, i) => {
+          const s = p.s, delta = deltaMap.get(s.sec) || 0;
           const badgeNivel = s.a >= 75 ? {bg:C.greenBg, tc:C.greenDk} :
                              s.a >= 40 ? {bg:C.yellowBg, tc:C.yellowDk} :
                                          {bg:C.redBg,    tc:C.redDk};
-          return <div key={s.id || `${s.sec}-${i}`} style={{marginBottom:12}}>
+          return <div key={p.id} style={{marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,gap:6}}>
               <span style={{display:"flex",alignItems:"center",gap:4,minWidth:0,overflow:"hidden",flex:1}}>
                 <span style={{color:C.textMut,flexShrink:0,fontSize:10}}>{i+1}</span>
@@ -14436,15 +14627,19 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
                   padding:"1px 5px",borderRadius:3,flexShrink:0}}>+{MXN(delta)} esta sem</span>}
               </span>
               <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0}}>
+                <span style={{fontSize:8,color:C.textMut}}>{NUM(p.pesoPct,1)}% del contrato</span>
                 <span style={{background:badgeNivel.bg,color:badgeNivel.tc,fontSize:10,fontWeight:700,
                   padding:"2px 6px",borderRadius:3}}>{NUM(s.a,0)}%</span>
-                <span style={{fontWeight:600,fontSize:11,color:C.textPri}}>{MXN(s.imp)}</span>
+                <span style={{fontWeight:600,fontSize:11,color:C.textPri}}>{MXN(p.imp)}</span>
               </div>
             </div>
-            <Bar pct={((s.imp||0)/maxImpTop)*100} color="rgba(255,254,249,0.3)"/>
+            <Bar pct={((p.imp||0)/maxImpTop)*100} color="rgba(255,254,249,0.3)"/>
+            {/* Dos fotos es lo que cabe en la tarjeta, no lo que hay. Cuando una
+                partida tiene más, se dice el número: «2 de 7» no deja creer que
+                son siete las que se revisaron. */}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
               {[0,1].map(fi=>{
-                const foto=mostrar[fi];
+                const foto=p.fotos[fi];
                 if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5",position:"relative"}}
                   onClick={()=>setLbFoto(foto.url)}>
                   <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}
@@ -14453,12 +14648,26 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
                 return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
                   background:"rgba(0,0,0,0.03)",border:"1px dashed rgba(0,0,0,0.10)",
                   display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
-                  <span style={{fontSize:8,color:C.textMut}}>Sin foto</span>
+                  <span style={{fontSize:8,color:C.textMut}}>
+                    {p.sinEvidencia ? "Sin evidencia" : "Sin foto"}
+                  </span>
                 </div>;
               })}
             </div>
+            {p.disponibles > p.fotos.length && (
+              <div style={{fontSize:8,color:C.textMut,marginTop:3}}>
+                {p.fotos.length} de {p.disponibles} fotografías de esta partida
+              </div>
+            )}
           </div>;
-        })}</>;
+        })}
+          {sel.recortadas > 0 && (
+            <div style={{fontSize:9,color:C.textMut,textAlign:"center",marginTop:2}}>
+              + {sel.recortadas} partida(s) del {COBERTURA_TECHO}% de mayor importe no caben
+              en esta tarjeta · salen completas en el expediente
+            </div>
+          )}
+        </>;
       })()}
       <div style={{fontSize:9,color:C.textMut,textAlign:"center",marginTop:4}}>
         Agrega fotos en Operación → Avance físico
@@ -26317,7 +26526,7 @@ export default function App(){
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
         ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
-        : <Dashboard obra={obra} subs={subs} evidencia={evidencia} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
+        : <Dashboard obra={obra} subs={subs} evidencia={evidencia} evidenciaCargada={evidenciaCargada} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}
       {screen==="obra"&&tab==="operacion"&&obra&&(
