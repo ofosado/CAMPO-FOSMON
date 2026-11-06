@@ -274,9 +274,15 @@ check(!!exprDash, 'el trazo de cada tramo decide su punteado en tiempo de dibujo
   exprDash || 'no se encontró un strokeDasharray que dependa del tramo');
 
 if (exprDash) {
-  const dash = (vigente, medido) =>
-    new Function('t', `"use strict"; return (${exprDash});`)({ vigente, medido });
-  const puntea = (v, m) => dash(v, m) !== undefined && dash(v, m) !== '0';
+  // La expresión mira el tramo y además el ESTILO de la serie: hay series que
+  // van punteadas de entrada —el programa de obra, que es un compromiso y no
+  // una medición— y ésas no cambian de trazo por estar medidas. Se pasa como
+  // entrada aparte porque no es una propiedad del tramo.
+  const libres = /\besPunteada\b/.test(exprDash) ? ['t', 'esPunteada'] : ['t'];
+  const dash = (vigente, medido, esPunteada = false) =>
+    new Function(...libres, `"use strict"; return (${exprDash});`)(
+      { vigente, medido }, esPunteada);
+  const puntea = (...a) => dash(...a) !== undefined && dash(...a) !== '0';
   check(puntea(false, true),
     'un tramo de la definición anterior sale punteado', `-> ${dash(false, true)}`);
   check(puntea(false, false),
@@ -285,6 +291,10 @@ if (exprDash) {
     'un tramo vigente y medido sale sólido', `-> ${String(dash(true, true))}`);
   check(puntea(true, false),
     'un tramo vigente con semanas sin captura sale punteado', `-> ${dash(true, false)}`);
+  if (libres.length > 1)
+    check(puntea(true, true, true),
+      'una serie punteada por estilo no se vuelve sólida por estar medida',
+      `-> ${dash(true, true, true)}`);
 }
 
 console.log(fallas === 0

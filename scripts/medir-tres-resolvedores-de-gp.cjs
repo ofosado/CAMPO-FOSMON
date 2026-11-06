@@ -7,16 +7,24 @@
 // las tres resoluciones que conviven en `src/App.jsx` sobre el MISMO escenario
 // y enseña qué contesta cada una.
 //
-// Las tres:
+// Las tres que había cuando se escribió:
 //   1. `estadoGastoGP`   — la del repositorio, con sus guardas.
 //   2. el prólogo de `TendenciasMensuales` — resuelve `datosObraGP` a mano.
 //   3. el prólogo de `ProyeccionAvanceGasto` — otra copia, más corta.
+//
+// Y LO QUE MIDE HOY SON DOS. La respuesta de esta medición fue que las copias
+// 2 y 3 NO tenían la guarda; se arreglaron, y el 2026-11-06 las tres gráficas
+// del tablero se unificaron en una. Las copias 2 y 3 dejaron de existir: la
+// gráfica única pide el gasto a `serieGastoDeSemanas`, que lo pide a
+// `estadoGastoGP`. La medición se queda —sigue siendo la forma de ver si
+// vuelven a brotar copias— pero enseña dos renglones, no tres, y el segundo ya
+// no es una copia sino la misma cuenta vista desde la gráfica.
 //
 // El escenario es el que ya está escrito en el comentario de `estadoGastoGP`:
 // la 0129 («AYU-COAT-REHABILITACION DEL MALECON») comparte «COAT» y «REHAB»
 // con la 0121 («SIOP Coatza Rehab. Av. Universidad»). Esa guarda se puso ahí
 // después del incidente; la pregunta que esta medición contesta es si las
-// otras dos copias la tienen.
+// otras copias la tienen.
 //
 // Sólo lee archivos. No toca red, ni emulador, ni producción.
 
@@ -197,27 +205,30 @@ const { estadoGastoGP } = deApp('estadoGastoGP');
 const est = estadoGastoGP(OBRA_0129, GP);
 console.log(`1. estadoGastoGP          → ${MXN(est.valor)}  · medido=${est.medido} · motivo=${est.motivo}`);
 
-const tend = correr('TendenciasMensuales', { ...PROPS });
-const ultTend = tend.gastoAcumSeries?.[tend.gastoAcumSeries.length - 1];
-const maxTend = Math.max(0, ...Object.values(tend.gastoAcumPorSem || {}));
-console.log(`2. TendenciasMensuales    → la serie de gasto por semana llega a ${MXN(maxTend)}`);
-console.log(`                             último punto dibujado: ${MXN(ultTend)}`);
+const tend = correr('TarjetaGraficaUnica', { ...PROPS });
+const nums = (a) => (a || []).filter(v => typeof v === 'number');
+const serieTend = tend.g?.gasto;
+const ultTend = serieTend?.[serieTend.length - 1];
+const maxTend = Math.max(0, ...nums(Object.values(tend.g?.gastoPorSem || {})));
+console.log(`2. TarjetaGraficaUnica    → la serie de gasto por semana llega a ${MXN(maxTend)}`);
+console.log(`                             último punto dibujado: ${
+  typeof ultTend === 'number' ? MXN(ultTend) : 'sin dato'}`);
+console.log(`                             veredicto que recibe:  medido=${tend.g?.gastoMedido}`);
+console.log(`                             línea en la leyenda:   ${
+  tend.g?.lineas?.some(l => l.clave === 'gasto') ? 'dibujada'
+    : `AUSENTE · ${tend.g?.ausentes?.find(a => a.clave === 'gasto')?.motivo || 'sin motivo'}`}`);
 
-const proy = correr('ProyeccionAvanceGasto', { ...PROPS });
-const maxProy = Math.max(0, ...(proy.gastoAcum || [0]));
-console.log(`3. ProyeccionAvanceGasto  → la serie de gasto por semana llega a ${MXN(maxProy)}`);
-console.log(`                             ritmo de gasto publicado: ${MXN(proy.ritmoGasto)} /sem`);
-console.log(`                             fin de obra proyectado:   ${
-  proy.finProyectado ? proy.finProyectado.toISOString().slice(0,10) : '—'}`);
-console.log(`                             margen proyectado:        ${MXN(proy.margenFinProy)}`);
+console.log('');
+console.log('3. ProyeccionAvanceGasto  → ya no existe: se borró el 2026-11-06 al');
+console.log('                             unificarse las tres gráficas en una.');
 
 console.log('');
 console.log('─'.repeat(74));
-const fuga = maxTend >= DINERO_DE_LA_0121 || maxProy >= DINERO_DE_LA_0121;
+const fuga = maxTend >= DINERO_DE_LA_0121;
 if (fuga) {
-  console.log('HAY DIVERGENCIA: alguna copia le cuelga a la 0129 el dinero de la 0121,');
+  console.log('HAY DIVERGENCIA: la gráfica le cuelga a la 0129 el dinero de la 0121,');
   console.log('mientras `estadoGastoGP` —la que alimenta el KPI— dice que no hay gasto.');
 } else {
-  console.log('Las tres coinciden: ninguna le cuelga a la 0129 el dinero de la 0121.');
+  console.log('Las dos coinciden: ninguna le cuelga a la 0129 el dinero de la 0121.');
 }
 console.log('');

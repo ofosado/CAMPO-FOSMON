@@ -264,81 +264,81 @@ async function correr(codigo) {
   // por las tres: el acumulado que se dibuja, el delta de la columna «Gasto de
   // la semana» —que lee `porSem`, no la serie, y por eso no se arreglaba solo—
   // y el margen, que es la resta.
+  //
+  // El sujeto cambió de nombre el 2026-11-06: las tres gráficas se unificaron en
+  // una y `TendenciasMensuales` desapareció con ellas. Las series ya no son
+  // locales del componente sino campos de `curvaUnicaDeObra`, que es la única
+  // cuenta que las arma. Lo que se afirma es lo mismo, sobre el mismo dato: el
+  // hueco del gasto no se publica como un cero.
   sec('5. La tabla y la gráfica por semanas no publican el hueco como $0');
-  const tendHueco  = ejecutar('TendenciasMensuales', { ...PROPS(LA_NUEVA),  programa: null });
-  const tendMedido = ejecutar('TendenciasMensuales', { ...PROPS(LA_MEDIDA), programa: null });
+  const tendHueco  = ejecutar('TarjetaGraficaUnica', { ...PROPS(LA_NUEVA),  programa: null });
+  const tendMedido = ejecutar('TarjetaGraficaUnica', { ...PROPS(LA_MEDIDA), programa: null });
 
   const todoNulo = (serie) => Array.isArray(serie) && serie.length > 0
     && serie.every(v => v === null || v === undefined);
   const algunNumero = (serie) => Array.isArray(serie)
     && serie.some(v => typeof v === 'number');
 
-  check(tendHueco.gastoMedido === false,
+  check(tendHueco.g?.gastoMedido === false,
     'el prólogo de la tabla recibe el veredicto del gasto, no lo deduce',
-    `gastoMedido=${tendHueco.gastoMedido}`);
-  check(todoNulo(tendHueco.gastoAcumSeries),
+    `gastoMedido=${tendHueco.g?.gastoMedido}`);
+  check(todoNulo(tendHueco.g?.gasto),
     'la serie de «Gasto acumulado» queda VACÍA, no plana en cero',
-    JSON.stringify(tendHueco.gastoAcumSeries?.slice(-3)));
-  check(todoNulo(tendHueco.gastoDeltaMedido),
+    JSON.stringify(tendHueco.g?.gasto?.slice(-3)));
+  check(todoNulo(tendHueco.gastoDelta),
     'la columna «Gasto de la semana» tampoco afirma un cero por semana',
-    JSON.stringify(tendHueco.gastoDeltaMedido?.slice(-3)));
-  check(todoNulo(tendHueco.margenSeries),
+    JSON.stringify(tendHueco.gastoDelta?.slice(-3)));
+  check(todoNulo(tendHueco.g?.margen),
     'y el margen no publica el ejecutado entero como ganancia',
-    JSON.stringify(tendHueco.margenSeries?.slice(-3)));
+    JSON.stringify(tendHueco.g?.margen?.slice(-3)));
   // El renglón concreto que se vio en el preview: la última semana.
   const ultima = (s) => Array.isArray(s) ? s[s.length - 1] : undefined;
-  check(ultima(tendHueco.margenSeries) === null
-        && algunNumero(tendHueco.ejecutadoSeries),
+  check(ultima(tendHueco.g?.margen) === null
+        && algunNumero(tendHueco.g?.ejecutado),
     'con ejecutado medido y gasto sin medir, el renglón de la semana en curso '
-    + 'deja el margen vacío', `ejecutado=${MXN(ultima(tendHueco.ejecutadoSeries))}`);
+    + 'deja el margen vacío', `ejecutado=${MXN(ultima(tendHueco.g?.ejecutado))}`);
+  // Y la gráfica lo DICE, no lo calla: sin la línea de gasto no hay área de
+  // margen que sombrear, y un hueco sin dibujar se lee como «no hay hueco». Las
+  // dos ausencias entran en la leyenda con su motivo. Esto no existía cuando el
+  // sujeto era `TendenciasMensuales`: la serie vacía simplemente no se pintaba.
+  const auGasto  = tendHueco.g?.ausentes?.find(a => a.clave === 'gasto');
+  const auMargen = tendHueco.g?.ausentes?.find(a => a.clave === 'margen');
+  check(!!auGasto && /gp|gasto/i.test(auGasto.motivo || ''),
+    'la leyenda declara que falta la línea de gasto, con el motivo',
+    auGasto?.motivo || 'callada');
+  check(!!auMargen && /no se sabe/.test(auMargen.motivo || ''),
+    'y que sin esa línea el margen no es cero, es que no se sabe',
+    auMargen?.motivo || 'callado');
+  check(!tendHueco.g?.areas?.some(a => a.clave === 'margen'),
+    'el área del margen no se sombrea contra un borde que no existe');
 
-  check(tendMedido.gastoMedido === true,
+  check(tendMedido.g?.gastoMedido === true,
     'canario: con la 0121 el veredicto es que SÍ se midió');
-  check(algunNumero(tendMedido.gastoAcumSeries)
-        && ultima(tendMedido.gastoAcumSeries) === tendMedido.gtActual,
-    'canario: la serie medida SÍ se dibuja y su último punto es el total vivo',
-    MXN(ultima(tendMedido.gastoAcumSeries)));
-  check(algunNumero(tendMedido.margenSeries),
+  check(algunNumero(tendMedido.g?.gasto),
+    'canario: la serie medida SÍ se dibuja',
+    MXN(ultima(tendMedido.g?.gasto)));
+  check(algunNumero(tendMedido.g?.margen),
     'canario: y el margen se dibuja — callarse siempre no es la conducta buscada',
-    MXN(ultima(tendMedido.margenSeries)));
+    MXN(ultima(tendMedido.g?.margen)));
+  check(!tendMedido.g?.ausentes?.some(a => a.clave === 'gasto'),
+    'canario: y no se declara ausente lo que sí se midió');
 
-  // ── 5b · Y LA PROYECCIÓN, QUE ES EL TERCER PISO ──────────────────────────
-  // El mismo `serieGastoDeSemanas` alimenta el panel de proyección, y ahí el
-  // cero plano se convertía en cuatro afirmaciones: «Ritmo gasto $0 /sem»,
-  // «Gasto acumulado a hoy $0», «Margen proyectado al cierre $29.1M» y una
-  // línea roja dibujada sobre la base. Las cuatro medidas en el preview sobre
-  // la 0128, en la misma pantalla cuyo KPI decía «sin medir».
-  sec('5b. La proyección tampoco publica un ritmo ni un margen que no midió');
-  const proyHueco  = ejecutar('ProyeccionAvanceGasto', PROPS(LA_NUEVA));
-  const proyMedido = ejecutar('ProyeccionAvanceGasto', PROPS(LA_MEDIDA));
-
-  check(proyHueco.ritmoGasto === null,
-    'no hay «ritmo de gasto»: un $0 /sem afirma que la obra no está gastando',
-    String(proyHueco.ritmoGasto));
-  check(proyHueco.gastoUlt === null,
-    'no hay «gasto acumulado a hoy»', String(proyHueco.gastoUlt));
-  check(proyHueco.margenFinProy === null,
-    'y no hay «margen proyectado al cierre»: faltaba el sustraendo',
-    String(proyHueco.margenFinProy));
-  check(proyHueco.ptsGastoHist.length === 0,
-    'la línea de gasto no se dibuja sobre la base del eje',
-    `${proyHueco.ptsGastoHist.length} puntos`);
-  check(proyHueco.fmtCompacto(null) === 'sin medir',
-    'y el formateador del panel dice «sin medir» donde no hay cifra',
-    proyHueco.fmtCompacto(null));
-  // El signo, otra vez: este panel tenía su propio `Math.abs` con un guion de
-  // teclado al lado para el margen negativo.
-  check(proyHueco.fmtCompacto(-13_684_113).startsWith(MENOS),
-    'el margen negativo del panel abre con el menos de verdad, no con un guion',
-    proyHueco.fmtCompacto(-13_684_113));
-
-  check(typeof proyMedido.ritmoGasto === 'number' && proyMedido.ritmoGasto > 0,
-    'canario: con el gasto medido SÍ hay ritmo', MXN(proyMedido.ritmoGasto));
-  check(typeof proyMedido.margenFinProy === 'number',
-    'canario: y SÍ hay margen proyectado', MXN(proyMedido.margenFinProy));
-  check(proyMedido.ptsGastoHist.length > 0,
-    'canario: y la línea de gasto se dibuja',
-    `${proyMedido.ptsGastoHist.length} puntos`);
+  // Aquí vivía la sección 5b: el panel de proyección no publicaba «Ritmo gasto
+  // $0 /sem», «Gasto acumulado a hoy $0» ni «Margen proyectado al cierre
+  // $29.1M» con el gasto sin medir, y su `fmtCompacto` decía «sin medir» en vez
+  // de una cifra. Medía `ProyeccionAvanceGasto`, que se borró el 2026-11-06 al
+  // unificarse las tres gráficas en una. No se reescribió contra otro sujeto
+  // porque no hay otro: ese panel ya no está en el tablero.
+  //
+  // Lo que se pierde con él, escrito aquí para que no se pierda dos veces:
+  //   · un ritmo no se promedia sobre semanas sin medir,
+  //   · un margen proyectado no se publica sin sustraendo.
+  // Las dos reglas vuelven a tener banco cuando se reconstruya el bloque del
+  // ritmo sobre cortes CERRADOS, que es donde van a vivir.
+  //
+  // El menos de verdad en el margen negativo —el otro defecto que medía esta
+  // sección— sigue cubierto: `MXNS` es la única cuenta que lo pone y la sección
+  // 2 la examina directamente, con `MENOS` como la afirmación.
 
   // ── 6 · UNA CUENTA POR NÚMERO ────────────────────────────────────────────
   // El prólogo ya no rehace la cuenta: pide el bundle. Se afirma comparando
@@ -380,7 +380,7 @@ async function correr(codigo) {
   // renglón diga «sin medir» y no el `—` por omisión de `TablaSemanas`, que ahí
   // significaría «no hubo movimiento».
   check(compacto.includes(
-      "{titulo:'Gastoacumulado',valores:gastoAcumSeries,fmt:MXN,vacio:'sinmedir'}"),
+      "{titulo:'Gastoacumulado',valores:g.gasto,fmt:MXN,vacio:'sinmedir'}"),
     'la columna «Gasto acumulado» declara qué dice cuando la serie viene vacía');
 
   // ── 8 · EL PAPEL QUE SE ENTREGA ──────────────────────────────────────────
@@ -534,26 +534,37 @@ const MUTACIONES = [
     '  const serie = semanas.map((s, i) => {\n    if (!medido) return null;',
     '  const serie = semanas.map((s, i) => {'],
   ['la columna «Gasto de la semana» vuelve a restar dos ceros y publicar un cero',
-    "    if (i === 0) return null;   // se calcula después\n    if (!gastoMedido) return null;",
-    '    if (i === 0) return null;   // se calcula después'],
+    '    if (i === 0) return null;\n    if (!g.gastoMedido) return null;',
+    '    if (i === 0) return null;'],
   ['la columna «Gasto acumulado» deja el `—` por omisión, que dice «no hubo movimiento»',
-    "{titulo:'Gasto acumulado', valores:gastoAcumSeries, fmt:MXN,\n             vacio:'sin medir'}",
-    "{titulo:'Gasto acumulado', valores:gastoAcumSeries, fmt:MXN}"],
-  ['la proyección vuelve a publicar un ritmo de gasto de $0 /sem',
-    '  const ritmoGasto = gastoMedido ? calcularRitmo(gastoAcum) : null;',
-    '  const ritmoGasto = calcularRitmo(gastoAcum);'],
-  ['la proyección vuelve a restar contra un gasto que nadie midió',
-    '  const margenFinProy = gastoFinProy === null ? null : ejecFinProy - gastoFinProy;',
-    '  const margenFinProy = ejecFinProy - (gastoFinProy || 0);'],
-  ['la línea de gasto de la proyección se vuelve a dibujar sobre la base del eje',
-    '  const ptsGastoHist = gastoMedido ? gastoAcum.map((v, i) => [xPos(i), yPos(v)]) : [];',
-    '  const ptsGastoHist = gastoAcum.map((v, i) => [xPos(i), yPos(v)]);'],
-  ['el formateador del panel vuelve a leer el `null` como un cero',
-    "    if (v === null || v === undefined) return 'sin medir';",
-    '    if (v === null || v === undefined) v = 0;'],
-  ['el panel vuelve a escribir el signo a mano, con el guion del teclado',
-    "    const signo = n < 0 ? '\\u2212' : '';",
-    "    const signo = '';"],
+    "{titulo:'Gasto acumulado', valores:g.gasto, fmt:MXN,\n             vacio:'sin medir'}",
+    "{titulo:'Gasto acumulado', valores:g.gasto, fmt:MXN}"],
+  // Las cinco mutaciones de la proyección —ritmo de gasto, margen al cierre,
+  // la línea sobre la base del eje, el `null` leído como cero y el signo a
+  // mano— se fueron con `ProyeccionAvanceGasto` el 2026-11-06. No se cambiaron
+  // de anclaje: no hay anclaje al que cambiarlas. El porqué está en la nota de
+  // la sección 5b, donde vivían las aserciones que mordían.
+  //
+  // En su lugar van las de la gráfica única, que es donde el mismo hueco se
+  // publica ahora. Las dos primeras son LA conducta nueva: antes la serie
+  // vacía simplemente no se pintaba, y una línea que falta sin decirlo deja la
+  // gráfica afirmando «no hay hueco» donde lo cierto es «no se sabe».
+  ['la línea de gasto que falta se calla en vez de declararse en la leyenda',
+    "    declarar('gasto', 'Gasto acumulado',\n      'el gasto de esta obra no está medido: GP no la conoce con esta clave');",
+    "    void 'la leyenda no dice nada';"],
+  ['el margen ausente se calla: sin la línea de gasto el hueco no se dibuja ni se explica',
+    "    declarar('margen', 'Margen bruto acumulado, en pesos',\n      !dibuja('gasto')",
+    "    if (0) declarar('margen', 'Margen bruto acumulado, en pesos',\n      !dibuja('gasto')"],
+  ['el área del margen se sombrea contra un borde que no se midió',
+    "  if (dibuja('ejec') && dibuja('gasto') && hayDato(margen)) {",
+    "  if (dibuja('ejec') && hayDato(ejecutado)) {"],
+  // Ésta vive aquí y no en `prueba-una-sola-pregunta-a-gp` porque sólo este
+  // banco tiene el escenario que la muerde: una obra que la corrida del gasto
+  // NO incluye. Allá las dos obras tienen gasto medido —el cero de la 0129 es
+  // un cero medido— y la mutación sobrevivía sin que nada estuviera mal.
+  ['la línea de gasto se dibuja sin mirar si el gasto está medido',
+    '  if (gastoMedido && hayDato(gasto)) {',
+    '  if (hayDato(gasto) || true) {'],
   ['el Dashboard de obra vuelve a resolver el gasto por el acceso sin veredicto',
     '  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones, gpData, otrosGastos);',
     '  const kpis = { ...calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones, gpData, otrosGastos),\n    gt: resolverGastoGP(obra, gpData), gastoGPMedido: true };'],

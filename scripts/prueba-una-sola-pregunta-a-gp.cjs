@@ -20,7 +20,15 @@
 // cero. La obra 0129 («AYU-COAT-REHABILITACION DEL MALECON») comparte «COAT» y
 // «REHAB» con la 0121 («SIOP Coatza Rehab. Av. Universidad»).
 //
-// QUÉ SE AFIRMA AQUÍ. Que las cuatro vías publican el MISMO gasto, y que ese
+// CUATRO VÍAS, Y DESDE EL 2026-11-06 TRES. Las tres gráficas del tablero se
+// unificaron en una: `TendenciasMensuales` y `ProyeccionAvanceGasto` se
+// borraron y las dos preguntan ahora por una sola, `curvaUnicaDeObra`, dentro
+// de `TarjetaGraficaUnica`. Dos copias menos de la misma pregunta es
+// exactamente la dirección en la que este banco empuja, así que el banco se
+// mudó con ellas en vez de reescribirse: las aserciones son las mismas, sobre
+// el mismo dato, contadas sobre tres vías.
+//
+// QUÉ SE AFIRMA AQUÍ. Que todas las vías publican el MISMO gasto, y que ese
 // gasto es el que midió `estadoGastoGP`. No se busca ninguna frase en el código
 // ni se comprueba que exista ningún nombre: se extrae por AST el prólogo de
 // cálculo de cada componente y se EJECUTA fuera de React.
@@ -28,7 +36,7 @@
 // CON CANARIO, Y POR LOS DOS LADOS. «La 0129 no se lleva los $19.9M» es trivial
 // de cumplir si el gasto se apaga entero: el mismo banco corre el escenario
 // GEMELO en el que la obra SÍ es la 0121, y entonces los $19.9M tienen que
-// aparecer en las cuatro. Un verde sobre un canario sordo no prueba nada.
+// aparecer en todas. Un verde sobre un canario sordo no prueba nada.
 //
 // Lo que NO cubre: el SVG, los colores, el texto de la leyenda.
 //
@@ -318,21 +326,29 @@ function correr(codigo) {
     'y el veredicto declara que no cruzó con ninguna obra del Sheet',
     String(estNueva.obraGP));
 
-  const tend = ejecutar('TendenciasMensuales', PROPS(LA_NUEVA));
-  const proy = ejecutar('ProyeccionAvanceGasto', PROPS(LA_NUEVA));
+  const tend = ejecutar('TarjetaGraficaUnica', PROPS(LA_NUEVA));
 
-  check(tope(tend.gastoAcumSeries) === 0,
-    'la curva de economía no dibuja un peso en ninguna de sus semanas',
-    MXN(tope(tend.gastoAcumSeries)));
-  check(tope(Object.values(tend.gastoAcumPorSem || {})) === 0,
+  check(tope(tend.g?.gasto) === 0,
+    'la curva no dibuja un peso en ninguna de sus semanas',
+    MXN(tope(tend.g?.gasto)));
+  check(tope(Object.values(tend.g?.gastoPorSem || {})) === 0,
     'ni la columna de gasto acumulado de la tabla',
-    MXN(tope(Object.values(tend.gastoAcumPorSem || {}))));
-  check(tope(proy.gastoAcum) === 0,
-    'la proyección tampoco, en su propio eje',
-    MXN(tope(proy.gastoAcum)));
-  check(casi(proy.ritmoGasto, 0),
-    'y por lo tanto no publica un ritmo de gasto que nadie gastó',
-    `${MXN(proy.ritmoGasto)} /sem`);
+    MXN(tope(Object.values(tend.g?.gastoPorSem || {}))));
+  check(tope(tend.gastoDelta) === 0,
+    'ni la columna de «Gasto de la semana», que lee el mapa y no la serie',
+    MXN(tope(tend.gastoDelta)));
+  // El cero de esta obra es un cero MEDIDO: la 0129 sí está en la corrida del
+  // gasto, lo que no tiene es cheques. Así que la gráfica dibuja su línea sobre
+  // la base del eje y eso es correcto —es lo que se gastó—, y NO la declara
+  // ausente. El hueco de verdad, la obra que la corrida no incluye, es otro
+  // escenario y lo mide `prueba-el-numero-con-su-calificativo`. Aquí lo que se
+  // vigila es que ese cero no se vuelva los $19.9M de la vecina, y el veredicto
+  // que viaja con él tiene que llegar entero a la gráfica.
+  check(tend.g?.gastoMedido === true,
+    'el veredicto llega a la gráfica: el cero de esta obra está MEDIDO',
+    `gastoMedido=${tend.g?.gastoMedido} · ${estNueva.motivo}`);
+  check(!tend.g?.ausentes?.some(a => a.clave === 'gasto'),
+    'y por eso no se declara ausente: un cero medido se dibuja, no se calla');
 
   const { gastoAcum: serieDelta } = _serieGastoAcumulado(LA_NUEVA, GP, []);
   check(tope(Object.values(serieDelta || {})) === 0,
@@ -358,20 +374,20 @@ function correr(codigo) {
   // las cuatro vías. Sin esto, el banco no distingue «no le cuelga el dinero de
   // otra» de «no sabe leer el dinero».
   sec('2. Canario: cuando la obra SÍ es la del Sheet, el dinero aparece');
-  const tendV = ejecutar('TendenciasMensuales', PROPS(LA_VECINA));
-  const proyV = ejecutar('ProyeccionAvanceGasto', PROPS(LA_VECINA));
+  const tendV = ejecutar('TarjetaGraficaUnica', PROPS(LA_VECINA));
 
   check(estVecina.obraGP?.id === '0121',
     'el veredicto trae la obra del Sheet con la que cruzó',
     String(estVecina.obraGP?.id));
-  check(casi(tope(tendV.gastoAcumSeries), DINERO_DE_LA_VECINA),
-    'la curva de economía llega al total del Sheet',
-    MXN(tope(tendV.gastoAcumSeries)));
-  check(casi(tope(proyV.gastoAcum), DINERO_DE_LA_VECINA),
-    'y la proyección también', MXN(tope(proyV.gastoAcum)));
-  check(proyV.ritmoGasto > 0,
-    'y el ritmo de gasto de la proyección ya no es cero',
-    `${MXN(proyV.ritmoGasto)} /sem`);
+  check(casi(tope(tendV.g?.gasto), DINERO_DE_LA_VECINA),
+    'la curva llega al total del Sheet',
+    MXN(tope(tendV.g?.gasto)));
+  check(casi(tope(Object.values(tendV.g?.gastoPorSem || {})), DINERO_DE_LA_VECINA),
+    'y la columna de la tabla también',
+    MXN(tope(Object.values(tendV.g?.gastoPorSem || {}))));
+  check(tendV.g?.lineas?.some(l => l.clave === 'gasto')
+        && !tendV.g?.ausentes?.some(a => a.clave === 'gasto'),
+    'y la línea SÍ se dibuja: no se declara ausente lo que se midió');
   const { gastoAcum: serieDeltaV } = _serieGastoAcumulado(LA_VECINA, GP, []);
   check(casi(tope(Object.values(serieDeltaV || {})), DINERO_DE_LA_VECINA),
     'y la columna de Δ margen la ve', MXN(tope(Object.values(serieDeltaV || {}))));
@@ -390,43 +406,63 @@ function correr(codigo) {
     'y la obra vieja sin `gpId` cobra por el prefijo de su id',
     MXN(estadoGastoGP(LA_VECINA_SIN_CLAVE, GP).valor));
 
-  // ── 3 · LAS DOS TARJETAS PUBLICAN EL MISMO GASTO ─────────────────────────
-  // Una cuenta por número, aplicada al gasto: los dos ejes son distintos —la
-  // ventana de N semanas y el plazo del contrato— pero donde se solapan tienen
-  // que decir lo mismo, porque es el mismo dinero de la misma obra.
-  sec('3. Las dos tarjetas publican el mismo gasto en las semanas que comparten');
-  const porSemProy = {};
-  (proyV.semanasHist || []).forEach((s, i) => { porSemProy[s.key] = proyV.gastoAcum[i]; });
-  const compartidas = (tendV.semanas || [])
+  // ── 3 · LAS DOS VÍAS PUBLICAN EL MISMO GASTO ─────────────────────────────
+  // Una cuenta por número, aplicada al gasto. Antes el par eran las dos
+  // tarjetas del tablero —tendencias y proyección—; al unificarse las gráficas
+  // quedó una sola, pero el par sigue existiendo y es el que de verdad importa
+  // porque son DOS PANTALLAS distintas: la gráfica de la obra y la columna de
+  // Δ margen de la lista de obras, que sale de `_serieGastoAcumulado`. Si
+  // discrepan, el usuario ve dos gastos del mismo dinero según dónde mire.
+  //
+  // Las dos llavean la semana distinto —`2026-W37` la gráfica, `Y2026-S37` la
+  // columna— así que hay que traducir. La traducción va aquí y no en el código:
+  // lo que se afirma es que los NÚMEROS coinciden, no que las llaves se
+  // escriban igual.
+  sec('3. La gráfica y la columna de Δ margen publican el mismo gasto');
+  const { gastoAcum: deltaVecina } = _serieGastoAcumulado(LA_VECINA, GP, []);
+  const aISO = (k) => String(k).replace(/^Y(\d{4})-S(\d{1,2})$/,
+    (_, a, s) => `${a}-W${String(s).padStart(2, '0')}`);
+  const porSemDelta = {};
+  Object.entries(deltaVecina || {}).forEach(([k, v]) => { porSemDelta[aISO(k)] = v; });
+  const compartidas = (tendV.g?.semanas || [])
     .map(s => s.key)
-    .filter(k => k in porSemProy);
-  check(compartidas.length >= 4,
-    'los dos ejes se solapan de verdad en el fixture',
-    `${compartidas.length} semanas en común`);
+    .filter(k => k in porSemDelta);
+  // El canario de este par: que la comparación de abajo NO sea vacía. Si las
+  // llaves dejaran de traducirse el solape caería a cero y «ninguna semana
+  // discrepa» saldría en verde sin haber comparado nada. Se pide además que
+  // alguna semana compartida traiga DINERO: dos ceros coinciden siempre.
+  //
+  // El umbral es 2, no 4, y es el del fixture: el documento de gasto de la
+  // 0121 tiene dos semanas. Pedir cuatro sería pedirle al fixture algo que no
+  // tiene y el banco saldría rojo por el escenario, no por el código.
+  const conDinero = compartidas.filter(k => porSemDelta[k] > 0);
+  check(compartidas.length >= 2 && conDinero.length >= 1,
+    'los dos ejes se solapan de verdad y el solape trae dinero',
+    `${compartidas.length} semanas en común, ${conDinero.length} con gasto`);
   const discrepan = compartidas.filter(k => {
-    const i = tendV.semanas.findIndex(s => s.key === k);
-    return !casi(tendV.gastoAcumSeries[i], porSemProy[k]);
+    const i = tendV.g.semanas.findIndex(s => s.key === k);
+    return !casi(tendV.g.gasto[i], porSemDelta[k]);
   });
   check(discrepan.length === 0,
     'y ninguna semana compartida publica dos gastos distintos',
-    discrepan.length ? discrepan.join(', ') : `${compartidas.length} semanas cuadran`);
+    discrepan.length
+      ? discrepan.map(k => `${k}: ${MXN(tendV.g.gasto[tendV.g.semanas.findIndex(s => s.key === k)])}`
+          + ` vs ${MXN(porSemDelta[k])}`).join(' · ')
+      : `${compartidas.length} semanas cuadran`);
 
   // ── 4 · EL GASTO QUE SE DIBUJA ES EL QUE MIDIÓ EL KPI ────────────────────
   // El último punto se ancla al total vivo. La cifra esperada no se teclea: sale
   // de `estadoGastoGP`, que es la del KPI del Dashboard.
-  sec('4. El último punto de las dos curvas es el gasto que publica el KPI');
-  const uT = tendV.semanas.length - 1;
-  check(casi(tendV.gastoAcumSeries[uT], estVecina.valor),
-    'tendencias cierra en el gasto del KPI',
-    `${MXN(tendV.gastoAcumSeries[uT])} = ${MXN(estVecina.valor)}`);
-  check(casi(proyV.gastoAcum[proyV.gastoAcum.length - 1], estVecina.valor),
-    'y la proyección arranca su punteado desde el mismo número',
-    MXN(proyV.gastoAcum[proyV.gastoAcum.length - 1]));
+  sec('4. El último punto de la curva es el gasto que publica el KPI');
+  const uT = tendV.g.semanas.length - 1;
+  check(casi(tendV.g.gasto[uT], estVecina.valor),
+    'la curva cierra en el gasto del KPI',
+    `${MXN(tendV.g.gasto[uT])} = ${MXN(estVecina.valor)}`);
   // Y en la obra nueva el cero del KPI es el cero de la curva, no una
   // coincidencia: las dos cifras salen de la misma cuenta.
-  check(casi(tend.gastoAcumSeries[tend.semanas.length - 1], estNueva.valor),
+  check(casi(tend.g.gasto[tend.g.semanas.length - 1], estNueva.valor),
     'y en la obra nueva, el cero de la curva es el cero del KPI',
-    `${MXN(tend.gastoAcumSeries[tend.semanas.length - 1])} = ${MXN(estNueva.valor)}`);
+    `${MXN(tend.g.gasto[tend.g.semanas.length - 1])} = ${MXN(estNueva.valor)}`);
 
   // ── 5 · EL GASTO MANUAL ANTERIOR A LA FIRMA NO SE PIERDE ─────────────────
   // La copia de la proyección no acarreaba lo de antes de la primera semana de
@@ -492,8 +528,8 @@ const MUTACIONES = [
     '  const medido  = (valor, motivo = \'medido\', extra = {}) =>\n    ({ valor, medido: true, motivo, obraGP: null, ...extra });',
     '  const medido  = (valor, motivo = \'medido\', extra = {}) =>\n    ({ valor, medido: true, motivo, ...extra, obraGP: null });'],
   ['el gasto por semana se resuelve la obra del GP por su cuenta, como antes',
-    '  const obraGP = estadoGastoGP(obra, gpData).obraGP;\n\n  // El Sheet guarda',
-    '  const _arr = Object.values(gpData?.obras || {});\n  let obraGP = obra?.gpId ? _arr.find(o => o.id === obra.gpId) : null;\n  if (!obraGP && /^\\d{4}/.test(obra?.id || \'\')) {\n    obraGP = _arr.find(o => o.id === obra.id.slice(0, 4));\n  }\n  if (!obraGP && obra) {\n    const _n = s => (s || \'\').toString().toUpperCase().normalize(\'NFD\')\n      .replace(/[\\u0300-\\u036f]/g, \'\').replace(/[^\\w\\s]/g, \' \')\n      .replace(/\\s+/g, \' \').trim();\n    const _p = _n(obra.nombre).split(\' \').filter(w => w.length > 3);\n    let _mejor = null, _sc = 0;\n    for (const o of _arr) {\n      const _g = _n(o.nombre).replace(/^\\d{4}\\s*/, \'\').split(\' \').filter(w => w.length > 3);\n      const _m = _p.filter(p => _g.some(g => g.includes(p) || p.includes(g))).length;\n      if (_m > _sc) { _sc = _m; _mejor = o; }\n    }\n    if (_sc >= 2) obraGP = _mejor;\n  }\n\n  // El Sheet guarda'],
+    '  const _gpEstado = estadoGastoGP(obra, gpData);\n  const obraGP = _gpEstado.obraGP;\n  const medido = _gpEstado.medido;\n\n  // El Sheet guarda',
+    '  const medido = true;\n  const _arr = Object.values(gpData?.obras || {});\n  let obraGP = obra?.gpId ? _arr.find(o => o.id === obra.gpId) : null;\n  if (!obraGP && /^\\d{4}/.test(obra?.id || \'\')) {\n    obraGP = _arr.find(o => o.id === obra.id.slice(0, 4));\n  }\n  if (!obraGP && obra) {\n    const _n = s => (s || \'\').toString().toUpperCase().normalize(\'NFD\')\n      .replace(/[\\u0300-\\u036f]/g, \'\').replace(/[^\\w\\s]/g, \' \')\n      .replace(/\\s+/g, \' \').trim();\n    const _p = _n(obra.nombre).split(\' \').filter(w => w.length > 3);\n    let _mejor = null, _sc = 0;\n    for (const o of _arr) {\n      const _g = _n(o.nombre).replace(/^\\d{4}\\s*/, \'\').split(\' \').filter(w => w.length > 3);\n      const _m = _p.filter(p => _g.some(g => g.includes(p) || p.includes(g))).length;\n      if (_m > _sc) { _sc = _m; _mejor = o; }\n    }\n    if (_sc >= 2) obraGP = _mejor;\n  }\n\n  // El Sheet guarda'],
   ['el gasto por semana lee el total vivo pero no de quién es',
     '  const gtActual = resolverGastoGP(obra, gpData) + totMaq + totOtros;',
     '  const gtActual = Object.values(gpData?.obras || {})\n    .reduce((t, o) => t + extraerGastoTotalGP(o), 0) + totMaq + totOtros;'],
@@ -503,12 +539,22 @@ const MUTACIONES = [
   ['el gasto fechado antes del arranque se tira, como hacía la proyección',
     '  const primera = semanas[0]?.key;\n  if (primera) {\n    Object.keys(manualIncrem).forEach(k => {\n      if (k < primera) acumManual += manualIncrem[k];\n    });\n  }',
     ''],
-  ['la proyección se arma otra vez su propia serie de gasto',
-    '  const { serie: gastoAcum, gtActual } =\n    serieGastoDeSemanas({ semanas: semanasHist, obra, gpData, otrosGastos, maquinaria });',
-    '  const gtActual = resolverGastoGP(obra, gpData);\n  const gastoAcum = semanasHist.map(() => gtActual);'],
-  ['el último punto de tendencias deja de ser el gasto del KPI',
-    '  const serie = semanas.map((s, i) =>\n    (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null));',
-    '  const serie = semanas.map((s) => porSem[s.key] ?? null);'],
+  // La mutación «la proyección se arma otra vez su propia serie de gasto» se
+  // fue con `ProyeccionAvanceGasto` el 2026-11-06: ya no hay una segunda
+  // tarjeta que pueda armarse su serie, y eso es la mejora, no una pérdida de
+  // cobertura.
+  //
+  // Lo que NO se puso aquí, a propósito: quitarle a la gráfica única la guarda
+  // `gastoMedido` de la línea de gasto. Se intentó y SOBREVIVIÓ, y la razón es
+  // el escenario: las dos obras de este banco tienen gasto MEDIDO —la 0129 es
+  // un cero medido, no un hueco—, así que ninguna aserción de aquí puede verla.
+  // Esa mutación vive en `prueba-el-numero-con-su-calificativo`, que es el
+  // banco cuyo escenario sí es una obra que la corrida no incluye. Una
+  // mutación que ningún escenario puede morder no mide nada: mide que el banco
+  // la tiene escrita.
+  ['el último punto de la curva deja de ser el gasto del KPI',
+    '    return (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null);',
+    '    return porSem[s.key] ?? null;'],
 ];
 
 if (process.argv.includes('--contraprueba')) {
