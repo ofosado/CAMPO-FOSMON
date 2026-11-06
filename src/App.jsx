@@ -4221,7 +4221,47 @@ const plazoDeObra = (obra, hoyISO = hoyLocalISO()) => {
   const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;
   const pctPlazo = (totalDias && totalDias > 0)
     ? Math.min((transcurridos / totalDias) * 100, 100) : null;
-  return { finVigente, ampliado, totalDias, transcurridos, restantes, pctPlazo };
+
+  // Lo que falta, medido contra el FIN y no restando dos tramos que salen del
+  // inicio. Dos razones, y las dos son defectos que se vieron:
+  //
+  //   · Así se puede contestar «cuántas semanas quedan» en una obra a la que
+  //     le falta `inicio`. Con `totalDias - transcurridos` esa obra no tenía
+  //     respuesta, porque `totalDias` sale null sin inicio.
+  //   · `restantes` está topado en 0 para la barra de plazo, y ese tope
+  //     convierte un plazo VENCIDO en «quedan 0». Un cero es una medición:
+  //     dice «se acaba hoy». Una obra vencida hace 35 días no se acaba hoy.
+  //
+  // Donde hay inicio las dos cuentas coinciden por construcción —`dias(i,f) -
+  // dias(i,h)` es `dias(h,f)`, y las tres pasan por `fechaLocalDeISO`—, así
+  // que esto no es una segunda cuenta del plazo: es la misma, preguntada
+  // desde el otro extremo para que el vencimiento tenga dónde decirse.
+  const alFin = dias(hoyISO, finVigente);
+  const vencidoDias = alFin == null ? null : Math.max(-alFin, 0);
+  const semanasRestantes = alFin == null ? null : Math.max(Math.floor(alFin / 7), 0);
+
+  return { finVigente, ampliado, totalDias, transcurridos, restantes, pctPlazo,
+           vencidoDias, semanasRestantes };
+};
+
+// Lo que la tarjeta «Proyección de gasto» dice del plazo, en palabras.
+//
+// Vive aquí, fuera del componente, por lo mismo que `frescuraDeGP`: una frase
+// que se decide dentro del JSX no se puede ejecutar en un banco, y entonces lo
+// único que se puede comprobar de ella es que el símbolo existe. Esta frase se
+// equivocaba de las dos maneras posibles —el fin equivocado y el cero falso—
+// precisamente porque nadie la había podido correr.
+//
+// Devuelve `null` cuando no hay fin con el que medir. Null es lo que la
+// pantalla necesita para CALLARSE: la alternativa era decir «quedan 0
+// semanas», que no es callarse, es afirmar que la obra se acaba hoy.
+const frasePlazoRestante = (obra) => {
+  const { semanasRestantes, vencidoDias } = plazoDeObra(obra);
+  if (semanasRestantes == null) return null;
+  if (vencidoDias > 0) {
+    return `el plazo contractual venció hace ${vencidoDias} día${vencidoDias === 1 ? '' : 's'}`;
+  }
+  return `quedan ${semanasRestantes} semana${semanasRestantes === 1 ? '' : 's'} de plazo contractual`;
 };
 
 // "3 de mar de 2027". El año va SIEMPRE: estas frases comparan fechas que en
@@ -5603,7 +5643,7 @@ const BIBLIOTECA_RIESGOS = [
     descripcion: 'A ritmo actual el presupuesto se agota antes del fin contractual',
     tab: 'gastos',
     detect: ({obra, gpData, kpis}) => {
-      if (!obra.fin || !gpData?.obras || !kpis) return null;
+      if (!gpData?.obras || !kpis) return null;
       const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
       if (!obraGP) return null;
       // La MISMA cuenta que el KPI «Velocidad prom.» de la pestaña Gastos, no
@@ -5615,7 +5655,26 @@ const BIBLIOTECA_RIESGOS = [
       const restante = obra.presupuesto - totalGastado;
       if (restante <= 0) return {severidad:'critico', valor:'0 sem', detalle:'Presupuesto agotado', extra:`Gastado: ${MXN(totalGastado)}`};
       const semsAgotar = Math.ceil(restante/velocidad);
-      const semsPlazo = Math.max(Math.floor((new Date(obra.fin) - new Date())/(86400000*7)), 0);
+      // El plazo lo cuenta `plazoDeObra`, que es quien lo cuenta para toda la
+      // aplicación. Aquí estaba escrito a mano —`new Date(obra.fin) - new
+      // Date()`— con tres errores en un renglón: `obra.fin` es el fin del
+      // CONTRATO y se salta la ampliación (`plz_001` y `plz_002`, de esta
+      // misma obra, sí medían contra el vigente), la fecha corta se lee como
+      // UTC mientras `new Date()` es el instante del aparato, y el tope en 0
+      // hacía pasar un plazo vencido por «quedan 0 semanas».
+      //
+      // No lleva guarda contra el plazo VENCIDO, y no por descuido: con el
+      // plazo vencido `semanasRestantes` es 0, y `semsAgotar` es al menos 1
+      // porque `restante <= 0` ya salió arriba, así que ninguna de las dos
+      // comparaciones de abajo puede ser cierta. Se intentó escribir la
+      // guarda; quitarla no cambiaba ninguna salida, o sea que no se podía
+      // poner en rojo. Una guarda que no se distingue de su ausencia haría
+      // creer que protege algo. De la obra vencida habla `plz_001`.
+      const { semanasRestantes: semsPlazo } = plazoDeObra(obra);
+      // Ésta sí se queda, y es para quien lee: «el plazo no se puede medir» es
+      // un estado del dato y merece decirse en su renglón, en lugar de
+      // descansar en que `semsAgotar < null` resulte falso.
+      if (semsPlazo == null) return null;
       if (semsAgotar < semsPlazo * 0.5) return {severidad:'critico', valor:`${semsAgotar} sem`, detalle:'Presupuesto se agota mucho antes del plazo', extra:`Quedan ${semsPlazo} sem de plazo`};
       if (semsAgotar < semsPlazo) return {severidad:'alto', valor:`${semsAgotar} sem`, detalle:'Presupuesto agotará antes del fin', extra:`Plazo: ${semsPlazo} sem`};
       return null;
@@ -16920,9 +16979,9 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
               <div style={{marginTop:10,padding:"10px 12px",background:semanasParaAgotar<8?`${alfa(C.red, 8.24)}`:`${alfa(C.blue, 8.24)}`,
                 borderRadius:6,fontSize:10,color:semanasParaAgotar<8?C.redDk:C.blueDk}}>
                 A la velocidad actual el presupuesto se agota en aproximadamente <b>{semanasParaAgotar} semanas</b>
-                {obra.fin && (() => {
-                  const semsRestPlazo = Math.max(Math.floor((new Date(obra.fin) - new Date())/(1000*60*60*24*7)), 0);
-                  return <span> (quedan {semsRestPlazo} semanas de plazo contractual).</span>;
+                {(() => {
+                  const f = frasePlazoRestante(obra);
+                  return f ? <span> ({f}).</span> : null;
                 })()}
               </div>
             )}
