@@ -1048,6 +1048,59 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   });
   console.log('obras de dependencia: OP-2026-001/002/003 (bajo orgs/coatzacoalcos)');
 
+  // ── BITÁCORA: MÁS FILAS QUE LA VENTANA ────────────────────────────────────
+  //
+  // La bitácora lee las últimas N por `ts desc` y el resto de los filtros los
+  // aplica en memoria. Ese defecto NO SE VE con veinte filas sembradas: hay
+  // que pasar del tope para que la pantalla tenga algo que no leyó. Producción
+  // tiene 4,603 filas y la ventana por omisión le cubre seis días; aquí se
+  // siembran 230, repartidas en meses, para que:
+  //
+  //   · con la ventana de 100 y de 200, la lectura quede TOPADA y el aviso de
+  //     recorte tenga que salir;
+  //   · con la de 500 quede completa, y el aviso tenga que desaparecer —media
+  //     prueba es el caso en que la pantalla NO debe avisar—;
+  //   · y haya filas de JUNIO, meses antes del piso de la ventana, que sólo se
+  //     alcanzan si el filtro de fecha viaja a la consulta.
+  //
+  // Las fechas van de junio a noviembre con la mayoría apiladas en los últimos
+  // días, como en producción: la ventana se llena de lo reciente y lo viejo
+  // queda fuera. `ts` es cadena ISO, igual que lo que escribe la app.
+  const BIT_OBRAS = ['0114', '0128', '0121'];
+  const BIT_TIPOS = ['escritura', 'lectura', 'borrado'];
+  const BIT_MODULOS = ['obras', 'avance', 'nomina', 'evidencia', 'estimaciones'];
+  let bitFilas = 0;
+  const sembrarFila = async (ts, i) => {
+    await escribir(`auditoria/sem-${String(i).padStart(4, '0')}`, {
+      ts,
+      usuario: i % 3 === 0 ? 'demo@fosmon.com.mx' : 'residente@fosmon.com.mx',
+      nombre: i % 3 === 0 ? 'Demo FOSMON' : 'Residente de obra',
+      tipo: BIT_TIPOS[i % BIT_TIPOS.length],
+      modulo: BIT_MODULOS[i % BIT_MODULOS.length],
+      obraId: BIT_OBRAS[i % BIT_OBRAS.length],
+      entidad: `obras/${BIT_OBRAS[i % BIT_OBRAS.length]}`,
+      ok: true,
+      mensaje: 'fila sembrada para ver la ventana de la bitácora',
+    });
+    bitFilas++;
+  };
+  // 200 recientes: 2026-11-01 a 2026-11-05, que es la pila que llena la ventana.
+  for (let i = 0; i < 200; i++) {
+    const dia = 5 - Math.floor(i / 50);
+    const h = String(23 - (i % 24)).padStart(2, '0');
+    const m = String(59 - (i % 60)).padStart(2, '0');
+    await sembrarFila(`2026-11-${String(dia).padStart(2, '0')}T${h}:${m}:00.000Z`, i);
+  }
+  // 30 viejas: junio y julio. Son las que la ventana NO alcanza y las que una
+  // pregunta por fecha tiene que poder encontrar.
+  for (let i = 0; i < 30; i++) {
+    const mes = i < 15 ? '06' : '07';
+    const dia = String(2 + (i % 15) * 2).padStart(2, '0');
+    await sembrarFila(`2026-${mes}-${dia}T1${i % 10}:30:00.000Z`, 1000 + i);
+  }
+  console.log(`bitácora: ${bitFilas} filas en auditoria — 200 del 1 al 5 de nov ` +
+    `(llenan la ventana de 100 y de 200) y 30 de junio/julio, que quedan fuera`);
+
   console.log('\nEntra con cualquiera de las dos, misma contraseña:');
   for (const c of CUENTAS) console.log(`  ${c.correo.padEnd(24)} ${CLAVE}   (${c.tipo})`);
 })().catch(e => { console.error('\n' + e.message); process.exit(1); });
