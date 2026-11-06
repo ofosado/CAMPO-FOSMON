@@ -4270,6 +4270,93 @@ const fechaEnPalabras = (d) => d instanceof Date && !isNaN(d)
   ? `${d.getDate()} de ${MESES_CORTO[d.getMonth()]} de ${d.getFullYear()}`
   : null;
 
+// ── UNA FECHA SE IMPRIME SI SE PUEDE LEER, NO SI EL CAMPO ESTÁ ─────────────
+//
+// Cinco sitios imprimían una fecha guardada preguntando si el campo EXISTE, y
+// ninguno preguntaba si se puede LEER. Son dos preguntas distintas y la
+// diferencia sale impresa, de dos maneras:
+//
+//   «Invalid Date» — `new Date(x).toLocaleDateString()` sobre algo que no es
+//       una fecha devuelve esa cadena, y la cadena se imprime. El lector ve
+//       dos palabras en inglés donde esperaba un día.
+//
+//   Diez letras cualesquiera — `String(x).slice(0, 10)` era el respaldo de
+//       los otros tres. Es peor que «Invalid Date» justamente porque NO se
+//       ve roto: `"1762387200"` son diez dígitos, y un instante guardado por
+//       error ya formateado —`"5/11/2026, 8:01:04 a.m."`, que es exactamente
+//       la avería que `fechaHoraLegible` documenta abajo— recorta a
+//       `"5/11/2026,"`, que se lee como una fecha. Mal tipografiada, pero
+//       fecha. Nadie va a reportar eso.
+//
+// Lo que cambia no es el formato de cada sitio —cada uno imprime el suyo y así
+// se queda— sino QUIÉN decide si hay algo que imprimir. Esa decisión se
+// escribe aquí una vez. Y cuando la respuesta es que no, la pantalla lo DICE:
+// no se calla y no rellena. Que una nota se tocó después de escrita hay que
+// decirlo siempre —es lo único que hace visible una corrección—, así que
+// «editada» se sigue diciendo aunque su fecha no se pueda leer.
+//
+// Ausente y «ilegible» no son el mismo estado y no se imprimen igual. Un campo
+// que no está es que nunca se escribió; un campo que no se puede leer es que
+// alguien escribió algo mal, y eso tiene a quién preguntarle.
+const instanteGuardado = (v) => {
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v : null;
+  if (!v) return null;
+  // Una fecha SIN hora es un día del calendario, no un instante, y los dos no
+  // se leen igual: `Date.parse('2026-11-05')` da la medianoche UTC, que en
+  // México es el 4 a las 18:00. Imprimirla así adelanta el día entero.
+  // `fechaLocalDeISO` construye la medianoche de acá, que es lo que quiso
+  // decir quien guardó un `YYYY-MM-DD`. `fechaCierre` se guarda así, y el
+  // código viejo de ese sitio ya pasaba por aquí: esto no es una precaución
+  // nueva, es no perder la que había.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return fechaLocalDeISO(v);
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t) : null;
+};
+
+// Las cuatro frases que esos cinco sitios imprimen. Viven aquí, fuera del JSX,
+// por lo mismo que `frasePlazoRestante` y `frescuraDeGP`: una frase decidida
+// dentro del render no se puede ejecutar en un banco, y de una frase que no se
+// puede ejecutar lo único comprobable es que su símbolo existe. Las cinco
+// llevaban años equivocándose precisamente porque nadie las había podido
+// correr.
+
+// «Catálogo de GP: 12 obras · al 5/11/2026». Devuelve el sufijo, o cadena
+// vacía cuando no hay campo: ahí no hay nada que reclamar.
+const sufijoFechaCatalogo = (ultimaActualizacion) => {
+  if (!ultimaActualizacion) return '';
+  const d = instanteGuardado(ultimaActualizacion);
+  return d ? ` · al ${d.toLocaleDateString('es-MX')}`
+           : ' · con fecha de catálogo ilegible';
+};
+
+// La misma frase para el mismo campo en los dos sitios que lo enseñan: la
+// tarjeta de la nota y el panel de la marca. Antes eran dos expresiones
+// distintas sobre `nota.editadaEn`, y discrepaban hasta cuando la fecha SÍ se
+// leía —una decía «5 de nov de 2026» y la otra «2026-11-05»—.
+const fraseNotaEditada = (editadaEn) => {
+  if (!editadaEn) return null;
+  const d = instanteGuardado(editadaEn);
+  return d ? `editada el ${fechaEnPalabras(d)}` : 'editada (sin fecha legible)';
+};
+
+// «cerró Fulano · 5 de nov de 2026».
+const sufijoFechaCierre = (fechaCierre) => {
+  if (!fechaCierre) return '';
+  const d = instanteGuardado(fechaCierre);
+  return d ? ` · ${fechaEnPalabras(d)}` : ' · con fecha de cierre ilegible';
+};
+
+// «Leída por Ana el 05 nov, 08:01». Quién la leyó se dice aunque su fecha no
+// se pueda leer: el nombre es el dato que sirve para preguntar.
+const fraseAlertaLeida = (leidaPor, leidaEn) => {
+  if (!leidaEn) return null;
+  const quien = `Leída por ${leidaPor || '—'}`;
+  const d = instanteGuardado(leidaEn);
+  return d
+    ? `${quien} el ${d.toLocaleString('es-MX', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`
+    : `${quien} (sin fecha legible)`;
+};
+
 // Por qué no hay delta en una semana. Son estados distintos y la pantalla los
 // tiene que distinguir: "es el primer cierre" no es lo mismo que "los dos
 // cierres se calcularon con definiciones distintas del avance".
@@ -9094,9 +9181,7 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
               justifyContent:"space-between",alignItems:"center",gap:8}}>
               <span>
                 Catálogo de GP: {catalogoGP.obras.length} obras
-                {catalogoGP.ultimaActualizacion
-                  ? ` · al ${new Date(catalogoGP.ultimaActualizacion).toLocaleDateString("es-MX")}`
-                  : ''}
+                {sufijoFechaCatalogo(catalogoGP.ultimaActualizacion)}
               </span>
               {/* Quien descubre que falta una obra es quien la está dando de
                   alta. El botón está aquí para que no tenga que esperar al
@@ -15034,9 +15119,10 @@ function NotasDeSemanas({estados = [], notas = {}, cuantas = 6, onGuardar = null
             {/* Que se tocó después de escrita se dice SIEMPRE: es lo único que
                 hace visible una corrección, porque el congelamiento es
                 disciplina de pantalla y no regla de Firestore. */}
-            {nota.editadaEn && <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
-              editada el {fechaEnPalabras(new Date(nota.editadaEn)) || nota.editadaEn.slice(0,10)}
-            </div>}
+            {(() => {
+              const f = fraseNotaEditada(nota.editadaEn);
+              return f ? <div style={{fontSize:9,color:C.textMut,marginTop:3}}>{f}</div> : null;
+            })()}
             {editable && <div style={{marginTop:6}}>
               <SecBtn onClick={()=>{ setBorrador(nota.texto || ""); setFallo(false); setEditando(e.clave); }}>
                 {falta ? "Escribir la nota" : "Corregir"}
@@ -21456,9 +21542,7 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
                 {marcaActiva.cierre.cerradoPor
                   ? `Cerrada por ${marcaActiva.cierre.cerradoPor}`
                   : "El cierre no registró quién lo hizo"}
-                {marcaActiva.cierre.fechaCierre
-                  && ` · ${fechaEnPalabras(fechaLocalDeISO(String(marcaActiva.cierre.fechaCierre).slice(0,10)))
-                        || String(marcaActiva.cierre.fechaCierre).slice(0,10)}`}
+                {sufijoFechaCierre(marcaActiva.cierre.fechaCierre)}
               </div>
               {/* La nota de la semana. El hueco se ve y nombra a quien cerró:
                   un hueco con nombre se le puede reclamar a alguien. */}
@@ -21467,11 +21551,10 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
                 color:marcaActiva.nota?.estado===NOTA_FALTA ? C.yellowDk : C.textSec,
                 fontStyle:marcaActiva.nota?.estado===NOTA_ESCRITA ? "normal" : "italic"}}>
                 {fraseNota(marcaActiva.nota)}
-                {marcaActiva.nota?.editadaEn && (
-                  <span style={{color:C.textMut,fontStyle:"italic"}}>
-                    {" "}— editada el {String(marcaActiva.nota.editadaEn).slice(0,10)}
-                  </span>
-                )}
+                {(() => {
+                  const f = fraseNotaEditada(marcaActiva.nota?.editadaEn);
+                  return f ? <span style={{color:C.textMut,fontStyle:"italic"}}>{" "}— {f}</span> : null;
+                })()}
               </div>
             </> : (
               <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginTop:6}}>
@@ -24316,11 +24399,12 @@ function PanelAlertas({obras, gpData, onCountChange, soloContrato = false}){
                   <strong>{a.obraNombre}</strong>{a.obraContrato && ` · ${a.obraContrato}`}
                 </div>
                 <div style={{fontSize:11,color:C.textMut,lineHeight:1.5}}>{a.detalle}</div>
-                {a.leida && a.leidaEn && (
-                  <div style={{fontSize:9,color:C.textMut,marginTop:5,fontStyle:"italic"}}>
-                    Leída por {a.leidaPor || "—"} el {new Date(a.leidaEn).toLocaleString("es-MX",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
-                  </div>
-                )}
+                {a.leida && (() => {
+                  const f = fraseAlertaLeida(a.leidaPor, a.leidaEn);
+                  return f ? (
+                    <div style={{fontSize:9,color:C.textMut,marginTop:5,fontStyle:"italic"}}>{f}</div>
+                  ) : null;
+                })()}
               </div>
               {!a.leida && (
                 <button onClick={()=>marcarLeida(a)}
