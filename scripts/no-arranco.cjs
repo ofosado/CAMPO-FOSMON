@@ -69,6 +69,52 @@ module.exports.sinPrecondicion = function sinPrecondicion(queFalta, comoConsegui
   process.exit(NO_ARRANCO);
 };
 
+// El cuarto modo: UN PUERTO QUE NO CONTESTA.
+//
+// Es un insumo del entorno como el de arriba, pero falla distinto y por eso
+// lleva su propia puerta. Un emulador caído no da error: da silencio. El SDK de
+// Firebase reintenta, y un banco apuntado a un puerto muerto no sale ni con 1
+// ni con 2 — se queda. Corrido a mano, es una terminal quieta que se mata con
+// ^C; dentro de la suite, cuatro minutos hasta que el corredor lo mata y
+// publica «sin contestar en 240 s», que manda a buscar un banco lento.
+//
+// El caso que lo abrió, 2026-11-06: `prueba-reglas-dependencia-captura` es el
+// único banco que ejercita `storage.rules`, los emuladores se habían levantado
+// con `--only firestore,auth`, y el 9199 estaba caído. El banco corrió ocho
+// secciones en verde, llegó a la novena, intentó subir la carátula y se quedó
+// ahí. En la cola del informe sólo había ruido de gRPC de Firestore: Storage no
+// aparecía por ninguna parte. Es el P4 por el peor lado — no hay ni código de
+// salida que clasificar.
+//
+// Se pregunta ANTES de la primera aserción, no donde se usa el puerto: llegar a
+// la novena sección y declarar entonces que no se midió nada deja ocho verdes
+// publicados sobre un entorno incompleto.
+//
+// `spawnSync` y no `net.connect` porque esto tiene que correr arriba del
+// archivo, antes del IIFE, y porque lo que hace falta es un plazo: un
+// `net.connect` a un puerto muerto espera a que se aburra el sistema operativo
+// —más de 75 s en macOS—, que es el defecto otra vez una planta más abajo.
+module.exports.exigirPuertos = function exigirPuertos(puertos, host = '127.0.0.1') {
+  const { spawnSync } = require('child_process');
+  const muertos = Object.entries(puertos).filter(([, p]) =>
+    spawnSync(process.execPath, ['-e', `
+      const net = require('net');
+      const s = net.connect(${Number(p)}, ${JSON.stringify(host)});
+      s.on('connect', () => { s.end(); process.exit(0); });
+      s.on('error', () => process.exit(1));
+      setTimeout(() => process.exit(1), 1500);
+    `]).status !== 0);
+  if (muertos.length === 0) return;
+  module.exports.sinPrecondicion(
+    muertos.map(([n, p]) => `${n} no contesta en ${host}:${p}`).join(' · '),
+    ['export PATH="/opt/homebrew/bin:/opt/homebrew/opt/openjdk/bin:$PATH"',
+     'firebase emulators:start --only ' +
+       Object.keys(puertos).join(',') + ' --project campo-fosmon-prueba',
+     '',
+     'Levántalos JUNTOS: con uno a medias el puerto queda tomado y el',
+     'siguiente intento falla por otra razón.']);
+};
+
 // El mismo principio, para el otro modo de no arrancar.
 //
 // Un símbolo que cambió de nombre lo atrapa `noArranco` arriba. Lo que no

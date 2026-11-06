@@ -84,6 +84,22 @@ if (process.argv.includes('--contraprueba')) {
     ['no publicar nada de lo que dijo el rojo',
       /console\.log\(\(salida\.match\(\/\^FALLA[\s\S]*?\.join\('\\n'\)\);/,
       "console.log('(en rojo)');"],
+    // El defecto del 2026-11-06: preguntar por un puerto y clasificar como si
+    // se hubiera preguntado por todos.
+    ['preguntar sólo por Firestore y correr el banco igual',
+      /const faltan = faltanA\(f\);/, 'const faltan = [];'],
+    // El mismo defecto por la tabla: olvidar que ese banco habla con Storage.
+    ['olvidar que un banco necesita Storage',
+      /\['prueba-reglas-dependencia-captura\.cjs',  \['firestore', 'auth', 'storage'\]\],/,
+      `['prueba-reglas-dependencia-captura.cjs',  ['firestore', 'auth']],`],
+    // Clasificarlo bien y correrlo de todos modos: el informe diría la verdad y
+    // la terminal se quedaría quieta igual.
+    ['clasificarlo sin emulador y correrlo de todos modos',
+      /`falta \$\{faltan\.join\(', '\)\}`\);\n    continue;/,
+      "`falta ${faltan.join(', ')}`);"],
+    // Y el consejo fijo, que es lo que mandó a levantar lo que ya estaba vivo.
+    ['el consejo vuelve a nombrar sólo firestore,auth',
+      /--only \$\{todos\.join\(','\)\}/, '--only firestore,auth'],
   ];
 
   let vistas = 0;
@@ -383,9 +399,96 @@ else
     'que 12.3 s sobre un plazo de 10 s se creyeran',
     'los declaró increíbles: la primera sección se volvería «no se pudo medir»');
 
-try { fs.rmSync(taller, { recursive: true, force: true }); } catch {}
+// ── UN EMULADOR CAÍDO SE NOMBRA, NO SE ESPERA ───────────────────────────────
+//
+// El 2026-11-06 la suite salió `SE COLGÓ · reglas-dependencia-captura · sin
+// contestar en 240 s`. No había nada lento: los emuladores se habían levantado
+// con `--only firestore,auth` y ese banco es el único del repo que ejercita
+// `storage.rules`. El corredor preguntaba por UN puerto —el 8080— y clasificaba
+// como si hubiera preguntado por los tres, así que el banco pasó el filtro,
+// arrancó, y el SDK de Storage se quedó reintentando contra el 9199 muerto. La
+// cola del informe traía ruido de gRPC de Firestore y no mencionaba Storage por
+// ninguna parte: cuatro minutos para no medir nada y un informe que mandaba al
+// sitio equivocado.
+//
+// Se mide con los TRES puertos bajo control y con el NOMBRE REAL del banco, que
+// es lo que lee la tabla del corredor: dos servidores de mentira hacen de
+// Firestore y de Auth —vivos— y Storage apunta a un puerto que nadie escucha.
+// Si se dejara que firestore saliera también caído, el informe diría «falta
+// firestore, auth, storage» y esta sección estaría verde sin haber distinguido
+// lo que importa: que se entere del que NO se veía.
+//
+// Y el banco de mentira NO VUELVE. Eso es la otra mitad: si el corredor lo
+// corriera, aquí habría una colgada. Que no la haya es la afirmación.
+console.log('\n── Con un banco que necesita Storage y el 9199 caído ──');
+const net = require('net');
+const servidor = (f) => { const s = net.createServer(c => c.end()); s.listen(0, '127.0.0.1', f); return s; };
+const falso = path.join(dentro, 'prueba-reglas-dependencia-captura.cjs');
+fs.writeFileSync(falso, `
+console.log('fingiendo ser el banco de reglas que habla con Storage…');
+require('net').connect(1, '10.255.255.1').on('error', () => {});
+setTimeout(() => { console.log('esto no se alcanza a imprimir'); }, 600000);
+`);
+// Un puerto tomado y cerrado: nadie escucha, y rechaza al instante en vez de
+// hacer esperar al sistema operativo.
+const muerto = 1;
+const sFs = servidor(), sAuth = servidor();
+const esperarEscucha = (s) => new Promise(r => s.listening ? r() : s.once('listening', r));
 
-console.log('');
-console.log(`${oks} comprobación(es) en verde · ${fallas} en rojo`);
-if (fallas === 0) console.log('El corredor no se cuelga, y lo que no pudo medir lo dice.');
-process.exit(fallas > 0 ? 1 : 0);
+(async () => {
+  await Promise.all([esperarEscucha(sFs), esperarEscucha(sAuth)]);
+  const rEmu = spawnSync(process.execPath,
+    [path.join(dentro, 'pruebas.cjs'), 'dependencia-captura'], {
+      encoding: 'utf8', cwd: taller, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME,
+             PLAZO_BANCO: String(PLAZO_DEL_BANCO),
+             EMU_PORT: String(sFs.address().port),
+             EMU_AUTH_PORT: String(sAuth.address().port),
+             EMU_STOR_PORT: String(muerto) },
+    });
+  const salidaEmu = (rEmu.stdout || '') + (rEmu.stderr || '');
+  const resumenEmu = (salidaEmu.match(/^\d+ en verde .*/m) || [''])[0];
+
+  if (/1 sin emulador/.test(resumenEmu))
+    ok('un banco al que le falta un emulador se cuenta «sin emulador»', resumenEmu.trim());
+  else
+    falla('un banco al que le falta un emulador se cuenta «sin emulador»',
+      'el resumen dice «1 sin emulador»', resumenEmu.trim() || '(no hubo resumen)');
+
+  // Lo que faltaba el 2026-11-06 era el NOMBRE. «Sin emulador» a secas manda a
+  // levantar lo que ya estaba levantado.
+  if (/falta storage/.test(salidaEmu))
+    ok('y dice CUÁL le falta, por su nombre',
+      (salidaEmu.match(/.*falta storage.*/) || [''])[0].trim());
+  else
+    falla('y dice CUÁL le falta, por su nombre',
+      'el renglón del banco dice «falta storage»',
+      (salidaEmu.match(/.*dependencia-captura.*/) || ['(no lo nombró)'])[0].trim());
+
+  // Que el 8080 conteste no autoriza a correrlo: era exactamente la mentira.
+  if (!/colgad/i.test(resumenEmu) || /0 colgada/.test(resumenEmu))
+    ok('no se corre, así que no hay colgada que explicar', resumenEmu.trim());
+  else
+    falla('no se corre, así que no hay colgada que explicar',
+      '0 colgada(s): con el puerto muerto no hay nada que medir',
+      resumenEmu.trim());
+
+  // Y el consejo del informe tiene que nombrar Storage. Este renglón decía
+  // `--only firestore,auth` fijo, y es el que se tecleó tres veces seguidas
+  // dejando el 9199 caído: el consejo del informe era la causa del punto ciego.
+  const consejo = (salidaEmu.match(/^\s*firebase emulators:start .*/m) || [''])[0];
+  if (/--only\s+\S*storage/.test(consejo))
+    ok('y el comando que sugiere incluye storage', consejo.trim());
+  else
+    falla('y el comando que sugiere incluye storage',
+      'el `--only` nombra los tres emuladores que la suite necesita',
+      consejo.trim() || '(no sugirió comando)');
+
+  sFs.close(); sAuth.close();
+  try { fs.rmSync(taller, { recursive: true, force: true }); } catch {}
+
+  console.log('');
+  console.log(`${oks} comprobación(es) en verde · ${fallas} en rojo`);
+  if (fallas === 0) console.log('El corredor no se cuelga, y lo que no pudo medir lo dice.');
+  process.exit(fallas > 0 ? 1 : 0);
+})();

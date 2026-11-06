@@ -33,6 +33,13 @@ const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
+
+// Los puertos que necesita, ANTES de la primera aserción. Un emulador caído no
+// da error: da silencio, y el SDK reintenta. El 2026-11-06 un banco de reglas
+// corrió ocho secciones en verde contra un puerto muerto y se quedó ahí hasta
+// que el corredor lo mató a los 240 s. Se pregunta arriba porque la alternativa
+// es publicar verdes medidos sobre un entorno incompleto. Ver `no-arranco`.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
 const OBRA = '0126';           // la que rayó su semana 38 en dos archivos
 
 // Las reglas que este banco juzga salen DEL ARCHIVO, no de lo que el emulador
