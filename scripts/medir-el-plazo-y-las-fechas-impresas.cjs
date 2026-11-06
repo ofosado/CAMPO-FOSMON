@@ -184,7 +184,12 @@ const comoLoImprimeHoy = (fin) =>
   let cierres = 0, cierresMalos = [], cierresSoloDia = 0;
   for (const o of obras) {
     const hd = await leer(`obras/${o.id}/avance/historial`);
-    const snaps = (hd?.fields?.snapshots?.arrayValue?.values || [])
+    // El arreglo se llama `semanas`, NO `snapshots`. Hasta el 2026-11-06 esta
+    // línea leía `snapshots`, que no existe: devolvía vacío siempre y el guion
+    // imprimía «0 cierres» —un cero falso que llegó a `PENDIENTES.md` como
+    // prueba de que el defecto estaba latente. El cero que sale de un campo
+    // mal escrito se lee igual que el que sale de una medición.
+    const snaps = (hd?.fields?.semanas?.arrayValue?.values || [])
       .map(v => v?.mapValue?.fields || {});
     for (const s of snaps) {
       const fc = txt(s, 'fechaCierre');
