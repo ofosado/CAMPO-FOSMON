@@ -41,36 +41,72 @@ if (archivos.length === 0) {
   process.exit(1);
 }
 
-// Las que necesitan el emulador de Firestore corriendo. Sin él no se puede
-// decir que la conducta esté bien ni mal: no se miró. Es un NO ARRANCÓ con
-// otra causa, y se marca aparte para que no se confunda con un renombre.
-const NECESITAN_EMULADOR = new Set([
-  'prueba-cierre-emulador.cjs',
-  'prueba-reglas-nomina-subcoleccion.cjs',
-  'prueba-reglas-dependencia-captura.cjs',
-  'prueba-reglas-evidencia.cjs',
-  'prueba-reglas-extraordinarias.cjs',
-  'prueba-migracion-ata-la-partida.cjs',
-  'prueba-prefijo-organizacion.cjs',
-  'prueba-aislamiento-de-usuarios.cjs',
+// ── QUÉ EMULADOR NECESITA CADA BANCO ───────────────────────────────────────
+//
+// Sin el emulador que necesita, de un banco no se puede decir que la conducta
+// esté bien ni mal: no se miró. Es un NO ARRANCÓ con otra causa, y se marca
+// aparte para que no se confunda con un renombre.
+//
+// Hasta el 2026-11-06 esto era una LISTA de archivos y la pregunta era una
+// sola: «¿contesta el 8080?». Firestore no es el único emulador que levantan.
+// `prueba-reglas-dependencia-captura` también habla con Storage —es el único
+// banco del repo que ejercita `storage.rules`—, y con el 8080 arriba y el 9199
+// caído ese banco pasaba el filtro, arrancaba, y el SDK de Storage se quedaba
+// reintentando la subida hasta que el corredor lo mató: `SE COLGÓ ·
+// reglas-dependencia-captura · sin contestar en 240 s`, con una cola de ruido
+// de gRPC que no nombraba a Storage por ninguna parte. Cuatro minutos para no
+// medir nada, y un informe que mandaba a buscar un banco lento.
+//
+// Lo que estaba mal no era el banco: era que el corredor preguntaba por UN
+// puerto y clasificaba como si hubiera preguntado por todos. Así que cada banco
+// declara QUÉ emuladores necesita, y se pregunta por cada uno.
+const EMULADORES = {
+  firestore: Number(process.env.EMU_PORT || 8080),
+  auth:      Number(process.env.EMU_AUTH_PORT || 9099),
+  storage:   Number(process.env.EMU_STOR_PORT || 9199),
+};
+const NECESITAN_EMULADOR = new Map([
+  ['prueba-cierre-emulador.cjs',             ['firestore', 'auth']],
+  ['prueba-reglas-nomina-subcoleccion.cjs',  ['firestore', 'auth']],
+  ['prueba-reglas-dependencia-captura.cjs',  ['firestore', 'auth', 'storage']],
+  ['prueba-reglas-evidencia.cjs',            ['firestore', 'auth']],
+  ['prueba-reglas-extraordinarias.cjs',      ['firestore', 'auth']],
+  ['prueba-migracion-ata-la-partida.cjs',    ['firestore']],
+  ['prueba-prefijo-organizacion.cjs',        ['firestore', 'auth']],
+  ['prueba-aislamiento-de-usuarios.cjs',     ['firestore', 'auth']],
 ]);
 
-// ¿Está el emulador de Firestore escuchando?
+// ¿Está escuchando ese puerto?
 //
-// Antes esto no se preguntaba: cualquier salida distinta de cero en una prueba
-// de la lista de arriba se atribuía al emulador. El 2026-09-24 eso escondió un
-// ReferenceError real —la prueba reventaba con los emuladores arriba y el
-// resumen decía "sin emulador"—, que es justo el modo de fallo que la
-// categoría existe para evitar. Si el puerto responde, una prueba que falla
+// Se pregunta CON PLAZO PROPIO: un `net.connect` a un puerto que no contesta
+// espera a que se aburra el sistema operativo, y entonces el corredor tendría
+// el mismo defecto que vino a detectar.
+//
+// Y se pregunta antes de correr, no después: si el puerto no contesta, de ese
+// banco no hay nada que clasificar. Lo que NO se hace es atribuirle al emulador
+// un fallo con el emulador ARRIBA — el 2026-09-24 eso escondió un
+// ReferenceError real, la prueba reventaba con los emuladores vivos y el
+// resumen decía «sin emulador». Si el puerto responde, una prueba que falla
 // está ROJA y se dice ROJA.
-const PUERTO_FIRESTORE = Number(process.env.EMU_PORT || 8080);
-const hayEmulador = spawnSync(process.execPath, ['-e', `
+const contesta = (puerto) => spawnSync(process.execPath, ['-e', `
   const net = require('net');
-  const s = net.connect(${PUERTO_FIRESTORE}, '127.0.0.1');
+  const s = net.connect(${puerto}, '127.0.0.1');
   s.on('connect', () => { s.end(); process.exit(0); });
   s.on('error', () => process.exit(1));
   setTimeout(() => process.exit(1), 1500);
 `]).status === 0;
+
+// Se pregunta una vez por puerto y no una vez por banco: ocho bancos de reglas
+// serían veintitantas sondas, y el estado de un puerto no cambia a media suite.
+const vivos = new Map();
+const estáVivo = (nombre) => {
+  if (!vivos.has(nombre)) vivos.set(nombre, contesta(EMULADORES[nombre]));
+  return vivos.get(nombre);
+};
+// Los que le faltan a este banco, por su nombre. El NOMBRE es el punto: «sin
+// emulador» a secas es lo que mandó a levantar `--only firestore,auth` tres
+// veces seguidas sin que nadie se enterara de que faltaba Storage.
+const faltanA = (f) => (NECESITAN_EMULADOR.get(f) || []).filter(e => !estáVivo(e));
 
 // ── El reloj con el que se juzga ────────────────────────────────────────────
 //
@@ -163,6 +199,19 @@ const frasePorNoContestar = (plazo, tardó) => relojCreible(plazo, tardó)
 const verdes = [], rojas = [], mudas = [], sinEmulador = [], colgadas = [];
 
 for (const f of archivos) {
+  // Si le falta un emulador, NO SE CORRE. Antes se corría y se clasificaba
+  // después, y el resultado era el de arriba: cuatro minutos de reintentos
+  // contra un puerto muerto para acabar en la misma casilla. Lo que se gana no
+  // es tiempo, es que el informe nombre el puerto en vez de publicar una
+  // colgada que manda a buscar un banco lento.
+  const faltan = faltanA(f);
+  if (faltan.length > 0) {
+    sinEmulador.push([f, faltan]);
+    console.log(`${'sin emulador'.padEnd(12)} ${f.replace(/^prueba-|\.cjs$/g, '').padEnd(34)} ` +
+      `falta ${faltan.join(', ')}`);
+    continue;
+  }
+
   const t0 = Date.now();
   const r = spawnSync(process.execPath, [path.join(dir, f)], {
     encoding: 'utf8', cwd: path.join(dir, '..'), env: entorno,
@@ -181,7 +230,6 @@ for (const f of archivos) {
   if (seColgó) { estado = 'SE COLGÓ'; colgadas.push([f, tardó, salida]); }
   else if (r.status === 0) { estado = 'verde'; verdes.push(f); }
   else if (r.status === NO_ARRANCO) { estado = 'NO ARRANCÓ'; mudas.push([f, salida]); }
-  else if (NECESITAN_EMULADOR.has(f) && !hayEmulador) { estado = 'sin emulador'; sinEmulador.push(f); }
   else { estado = 'ROJO'; rojas.push([f, salida, rojasAqui]); }
 
   const detalle = seColgó
@@ -238,9 +286,19 @@ for (const [f, salida] of rojas) {
   console.log((salida.match(/^FALLA.*(?:\n[ \t]+.*)*$/gm) || [salida.trim()]).join('\n'));
 }
 if (sinEmulador.length > 0) {
-  console.log('\nLas de "sin emulador" no se comprobaron. Para correrlas:');
+  // El comando lleva TODOS los emuladores que la suite necesita, no sólo los
+  // que faltan hoy. Este renglón decía `--only firestore,auth` fijo, y eso es
+  // literalmente lo que se tecleó tres veces el 2026-11-06 dejando Storage
+  // caído: el consejo del informe era la causa del punto ciego. Se arma de la
+  // tabla de arriba, así que un banco nuevo que pida un emulador nuevo lo
+  // agrega aquí sin que nadie se acuerde de venir a editar la cadena.
+  const todos = [...new Set([...NECESITAN_EMULADOR.values()].flat())];
+  const faltantes = [...new Set(sinEmulador.flatMap(([, q]) => q))];
+  console.log(`\nLas ${sinEmulador.length} de "sin emulador" no se comprobaron: ` +
+    `no contesta ${faltantes.join(', ')}.`);
+  console.log('Levántalos JUNTOS —uno a medias deja el puerto tomado— y repite:');
   console.log('  export PATH="/opt/homebrew/bin:/opt/homebrew/opt/openjdk/bin:$PATH"');
-  console.log('  firebase emulators:start --only firestore,auth --project campo-fosmon-prueba');
+  console.log(`  firebase emulators:start --only ${todos.join(',')} --project campo-fosmon-prueba`);
 }
 
 process.exit(rojas.length + mudas.length + colgadas.length > 0 ? 1 : 0);

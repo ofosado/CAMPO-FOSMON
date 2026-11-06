@@ -51,6 +51,16 @@ const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PUERTO_STOR = Number(process.env.EMU_STOR_PORT || 9199);
 const PROYECTO = 'campo-fosmon-prueba';
 
+// LOS TRES PUERTOS, ANTES DE LA PRIMERA ASERCIÓN. Éste es el único banco del
+// repo que ejercita `storage.rules`, así que es el único al que le importa el
+// 9199 — y el 2026-11-06 se levantaron los emuladores con `--only
+// firestore,auth`, el banco corrió ocho secciones en verde, llegó a la novena y
+// se quedó reintentando la subida hasta que el corredor lo mató a los 240 s.
+// Preguntarlo arriba es lo que convierte eso en un NO ARRANCÓ que nombra el
+// puerto, en vez de ocho verdes publicados sobre un entorno incompleto.
+noArranco.exigirPuertos(
+  { firestore: PUERTO, auth: PUERTO_AUTH, storage: PUERTO_STOR }, HOST);
+
 // Las reglas que este banco juzga salen DEL ARCHIVO, no de lo que el emulador
 // tuviera puesto ni de lo que le dejara la prueba anterior. Importa aquí:
 // `prueba-nota-no-calla` carga un ruleset mutilado a propósito, no lo
