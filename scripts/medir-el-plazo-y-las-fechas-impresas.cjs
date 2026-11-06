@@ -176,6 +176,25 @@ const comoLoImprimeHoy = (fin) =>
     }
   }
 
+  // `fechaCierre` es el cuarto campo de la misma familia, y el único que se
+  // guarda como DÍA SUELTO (`2026-11-05`) y no como instante. Por eso se
+  // cuentan dos cosas distintas de él: cuántos no se pueden leer —que es el
+  // defecto compartido— y cuántos vienen sin hora, que es donde el día se
+  // puede adelantar en uno si se lee como medianoche UTC.
+  let cierres = 0, cierresMalos = [], cierresSoloDia = 0;
+  for (const o of obras) {
+    const hd = await leer(`obras/${o.id}/avance/historial`);
+    const snaps = (hd?.fields?.snapshots?.arrayValue?.values || [])
+      .map(v => v?.mapValue?.fields || {});
+    for (const s of snaps) {
+      const fc = txt(s, 'fechaCierre');
+      if (fc == null) continue;
+      cierres++;
+      if (!sePuedeLeer(fc)) cierresMalos.push({ obra: o.id, fc });
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(fc)) cierresSoloDia++;
+    }
+  }
+
   // ── EL VEREDICTO ──────────────────────────────────────────────────────────
   console.log('');
   console.log('─'.repeat(84));
@@ -218,6 +237,13 @@ const comoLoImprimeHoy = (fin) =>
   for (const m of leidasMalas) console.log(`    ${m.id} → «${m.le}» IMPRIME «Invalid Date»`);
   console.log(`  avance/notas: ${notasMalas.length} nota(s) con \`editadaEn\` ilegible`);
   for (const m of notasMalas) console.log(`    ${m.obra} ${m.clave} → «${m.ed}» imprime «${String(m.ed).slice(0, 10)}»`);
+  console.log(`  avance/historial: ${cierres} cierre(s) con \`fechaCierre\`, ` +
+    `${cierresMalos.length} ilegible(s), ${cierresSoloDia} guardado(s) como día suelto`);
+  for (const m of cierresMalos) console.log(`    ${m.obra} → «${m.fc}» imprime «${String(m.fc).slice(0, 10)}»`);
+  if (cierresSoloDia) {
+    console.log('    Los días sueltos son los que `Date.parse` leería como medianoche UTC,');
+    console.log('    o sea el día ANTERIOR en la zona de la obra. Van por `fechaLocalDeISO`.');
+  }
   if (finIlegible.length) {
     console.log(`  obras con \`fin\` ilegible: ${finIlegible.map(o => o.id).join(', ')}`);
   }
