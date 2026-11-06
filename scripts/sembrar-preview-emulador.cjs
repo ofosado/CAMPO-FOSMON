@@ -579,9 +579,13 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
 
   // El programa de obra (#51, el avance contra una recta). Se siembra SÓLO
   // donde se pasa, y eso es el punto: con una obra que lo tiene y otra que no,
-  // el preview enseña los dos rótulos lado a lado —«Avance programado» contra
-  // «Avance lineal»— que es la mitad del cambio. Una prueba dice que los
-  // rótulos son distintos; sólo la pantalla dice si se entiende la diferencia.
+  // el preview enseña los dos casos lado a lado. Hasta el 2026-11-06 lo que se
+  // comparaba eran dos rótulos —«Avance programado» contra «Avance lineal»—
+  // porque la obra sin anexo igual dibujaba su recta; desde el #110 la obra sin
+  // anexo no dibuja NADA y en su lugar dice qué archivo falta. Lo que hay que
+  // mirar cambió con eso: no si se entiende la diferencia entre dos rótulos,
+  // sino si un panel con tres curvas en vez de cuatro se lee como una ausencia
+  // declarada y no como una gráfica a medio cargar.
   //
   // La forma del documento es la que escribe `confirmar()` en
   // `CargaDelPrograma`, no una inventada: si no empatara, el preview diría que

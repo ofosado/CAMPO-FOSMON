@@ -25,14 +25,26 @@
 //
 // LAS DOS DIRECCIONES, QUE SON DOS DEFECTOS DISTINTOS. No basta con probar que
 // la cifra cambia; hay que probar que cambia EN LOS DOS SENTIDOS, porque cada
-// uno hace un daño distinto y un arreglo a medias sólo tapa uno:
+// uno hace un daño distinto y un arreglo a medias sólo tapa uno. Los dos anexos
+// del fixture están elegidos para caer a lados opuestos de aquel reparto
+// lineal:
 //
 //   · el anexo ABSUELVE — obra con el gasto programado al final. La recta la
-//     acusa de ir muy atrasada cuando va donde dijo que iría. Es la multa
+//     acusaba de ir muy atrasada cuando va donde dijo que iría. Es la multa
 //     injusta: el contratista cumple y el semáforo lo pinta en rojo.
 //   · el anexo ACUSA — obra con el gasto programado al principio. La recta la
-//     deja pasar en silencio cuando va muy por detrás de lo que firmó. Es la
+//     dejaba pasar en silencio cuando va muy por detrás de lo que firmó. Es la
 //     peor de las dos, porque el atraso real no se ve hasta que es tarde.
+//
+// Y EL TERCER CASO, EL DEL 2026-11-06: SIN ANEXO. Hasta ese día la regla medía
+// contra la recta también cuando NO había programa cargado — ahí la recta no
+// era una aproximación mala, era la única vara, y el reclamo salía igual. Eso
+// se quitó: sin anexo la regla calla. No es un hueco que haya que llenar con
+// otra cuenta; es que sin el calendario que las dos partes firmaron no hay
+// atraso que reclamar, y la pantalla lo dice donde se puede arreglar, que es la
+// gráfica. La sección 5 lo barre con cuatro avances distintos, porque el modo
+// nuevo de romper esto es reponer la recta «para que la tarjeta no se vea
+// vacía».
 //
 // Lo que se afirma es CONDUCTA: qué publica el motor de riesgos cuando se le
 // dan una obra y un programa. Las reglas se extraen de `src/App.jsx` y se
@@ -65,6 +77,14 @@ noArranco.vigilarExcepciones('src/App.jsx');
 const PEDIDOS = [
   'detectarRiesgos', 'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA',
   'avanceProgramadoA', 'pctProgramadoEnFecha', 'hoyLocalISO',
+  // `fechaLocalDeISO` no la usa ninguna aserción: la usan las MUTACIONES que
+  // reponen la recta. Al salir la recta de `avanceProgramadoA` esta función
+  // dejó de estar en la clausura que arrastra el extractor, y sin pedirla
+  // explícitamente esas mutaciones revientan con ReferenceError. Reventar
+  // también sale ROJO, así que la contraprueba quedaría verde por la razón
+  // equivocada: comprobándose contra su propio andamiaje en vez de contra la
+  // conducta.
+  'fechaLocalDeISO',
 ];
 
 const { cuerpo, faltan } = fuenteDeApp(PEDIDOS, { tolerante: true });
@@ -131,7 +151,12 @@ function correr(fuente) {
   const pp = (r) => r === null ? null : Number(String(r.valor).replace(/[^\d.]/g, ''));
 
   const HOY_ISO = fn.hoyLocalISO();
-  const rectaPct = fn.avanceProgramadoA(OBRA, null, HOY_ISO).pct;
+  // La recta que la app usaba hasta el 2026-11-06, calculada AQUÍ y no pedida
+  // a la app: ya no existe allá. Sirve de una sola cosa, documentar la forma
+  // del fixture — que los dos anexos caen a lados opuestos del reparto lineal,
+  // que es lo que hacía que la vara decidiera el veredicto.
+  const diaDe = (s) => { const [a, m, d] = s.split('-').map(Number); return new Date(a, m - 1, d); };
+  const rectaPct = ((diaDe(HOY_ISO) - diaDe(INICIO)) / (diaDe(FIN) - diaDe(INICIO))) * 100;
 
   // ── 0 · EL FIXTURE DICE LO QUE CREO QUE DICE ──────────────────────────────
   // Si el calendario del fixture se desarma, las aserciones de abajo pasarían
@@ -139,30 +164,35 @@ function correr(fuente) {
   const pctAbsuelve = fn.avanceProgramadoA(OBRA, ANEXO_ABSUELVE, HOY_ISO);
   const pctAcusa    = fn.avanceProgramadoA(OBRA, ANEXO_ACUSA, HOY_ISO);
   check(pctAbsuelve.fuente === 'programa' && pctAcusa.fuente === 'programa',
-    'los dos anexos del fixture se leen como programa, no como recta',
+    'los dos anexos del fixture se leen como programa',
     `${pctAbsuelve.fuente} · ${pctAcusa.fuente}`);
   check(pctAbsuelve.pct < rectaPct - 20 && pctAcusa.pct > rectaPct + 20,
-    'y quedan uno muy por debajo y otro muy por encima de la recta',
+    'y quedan uno muy por debajo y otro muy por encima de la recta de aquel entonces',
     `absuelve ${pctAbsuelve.pct.toFixed(1)}% · recta ${rectaPct.toFixed(1)}% · acusa ${pctAcusa.pct.toFixed(1)}%`);
+  check(!!OBRA.inicio && !!OBRA.fin,
+    'canario: la obra tiene inicio y fin, o sea que esa recta SÍ se podía calcular',
+    `${OBRA.inicio} → ${OBRA.fin}`);
 
-  // ── 1 · EL ANEXO ABSUELVE Y LA RECTA MULTA ────────────────────────────────
-  const absSinAnexo = semaforo(ctx(null, AF_ABSUELTA));
+  // ── 1 · ES EL ANEXO EL QUE DECIDE, NO EL AVANCE ───────────────────────────
+  // El MISMO avance real, los dos anexos, veredictos opuestos. Es la forma más
+  // fuerte de afirmar contra qué mide: si el veredicto lo decidiera el avance,
+  // estas dos corridas darían lo mismo.
   const absConAnexo = semaforo(ctx(ANEXO_ABSUELVE, AF_ABSUELTA));
-  check(absSinAnexo !== null,
-    'sin anexo, la obra que gastará al final se publica atrasada',
-    absSinAnexo ? `${absSinAnexo.severidad} ${absSinAnexo.valor}` : 'no disparó');
+  const mismoAvanceAcusa = semaforo(ctx(ANEXO_ACUSA, AF_ABSUELTA));
   check(absConAnexo === null,
-    'con el anexo cargado el semáforo CALLA: va donde dijo que iría',
-    absConAnexo ? `siguió disparando: ${absConAnexo.severidad} ${absConAnexo.valor}` : 'calló');
+    'con el anexo que gasta al final el semáforo CALLA: va donde dijo que iría',
+    absConAnexo ? `disparó: ${absConAnexo.severidad} ${absConAnexo.valor}` : 'calló');
+  check(mismoAvanceAcusa !== null,
+    'y con el anexo que gasta al principio, el MISMO avance sí se acusa',
+    mismoAvanceAcusa ? `${mismoAvanceAcusa.severidad} ${mismoAvanceAcusa.valor}` : 'no disparó');
 
-  // ── 2 · EL ANEXO ACUSA Y LA RECTA DEJA PASAR ──────────────────────────────
+  // ── 2 · EL ANEXO ACUSA LO QUE LA RECTA DEJABA PASAR ───────────────────────
   // Esta es la que protege al municipio: el contratista va de verdad atrasado
-  // contra lo que firmó, y la recta no lo ve.
-  const acuSinAnexo = semaforo(ctx(null, AF_ACUSADA));
+  // contra lo que firmó, con un avance que la recta habría absuelto.
   const acuConAnexo = semaforo(ctx(ANEXO_ACUSA, AF_ACUSADA));
-  check(acuSinAnexo === null,
-    'sin anexo, la obra que ya debía estar casi lista pasa en silencio',
-    acuSinAnexo ? `disparó: ${acuSinAnexo.valor}` : 'calló');
+  check(AF_ACUSADA < rectaPct + 15 && AF_ACUSADA > pctAbsuelve.pct,
+    'canario: ese avance quedaba dentro del umbral contra la recta de aquel entonces',
+    `avance ${AF_ACUSADA}% · recta ${rectaPct.toFixed(1)}%`);
   check(acuConAnexo !== null,
     'con el anexo cargado el semáforo SÍ la acusa',
     acuConAnexo ? `${acuConAnexo.severidad} ${acuConAnexo.valor}` : 'no disparó');
@@ -176,30 +206,38 @@ function correr(fuente) {
     'y el atraso que publica es el de `avanceProgramadoA`, no una resta propia',
     `publica ${acuConAnexo ? acuConAnexo.valor : '—'} · la cuenta da -${esperado.toFixed(1)}pp`);
 
-  // ── 4 · EL TÍTULO NOMBRA LA VARA ──────────────────────────────────────────
+  // ── 4 · EL TÍTULO NOMBRA LA VARA, Y NO NOMBRA NINGUNA RECTA ───────────────
   // Un semáforo que dice «contra el programa» habiendo restado la recta es la
-  // misma afirmación falsa, más chica y más difícil de ver.
+  // misma afirmación falsa, más chica y más difícil de ver. Ya no hay recta que
+  // restar, así que lo que se afirma es que la palabra tampoco aparece: el día
+  // que alguien la reponga, el título la va a delatar.
   const conAnexo = semaforo(ctx(ANEXO_ACUSA, AF_ACUSADA));
-  const sinAnexo = semaforo(ctx(null, AF_ABSUELTA));
   check(/programa/i.test(conAnexo?.titulo || ''),
     'con anexo, el título dice que midió contra el programa',
     conAnexo?.titulo);
-  check(/recta/i.test(sinAnexo?.titulo || '') && !/contra el programa/i.test(sinAnexo?.titulo || ''),
-    'sin anexo, el título dice RECTA y no se cuelga la palabra programa',
-    sinAnexo?.titulo);
-  check(/no tiene programa cargado/i.test(sinAnexo?.extra || ''),
-    'y el detalle avisa de que a esa obra le falta el anexo',
-    sinAnexo?.extra);
+  check(!/recta|lineal|plazo/i.test(conAnexo?.titulo || ''),
+    'y no nombra ninguna recta ni el plazo: midió contra el anexo',
+    conAnexo?.titulo);
+  check(!/recta|lineal/i.test(conAnexo?.extra || ''),
+    'el detalle tampoco', conAnexo?.extra);
 
-  // ── 5 · MIENTRAS LA LECTURA VIAJA, CALLA ──────────────────────────────────
-  // `undefined` es «todavía no se sabe». Disparar ahí publica la recta y la
-  // rotula programa durante el viaje — el defecto entero, en una rendija de
-  // milisegundos que se ve en cada recarga.
+  // ── 5 · SIN ANEXO, EL SEMÁFORO CALLA EN LOS DOS SENTIDOS ──────────────────
+  // El corte del 2026-11-06. Esta tarjeta la lee la DEPENDENCIA, y «rezagado»
+  // contra el reparto lineal del plazo es un reclamo sin contrato detrás.
+  // Antes el mismo caso disparaba: la obra de arriba, sin anexo, se publicaba
+  // atrasada estando donde iba a estar.
+  const AF_SIN = [0, AF_ABSUELTA, AF_ACUSADA, 100];
+  const disparan = AF_SIN.filter(af => semaforo(ctx(null, af)) !== null);
+  check(disparan.length === 0,
+    'sin anexo no se acusa a ninguna obra, con cualquier avance que lleve',
+    disparan.length ? `disparó con ${disparan.join('%, ')}%` : `${AF_SIN.length} avances probados, 0 disparos`);
   check(semaforo(ctx(undefined, AF_ABSUELTA)) === null,
-    'con la lectura del anexo a medio viaje no se afirma nada',
-    'undefined ≠ null');
-  check(semaforo(ctx(null, AF_ABSUELTA)) !== null,
-    'pero `null` —ya se sabe que no hay anexo— sí cae a la recta y lo dice');
+    'con la lectura del anexo a medio viaje tampoco se afirma nada');
+  // El canario de esta sección: con anexo cargado y el mismo avance SÍ dispara,
+  // así que los ceros de arriba son por la falta del anexo y no porque la regla
+  // esté muerta.
+  check(semaforo(ctx(ANEXO_ACUSA, 0)) !== null,
+    'canario: con anexo y ese mismo avance la regla sigue viva');
 
   // ── 6 · AL MUNICIPIO LE LLEGA, Y MEDIDO CONTRA EL ANEXO ───────────────────
   const depConAnexo = semaforo(ctx(ANEXO_ACUSA, AF_ACUSADA, { tipo: 'dependencia' }));
@@ -250,24 +288,46 @@ function correr(fuente) {
 //
 // Cada mutación es una manera realista de volver al defecto, no de romper el
 // andamiaje: el banco sigue arrancando y ejecutando, y tiene que salir ROJO.
+// La recta tal como la escribiría quien la repone: redonda, con los mismos
+// resguardos que tenía, no un sabotaje. Si una mutación sólo se detecta porque
+// está mal escrita, no prueba nada.
+const RECTA = `
+        const i = fechaLocalDeISO(obra?.inicio);
+        const f = fechaLocalDeISO(obra?.fin || obra?.finAmpliado);
+        if (!i || !f || f <= i) return null;
+        const h = fechaLocalDeISO(hoyLocalISO());
+        p.pct = Math.max(0, Math.min(100, ((h - i) / (f - i)) * 100));`;
+const DETECTA = 'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
+  '      if (p.pct === null) return null;';
+
 const MUTACIONES = [
-  // El defecto original, exacto.
-  ['vuelve a medir contra la recta aunque el anexo esté cargado',
+  // El defecto que cerró el #51: tener el anexo y no usarlo.
+  ['el detector no le pasa el anexo cargado a la cuenta',
     'const p = avanceProgramadoA(obra, programa, hoyLocalISO());',
     'const p = avanceProgramadoA(obra, null, hoyLocalISO());'],
-  // La rendija: afirmar durante el viaje de la lectura.
-  ['dispara con la lectura del anexo a medio viaje',
-    'if (programa === undefined) return null;',
-    'if (programa === undefined) programa = null;'],
-  // El título mintiendo sobre la vara que usó.
-  ['dice «contra el programa» aunque haya restado la recta',
-    "const vara = esProg ? 'el programa' : 'la recta del plazo';",
-    "const vara = 'el programa';"],
-  // El motor tirando el título dinámico: el detector mide bien y la pantalla
-  // sigue nombrando mal.
-  ['el motor ignora el título que devuelve el detector',
-    'titulo: r.titulo || plantilla.titulo,',
-    'titulo: plantilla.titulo,'],
+  // El defecto del 2026-11-06, y el modo realista de volver a él: la tarjeta se
+  // ve vacía en las 7 obras vivas y alguien la rellena con el plazo.
+  ['repone la recta del plazo donde no hay anexo',
+    DETECTA,
+    'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
+    '      if (p.pct === null) {' + RECTA + '\n      }\n' +
+    '      if (p.pct === null) return null;'],
+  // La rendija más fina: sólo mientras la lectura del anexo va en camino. Dura
+  // un parpadeo por recarga, así que a mano no se ve; es exactamente el tipo de
+  // cosa que tiene que atrapar un banco y no un par de ojos.
+  ['afirma un atraso mientras la lectura del anexo va en camino',
+    DETECTA,
+    'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
+    '      if (p.pct === null && programa === undefined) {' + RECTA + '\n      }\n' +
+    '      if (p.pct === null) return null;'],
+  // El título volviendo al de antes del #51 — el que publicaba el Dashboard de
+  // la 0114 el 2026-11-04. Mide contra el anexo y nombra el plazo: la misma
+  // afirmación falsa, más chica y más difícil de ver.
+  ['el título vuelve a nombrar el plazo en vez del programa',
+    "    titulo: 'Avance rezagado contra el programa',\n" +
+    "    descripcion: 'El avance real va por debajo del programa contractual',",
+    "    titulo: 'Avance vs plazo desbalanceado',\n" +
+    "    descripcion: 'El avance real va por debajo del programa contractual',"],
   // Esconderle el atraso al municipio.
   ['al municipio se le esconde el atraso de su contratista',
     "const RIESGOS_SOLO_CONSTRUCTORA = new Set([\n  'fin_001',",
