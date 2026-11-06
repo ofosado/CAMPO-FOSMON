@@ -116,9 +116,18 @@ const OBRA = {
 
 // Los `sec` que el pie de cada foto imprime, en el orden en que el PDF los
 // dibujó. Es el orden en que el expediente ENSEÑA la evidencia.
+//
+// `d.tabla === undefined` NO es un detalle de implementación: desde que el
+// expediente imprime la TABLA de partidas grandes sin evidencia, la clave de
+// una partida aparece en la hoja por dos caminos distintos —el pie de una foto
+// y una celda de esa tabla— con exactamente el mismo texto. Sin este filtro
+// este lector contaba la fila de la tabla como si fuera una foto, y «la primera
+// foto del expediente» se cumplía o fallaba según qué tan arriba quedó una
+// tabla. El lienzo distingue las dos: `text()` lleva `x`/`y`, `autoTable` lleva
+// `tabla`/`celda`.
 const SECS = new Set([...CAT.map(s => s.sec), EXTRA.sec]);
 const ordenImpreso = (dibujos) =>
-  dibujos.filter(d => SECS.has(d.texto)).map(d => d.texto);
+  dibujos.filter(d => d.tabla === undefined && SECS.has(d.texto)).map(d => d.texto);
 
 async function correr(fuente) {
   const fn = construir(fuente);
@@ -258,11 +267,19 @@ async function correr(fuente) {
     const d = papelChicas.find(x => re.test(x.texto));
     return d ? d.pagina : null;
   };
-  const pag1 = pagDe(/EVIDENCIA FOTOGRÁFICA \(1 de 2\)/);
-  const pag2 = pagDe(/EVIDENCIA FOTOGRÁFICA \(2 de 2\)/);
-  check(pag1 !== null && pag2 !== null && pag1 !== pag2,
-    'el expediente sigue trayendo sus dos páginas de evidencia',
-    `páginas ${pag1} y ${pag2}`);
+  // LAS HOJAS SON LAS QUE LAS FOTOS NECESITAN. Hasta el 2026-11-06 el
+  // expediente traía DOS hojas de seis huecos tecleadas a mano, siempre, y este
+  // banco afirmaba que las dos seguían ahí. Con las tres fotos de este fixture
+  // eso son NUEVE CAJAS GRISES impresas y firmadas, que no es un defecto de
+  // maquetación: una hoja de evidencia mayormente vacía se hojea sin leerse, y
+  // el hueco que importa —la partida grande que no tiene con qué respaldarse—
+  // se pierde entre los que sólo son sitio de sobra. Lo que se afirma es la
+  // relación, no el número: tres fotos caben en una hoja y no se parten en dos.
+  const hojasFoto = papelChicas.filter(d => /EVIDENCIA FOTOGRÁFICA/.test(d.texto));
+  check(hojasFoto.length === 1 && !/\bde \d+\)/.test(hojasFoto[0].texto),
+    'con tres fotos el expediente abre UNA hoja de evidencia, no dos con nueve huecos',
+    `abrió ${hojasFoto.length}: ${hojasFoto.map(h => h.texto).join(' | ') || '(ninguna)'}`);
+  const pag1 = hojasFoto[0]?.pagina ?? null;
   const bandasTitulo = papelChicas.filter(d => d.texto === fChicas.titulo);
   check(bandasTitulo.length === 1 && bandasTitulo[0].pagina === pag1,
     'el veredicto de cobertura queda impreso, y en la primera página de fotos',
@@ -273,10 +290,33 @@ async function correr(fuente) {
   check(!textos.some(t => t !== fChicas.titulo && /cobertura/i.test(t) && /%/.test(t)),
     'en el papel no aparece ningún otro «cobertura %» que lo contradiga');
 
+  // Y LAS DOS PARTIDAS GRANDES SIN FOTO SE DECLARAN. Son el 80% del contrato y
+  // ninguna tiene evidencia; el criterio viejo las filtraba con
+  // `.filter(x => x.fotos.length > 0)` y el expediente salía enseñando tres
+  // fotos de banquetas y señalamiento sin decir que terracerías y pavimento
+  // —el 80% del dinero— no tienen una sola.
+  const celdas = papelChicas.filter(d => d.tabla !== undefined).map(d => d.texto);
+  check(celdas.includes('1000 01') && celdas.includes('1000 02'),
+    'las dos partidas del 80% sin evidencia salen declaradas en una tabla',
+    `claves en tablas: ${celdas.filter(t => SECS.has(t)).join(' , ') || '(ninguna)'}`);
+
   // La banda es un veredicto, no un decorado: repetirla en cada página la
-  // volvería membrete y se dejaría de leer.
-  check(papelChicas.filter(d => d.texto === fChicas.detalle).length === 1,
-    'la banda no se repite en la segunda página de fotos');
+  // volvería membrete y se dejaría de leer. Hace falta un papel de DOS hojas
+  // para que esto afirme algo: con las tres fotos de arriba no hay segunda
+  // página donde repetirse, y la aserción se cumpliría sola. Ocho fotos de la
+  // partida de mayor importe abren dos.
+  const papelDosHojas = await dibujar({
+    evidencia: Array.from({ length: 8 }, () => foto('1000 01')),
+  });
+  const hojas2 = papelDosHojas.filter(d => /EVIDENCIA FOTOGRÁFICA/.test(d.texto));
+  check(hojas2.length === 2 && /\(1 de 2\)/.test(hojas2[0].texto) &&
+        /\(2 de 2\)/.test(hojas2[1].texto),
+    'ocho fotos abren dos hojas, y cada una dice cuál de cuántas es',
+    `abrió ${hojas2.length}: ${hojas2.map(h => h.texto).join(' | ')}`);
+  const fOcho = fn.frasesDeCobertura(cob(fn, Array.from({ length: 8 }, () => foto('1000 01'))));
+  check(papelDosHojas.filter(d => d.texto === fOcho.detalle).length === 1,
+    'y la banda del veredicto no se repite en la segunda hoja',
+    `salió ${papelDosHojas.filter(d => d.texto === fOcho.detalle).length} vez(ces)`);
 
   // El orden impreso: lo que se ve es lo que pesa. Hasta el 2026-11-05 el
   // criterio era el delta de avance de la semana, y la partida de mayor
@@ -367,17 +407,27 @@ const MUTACIONES = [
     'if ((acum / total) * 100 >= 100) break;'],
   // El PDF.
   ['el expediente deja de imprimir el veredicto',
-    'if (conBanda) yf = drawBandaCobertura(yf);',
-    'if (false) yf = drawBandaCobertura(yf);'],
-  ['la banda se repite en las dos páginas y se vuelve membrete',
-    "drawFotoPage(fotos12.slice(6,12), '9  EVIDENCIA FOTOGRÁFICA (2 de 2)');",
-    "drawFotoPage(fotos12.slice(6,12), '9  EVIDENCIA FOTOGRÁFICA (2 de 2)', true);"],
+    'if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));',
+    'if (conBanda) yf = drawHuecosDeEvidencia(yf);'],
+  ['la banda se repite en todas las hojas y se vuelve membrete',
+    'const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, h === 0);',
+    'const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, true);'],
+  ['las hojas vuelven a ser dos siempre, con los huecos que haga falta',
+    'const hojas = Math.max(1, Math.ceil(fotos12.length / POR_HOJA));',
+    'const hojas = 2;'],
+  ['el expediente deja de declarar las partidas grandes sin evidencia',
+    'if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));',
+    'if (conBanda) yf = drawBandaCobertura(yf);'],
   ['el PDF enseña las fotos en un orden distinto del que midió',
-    'const ordenDeCobertura = new Map(cobertura.porImporte.map((x, i) => [x.id, i]));',
-    'const ordenDeCobertura = new Map([...cobertura.porImporte].reverse().map((x, i) => [x.id, i]));'],
+    'const enCorte = cobertura.porImporte.slice(0, cobertura.hastaTecho);',
+    'const enCorte = [...cobertura.porImporte].reverse().slice(0, cobertura.hastaTecho);'],
+  ['el PDF abre el apéndice de extraordinarias antes de terminar el contrato',
+    `    .sort((a, b) => (esExtraordinaria(a.s) ? 1 : 0) - (esExtraordinaria(b.s) ? 1 : 0)
+                 || b.imp - a.imp)`,
+    '    .sort((a, b) => b.imp - a.imp)'],
   ['el PDF sólo enseña fotos de las partidas que ponderan',
-    '  const subsConFotos = (subs || [])\n    .map((s, i) => {',
-    '  const subsConFotos = cobertura.porImporte.map(x => x.s)\n    .map((s, i) => {'],
+    'for (const p of [...seleccion.partidas, ...seleccion.fuera]) {',
+    'for (const p of [...seleccion.partidas]) {'],
 ];
 
 (async () => {
