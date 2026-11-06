@@ -276,7 +276,8 @@ const FUENTE_4BIS = bloque4bis();
 const faltan = [
   ...['registrarSalud', 'registrarFalloDeSalud', 'coleccionesDeBitacora',
       'contarDenegaciones', 'textoDenegaciones', 'bloqueDenegaciones',
-      'correoResumenSemanal', 'TIPO_DENEGACION'].filter(n => !decl[n]),
+      'correoResumenSemanal', 'TIPO_DENEGACION',
+      'bloqueCaptura', 'avisoDeCaptura'].filter(n => !decl[n]),
   ...(FUENTE_CRON ? [] : ['el manejador de exports.vigilarDenegaciones']),
   ...(FUENTE_4BIS ? [] : ['el bloque 4bis de generarYEnviarResumenSemanal']),
 ];
@@ -576,9 +577,14 @@ const dbQueRevienta = (porQue) => ({
   // quiere— pero inyectar las dos con el mismo valor sería peor: taparía el día
   // que una se use en el sitio de la otra. Cuál va dónde lo mide
   // `prueba-las-dos-direcciones-del-producto.cjs`; aquí sólo tienen que existir.
+  // `bloqueCaptura` y `avisoDeCaptura` entran los DE VERDAD, no marcas: este
+  // banco no afirma nada sobre lo que digan, y lo que dicen —que un hueco de
+  // captura no se publica como un número— lo mide
+  // `prueba-un-numero-que-nadie-midio.cjs`. Poner marcas aquí no taparía nada,
+  // pero sí haría que este banco armara un correo que no es el que se manda.
   const email = new Function('semaforoColor', 'APP_URL', 'SITIO_PUBLICO', 'PCT_FMT',
     'MXN_FMT', 'bloqueDenegaciones', 'bloqueFueraDeAlcance',
-    `${decl.correoResumenSemanal}; return correoResumenSemanal;`)(
+    `${decl.bloqueCaptura}; ${decl.avisoDeCaptura}; ${decl.correoResumenSemanal}; return correoResumenSemanal;`)(
     () => '#000', 'https://ejemplo-app', 'https://ejemplo-publico',
     n => `${n}%`, n => `$${n}`,
     d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`,

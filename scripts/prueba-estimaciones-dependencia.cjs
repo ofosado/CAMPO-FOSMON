@@ -76,6 +76,14 @@ const NOMBRES = [
   '_fechaLocal', 'periodoEnPalabras', 'diasDeRecepcion',
   'MXN', 'NUM', 'EST_COL', 'EST_COL_DEP',
   'subirAdjuntoEstimacion',
+  // El rótulo de cada estimación ya no se teclea en cada pantalla: sale de
+  // `rotuloEstimacion`, que es la única que decide cómo se nombra una
+  // estimación sin número. Entran las piezas DE VERDAD, no dobles, porque el
+  // §3 de abajo lee los rótulos que la pantalla imprime y un doble haría que
+  // este banco midiera el doble. Qué dice el rótulo del hueco lo mide
+  // `prueba-un-numero-que-nadie-midio.cjs`.
+  'noDeEstimacion', 'siguienteNoDeEstimacion', 'ROTULO_EST_SIN_NUMERO',
+  'rotuloEstimacion', 'ordenDeEstimaciones',
 ];
 const FUNCIONES = ['EstimacionesDependencia'];
 
