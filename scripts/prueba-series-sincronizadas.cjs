@@ -20,11 +20,22 @@
 //     cuando el dinero alcanzaba el contrato, en vez de cuando el avance FÍSICO
 //     llega al 100%.
 //
-// Esta prueba NO busca frases en el código: extrae por AST el prólogo de
-// cálculo de `TendenciasMensuales` y `ProyeccionAvanceGasto` —todo lo anterior
-// al render— y lo EJECUTA fuera de React con dobles, comparando las series
-// resultantes contra números calculados a mano. Es P3: se verifica que el
-// comportamiento ocurre, no que el mecanismo esté escrito.
+// LAS DOS ÚLTIMAS SE QUEDARON SIN SUJETO EL 2026-11-06. Las tres gráficas de la
+// pantalla de obra se unificaron en una y `ProyeccionAvanceGasto` se borró con
+// su ritmo, su proyección y su margen al cierre; las secciones 5, 5b y 6 de
+// este banco medían ESE código y se fueron con él, porque una prueba que mide
+// algo que ya no existe es una prueba que no mide nada. Las dos reglas que
+// defendían —ningún ritmo resta a través de una frontera de esquema, y la obra
+// termina cuando el avance FÍSICO llega al 100%, no cuando el dinero alcanza el
+// contrato— siguen siendo reglas, y vuelven a tener banco cuando se reconstruya
+// el bloque de ritmo sobre cortes CERRADOS. Queda anotado aquí, donde se medía,
+// y no sólo en PENDIENTES.
+//
+// Esta prueba NO busca frases en el código: extrae por AST `curvaUnicaDeObra`
+// —la cuenta que arma las series que dibujan el tablero y el PDF— y la EJECUTA
+// fuera de React, comparando las series resultantes contra números calculados a
+// mano. Es P3: se verifica que el comportamiento ocurre, no que el mecanismo
+// esté escrito.
 //
 // Lo que NO cubre: el render, el SVG, los textos de las leyendas, el tooltip.
 //
@@ -117,58 +128,39 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // `cargando`—, pero tienen que EXISTIR o el prólogo revienta.
                  'avanceProgramadoA', 'programaConArranque', 'pctProgramadoEnFecha',
                  'acumuladoProgramado', 'mesesDelPrograma', 'diaDeBarra', 'diasDelMes',
-                 'tramosDeBarra', 'hoyLocalISO', 'ROTULO_PROGRAMADO',
-                 'finVigenteDe',
+                 'tramosDeBarra', 'hoyLocalISO', 'fechaEnZonaObra', 'ZONA_OBRA',
+                 'ROTULO_PROGRAMADO', 'finVigenteDe',
+                 // LA CUENTA BAJO EXAMEN. Antes se recortaba el prólogo del
+                 // componente por AST y se corría con los hooks doblados;
+                 // ahora las series las arma `curvaUnicaDeObra` a nivel de
+                 // módulo, porque el PDF dibuja el mismo objeto y una segunda
+                 // copia es una segunda cuenta. Se ejercita la cuenta directa:
+                 // es la que publica las cifras, y entrar por el componente
+                 // sólo añadía andamiaje que se rompe con cada renombre.
+                 'curvaUnicaDeObra', 'COLOR_CURVA', 'fmtDineroCorto',
+                 'tramosDeSerie',
                  // El formateador real, no un doble: los pp de la tabla salen
                  // de él y un `String(v)` escondería un redondeo distinto.
                  'NUM'];
 const fuentesHelper = [];
-const funcs = {};
+const hallados = new Set();
 traverse(ast, {
   VariableDeclaration(p) {
     if (p.parent.type !== 'Program') return;
     const d = p.node.declarations[0];
     if (d?.id?.type === 'Identifier' && HELPERS.includes(d.id.name)) {
       fuentesHelper.push(codigo.slice(p.node.start, p.node.end));
+      hallados.add(d.id.name);
     }
-  },
-  FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (n === 'TendenciasMensuales' || n === 'ProyeccionAvanceGasto') funcs[n] = p.node;
   },
 });
 const PRELUDIO = fuentesHelper.join('\n');
-
-// El prólogo = todas las sentencias del cuerpo ANTERIORES al primer `return`
-// de primer nivel. El render vive después de ese return; los returns tempranos
-// (p.ej. "falta presupuesto") están dentro de un `if`, así que no cortan aquí.
-function prologoDe(nodo) {
-  const cuerpo = nodo.body.body;
-  const corte = cuerpo.findIndex(s => s.type === 'ReturnStatement');
-  const hasta = corte === -1 ? cuerpo.length : corte;
-  if (hasta === 0) return null;
-  return codigo.slice(cuerpo[0].start, cuerpo[hasta - 1].end);
-}
-
-// Los returns tempranos devuelven JSX, que `new Function` no sabe leer.
-// Se sustituye cada elemento JSX de nivel superior por `null`: no cambia el
-// cálculo porque esas ramas no se toman con los datos de prueba, y si alguna
-// se tomara el `null` haría que el escenario falle de forma visible.
-function sinJSX(src) {
-  const a = parse(src, { ...OPTS, allowReturnOutsideFunction: true });
-  const rangos = [];
-  traverse(a, {
-    'JSXElement|JSXFragment'(p) {
-      if (p.findParent(q => q.isJSXElement() || q.isJSXFragment())) return;
-      rangos.push([p.node.start, p.node.end]);
-      p.skip();
-    },
-  });
-  rangos.sort((x, y) => y[0] - x[0]);
-  let out = src;
-  rangos.forEach(([i, j]) => { out = out.slice(0, i) + 'null' + out.slice(j); });
-  return out;
-}
+// Si falta uno, el preludio revienta al evaluarse y la excepción se classifica
+// como NO ARRANCÓ (2) por el vigilante de arriba. Se pregunta antes y por
+// nombre para que el informe diga CUÁL falta en vez de dejar una traza de
+// `ReferenceError` a media cuenta. Ver `no-arranco`.
+const faltanHelpers = HELPERS.filter(h => !hallados.has(h));
+if (faltanHelpers.length) noArranco(faltanHelpers, ARCHIVO);
 
 const BUILTINS = new Set(['Object','Math','Date','Number','String','Array','JSON','Boolean',
   'isNaN','isFinite','parseFloat','parseInt','console','Map','Set','NaN','undefined','Infinity',
@@ -209,42 +201,31 @@ const STUBS = () => ({
   React: {},
 });
 
-// Corre el prólogo de `nombre` con `props`, y devuelve los locales pedidos que
-// de verdad existan en esa versión del archivo. Un nombre ausente sale como
-// `undefined` y la aserción que lo use falla — que es lo correcto: contra la
-// versión vieja `excedenteSobreContrato` no existe.
-const cacheProl = {};
-function correr(nombre, props, quiero) {
-  if (!funcs[nombre]) throw new Error(`no se encontró \`${nombre}\` — ¿se renombró?`);
-  if (!cacheProl[nombre]) {
-    const p = prologoDe(funcs[nombre]);
-    if (!p) throw new Error(`\`${nombre}\` no tiene prólogo de cálculo`);
-    cacheProl[nombre] = sinJSX(p);
-  }
-  const prologo = cacheProl[nombre];
-
-  // Qué declara el prólogo: sólo eso se puede devolver.
-  const declarados = new Set();
-  {
-    const a = parse(prologo, { ...OPTS, allowReturnOutsideFunction: true });
-    traverse(a, { Program(p) { Object.keys(p.scope.bindings).forEach(k => declarados.add(k)); p.stop(); } });
-  }
-  const devolver = quiero.filter(k => declarados.has(k));
-
-  const entorno = { ...STUBS(), ...props };
-  const libres = libresDe(PRELUDIO + '\n' + prologo)
-    .filter(n => !HELPERS.includes(n));
-  const faltantes = libres.filter(n => !(n in entorno));
-  if (faltantes.length) {
+// Saca del preludio una de las cuentas, ya evaluada. Las variables libres que
+// quedan después del preludio son sólo las de pantalla —`C`, los componentes—
+// y entran dobladas: se dobla el hook, nunca la cuenta.
+const deModulo = (() => {
+  const libres = libresDe(PRELUDIO).filter(n => !hallados.has(n));
+  const entorno = STUBS();
+  const sinDoble = libres.filter(n => !(n in entorno));
+  if (sinDoble.length) {
     // Se inyectan como undefined pero se avisan: una variable libre inesperada
     // puede estar silenciando parte del cálculo.
-    console.log(`   ! variables libres sin doble en ${nombre}: ${faltantes.join(', ')}`);
+    console.log(`   ! variables libres sin doble: ${sinDoble.join(', ')}`);
   }
-  const nombres = libres;
-  const cuerpo = `${PRELUDIO}\n${prologo}\n;return {${devolver.join(',')}};`;
-  const fn = new Function(...nombres, cuerpo);
-  return fn(...nombres.map(k => entorno[k]));
-}
+  return (nombre) => new Function(...libres, `${PRELUDIO}\n;return ${nombre};`)(
+    ...libres.map(k => entorno[k]));
+})();
+
+const curvaUnicaDeObra = deModulo('curvaUnicaDeObra');
+const semanasDeVentana = deModulo('semanasDeVentana');
+const serieAvanceDeSemanas = deModulo('serieAvanceDeSemanas');
+
+// La curva de una obra con la ventana que abre la tarjeta. El rango por omisión
+// es el de `TarjetaGraficaUnica`; las obras de estos escenarios son de 10
+// semanas, así que la ventana la recorta el arranque de la obra y no el rango.
+const curva = (props, rango = 12) =>
+  curvaUnicaDeObra({ semanas: semanasDeVentana(props.obra, rango), ...props });
 
 // ── Fixtures ───────────────────────────────────────────────────────────
 // Las semanas se calculan con la MISMA regla ISO del componente, relativas a
@@ -307,26 +288,6 @@ const vacios = (extra) => {
 const CLAVE_GP = '0199';
 const gpContestoCero = () => ({ obras: {}, obrasPedidas: [CLAVE_GP] });
 
-// `fronteraDinero` / `fronteraAvance` son las dos fronteras que quedan. El par
-// `idxFrontera` / `hayTramoViejo` ya no existe: resolvía la frontera de la
-// métrica seleccionada en la pestaña, y la tarjeta ya no tiene pestañas —
-// dibuja los dos paneles a la vez, cada serie con su propia frontera.
-//
-// `gastoAcumSeries` y `gastoDeltaMedido` van aquí porque son columnas de la
-// tabla y la tabla es donde una cifra se lee como medida: `gastoSemanalSeries`
-// rellena las semanas sin GP con el promedio de la ventana, que sirve para la
-// forma de la curva y miente en un renglón.
-const QUIERO_TEND = ['ejecutadoSeries','margenSeries','avanceSeries','esquemaPorSemana',
-                     'fronteraDinero','fronteraAvance',
-                     'semanas','idxPrimerAvance','ejecutadoPorSem',
-                     'programadoSeries','gastoAcumSeries','gastoDeltaMedido',
-                     'avanceDeltaSeries'];
-const QUIERO_PROY = ['ejecAcum','avancePctAcum','gastoAcum','ejecProy','gastoProy','avanceProy',
-                     'semanasProy','semanasHist','ritmoEjec','ritmoAvance','ritmoGasto',
-                     'idxFrontDinero','hayTramoViejoDinero','idxFrontAvance','hayTramoViejoAvance',
-                     'margenFinProy','excedenteSobreContrato',
-                     'ejecFinProy','gastoFinProy','presupuesto'];
-
 // ── Las pruebas ────────────────────────────────────────────────────────
 try {
 
@@ -341,27 +302,32 @@ console.log(`   dinero ejecutado ${MXN(EJEC_REAL)}. Reconstruirlo da ${MXN(EJEC_
     otrosGastos: [{ fecha: fechaISO(haceSemanas(5)), importe: 1_000_000 }],
   });
 
-  const t = correr('TendenciasMensuales', props, QUIERO_TEND);
+  const t = curva(props);
   const i4 = idxDe(4);
-  check(casi(t.ejecutadoSeries?.[i4], EJEC_REAL),
-    `gráfica de tendencias, semana del snapshot: ${MXN(t.ejecutadoSeries?.[i4])} (esperado ${MXN(EJEC_REAL)})`);
-  check(!casi(t.ejecutadoSeries?.[i4], EJEC_RECONSTRUIDO),
+  check(casi(t.ejecutado?.[i4], EJEC_REAL),
+    `la curva, semana del snapshot: ${MXN(t.ejecutado?.[i4])} (esperado ${MXN(EJEC_REAL)})`);
+  check(!casi(t.ejecutado?.[i4], EJEC_RECONSTRUIDO),
     `y NO es el dinero recortado ${MXN(EJEC_RECONSTRUIDO)}`);
-  check(casi(t.ejecutadoSeries?.[t.ejecutadoSeries.length - 1], EJEC_REAL),
+  check(casi(t.ejecutado?.[t.ejecutado.length - 1], EJEC_REAL),
     'el último punto se ancla al mismo ejecutado que el KPI del Dashboard');
   // El avance físico SÍ se topa: la misma obra va al 60%, no al 72%.
-  check(casi(t.avanceSeries?.[i4], 60, 0.01),
+  check(casi(t.avance?.[i4], 60, 0.01),
     `el avance físico de esa semana sigue siendo 60% (P1: el avance sí se topa)`);
-
-  const p = correr('ProyeccionAvanceGasto', props, QUIERO_PROY);
-  const ult = p.ejecAcum?.[p.ejecAcum.length - 1];
-  check(casi(ult, EJEC_REAL),
-    `gráfica de proyección, último histórico: ${MXN(ult)} (esperado ${MXN(EJEC_REAL)})`);
-  check(!casi(ult, EJEC_RECONSTRUIDO),
-    `y tampoco ahí es ${MXN(EJEC_RECONSTRUIDO)}`);
-  // La prueba de fondo: las dos gráficas y el KPI dan el MISMO número.
-  check(casi(ult, t.ejecutadoSeries?.[t.ejecutadoSeries.length - 1]),
-    'las dos gráficas coinciden entre sí en el ejecutado de hoy');
+  // Y el rótulo de la línea del ejecutado publica el MISMO número que la serie,
+  // en sus dos unidades. Era de donde salía la discrepancia visible: la cifra
+  // del eje y la del rótulo venían de dos cuentas.
+  const lEjec = t.lineas?.find(l => l.clave === 'ejec');
+  check(!!lEjec && typeof lEjec.fmt === 'function',
+    'la línea del ejecutado trae su propio rótulo');
+  check(lEjec?.fmt(EJEC_REAL) === '$7.2M · 72%',
+    `el rótulo del punto del snapshot dice los pesos y el 72% del contrato (${lEjec?.fmt(EJEC_REAL)})`);
+  // El porcentaje es del VALOR QUE SE ROTULA, no de otra serie que por casualidad
+  // valga lo mismo. Se pregunta dos veces con valores distintos: un rótulo que
+  // leyera el avance físico, o el último punto, o una constante, contestaría el
+  // mismo número las dos veces. Esto es lo que ninguna comprobación de
+  // subcadena sobre un solo valor alcanza a ver.
+  check(lEjec?.fmt(t.presupuesto / 2) === '$5.0M · 50%',
+    `y la mitad del contrato se rotula como el 50% (${lEjec?.fmt(t.presupuesto / 2)})`);
 }
 
 console.log('\n2. Frontera de esquema en tendencias — tramo viejo señalado, no borrado');
@@ -372,7 +338,10 @@ console.log('\n2. Frontera de esquema en tendencias — tramo viejo señalado, n
     snap(2, { av: 60, me: 7_000_000, esquema: 2 }),
   ];
   const props = vacios({ obra: obraBase(), historialAvance: hist });
-  const t = correr('TendenciasMensuales', props, QUIERO_TEND);
+  const t = curva(props);
+  // El esquema por semana lo resuelve `serieAvanceDeSemanas` y la curva no lo
+  // republica: se le pregunta a la cuenta que lo decide, no a la que lo usa.
+  const av = serieAvanceDeSemanas({ semanas: t.semanas, ...props });
 
   check(t.semanas?.length === 10, `la ventana tiene las 10 semanas del contrato (${t.semanas?.length})`);
   check(t.fronteraDinero?.idx === idxDe(2),
@@ -387,14 +356,20 @@ console.log('\n2. Frontera de esquema en tendencias — tramo viejo señalado, n
     `el AVANCE no ve frontera: su definición no cambió en el esquema 2 (idx ${t.fronteraAvance?.idx})`);
   // Ningún punto se pierde: 0112 tiene un solo snapshot nuevo y con un corte
   // se quedaría con un punto suelto.
-  check(t.ejecutadoSeries?.filter(v => typeof v === 'number').length === 7,
+  check(t.ejecutado?.filter(v => typeof v === 'number').length === 7,
     'no se corta la serie: los 7 puntos con dato siguen ahí');
-  check(casi(t.ejecutadoSeries?.[idxDe(6)], 3_000_000),
+  check(casi(t.ejecutado?.[idxDe(6)], 3_000_000),
     'el tramo viejo conserva su propio dinero (el que se guardó topado)');
-  check(casi(t.ejecutadoSeries?.[idxDe(2)], 7_000_000),
+  check(casi(t.ejecutado?.[idxDe(2)], 7_000_000),
     `el tramo nuevo muestra ${MXN(7_000_000)}, no ${MXN(6_000_000)}`);
-  check(t.esquemaPorSemana?.[idxDe(4)] === 1 && t.esquemaPorSemana?.[idxDe(1)] === 2,
+  check(av.esquemaPorSemana?.[idxDe(4)] === 1 && av.esquemaPorSemana?.[idxDe(1)] === 2,
     'el esquema se arrastra igual que el valor: una semana sin captura hereda la definición');
+  // Y las semanas sin captura se dibujan PUNTEADAS, no sólidas: el valor es
+  // arrastrado y una recta sólida afirma que el ejecutado no se movió. Es la
+  // 0114. Lo que lo decide es `ejecutadoMedido`, que la curva publica para que
+  // el panel pueda partir la línea en tramos.
+  check(t.ejecutadoMedido?.[idxDe(6)] === true && t.ejecutadoMedido?.[idxDe(5)] === false,
+    'la semana del snapshot va medida y la de arrastre no');
 }
 
 console.log('\n3. Obra con puro esquema viejo — no se inventa una frontera');
@@ -403,7 +378,7 @@ console.log('\n3. Obra con puro esquema viejo — no se inventa una frontera');
     snap(6, { av: 30, me: 3_000_000, esquema: 1 }),
     snap(2, { av: 45, me: 4_500_000, esquema: 1 }),
   ];
-  const t = correr('TendenciasMensuales', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_TEND);
+  const t = curva(vacios({ obra: obraBase(), historialAvance: hist }));
   check(t.fronteraDinero?.hay === false && t.fronteraAvance?.hay === false,
     'sin snapshots del esquema nuevo no hay nada que separar, así que no se puntea nada');
   check(t.fronteraDinero?.idx === -1 && t.fronteraAvance?.idx === -1,
@@ -415,135 +390,47 @@ console.log('\n4. Snapshot sin `montoEjecutado` — no disponible, no cero (P2)'
   // Un snapshot antiguo al que le falta el dato. Reconstruirlo desde el avance
   // daría $3,000,000 inventados; y el margen restaría contra ese número.
   const hist = [snap(6, { av: 30, esquema: 1 })];
+  // El gasto va MEDIDO a propósito —GP preguntó por la clave y contestó cero,
+  // y los $2M están capturados a mano—: con el gasto sin medir el margen
+  // saldría null de todas formas y la aserción de abajo pasaría por el motivo
+  // equivocado. Lo que tiene que faltar aquí es el ejecutado, nada más.
   const props = vacios({
-    obra: obraBase(), historialAvance: hist,
+    obra: { ...obraBase(), gpId: CLAVE_GP }, gpData: gpContestoCero(),
+    historialAvance: hist,
     otrosGastos: [{ fecha: fechaISO(haceSemanas(7)), importe: 2_000_000 }],
   });
-  const t = correr('TendenciasMensuales', props, QUIERO_TEND);
-  check(t.ejecutadoSeries?.[idxDe(6)] === null,
-    `la semana queda en "no disponible" (valor: ${t.ejecutadoSeries?.[idxDe(6)]})`);
-  check(!casi(t.ejecutadoSeries?.[idxDe(6)], 3_000_000),
+  const t = curva(props);
+  check(t.ejecutado?.[idxDe(6)] === null,
+    `la semana queda en "no disponible" (valor: ${t.ejecutado?.[idxDe(6)]})`);
+  check(!casi(t.ejecutado?.[idxDe(6)], 3_000_000),
     'no se rellena con los $3,000,000 que daría reconstruirlo desde el avance');
   check(t.idxPrimerAvance === idxDe(6),
     'la semana SÍ cuenta como primera con avance capturado — el avance físico existe');
-  check(t.margenSeries?.[idxDe(6)] === null,
-    `y aun así el margen queda en null: restar $2,000,000 de gasto contra un cero inventado dibujaría una pérdida que nadie midió (valor: ${t.margenSeries?.[idxDe(6)]})`);
+  check(casi(t.gasto?.[idxDe(6)], 2_000_000),
+    `canario: el gasto de esa semana SÍ está medido (${MXN(t.gasto?.[idxDe(6)])})`);
+  check(t.margen?.[idxDe(6)] === null,
+    `y aun así el margen queda en null: restar $2,000,000 de gasto contra un cero inventado dibujaría una pérdida que nadie midió (valor: ${t.margen?.[idxDe(6)]})`);
+  // Y el área tampoco se sombrea con un borde que no existe: la curva declara
+  // qué falta y con qué motivo, en vez de dejar el hueco sin dibujar y que se
+  // lea como «no hay margen».
+  const aMargen = t.areas?.find(a => a.clave === 'margen');
+  const auMargen = t.ausentes?.find(a => a.clave === 'margen');
+  check(!aMargen && !!auMargen,
+    `el margen no se sombrea y se declara ausente (${auMargen ? 'declarado' : 'callado'})`);
+  // Y el motivo nombra QUÉ LADO falta. Aquí el que falta es el ejecutado —el
+  // gasto está medido, el canario de arriba lo comprueba—, así que decir «no
+  // hay línea de gasto» sería un motivo falso. Un rótulo sin el lado ausente no
+  // se puede discutir: el lector no sabe qué capturar para que aparezca.
+  check(/ejecutado/.test(auMargen?.motivo || ''),
+    `y el motivo nombra el lado que falta, el ejecutado (${auMargen?.motivo || 'sin motivo'})`);
 }
 
-console.log('\n5. Proyección: cada ritmo se acota a la frontera de SU métrica');
-{
-  // Esquema 1 (dinero topado) hasta la semana −4; esquema 2 desde la −3.
-  // Para el DINERO eso es un cambio de definición:
-  //   ventana completa (mal):  (9.0M − 2.0M) / 8 = 875,000 por semana
-  //   ventana acotada (bien):  (9.0M − 8.0M) / 3 = 333,333 por semana
-  // La diferencia no es ritmo de obra: es el escalón del cambio de definición.
-  //
-  // Para el AVANCE no lo es: su definición cambió en el esquema 3, no en el 2.
-  // Su ventana se queda completa: (60 − 20) / 8 = 5 pp por semana. Acortarla
-  // aquí mediría el ritmo de las últimas 3 semanas y lo llamaría "el ritmo de
-  // la obra" por un cambio que ni siquiera le tocó a esta métrica.
-  const hist = [
-    snap(8, { av: 20, me: 2_000_000, esquema: 1 }),
-    snap(3, { av: 50, me: 8_000_000, esquema: 2 }),
-    snap(0, { av: 60, me: 9_000_000, esquema: 2 }),
-  ];
-  const p = correr('ProyeccionAvanceGasto', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_PROY);
-
-  check(p.hayTramoViejoDinero === true && p.idxFrontDinero === idxDe(3),
-    `la proyección ve la misma frontera de dinero que las tendencias (idx ${p.idxFrontDinero}, esperado ${idxDe(3)})`);
-  check(p.hayTramoViejoAvance === false && p.idxFrontAvance === -1,
-    `y NINGUNA frontera de avance, porque no hay snapshot del esquema 3 (idx ${p.idxFrontAvance})`);
-  check(casi(p.ritmoEjec, 1_000_000 / 3, 1),
-    `ritmo del ejecutado ${MXN(p.ritmoEjec)}/sem — medido sólo dentro del esquema vigente`);
-  check(!casi(p.ritmoEjec, 875_000, 1),
-    'y NO los $875,000/sem que salen de restar un punto topado de uno sin topar');
-  check(casi(p.ritmoAvance, 5, 0.01),
-    `ritmo del avance físico ${p.ritmoAvance?.toFixed(2)} pp/sem, con la ventana COMPLETA`);
-  check(!casi(p.ritmoAvance, 10 / 3, 0.01),
-    'y no los 3.33 pp/sem de acortarle la ventana por una frontera que es del dinero');
-}
-
-console.log('\n5b. Proyección: con un snapshot esquema 3 el avance SÍ ve su frontera');
-{
-  // El mismo historial, pero el último punto ya trae el avance compensado.
-  // Ahora el escalón de 50→60 mezcla dos definiciones de avance y la ventana
-  // del avance se acota a la frontera; la del dinero no se mueve.
-  const hist = [
-    snap(8, { av: 20, me: 2_000_000, esquema: 1 }),
-    snap(3, { av: 50, me: 8_000_000, esquema: 2 }),
-    snap(0, { av: 60, me: 9_000_000, esquema: 3 }),
-  ];
-  const p = correr('ProyeccionAvanceGasto', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_PROY);
-
-  check(p.hayTramoViejoAvance === true && p.idxFrontAvance === idxDe(0),
-    `la frontera del avance cae en el primer snapshot esquema 3 (idx ${p.idxFrontAvance}, esperado ${idxDe(0)})`);
-  check(p.idxFrontDinero === idxDe(3),
-    `la del dinero sigue donde estaba, tres semanas antes (idx ${p.idxFrontDinero}, esperado ${idxDe(3)})`);
-  check(p.idxFrontAvance !== p.idxFrontDinero,
-    'las dos fronteras se separan: por eso son dos y no una');
-  // Ventana del avance acotada al último punto → no queda tramo que medir.
-  check(p.ritmoAvance === 0,
-    `sin semanas dentro del esquema 3 no se inventa un ritmo de avance (${p.ritmoAvance})`);
-  check(casi(p.ritmoEjec, 1_000_000 / 3, 1),
-    `y el ritmo del dinero no se movió: ${MXN(p.ritmoEjec)}/sem`);
-}
-
-console.log('\n6. Proyección: termina al 100% de avance FÍSICO, y el dinero no se topa');
-{
-  // Ritmo de avance 5 pp/sem desde 60% → 8 semanas para cerrar.
-  // Ritmo del ejecutado 875,000/sem → al cierre $16,000,000 sobre un contrato
-  // de $10,000,000. Ese exceso tiene que verse, no esconderse bajo un tope.
-  const hist = [
-    snap(8, { av: 20, me: 2_000_000, esquema: 2 }),
-    snap(0, { av: 60, me: 9_000_000, esquema: 2 }),
-  ];
-  // Esta sección SÍ afirma cifras de gasto, así que el escenario tiene que
-  // decir qué contestó GP. Contesta cero —pedida y sin cheques—, que deja el
-  // gasto entero en los dos manuales de abajo y no mueve ninguna de las
-  // cuentas de esta sección. Sin esto el gasto queda SIN MEDIR y la
-  // proyección se niega a publicar un margen, que es lo correcto pero no es
-  // lo que esta sección vino a medir.
-  const props = vacios({
-    obra: { ...obraBase(), gpId: CLAVE_GP },
-    gpData: gpContestoCero(),
-    historialAvance: hist,
-    otrosGastos: [
-      { fecha: fechaISO(haceSemanas(8)), importe: 1_000_000 },
-      { fecha: fechaISO(haceSemanas(1)), importe: 3_000_000 },
-    ],
-  });
-  const p = correr('ProyeccionAvanceGasto', props, QUIERO_PROY);
-
-  check(casi(p.ritmoAvance, 5, 0.01), `ritmo de avance ${p.ritmoAvance} pp/sem`);
-  check(p.semanasProy?.length === 8,
-    `la proyección dura 8 semanas: lo que falta de avance físico entre el ritmo (${p.semanasProy?.length})`);
-  check(casi(p.avanceProy?.[p.avanceProy.length - 1], 100, 0.01),
-    'la última semana proyectada es exactamente el 100% de avance físico');
-  check(p.avanceProy?.every(v => v <= 100 + 1e-9),
-    'ninguna semana proyectada pasa del 100% (P1: el avance sí se topa)');
-
-  const ejecFin = p.ejecProy?.[p.ejecProy.length - 1];
-  check(casi(ejecFin, 16_000_000),
-    `ejecutado proyectado al cierre ${MXN(ejecFin)} (esperado ${MXN(16_000_000)})`);
-  check(ejecFin > PRESUPUESTO,
-    `el dinero proyectado rebasa el contrato de ${MXN(PRESUPUESTO)} y no se recorta (P1)`);
-  check(casi(p.excedenteSobreContrato, 6_000_000),
-    `cuánto va por encima del contrato se sigue sabiendo: ${MXN(p.excedenteSobreContrato)}`);
-
-  // MARGEN CONTRA EL EJECUTADO PROYECTADO, SIN TOPAR (2026-09-22).
-  // El supuesto anterior —la obra cierra en el contrato y el volumen de más no
-  // se cobra— resultó falso: los volúmenes adicionales se estiman por partida.
-  // Topar el ingreso al contrato subestimaba el margen en $6,000,000 justo en
-  // las obras que operan así.
-  check(casi(p.gastoFinProy, 7_000_000),
-    `gasto proyectado al cierre ${MXN(p.gastoFinProy)}`);
-  check(casi(p.margenFinProy, 9_000_000),
-    `margen proyectado ${MXN(p.margenFinProy)} = ejecutado ${MXN(16_000_000)} − gasto ${MXN(7_000_000)}`);
-  check(!casi(p.margenFinProy, 3_000_000),
-    'y NO los $3,000,000 que salían de topar el ingreso al contrato');
-  check(casi(p.margenFinProy - (PRESUPUESTO - p.gastoFinProy), 6_000_000),
-    'la diferencia entre los dos criterios es exactamente el excedente sobre contrato');
-}
+// Aquí vivían las secciones 5, 5b y 6: el ritmo acotado a la frontera de su
+// métrica, la proyección que termina al 100% de avance FÍSICO y el margen al
+// cierre sin topar el ingreso. Medían `ProyeccionAvanceGasto`, que se borró el
+// 2026-11-06 al unificarse las tres gráficas en una. No se reescribieron contra
+// otro sujeto porque no hay otro: el ritmo se reconstruye aparte, sobre cortes
+// CERRADOS, y ahí vuelven a tener banco. El porqué está arriba, en la cabecera.
 
 console.log('\n7. Obra sin excedente — el arreglo no mueve el caso normal');
 {
@@ -553,10 +440,10 @@ console.log('\n7. Obra sin excedente — el arreglo no mueve el caso normal');
     snap(6, { av: 30, me: 3_000_000, esquema: 2 }),
     snap(2, { av: 45, me: 4_500_000, esquema: 2 }),
   ];
-  const t = correr('TendenciasMensuales', vacios({ obra: obraBase(), historialAvance: hist }), QUIERO_TEND);
-  check(casi(t.ejecutadoSeries?.[idxDe(6)], 3_000_000) && casi(t.ejecutadoSeries?.[idxDe(2)], 4_500_000),
+  const t = curva(vacios({ obra: obraBase(), historialAvance: hist }));
+  check(casi(t.ejecutado?.[idxDe(6)], 3_000_000) && casi(t.ejecutado?.[idxDe(2)], 4_500_000),
     'las dos semanas dan lo mismo que antes del arreglo');
-  check(t.ejecutadoSeries?.slice(0, idxDe(6)).every(v => v === null),
+  check(t.ejecutado?.slice(0, idxDe(6)).every(v => v === null),
     'y antes del primer snapshot la serie sigue en "no disponible", no en cero');
 }
 
@@ -585,14 +472,12 @@ console.log('   qué día se corra la prueba.');
     obra: obraBase(),
     historialAvance: [snap(4, { av: 40, me: 4_000_000, esquema: 2 })],
     otrosGastos: [{ fecha: lunes4, importe: 500_000 }],
-    estimaciones: [{ estatus: 'cobrada', fechaCobro: lunes4, monto: 900_000 }],
   });
   // Se mira el ACUMULADO por semana y no el incremental: el incremental vivía
   // dentro del componente y ahora es interno a `serieGastoDeSemanas`. El
   // acumulado es además lo que la tabla publica, así que la aserción pasa a
   // morder sobre la cifra que alguien lee.
-  const t = correr('TendenciasMensuales', props,
-    [...QUIERO_TEND, 'gastoAcumPorSem', 'estPorSem']);
+  const t = curva(props);
 
   // a) El arranque de la obra. La ventana no puede tener 11 semanas en lunes.
   check(t.semanas?.length === 10,
@@ -601,16 +486,17 @@ console.log('   qué día se corra la prueba.');
     `la primera semana es la del arranque, no la de antes (${t.semanas?.[0]?.key}, esperado ${kDe(9)})`);
 
   // b) Un gasto manual capturado en lunes.
-  check(t.gastoAcumPorSem?.[kDe(4)] === 500_000,
-    `el gasto del lunes se suma a su propia semana ${kDe(4)} (${t.gastoAcumPorSem?.[kDe(4)]})`);
-  check(t.gastoAcumPorSem?.[kDe(5)] === 0,
-    `y la semana anterior ${kDe(5)} sigue en cero (${t.gastoAcumPorSem?.[kDe(5)]})`);
+  check(t.gastoPorSem?.[kDe(4)] === 500_000,
+    `el gasto del lunes se suma a su propia semana ${kDe(4)} (${t.gastoPorSem?.[kDe(4)]})`);
+  check(t.gastoPorSem?.[kDe(5)] === 0,
+    `y la semana anterior ${kDe(5)} sigue en cero (${t.gastoPorSem?.[kDe(5)]})`);
 
-  // c) Una estimación cobrada en lunes.
-  check(t.estPorSem?.[kDe(4)] === 900_000,
-    `la estimación cobrada el lunes entra en ${kDe(4)} (${t.estPorSem?.[kDe(4)]})`);
-  check((t.estPorSem?.[kDe(5)] || 0) === 0,
-    `y la semana anterior ${kDe(5)} sigue sin cobros (${t.estPorSem?.[kDe(5)]})`);
+  // Aquí iba (c): la misma comprobación sobre una estimación cobrada en lunes.
+  // La serie de estimaciones por semana se armaba dentro de la tarjeta y
+  // NINGUNA línea de la gráfica ni renglón de la tabla la leía; se borró con la
+  // gráfica única el 2026-11-06. El lunes de un cobro no se mide en ningún
+  // sitio hoy, así que no hay dónde afirmarlo. La regla de fecha —día LOCAL— la
+  // siguen defendiendo (b), (d) y (e), que es la misma cuenta.
 
   // d) Una marca de tiempo CON hora no se toca: designa un instante, y su día
   //    local ya es el correcto. Arreglarla sería inventar el error al revés.
@@ -621,20 +507,22 @@ console.log('   qué día se corra la prueba.');
     historialAvance: [snap(4, { av: 40, me: 4_000_000, esquema: 2 })],
     otrosGastos: [{ fecha: finDeSemana, importe: 700_000 }],
   });
-  const t2 = correr('TendenciasMensuales', props2,
-    [...QUIERO_TEND, 'gastoAcumPorSem']);
-  check(t2.gastoAcumPorSem?.[kDe(5)] === 700_000,
-    `un sello de tiempo completo del sábado anterior sigue en ${kDe(5)} (${t2.gastoAcumPorSem?.[kDe(5)]})`);
-  check(t2.gastoAcumPorSem?.[kDe(6)] === 0,
-    `y no se va una semana más atrás ${kDe(6)} (${t2.gastoAcumPorSem?.[kDe(6)]})`);
+  const t2 = curva(props2);
+  check(t2.gastoPorSem?.[kDe(5)] === 700_000,
+    `un sello de tiempo completo del sábado anterior sigue en ${kDe(5)} (${t2.gastoPorSem?.[kDe(5)]})`);
+  check(t2.gastoPorSem?.[kDe(6)] === 0,
+    `y no se va una semana más atrás ${kDe(6)} (${t2.gastoPorSem?.[kDe(6)]})`);
 
   // e) Y la función de la que cuelga todo lo demás —fotos, nómina, alertas,
   //    el id del snapshot— con fechas FIJAS, que no dependen de hoy.
   //    El 3 de agosto de 2026 es lunes y vive en la semana 32; con la lectura
   //    UTC daba 31. El 28 de enero de 2027 es el jueves de la semana 4, el año
   //    en que el 1 de enero cae en viernes.
-  const { semanaISO, jueveDeSemanaISO } =
-    new Function(`${PRELUDIO}\n;return { semanaISO, jueveDeSemanaISO };`)();
+  //    Salen por `deModulo`, igual que las demás: el prólogo ya no se puede
+  //    evaluar a secas porque trae cuentas que miran `C` —los colores de la
+  //    curva—, y `C` es un doble, no una constante del archivo.
+  const semanaISO = deModulo('semanaISO');
+  const jueveDeSemanaISO = deModulo('jueveDeSemanaISO');
 
   const s0803 = semanaISO('2026-08-03');
   check(s0803.semana === 32 && s0803.año === 2026,

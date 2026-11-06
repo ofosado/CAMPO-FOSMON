@@ -5,9 +5,15 @@
 //
 // QUÉ CAMBIÓ. «Tendencias» mostraba una métrica a la vez tras una fila de
 // pestañas —avance / gasto / margen—, sin el programa contractual encima, y el
-// tablero del municipio no tenía ninguna gráfica. Ahora la constructora ve dos
-// paneles apilados sobre UN eje de semanas (la curva S arriba, su economía
-// abajo) y la dependencia ve la curva S sola, en `CurvaSDelContrato`.
+// tablero del municipio no tenía ninguna gráfica. Ahora la constructora ve UNA
+// gráfica —`TarjetaGraficaUnica`, que pide sus series a `curvaUnicaDeObra`— y
+// la dependencia ve la curva S sola, en `CurvaSDelContrato`.
+//
+// Por el camino fueron dos paneles apilados y una tercera gráfica de
+// proyección. Las tres dibujaban el mismo ejecutado y el mismo gasto con
+// cuentas distintas, así que podían discrepar sin que nada lo dijera; el
+// porqué de una sola está escrito en `curvaUnicaDeObra`. Lo que este banco
+// afirma no cambió al unificarse: cambió de dónde lo lee.
 //
 // LOS DOS COMPONENTES COMPARTEN LAS CUENTAS, NO EL CÓDIGO DE PANTALLA:
 // `semanasDeVentana`, `serieAvanceDeSemanas` y `serieProgramadaDeSemanas` están
@@ -346,7 +352,17 @@ function correr(codigo) {
   const sec = (t) => { if (!process.env.CALLADO) console.log(`\n${t}`); };
 
   const dep = ejecutar('CurvaSDelContrato', PROPS_DEP());
-  const con = ejecutar('TendenciasMensuales', PROPS_CON());
+  // La tarjeta de la constructora ya no calcula las series en su prólogo: las
+  // pide a `curvaUnicaDeObra`, que es el MISMO objeto que va a dibujar el PDF.
+  // Lo que le queda propio son los tres deltas de la tabla. Se ejercitan los
+  // dos lados —el componente para los deltas, la cuenta suelta para las
+  // series— porque un banco que sólo mirara la cuenta no vería si la tabla la
+  // lee de verdad.
+  const con = ejecutar('TarjetaGraficaUnica', PROPS_CON());
+  const curvaUnicaDeObra = cuenta('curvaUnicaDeObra');
+  const CURVA = (extra = {}) =>
+    curvaUnicaDeObra({ semanas: con.semanas, ...PROPS_CON(extra) });
+  const gc = con.g;
 
   // ── 0 · EL FIXTURE DICE LO QUE CREO QUE DICE ─────────────────────────────
   // Si el calendario del fixture se desarma, lo de abajo pasaría por la razón
@@ -375,12 +391,20 @@ function correr(codigo) {
         JSON.stringify(con.semanas.map(s => s.key)),
     'el eje de semanas es idéntico en los dos tableros',
     `${dep.semanas[0]?.key} … ${dep.semanas[dep.semanas.length - 1]?.key}`);
-  check(JSON.stringify(dep.avanceSeries) === JSON.stringify(con.avanceSeries),
+  check(JSON.stringify(dep.avanceSeries) === JSON.stringify(gc.avance),
     'y el avance físico también, punto por punto',
-    `último: ${dep.avanceSeries?.[9]} vs ${con.avanceSeries?.[9]}`);
-  check(JSON.stringify(dep.programadoSeries) === JSON.stringify(con.programadoSeries),
+    `último: ${dep.avanceSeries?.[9]} vs ${gc.avance?.[9]}`);
+  check(JSON.stringify(dep.programadoSeries) === JSON.stringify(gc.programadoPct),
     'y el programado, que es contra lo que las dos pantallas acusan',
-    `último: ${dep.programadoSeries?.[9]?.toFixed?.(1)} vs ${con.programadoSeries?.[9]?.toFixed?.(1)}`);
+    `último: ${dep.programadoSeries?.[9]?.toFixed?.(1)} vs ${gc.programadoPct?.[9]?.toFixed?.(1)}`);
+  // Y la tarjeta de la constructora dibuja LO QUE LE DA LA CUENTA, sin
+  // retocarlo de paso. Es lo que permite que el PDF publique las mismas cifras
+  // llamando a la cuenta sola, sin montar el componente.
+  const suelta = CURVA();
+  check(JSON.stringify(suelta.avance) === JSON.stringify(gc.avance) &&
+        JSON.stringify(suelta.gasto) === JSON.stringify(gc.gasto) &&
+        JSON.stringify(suelta.margen) === JSON.stringify(gc.margen),
+    'la tarjeta publica exactamente la curva que la cuenta devuelve');
   // El último punto anclado al avance vivo: si no se ancla, la gráfica y el KPI
   // de la misma pantalla publican dos avances distintos. La cifra esperada no
   // se teclea: sale de `avanceFisicoPonderado`, la del KPI.
@@ -405,13 +429,18 @@ function correr(codigo) {
 
   // El canario primero: la MISMA inyección tiene que mover la tarjeta de la
   // constructora. Un verde sobre un canario sordo no prueba nada.
-  const conSinDinero = ejecutar('TendenciasMensuales', PROPS_CON(SIN_DINERO));
+  const conSinDinero = ejecutar('TarjetaGraficaUnica', PROPS_CON(SIN_DINERO));
   const movidosCon = difieren(con, conSinDinero);
   check(movidosCon.length > 0,
     'canario: quitarle el dinero SÍ mueve la tarjeta de la constructora',
     `${movidosCon.length} locales cambian, entre ellos ${movidosCon.slice(0, 3).join(', ')}`);
-  check(movidosCon.includes('margenSeries') && movidosCon.includes('gastoAcumSeries'),
-    'y los que cambian son precisamente las series de dinero');
+  // El canario se afina sobre la curva, no sobre los locales: la tarjeta tiene
+  // el dinero entero metido en un solo local (`g`), y decir «g cambió» no
+  // afirma que cambiara lo que se dibuja de dinero.
+  const curvaSinDinero = CURVA(SIN_DINERO);
+  check(JSON.stringify(gc.gasto) !== JSON.stringify(curvaSinDinero.gasto) &&
+        JSON.stringify(gc.margen) !== JSON.stringify(curvaSinDinero.margen),
+    'y lo que cambia son precisamente la línea del gasto y el área del margen');
   check(Object.values(con).some(v => lleva(v, EJEC_REAL)),
     'y el ejecutado real sigue ahí, que es el guardián de los $2.7M', `${EJEC_REAL}`);
 
@@ -504,9 +533,9 @@ function correr(codigo) {
   check(dep.deltaSeries?.[idxF] === null,
     'el municipio no publica el delta de la semana que cruza',
     `idx ${idxF}: ${dep.deltaSeries?.[idxF]}`);
-  check(con.avanceDeltaSeries?.[idxF] === null,
+  check(con.avanceDelta?.[idxF] === null,
     'y la constructora tampoco',
-    `idx ${idxF}: ${con.avanceDeltaSeries?.[idxF]}`);
+    `idx ${idxF}: ${con.avanceDelta?.[idxF]}`);
   check(dep.avanceSeries.filter(v => typeof v === 'number').length === 10,
     'y la serie no se corta: el tramo viejo sigue dibujado, punteado');
 
@@ -515,7 +544,7 @@ function correr(codigo) {
   // menos su gasto, la tabla se contradice a sí misma en la misma fila.
   sec('6. En la tabla, margen = ejecutado − gasto acumulado');
   const u = con.semanas.length - 1;
-  const mg = con.margenSeries?.[u], ej = con.ejecutadoSeries?.[u], ga = con.gastoAcumSeries?.[u];
+  const mg = gc.margen?.[u], ej = gc.ejecutado?.[u], ga = gc.gasto?.[u];
   check(typeof mg === 'number' && typeof ej === 'number' && typeof ga === 'number',
     'las tres cifras de la última semana existen',
     `margen ${mg} · ejecutado ${ej} · gasto ${ga}`);
@@ -525,31 +554,53 @@ function correr(codigo) {
   // Que el ancla sea de verdad el motivo: con el gasto sin fecha dentro, el
   // acumulado por semana se queda corto. Si el fixture dejara de distinguir
   // las dos cifras, la aserción de arriba pasaría sin morder.
-  const porSemana = con.gastoAcumPorSem?.[con.semanas[u].key];
+  const porSemana = gc.gastoPorSem?.[con.semanas[u].key];
   check(typeof porSemana === 'number' && Math.abs(porSemana - ga) > 1,
     'y el fixture distingue: sin el ancla, el acumulado por semana se queda corto',
     `por semana ${porSemana} vs anclado ${ga}`);
-
-  // ── 7 · EL GASTO DE LA SEMANA ES MEDIDO, NO PROMEDIADO ───────────────────
-  // `gastoSemanalSeries` rellena las semanas sin movimiento del GP con el
-  // promedio de la ventana: sirve para la forma de la curva y en un renglón de
-  // tabla se lee como una cifra medida.
-  sec('7. El gasto de la semana que se tabula es el medido');
-  const rellenadas = con.semanas
+  // Y el área del margen es la resta de las dos LÍNEAS QUE SE DIBUJAN, semana
+  // por semana, no sólo en la última. Si tuviera su propia cuenta del gasto el
+  // sombreado podría dejar de coincidir con el hueco que se ve entre las dos
+  // curvas, y un área que no coincide con sus bordes se lee como otra cantidad.
+  const descuadra = con.semanas
     .map((_, i) => i)
-    .filter(i => i > 0 && !(con.deltasRaw?.[i] > 0) && con.gastoSemanalSeries?.[i] > 0);
-  check(rellenadas.length > 0,
-    'el fixture tiene semanas que la curva rellena con el promedio',
-    `${rellenadas.length} semanas`);
-  check(rellenadas.every(i => con.gastoDeltaMedido?.[i] == null ||
-                              con.gastoDeltaMedido[i] === 0),
-    'y en la tabla esas semanas quedan vacías, no con el promedio',
-    rellenadas.map(i => `${i}:${con.gastoDeltaMedido?.[i]}`).join(' '));
-  const medidas = con.semanas.map((_, i) => i)
-    .filter(i => i > 0 && i < u && con.deltasRaw?.[i] > 0);
-  check(medidas.length > 0 && medidas.every(i => casi(con.gastoDeltaMedido[i], con.deltasRaw[i], 1)),
-    'y donde SÍ hubo movimiento, la tabla trae el movimiento real',
-    medidas.map(i => `${i}:${con.gastoDeltaMedido?.[i]}`).join(' '));
+    .filter(i => typeof gc.margen[i] === 'number'
+              && !casi(gc.margen[i], gc.ejecutado[i] - gc.gasto[i], 1));
+  check(descuadra.length === 0,
+    'el área del margen es la resta de las dos líneas en TODAS las semanas',
+    descuadra.length ? `descuadran ${descuadra.join(', ')}`
+                     : `${gc.margen.filter(v => v !== null).length} semanas revisadas`);
+
+  // ── 7 · EL GASTO DE LA SEMANA ES MEDIDO, NO RELLENADO ────────────────────
+  // La gráfica vieja rellenaba las semanas sin movimiento del GP con el
+  // promedio de la ventana. Para la forma de una curva sirve; en un renglón de
+  // tabla se lee como una cifra medida. Esa serie se borró con la gráfica, y lo
+  // que queda que haya que defender es la propiedad que la delataba: los gastos
+  // semanales SUMAN el acumulado. Un relleno —promedio, interpolación, lo que
+  // sea— mete pesos que el acumulado no tiene y rompe la suma.
+  sec('7. Los gastos de la semana suman el acumulado, sin pesos de relleno');
+  const deltas = con.gastoDelta || [];
+  const suma = deltas.reduce((t, v) => t + (typeof v === 'number' ? v : 0), 0);
+  // El tramo que las deltas cubren: de la primera semana a la última que SÍ
+  // publica delta. La última queda fuera cuando el ancla movió el acumulado
+  // (sección 8), así que el extremo se lee de las deltas, no se supone.
+  const ultConDelta = deltas.reduce((m, v, i) => (typeof v === 'number' ? i : m), 0);
+  let ref = gc.gastoPorSem?.[con.semanas[0].key] || 0;
+  const acumEn = (i) => {
+    let x = ref;
+    for (let k = 0; k <= i; k++) x = Math.max(x, gc.gastoPorSem?.[con.semanas[k].key] || x);
+    return x;
+  };
+  check(casi(suma, acumEn(ultConDelta) - acumEn(0), 1),
+    'la suma de los gastos semanales es el acumulado medido de ese tramo',
+    `${suma} vs ${acumEn(ultConDelta) - acumEn(0)}`);
+  // Canario: que la suma no cuadre por ser todo cero, y que el fixture tenga
+  // de verdad semanas quietas —que son las que un relleno habría llenado.
+  const conMovimiento = deltas.filter(v => typeof v === 'number' && v > 0).length;
+  const quietas = deltas.filter(v => v === 0).length;
+  check(conMovimiento > 0 && quietas > 0,
+    'canario: el fixture tiene semanas con movimiento y semanas quietas',
+    `${conMovimiento} con gasto, ${quietas} en cero`);
 
   // ── 8 · EL SALTO DEL ANCLA NO SE PUBLICA COMO UNA SEMANA DE GASTO ────────
   // Medido en el preview sobre Oaxaca Parque Lineal: el último renglón decía
@@ -558,14 +609,14 @@ function correr(codigo) {
   // vez. El salto es un total sin fechar alcanzando a su serie, y lo único
   // cierto que se puede escribir ahí es «—».
   sec('8. El salto del ancla no se publica como gasto de una semana');
-  check(con.gastoSinFechar === true,
+  check(gc.gastoSinFechar === true,
     'el fixture tiene gasto sin fechar, que es cuando el ancla mueve el número',
     `por semana ${porSemana} vs KPI ${ga}`);
-  check(con.gastoDeltaMedido?.[u] === null,
+  check(con.gastoDelta?.[u] === null,
     'y la última semana no afirma ningún gasto medido',
-    `${con.gastoDeltaMedido?.[u]}`);
-  const salto = ga - (con.gastoAcumSeries?.[u - 1] ?? 0);
-  check(Math.abs(salto) > 1 && con.gastoDeltaMedido?.[u] !== salto,
+    `${con.gastoDelta?.[u]}`);
+  const salto = ga - (gc.gasto?.[u - 1] ?? 0);
+  check(Math.abs(salto) > 1 && con.gastoDelta?.[u] !== salto,
     'y mucho menos afirma que el salto entero se gastó en esos siete días',
     `el salto es ${salto}`);
 
@@ -590,7 +641,7 @@ const MUTACIONES = [
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    return `${j.getFullYear()}-',
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    j.setDate(j.getDate() - 3);\n    return `${j.getFullYear()}-'],
   ['con el anexo a medio viaje se acusa de que falta',
-    "  if (programa === undefined) {\n    return { serie: semanas.map(() => null), fuente: 'cargando' };\n  }",
+    "  if (programa === undefined) {\n    return { serie: semanas.map(() => null), montos: semanas.map(() => null),\n             total: null, fuente: 'cargando' };\n  }",
     '  if (programa === undefined) programa = null;'],
   // LA RECTA, DE VUELTA, en la serie semanal. Cada jueves calcula el reparto
   // lineal y la línea punteada reaparece en los dos tableros.
@@ -616,23 +667,35 @@ const MUTACIONES = [
     'if (hayTramoViejo && i === idxF) return null;',
     ''],
   ['el delta de la constructora cruza la frontera del esquema',
-    'if (fronteraAvance.hay && i === fronteraAvance.idx) return null;',
+    'if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;',
     ''],
   ['el gasto acumulado de la tabla no se ancla al del KPI',
     'return (anclada && i === semanas.length - 1) ? gtActual : (porSem[s.key] ?? null);',
     'return porSem[s.key] ?? null;'],
+  // El área del margen con su propia cuenta del gasto: arrastra el último
+  // acumulado conocido en vez de leer la serie que se dibuja. Es la manera
+  // natural de que el sombreado deje de coincidir con el hueco entre las dos
+  // curvas sin que nada en la pantalla lo diga.
   ['el margen se saca su propia cuenta del gasto en vez de leer la serie',
-    'const g = gastoAcumSeries[i];\n    if (typeof g !== \'number\') return null;\n    // Ejecutado ya viene con arrastre desde ejecutadoSeries\n    return ejecutadoSeries[i] - g;',
-    'let g = 0;\n    for (let j = i; j >= 0; j--) {\n      const x = gastoAcumPorSem[semanas[j].key];\n      if (x && x > 0) { g = x; break; }\n    }\n    return ejecutadoSeries[i] - g;'],
-  ['la tabla publica el gasto promediado como si lo hubiera medido',
-    '    if (i === semanas.length - 1 && gastoSinFechar) return null;\n    return deltasRaw[i];',
-    '    return gastoSemanalSeries[i];'],
+    "    if (typeof gasto[i] !== 'number') return null;\n    return ejecutado[i] - gasto[i];",
+    '    let gi = 0;\n    for (let j = i; j >= 0; j--) {\n      const x = gastoPorSem[semanas[j].key];\n      if (x && x > 0) { gi = x; break; }\n    }\n    return ejecutado[i] - gi;'],
+  // El relleno, de vuelta: las semanas quietas publican el promedio de la
+  // ventana en vez del cero medido. La suma de las deltas se despega del
+  // acumulado, que es justo lo que la sección 7 vigila.
+  ['la tabla rellena las semanas quietas con el promedio de la ventana',
+    '    if (act >= prev) gastoRef = act;\n    return Math.max(0, act - prev);',
+    `    if (act >= prev) gastoRef = act;
+    const d = Math.max(0, act - prev);
+    if (d > 0) return d;
+    const tot = (g.gastoPorSem[semanas[semanas.length - 1]?.key] || 0)
+              - (g.gastoPorSem[semanas[0]?.key] || 0);
+    return tot / Math.max(1, semanas.length - 1);`],
   ['la última semana publica un $0 de gasto junto a un acumulado que saltó',
-    'if (i === semanas.length - 1 && gastoSinFechar) return null;',
+    'if (i === semanas.length - 1 && g.gastoSinFechar) return null;',
     ''],
   ['el salto del ancla se publica como el gasto de esa semana',
-    'if (i === semanas.length - 1 && gastoSinFechar) return null;\n    return deltasRaw[i];',
-    'if (i === semanas.length - 1 && gastoSinFechar) {\n      return gtActual - (gastoAcumPorSem[semanas[i - 1].key] ?? 0);\n    }\n    return deltasRaw[i];'],
+    'if (i === semanas.length - 1 && g.gastoSinFechar) return null;\n    const act =',
+    'if (i === semanas.length - 1 && g.gastoSinFechar) {\n      return g.gasto[i] - (g.gastoPorSem[semanas[i - 1].key] ?? 0);\n    }\n    const act ='],
 ];
 
 if (process.argv.includes('--contraprueba')) {

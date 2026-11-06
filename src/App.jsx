@@ -3470,7 +3470,7 @@ const ROTULO_PROGRAMADO = {
 // EL EJE DE SEMANAS Y LAS DOS SERIES QUE SE DIBUJAN SOBRE ÉL
 // ════════════════════════════════════════════════════════════════════════════
 //
-// Estas tres cuentas vivían DENTRO de `TendenciasMensuales`. Salieron aquí
+// Estas tres cuentas vivían DENTRO de la tarjeta de tendencias. Salieron aquí
 // cuando el tablero del municipio pasó a dibujar su propia curva S: la
 // alternativa era una segunda copia del eje y de la serie de avance, una por
 // tablero, y entonces la misma obra podría publicar dos curvas distintas sin
@@ -3632,9 +3632,21 @@ const serieAvanceDeSemanas = ({ semanas = [], historialAvance = [], subs = [], o
 // autoriza a la pantalla a decir «esta obra no tiene programa». Decirlo
 // durante el viaje es acusar de un dato faltante que todavía no se consultó, y
 // se vería en cada recarga.
+// Y TAMBIÉN EN PESOS, porque la gráfica única pone las cuatro series sobre un
+// solo eje de dinero. Los pesos NO se derivan del porcentaje multiplicando por
+// el contrato: son los montos que el anexo trae mes por mes, leídos con
+// `acumuladoProgramado` — que es exactamente el numerador del que sale el
+// porcentaje de arriba. Es una cuenta, publicada en sus dos unidades.
+//
+// El `total` sale también, y hace falta: el anexo declara su propio total y no
+// tiene por qué coincidir con el contrato capturado (el #95 es justo ese caso).
+// Cuando no coinciden, la curva programada y la ejecutada terminan a alturas
+// distintas sobre el mismo eje; quien las dibuje tiene que decirlo en vez de
+// reescalar una de las dos, que es cómo se esconde una discrepancia del dato.
 const serieProgramadaDeSemanas = ({ semanas = [], obra = null, programa }) => {
   if (programa === undefined) {
-    return { serie: semanas.map(() => null), fuente: 'cargando' };
+    return { serie: semanas.map(() => null), montos: semanas.map(() => null),
+             total: null, fuente: 'cargando' };
   }
   const isoDelJueves = (s) => {
     const j = jueveDeSemanaISO(s.año, s.sem);
@@ -3643,11 +3655,18 @@ const serieProgramadaDeSemanas = ({ semanas = [], obra = null, programa }) => {
   };
   const serie = semanas.map(s =>
     avanceProgramadoA(obra, programa, isoDelJueves(s)).pct);
+  // El mismo anexo con el mismo arranque heredado que usó el porcentaje: si
+  // aquí se leyera `programa` crudo, una obra cuyo anexo no trae inicio propio
+  // tendría pesos sin fechar junto a porcentajes fechados.
+  const conArranque = programaConArranque(programa, obra);
+  const montos = semanas.map(s =>
+    conArranque ? acumuladoProgramado(conArranque, isoDelJueves(s)) : null);
+  const total = Number(conArranque?.total) > 0 ? Number(conArranque.total) : null;
   // La fuente se toma A HOY, que es la misma pregunta que contesta el KPI. Una
   // fuente por semana se podría mezclar y la leyenda tendría que decir dos
   // cosas a la vez; el origen del número no cambia de semana a semana.
   const fuente = avanceProgramadoA(obra, programa, hoyLocalISO()).fuente;
-  return { serie, fuente };
+  return { serie, montos, total, fuente };
 };
 
 // Camino Bezier suavizado (Catmull-Rom → cúbica) por una lista de puntos.
@@ -3668,6 +3687,98 @@ const caminoSuave = (pts) => {
            `${p2[0].toFixed(2)},${p2[1].toFixed(2)}`);
   }
   return d.join(' ');
+};
+
+// LOS TRAMOS DE UNA SERIE: dónde va sólida, dónde punteada, y por qué.
+//
+// Hay DOS motivos distintos para no dibujar sólido y los dos tienen que verse,
+// porque dicen cosas distintas:
+//
+//   · `medido` en false — esa semana no tiene captura y el valor viene
+//     ARRASTRADO del último conocido. Una recta sólida sobre seis semanas sin
+//     cierre afirma «el ejecutado no se movió en seis semanas», y lo cierto es
+//     que no se sabe. Salió de la obra 0114, que perdió seis cierres entre la
+//     semana 30 y la 37 al llenarse el documento de historial.
+//   · `vigente` en false — ese tramo se calculó con la definición anterior del
+//     dinero o del avance. La cifra significa otra cosa; no es que falte.
+//
+// UN HUECO DE UNA SOLA SEMANA TAMBIÉN SE PUNTEA. No hay un número de ausencias
+// a partir del cual empiece a importar, y poner un umbral obliga a justificar
+// dónde estaría.
+//
+// Los tramos sólidos van por RACHAS de semanas consecutivas y no de par en
+// par: de par en par cada tramo son dos puntos y la curva suavizada se
+// convierte en una poligonal.
+const tramosDeSerie = ({ pts = [], medido = null, idxFrontera = -1 }) => {
+  const hayViejo = idxFrontera > 0;
+  // Un tramo pertenece al esquema viejo si ARRANCA antes de la frontera: el
+  // trecho que la cruza une dos definiciones y no se puede llamar vigente.
+  const vigenteEn = (i) => !hayViejo || i >= idxFrontera;
+  // Sin `medido` cuenta como medida toda semana con punto. Es el caso de las
+  // series que no distinguen: el programa contractual no se «captura» semana a
+  // semana, está firmado de una vez.
+  const conDato = (i) => !!pts[i] && (!medido || medido[i] !== false);
+  const idx = pts.map((p, i) => i).filter(conDato);
+  const tramos = [];
+  for (let k = 1; k < idx.length; k++) {
+    const a = idx[k - 1], b = idx[k];
+    const medidoAca = (b - a) === 1;
+    const vigenteAca = vigenteEn(a);
+    const ult = tramos[tramos.length - 1];
+    if (ult && ult.hasta === a && ult.medido === medidoAca
+        && ult.vigente === vigenteAca) {
+      ult.hasta = b; ult.pts.push(pts[b]);
+    } else {
+      tramos.push({ medido: medidoAca, vigente: vigenteAca,
+                    desde: a, hasta: b, pts: [pts[a], pts[b]] });
+    }
+  }
+  return tramos;
+};
+
+// EL ÁREA ENTRE DOS CURVAS, cerrada sobre las dos curvas DIBUJADAS.
+//
+// El camino de ida es el de la serie de arriba y el de vuelta el de la de
+// abajo, los dos con `caminoSuave`, de modo que el borde del sombreado es
+// exactamente la línea que se ve. La alternativa —cerrar con segmentos
+// rectos entre los puntos— deja el relleno despegado de la curva en cada
+// tramo, y un área que no coincide con sus bordes se lee como otra cantidad.
+const bandaEntre = (arriba, abajo) => {
+  if (!arriba || !abajo || arriba.length < 2 || abajo.length < 2) return '';
+  const ida = caminoSuave(arriba);
+  const vuelta = caminoSuave([...abajo].reverse());
+  if (!ida || !vuelta) return '';
+  return `${ida} L${vuelta.slice(1)} Z`;
+};
+
+// Dónde la diferencia entre dos series es positiva y dónde negativa, en
+// coordenadas del eje X.
+//
+// El margen cruza el cero: hay obras que arrancan gastando antes de ejecutar y
+// se recuperan después. Sombrear toda la banda de un color diría «margen» en
+// el tramo donde hubo pérdida, así que la banda se parte donde la diferencia
+// cambia de signo, y el corte se pone EN EL CRUCE —interpolado entre las dos
+// semanas— y no en la semana siguiente: correrlo a la muestra de al lado le
+// regala al verde una semana de pérdida, o al revés.
+const tramosDeSigno = (difs, xs) => {
+  const out = [];
+  let ini = null;
+  for (let i = 0; i < difs.length; i++) {
+    const d = difs[i];
+    if (d === null || d === undefined) { ini = null; continue; }
+    if (ini === null) { ini = { desde: xs[i], signo: d >= 0 }; out.push(ini); }
+    const sig = difs[i + 1];
+    ini.hasta = xs[i];
+    if (sig === null || sig === undefined) { ini = null; continue; }
+    if ((sig >= 0) !== ini.signo) {
+      const a = Math.abs(d), b = Math.abs(sig);
+      const corte = (a + b) > 0 ? xs[i] + (xs[i + 1] - xs[i]) * (a / (a + b)) : xs[i];
+      ini.hasta = corte;
+      ini = { desde: corte, hasta: xs[i + 1], signo: sig >= 0 };
+      out.push(ini);
+    }
+  }
+  return out.filter(t => t.hasta > t.desde);
 };
 
 // Quién lee el anexo. Una sola vez, aquí, porque son ya tres los tableros que
@@ -12684,6 +12795,272 @@ function SelectorVentana({rango, onRango}) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// LA GRÁFICA ÚNICA — UN SOLO OBJETO, DOS CONSUMIDORES
+// ════════════════════════════════════════════════════════════════════════════
+//
+// POR QUÉ UNA Y NO TRES. Hasta hoy el tablero de la constructora dibujaba el
+// avance en porcentaje en un panel, la economía en pesos en otro, y abajo una
+// proyección con su propia copia del ejecutado y del gasto. Tres dibujos de
+// series que se solapan son tres sitios donde desincronizarse: el día que
+// alguien arregle el arrastre del ejecutado en uno, los otros dos siguen
+// publicando el número viejo y nada en la pantalla lo dice.
+//
+// Y EL EJE ES DE PESOS, no de porcentaje. Las cuatro cantidades que esta
+// gráfica contesta —lo que se construyó, lo que se había programado construir,
+// lo que se gastó y el hueco entre las dos últimas— son dinero. Mientras el
+// avance iba en un panel al 0–100% y el dinero en otro, la pregunta que importa
+// («¿el gasto va más rápido que la obra?») había que contestarla saltando de
+// un panel al otro, y los dos ejes no eran comparables.
+//
+// EL MARGEN NO ES UNA LÍNEA. Es el área entre el ejecutado y el gasto. Como
+// tercera línea —así estaba— compite con las dos de las que sale, y la pregunta
+// «¿se está abriendo o cerrando el hueco?» se contesta leyendo tres curvas
+// cuando el hueco se ve de un vistazo. Va rotulado EN PESOS a propósito: en el
+// tablero de arriba «margen» es un porcentaje, y dos cosas con el mismo nombre
+// y distinta unidad se confunden. El porcentaje es esa misma área entre lo
+// ejecutado.
+//
+// NINGUNA CIFRA NUEVA. Cada serie sale de la función que ya la calcula para su
+// KPI: `serieAvanceDeSemanas`, `serieGastoDeSemanas`,
+// `serieProgramadaDeSemanas`, `montoEjecutadoSnap`, `desgloseEjecutado`. Lo
+// único que esto hace es juntarlas y decir cuáles NO se pueden dibujar.
+//
+// LO QUE NO SE PUEDE DIBUJAR SE DECLARA. Una serie que falta y simplemente no
+// se pinta deja la gráfica mintiendo por omisión: sin la línea de gasto no hay
+// área de margen, y una gráfica sin área se lee como «no hay hueco» en vez de
+// «no se sabe». Así que lo que no hay sale en `ausentes`, con el motivo, y la
+// leyenda lo escribe.
+//
+// Devuelve datos, no React: `lineas` y `areas` las dibuja el panel del tablero
+// y las va a dibujar el PDF con las primitivas de jsPDF. Si esto devolviera
+// SVG el PDF tendría que rearmarlo y volveríamos a dos copias.
+// El color va por clave y en un solo sitio: el PDF de cotea lleva su propia
+// paleta y lo que remapea es esta tabla, no cada serie en su sitio de uso.
+const COLOR_CURVA = { ejec: C.blueDk, prog: C.caliza, gasto: C.redDk };
+
+const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
+                            subs = [], gpData = null, otrosGastos = [],
+                            maquinaria = [], programa }) => {
+  const presupuesto = parseFloat(obra?.presupuesto) || 0;
+
+  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =
+    serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
+
+  const { porSem: gastoPorSem, serie: gasto, sinFechar: gastoSinFechar,
+          medido: gastoMedido } =
+    serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
+
+  const { serie: programadoPct, montos: programado, total: totalPrograma,
+          fuente: fuentePrograma } =
+    serieProgramadaDeSemanas({ semanas, obra, programa });
+
+  // ── EL EJECUTADO ACUMULADO, SEMANA POR SEMANA ─────────────────────────────
+  // Se LEE del snapshot, no se reconstruye: `avance% × presupuesto` rearma el
+  // dinero desde el avance físico, que está topado por partida, y publicaría el
+  // dinero recortado mientras el KPI publica el real. Ver `montoEjecutadoSnap`.
+  const ejecutadoPorSem = {};
+  Object.entries(avancePorSem).forEach(([k, snap]) => {
+    const me = montoEjecutadoSnap(snap);
+    if (me !== null) ejecutadoPorSem[k] = me;
+  });
+
+  // Arrastre: una semana sin captura HEREDA el último valor conocido. Un cero
+  // dibujaría una caída a piso que nadie capturó. Arranca en null —no en 0—
+  // porque con 0 el `??` de abajo nunca dispara y el respaldo queda muerto.
+  const primeraVisible = semanas[0]?.key;
+  let ultimoConocido = null;
+  if (primeraVisible) {
+    const previos = Object.entries(ejecutadoPorSem)
+      .filter(([k]) => k < primeraVisible)
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (previos.length > 0) ultimoConocido = previos[previos.length - 1][1];
+  }
+  // El respaldo al ejecutado vivo entra SÓLO cuando no hay ningún snapshot en
+  // toda la obra: es el caso «el historial aún no llega de Firestore». Se mide
+  // sobre `avancePorSem` y no sobre `ejecutadoPorSem`, porque un snapshot viejo
+  // sin `montoEjecutado` no aparece en el segundo y contra esa colección la
+  // obra parecía «sin historial» → la serie arrancaba en 0, y ese 0 no es «no
+  // ejecutó nada», es «no se guardó el dato».
+  const ejecutadoVivo = (subs && subs.length > 0)
+    ? desgloseEjecutado(subs, obra?.modoAvance === "volumen").total : null;
+  const hayAlgunSnapshot = Object.keys(avancePorSem).length > 0;
+  const ejecutado = [];
+  let acarreo = ultimoConocido ?? (hayAlgunSnapshot ? null : ejecutadoVivo);
+  semanas.forEach(s => {
+    if (typeof ejecutadoPorSem[s.key] === 'number') acarreo = ejecutadoPorSem[s.key];
+    ejecutado.push(acarreo);
+  });
+  // Ancla de la última semana en el ejecutado VIVO, el mismo que alimenta el
+  // KPI de arriba. Lleva su propia condición —sin catálogo no hay ejecutado que
+  // anclar— y no la del gasto: atado al gasto, una obra con catálogo capturado
+  // y sin un peso gastado no anclaba, y el último punto de la curva discrepaba
+  // del KPI.
+  const ejecutadoAnclado = semanas.length > 0 && subs && subs.length > 0
+    && ejecutadoVivo > 0;
+  if (ejecutadoAnclado) ejecutado[semanas.length - 1] = ejecutadoVivo;
+
+  // QUÉ SEMANAS SON MEDICIÓN Y CUÁLES ARRASTRE. Sin esto el arrastre se dibuja
+  // sólido y la línea afirma «el ejecutado no se movió en seis semanas» donde
+  // lo cierto es que nadie cerró esas seis. Es la 0114. Ver `tramosDeSerie`.
+  //
+  // La última semana cuenta como medida cuando el ancla la movió: ese número es
+  // el ejecutado VIVO del catálogo, el mismo del KPI de arriba, no un valor
+  // heredado de un corte anterior.
+  const ejecutadoMedido = semanas.map((s, i) =>
+    typeof ejecutadoPorSem[s.key] === 'number'
+    || (ejecutadoAnclado && i === semanas.length - 1));
+
+  // ── EL MARGEN: LA RESTA DE LAS DOS LÍNEAS QUE SE DIBUJAN ──────────────────
+  // Se lee de las series, no se recalcula. Es lo que dice el rótulo del área:
+  // si tuviera su propia cuenta, el sombreado podría dejar de coincidir con el
+  // hueco que se ve entre las dos curvas.
+  //
+  // Antes de la primera semana con avance capturado queda null: muchas obras
+  // acumulan gasto antes de capturar avance —movilización, compras— y ahí el
+  // margen sale muy negativo por no tener ejecutado todavía, no por pérdida.
+  // `idxPrimerAvance` es la misma respuesta que decide dónde arranca la curva
+  // del avance; con dos, el margen empezaría donde la curva no existe.
+  const margen = semanas.map((s, i) => {
+    if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
+    if (typeof ejecutado[i] !== 'number') return null;
+    if (typeof gasto[i] !== 'number') return null;
+    return ejecutado[i] - gasto[i];
+  });
+
+  // ── FRONTERAS DE ESQUEMA, UNA POR MÉTRICA ─────────────────────────────────
+  // El dinero cambió de definición en el esquema 2 y el avance en el 3. Una
+  // serie de dinero punteada por la frontera del avance diría que su tramo no
+  // es comparable cuando sí lo es. El tramo viejo se señala punteado y no se
+  // corta: cortarlo deja obras como la 0112 con un solo punto.
+  const fronteraDe = (umbral) => {
+    const idx = esquemaPorSemana.findIndex(e => e !== null && e >= umbral);
+    const hay = idx > 0
+      && esquemaPorSemana.slice(0, idx).some(e => e !== null && e < umbral);
+    return { idx, hay };
+  };
+  const fronteraAvance = fronteraDe(ESQUEMA_AVANCE);
+  const fronteraDinero = fronteraDe(ESQUEMA_DINERO);
+  // El gasto sale del GP, no de los snapshots: no cruza ninguna frontera.
+
+  // ── QUÉ SE DIBUJA Y QUÉ SE DECLARA AUSENTE ────────────────────────────────
+  const hayDato = (serie) => serie.some(v => typeof v === 'number');
+  const lineas = [];
+  const ausentes = [];
+  const declarar = (clave, nombre, motivo) => ausentes.push({ clave, nombre, motivo });
+
+  // (a) EL EJECUTADO. Su rótulo lleva monto Y porcentaje, y el porcentaje es el
+  // de ESTA cantidad sobre el contrato —no el avance físico—: poner el avance
+  // ponderado junto a un monto ejecutado pone dos cuentas distintas en la misma
+  // etiqueta, y son dos números que no tienen por qué coincidir.
+  if (hayDato(ejecutado)) {
+    lineas.push({
+      clave: 'ejec', nombre: 'Avance ejecutado', color: COLOR_CURVA.ejec,
+      valores: ejecutado, rotulada: true, medido: ejecutadoMedido,
+      idxFrontera: fronteraDinero.hay ? fronteraDinero.idx : -1,
+      fmt: (v) => presupuesto > 0
+        ? `${fmtDineroCorto(v)} · ${NUM((v / presupuesto) * 100, 0)}%`
+        : fmtDineroCorto(v),
+    });
+  } else {
+    declarar('ejec', 'Avance ejecutado',
+      hayAlgunSnapshot
+        ? 'ningún corte guardado trae el monto ejecutado'
+        : 'esta obra todavía no tiene ningún corte de avance capturado');
+  }
+
+  // (b) EL PROGRAMADO. Sin anexo no hay línea: la recta del plazo se quitó el
+  // 2026-11-06 porque una línea que parte el contrato entre el inicio y el fin
+  // se lee como un plan diga lo que diga la leyenda. Ver `avanceProgramadoA`.
+  if (fuentePrograma === 'programa' && hayDato(programado)) {
+    lineas.push({
+      clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
+      valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+    });
+  } else {
+    declarar('prog', 'Avance programado',
+      fuentePrograma === 'cargando'
+        ? 'leyendo el programa de obra…'
+        : 'no hay programa de obra capturado: carga el AE11 o el DE-5 en Planeación');
+  }
+
+  // (c) EL GASTO. `serieGastoDeSemanas` ya contesta si está MEDIDO; sin esa
+  // bandera la serie trae ceros por semana y quien los lea publica ceros con
+  // cara de medidos.
+  if (gastoMedido && hayDato(gasto)) {
+    lineas.push({
+      clave: 'gasto', nombre: 'Gasto acumulado', color: COLOR_CURVA.gasto,
+      valores: gasto, fmt: fmtDineroCorto,
+    });
+  } else {
+    declarar('gasto', 'Gasto acumulado',
+      'el gasto de esta obra no está medido: GP no la conoce con esta clave');
+  }
+
+  const dibuja = (clave) => lineas.some(l => l.clave === clave);
+
+  // ── LAS DOS ÁREAS ─────────────────────────────────────────────────────────
+  const areas = [];
+
+  // (d) EL MARGEN. Verde donde lo ejecutado va por encima del gasto y rojo
+  // donde va por debajo: una banda de un solo color diría «margen» en el tramo
+  // en que hubo pérdida.
+  if (dibuja('ejec') && dibuja('gasto') && hayDato(margen)) {
+    areas.push({
+      clave: 'margen', nombre: 'Margen bruto acumulado, en pesos',
+      arriba: 'ejec', abajo: 'gasto', valores: margen,
+      colorPos: C.greenDk, colorNeg: C.redDk,
+    });
+  } else {
+    declarar('margen', 'Margen bruto acumulado, en pesos',
+      !dibuja('gasto')
+        ? 'sin la línea de gasto no hay hueco que sombrear — no es que no haya margen, es que no se sabe'
+        : 'no hay ejecutado capturado contra el que restar el gasto');
+  }
+
+  // Y la diferencia contra el programa, que es lo que hace evidente el atraso
+  // de un vistazo. Amarillo cuando la obra va por debajo de lo programado.
+  const contraPrograma = semanas.map((s, i) =>
+    (typeof ejecutado[i] === 'number' && typeof programado[i] === 'number')
+      ? ejecutado[i] - programado[i] : null);
+  if (dibuja('ejec') && dibuja('prog') && hayDato(contraPrograma)) {
+    areas.push({
+      clave: 'atraso', nombre: 'Contra el programa, en pesos',
+      arriba: 'ejec', abajo: 'prog', valores: contraPrograma,
+      colorPos: C.blue, colorNeg: C.yellowDk,
+    });
+  } else {
+    declarar('atraso', 'Contra el programa, en pesos',
+      !dibuja('prog')
+        ? 'sin programa capturado no hay atraso que sombrear'
+        : 'no hay ejecutado capturado que comparar contra el programa');
+  }
+
+  // ── EL PIE: LO QUE HAY QUE SABER PARA LEER EL DIBUJO ──────────────────────
+  // El desajuste de bases va aquí y no se corrige reescalando: el anexo declara
+  // su propio total y si no coincide con el contrato capturado, las dos curvas
+  // terminan a alturas distintas. Reescalar una esconde un defecto del dato.
+  const notas = [];
+  if (dibuja('prog') && presupuesto > 0 && totalPrograma
+      && Math.abs(totalPrograma - presupuesto) / presupuesto > 0.005) {
+    notas.push(`el anexo suma ${fmtDineroCorto(totalPrograma)} y el contrato ` +
+      `capturado ${fmtDineroCorto(presupuesto)}: las dos curvas no cierran a la misma altura`);
+  }
+  if (fronteraDinero.hay) notas.push('el tramo punteado del dinero se guardó recortado por partida');
+  if (gastoSinFechar) notas.push('parte del gasto llega sin fecha, así que sólo la última semana trae el total');
+
+  return {
+    semanas, lineas, areas, ausentes, notas,
+    // Las series crudas salen también porque la tabla de abajo contesta «cuánto
+    // exactamente» sobre LAS MISMAS: si las recalculara, el renglón y la curva
+    // de la misma semana podrían discrepar.
+    avance, programadoPct, programado, ejecutado, gasto, margen, contraPrograma,
+    ejecutadoMedido, gastoPorSem, presupuesto, totalPrograma,
+    fuentePrograma, gastoMedido, gastoSinFechar,
+    fronteraAvance, fronteraDinero, idxPrimerAvance,
+  };
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // UN PANEL DE LÍNEAS SOBRE EL EJE DE SEMANAS
 // ════════════════════════════════════════════════════════════════════════════
 //
@@ -12700,15 +13077,46 @@ function SelectorVentana({rango, onRango}) {
 // `ejeAbajo` es lo único que distingue a los paneles apilados: las etiquetas de
 // semana se escriben una sola vez, debajo del último. Los dos paneles comparten
 // el eje porque reciben el MISMO arreglo `semanas`, no porque se sincronicen.
-function PanelSemanal({semanas, series, fmt, fmtEje, titulo, pie, ejeAbajo = true,
+//
+// LAS ÁREAS. Una entrada de `areas` sombrea el hueco entre dos series ya
+// dibujadas, nombrándolas por su clave: el panel no sabe qué significan ni
+// calcula la diferencia, la recibe en `valores` para poder decidir el color por
+// signo. Un área cuyas dos series no estén dibujadas no se pinta — no hay
+// hueco que enseñar si falta uno de los bordes.
+//
+// LAS LÍNEAS SE PRENDEN Y SE APAGAN. Con cuatro cantidades sobre un eje, poder
+// quitar una es la diferencia entre leer la gráfica y adivinarla. El estado es
+// `useState` a secas, A PROPÓSITO: al abrir salen todas. Guardarlo entre
+// sesiones deja a alguien mirando una gráfica con el gasto apagado desde la
+// semana pasada y leyendo la obra sin él sin acordarse de haberlo apagado.
+//
+// LO QUE NO SE PUEDE DIBUJAR SE ESCRIBE. `ausentes` entra en la leyenda con su
+// motivo. Y una serie que SÍ se pasó pero viene sin un solo dato en la ventana
+// también se nombra, en vez de desaparecer del dibujo y de la leyenda a la vez:
+// ése es el modo de mentir por omisión de este componente.
+function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
+                       titulo, pie, ejeAbajo = true,
                        altura = 150, maxFijo = null, minFijo = null}) {
+  const [apagadas, setApagadas] = useState(() => []);
+  const prender = (clave) => setApagadas(a =>
+    a.includes(clave) ? a.filter(c => c !== clave) : [...a, clave]);
+  // Los `clipPath` de las áreas viven en el documento, no en el SVG: con un id
+  // fijo, dos paneles en la misma pantalla recortarían con la banda del otro.
+  const idPanel = React.useId().replace(/:/g, '');
+
   const W = 720, PL = 62, PR = 18, PT = 22;
   const PB = ejeAbajo ? 32 : 10;
   const H = altura + PT + PB;
   const cw = W - PL - PR, ch = altura;
 
-  const vivos = series.filter(s => s.valores.some(v => v !== null && v !== undefined));
-  const todos = vivos.flatMap(s => s.valores.filter(v => v !== null && v !== undefined));
+  const conDato = (s) => s.valores.some(v => v !== null && v !== undefined);
+  const vacias = series.filter(s => !conDato(s));
+  const vivos = series.filter(s => conDato(s) && !apagadas.includes(s.clave));
+  // La escala NO cambia al apagar una línea. Si el eje se reajustara, apagar el
+  // gasto haría crecer al ejecutado en la pantalla y parecería que la obra
+  // avanzó: prender y apagar es una ayuda para leer, no debe alterar lo leído.
+  const todos = series.filter(conDato)
+    .flatMap(s => s.valores.filter(v => v !== null && v !== undefined));
   const maxValor = maxFijo !== null ? maxFijo : Math.max(...todos.map(Math.abs), 1);
   const minValor = minFijo !== null ? minFijo : Math.min(...todos, 0);
   const rangoY = (maxValor - minValor) || 1;
@@ -12719,21 +13127,74 @@ function PanelSemanal({semanas, series, fmt, fmtEje, titulo, pie, ejeAbajo = tru
   const hayNegativos = todos.some(v => v < 0);
   const rotar = semanas.length >= 12;
 
+  // Las áreas que de verdad se pueden sombrear: las dos series encendidas.
+  const puntosDe = (clave) => {
+    const s = vivos.find(x => x.clave === clave);
+    if (!s) return null;
+    return semanas.map((m, i) => {
+      const v = s.valores[i];
+      return (v === null || v === undefined) ? null : [xPos(i), yPos(v)];
+    });
+  };
+  const areasVivas = areas.map(a => {
+    const pa = puntosDe(a.arriba), pb = puntosDe(a.abajo);
+    if (!pa || !pb) return null;
+    // Sólo el tramo donde las DOS tienen dato: cerrar una banda contra un punto
+    // que no existe inventa un hueco.
+    const idx = semanas.map((m, i) => i).filter(i => pa[i] && pb[i]);
+    if (idx.length < 2) return null;
+    return { ...a,
+      banda: bandaEntre(idx.map(i => pa[i]), idx.map(i => pb[i])),
+      tramos: tramosDeSigno(semanas.map((m, i) => pa[i] && pb[i] ? a.valores[i] : null),
+                            semanas.map((m, i) => xPos(i))) };
+  }).filter(Boolean);
+
+  const chip = (clave, hijos, extra) => <span key={clave} style={{display:"inline-flex",
+    alignItems:"center",gap:4,fontSize:9,...extra}}>{hijos}</span>;
+
   return <div>
-    {(titulo || vivos.length > 0) && (
+    {(titulo || series.length > 0 || ausentes.length > 0) && (
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:2}}>
         {titulo && <span style={{fontSize:10,fontWeight:700,color:C.textSec,
           letterSpacing:"0.03em"}}>{titulo}</span>}
-        {vivos.map(s => (
-          <span key={s.clave} style={{display:"inline-flex",alignItems:"center",gap:4,
-            fontSize:9,color:C.textMut}}>
+        {series.filter(conDato).map(s => {
+          const off = apagadas.includes(s.clave);
+          return <button key={s.clave} type="button" onClick={() => prender(s.clave)}
+            title={off ? `Prender ${s.nombre}` : `Apagar ${s.nombre}`}
+            aria-pressed={!off}
+            style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:9,
+              color:off ? C.textMut : C.textSec, background:"none",
+              border:"none",padding:0,cursor:"pointer",
+              textDecoration:off ? "line-through" : "none",opacity:off ? 0.6 : 1}}>
             <svg width="16" height="6" style={{flexShrink:0}}>
-              <line x1="0" y1="3" x2="16" y2="3" stroke={s.color} strokeWidth={2}
+              <line x1="0" y1="3" x2="16" y2="3" stroke={off ? C.textMut : s.color}
+                strokeWidth={2}
                 strokeDasharray={s.estilo === 'punteada' ? '4,3' : undefined}/>
             </svg>
             {s.nombre}
-          </span>
-        ))}
+          </button>;
+        })}
+        {areasVivas.map(a => chip(a.clave, <>
+          <svg width="16" height="8" style={{flexShrink:0}}>
+            <rect x="0" y="0" width="8" height="8" fill={alfa(a.colorPos, 22)}/>
+            <rect x="8" y="0" width="8" height="8" fill={alfa(a.colorNeg, 22)}/>
+          </svg>
+          {a.nombre}
+        </>, {color:C.textMut}))}
+        {/* Lo que no hay, con su motivo. Va en la misma leyenda y no en una nota
+            al pie: quien mira la gráfica lee la leyenda para saber qué está
+            viendo, y lo que falta es parte de eso. */}
+        {[...ausentes,
+          ...vacias.map(s => ({clave:s.clave, nombre:s.nombre,
+            motivo:'sin dato en estas semanas'}))].map(a =>
+          chip(a.clave, <>
+            <svg width="16" height="6" style={{flexShrink:0}}>
+              <line x1="0" y1="3" x2="16" y2="3" stroke={C.textMut} strokeWidth={1.5}
+                strokeDasharray="2,2" opacity={0.6}/>
+            </svg>
+            <span style={{fontStyle:"italic"}}>{a.nombre}: {a.motivo}</span>
+          </>, {color:C.textMut,opacity:0.85})
+        )}
       </div>
     )}
     <div style={{overflowX:"auto",width:"100%"}}>
@@ -12755,34 +13216,55 @@ function PanelSemanal({semanas, series, fmt, fmtEje, titulo, pie, ejeAbajo = tru
             stroke={C.textMut} strokeWidth={0.8} strokeDasharray="2,2"/>
         )}
 
-        {/* Una línea por serie. El tramo anterior a su frontera va punteado y
-            atenuado: se señala, no se borra — cortarlo dejaría obras como la
-            0112 con un solo punto. */}
+        {/* LAS ÁREAS, debajo de las líneas que las encierran.
+            El relleno va recortado por la banda y pintado con rectángulos
+            verticales, uno por tramo de signo. Es la única forma de que el
+            borde del sombreado siga la curva Bézier EXACTA que se dibuja
+            arriba y a la vez cambie de color donde la diferencia cruza el
+            cero: un polígono por tramo tendría que cerrar con rectas y el
+            relleno se despegaría de su propio borde. */}
+        {areasVivas.map(a => <g key={a.clave}>
+          <defs>
+            <clipPath id={`${idPanel}-${a.clave}`}><path d={a.banda}/></clipPath>
+          </defs>
+          <g clipPath={`url(#${idPanel}-${a.clave})`}>
+            {a.tramos.map((t, i) => (
+              <rect key={i} x={t.desde} y={PT} width={Math.max(t.hasta - t.desde, 0)}
+                height={ch} fill={alfa(t.signo ? a.colorPos : a.colorNeg, 16)}/>
+            ))}
+          </g>
+        </g>)}
+
+        {/* Una línea por serie, partida en tramos. El tramo anterior a su
+            frontera y el que cubre semanas sin captura van punteados y
+            atenuados: se señalan, no se borran — cortarlos dejaría obras como
+            la 0112 con un solo punto. Ver `tramosDeSerie`. */}
         {vivos.map(s => {
           const punto = (i) => (s.valores[i] === null || s.valores[i] === undefined)
             ? null : [xPos(i), yPos(s.valores[i])];
           const iF = (typeof s.idxFrontera === 'number') ? s.idxFrontera : -1;
           const hayViejo = iF > 0;
-          // El punto de la frontera pertenece a los dos tramos: es donde cambia
-          // la definición, no donde falta el dato.
-          const ptsViejo = hayViejo
-            ? semanas.map((m, i) => i <= iF ? punto(i) : null).filter(Boolean) : [];
-          const ptsNuevo = hayViejo
-            ? semanas.map((m, i) => i >= iF ? punto(i) : null).filter(Boolean)
-            : semanas.map((m, i) => punto(i)).filter(Boolean);
+          const pts = semanas.map((m, i) => punto(i));
+          const tramos = tramosDeSerie({ pts, medido: s.medido, idxFrontera: iF });
           const esPunteada = s.estilo === 'punteada';
           return <g key={s.clave}>
-            {ptsViejo.length >= 2 && (
-              <path d={caminoSuave(ptsViejo)} fill="none" stroke={s.color}
-                strokeWidth={2} strokeDasharray="5,3" opacity={0.5}
+            {tramos.map((t, k) => (
+              <path key={k} d={caminoSuave(t.pts)} fill="none" stroke={s.color}
+                strokeWidth={(t.vigente && t.medido) ? (esPunteada ? 1.8 : 2.2) : 2}
+                strokeDasharray={(t.vigente && t.medido && !esPunteada)
+                  ? undefined : '5,3'}
+                // Un trecho sin medir NO es una serie de menor confianza: es un
+                // trecho que no se midió. Conserva el grosor y sólo se atenúa.
+                opacity={t.vigente ? (t.medido ? 1 : 0.55) : 0.5}
                 strokeLinecap="round" strokeLinejoin="round"/>
-            )}
-            {ptsNuevo.length >= 2 && (
-              <path d={caminoSuave(ptsNuevo)} fill="none" stroke={s.color}
-                strokeWidth={esPunteada ? 1.8 : 2.2}
-                strokeDasharray={esPunteada ? '4,3' : undefined}
-                strokeLinecap="round" strokeLinejoin="round"/>
-            )}
+            ))}
+            {/* Los extremos de cada trecho sin medir se marcan: el ojo tiene
+                que ver dónde vuelve a haber dato. */}
+            {tramos.filter(t => !t.medido).flatMap((t, k) =>
+              [t.pts[0], t.pts[t.pts.length - 1]].map((p, j) => (
+                <circle key={`${k}-${j}`} cx={p[0]} cy={p[1]} r={2.2}
+                  fill={C.card} stroke={s.color} strokeWidth={1.2}/>
+              )))}
             {/* Los puntos y sus cifras sólo en la serie principal: con tres
                 series rotuladas no se lee ninguna. */}
             {s.rotulada && semanas.map((m, i) => {
@@ -12799,7 +13281,9 @@ function PanelSemanal({semanas, series, fmt, fmtEje, titulo, pie, ejeAbajo = tru
                 {v !== 0 && <text x={x} y={yLabel} textAnchor={anchor}
                   fontSize="8.5" fill={v < 0 ? C.redDk : C.textPri} fontWeight="600"
                   transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
-                  {fmt(v)}
+                  {/* El rótulo de la serie manda sobre el del panel: el
+                      ejecutado lleva monto Y porcentaje, y el eje sólo pesos. */}
+                  {(s.fmt || fmt)(v)}
                 </text>}
               </g>;
             })}
@@ -12869,388 +13353,61 @@ function TablaSemanas({semanas, columnas, maxAlto = 230}) {
     </table>
   </div>;
 }
-
-// ── TENDENCIAS SEMANALES ──────────────────────────────────────────────────
-// Antes eran mensuales, pero daban poca información (1-2 puntos por trimestre
-// en obras cortas). Ahora es semana ISO por semana ISO.
-// Datos consolidados:
-// - Avance: historialAvance (ya vive por semana ISO — un snapshot por semana)
-// - Gasto TOTAL por semana = último GP conocido + Maquinaria + Otros.
-//   (Almacén NO suma al gasto — ya está en GP; suma al Ejecutado.)
-//   El GP del Sheet ya viene como acumulado por semana; los otros conceptos
-//   se suman a la semana ISO de su fecha.
-// - Margen semanal = ejecutado semanal (∑ a% × imp por sub) - gasto acumulado
-//   [MISMA fórmula que el Dashboard, no "avance% × presupuesto"]
-// - Necesita 'subs' para calcular el monto ejecutado real por semana; si no
-//   se pasan, cae a "avance% × presupuesto" como aproximación.
-// No recibe `datosObraGP`: la obra del GP se resuelve DENTRO, con
-// `estadoGastoGP`, igual que el KPI. El prop existía porque este componente
-// traía su propio match difuso —sin la guarda de la 0129— y el Dashboard, que
-// nunca lo pasó, dejaba que decidiera por su cuenta. Ver `serieGastoDeSemanas`.
-function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otrosGastos, maquinaria, materiales, subs, programa}) {
-  // UN SOLO SELECTOR para los dos paneles. Antes había además una fila de
-  // pestañas —avance / gasto / margen— y se veía una métrica a la vez: para
-  // saber si el gasto corría más rápido que el avance había que acordarse de la
-  // otra pestaña. Ahora van apiladas sobre el mismo eje.
+// ── LA TARJETA DE LA GRÁFICA ÚNICA ────────────────────────────────────────
+//
+// Aquí había DOS paneles apilados —el avance en porcentaje arriba, la economía
+// en pesos abajo— y debajo de esta tarjeta una tercera gráfica de proyección
+// con su propia copia del ejecutado y del gasto. El porqué de una sola está
+// escrito en `curvaUnicaDeObra`. Esto es nada más la tarjeta que la enmarca: el
+// selector de ventana, la gráfica y la tabla que contesta «cuánto, exactamente,
+// en qué semana».
+//
+// YA NO RECIBE `estimaciones` NI `materiales`. Los recibía, y con ellos armaba
+// una serie de estimaciones cobradas por semana —con su propia corrección de
+// doble conteo— y otra de gasto semanal rellenada con promedios, que NINGUNA
+// línea de la gráfica ni ningún renglón de la tabla leía. Ciento diez líneas de
+// cuenta muerta que al leerlas parecían sostener algo.
+//
+// Tampoco recibe `datosObraGP`: la obra del GP se resuelve dentro, con
+// `estadoGastoGP`, igual que el KPI. Ver `serieGastoDeSemanas`.
+function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
+                              maquinaria, subs, programa}) {
   const [rango, setRango] = useState(12);          // últimas N semanas
-
-  // El mapeo fecha → semana ISO de las estimaciones cobradas. Es `semanaISO`,
-  // la única del repositorio; aquí sólo se le cambia la forma del resultado a
-  // `{sem, año}` porque así lo leen las líneas de abajo. La copia que vivía
-  // aquí —con su propio `new Date` y su propia versión del corrimiento del
-  // lunes— se fue: dos copias de la cuenta de semanas en el mismo archivo es
-  // cómo se llega a que un cobro registrado el lunes caiga en la semana que ya
-  // cerró.
-  const semanaISOLocal = (fecha) => {
-    const s = semanaISO(fecha);
-    return (s && isFinite(s.semana) && isFinite(s.año)) ? { sem: s.semana, año: s.año } : null;
-  };
-
-  // ── El eje de semanas y la serie de avance ────────────────────────────────
-  // Las dos cuentas viven en `semanasDeVentana` y `serieAvanceDeSemanas`, a
-  // nivel de módulo, porque el tablero del municipio dibuja la MISMA curva S
-  // con los mismos datos. Mientras estuvieron aquí dentro, la única forma de
-  // que el municipio tuviera curva era copiarlas.
   const semanas = semanasDeVentana(obra, rango);
-  const {
-    avancePorSem,
-    serie: avanceSeries,
-    avanceActual: avanceActualParaFallback,
-    esquemaPorSemana,
-    idxPrimerAvance,
-  } = serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
+  const g = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
+                               otrosGastos, maquinaria, programa });
 
-  // ── Gasto TOTAL acumulado por semana ──────────────────────────────────
-  // La cuenta vive en `serieGastoDeSemanas`, a nivel de módulo, por la misma
-  // razón que el eje y la curva de avance: la proyección dibuja el MISMO gasto
-  // semanal y mientras cada una lo armaba por su cuenta podían publicar dos
-  // gastos distintos de la misma obra. La nota larga —qué trae el Sheet, qué
-  // es delta y qué acumulado, y por qué el almacén NO suma aquí— está allá.
-  const {
-    porSem: gastoAcumPorSem,
-    serie: gastoAcumSeries,
-    gtActual,
-    sinFechar: gastoSinFechar,
-    // Si el gasto de GP de esta obra no está medido, la respuesta se PIDE aquí
-    // y no se vuelve a deducir: `porSem` sigue trayendo un número por semana
-    // —cero— y cualquier consumidor que lo lea sin esta bandera publica ceros
-    // con cara de medidos, que es el defecto un piso más abajo del KPI.
-    medido: gastoMedido,
-  } = serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
+  // ── LAS COLUMNAS DE LA TABLA ──────────────────────────────────────────────
+  // La tabla lee LAS MISMAS series que la gráfica, tomadas del mismo objeto.
+  // Lo que se calcula aquí abajo son los tres deltas, que sólo existen en la
+  // tabla: la gráfica dibuja acumulados.
 
-  // ── Estimaciones acumuladas COBRADAS (pagadas) por semana
-  const estPorSem = {};
-  let acumEst = 0;
-  const estOrd = (estimaciones || [])
-    .filter(e => {
-      const s = (e.estatus||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-      return s === 'pagada' || s === 'cobrada';
-    })
-    // La fecha se arma en LOCAL —ver `semanaISO`— porque abajo pasa por
-    // `semanaISOLocal`: con la lectura UTC, una estimación cobrada un lunes se
-    // contabilizaba en la semana que ya había cerrado.
-    .map(e => {
-      const f = e.fechaCobro || e.fecha || e.periodo || 0;
-      const _s = typeof f === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(f.trim()) : null;
-      return { ...e, _fecha: _s ? new Date(+_s[1], +_s[2] - 1, +_s[3]) : new Date(f) };
-    })
-    .filter(e => !isNaN(e._fecha))
-    .sort((a,b) => a._fecha - b._fecha);
-  // Suma pre-rango: todo lo cobrado ANTES de que empiece la primera semana de
-  // la ventana. El corte es el lunes de esa semana —no un jueves ni el 1 de
-  // enero más tantos días—, porque lo que se pregunta es si el cobro cae fuera
-  // de la ventana, y la ventana empieza el lunes.
-  const primeraSemFecha = (() => {
-    const s = semanas[0];
-    if (!s) return null;
-    const d = jueveDeSemanaISO(s.año, s.sem);
-    d.setDate(d.getDate() - 3);
-    d.setHours(0,0,0,0);
-    return d;
-  })();
-  if (primeraSemFecha) {
-    estOrd.forEach(e => { if (e._fecha < primeraSemFecha) acumEst += (e.monto||0); });
-  }
-  semanas.forEach(s => {
-    // Todas las cobradas cuya fecha cae en esta semana ISO
-    estOrd.forEach(e => {
-      const iso = semanaISOLocal(e._fecha);
-      if (!iso) return;
-      if (iso.sem === s.sem && iso.año === s.año) acumEst += (e.monto||0);
-    });
-    // Nota: como estOrd está ordenado, esta suma "por semana" cuenta cada
-    // estimación una sola vez. Cuando cambiamos de semana, sigue acumulando.
-    estPorSem[s.key] = acumEst;
-  });
-  // Corrección: la lógica de arriba puede doble-contar. Recalculamos limpio:
-  {
-    let a = 0;
-    if (primeraSemFecha) {
-      estOrd.forEach(e => { if (e._fecha < primeraSemFecha) a += (e.monto||0); });
-    }
-    semanas.forEach(s => {
-      // Restamos lo pre-rango ya sumado + sumamos lo de esta semana exacta
-      const semSum = estOrd.reduce((t,e) => {
-        const iso = semanaISOLocal(e._fecha);
-        if (iso && iso.sem === s.sem && iso.año === s.año) return t + (e.monto||0);
-        return t;
-      }, 0);
-      a += semSum;
-      estPorSem[s.key] = a;
-    });
-  }
-
-  // ── El arrastre del dinero ────────────────────────────────────────────────
-  // REGLA IMPORTANTE (agosto 2026): si el equipo de obra NO captura avance
-  // una semana, el snapshot NO existe → antes se mostraba 0% y la gráfica
-  // caía del cielo. Ahora ARRASTRAMOS el último valor conocido: si la
-  // semana pasada iban en 80% y no hubo captura esta semana, sigue en 80%.
-  // Eso lo hace ya `serieAvanceDeSemanas` para el avance; aquí abajo se repite
-  // el mismo tratamiento para el ejecutado y el margen, que dependen de él.
-  // El gasto acumulado NO necesita este tratamiento porque siempre suma.
-  const primerSemanaVisible = semanas[0]?.key;
-
-  // Serie de MARGEN semanal (misma fórmula que el Dashboard):
-  //   margen = ejecutado - gasto total
-  //   ejecutado = ∑(a% × imp) por sub + almacén acumulado en la semana
-  //
-  // Antes se calculaba como (avance% × presupuesto) - gasto, lo que daba
-  // números irreales (avance% × presupuesto no es el monto ejecutado real,
-  // es el "monto contractual proporcional al avance"). Con presupuestos
-  // grandes y avance parcial, esto inflaba el ejecutado a cifras absurdas
-  // (ej. 20% × $520M = $104M "ejecutado", cuando en realidad el ejecutado
-  // real venía siendo mucho menor).
-  //
-  // Nueva fórmula: usar el snapshot semanal del historial que ya trae
-  // subs[{sec,a,imp}] — el mismo array que usa el Dashboard para 'am'.
-  // Si la semana no tiene snapshot, se hereda el ejecutado anterior
-  // (mismo tratamiento que el avance).
-
-  // Ejecutado por semana — SE LEE DEL SNAPSHOT, no se reconstruye.
-  //
-  // Antes iba `avance_ponderado% × presupuesto`. Eso reconstruía el dinero a
-  // partir del avance físico, que está topado al 100% por partida (P1: el
-  // avance físico sí se topa, el dinero no). Mientras todos los snapshots
-  // fueron del esquema 1 el número salía idéntico al guardado —verificado
-  // contra las 4 obras con historial— porque el `montoEjecutado` del esquema 1
-  // también iba topado. Con el esquema 2 la identidad se rompe y la gráfica
-  // se quedaría mostrando el dinero recortado mientras el KPI muestra el real.
-  //
-  // Ver `montoEjecutadoSnap`. Si un snapshot no trae el dato, la semana queda
-  // en null: "no disponible", no cero (P2).
-  const presObra = parseFloat(obra?.presupuesto) || 0;
-  const ejecutadoPorSem = {};
-  Object.entries(avancePorSem).forEach(([k, snap]) => {
-    const me = montoEjecutadoSnap(snap);
-    if (me === null) return;
-    ejecutadoPorSem[k] = me;
-  });
-
-  // Buscar último ejecutado anterior a la ventana visible para arranque.
-  // Arranca en null, no en 0: con 0 el `??` de más abajo nunca disparaba
-  // —0 no es nullish— y el fallback del avance actual era código muerto.
-  let ultimoEjecutadoConocido = null;
-  if (primerSemanaVisible) {
-    const anteriores = Object.entries(ejecutadoPorSem)
-      .filter(([k]) => k < primerSemanaVisible)
-      .sort(([a], [b]) => a.localeCompare(b));
-    if (anteriores.length > 0) {
-      ultimoEjecutadoConocido = anteriores[anteriores.length - 1][1];
-    }
-  }
-
-  // ── Serie EJECUTADO por semana (acumulado, con arrastre) ──────────────
-  // Reglas:
-  //   1) Si esta semana tiene snapshot, se usa su `montoEjecutado`.
-  //   2) Si no, se HEREDA el último valor conocido (semanas anteriores).
-  //   3) Si todavía no hay ningún valor conocido, la semana queda en null
-  //      —no disponible— en vez de 0. Un cero dibuja una caída a piso que
-  //      nadie capturó (P2).
-  // El fallback al ejecutado vivo solo entra cuando NO hay ningún snapshot
-  // en toda la obra: es el caso "el historial aún no llega de Firestore".
-  // Si no hay subs tampoco hay fallback: null, no 0 (P2).
-  const ejecutadoActualParaFallback = (subs && subs.length > 0)
-    ? desgloseEjecutado(subs, obra?.modoAvance === "volumen").total
-    : null;
-  // OJO: se mide sobre `avancePorSem`, no sobre `ejecutadoPorSem`. Un snapshot
-  // viejo sin `montoEjecutado` no aparece en `ejecutadoPorSem`, y contra esa
-  // colección la obra parecía "sin historial" → se caía al fallback y la serie
-  // arrancaba en 0. Ese 0 no es "no ejecutó nada", es "no se guardó el dato".
-  const hayAlgunSnapshot = Object.keys(avancePorSem).length > 0;
-  const ejecutadoSeries = [];
-  let ejecAcarreo = ultimoEjecutadoConocido
-    ?? (hayAlgunSnapshot ? null : ejecutadoActualParaFallback);
-  semanas.forEach(s => {
-    if (typeof ejecutadoPorSem[s.key] === 'number') {
-      ejecAcarreo = ejecutadoPorSem[s.key];
-    }
-    ejecutadoSeries.push(ejecAcarreo);
-  });
-
-  // ── Ancla del EJECUTADO en la semana más reciente ───────────────────────
-  // El del gasto lo decide `serieGastoDeSemanas`; éste es otra serie y lleva su
-  // propia condición: sin catálogo no hay ejecutado que anclar.
-  //
-  // Las dos colgaban de un solo `hayDatosDash` que pedía `gtActual > 0`, y por
-  // ahí el ejecutado quedaba atado al gasto: una obra con catálogo capturado y
-  // sin un peso gastado no anclaba su ejecutado, así que el último renglón de la
-  // tabla publicaba el valor arrastrado del snapshot mientras el KPI de arriba
-  // publicaba el vivo. Son dos series y son dos preguntas.
-  //
-  // Ejecutado actual con la MISMA función que alimenta el KPI del Dashboard
-  // (`desgloseEjecutado`). Antes era avance% × presupuesto, que es el dinero
-  // topado: el último punto de la gráfica no cuadraba con el KPI de arriba.
-  const meActual = ejecutadoActualParaFallback;
-  if (semanas.length > 0 && subs && subs.length > 0 && meActual > 0) {
-    ejecutadoSeries[semanas.length - 1] = meActual;
-  }
-
-  // ── Serie de GASTO SEMANAL (delta por semana) ──────────────────────────
-  // gasto_sem_i = gasto_acum_i - gasto_acum_(i-1)
-  // Reglas para NO dejar barras vacías:
-  //   1) La PRIMERA semana visible NO muestra el acumulado global — muestra
-  //      un delta estimado (promedio de los deltas reales visibles) para
-  //      no bordear la gráfica con un pico enorme (el "17M" de Malecón).
-  //   2) Si una semana ISO no tiene actualización del GP, se rellena con
-  //      el promedio de las semanas con gasto real de la ventana. Esto
-  //      refleja mejor la realidad: aunque no haya factura ese día, hay
-  //      nómina, renta de equipos, etc.
-  //   3) Y si el gasto de GP no está medido NO hay delta que calcular: la resta
-  //      de dos ceros da cero, y ese cero se leería como «esta semana no se
-  //      gastó nada». Por eso la serie entera queda en null, igual que el
-  //      acumulado del que sale.
-  let gastoAcumRef = gastoAcumPorSem[semanas[0]?.key] || 0;
-  const deltasRaw = semanas.map((s, i) => {
-    if (i === 0) return null;   // se calcula después
-    if (!gastoMedido) return null;
-    const act = gastoAcumPorSem[s.key] || gastoAcumRef;
-    const prev = gastoAcumPorSem[semanas[i-1].key] || gastoAcumRef;
-    if (act >= prev) gastoAcumRef = act;
-    return Math.max(0, act - prev);
-  });
-  // Promedio de deltas > 0 (para rellenar semanas sin captura ni GP)
-  const deltasReales = deltasRaw.filter(d => d && d > 0);
-  const promedioDelta = deltasReales.length > 0
-    ? deltasReales.reduce((t, d) => t + d, 0) / deltasReales.length
-    : 0;
-
-  const gastoSemanalSeries = semanas.map((s, i) => {
-    if (i === 0) {
-      // Primera semana: usa el promedio (evita mostrar el acumulado
-      // histórico como un pico gigante en la primera barra visible).
-      return promedioDelta;
-    }
-    const d = deltasRaw[i];
-    // Si es 0 o null (semana sin actualización del GP), usa el promedio
-    // de deltas reales — refleja que sí hubo gasto (nómina, equipos, etc.)
-    // aunque no haya facturación nueva en el Sheet.
-    if (!d || d === 0) return promedioDelta;
-    return d;
-  });
-
-  // ── Serie de MARGEN semanal ──────────────────────────────────────────
-  // Fórmula (misma que el Dashboard):
-  //   margen_semana = ejecutado_acumulado_semana − gasto_acumulado_semana
-  //
-  // REGLA (usuario, agosto 2026, iteración 3):
-  //   Muchas obras acumulan GASTO ANTES de empezar a capturar avance
-  //   físico (compras iniciales, movilización, etc.). Si calculamos
-  //   margen en esas semanas, sale muy negativo porque hay gasto sin
-  //   ejecutado — número engañoso.
-  //   → El margen SÓLO se grafica desde la PRIMERA semana con snapshot
-  //     real de avance. Antes de eso queda null (no se dibuja).
-  //   → Si una semana intermedia no tiene captura, se ARRASTRA el
-  //     último valor conocido (para ejecutado y gasto).
-  //   → El último punto se ancla exactamente al KPI del Dashboard.
-  //   → SIN factor de calibración — la iteración anterior modificaba
-  //     los valores reales del histórico y arrojaba datos raros.
-  // `idxPrimerAvance` viene de `serieAvanceDeSemanas`: es la misma pregunta
-  // —«desde qué semana hay avance capturado»— que decide dónde arranca la
-  // curva S, y dos respuestas distintas dibujarían el margen desde una semana
-  // en la que la curva todavía no existe.
-  const margenSeries = semanas.map((s, i) => {
-    // Antes de la primera semana con avance capturado: no hay margen
-    if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
-    // Si el ejecutado de esa semana no está disponible, el margen tampoco.
-    // Restar contra un cero inventado dibujaría una pérdida que no existe (P2).
-    if (typeof ejecutadoSeries[i] !== 'number') return null;
-    // El gasto que se resta es EL MISMO que se dibuja, leído de la serie, no
-    // recalculado aquí. Es lo que dice el pie del panel: el margen es la resta
-    // de las otras dos líneas. Tenía su propia cuenta —un barrido hacia atrás
-    // buscando el último acumulado > 0 y su propia decisión de anclar— y dos
-    // cuentas del mismo número es cómo la línea morada deja de ser la distancia
-    // entre las otras dos.
-    const g = gastoAcumSeries[i];
-    if (typeof g !== 'number') return null;
-    // Ejecutado ya viene con arrastre desde ejecutadoSeries
-    return ejecutadoSeries[i] - g;
-  });
-
-  // ── FRONTERA DE ESQUEMA ───────────────────────────────────────────────
-  // Las semanas anteriores al arreglo del recorte se calcularon con el avance
-  // topado por partida, y su `montoEjecutado` venía recortado. Las nuevas no.
-  // La serie es continua en el eje del tiempo pero NO en su definición: el
-  // escalón que aparece al cruzar no es avance, es cambio de criterio.
-  //
-  // Decisión de producto (usuario, 2026-09-21): no se corta la serie —dejaría
-  // obras como 0112 con un solo punto—. Se dibuja el tramo viejo PUNTEADO y se
-  // explica en leyenda, igual que ya se hace en la curva S de avance. Y ningún
-  // delta cruza la frontera.
-  //
-  // El esquema de una semana es el del último snapshot conocido hasta ella,
-  // porque el valor se arrastra: una semana sin captura hereda el dato y, con
-  // él, la definición con que se calculó. Eso lo resuelve ya
-  // `serieAvanceDeSemanas` —de donde sale `esquemaPorSemana`— porque el
-  // municipio necesita la misma frontera para su curva.
-  //
-  // Índice de la primera semana ya calculada con el esquema vigente. Todo lo
-  // anterior a él pertenece a la definición vieja.
-  // La frontera es POR MÉTRICA: el dinero cambió de definición en el esquema 2
-  // y el avance en el 3. Una serie de dinero que solo cruza la frontera del
-  // avance es perfectamente comparable y no debe dibujarse punteada.
-  // Solo hay frontera que dibujar si de verdad se mezclan dos definiciones
-  // DENTRO de la ventana visible.
-  const fronteraDe = (umbral) => {
-    const idx = esquemaPorSemana.findIndex(e => e !== null && e >= umbral);
-    const hay = idx > 0
-      && esquemaPorSemana.slice(0, idx).some(e => e !== null && e < umbral);
-    return { idx, hay };
-  };
-  const fronteraAvance = fronteraDe(ESQUEMA_AVANCE);
-  const fronteraDinero = fronteraDe(ESQUEMA_DINERO);
-  // El gasto sale del GP, no de los snapshots: no cruza ninguna frontera.
-
-  // ── EL PROGRAMA CONTRACTUAL SOBRE EL MISMO EJE ────────────────────────────
-  // Lo que convierte esto en una curva S y no en una línea de avance: el
-  // avance solo dice «va en 57%»; contra el programa dice «va 17 puntos
-  // atrás». Sin anexo cargado la serie viene toda en `null` y la línea NO SE
-  // DIBUJA: el #51 (el avance contra una recta) terminaba en rotular la recta
-  // «lineal», y una línea que parte el contrato en dos se lee como un plan
-  // aunque la leyenda diga otra cosa. La leyenda dice que falta y dónde se
-  // carga.
-  const { serie: programadoSeries, fuente: fuentePrograma } =
-    serieProgramadaDeSemanas({ semanas, obra, programa });
-  const rotuloPrograma = ROTULO_PROGRAMADO[fuentePrograma] || ROTULO_PROGRAMADO.sin_programa;
-  const hayPrograma = fuentePrograma === 'programa';
-
-  // ── El avance SEMANAL, en puntos porcentuales ─────────────────────────────
-  // NINGÚN DELTA CRUZA LA FRONTERA. Restar un avance compensado de uno topado
-  // mide el cambio de criterio, no lo que la obra hizo esa semana, y en la
-  // tabla ese número se leería como «avanzó 12 puntos en una semana».
-  const avanceDeltaSeries = semanas.map((s, i) => {
+  // El avance SEMANAL, en puntos porcentuales. NINGÚN DELTA CRUZA LA FRONTERA:
+  // restar un avance compensado de uno topado mide el cambio de criterio, no lo
+  // que la obra hizo esa semana, y en la tabla ese número se leería como
+  // «avanzó 12 puntos en una semana».
+  const avanceDelta = semanas.map((s, i) => {
     if (i === 0) return null;
-    if (fronteraAvance.hay && i === fronteraAvance.idx) return null;
-    const a = avanceSeries[i], b = avanceSeries[i - 1];
+    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;
+    const a = g.avance[i], b = g.avance[i - 1];
     if (typeof a !== 'number' || typeof b !== 'number') return null;
     return a - b;
   });
 
-  // ── El gasto de la semana, MEDIDO ─────────────────────────────────────────
-  // `gastoSemanalSeries` rellena las semanas sin actualización del GP con el
-  // promedio de la ventana: para la forma de la curva está bien, pero en una
-  // tabla ese número se leería como una cifra medida. Aquí va el delta real y
-  // «—» donde no hubo movimiento que medir. La primera semana de la ventana no
-  // tiene delta: su anterior está fuera.
+  // La desviación contra el programa, en puntos. Si no hay programado para esa
+  // semana queda null: un cero diría «está justo en programa», que es una
+  // afirmación distinta de «no se sabe».
+  const desviacion = semanas.map((s, i) => {
+    const p = g.programadoPct[i];
+    if (p === null || p === undefined) return null;
+    if (typeof g.avance[i] !== 'number') return null;
+    return g.avance[i] - p;
+  });
+
+  // El gasto DE LA SEMANA, medido. Va el delta real y «—» donde no hubo
+  // movimiento que medir: rellenar con el promedio de la ventana —como hacía la
+  // serie que alimentaba la gráfica vieja— está bien para la forma de una curva
+  // y en una tabla se lee como una cifra medida.
   //
   // Y la última semana queda en «—» cuando el ancla movió el acumulado. Medido
   // en el preview sobre Oaxaca Parque Lineal: el renglón decía acumulado
@@ -13259,21 +13416,15 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
   // estuvo fechado alcanzando a su serie. Las otras dos salidas mienten peor —
   // poner el salto afirma un gasto de $13.4M en una semana, y dejar el $0
   // afirma que no se gastó nada mientras el acumulado de al lado se triplica.
-  const gastoDeltaMedido = semanas.map((s, i) => {
+  let gastoRef = g.gastoPorSem[semanas[0]?.key] || 0;
+  const gastoDelta = semanas.map((s, i) => {
     if (i === 0) return null;
-    if (i === semanas.length - 1 && gastoSinFechar) return null;
-    return deltasRaw[i];
-  });
-
-  // ── La desviación contra el programa, semana por semana ───────────────────
-  // El número del #51: no «va en 57%» sino «va 17 puntos atrás de lo que
-  // firmó». Si no hay programado para esa semana queda null — un cero diría
-  // «está justo en programa», que es una afirmación distinta de «no se sabe».
-  const desviacionSeries = semanas.map((s, i) => {
-    const p = programadoSeries[i];
-    if (p === null || p === undefined) return null;
-    if (typeof avanceSeries[i] !== 'number') return null;
-    return avanceSeries[i] - p;
+    if (!g.gastoMedido) return null;
+    if (i === semanas.length - 1 && g.gastoSinFechar) return null;
+    const act = g.gastoPorSem[s.key] || gastoRef;
+    const prev = g.gastoPorSem[semanas[i - 1].key] || gastoRef;
+    if (act >= prev) gastoRef = act;
+    return Math.max(0, act - prev);
   });
 
   const colorDelta = (v) => v > 0 ? C.greenDk : v < 0 ? C.redDk : C.textSec;
@@ -13283,15 +13434,13 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",
       marginBottom:10,flexWrap:"wrap",gap:8}}>
       <div>
-        <Tit>Avance y economía, semana por semana</Tit>
-        {/* El subtítulo no puede prometer la comparación cuando no hay con
-            qué compararla. Decía «La obra contra su programa arriba» siempre,
-            y en las 7 obras vivas de hoy —ninguna con anexo cargado— eso era
-            el mismo defecto que la recta, dicho en letra de nueve. */}
+        <Tit>Lo construido, lo programado y lo gastado</Tit>
+        {/* El subtítulo nombra el eje y las dos áreas, y no promete ninguna
+            comparación que la gráfica no vaya a dibujar: cuáles faltan lo dice
+            la leyenda, obra por obra, con el motivo. */}
         <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-          {hayPrograma
-            ? 'La obra contra su programa arriba, su dinero abajo, sobre el mismo eje de semanas'
-            : 'El avance de la obra arriba, su dinero abajo, sobre el mismo eje de semanas'}
+          Todo en pesos acumulados del contrato, sobre un solo eje de semanas ·
+          el hueco sombreado entre lo ejecutado y el gasto es el margen
         </div>
       </div>
       <SelectorVentana rango={rango} onRango={setRango}/>
@@ -13302,79 +13451,30 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
           No hay semanas que dibujar: la obra no tiene fecha de arranque capturada.
         </div>
       : <div style={{display:"flex",flexDirection:"column",gap:4}}>
-          {/* PANEL 1 — LA CURVA S. Va siempre, en los dos tableros. El título
-              dice «contra el programa» sólo cuando hay programa: un panel que
-              se titula así dibujando una sola línea afirma una comparación que
-              no hizo. */}
           <PanelSemanal
             semanas={semanas}
-            titulo={hayPrograma ? 'AVANCE FÍSICO CONTRA EL PROGRAMA' : 'AVANCE FÍSICO'}
-            ejeAbajo={false}
-            altura={135}
-            maxFijo={100}
-            minFijo={0}
-            fmt={fmtPctCorto}
-            pie={rotuloPrograma.sub + (fronteraAvance.hay
-              ? ' · el tramo punteado del avance se calculó con la definición anterior'
-              : '')}
-            series={[
-              {clave:'real', nombre:'Avance real', color:C.greenDk, valores:avanceSeries,
-               idxFrontera: fronteraAvance.hay ? fronteraAvance.idx : -1, rotulada:true},
-              // La cuarta serie NO SE DIBUJA sin anexo. Pasarla en nulls
-              // dejaría su nombre en la leyenda sin nada en el dibujo, que es
-              // la misma afirmación sin respaldo una planta más abajo.
-              ...(hayPrograma
-                ? [{clave:'prog', nombre:rotuloPrograma.kpi, color:C.caliza,
-                    valores:programadoSeries, estilo:'punteada'}]
-                : []),
-            ]}/>
-
-          {/* PANEL 2 — LA ECONOMÍA. Las tres series en pesos sobre un solo eje:
-              el margen ES la distancia entre las otras dos, y verlo como una
-              tercera línea es lo que hace visible el cruce. Antes estaban en
-              pestañas distintas y había que acordarse de la otra. */}
-          <PanelSemanal
-            semanas={semanas}
-            titulo="LA ECONOMÍA DE LA OBRA"
             ejeAbajo={true}
-            altura={135}
+            altura={200}
             fmt={fmtDineroCorto}
-            pie={(gastoMedido
-                ? 'El margen es la resta de las otras dos líneas: la misma del KPI de arriba'
-                // Ni gasto ni margen se dibujan, y el pie tiene que decir por
-                // qué: un panel con una sola línea y el pie hablando de tres
-                // se lee como una gráfica rota.
-                : 'Sin el gasto de GP no se dibujan ni el gasto ni el margen') +
-              (fronteraDinero.hay
-                ? ' · el tramo punteado del dinero se guardó recortado por partida'
-                : '') +
-              // Sin esto, la subida del último tramo del gasto se lee como una
-              // semana de gasto enorme. Es el total del GP, que llega sin fecha
-              // y sólo se puede colgar del final.
-              (gastoSinFechar
-                ? ' · parte del gasto llega sin fecha, así que sólo la última semana trae el total'
-                : '')}
-            series={[
-              {clave:'ejec', nombre:'Ejecutado', color:C.blueDk, valores:ejecutadoSeries,
-               idxFrontera: fronteraDinero.hay ? fronteraDinero.idx : -1},
-              {clave:'gasto', nombre:'Gasto total', color:C.redDk, valores:gastoAcumSeries},
-              {clave:'margen', nombre:'Margen', color:C.purpleDk, valores:margenSeries,
-               idxFrontera: fronteraDinero.hay ? fronteraDinero.idx : -1, rotulada:true},
-            ]}/>
+            series={g.lineas}
+            areas={g.areas}
+            ausentes={g.ausentes}
+            pie={g.notas.join(' · ')}/>
 
           <TablaSemanas semanas={semanas} columnas={[
-            {titulo:'Avance', valores:avanceSeries, fmt:(v)=>`${NUM(v,1)}%`},
-            {titulo:'Δ semana', valores:avanceDeltaSeries, fmt:pp, color:colorDelta,
+            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`},
+            {titulo:'Δ semana', valores:avanceDelta, fmt:pp, color:colorDelta,
              vacio:'—'},
             {titulo:'Programa',
-             valores:programadoSeries, fmt:(v)=>`${NUM(v,1)}%`, vacio:'sin dato'},
-            {titulo:'Contra el programa', valores:desviacionSeries, fmt:pp,
+             valores:g.programadoPct, fmt:(v)=>`${NUM(v,1)}%`, vacio:'sin dato'},
+            {titulo:'Contra el programa', valores:desviacion, fmt:pp,
              color:colorDelta, vacio:'sin dato'},
-            {titulo:'Ejecutado', valores:ejecutadoSeries, fmt:MXN, vacio:'no disponible'},
-            {titulo:'Gasto acumulado', valores:gastoAcumSeries, fmt:MXN,
+            {titulo:'Ejecutado', valores:g.ejecutado, fmt:MXN, vacio:'no disponible'},
+            {titulo:'Programado $', valores:g.programado, fmt:MXN, vacio:'sin dato'},
+            {titulo:'Gasto acumulado', valores:g.gasto, fmt:MXN,
              vacio:'sin medir'},
-            {titulo:'Gasto de la semana', valores:gastoDeltaMedido, fmt:MXNS, vacio:'—'},
-            {titulo:'Margen', valores:margenSeries, fmt:MXNS,
+            {titulo:'Gasto de la semana', valores:gastoDelta, fmt:MXNS, vacio:'—'},
+            {titulo:'Margen', valores:g.margen, fmt:MXNS,
              color:(v)=>v>=0?C.greenDk:C.redDk, vacio:'no disponible'},
           ]}/>
         </div>}
@@ -13390,7 +13490,7 @@ function TendenciasMensuales({obra, historialAvance, gpData, estimaciones, otros
 // contestaba con un número suelto y sin historia. Esto le da su primera curva:
 // el avance real contra el programa que las dos partes firmaron.
 //
-// POR QUÉ ES UN COMPONENTE APARTE y no `TendenciasMensuales` con una bandera.
+// POR QUÉ ES UN COMPONENTE APARTE y no `TarjetaGraficaUnica` con una bandera.
 // Es el mismo criterio de `DashboardDependencia`, escrito en su cabecera: una
 // bandera son diez puntos de toque y basta olvidar uno para filtrar. Aquí el
 // gasto, el margen y el ejecutado no se calculan —ni se reciben—, así que no
@@ -13487,705 +13587,6 @@ function CurvaSDelContrato({obra, historialAvance = [], subs = [], programa}) {
              color:colorDelta, vacio:'sin dato'},
           ]}/>
         </div>}
-  </Card>;
-}
-
-// ── PROYECCIÓN DE AVANCE Y GASTO ─────────────────────────────────────────
-// Toma la serie histórica semanal de gasto y ejecutado, calcula el RITMO
-// (promedio de deltas semanales de las últimas N semanas) y extiende ambas
-// series con líneas PUNTEADAS hasta que el ejecutado llegue al presupuesto
-// contratado (fin de obra proyectado).
-//
-// - Línea sólida: histórico real (semana de inicio → hoy).
-// - Línea punteada: proyección (hoy → fin de obra estimado).
-// - Área sombreada entre curvas:
-//     verde = ejecutado > gasto (margen positivo)
-//     rojo  = gasto > ejecutado (margen negativo, sobregasto)
-// - Marca vertical: "Hoy" y "Fin proyectado".
-// Tampoco recibe `datosObraGP`: ver la nota de `TendenciasMensuales`. Aquí el
-// match difuso ni siquiera estaba —sólo clave explícita y prefijo—, así que
-// contestaba bien la 0129 por no haber llegado al paso que falla, no por
-// saberlo. Ahora la obra del GP la da `estadoGastoGP`, como el KPI.
-function ProyeccionAvanceGasto({obra, historialAvance, gpData, otrosGastos, maquinaria, subs}) {
-  const [ritmoBase, setRitmoBase] = useState(8); // semanas para promediar el ritmo
-  const [hover, setHover] = useState(null);       // índice de semana con cursor encima
-  const svgRef = useRef();
-
-  // `semanaISO`, la única del repositorio, con la forma `{sem, año}` que leen
-  // las líneas de abajo. La copia privada que vivía aquí se fue por la misma
-  // razón que la de tendencias: dos cuentas de la semana ISO en el mismo
-  // archivo acaban poniendo el mismo gasto en dos semanas distintas.
-  const semanaISOLocal = (fecha) => {
-    const s = semanaISO(fecha);
-    return (s && isFinite(s.semana) && isFinite(s.año)) ? { sem: s.semana, año: s.año } : null;
-  };
-  const skey = claveSemanaISO;
-
-  // La obra del GP, con el MISMO match que el KPI. Se necesita antes del eje
-  // porque de ella sale el arranque cuando el contrato no trae fecha.
-  const obraGP = estadoGastoGP(obra, gpData).obraGP;
-
-  const presupuesto = parseFloat(obra?.presupuesto) || 0;
-  // `fechaLocalDeISO` y no `new Date(...)`: ver la nota larga en la gráfica de
-  // tendencias. La forma corta se lee como UTC y en México cae el día anterior
-  // a las 18:00, así que una obra que arrancó un LUNES se va a la semana de
-  // antes. El fallback de abajo arma la fecha por partes y ya era local.
-  let fechaInicio = fechaLocalDeISO(obra?.inicio);
-  let inicioValido = fechaInicio && !isNaN(fechaInicio);
-
-  // Fallback fecha de inicio: si no está en contrato pero hay datos de GP,
-  // usar la primera semana con gasto reportado. Así TAMSA (u obras sin
-  // fecha de inicio capturada) sí ven la gráfica de gasto.
-  if (!inicioValido && obraGP?.semanas) {
-    const añoActual = new Date().getFullYear();
-    const semanasNums = Object.keys(obraGP.semanas)
-      .map(k => { const m = String(k).match(/S?(\d{1,2})/); return m ? parseInt(m[1],10) : null; })
-      .filter(n => n !== null)
-      .sort((a,b) => a-b);
-    if (semanasNums.length > 0) {
-      // Aproximar: enero 1 + (sem-1) × 7 días
-      const primSem = semanasNums[0];
-      fechaInicio = new Date(añoActual, 0, 1);
-      fechaInicio.setDate(fechaInicio.getDate() + (primSem - 1) * 7);
-      inicioValido = true;
-    }
-  }
-
-  // ¿Hay algo de gasto reportado? (GP o manuales)
-  const hayGasto = (obraGP?.grandTotal || 0) > 0
-    || (otrosGastos && otrosGastos.length > 0)
-    || (maquinaria && maquinaria.length > 0);
-
-  // Modo "solo gasto": cuando NO hay presupuesto o catálogo cargado, pero
-  // SÍ hay gasto de GP. Muestra únicamente la línea de gasto acumulado,
-  // sin proyección de ejecutado ni fin proyectado.
-  const soloGasto = !presupuesto || !subs || subs.length === 0;
-
-  if (!inicioValido && !hayGasto) {
-    return <Card>
-      <Tit>Proyección de avance y gasto</Tit>
-      <div style={{fontSize:11,color:C.textMut,padding:"20px 8px",textAlign:"center"}}>
-        Falta presupuesto o fecha de inicio del contrato para proyectar.
-      </div>
-    </Card>;
-  }
-
-  // Semanas del histórico (inicio contrato → hoy)
-  const hoy = new Date();
-  const isoInicio = semanaISOLocal(fechaInicio);
-  const isoHoy = semanaISOLocal(hoy);
-  const semanasHist = [];
-  {
-    let d = jueveDeSemanaISO(isoInicio.año, isoInicio.sem);
-    while (true) {
-      const iso = semanaISOLocal(d);
-      const key = skey(iso.sem, iso.año);
-      semanasHist.push({ key, sem: iso.sem, año: iso.año, fecha: new Date(d) });
-      if (iso.sem === isoHoy.sem && iso.año === isoHoy.año) break;
-      d.setDate(d.getDate() + 7);
-      // Safety: máx 500 semanas (~10 años)
-      if (semanasHist.length > 500) break;
-    }
-  }
-
-  // ── GASTO ACUMULADO por semana ────────────────────────────────────────
-  // La misma cuenta que dibuja la tarjeta de tendencias, y ahora el mismo
-  // código: `serieGastoDeSemanas`. Estaba duplicada aquí, y la copia perdía el
-  // gasto manual fechado antes de la firma del contrato —esta ventana arranca
-  // ahí— sin decirlo. También ancla el último punto al KPI del Dashboard.
-  // `medido` viaja con la serie por la misma razón que en la tabla: sin él,
-  // una serie vacía se lee como una serie de ceros y este panel publica un
-  // ritmo de gasto, un gasto a hoy y un margen al cierre que nadie midió.
-  const { serie: gastoAcum, gtActual, medido: gastoMedido } =
-    serieGastoDeSemanas({ semanas: semanasHist, obra, gpData, otrosGastos, maquinaria });
-
-  // ── EJECUTADO ACUMULADO por semana (leído del snapshot) ───────────────
-  const avancePorSem = {};
-  (historialAvance || []).forEach(snap => {
-    const key = skey(snap.semana, snap.año);
-    avancePorSem[key] = capturaMasReciente(avancePorSem[key], snap);
-  });
-  const modoVolObra = (obra?.modoAvance === "volumen");
-  // Avance FÍSICO actual (topado, P1) — es el que marca cuándo termina la obra.
-  const avanceActual = (subs && subs.length > 0)
-    ? avanceFisicoPonderado(subs, presupuesto, modoVolObra)
-    : 0;
-  // DINERO ejecutado actual, sin topar — la misma función que el KPI.
-  const ejecActual = (subs && subs.length > 0)
-    ? desgloseEjecutado(subs, modoVolObra).total
-    : 0;
-  // Serie de dinero: se LEE del snapshot, no se reconstruye desde el avance
-  // topado. Ver `montoEjecutadoSnap`.
-  let ejecAcarreo = 0;
-  const ejecAcum = semanasHist.map(s => {
-    const me = montoEjecutadoSnap(avancePorSem[s.key]);
-    if (me !== null) ejecAcarreo = me;
-    return ejecAcarreo;
-  });
-  if (semanasHist.length > 0 && ejecActual > 0) {
-    ejecAcum[ejecAcum.length - 1] = ejecActual;
-  }
-  // ¿Cada semana trae medición propia, o es el valor de la anterior arrastrado?
-  // Hace falta para no dibujar sólido lo que nadie midió. La 0114 tiene seis
-  // semanas seguidas sin dato —los cierres 32 a 36 se perdieron al llenarse el
-  // documento— y una recta sólida sobre ellas afirma "el ejecutado no se movió",
-  // que es distinto de "no se sabe". P2: lo que no se midió no se pinta como
-  // medido. El último punto sí está medido: se sobrescribe con el valor vivo.
-  const ejecMedido = semanasHist.map(s => montoEjecutadoSnap(avancePorSem[s.key]) !== null);
-  if (semanasHist.length > 0 && ejecActual > 0) {
-    ejecMedido[ejecMedido.length - 1] = true;
-  }
-  // Serie de AVANCE FÍSICO en paralelo: la proyección termina cuando la obra
-  // llega al 100% de avance, no cuando el dinero alcanza el presupuesto.
-  let avAcarreoPct = 0;
-  const avancePctAcum = semanasHist.map(s => {
-    const snap = avancePorSem[s.key];
-    if (snap && typeof snap.avancePonderado === 'number') avAcarreoPct = snap.avancePonderado;
-    return avAcarreoPct;
-  });
-  if (semanasHist.length > 0 && avanceActual > 0) {
-    avancePctAcum[avancePctAcum.length - 1] = avanceActual;
-  }
-  // Frontera de esquema, misma decisión que en TendenciasMensuales: el tramo
-  // anterior al arreglo del recorte se dibuja punteado y no se compara contra
-  // el nuevo. El esquema se arrastra igual que el valor.
-  let esqAcarreo = null;
-  const esquemaHist = semanasHist.map(s => {
-    const snap = avancePorSem[s.key];
-    if (snap) esqAcarreo = esquemaDe(snap);
-    return esqAcarreo;
-  });
-  // Una frontera por métrica: el dinero cambió en el esquema 2, el avance en
-  // el 3. Con un solo umbral la serie de dinero de un snapshot esquema 2 se
-  // dibujaría punteada sin necesidad.
-  const fronteraDe = (umbral) => {
-    const idx = esquemaHist.findIndex(e => e !== null && e >= umbral);
-    const hay = idx > 0
-      && esquemaHist.slice(0, idx).some(e => e !== null && e < umbral);
-    return { idx, hay };
-  };
-  const { idx: idxFrontDinero, hay: hayTramoViejoDinero } = fronteraDe(ESQUEMA_DINERO);
-  const { idx: idxFrontAvance,  hay: hayTramoViejoAvance } = fronteraDe(ESQUEMA_AVANCE);
-
-  // ── RITMO SEMANAL ─────────────────────────────────────────────────────
-  // Se calcula como: (valor_final − valor_inicio_ventana) / semanas_ventana
-  // Antes se hacía promedio de deltas > 0, pero como muchas semanas no
-  // tienen captura (delta = 0), el filtro dejaba pocos puntos y cambiar
-  // 4/8/12 daba casi el mismo resultado. Ahora divide el cambio TOTAL
-  // entre TODAS las semanas del rango — sí varía al cambiar la ventana.
-  // `desde` acota la ventana para que NINGÚN delta cruce la frontera de
-  // esquema: restar un punto topado de uno sin topar mide el cambio de
-  // definición, no el ritmo de la obra.
-  const calcularRitmo = (serie, desde = 0) => {
-    if (serie.length < 2) return 0;
-    const maxVentana = serie.length - 1 - desde;
-    if (maxVentana < 1) return 0;
-    const nVentana = Math.min(ritmoBase, maxVentana);
-    const idxIni = serie.length - 1 - nVentana;
-    const cambio = serie[serie.length - 1] - serie[idxIni];
-    return cambio > 0 ? cambio / nVentana : 0;
-  };
-  // El gasto viene del GP: no depende del esquema de los snapshots. Si no está
-  // medido no hay ritmo: `calcularRitmo` sobre una serie vacía devuelve 0, y un
-  // «$0 /sem» afirma que la obra no está gastando.
-  const ritmoGasto = gastoMedido ? calcularRitmo(gastoAcum) : null;
-  // Cada ritmo se acota a SU propia frontera: el del dinero a la del dinero y
-  // el del avance a la del avance. Mezclarlas alargaría o acortaría una ventana
-  // por un cambio de definición que no le tocó.
-  const ritmoEjec = calcularRitmo(ejecAcum, hayTramoViejoDinero ? idxFrontDinero : 0);
-  // Ritmo del AVANCE FÍSICO en puntos porcentuales por semana — es el que
-  // decide cuándo termina la obra.
-  const ritmoAvance = calcularRitmo(avancePctAcum, hayTramoViejoAvance ? idxFrontAvance : 0);
-
-  // ── PROYECCIÓN: continuar hasta que la OBRA llegue al 100% ────────────
-  // Antes el criterio de término era "el dinero ejecutado alcanza el
-  // presupuesto", y además se topaba con Math.min(presupuesto, …). Las dos
-  // cosas violan P1: el dinero no se topa. Una obra puede ejecutar volumen por
-  // encima del catálogo y seguir sin terminar, y puede terminar habiendo
-  // ejecutado más dinero que el contratado. Lo que se topa al 100% es el
-  // avance FÍSICO, y ese es el que marca el fin.
-  //
-  // OJO (PENDIENTES #27): esto asume contrato cerrado, con un alcance que llega
-  // al 100%. En un contrato ABIERTO tipo TAMSA —servicios por demanda— no hay
-  // un 100% que alcanzar y este criterio no aplica: la proyección debería
-  // cortarse por la fecha de término del contrato. Se resuelve cuando exista
-  // `tipoContrato`; hoy el modelo no distingue.
-  const gastoUlt = gastoMedido ? (gastoAcum[gastoAcum.length - 1] || 0) : null;
-  const ejecUlt = ejecAcum[ejecAcum.length - 1] || 0;
-  const avanceUlt = avancePctAcum[avancePctAcum.length - 1] || 0;
-  const semanasProy = [];
-  const gastoProy = [];
-  const ejecProy = [];
-  const avanceProy = [];
-  if (ritmoAvance > 0) {
-    const pendientePct = Math.max(0, 100 - avanceUlt);
-    const semanasNecesarias = Math.ceil(pendientePct / ritmoAvance);
-    // Cap a 200 semanas para no volarse
-    const nProy = Math.min(semanasNecesarias, 200);
-    let dCursor = new Date(semanasHist[semanasHist.length - 1].fecha);
-    let gAcum = gastoUlt;
-    let eAcum = ejecUlt;
-    let aAcum = avanceUlt;
-    for (let i = 1; i <= nProy; i++) {
-      dCursor = new Date(dCursor);
-      dCursor.setDate(dCursor.getDate() + 7);
-      const iso = semanaISOLocal(dCursor);
-      // Sin gasto medido no hay nada que proyectar: `null` deja la línea sin
-      // dibujar en vez de prolongar un cero.
-      gAcum = gastoMedido ? gAcum + ritmoGasto : null;
-      // Sin Math.min: el dinero proyectado puede rebasar el contrato, y si lo
-      // hace hay que verlo, no esconderlo bajo un tope.
-      eAcum += ritmoEjec;
-      aAcum = Math.min(100, aAcum + ritmoAvance);
-      semanasProy.push({ key: skey(iso.sem, iso.año), sem: iso.sem, año: iso.año, fecha: new Date(dCursor) });
-      gastoProy.push(gAcum);
-      ejecProy.push(eAcum);
-      avanceProy.push(aAcum);
-      if (aAcum >= 100) break;
-    }
-  }
-
-  // Serie completa (hist + proy) para escalar el gráfico
-  const todasSemanas = [...semanasHist, ...semanasProy];
-  const todosGasto = [...gastoAcum, ...gastoProy];
-  const todosEjec = [...ejecAcum, ...ejecProy];
-  // Avance FÍSICO por semana (hist + proy). El tooltip lo lee de aquí en vez
-  // de derivarlo del dinero: ahora que el dinero no se topa, ejecutado/contrato
-  // puede pasar del 100% sin que la obra esté terminada.
-  const todosAvance = [...avancePctAcum, ...avanceProy];
-  // Base para escalar: incluir presupuesto solo si aplica (modo completo)
-  const maxValor = Math.max(...todosGasto, ...todosEjec, presupuesto || 0, 1);
-
-  // Fecha fin proyectado
-  const finProyectado = semanasProy.length > 0
-    ? semanasProy[semanasProy.length - 1].fecha
-    : null;
-  const gastoFinProy = !gastoMedido ? null
-    : (gastoProy.length > 0 ? gastoProy[gastoProy.length - 1] : gastoUlt);
-  const ejecFinProy = ejecProy.length > 0 ? ejecProy[ejecProy.length - 1] : ejecUlt;
-  // MARGEN PROYECTADO AL CIERRE — contra el EJECUTADO proyectado, sin topar.
-  //
-  // Antes se calculaba `contrato − gasto`, con el criterio de que la obra
-  // cierra en el importe contratado y el volumen de más no se cobra sin
-  // convenio. El usuario corrigió el supuesto (2026-09-22): los volúmenes
-  // adicionales SÍ se estiman por partida, así que ese trabajo se cobra y sí
-  // es ingreso. Topar el ingreso al contrato subestimaba el margen justo en
-  // las obras que más se pasan —TAMSA y el Malecón—, y además contradecía P1
-  // en la única cifra donde el tope seguía vivo.
-  //
-  // Si mañana entra `tipoContrato` y un contrato resulta ser cerrado de
-  // verdad, ahí el tope vuelve a tener sentido; mientras no se sepa, el
-  // sistema no debe inventar un recorte (PENDIENTES #27).
-  // Restar contra un gasto que no se midió publica el ejecutado entero como
-  // ganancia — exactamente lo que hacía la tabla de arriba.
-  const margenFinProy = gastoFinProy === null ? null : ejecFinProy - gastoFinProy;
-  // Cuánto del ejecutado proyectado va por encima del contrato. Es un dato,
-  // no una alarma: se enseña junto al contrato para dar la escala.
-  const excedenteSobreContrato = (presupuesto > 0 && ejecFinProy > presupuesto)
-    ? ejecFinProy - presupuesto
-    : 0;
-
-  // ── SVG ──────────────────────────────────────────────────────────────
-  const W = 720, H = 200, PL = 62, PR = 18, PT = 22, PB = 42;
-  const cw = W - PL - PR, ch = H - PT - PB;
-  const n = todasSemanas.length;
-  const xPos = (i) => PL + (cw / Math.max(n - 1, 1)) * i;
-  const yPos = (v) => PT + ch - (v / maxValor) * ch;
-  const idxHoy = semanasHist.length - 1;
-
-  // Mismo criterio que `MXNS`: el signo lo pone el formateador, una vez. El
-  // «Margen proyectado al cierre» lo escribía a mano al lado y con el guion del
-  // teclado, y además partía de `Math.abs`, que es la señal de siempre.
-  // Y `null` no es cero: es «no se midió», y se dice con palabras.
-  const fmtCompacto = (v) => {
-    if (v === null || v === undefined) return 'sin medir';
-    const n = Number(v) || 0;
-    const abs = Math.abs(n);
-    const signo = n < 0 ? '\u2212' : '';
-    if (abs >= 1e6) return `${signo}$${(abs/1e6).toFixed(1)}M`;
-    if (abs >= 1e3) return `${signo}$${(abs/1e3).toFixed(0)}k`;
-    return `${signo}$${abs.toFixed(0)}`;
-  };
-  const fmtFecha = (d) => d ? `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}` : '—';
-
-  // Path Bezier suave (Catmull-Rom → Cubic)
-  const smoothPath = (pts) => {
-    if (pts.length < 2) return '';
-    const d = [`M ${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      const c1x = p1[0] + (p2[0] - p0[0]) / 6;
-      const c1y = p1[1] + (p2[1] - p0[1]) / 6;
-      const c2x = p2[0] - (p3[0] - p1[0]) / 6;
-      const c2y = p2[1] - (p3[1] - p1[1]) / 6;
-      d.push(`C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`);
-    }
-    return d.join(' ');
-  };
-
-  // Puntos por segmento (histórico / proyección) — se conectan cruzando el pt idxHoy
-  // Sin gasto medido no hay puntos: `yPos(null)` cae en la línea base y
-  // dibujaría una recta en cero, que es la misma mentira de la tabla.
-  const ptsGastoHist = gastoMedido ? gastoAcum.map((v, i) => [xPos(i), yPos(v)]) : [];
-  const ptsEjecHist  = ejecAcum.map((v, i) => [xPos(i), yPos(v)]);
-  // ── TRAMOS DE LA LÍNEA HISTÓRICA ──────────────────────────────────────
-  // La línea no se traza sobre los valores arrastrados: se traza de medición a
-  // medición. Cuando dos mediciones no son semanas consecutivas, el trecho
-  // entre ellas va punteado, porque el camino que siguió la obra ahí dentro no
-  // se conoce. Dibujarlo plano y luego saltar concentraría en la última semana
-  // un avance que tardó seis en ocurrir.
-  const idxMedidos = ejecMedido.reduce((a, m, i) => (m ? [...a, i] : a), []);
-  const tramosEjec = [];
-  for (let k = 1; k < idxMedidos.length; k++) {
-    const a = idxMedidos[k - 1], b = idxMedidos[k];
-    tramosEjec.push({
-      pts: [ptsEjecHist[a], ptsEjecHist[b]],
-      // Sólido solo entre semanas consecutivas. Una semana sin cierre es una
-      // semana sin dato, dé igual que sea una o seis: no hay un número de
-      // ausencias a partir del cual empiece a importar. Puntear desde la
-      // primera evita además tener que justificar dónde estaría el umbral.
-      medido: (b - a) === 1,
-      // Un tramo pertenece al esquema viejo si arranca antes de la frontera.
-      vigente: !hayTramoViejoDinero || a >= idxFrontDinero,
-    });
-  }
-  // El área sombreada tiene que seguir los mismos puntos que la línea —de
-  // medición a medición—, no los arrastrados. Si no, queda un relleno plano
-  // bajo una línea en diagonal y las dos cosas se contradicen en pantalla.
-  const ptsEjecArea = idxMedidos
-    .filter(i => !hayTramoViejoDinero || i >= idxFrontDinero)
-    .map(i => ptsEjecHist[i]);
-  const ptsGastoProy = ptsGastoHist.length > 0
-    ? [ptsGastoHist[ptsGastoHist.length - 1], ...gastoProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
-    : [];
-  const ptsEjecProy  = ptsEjecHist.length > 0
-    ? [ptsEjecHist[ptsEjecHist.length - 1], ...ejecProy.map((v, i) => [xPos(semanasHist.length + i), yPos(v)])]
-    : [];
-
-  // Ticks eje X — mostrar cada N semanas para no saturar
-  const stepX = Math.max(1, Math.ceil(n / 10));
-
-  return <Card>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:8}}>
-      <div>
-        <Tit>Proyección de avance y gasto</Tit>
-        <div style={{fontSize:9,color:C.textMut,marginTop:-4}}>
-          Pasa el cursor sobre la gráfica para ver el detalle por semana
-        </div>
-      </div>
-      <div style={{display:"flex",gap:4,alignItems:"center"}}>
-        <span style={{fontSize:9,color:C.textMut}}>Ritmo:</span>
-        <select value={ritmoBase} onChange={e=>setRitmoBase(Number(e.target.value))}
-          style={{fontSize:10,padding:"3px 6px",border:`1px solid ${C.border}`,borderRadius:4,color:C.textSec}}>
-          <option value={4}>Últimas 4 sem</option>
-          <option value={8}>Últimas 8 sem</option>
-          <option value={12}>Últimas 12 sem</option>
-        </select>
-      </div>
-    </div>
-
-    <div style={{overflowX:"auto",width:"100%",position:"relative"}}>
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`}
-        style={{width:"100%",height:"auto",minWidth:520,cursor:"crosshair",display:"block"}}
-        preserveAspectRatio="xMidYMid meet"
-        onMouseMove={e => {
-          const r = svgRef.current?.getBoundingClientRect();
-          if (!r) return;
-          // Convertir mouse a coordenadas viewBox
-          const vx = ((e.clientX - r.left) / r.width) * W;
-          if (vx < PL || vx > PL + cw) { setHover(null); return; }
-          const rel = (vx - PL) / cw;
-          const idx = Math.round(rel * (n - 1));
-          if (idx >= 0 && idx < n) setHover(idx);
-        }}
-        onMouseLeave={() => setHover(null)}>
-        <defs>
-          <linearGradient id="pgrad-ejec" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor={C.blueDk} stopOpacity="0.30"/>
-            <stop offset="100%" stopColor={C.blueDk} stopOpacity="0.02"/>
-          </linearGradient>
-          <linearGradient id="pgrad-gasto" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor={C.redDk} stopOpacity="0.25"/>
-            <stop offset="100%" stopColor={C.redDk} stopOpacity="0.02"/>
-          </linearGradient>
-        </defs>
-
-        {/* Guías eje Y */}
-        {[0, 0.5, 1].map(p => (
-          <line key={p} x1={PL} y1={PT + ch * p} x2={PL + cw} y2={PT + ch * p}
-            stroke={C.border} strokeWidth={0.5} strokeDasharray={p===1?'0':'3,3'}/>
-        ))}
-        {[0, 0.5, 1].map(p => {
-          const v = maxValor * (1 - p);
-          return <text key={p} x={PL - 6} y={PT + ch * p + 3}
-            textAnchor="end" fontSize="9" fill={C.textMut}>
-            {fmtCompacto(v)}
-          </text>;
-        })}
-
-        {/* Línea presupuesto (referencia horizontal) — solo si aplica */}
-        {!soloGasto && presupuesto > 0 && (
-          <>
-            <line x1={PL} y1={yPos(presupuesto)} x2={PL+cw} y2={yPos(presupuesto)}
-              stroke={C.caliza} strokeWidth={0.8} strokeDasharray="4,3" opacity="0.7"/>
-            <text x={PL + 4} y={yPos(presupuesto) - 3} fontSize="8.5" fill={C.caliza} fontWeight="600">
-              Presupuesto {fmtCompacto(presupuesto)}
-            </text>
-          </>
-        )}
-
-        {/* Marca vertical HOY */}
-        {idxHoy >= 0 && (
-          <>
-            <line x1={xPos(idxHoy)} y1={PT} x2={xPos(idxHoy)} y2={PT + ch}
-              stroke={C.textMut} strokeWidth={0.8} strokeDasharray="3,3"/>
-            <text x={xPos(idxHoy) + 3} y={PT + 10} fontSize="9" fill={C.textMut} fontWeight="600">Hoy</text>
-          </>
-        )}
-
-        {/* Áreas sombreadas — histórico */}
-        {ptsGastoHist.length >= 2 && (
-          <path d={`${smoothPath(ptsGastoHist)} L ${ptsGastoHist[ptsGastoHist.length-1][0]},${yPos(0)} L ${ptsGastoHist[0][0]},${yPos(0)} Z`}
-            fill="url(#pgrad-gasto)"/>
-        )}
-        {/* Área solo bajo el tramo vigente: un área sólida bajo una línea
-            punteada diría que ese tramo es igual de firme. */}
-        {!soloGasto && ptsEjecArea.length >= 2 && (
-          <path d={`${smoothPath(ptsEjecArea)} L ${ptsEjecArea[ptsEjecArea.length-1][0]},${yPos(0)} L ${ptsEjecArea[0][0]},${yPos(0)} Z`}
-            fill="url(#pgrad-ejec)"/>
-        )}
-
-        {/* Líneas HISTÓRICAS (sólidas) */}
-        <path d={smoothPath(ptsGastoHist)} fill="none" stroke={C.redDk} strokeWidth={2.2}
-          strokeLinecap="round" strokeLinejoin="round"/>
-        {/* Ejecutado histórico, tramo por tramo. Dos motivos distintos para no
-            dibujar sólido: el esquema viejo (la cifra significa otra cosa) y la
-            falta de captura (no hay cifra). Los dos van punteados, pero el
-            segundo conserva el grosor: no es una serie de menor confianza, es
-            un trecho que no se midió. */}
-        {!soloGasto && tramosEjec.map((t, i) => (
-          <path key={i} d={smoothPath(t.pts)} fill="none" stroke={C.blueDk}
-            strokeWidth={t.vigente ? 2.2 : 2}
-            strokeDasharray={t.vigente && t.medido ? undefined : '5,3'}
-            opacity={t.vigente ? (t.medido ? 1 : 0.55) : 0.5}
-            strokeLinecap="round" strokeLinejoin="round"/>
-        ))}
-        {/* Los extremos de cada trecho sin medir se marcan: el ojo tiene que
-            ver dónde vuelve a haber dato. */}
-        {!soloGasto && tramosEjec.filter(t => !t.medido).map((t, i) => (
-          <g key={`h${i}`}>
-            <circle cx={t.pts[0][0]} cy={t.pts[0][1]} r={2.5} fill="white"
-              stroke={C.blueDk} strokeWidth={1.2}/>
-            <circle cx={t.pts[1][0]} cy={t.pts[1][1]} r={2.5} fill="white"
-              stroke={C.blueDk} strokeWidth={1.2}/>
-          </g>
-        ))}
-
-        {/* Líneas PROYECTADAS (punteadas) — solo si hay ejecutado con ritmo */}
-        {!soloGasto && ptsGastoProy.length >= 2 && (
-          <path d={smoothPath(ptsGastoProy)} fill="none" stroke={C.redDk} strokeWidth={2}
-            strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
-        )}
-        {!soloGasto && ptsEjecProy.length >= 2 && (
-          <path d={smoothPath(ptsEjecProy)} fill="none" stroke={C.blueDk} strokeWidth={2}
-            strokeDasharray="5,3" strokeLinecap="round" strokeLinejoin="round" opacity="0.75"/>
-        )}
-
-        {/* Puntos: inicio, hoy, fin proyectado */}
-        {!soloGasto && ptsEjecHist[0] && (
-          <circle cx={ptsEjecHist[0][0]} cy={ptsEjecHist[0][1]} r={3} fill={C.blueDk} stroke="white" strokeWidth={1}/>
-        )}
-        {idxHoy >= 0 && ptsGastoHist[idxHoy] && (
-          <circle cx={ptsGastoHist[idxHoy][0]} cy={ptsGastoHist[idxHoy][1]} r={3.5} fill={C.redDk} stroke="white" strokeWidth={1.2}/>
-        )}
-        {!soloGasto && idxHoy >= 0 && ptsEjecHist[idxHoy] && (
-          <circle cx={ptsEjecHist[idxHoy][0]} cy={ptsEjecHist[idxHoy][1]} r={3.5} fill={C.blueDk} stroke="white" strokeWidth={1.2}/>
-        )}
-        {!soloGasto && ptsEjecProy.length > 0 && (
-          <>
-            <line x1={ptsEjecProy[ptsEjecProy.length-1][0]} y1={PT}
-              x2={ptsEjecProy[ptsEjecProy.length-1][0]} y2={PT + ch}
-              stroke={C.greenDk} strokeWidth={0.8} strokeDasharray="3,3" opacity="0.6"/>
-            <text x={ptsEjecProy[ptsEjecProy.length-1][0] - 3} y={PT + 10}
-              textAnchor="end" fontSize="9" fill={C.greenDk} fontWeight="600">
-              Fin proy.
-            </text>
-            <circle cx={ptsEjecProy[ptsEjecProy.length-1][0]} cy={ptsEjecProy[ptsEjecProy.length-1][1]}
-              r={3.5} fill={C.greenDk} stroke="white" strokeWidth={1.2}/>
-          </>
-        )}
-
-        {/* Eje X */}
-        {todasSemanas.map((s, i) => {
-          if (i % stepX !== 0 && i !== n - 1 && i !== idxHoy) return null;
-          const dd = String(s.fecha.getDate()).padStart(2,'0');
-          const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
-          return <g key={s.key}>
-            <text x={xPos(i)} y={H - 22} textAnchor="middle" fontSize="8.5" fill={C.textSec}>
-              S{s.sem}
-            </text>
-            <text x={xPos(i)} y={H - 12} textAnchor="middle" fontSize="7.5" fill={C.textMut}>
-              {dd}/{mm}
-            </text>
-          </g>;
-        })}
-
-        {/* Crosshair + puntos resaltados en hover */}
-        {hover !== null && todasSemanas[hover] && (
-          <g pointerEvents="none">
-            <line x1={xPos(hover)} y1={PT} x2={xPos(hover)} y2={PT + ch}
-              stroke={C.caliza} strokeWidth={0.7} strokeDasharray="2,3" opacity={0.5}/>
-            {gastoMedido && <circle cx={xPos(hover)} cy={yPos(todosGasto[hover])} r={5}
-              fill="none" stroke={C.redDk} strokeWidth={1.8}/>}
-            <circle cx={xPos(hover)} cy={yPos(todosEjec[hover])} r={5}
-              fill="none" stroke={C.blueDk} strokeWidth={1.8}/>
-          </g>
-        )}
-      </svg>
-
-      {/* Tooltip flotante */}
-      {hover !== null && todasSemanas[hover] && (() => {
-        const s = todasSemanas[hover];
-        const esProy = hover > idxHoy;
-        const g = gastoMedido ? (todosGasto[hover] || 0) : null;
-        const e = todosEjec[hover] || 0;
-        const pctAv = todosAvance[hover];
-        // Margen de la semana: ejecutado − gasto, sin topar. Tiene que salir
-        // del mismo criterio que el margen proyectado del pie; si uno topa al
-        // contrato y el otro no, la misma gráfica da dos márgenes distintos
-        // según dónde se pose el cursor.
-        const margen = g === null ? null : e - g;
-        const excedenteSem = presupuesto > 0 ? Math.max(0, e - presupuesto) : 0;
-        const dd = String(s.fecha.getDate()).padStart(2,'0');
-        const mm = String(s.fecha.getMonth()+1).padStart(2,'0');
-        const yy = String(s.fecha.getFullYear()).slice(2);
-        // Posicionar tooltip: seguir cursor por izquierda/derecha
-        const relX = hover / Math.max(n - 1, 1);
-        const leftPct = relX < 0.6 ? `${(PL + xPos(hover) - PL) / W * 100 + 3}%` : 'auto';
-        const rightPct = relX >= 0.6 ? `${(1 - (xPos(hover) / W)) * 100 + 3}%` : 'auto';
-        return <div style={{
-          position:"absolute", top:8, left:leftPct, right:rightPct,
-          background:C.surface, border:`1px solid ${C.border}`, borderRadius:8,
-          padding:"8px 10px", minWidth:170, boxShadow:"0 4px 14px rgba(0,0,0,0.12)",
-          pointerEvents:"none", fontSize:10, zIndex:5
-        }}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-            <span style={{fontSize:11,fontWeight:700,color:C.textPri}}>S{s.sem} · {dd}/{mm}/{yy}</span>
-            <span style={{fontSize:8,padding:"1px 5px",borderRadius:3,fontWeight:600,
-              background: esProy ? alfa(C.yellow, 13.33) : alfa(C.green, 13.33),
-              color: esProy ? C.yellowDk : C.greenDk}}>
-              {esProy ? "PROYECT." : "REAL"}
-            </span>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
-            <span style={{color:C.textSec}}><span style={{display:"inline-block",width:8,height:8,background:C.blueDk,borderRadius:2,marginRight:5,verticalAlign:"middle"}}/>Ejecutado</span>
-            <span style={{fontWeight:700,color:C.blueDk}}>{fmtCompacto(e)}</span>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
-            <span style={{color:C.textSec}}><span style={{display:"inline-block",width:8,height:8,background:C.redDk,borderRadius:2,marginRight:5,verticalAlign:"middle"}}/>Gasto acum.</span>
-            <span style={{fontWeight:700,color:C.redDk}}>{fmtCompacto(g)}</span>
-          </div>
-          {excedenteSem > 0 && (
-            <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:2}}>
-              <span style={{color:C.textMut}}>· sobre contrato</span>
-              <span style={{fontWeight:700,color:C.textMut}}>{fmtCompacto(excedenteSem)}</span>
-            </div>
-          )}
-          <div style={{display:"flex",justifyContent:"space-between",gap:8,paddingTop:4,marginTop:4,borderTop:`0.5px solid ${C.border}`}}>
-            <span style={{color:C.textSec}}>Avance</span>
-            <span style={{fontWeight:700,color:C.textPri}}>
-              {typeof pctAv === 'number' ? `${pctAv.toFixed(1)}%` : 'no disp.'}
-            </span>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginTop:2}}>
-            <span style={{color:C.textSec}}>Margen</span>
-            <span style={{fontWeight:700,color: margen === null ? C.textMut
-              : margen >= 0 ? C.greenDk : C.red}}>
-              {fmtCompacto(margen)}
-            </span>
-          </div>
-        </div>;
-      })()}
-    </div>
-
-    {/* Leyenda + KPIs proyección */}
-    <div style={{display:"flex",gap:14,marginTop:6,fontSize:10,color:C.textSec,flexWrap:"wrap",justifyContent:"center"}}>
-      {!soloGasto && <span><span style={{display:"inline-block",width:10,height:2,background:C.blueDk,verticalAlign:"middle",marginRight:4}}/>Ejecutado</span>}
-      {gastoMedido && <span><span style={{display:"inline-block",width:10,height:2,background:C.redDk,verticalAlign:"middle",marginRight:4}}/>Gasto</span>}
-      {!soloGasto && <span style={{color:C.textMut}}>· · · Proyección</span>}
-    </div>
-    {soloGasto && (
-      <div style={{marginTop:8,padding:'8px 12px',background:C.yellowBg,
-        border:`0.5px solid ${alfa(C.yellow, 33.33)}`,borderRadius:6,fontSize:10,color:C.textSec}}>
-        Solo se muestra el <b>gasto acumulado</b> porque no hay {!presupuesto?'presupuesto capturado':'catálogo de avance físico'}. Al cargar el {!presupuesto?'presupuesto en Planeación → Contrato':'catálogo en Planeación → Presupuesto'}, aparecerá la línea de ejecutado y la proyección de fin de obra.
-      </div>
-    )}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,
-      marginTop:10,paddingTop:8,borderTop:`0.5px solid ${C.border}`}}>
-      {!soloGasto && (
-        <div>
-          <div style={{fontSize:9,color:C.textMut}}>Ritmo ejecutado</div>
-          <div style={{fontSize:12,fontWeight:700,color:C.blueDk}}>{fmtCompacto(ritmoEjec)}<span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span></div>
-        </div>
-      )}
-      <div>
-        <div style={{fontSize:9,color:C.textMut}}>Ritmo gasto</div>
-        <div style={{fontSize:12,fontWeight:700,color: ritmoGasto === null ? C.textMut : C.redDk}}>{fmtCompacto(ritmoGasto)}{ritmoGasto !== null && <span style={{fontSize:9,fontWeight:400,color:C.textMut}}> /sem</span>}</div>
-      </div>
-      <div>
-        <div style={{fontSize:9,color:C.textMut}}>Gasto acumulado a hoy</div>
-        <div style={{fontSize:12,fontWeight:700,color: gastoUlt === null ? C.textMut : C.caliza}}>{fmtCompacto(gastoUlt)}</div>
-      </div>
-      {!soloGasto && (
-        <>
-          <div>
-            <div style={{fontSize:9,color:C.textMut}}>Fin de obra proyectado</div>
-            <div style={{fontSize:12,fontWeight:700,color:C.greenDk}}>{fmtFecha(finProyectado)}</div>
-          </div>
-          <div>
-            <div style={{fontSize:9,color:C.textMut}}>Margen proyectado al cierre</div>
-            <div style={{fontSize:12,fontWeight:700,color: margenFinProy === null ? C.textMut
-              : margenFinProy >= 0 ? C.greenDk : C.red}}>
-              {fmtCompacto(margenFinProy)}
-            </div>
-            <div style={{fontSize:8,color:C.textMut}}>{margenFinProy === null
-              ? 'no se puede afirmar sin el gasto' : 'ejecutado proyectado − gasto'}</div>
-          </div>
-        </>
-      )}
-    </div>
-
-    {/* Ejecutado proyectado contra contrato — dato, no advertencia.
-        Ejecutar por encima del contrato es normal: los volúmenes adicionales
-        se estiman por partida y se cobran. Pintarlo de amarillo con un
-        "no cobrable" afirmaba algo que el sistema no sabe —no conoce el tipo
-        de contrato ni qué está autorizado— y encendía una alarma en las obras
-        que operan así todo el tiempo. Se muestran las dos cifras y ya. */}
-    {!soloGasto && excedenteSobreContrato > 0 && (
-      <div style={{marginTop:8,padding:"7px 10px",background:`${alfa(C.textMut, 6.27)}`,
-        border:`0.5px solid ${C.border}`,borderRadius:6,fontSize:10,color:C.textSec}}>
-        Ejecutado proyectado <b style={{color:C.blueDk}}>{fmtCompacto(ejecFinProy)}</b>
-        {' · '}contrato <b style={{color:C.textPri}}>{fmtCompacto(presupuesto)}</b>
-        {' · '}sobre contrato <b>{fmtCompacto(excedenteSobreContrato)}</b>
-      </div>
-    )}
-
-    {/* Aquí iban los dos párrafos de frontera de definición —el del ejecutado
-        y el de la proyección—. Se quitaron: el punteado ya distingue los dos
-        tramos y el texto confundía a quien no siguió el proyecto.
-        `hayTramoViejoDinero` y `hayTramoViejoAvance` siguen vivos y siguen
-        mandando: el ritmo y la proyección se calculan solo dentro del tramo
-        vigente. Se quitó el texto, no la regla. */}
-    {/* Aquí iba el párrafo de las semanas sin captura. Se quitó por el mismo
-        criterio que los de frontera de esquema: el punteado y los círculos
-        huecos ya declaran el hueco, y el texto solo lo repite con palabras.
-        El comportamiento no cambia — quien decide qué tramo va punteado es
-        `medido` en `tramosEjec`, que se lee directo al dibujar. Ese aviso
-        tenía dos banderas propias, `haySinMedir` y `semanasSinMedir`, que no
-        gobernaban nada más y se fueron con él. */}
   </Card>;
 }
 
@@ -14311,26 +13712,19 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </div>;
     })()}
 
-    {/* BLOQUE 1.5: TENDENCIAS SEMANALES */}
-    <TendenciasMensuales
+    {/* BLOQUE 1.5: LA GRÁFICA ÚNICA.
+        Era éste más un bloque 1.6 de proyección de avance y gasto. Las dos
+        dibujaban el mismo ejecutado y el mismo gasto con dos cuentas
+        distintas, así que podían discrepar sin que nada en la pantalla lo
+        dijera. Ver `curvaUnicaDeObra`. */}
+    <TarjetaGraficaUnica
       obra={obra}
       historialAvance={historialAvance}
       gpData={gpData}
-      estimaciones={estimaciones}
       otrosGastos={otrosGastos}
       maquinaria={maquinaria}
-      materiales={materiales}
       subs={subs}
       programa={programaObra}/>
-
-    {/* BLOQUE 1.6: PROYECCIÓN DE AVANCE Y GASTO */}
-    <ProyeccionAvanceGasto
-      obra={obra}
-      historialAvance={historialAvance}
-      gpData={gpData}
-      otrosGastos={otrosGastos}
-      maquinaria={maquinaria}
-      subs={subs}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
     {totalRiesgos > 0 && (
