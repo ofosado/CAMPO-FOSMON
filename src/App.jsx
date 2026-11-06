@@ -30,7 +30,11 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // los datos. Cuando viene null, el PDF cae a la recta del plazo Y LO DICE —ver
 // `avanceProgramadoA` y `ROTULO_PROGRAMADO`—, que es la diferencia entre una
 // cifra con respaldo contractual y un reparto lineal que nadie firmó.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null) {
+// `evidenciaCargada` entra como parámetro propio y NO se deduce de que la lista
+// venga vacía. `fsColl` devuelve `[]` cuando la regla niega, así que sin este
+// dato el expediente imprimiría «0% de cobertura» por una lectura fallida: una
+// cifra creíble y falsa, en un documento con tres firmas al pie.
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null, evidenciaCargada = true) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -1847,58 +1851,53 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   // ════════════════════════════════════════════════════════════════════════
   // PAGS — FOTOGRAFÍAS
-  // Criterio de selección (corregido jul-2026):
-  //   1. Priorizar partidas con MAYOR DELTA de avance en el corte semanal
-  //      actual vs el anterior (más monto ejecutado esta semana).
-  //   2. Para cada partida seleccionada, tomar sus fotos MÁS RECIENTES.
-  //   3. Si no hay historial (obra nueva o sin snapshots), fallback a las
-  //      partidas con MÁS FOTOS disponibles (proxy de actividad reciente).
-  //   4. Rellenar hasta 12 fotos combinando partidas.
-  // ════════════════════════════════════════════════════════════════════════
-
+  //
+  // EL ORDEN ES POR IMPORTE, DE MAYOR A MENOR. Doce fotos no caben todas, así
+  // que el criterio decide qué se ve, y lo que se ve es lo que el expediente
+  // afirma haber respaldado. Hasta el 2026-11-05 el orden era por DELTA DE
+  // AVANCE DE LA SEMANA, con el número de fotos como desempate. Eso responde a
+  // otra pregunta —«¿qué se movió esta semana?»— y para un expediente tiene dos
+  // fallas: la partida de $10 millones nunca sale si esta semana no se tocó, y
+  // «más fotos» premia a quien repite la misma toma. La cobertura se pondera
+  // por importe, así que las fotos que la sostienen se enseñan en ese orden.
+  //
   // Las fotos salen de `evidenciaDePartida`, la misma cuenta que lee la galería.
   // Antes esta función aplanaba `s.fotos` por su cuenta: era una de tres copias
   // del mismo recorrido, y la copia de la galería se quedó sin `.flat()` y dejó
   // invisibles todas las fotos de producción en la pantalla del cliente
   // (PENDIENTES #32). Con una sola cuenta, el PDF y la pantalla no pueden
   // enseñar fotos distintas.
+  //
+  // El orden de las que PONDERAN sale de `cobertura.porImporte`, que es el
+  // mismo arreglo con el que se calculó el porcentaje: así el documento no
+  // puede publicar un número sacado de un orden y enseñar las fotos de otro.
+  //
+  // Pero el candidato es TODA partida con foto, no sólo las que ponderan. Las
+  // extraordinarias no entran en el denominador y las partidas sin importe
+  // tampoco, y las dos pueden tener fotos reales: dejarlas fuera del expediente
+  // haría invisible evidencia que existe. Van después, también por importe.
+  // Esto también es lo que salva el caso de que la cobertura no se pueda medir:
+  // el mapa queda vacío, todo cae al orden por importe, y las fotos se siguen
+  // enseñando en lugar de desaparecer con el porcentaje.
+  // ════════════════════════════════════════════════════════════════════════
 
-  // Calcular delta por partida usando historialAvance
-  // El delta representa cuánto avanzó la partida en el último corte
-  const semanasOrd = (historialAvance || []).slice()
-    .sort((a,b) => (a.año - b.año) || (a.semana - b.semana));
-  const snapActual = semanasOrd[semanasOrd.length - 1];
-  const snapAnterior = semanasOrd[semanasOrd.length - 2];
+  const cobertura = coberturaDeEvidencia({ subs, evidencia, evidenciaCargada });
+  const fraseCobertura = frasesDeCobertura(cobertura);
 
-  // Mapa sec → delta monto avanzado esta semana
-  const deltaPorSec = new Map();
-  if (snapActual && Array.isArray(snapActual.subs)) {
-    snapActual.subs.forEach(sa => {
-      const sPrev = snapAnterior?.subs?.find(x => x.sec === sa.sec);
-      const aPrev = sPrev?.a || 0;
-      const delta = (sa.a || 0) - aPrev;
-      if (delta > 0.01) {
-        const deltaMonto = delta * (sa.imp || 0) / 100;
-        deltaPorSec.set(sa.sec, deltaMonto);
-      }
+  const ordenDeCobertura = new Map(cobertura.porImporte.map((x, i) => [x.id, i]));
+  const subsConFotos = (subs || [])
+    .map((s, i) => {
+      const id = idDePartida(s, i);
+      return { s, id, imp: importeCatalogoPartida(s),
+               fotos: evidenciaDePartida(evidencia, id) };
+    })
+    .filter(x => x.fotos.length > 0)
+    .sort((a, b) => {
+      const ra = ordenDeCobertura.has(a.id) ? ordenDeCobertura.get(a.id) : Infinity;
+      const rb = ordenDeCobertura.has(b.id) ? ordenDeCobertura.get(b.id) : Infinity;
+      if (ra !== rb) return ra - rb;
+      return b.imp - a.imp;
     });
-  }
-
-  // Rankear partidas: primero por delta semanal, luego por #fotos como fallback
-  const subsConFotos = subs
-    .map((s, i) => ({ s, fotos: evidenciaDePartida(evidencia, idDePartida(s, i)),
-                      delta: deltaPorSec.get(s.sec) || 0 }))
-    .filter(x => x.fotos.length > 0);
-
-  subsConFotos.sort((a,b) => {
-    // Priorizar las que tienen delta > 0 (avance esta semana)
-    if (a.delta > 0 && b.delta === 0) return -1;
-    if (a.delta === 0 && b.delta > 0) return 1;
-    // Entre las que tienen delta, ordenar por delta descendente
-    if (a.delta > 0 && b.delta > 0) return b.delta - a.delta;
-    // Fallback: por número de fotos (más fotos = más actividad reciente)
-    return b.fotos.length - a.fotos.length;
-  });
 
   // Construir lista de hasta 12 fotos, distribuyendo entre partidas
   // (para no llenarlo todo con 12 fotos de una sola partida)
@@ -1972,10 +1971,33 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
   const FW=(CW-8)/3, FH=FW*0.64;
 
-  function drawFotoPage(fotos6, title) {
+  // La banda de cobertura. Va SÓLO en la primera página de evidencia: repetirla
+  // la volvería decorado, y lo que dice es un veredicto.
+  //
+  // El color lo decide el veredicto, no el gusto: debajo del piso es rojo
+  // porque el expediente está diciendo que no se puede respaldar, y lo que no
+  // se pudo medir es ámbar —ni acusa ni absuelve— porque un «no se pudo leer»
+  // pintado de rojo se lee como una obra sin fotos, que es justo la confusión
+  // que esto existe para evitar.
+  function drawBandaCobertura(yf) {
+    const [borde, fondo, tinta] = !cobertura.medible ? [K.am, K.ab2, K.ak2]
+      : cobertura.pct >= COBERTURA_TECHO ? [K.vd, K.vb, K.vk]
+      : cobertura.pct >= COBERTURA_PISO ? [K.az, K.ab, K.ak]
+      : [K.rd, K.rb, K.rk];
+    const lineas = doc.splitTextToSize(fraseCobertura.detalle, CW - 8);
+    const h = 9 + lineas.length * 3.6;
+    sf(fondo); sd(borde); lw(0.3); R(ML, yf, CW, h, 'FD');
+    st(tinta); fs(8.5); fw('bold'); T(fraseCobertura.titulo, ML + 4, yf + 5.5);
+    fs(7); fw('normal');
+    lineas.forEach((ln, i) => T(ln, ML + 4, yf + 9.5 + i * 3.6));
+    return yf + h + 3;
+  }
+
+  function drawFotoPage(fotos6, title, conBanda = false) {
     doc.addPage(); pageFrame();
     let yf=CY0;
     yf=secHead(title, yf)+2;
+    if (conBanda) yf = drawBandaCobertura(yf);
     // 2 filas × 3 fotos
     for(let row=0;row<2;row++){
       const rowF=fotos6.slice(row*3,(row+1)*3);
@@ -2020,7 +2042,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     return yf+6;
   }
 
-  let yF2=drawFotoPage(fotos12.slice(0,6), '8  EVIDENCIA FOTOGRÁFICA (1 de 2)');
+  let yF2=drawFotoPage(fotos12.slice(0,6), '8  EVIDENCIA FOTOGRÁFICA (1 de 2)', true);
   drawFotoPage(fotos12.slice(6,12), '9  EVIDENCIA FOTOGRÁFICA (2 de 2)');
 
   // Firmas al final de pág 8
@@ -3802,6 +3824,109 @@ const evidenciaDePartida = (lista, partidaId) =>
     .filter(e => e.partidaId === partidaId)
     .sort((a, b) => String(b.fechaServidor || b.fechaDeclarada || '')
       .localeCompare(String(a.fechaServidor || a.fechaDeclarada || '')));
+
+// ── CUÁNTO DEL CONTRATO TIENE FOTO ────────────────────────────────────────
+//
+// LA COBERTURA SE MIDE EN DINERO, NO EN FOTOS. Mil fotos del señalamiento no
+// cubren la obra; una foto de la partida que vale el 30% del contrato cubre el
+// 30%. Contar fotos publicaría esfuerzo y lo llamaría cobertura.
+//
+// UNA PARTIDA CUENTA ENTERA O NO CUENTA. La foto no sabe a qué volumen
+// corresponde —no hay campo que lo diga— así que repartir el importe entre sus
+// fotos sería inventar la cifra. Con una foto vigente, la partida aporta todo
+// su importe de catálogo; sin ninguna, no aporta nada.
+//
+// LAS EXTRAORDINARIAS NO ENTRAN EN EL DENOMINADOR. No están en el contrato que
+// se firmó. Si entraran, autorizar una extraordinaria BAJARÍA la cobertura del
+// expediente sin que nadie dejara de tomar una sola foto.
+//
+// Medido en producción el 2026-11-05 (`scripts/medir-cobertura-de-evidencia.cjs
+// --prod`): las siete obras vivas son medibles y salen 94.6%, 78.0%, 45.4%,
+// 25.4% y tres en 0.0%. Las tres conductas de abajo tienen obra que las ejerce.
+const COBERTURA_TECHO = 80;  // arriba de aquí ya no se pide más evidencia
+const COBERTURA_PISO  = 50;  // debajo de aquí no se publica el número
+
+// `evidenciaCargada` NO es un detalle: `fsColl` devuelve `[]` cuando la regla
+// niega o la red falla, así que una lectura fallida y una obra sin fotos llegan
+// aquí con la misma lista vacía. Publicar «0% · la evidencia no alcanza» por una
+// lectura denegada sería una cifra creíble y falsa impresa en un documento que
+// firma un residente. Sin lectura no hay cobertura: `medible: false`.
+const coberturaDeEvidencia = ({ subs, evidencia, evidenciaCargada = true }) => {
+  const vacio = (razon) => ({
+    medible: false, razon, pct: null, total: 0, cubierto: 0,
+    partidas: 0, partidasConFoto: 0, hastaTecho: 0, faltan: [], porImporte: [],
+  });
+  if (!evidenciaCargada) return vacio('no-leida');
+
+  // El id se resuelve UNA vez y con el índice del arreglo COMPLETO.
+  // `idDePartida` usa el índice como último recurso, así que numerar después de
+  // filtrar daría un `#i` distinto del que guardó la foto, y esas partidas
+  // saldrían sin cubrir sin que les falte nada.
+  const cat = soloCatalogo(subs || [])
+    .map((s, i) => ({ s, id: idDePartida(s, i), imp: importeCatalogoPartida(s) }))
+    .filter(x => x.imp > 0);
+  const total = cat.reduce((t, x) => t + x.imp, 0);
+  if (total <= 0) return vacio('sin-importes');
+
+  const conFoto = new Set(evidenciaVigente(evidencia).map(e => e.partidaId));
+  const cubierto = cat.filter(x => conFoto.has(x.id)).reduce((t, x) => t + x.imp, 0);
+
+  // De mayor a menor importe: es el orden en que se decidió fotografiar y es
+  // también el orden en que el expediente enseña las fotos, para que lo que se
+  // ve sea lo que pesa.
+  const porImporte = [...cat].sort((a, b) => b.imp - a.imp);
+
+  // Cuántas partidas hay que cubrir para llegar al techo, y cuáles de ésas
+  // siguen sin foto. Ésta es la lista de trabajo, y es corta por construcción.
+  let acum = 0, hastaTecho = 0;
+  for (const x of porImporte) {
+    if ((acum / total) * 100 >= COBERTURA_TECHO) break;
+    acum += x.imp; hastaTecho++;
+  }
+
+  return {
+    medible: true, razon: null,
+    pct: (cubierto / total) * 100,
+    total, cubierto,
+    partidas: cat.length,
+    partidasConFoto: cat.filter(x => conFoto.has(x.id)).length,
+    hastaTecho,
+    faltan: porImporte.slice(0, hastaTecho).filter(x => !conFoto.has(x.id)),
+    porImporte,
+  };
+};
+
+// El rótulo vive con la cuenta, no en cada pantalla. Es la misma razón del
+// `ROTULO_PROGRAMADO`: dos sitios que redactan el mismo veredicto acaban
+// diciéndolo distinto, y el que se queda viejo afirma lo que ya no es.
+//
+// Debajo del piso NO SE PUBLICA EL NÚMERO. Un «31.2% de cobertura» impreso sin
+// más se lee como una medición cumplida; lo que dice es que el expediente no
+// está respaldado, y eso es una frase, no un porcentaje.
+const frasesDeCobertura = (c) => {
+  if (!c.medible) return c.razon === 'no-leida'
+    ? { titulo: 'Cobertura no medida',
+        detalle: 'No se pudo leer la evidencia de esta obra, así que no se puede ' +
+                 'decir cuánto del contrato está respaldado. No quiere decir que no haya fotos.' }
+    : { titulo: 'Cobertura no medible',
+        detalle: 'El catálogo de esta obra no tiene importes, y la cobertura se ' +
+                 'pondera por importe. Sin importes no hay con qué medirla.' };
+  const pct = c.pct.toFixed(1) + '%';
+  if (c.pct >= COBERTURA_TECHO) return {
+    titulo: `Cobertura de evidencia ${pct} del contrato`,
+    detalle: `${c.partidasConFoto} de ${c.partidas} partidas con fotografía. ` +
+             `Supera el ${COBERTURA_TECHO}% que este expediente exige.` };
+  if (c.pct >= COBERTURA_PISO) return {
+    titulo: `Cobertura de evidencia ${pct} del contrato`,
+    detalle: `${c.partidasConFoto} de ${c.partidas} partidas con fotografía. ` +
+             `Para llegar al ${COBERTURA_TECHO}% faltan ${c.faltan.length} de las ` +
+             `${c.hastaTecho} partidas de mayor importe.` };
+  return {
+    titulo: 'La evidencia fotográfica no alcanza para respaldar este expediente',
+    detalle: `Sólo ${c.partidasConFoto} de ${c.partidas} partidas tienen fotografía, y ` +
+             `no llegan al ${COBERTURA_PISO}% del importe contratado. Faltan ` +
+             `${c.faltan.length} de las ${c.hastaTecho} partidas de mayor importe.` };
+};
 
 // ── ANULAR, QUE NO ES BORRAR ──────────────────────────────────────────────
 // La `×` de la pantalla de captura borraba la foto del arreglo y se acabó. Dos
@@ -25677,7 +25802,7 @@ export default function App(){
           // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
           // lecturas —una por sub— de documentos que nunca existieron, porque
           // las reglas denegaban la escritura. Ver PENDIENTES #31.
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra);
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra, evidenciaCargada);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,

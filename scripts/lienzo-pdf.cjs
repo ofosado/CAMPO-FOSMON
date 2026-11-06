@@ -58,14 +58,30 @@ function lienzo() {
 // montan con jsPDF ya cargado para que el generador no intente bajarlo de un
 // CDN: sin eso el banco pediría red, y un banco que pide red da rojo el día que
 // no hay.
-async function dibujarPDF(generarPDFObra, branding, obra) {
+//
+// `datos` son los argumentos que algún banco necesita de verdad; el resto van
+// vacíos. Se pasan POR NOMBRE y no como una lista posicional más larga porque
+// `generarPDFObra` ya lleva quince parámetros y contar comas hasta el
+// decimoquinto es la clase de error que no se ve en la revisión: el banco de la
+// cobertura necesita el 2, el 13, el 14 y el 15, y los tres últimos son
+// `evidencia`, `programa` y `evidenciaCargada`, que es precisamente el que
+// distingue «no hay fotos» de «no se pudieron leer».
+async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
+  const {
+    subs = [], estimaciones = [], maquinaria = [], materiales = [],
+    subcontratos = [], historialAvance = [], gpData = null, otrosGastos = [],
+    gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null,
+    evidenciaCargada = true,
+  } = datos;
   const { doc, dibujos } = lienzo();
   const guardados = { window: global.window, document: global.document, alert: global.alert };
   global.window = { jspdf: { jsPDF: function () { return doc; } }, _atLoaded: true };
   global.document = { createElement: () => ({}), head: { appendChild: () => {} } };
   global.alert = () => {};
   try {
-    await generarPDFObra(obra, [], [], [], [], [], branding, [], null, [], null, [], []);
+    await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales,
+      subcontratos, branding, historialAvance, gpData, otrosGastos, gpDetalle,
+      nominaHistorial, evidencia, programa, evidenciaCargada);
   } finally {
     global.window = guardados.window;
     global.document = guardados.document;
