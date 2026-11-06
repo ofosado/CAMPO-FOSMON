@@ -218,9 +218,24 @@ for (const [f, salida] of mudas) {
   console.log(`\n──────── ${f} no arrancó ────────`);
   console.log(salida.trim());
 }
+// De un rojo se publica el renglón `FALLA` Y LO QUE VENGA SANGRADO DEBAJO, que
+// es donde los bancos ponen qué esperaban y qué midieron.
+//
+// Antes se publicaba sólo el renglón. El 2026-11-06 la suite sacó un rojo en
+// `prueba-corredor-no-se-cuelga` que no volvió a aparecer ni corriéndolo solo
+// ni cuatro veces en paralelo, y el número que lo habría explicado —el resumen
+// que el banco sí había medido e impreso— lo había tirado esta línea. Un fallo
+// que no se reproduce y cuya medición se descartó no se puede clasificar: no
+// se sabe si fue la máquina o el banco, y «se arregla volviendo a correr» es
+// exactamente la costumbre que convierte un defecto en ruido tolerado.
+//
+// El sangrado es el criterio porque es el que ya usan los bancos sin haberlo
+// acordado (`esperaba:` / `obtuvo:`), y porque corta solo: el siguiente
+// renglón sin sangrar vuelve a ser salida normal y no se arrastra el archivo
+// entero hasta el informe.
 for (const [f, salida] of rojas) {
   console.log(`\n──────── ${f} en rojo ────────`);
-  console.log((salida.match(/^FALLA.*$/gm) || [salida.trim()]).join('\n'));
+  console.log((salida.match(/^FALLA.*(?:\n[ \t]+.*)*$/gm) || [salida.trim()]).join('\n'));
 }
 if (sinEmulador.length > 0) {
   console.log('\nLas de "sin emulador" no se comprobaron. Para correrlas:');
