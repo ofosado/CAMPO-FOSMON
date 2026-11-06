@@ -355,9 +355,9 @@ function correr(codigo) {
   const avanceProgramadoA = cuenta('avanceProgramadoA');
   const hoyLocalISO = cuenta('hoyLocalISO');
   const jueveDeSemanaISO = cuenta('jueveDeSemanaISO');
-  const aHoy = avanceProgramadoA(OBRA, PROGRAMA, hoyLocalISO(), FIN);
+  const aHoy = avanceProgramadoA(OBRA, PROGRAMA, hoyLocalISO());
   check(aHoy.fuente === 'programa',
-    'el anexo del fixture se lee como programa, no como recta', aHoy.fuente);
+    'el anexo del fixture se lee como programa', aHoy.fuente);
   check(Array.isArray(dep.semanas) && dep.semanas.length === 10,
     'la ventana del municipio son las 10 semanas del contrato',
     `${dep.semanas?.length} semanas`);
@@ -431,12 +431,12 @@ function correr(codigo) {
   const isoDe = (d) => iso(d);
   const alJueves = dep.semanas.map(s => {
     const j = jueveDeSemanaISO(s.año, s.sem);
-    return avanceProgramadoA(OBRA, PROGRAMA, isoDe(j), FIN).pct;
+    return avanceProgramadoA(OBRA, PROGRAMA, isoDe(j)).pct;
   });
   const alLunes = dep.semanas.map(s => {
     const j = jueveDeSemanaISO(s.año, s.sem);
     j.setDate(j.getDate() - 3);
-    return avanceProgramadoA(OBRA, PROGRAMA, isoDe(j), FIN).pct;
+    return avanceProgramadoA(OBRA, PROGRAMA, isoDe(j)).pct;
   });
   check(dep.programadoSeries.every((v, i) => casi(v, alJueves[i], 0.01)),
     'cada semana trae el programado a su jueves',
@@ -448,11 +448,12 @@ function correr(codigo) {
   check(!dep.programadoSeries.every((v, i) => casi(v, alLunes[i], 0.01)),
     'así que la serie NO es la del lunes');
 
-  // ── 4 · MIENTRAS EL ANEXO VIAJA, NADA SE AFIRMA ──────────────────────────
-  // `undefined` es «todavía no se sabe». Tratarlo como `null` publica la recta
-  // rotulada «programado» durante el viaje: el #51 (el avance contra una recta)
-  // por una rendija de milisegundos, visible en cada recarga.
-  sec('4. Con el anexo a medio viaje no se dibuja ninguna línea');
+  // ── 4 · SIN ANEXO NO SE DIBUJA LA CUARTA SERIE ───────────────────────────
+  // Los dos casos dan una serie de nulls y hay que distinguirlos igual:
+  // `undefined` es «todavía no se sabe» y se calla; `null` es «se sabe que no
+  // hay» y se DICE. Y la obra de este fixture tiene inicio y fin, o sea que la
+  // recta se podía calcular: lo que se afirma es que ya no se calcula.
+  sec('4. Sin anexo no se dibuja ninguna línea programada, y se dice por qué');
   const viajando = ejecutar('CurvaSDelContrato', PROPS_DEP({ programa: undefined }));
   const sinAnexo = ejecutar('CurvaSDelContrato', PROPS_DEP({ programa: null }));
   check(viajando.programadoSeries.every(v => v === null),
@@ -467,12 +468,32 @@ function correr(codigo) {
         /leyendo/i.test(viajando.rotulo?.sub || ''),
     'y el rótulo no afirma «programado» mientras la lectura viaja',
     `${viajando.rotulo?.kpi} · ${viajando.rotulo?.sub}`);
-  check(sinAnexo.programadoSeries.filter(v => typeof v === 'number').length === 10
-        && sinAnexo.fuentePrograma === 'recta',
-    'pero con `null` —ya se sabe que no hay anexo— sí cae a la recta y la nombra',
+  check(viajando.hayPrograma === false,
+    'viajando tampoco se dibuja la serie: no hay nada que dibujar todavía');
+  // El corte del 2026-11-06: con `null` NO aparece una recta en su lugar.
+  check(sinAnexo.programadoSeries.every(v => v === null),
+    'sin anexo el programado NO se sustituye por una recta, ni un punto',
+    `${sinAnexo.programadoSeries.filter(v => v !== null).length} puntos dibujados`);
+  check(sinAnexo.desviacionSeries.every(v => v === null),
+    'y la columna «Contra el programa» queda entera en "sin dato"');
+  check(sinAnexo.fuentePrograma === 'sin_programa',
+    'la fuente dice que falta el anexo —no «recta», no «cargando»—',
     String(sinAnexo.fuentePrograma));
-  check(/lineal/i.test(sinAnexo.rotulo?.kpi || ''),
-    'el rótulo de la recta dice LINEAL, no «programado»', sinAnexo.rotulo?.kpi);
+  check(sinAnexo.hayPrograma === false,
+    'y la serie punteada no se le pasa al panel: su nombre no queda en la leyenda');
+  check(!/lineal|recta/i.test(sinAnexo.rotulo?.kpi || '') &&
+        !/lineal|recta/i.test(sinAnexo.rotulo?.sub || ''),
+    'el rótulo no nombra ninguna recta ni nada lineal',
+    `${sinAnexo.rotulo?.kpi} · ${sinAnexo.rotulo?.sub}`);
+  check(/(AE11|DE-5|carga)/i.test(sinAnexo.rotulo?.sub || ''),
+    'dice qué archivo cargar, que es lo único que arregla el hueco',
+    sinAnexo.rotulo?.sub);
+  // El canario de esta sección: la obra del fixture TIENE las dos fechas. Sin
+  // esto, el verde de arriba podría venir de un fixture sin plazo, donde la
+  // recta no se podía calcular de todas formas.
+  check(!!OBRA.inicio && !!(OBRA.fin || OBRA.finAmpliado),
+    'canario: la obra del fixture tiene inicio y fin, o sea que la recta SÍ se podía calcular',
+    `${OBRA.inicio} → ${OBRA.finAmpliado || OBRA.fin}`);
 
   // ── 5 · NINGÚN DELTA CRUZA LA FRONTERA ───────────────────────────────────
   // Restar un avance compensado de uno topado mide el cambio de criterio, no la
@@ -560,17 +581,37 @@ const MUTACIONES = [
     'const semanas = semanasDeVentana(obra, rango);\n  const { serie: avanceSeries, esquemaPorSemana } =',
     'const semanas = semanasDeVentana(obra, 8);\n  const { serie: avanceSeries, esquemaPorSemana } ='],
   ['el municipio pierde el ancla al avance vivo del KPI',
-    'serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa, finISO: finVigenteDe(obra) });\n  const rotulo =',
-    'serieAvanceDeSemanas({ semanas, historialAvance, subs: [], obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa, finISO: finVigenteDe(obra) });\n  const rotulo ='],
+    'serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa });\n  const rotulo =',
+    'serieAvanceDeSemanas({ semanas, historialAvance, subs: [], obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa });\n  const rotulo ='],
   ['la economía del contratista se le cuela al municipio',
     'const idxF = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_AVANCE);',
     'const gastoDeLaObra = (otrosGastos || []).reduce((t, g) => t + (g.importe || 0), 0);\n  const idxF = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_AVANCE);'],
   ['el programa se mide al lunes de la semana, no a su jueves',
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    return `${j.getFullYear()}-',
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    j.setDate(j.getDate() - 3);\n    return `${j.getFullYear()}-'],
-  ['con el anexo a medio viaje se dibuja la recta y se rotula programa',
+  ['con el anexo a medio viaje se acusa de que falta',
     "  if (programa === undefined) {\n    return { serie: semanas.map(() => null), fuente: 'cargando' };\n  }",
     '  if (programa === undefined) programa = null;'],
+  // LA RECTA, DE VUELTA, en la serie semanal. Cada jueves calcula el reparto
+  // lineal y la línea punteada reaparece en los dos tableros.
+  ['la serie semanal repone la recta donde no hay anexo',
+    "  const serie = semanas.map(s =>\n    avanceProgramadoA(obra, programa, isoDelJueves(s)).pct);",
+    `  const recta = (fISO) => {
+    const i = fechaLocalDeISO(obra?.inicio);
+    const f = fechaLocalDeISO(obra?.finAmpliado || obra?.fin);
+    const c = fechaLocalDeISO(fISO);
+    if (!i || !f || !c || f <= i) return null;
+    return Math.min(Math.max(((c - i) / (f - i)) * 100, 0), 100);
+  };
+  const serie = semanas.map(s => {
+    const p = avanceProgramadoA(obra, programa, isoDelJueves(s)).pct;
+    return p === null ? recta(isoDelJueves(s)) : p;
+  });`],
+  // Y la forma más barata de que vuelva: pasarle la serie de nulls al panel de
+  // todos modos. No dibuja nada, pero deja su nombre en la leyenda.
+  ['el municipio le pasa la serie vacía al panel igual',
+    '  const hayPrograma = fuentePrograma === \'programa\';\n\n  // La frontera del AVANCE',
+    '  const hayPrograma = true;\n\n  // La frontera del AVANCE'],
   ['el delta del municipio cruza la frontera del esquema',
     'if (hayTramoViejo && i === idxF) return null;',
     ''],
