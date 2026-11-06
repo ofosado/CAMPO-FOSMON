@@ -466,8 +466,16 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y=CY0;
   y=secHead('2  ESTIMACIONES AL CLIENTE', y);
 
-  // Filtrar solo estimaciones con datos reales
-  const estActivas=estimaciones.filter(e=>e.no&&e.monto>0);
+  // Las estimaciones que tienen dinero adentro. El filtro pedía ADEMÁS que
+  // tuvieran `no`, y eso descartaba la fila del expediente sin descartarla del
+  // TOTAL: `te` (arriba) suma TODAS las estimaciones, así que una estimación
+  // sin numerar desaparecía de la tabla y seguía contada en el renglón TOTAL de
+  // esa misma tabla. El documento salía con tres firmas al pie, una tabla que
+  // no cuadra con su propio total, y la diferencia sin nombre ni renglón.
+  //
+  // Faltar el `no` es faltar la ETIQUETA, no el dinero. La etiqueta la pone
+  // `rotuloEstimacion`, que dice que falta; el monto se imprime porque existe.
+  const estActivas=estimaciones.filter(e=>e.monto>0);
   const aT=te*(obra.pctAnticipo||10)/100;
   const fgT=te*(obra.pctFondoGar||5)/100;
 
@@ -481,7 +489,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     estRows = estActivas.map(e=>{
       const ef=e.monto*(1-(obra.pctAnticipo||10)/100-(obra.pctFondoGar||5)/100);
       return [
-        `EST-${String(e.no).padStart(2,'0')}`,
+        rotuloEstimacion(e),
         e.periodo||'',
         MXN(e.monto),
         e.estatus||'',
@@ -600,7 +608,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 
       // Etiqueta izquierda
       st(K.ng); fs(7); fw('bold');
-      T(`EST-${String(d.no).padStart(2,'0')}`, ML, rowY + 5);
+      T(rotuloEstimacion(d), ML, rowY + 5);
       st(K.gmu); fs(6); fw('normal');
       T((d.periodo || '—').slice(0, 22), ML + 14, rowY + 5);
 
@@ -1829,7 +1837,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
       if (estsSub.length > 0 && (CYmax - ySub) > 25) {
         ySub = secHead('Historial de estimaciones', ySub, K.gtx);
         const estFilas = estsSub.map(e => [
-          `EST-${String(e.no || '').padStart(2,'0')}`,
+          rotuloEstimacion(e),
           e.fecha || '—',
           (e.periodo || e.referencia || '').substring(0, 60),
           MXN(pf(e.monto)),
@@ -2924,6 +2932,97 @@ const sonComparables = (a, b, metrica = 'avance') => {
 // devuelve null —"no disponible"—, no cero.
 const montoEjecutadoSnap = (snap) =>
   (typeof snap?.montoEjecutado === 'number') ? snap.montoEjecutado : null;
+
+// ── EL NÚMERO DE UNA ESTIMACIÓN, Y SU RÓTULO ───────────────────────────────
+//
+// `no` es el consecutivo CONTRACTUAL de la estimación. No es la posición en la
+// lista ni un adorno: es con lo que el cliente la identifica en su oficio de
+// pago, y es lo que va impreso en el expediente que se entrega firmado.
+//
+// Ese número se calculaba y se rotulaba de nueve maneras, con CINCO conductas
+// distintas el día que a una fila guardada le faltara el `no`:
+//
+//   17313  `Math.max(...es.map(e => e.no)) + 1`   → NaN, y rotula «EST-NaN»
+//   21793  `Math.max(...map(parseInt(e.no)||0))`  → la misma cuenta, con guarda
+//   484 · 603 · 17384  `String(e.no).padStart(2)` → «EST-NaN»
+//   1832   `String(e.no || '')`                   → «EST-» a secas
+//   17103…17126 · 21436  `` `EST-0${e.no}` ``     → «EST-0undefined», y además
+//          «EST-012» cuando el número SÍ está y pasa de nueve
+//   17758 · 22516  `e.no ?? i+1` / `e.no || i+1`  → la POSICIÓN DE LA FILA
+//          disfrazada de consecutivo
+//
+// Las dos últimas son las peores y por razones opuestas. El `NaN` por lo menos
+// se ve: nadie cree que exista la EST-NaN. La posición de la fila no se ve —
+// «EST-04» es un rótulo perfectamente creíble— y es falsa: pueden faltar
+// estimaciones, pueden venir desordenadas, y el consecutivo lo fija el oficio
+// del cliente, no el renglón en que quedó en pantalla.
+//
+// Y el `NaN` no es el defecto de la fila mala: `Math.max` con un solo `NaN`
+// adentro devuelve `NaN`, así que UNA fila sin numerar hace que la obra entera
+// deje de poder dar de alta estimaciones con número.
+//
+// Medido en producción el 2026-11-05 (`medir-el-relleno-que-pasa-por-medicion`):
+// hoy las 34 estimaciones guardadas de las 7 obras traen su `no`, así que el
+// «EST-NaN» todavía no sale. Lo dispara la primera fila que entre sin numerar
+// —importación, migración, o cualquier escritura que guarde la lista sin el
+// campo—, y la dispara para toda la obra.
+//
+// Una sola cuenta, entonces, y cuando el dato no está se dice que no está.
+
+// El `no` que una estimación GUARDADA realmente trae, o `null`. `null` es
+// «esta fila no está numerada», que no es lo mismo que «es la cero»: la EST-00
+// no existe, así que un cero guardado es el rastro de un relleno anterior
+// —`parseInt(e.no) || 0`— y no un consecutivo.
+const noDeEstimacion = (e) => {
+  const n = Number(e?.no);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+};
+
+// El consecutivo de la SIGUIENTE estimación. Una fila sin numerar se ignora al
+// medir el máximo en vez de envenenarlo: la pregunta es «¿cuál es el número más
+// alto que YA se usó?», y una fila sin número no usó ninguno.
+const siguienteNoDeEstimacion = (estimaciones = []) => {
+  const usados = (Array.isArray(estimaciones) ? estimaciones : [])
+    .map(noDeEstimacion)
+    .filter((n) => n !== null);
+  return usados.length ? Math.max(...usados) + 1 : 1;
+};
+
+// Lo que se enseña cuando la estimación no está numerada. Es visible a
+// propósito: quien lo vea tiene que poder teclear el número que falta, y para
+// eso tiene que notar que falta.
+const ROTULO_EST_SIN_NUMERO = 'EST-s/n';
+
+const rotuloEstimacion = (e) => {
+  const n = noDeEstimacion(e);
+  return n === null ? ROTULO_EST_SIN_NUMERO : `EST-${String(n).padStart(2, '0')}`;
+};
+
+// El ORDEN de la relación, que es el que le da sentido al acumulado.
+//
+// Las dos tablas de estimaciones ordenaban con `(Number(a.no)||0) -
+// (Number(b.no)||0)`, y ese `||0` es el mismo relleno de siempre con otra
+// cara: a la fila sin numerar le asigna el lugar 0, o sea la pone ANTES de la
+// primera. Y el acumulado se suma en ese orden. Resultado, visto en el
+// emulador con una estimación sin numerar de $1,850,000: el renglón de la
+// EST-01 publicaba un acumulado de $6,050,000 —su propio monto más el de una
+// fila que no tiene lugar en la secuencia— mientras el pie de la misma tabla
+// afirmaba que el acumulado «suma por número de estimación, de la 1 en
+// adelante». La cifra no era de nadie y la leyenda era falsa.
+//
+// Las que no tienen número van al FINAL, y en el orden en que están
+// guardadas. Así cada renglón numerado dice exactamente lo que el pie promete
+// —lo acumulado hasta ese número— y la fila sin numerar queda abajo, con el
+// total de la relación, que es lo único cierto que se puede decir de ella: su
+// dinero cuenta, su posición no se sabe.
+const ordenDeEstimaciones = (a, b) => {
+  const na = noDeEstimacion(a);
+  const nb = noDeEstimacion(b);
+  if (na === null && nb === null) return 0;
+  if (na === null) return 1;
+  if (nb === null) return -1;
+  return na - nb;
+};
 
 // ── EL CORTE DE ESTIMACIONES ────────────────────────────────────────────────
 // Lo estimado y lo pagado AL MOMENTO DEL CIERRE. Hasta ahora el cierre semanal
@@ -17100,7 +17199,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           // Nueva estimación
           await notifARoles(['director_general','director_operaciones','admin_sistema'], {
             categoria: 'financiero', tipo: 'estim_creada',
-            titulo: `Nueva estimación EST-0${e.no} · ${obra.nombre||obra.id}`,
+            titulo: `Nueva estimación ${rotuloEstimacion(e)} · ${obra.nombre||obra.id}`,
             mensaje: `${MXN(e.monto)} en estatus ${e.estatus}`,
             link, creadaPor,
           });
@@ -17109,21 +17208,21 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           if (e.estatus === 'Facturada') {
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_facturada',
-              titulo: `EST-0${e.no} facturada · ${obra.nombre||obra.id}`,
+              titulo: `${rotuloEstimacion(e)} facturada · ${obra.nombre||obra.id}`,
               mensaje: `${MXN(e.monto)} · ${obra.diasPago||30} días para vencer cobro`,
               link, creadaPor,
             });
           } else if (e.estatus === 'Pagada') {
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_pagada',
-              titulo: `EST-0${e.no} cobrada · ${obra.nombre||obra.id}`,
+              titulo: `${rotuloEstimacion(e)} cobrada · ${obra.nombre||obra.id}`,
               mensaje: `${MXN(e.monto)} recibidos del cliente`,
               link, creadaPor,
             });
           } else if (e.estatus === 'Aprobada') {
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_aprobada',
-              titulo: `EST-0${e.no} aprobada · ${obra.nombre||obra.id}`,
+              titulo: `${rotuloEstimacion(e)} aprobada · ${obra.nombre||obra.id}`,
               mensaje: `${MXN(e.monto)} lista para facturar`,
               link, creadaPor,
             });
@@ -17225,7 +17324,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
     let acum = 0;
     return estimaciones
       .map((e, i) => ({ e, i }))
-      .sort((x, y) => (Number(x.e?.no)||0) - (Number(y.e?.no)||0))
+      .sort((x, y) => ordenDeEstimaciones(x.e, y.e))
       .map(({ e, i }) => {
         const c = cE(e);
         acum += (Number(e?.monto) || 0);
@@ -17237,6 +17336,11 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           atraso: atrasoDeEstimacion(e, obra.diasPago||30) };
       });
   })();
+
+  // Cuántas van al final por no tener número. El pie de la tabla lo necesita
+  // para no afirmar un orden que no se cumple, y se cuenta aquí, sobre los
+  // mismos renglones que se dibujan, no sobre `estimaciones` aparte.
+  const sinNumerar = renglones.filter(({ e }) => noDeEstimacion(e) === null).length;
 
   // Las columnas. Una deducción pactada en CERO no abre columna: el mismo
   // criterio que ya usan los KPIs de arriba. Una columna de ceros en un estado
@@ -17310,7 +17414,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <Tit>Relación de estimaciones</Tit>
         <div style={{display:"flex",gap:6}}>
-        {editar&&<SecBtn onClick={()=>setEstimaciones(es=>[...es,{no:(es.length>0?Math.max(...es.map(e=>e.no)):0)+1,monto:0,periodo:"",estatus:"En proceso"}])}>+ Nueva estimación</SecBtn>}
+        {editar&&<SecBtn onClick={()=>setEstimaciones(es=>[...es,{no:siguienteNoDeEstimacion(es),monto:0,periodo:"",estatus:"En proceso"}])}>+ Nueva estimación</SecBtn>}
         {editar&&<button onClick={async ()=>{
           try{
             // El `try` no alcanzaba: `fsSetA` NO lanza, devuelve `false`. Con
@@ -17381,7 +17485,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
               // escritura usen la misma identidad es el punto.
               return <tr key={i}>
                 <td style={{...celda,borderLeft:`3px solid ${atraso?.color===C.red?C.red:ecol}`,
-                  fontWeight:700,color:C.caliza}}>EST-{String(e.no).padStart(2,'0')}</td>
+                  fontWeight:700,color:C.caliza}}>{rotuloEstimacion(e)}</td>
                 <td style={celda}>
                   {editar
                     ? <Inp type="text" value={e.periodo||""} placeholder="01–31 may 2026"
@@ -17485,6 +17589,12 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         Importes SIN IVA. «Neto a pagar» descuenta amortización de anticipo, fondo de
         garantía y retención estratégica. «Acumulado» y «% contrato» suman por número
         de estimación, de la 1 en adelante.
+        {/* La leyenda de arriba sólo es cierta si todas están numeradas. Si hay
+            alguna sin número va al final, y entonces su acumulado NO es «lo
+            cobrado hasta ella» —no tiene un «hasta»— sino el total de la
+            relación. Decirlo, en vez de dejar que se lea como un renglón más de
+            la secuencia. */}
+        {sinNumerar > 0 && ` ${sinNumerar === 1 ? "Una estimación no tiene" : `${sinNumerar} estimaciones no tienen`} número capturado: ${sinNumerar === 1 ? "va" : "van"} al final y su acumulado es el total de la relación, no un punto de la secuencia.`}
       </div>}
     </Card>
   </div>;
@@ -17599,7 +17709,7 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
         setEstimaciones(lista);
       } catch (commitErr) {
         await borrarFotoHuerfana(subidoRef);
-        setFallo(`El archivo subió pero NO quedó ligado a la EST-${est.no}: ` +
+        setFallo(`El archivo subió pero NO quedó ligado a la ${rotuloEstimacion(est)}: ` +
                  `${commitErr?.message || 'error desconocido'}. Se borró para no ` +
                  `dejar basura; vuelve a intentarlo.`);
       }
@@ -17656,7 +17766,7 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
     let acum = 0;
     return estimaciones
       .map((e, i) => ({ e, i }))
-      .sort((x, y) => (Number(x.e?.no)||0) - (Number(y.e?.no)||0))
+      .sort((x, y) => ordenDeEstimaciones(x.e, y.e))
       .map(({ e, i }) => {
         acum += monto(e);
         return { e, i, acum,
@@ -17664,6 +17774,11 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
           dias: diasDeRecepcion(e) };
       });
   })();
+
+  // Las que van al final por no traer número, contadas sobre los renglones que
+  // de verdad se dibujan. El pie de la tabla lo usa para no prometer un orden
+  // que esos renglones no cumplen.
+  const sinNumerar = renglones.filter(({ e }) => noDeEstimacion(e) === null).length;
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {!editar && <div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
@@ -17755,7 +17870,7 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
               const num = {...celda, textAlign:"right", fontVariantNumeric:"tabular-nums"};
               return <tr key={e.no ?? i}>
                 <td style={{...celda,borderLeft:`3px solid ${col}`,fontWeight:700,color:C.caliza}}>
-                  EST-{String(e.no ?? i+1).padStart(2,'0')}
+                  {rotuloEstimacion(e)}
                 </td>
                 {/* Las dos fechas del periodo, una encima de otra: son un solo
                     dato —de cuándo a cuándo— y partirlas en dos columnas obliga
@@ -17875,6 +17990,11 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
         Montos SIN IVA, como los presenta el contratista. «Días en presentarla» va del
         cierre del periodo a la recepción en ventanilla. «Acumulado» suma por número de
         estimación, de la 1 en adelante.
+        {/* Igual que en la pantalla del contratista: la leyenda de arriba sólo
+            vale si todas traen número. Aquí importa más, porque esta tabla es
+            el libro de entradas de la ventanilla y el acumulado es lo que la
+            dependencia lee como «cuánto lleva reclamado». */}
+        {sinNumerar > 0 && ` ${sinNumerar === 1 ? "Una estimación llegó sin" : `${sinNumerar} estimaciones llegaron sin`} número: ${sinNumerar === 1 ? "va" : "van"} al final y su acumulado es el total de la relación, no un punto de la secuencia.`}
       </div>}
     </Card>
   </div>;
@@ -21433,7 +21553,7 @@ function EstimacionesCliente({obra, estimaciones}){
         return <div key={i} style={{background:C.bg,borderRadius:8,padding:"11px 13px",marginBottom:8,
           borderLeft:`3px solid ${ecol}`}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>EST-0{e.no}</span>
+            <span style={{fontSize:13,fontWeight:700,color:C.caliza,letterSpacing:"0.06em"}}>{rotuloEstimacion(e)}</span>
             <Bdg color={ecol}>{e.estatus}</Bdg>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
@@ -21789,12 +21909,9 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   }).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
 
   const agregarEstimacion = () => {
-    const nextNo = estimacionesSub.length > 0
-      ? Math.max(...estimacionesSub.map(e => parseInt(e.no)||0)) + 1
-      : 1;
     const nueva = {
       id: Date.now(),
-      no: nextNo,
+      no: siguienteNoDeEstimacion(estimacionesSub),
       fecha: hoyLocalISO(),
       periodo: "",
       monto: 0,
@@ -21814,7 +21931,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       notifARoles(['director_general','director_operaciones','admin_sistema'], {
         categoria: 'financiero', tipo: 'estimacion_sub_pagada',
         titulo: `Estimación pagada · ${sub.proveedor || sub.nombre}`,
-        mensaje: `EST-${String(ahora.no).padStart(2,'0')} · ${MXN(ahora.monto)} · ${obra.nombre || obra.id}`,
+        mensaje: `${rotuloEstimacion(ahora)} · ${MXN(ahora.monto)} · ${obra.nombre || obra.id}`,
         link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
         creadaPor: usuario?.correo || 'sistema',
       });
@@ -22513,7 +22630,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                   <button onClick={()=>eliminarEstimacion(i)}
                     style={{background:"none",border:"none",color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
                 </>) : (<>
-                  <span style={{fontSize:11,fontWeight:700,color:C.caliza}}>EST-{String(e.no||i+1).padStart(2,'0')}</span>
+                  <span style={{fontSize:11,fontWeight:700,color:C.caliza}}>{rotuloEstimacion(e)}</span>
                   <span style={{fontSize:11,color:C.textSec}}>{e.fecha||"—"}</span>
                   <span style={{fontSize:10,color:C.textSec}}>{e.periodo||"—"}</span>
                   <span style={{fontSize:12,fontWeight:600,color:C.caliza,textAlign:"right"}}>{MXN(e.monto||0)}</span>

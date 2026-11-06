@@ -14,7 +14,8 @@
 
 'use strict';
 
-// Anota PÁGINA y POSICIÓN, no sólo el texto. Tirar las posiciones hace que un
+// Anota lo que el generador manda a la hoja: los `text()` Y las celdas de
+// `autoTable`. Anota PÁGINA y POSICIÓN, no sólo el texto. Tirar las posiciones hace que un
 // banco afirme más de lo que comprueba: el pie de la portada y el marco de cada
 // página dibujan cosas parecidas en el mismo renglón, así que un `includes` se
 // cumple con el marco aunque la portada esté mal. La portada es la página 1
@@ -22,6 +23,7 @@
 function lienzo() {
   const dibujos = [];
   let pagina = 1;
+  let tablas = 0;
   const base = {
     internal: {
       pageSize: { getWidth: () => 279, getHeight: () => 216, width: 279, height: 216 },
@@ -40,6 +42,33 @@ function lienzo() {
     get(o, k) {
       if (k === 'addPage') return () => { pagina += 1; };
       if (k === 'setPage') return (i) => { pagina = Number(i) || pagina; };
+      // Las TABLAS también son texto que el generador manda dibujar, y hasta
+      // hoy el Proxy se las tragaba como a cualquier método imprevisto. Eso
+      // dejaba ciega a la tabla principal de estimaciones del expediente —la
+      // que lleva el consecutivo y el monto de cada una, o sea justo donde un
+      // rótulo inventado se imprime y se firma—. Se anotan en `dibujos` y no
+      // en una lista aparte porque son lo mismo: lo que acaba en la hoja. Van
+      // sin `x`/`y` porque autoTable las coloca él.
+      //
+      // `tabla` es el NÚMERO de tabla del documento, contando desde 1, y
+      // `celda` la columna. Las dos hacen falta: el expediente lleva una docena
+      // de tablas y varias tienen una columna de montos, así que un banco que
+      // sólo supiera «esto vino de una tabla» sumaría la columna de una tabla
+      // con la de otra y compararía ese revoltijo contra un TOTAL que no es el
+      // suyo. Con el número, un banco pide la tabla donde está lo que afirma.
+      if (k === 'autoTable') return (opts = {}) => {
+        tablas += 1;
+        const filas = [...(opts.head || []), ...(opts.body || [])];
+        for (const fila of filas) {
+          for (const [celda, c] of (Array.isArray(fila) ? fila : [fila]).entries()) {
+            const t = c && typeof c === 'object' && 'content' in c ? c.content : c;
+            if (t === null || t === undefined) continue;
+            dibujos.push({ texto: String(t), pagina, tabla: tablas, celda });
+          }
+        }
+        base.lastAutoTable = { finalY: 50 };
+        return undefined;
+      };
       if (k in o) return o[k];
       return (...args) => {
         if (k === 'text') {

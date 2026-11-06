@@ -64,8 +64,18 @@ if (process.argv[2] === '--contraprueba') {
   // prueba sólo mirara una, la otra se iría en verde.
   const MUTACIONES = [
     { nombre: 'el acumulado se suma en el orden en que están guardadas',
-      de: `      .sort((x, y) => (Number(x.e?.no)||0) - (Number(y.e?.no)||0))\n`,
+      de: `      .sort((x, y) => ordenDeEstimaciones(x.e, y.e))\n`,
       a: `` },
+    // La vuelta al `||0`: la fila sin numerar recupera el lugar 0 y se mete
+    // ANTES de la primera, así que el acumulado de la EST-01 deja de ser lo
+    // cobrado hasta la 1. Es una mutación aparte de la de arriba porque no
+    // quita el orden —lo deja puesto y mintiendo—, que es justo el caso que se
+    // escapó de la revisión la primera vez.
+    { nombre: 'la fila sin numerar recupera el lugar 0 y se cuela antes de la EST-01',
+      de: `  if (na === null && nb === null) return 0;\n`
+        + `  if (na === null) return 1;\n`
+        + `  if (nb === null) return -1;\n`,
+      a: `  if (na === null || nb === null) return (na || 0) - (nb || 0);\n` },
     { nombre: 'teclear un monto escribe por la posición del RENGLÓN, no del arreglo',
       de: `      .map(({ e, i }) => {`,
       a: `      .map(({ e }, i) => {` },
@@ -143,7 +153,12 @@ const check = (cond, m, detalle) => {
 // De módulo: la paleta (con `tok`, sin el que no se arma), la lectura de fecha
 // local y la cuenta del plazo de pago, que la tabla comparte con el KPI
 // «Atrasado» justo para que no puedan discrepar.
-const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion'];
+// `noDeEstimacion` y `ordenDeEstimaciones` van en este orden porque el
+// PRELUDIO se arma en el orden de la lista y la segunda usa la primera. Entran
+// las de verdad: el orden es lo que le da sentido al acumulado, y un doble
+// haría que este banco midiera su propio orden en vez del de la pantalla.
+const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion',
+  'noDeEstimacion', 'ordenDeEstimaciones'];
 // Del componente: por nombre y por DUEÑO. Hay un `renglones`, un `actualiza` y
 // un `monto` en cada una de las dos pantallas; tomar el primero que aparezca
 // mediría la pantalla equivocada.
@@ -259,6 +274,43 @@ check(casi(acums[0], 10_000_000) && casi(acums[1], 30_000_000) && casi(acums[2],
 check(!casi(acums[0], 30_000_000),
   'y no el de la primera estimación guardada, que es otra cifra',
   `sumado en orden de captura diría ${MXN(30_000_000)}`);
+
+// ── 1bis. Y una fila SIN NUMERAR no se cuela delante de la EST-01 ─────────
+// Esto se vio en el emulador el 2026-11-05. El orden era `(Number(a.no)||0) -
+// (Number(b.no)||0)`: ese `||0` le daba el lugar 0 a la estimación sin
+// numerar, o sea la ponía ANTES de la primera, y como el acumulado se suma en
+// ese orden, el renglón de la EST-01 publicaba su monto MÁS el de una fila que
+// no tiene lugar en la secuencia. Cifra que no es de nadie, y encima el pie de
+// la misma tabla afirmaba que el acumulado va «por número de estimación, de la
+// 1 en adelante».
+//
+// Se mide en LAS DOS pantallas con la misma fixture: el defecto estaba escrito
+// dos veces y arreglarlo en una sola habría dejado a la ventanilla —que es
+// quien lee el acumulado como «cuánto lleva reclamado»— con la cifra mala.
+console.log('\n1bis. Una estimación sin numerar no desplaza el acumulado de las demás');
+const conHueco = [
+  { no: 2, monto: 20_000_000, estatus: 'Facturada',  periodo: '02' },
+  { monto: 5_000_000,         estatus: 'En proceso', periodo: 'sin número' },
+  { no: 1, monto: 10_000_000, estatus: 'Pagada',     periodo: '01' },
+];
+for (const [quien, armar] of [['constructora', constructora], ['dependencia', dependencia]]) {
+  const r = armar(obraC, conHueco).renglones;
+  check(r.length === 3, `${quien}: las tres siguen en la tabla, la sin numerar incluida`,
+    `salieron ${r.length}`);
+  const porNum = r.map(x => (x.e.no === undefined ? 's/n' : x.e.no));
+  check(JSON.stringify(porNum) === '[1,2,"s/n"]',
+    `${quien}: la sin numerar va al FINAL, detrás de la 1 y la 2`,
+    `salió [${porNum.join(',')}]`);
+  check(casi(r[0].acum, 10_000_000),
+    `${quien}: el acumulado de la EST-01 es sólo lo cobrado hasta la 1`,
+    `${MXN(r[0].acum)} — con la sin numerar delante decía ${MXN(15_000_000)}`);
+  check(casi(r[1].acum, 30_000_000),
+    `${quien}: y el de la EST-02 es la 1 más la 2, sin dinero ajeno`,
+    MXN(r[1].acum));
+  check(casi(r[2].acum, 35_000_000),
+    `${quien}: la sin numerar cierra en el total: su dinero cuenta, su lugar no se sabe`,
+    MXN(r[2].acum));
+}
 
 // ── 2. El TOTALES de la tabla es el mismo número de los KPIs de arriba ─────
 console.log('\n2. El renglón de TOTALES no lleva su propia suma');

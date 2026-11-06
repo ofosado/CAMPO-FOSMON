@@ -2422,7 +2422,7 @@ const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
 // Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore
 async function calcularKpisObra(obraId, gpData) {
   const db = admin.firestore();
-  const [infoSnap, subsSnap, maqSnap, matSnap, otrosSnap, estSnap, extraSnap] = await Promise.all([
+  const [infoSnap, subsSnap, maqSnap, matSnap, otrosSnap, estSnap, extraSnap, histSnap] = await Promise.all([
     db.doc(`obras/${obraId}/config/info`).get(),
     db.doc(`obras/${obraId}/avance/subs`).get(),
     db.doc(`obras/${obraId}/avance/maquinaria`).get(),
@@ -2430,6 +2430,7 @@ async function calcularKpisObra(obraId, gpData) {
     db.doc(`obras/${obraId}/config/otros_gastos`).get(),
     db.doc(`obras/${obraId}/config/estimaciones`).get(),
     db.doc(`obras/${obraId}/avance/extraordinarias`).get(),
+    db.doc(`obras/${obraId}/avance/historial`).get(),
   ]);
   const info = infoSnap.exists ? infoSnap.data() : {};
   // El catálogo y las extraordinarias se mezclan ANTES de cualquier cuenta,
@@ -2473,11 +2474,26 @@ async function calcularKpisObra(obraId, gpData) {
     .filter(e => /pagada|cobrada/i.test(String(e.estatus || "")))
     .reduce((t, e) => t + (Number(e.monto) || 0), 0);
 
-  // Última captura de avance (para alerta de pendiente)
-  const fechaUltCaptura = subsSnap.exists ? subsSnap.data().fecha : null;
-  const diasDesdeCaptura = fechaUltCaptura
-    ? Math.floor((Date.now() - new Date(fechaUltCaptura).getTime()) / 86400000)
-    : 999;
+  // ── Última captura de avance ──────────────────────────────────────────────
+  // Esto era la SEXTA copia de la cuenta, y la única que seguía rellenando.
+  // Hacía dos cosas mal a la vez:
+  //
+  // (1) Medía otra cosa. Leía `avance/subs.fecha` —cuándo se guardó el catálogo
+  //     de conceptos— mientras `recordatorioLunes` cuenta desde la última
+  //     SEMANA CERRADA en `avance/historial`. Dos fuentes para el mismo número:
+  //     el correo de dirección podía decir «sin captura 2d» de una obra a cuyo
+  //     residente el correo del lunes le reclamaba el cierre, y al revés.
+  //
+  // (2) Cuando no había fecha escribía `999`. Ese 999 no se midió. Y aguas
+  //     abajo se publica: el renglón del correo lo imprime en rojo como «Sin
+  //     captura 999d» y `obrasSinCaptura` lo cuenta entre las atrasadas. Medido
+  //     en producción el 2026-11-05, dos obras ACTIVAS —0128 y 0131, las dos
+  //     recién dadas de alta y sin un solo cierre— venían recibiendo esa
+  //     acusación cada lunes. No están atrasadas 999 días: no han empezado.
+  //
+  // `null` quiere decir «no se puede contar». Quien lo reciba decide qué dice.
+  const semanasCerradas = histSnap.exists ? (histSnap.data().semanas || []) : [];
+  const diasDesdeCaptura = diasSinCapturaDe(semanasCerradas);
 
   return {
     obraId, nombre: info.nombre || obraId, contrato: info.contrato || "",
@@ -2489,6 +2505,59 @@ async function calcularKpisObra(obraId, gpData) {
     gastoGPMedido: gpEstado.medido, gastoGPMotivo: gpEstado.motivo,
     diasDesdeCaptura, modoVol,
   };
+}
+
+/**
+ * La marca de captura de una obra en la tabla del correo.
+ *
+ * TRES estados, igual que `bloqueDenegaciones` y por la misma razón. Antes eran
+ * dos, porque el tercero venía disfrazado del segundo: una obra sin un solo
+ * cierre llegaba aquí con un `999` de relleno y salía impresa en rojo como la
+ * más atrasada del portafolio. Lo peor no es que el número sea falso, es que es
+ * CREÍBLE en su forma —«Sin captura 999d» se lee como una medición— y acusa a
+ * quien no ha tenido oportunidad de capturar nada.
+ *
+ * `null` se enseña como lo que es, con la misma letra apagada y en cursiva que
+ * usa «sin medir» en la columna del gasto: no se sabe, y por eso no se pinta de
+ * rojo ni de verde.
+ */
+function bloqueCaptura(dias) {
+  if (dias === null || dias === undefined) {
+    return `<span style="color:#9AA0AC;font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;
+  }
+  if (dias > 7) {
+    return `<span style="background:#FCEBEB;color:#A32D2D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">Sin captura ${dias}d</span>`;
+  }
+  return `<span style="color:#9AA0AC;font-size:11px;">Captura: ${dias}d</span>`;
+}
+
+/**
+ * El aviso de arriba sobre la captura del portafolio.
+ *
+ * Dos conteos y no uno, porque no son la misma cosa y la diferencia es
+ * accionable: a la obra que capturó hace quince días se le reclama; a la que
+ * nunca ha cerrado una semana se le pregunta si ya arrancó. Meterlas en el
+ * mismo número obliga a Dirección a abrir la app para distinguirlas, que es
+ * justo lo que este correo existe para evitar.
+ *
+ * Y las que nunca cerraron NO se callan por quedar fuera del `> 7`. Al dejar
+ * de rellenar con 999 salieron del conteo viejo, y si nadie las nombrara el
+ * arreglo habría cambiado una acusación falsa por un silencio: las dos obras
+ * que el 2026-11-05 recibían «999d» desaparecerían del resumen.
+ */
+function avisoDeCaptura(atrasadas, sinUnCierre) {
+  const partes = [];
+  if (atrasadas > 0) {
+    partes.push(`<b>${atrasadas} ${atrasadas === 1 ? "obra" : "obras"} sin captura en los últimos 7 días.</b>`);
+  }
+  if (sinUnCierre > 0) {
+    partes.push(`<b>${sinUnCierre} ${sinUnCierre === 1 ? "obra no ha cerrado" : "obras no han cerrado"} ni una semana todavía.</b>`);
+  }
+  if (!partes.length) return "";
+  return `
+          <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
+            ${partes.join(" ")} Revisa la columna "Sin captura" abajo.
+          </div>`;
 }
 
 /**
@@ -2596,9 +2665,7 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
     const sinMedir = k.gastoGPMedido === false;
     const colorGasto = sinMedir ? "#9AA0AC" : semaforoColor(k.pctGasto, "gasto");
     const linkObra = `${APP_URL}/?obra=${encodeURIComponent(k.obraId)}`;
-    const alertaCaptura = k.diasDesdeCaptura > 7
-      ? `<span style="background:#FCEBEB;color:#A32D2D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">Sin captura ${k.diasDesdeCaptura}d</span>`
-      : `<span style="color:#9AA0AC;font-size:11px;">Captura: ${k.diasDesdeCaptura}d</span>`;
+    const alertaCaptura = bloqueCaptura(k.diasDesdeCaptura);
     return `
     <tr>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;vertical-align:top;">
@@ -2627,7 +2694,11 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
   const presupuestoTotal = kpisObras.reduce((t, k) => t + k.presupuesto, 0);
   const gastoTotal = kpisObras.reduce((t, k) => t + k.totGasto, 0);
   const cobradoTotal = kpisObras.reduce((t, k) => t + k.cobrado, 0);
-  const obrasSinCaptura = kpisObras.filter(k => k.diasDesdeCaptura > 7).length;
+  // Dos conteos, no uno: ver `avisoDeCaptura`. El `!== null` es explícito
+  // aunque `null > 7` ya sea falso — el día que alguien cambie el centinela a
+  // `undefined` o a `-1`, la comparación muda volvería a mentir en silencio.
+  const obrasSinCaptura = kpisObras.filter(k => k.diasDesdeCaptura !== null && k.diasDesdeCaptura > 7).length;
+  const obrasSinUnCierre = kpisObras.filter(k => k.diasDesdeCaptura === null).length;
 
   // El total de gasto suma obras a las que les falta el sumando de GP entero,
   // así que sale CORTO y nadie lo nota: es un número redondo, con su etiqueta,
@@ -2676,10 +2747,7 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
             </tr>
           </table>
-          ${obrasSinCaptura > 0 ? `
-          <div style="margin-top:14px;padding:10px 14px;background:#FCEBEB;border-left:3px solid #E24B4A;border-radius:4px;font-size:12px;color:#A32D2D;">
-            <b>${obrasSinCaptura} ${obrasSinCaptura === 1 ? "obra" : "obras"} sin captura en los últimos 7 días.</b> Revisa la columna "Sin captura" abajo.
-          </div>` : ""}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}
+          ${avisoDeCaptura(obrasSinCaptura, obrasSinUnCierre)}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}
         </td></tr>
         <!-- Tabla de obras -->
         <tr><td style="padding:0;">
