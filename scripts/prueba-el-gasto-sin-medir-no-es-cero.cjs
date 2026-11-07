@@ -68,9 +68,15 @@ if (process.argv.includes('--contraprueba')) {
       (t) => t.replace("    if (pedida === true) return medido(0, 'sin-cheques');",
         "    if (pedida === true) return sinDato('sin-cheques');")],
     // ── La copia se desvía de la de la pantalla ─────────────────────────────
+    // El anclaje se corta en la coma. El renglón de `functions/index.js` se
+    // partió en dos al añadirle `{ obraGP: mejor }`, y el anclaje viejo —que
+    // llegaba hasta el `);`— dejó de calzar: la contraprueba lo decía
+    // («SIN APLICAR») y salía en 1, pero nadie la corría, porque la suite sólo
+    // pasa por el modo normal. Reanclada el 2026-11-07 a lo que no cambia, que
+    // es el umbral.
     ['la copia de las funciones afloja el match por nombre a una palabra',
-      (t) => t.replace("  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');",
-        "  if (score >= 1 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre');")],
+      (t) => t.replace("  if (score >= 2 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre',",
+        "  if (score >= 1 && mejor) return medido(extraerGastoTotalGP(mejor), 'por-nombre',")],
     ['la clave que no cuadra vuelve a caer al match difuso',
       (t) => t.replace("    return veredictoDeClaveAusente(obra.gpId, 'capturada en Contrato');",
         "    // (cae al difuso)")],

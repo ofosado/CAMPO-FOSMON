@@ -558,7 +558,14 @@ async function main() {
       let fallos;
       process.env.CALLADO = '1';
       try { fallos = await correr(FUENTE.replace(de, a)); }
-      catch (e) { fallos = [`revienta: ${e.message}`]; }
+      catch (e) {
+        // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
+        // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
+        // realidad nadie detecta, así que es NO ARRANCÓ, que es un 2.
+        console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                      `en vez de romper la semántica: ${e.message}`);
+        process.exit(2);
+      }
       delete process.env.CALLADO;
       if (fallos.length) {
         console.log(`   ✓ ROJO  ${titulo}  ·  ${fallos.length} aserción(es) mordieron`);

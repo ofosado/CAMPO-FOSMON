@@ -133,9 +133,17 @@ if (process.argv.includes('--contraprueba')) {
     ['FN', 'el encabezado del lunes vuelve a teclear la marca',
       (t) => t.replace('>cotea${firma ? ` · ${firma}` : ""}</div>',
         '>CAMPO · FOSMON CONSTRUCCIONES</div>')],
+    // REANCLADA el 2026-11-07. El pie imprimía el host de `APP_URL` y el
+    // anclaje lo llevaba dentro; al partir la dirección en dos —`APP_URL` para
+    // la app y `SITIO_PUBLICO` para la cara pública— el pie pasó a imprimir el
+    // segundo y la mutación se quedó SIN APLICAR, o sea el banco llevaba
+    // semanas cubriendo 7 de 8 sin decirlo en verde, porque la suite sólo corre
+    // el modo normal. El anclaje se queda en la parte que esta mutación de
+    // verdad niega —leer `casa` en vez de teclear la empresa— y no en la
+    // dirección, que es otra pelea.
     ['FN', 'el pie del lunes vuelve a teclear la empresa',
-      (t) => t.replace('cotea${casa ? ` — ${casa}` : ""} · ${APP_URL',
-        'CAMPO — FOSMON Construcciones · ${APP_URL')],
+      (t) => t.replace('cotea${casa ? ` — ${casa}` : ""} · ',
+        'CAMPO — FOSMON Construcciones · ')],
     ['FN', 'sin marca, el lunes se firma con FOSMON de todos modos',
       (t) => t.replace("const firma = marca?.empresa ? ESC_HTML(marca.empresa).toUpperCase() : \"\";",
         "const firma = marca?.empresa ? ESC_HTML(marca.empresa).toUpperCase() : \"FOSMON CONSTRUCCIONES\";")],
