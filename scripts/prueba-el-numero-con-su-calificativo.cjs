@@ -574,9 +574,17 @@ const MUTACIONES = [
   // resolvedor, con el match difuso que le colgaba a la 0129 los $19.9M de la
   // 0121. Es la mutación que reproduce el incidente en el documento que se
   // entrega, y la que ninguna aserción veía antes de la sección 8.
+  // LA DECLARACIÓN DE `_gpEstado` SE CONSERVA, y no es un detalle de forma: más
+  // abajo `generarPDFObra` saca de ahí `totGP`. Borrarla la volvía una variable
+  // libre, el taller se negaba a correr el trozo —«nadie los dobla»— y la
+  // mutación salía ROJA POR REVENTAR, o sea midiendo que el taller sabe parsear
+  // en vez de que la aserción muerda. Lo que se muta es la RESOLUCIÓN y el
+  // veredicto, que es el defecto: volver al match difuso y decir «medido»
+  // siempre. Corregido el 2026-11-07.
   ['el PDF vuelve a resolver la obra del GP por parecido de nombre',
     '  const _gpEstado = estadoGastoGP(obra, gpData);\n  const obraGP = _gpEstado.obraGP;\n  const gastoGPMedido = _gpEstado.medido;',
-    `  const obraGP = (() => {
+    `  const _gpEstado = estadoGastoGP(obra, gpData);
+  const obraGP = (() => {
     const ob = gpData?.obras || {};
     const pal = (s) => String(s || '').toUpperCase().split(/[^A-Z0-9]+/).filter(w => w.length > 3);
     const mias = pal(obra?.nombre);
@@ -635,7 +643,14 @@ async function main() {
       let fallos;
       process.env.CALLADO = '1';
       try { fallos = await correr(FUENTE.replace(de, a)); }
-      catch (e) { fallos = [`revienta: ${e.message}`]; }
+      catch (e) {
+        // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
+        // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
+        // realidad nadie detecta, así que es NO ARRANCÓ, que es un 2.
+        console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                      `en vez de romper la semántica: ${e.message}`);
+        process.exit(2);
+      }
       delete process.env.CALLADO;
       if (fallos.length) {
         console.log(`   ✓ ROJO  ${titulo}  ·  ${fallos.length} aserción(es) mordieron`);

@@ -398,7 +398,14 @@ if (process.argv.includes('--contraprueba')) {
       fallos = cual === 'trozo'
         ? correr(cuerpo, TROZO.replace(de, a))
         : correr(cuerpo.replace(de, a), TROZO);
-    } catch (e) { fallos = [`revienta: ${e.message}`]; }
+    } catch (e) {
+      // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
+      // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
+      // realidad nadie detecta, así que es NO ARRANCÓ, que es un 2.
+      console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                    `en vez de romper la semántica: ${e.message}`);
+      process.exit(2);
+    }
     delete process.env.CALLADO;
     Date.now = NOW_REAL;
     if (fallos.length) {

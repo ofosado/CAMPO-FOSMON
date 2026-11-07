@@ -311,15 +311,15 @@ const MUTACIONES = [
   //     también con razón: un `{ok:false}` no trae total ni fechas, así que no
   //     hay nada que comparar ni con guarda ni sin ella. La guarda se quitó de
   //     `src/App.jsx` en vez de inventarle una aserción.
+  //     Y se quedó escrita EN LA LISTA VIVA, apuntando a un renglón que ya no
+  //     existe: desde entonces la contraprueba salía NO ARRANCÓ (2) sin que
+  //     nadie lo viera, porque la suite sólo corre el modo normal. Se borró el
+  //     2026-11-07. Una mutación descartada se cuenta aquí, nunca en la lista.
   // Quedarse en el primero: el caso real tiene tres y arreglar uno no arregla
   // los otros dos.
   ['sólo reporta el primer hallazgo',
     '  return hallazgos;',
     '  return hallazgos.slice(0, 1);'],
-  // Un archivo rechazado no trae cifras; enfrentarlo compara contra undefined.
-  ['enfrenta un archivo que el parser rechazó',
-    'if (!prog || prog.ok === false || !obra) return [];',
-    'if (!prog || !obra) return [];'],
 ];
 
 if (process.argv.includes('--contraprueba')) {
@@ -333,7 +333,14 @@ if (process.argv.includes('--contraprueba')) {
     let fallos;
     process.env.CALLADO = '1';
     try { fallos = correr(cuerpo.replace(de, a)); }
-    catch (e) { fallos = [`revienta: ${e.message}`]; }
+    catch (e) {
+      // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
+      // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
+      // realidad nadie detecta, así que es NO ARRANCÓ, que es un 2.
+      console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                    `en vez de romper la semántica: ${e.message}`);
+      process.exit(2);
+    }
     delete process.env.CALLADO;
     if (fallos.length) {
       console.log(`   ✓ ROJO  ${titulo}  ·  ${fallos.length} aserción(es) mordieron`);
