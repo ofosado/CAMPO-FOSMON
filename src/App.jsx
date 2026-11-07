@@ -12836,28 +12836,22 @@ function SelectorVentana({rango, onRango}) {
 // SVG el PDF tendría que rearmarlo y volveríamos a dos copias.
 // El color va por clave y en un solo sitio: el PDF de cotea lleva su propia
 // paleta y lo que remapea es esta tabla, no cada serie en su sitio de uso.
-const COLOR_CURVA = { ejec: C.blueDk, prog: C.caliza, gasto: C.redDk };
+const COLOR_CURVA = { ejec: C.blueDk, prog: C.caliza, gasto: C.redDk,
+                      pagado: C.greenDk };
 
-const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
-                            subs = [], gpData = null, otrosGastos = [],
-                            maquinaria = [], programa }) => {
-  const presupuesto = parseFloat(obra?.presupuesto) || 0;
-
-  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =
-    serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
-
-  const { porSem: gastoPorSem, serie: gasto, sinFechar: gastoSinFechar,
-          medido: gastoMedido } =
-    serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
-
-  const { serie: programadoPct, montos: programado, total: totalPrograma,
-          fuente: fuentePrograma } =
-    serieProgramadaDeSemanas({ semanas, obra, programa });
-
-  // ── EL EJECUTADO ACUMULADO, SEMANA POR SEMANA ─────────────────────────────
-  // Se LEE del snapshot, no se reconstruye: `avance% × presupuesto` rearma el
-  // dinero desde el avance físico, que está topado por partida, y publicaría el
-  // dinero recortado mientras el KPI publica el real. Ver `montoEjecutadoSnap`.
+// ── EL EJECUTADO ACUMULADO, SEMANA POR SEMANA ───────────────────────────────
+// Sale de aquí y no de dentro de `curvaUnicaDeObra` porque la gráfica de la
+// dependencia necesita ESTA MISMA serie —lo construido en pesos— y no puede
+// recibir `gpData`. Copiarle el bloque habría dejado dos arrastres del
+// ejecutado: el día que alguien arregle uno, el otro sigue publicando el número
+// viejo. Es el mismo motivo por el que las tres gráficas de la constructora se
+// volvieron una.
+//
+// Se LEE del snapshot, no se reconstruye: `avance% × presupuesto` rearma el
+// dinero desde el avance físico, que está topado por partida, y publicaría el
+// dinero recortado mientras el KPI publica el real. Ver `montoEjecutadoSnap`.
+const serieEjecutadaDeSemanas = ({ semanas = [], obra = null, subs = [],
+                                   avancePorSem = {} }) => {
   const ejecutadoPorSem = {};
   Object.entries(avancePorSem).forEach(([k, snap]) => {
     const me = montoEjecutadoSnap(snap);
@@ -12910,22 +12904,136 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
     typeof ejecutadoPorSem[s.key] === 'number'
     || (ejecutadoAnclado && i === semanas.length - 1));
 
-  // ── EL MARGEN: LA RESTA DE LAS DOS LÍNEAS QUE SE DIBUJAN ──────────────────
-  // Se lee de las series, no se recalcula. Es lo que dice el rótulo del área:
-  // si tuviera su propia cuenta, el sombreado podría dejar de coincidir con el
-  // hueco que se ve entre las dos curvas.
-  //
-  // Antes de la primera semana con avance capturado queda null: muchas obras
-  // acumulan gasto antes de capturar avance —movilización, compras— y ahí el
-  // margen sale muy negativo por no tener ejecutado todavía, no por pérdida.
-  // `idxPrimerAvance` es la misma respuesta que decide dónde arranca la curva
-  // del avance; con dos, el margen empezaría donde la curva no existe.
-  const margen = semanas.map((s, i) => {
-    if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
-    if (typeof ejecutado[i] !== 'number') return null;
-    if (typeof gasto[i] !== 'number') return null;
-    return ejecutado[i] - gasto[i];
+  return { ejecutadoPorSem, ejecutado, ejecutadoMedido, ejecutadoVivo,
+           ejecutadoAnclado, hayAlgunSnapshot };
+};
+
+// ── EL HUECO ENTRE DOS CURVAS ───────────────────────────────────────────────
+// Una sola cuenta para los tres sombreados que existen —margen, atraso y lo
+// construido no pagado—. Se lee de las series que SE DIBUJAN, no se recalcula
+// de sus fuentes: si cada área tuviera su propia cuenta, el sombreado podría
+// dejar de coincidir con el hueco que se ve entre las dos curvas, y el rótulo
+// del área afirma justamente que es esa resta.
+//
+// `desde` es el índice antes del cual no hay resta que hacer. Sirve para el
+// margen: muchas obras acumulan gasto antes de capturar avance —movilización,
+// compras— y ahí el margen sale muy negativo por no tener ejecutado todavía, no
+// por pérdida.
+const huecoEntreCurvas = (arriba, abajo, desde = 0) =>
+  (arriba || []).map((_, i) => {
+    if (desde === -1 || i < desde) return null;
+    if (typeof arriba[i] !== 'number') return null;
+    if (typeof abajo?.[i] !== 'number') return null;
+    return arriba[i] - abajo[i];
   });
+
+// ── LO PAGADO AL CONTRATISTA, SEMANA POR SEMANA ─────────────────────────────
+// La serie que le falta al tablero de la dependencia: el hueco entre lo
+// construido y lo pagado es para el municipio lo que el margen es para la
+// constructora, y no expone nada del contratista porque es dinero público.
+//
+// DE DÓNDE SALE LA FECHA, que es toda la dificultad. Una estimación guarda
+// `no`, `monto`, `estatus`, `periodo` y `fechaFact`, y NINGUNO es una fecha de
+// pago. Medido en producción el 2026-11-06 sobre las 42 estimaciones de las 7
+// obras: no existe el campo. Y `periodo` es texto libre sin formato —«05-30 de
+// Junio 2026», «16-jul-26 al 15-ago-26», «01  sept  al 30 sept 2026», dos
+// vacíos—, así que fecharla con eso es adivinar. Fecharla con `fechaFact` sería
+// peor: es la fecha de la FACTURA, y rotular «pagado» una serie fechada por
+// facturación es poner un nombre encima de otra cuenta.
+//
+// Así que el único origen fechado y honesto es el CORTE SEMANAL CONGELADO:
+// `montoPagado`, que el cierre guarda en el snapshot (ver `montoPagadoSnap`).
+// Es la misma regla que ya se aplicó al programado: sin dato fechado no se
+// dibuja una recta repartida, se declara ausente con su motivo.
+//
+// LO QUE NO SE HACE, y es la trampa de esta serie: tomar el total pagado de HOY
+// y repetirlo hacia atrás. Eso dibuja una línea plana con el valor actual, que
+// es exactamente la interpolación que `montoPagadoSnap` se niega a hacer. Las
+// semanas sin corte quedan en `null`.
+//
+// LA ÚLTIMA SEMANA SÍ SE ANCLA en el total vivo, con la misma mecánica del
+// ejecutado. La última semana ES hoy y el total vivo ES lo pagado hoy: no es
+// interpolar, es medir el punto donde sí se sabe. Con eso una obra sin ningún
+// corte —las tres de dependencia en producción— enseña un punto medido en vez
+// de nada, y el hueco contra lo construido se puede leer en esa semana.
+//
+// `cargadas` es la condición y no un detalle, por el mismo motivo que en
+// `corteDeEstimaciones`: la lista arranca en `[]` y se llena cuando contesta
+// Firestore. Anclar en esa ventana clava un $0 que se lee «no se le ha pagado
+// nada», que es una afirmación, no un hueco.
+const seriePagadaDeSemanas = ({ semanas = [], historialAvance = [],
+                                estimaciones = [], cargadas = false }) => {
+  const pagadoPorSem = {};
+  (historialAvance || []).forEach(snap => {
+    const mp = montoPagadoSnap(snap);
+    if (mp === null) return;
+    const key = claveSemanaISO(snap.semana, snap.año);
+    pagadoPorSem[key] = mp;
+  });
+
+  const primera = semanas[0]?.key;
+  let ultimoConocido = null;
+  if (primera) {
+    const previos = Object.entries(pagadoPorSem)
+      .filter(([k]) => k < primera)
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (previos.length > 0) ultimoConocido = previos[previos.length - 1][1];
+  }
+
+  // El total vivo, con el MISMO literal de «pagada» que el corte semanal y que
+  // el KPI del tablero. Ver `ESTATUS_PAGADA`: un lado que leyera "Pagado" se
+  // saldría de la suma sin que nada en la pantalla lo dijera.
+  const pagadoVivo = cargadas && Array.isArray(estimaciones)
+    ? estimaciones.filter(e => _ne(e?.estatus) === _ne(ESTATUS_PAGADA))
+                  .reduce((t, e) => t + (parseFloat(e?.monto) || 0), 0)
+    : null;
+
+  const serie = [];
+  let acarreo = ultimoConocido;
+  semanas.forEach(s => {
+    if (typeof pagadoPorSem[s.key] === 'number') acarreo = pagadoPorSem[s.key];
+    serie.push(acarreo);
+  });
+
+  const anclada = semanas.length > 0 && pagadoVivo !== null;
+  if (anclada) serie[semanas.length - 1] = pagadoVivo;
+
+  const medido = semanas.map((s, i) =>
+    typeof pagadoPorSem[s.key] === 'number'
+    || (anclada && i === semanas.length - 1));
+
+  // Cuántas de las semanas DIBUJADAS traen el corte congelado. El pie lo dice:
+  // una curva que descansa en un solo punto anclado no es una historia, y la
+  // leyenda no debe dejar que se lea como si lo fuera.
+  const conCorte = semanas.filter(s => typeof pagadoPorSem[s.key] === 'number').length;
+
+  return { pagadoPorSem, serie, medido, pagadoVivo, anclada, conCorte };
+};
+
+const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
+                            subs = [], gpData = null, otrosGastos = [],
+                            maquinaria = [], programa }) => {
+  const presupuesto = parseFloat(obra?.presupuesto) || 0;
+
+  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =
+    serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
+
+  const { porSem: gastoPorSem, serie: gasto, sinFechar: gastoSinFechar,
+          medido: gastoMedido } =
+    serieGastoDeSemanas({ semanas, obra, gpData, otrosGastos, maquinaria });
+
+  const { serie: programadoPct, montos: programado, total: totalPrograma,
+          fuente: fuentePrograma } =
+    serieProgramadaDeSemanas({ semanas, obra, programa });
+
+  const { ejecutadoPorSem, ejecutado, ejecutadoMedido, hayAlgunSnapshot } =
+    serieEjecutadaDeSemanas({ semanas, obra, subs, avancePorSem });
+
+  // El margen es el hueco entre las dos líneas que se dibujan, con la cuenta
+  // de `huecoEntreCurvas`. Arranca en `idxPrimerAvance`, que es la misma
+  // respuesta que decide dónde arranca la curva del avance; con dos, el margen
+  // empezaría donde la curva no existe.
+  const margen = huecoEntreCurvas(ejecutado, gasto, idxPrimerAvance);
 
   // ── FRONTERAS DE ESQUEMA, UNA POR MÉTRICA ─────────────────────────────────
   // El dinero cambió de definición en el esquema 2 y el avance en el 3. Una
@@ -13019,9 +13127,7 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
 
   // Y la diferencia contra el programa, que es lo que hace evidente el atraso
   // de un vistazo. Amarillo cuando la obra va por debajo de lo programado.
-  const contraPrograma = semanas.map((s, i) =>
-    (typeof ejecutado[i] === 'number' && typeof programado[i] === 'number')
-      ? ejecutado[i] - programado[i] : null);
+  const contraPrograma = huecoEntreCurvas(ejecutado, programado);
   if (dibuja('ejec') && dibuja('prog') && hayDato(contraPrograma)) {
     areas.push({
       clave: 'atraso', nombre: 'Contra el programa, en pesos',
@@ -13136,13 +13242,33 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
       return (v === null || v === undefined) ? null : [xPos(i), yPos(v)];
     });
   };
+  // UN ÁREA QUE NO SE PUEDE SOMBREAR TAMPOCO DESAPARECE. Con menos de dos
+  // semanas en las que las DOS líneas tienen dato no hay banda que pintar —una
+  // banda de un solo punto no es una banda—, y hasta el 2026-11-07 el área se
+  // caía de la leyenda sin dejar rastro: la pantalla dejaba de nombrar un hueco
+  // que sí existe, que es justo lo que no debe pasar con lo que no se dibuja.
+  // Se vio en el tablero del municipio, donde «Construido y no pagado» —el
+  // equivalente del margen— se esfumaba en toda obra cuyo pagado sólo descansa
+  // en el ancla de la última semana, que hoy son casi todas.
+  //
+  // Apagar una línea a mano NO entra aquí: eso lo hizo quien mira y no hay que
+  // explicárselo. Por eso sólo se declara cuando las dos líneas están vivas y
+  // aun así no se tocan en dos semanas.
+  const areasMudas = [];
   const areasVivas = areas.map(a => {
     const pa = puntosDe(a.arriba), pb = puntosDe(a.abajo);
     if (!pa || !pb) return null;
     // Sólo el tramo donde las DOS tienen dato: cerrar una banda contra un punto
     // que no existe inventa un hueco.
     const idx = semanas.map((m, i) => i).filter(i => pa[i] && pb[i]);
-    if (idx.length < 2) return null;
+    if (idx.length < 2) {
+      areasMudas.push({clave:a.clave, nombre:a.nombre,
+        motivo: idx.length === 1
+          ? 'sólo una semana tiene las dos líneas a la vez, y un hueco de un ' +
+            'solo punto no se puede sombrear'
+          : 'no hay ninguna semana en la que las dos líneas tengan dato'});
+      return null;
+    }
     return { ...a,
       banda: bandaEntre(idx.map(i => pa[i]), idx.map(i => pb[i])),
       tramos: tramosDeSigno(semanas.map((m, i) => pa[i] && pb[i] ? a.valores[i] : null),
@@ -13184,7 +13310,7 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
         {/* Lo que no hay, con su motivo. Va en la misma leyenda y no en una nota
             al pie: quien mira la gráfica lee la leyenda para saber qué está
             viendo, y lo que falta es parte de eso. */}
-        {[...ausentes,
+        {[...ausentes, ...areasMudas,
           ...vacias.map(s => ({clave:s.clave, nombre:s.nombre,
             motivo:'sin dato en estas semanas'}))].map(a =>
           chip(a.clave, <>
@@ -13482,59 +13608,218 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// LA CURVA S DEL CONTRATO — TABLERO DE UNA DEPENDENCIA
+// LA GRÁFICA DEL CONTRATO — TABLERO DE UNA DEPENDENCIA
 // ════════════════════════════════════════════════════════════════════════════
 //
-// El tablero del municipio no tenía ninguna gráfica. Tenía cinco KPIs de
-// dinero del contrato, dos barras y el plazo; la pregunta «¿va a tiempo?» se
-// contestaba con un número suelto y sin historia. Esto le da su primera curva:
-// el avance real contra el programa que las dos partes firmaron.
+// TRES SERIES, NO CUATRO Y NO DOS: lo programado, lo construido y LO PAGADO al
+// contratista. El hueco entre lo construido y lo pagado es para el municipio lo
+// que el margen es para la constructora —dice si va debiendo o va adelantado—,
+// y se puede sombrear sin exponer nada del contratista porque es dinero
+// público. Nada de gasto y nada de margen: ésos son economía de la empresa.
+//
+// Antes esto dibujaba dos series en PORCENTAJE: avance real contra programa.
+// El porcentaje contestaba «¿va a tiempo?» y dejaba fuera la pregunta que un
+// municipio hace primero, que es de dinero. En pesos acumulados del contrato
+// las tres comparten eje y las dos preguntas se leen en el mismo dibujo.
 //
 // POR QUÉ ES UN COMPONENTE APARTE y no `TarjetaGraficaUnica` con una bandera.
 // Es el mismo criterio de `DashboardDependencia`, escrito en su cabecera: una
 // bandera son diez puntos de toque y basta olvidar uno para filtrar. Aquí el
-// gasto, el margen y el ejecutado no se calculan —ni se reciben—, así que no
-// hay nada que esconder y nada que se pueda escapar por un `display:none` que
-// cualquiera abre con el inspector.
+// gasto y el margen no se calculan —ni se reciben: no entra `gpData`—, así que
+// no hay nada que esconder y nada que se pueda escapar por un `display:none`
+// que cualquiera abre con el inspector.
 //
-// Lo que SÍ comparte con la tarjeta de la constructora son las cuentas:
-// `semanasDeVentana`, `serieAvanceDeSemanas` y `serieProgramadaDeSemanas` son
-// las mismas funciones. Por eso las dos curvas de la misma obra no pueden
-// discrepar, que es lo que pasaría con una segunda copia del cálculo.
+// Lo que SÍ comparte con la tarjeta de la constructora son LAS CUENTAS:
+// `semanasDeVentana`, `serieAvanceDeSemanas`, `serieProgramadaDeSemanas`,
+// `serieEjecutadaDeSemanas` y `huecoEntreCurvas` son las mismas funciones. Por
+// eso las dos curvas de la misma obra no pueden discrepar, que es lo que
+// pasaría con una segunda copia del cálculo. Lo único propio de aquí es
+// `seriePagadaDeSemanas`, que la constructora no dibuja.
 //
 // El anexo NO es economía del contratista: es el calendario que firmaron las
 // dos partes. La frontera del margen no lo toca.
-function CurvaSDelContrato({obra, historialAvance = [], subs = [], programa}) {
-  const [rango, setRango] = useState(12);
+const curvaDeGobierno = ({ semanas = [], obra = null, historialAvance = [],
+                           subs = [], programa, estimaciones = [],
+                           estCargadas = false }) => {
+  const presupuesto = parseFloat(obra?.presupuesto) || 0;
 
-  const semanas = semanasDeVentana(obra, rango);
-  const { serie: avanceSeries, esquemaPorSemana } =
+  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =
     serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });
-  const { serie: programadoSeries, fuente: fuentePrograma } =
+
+  const { ejecutado, ejecutadoMedido, hayAlgunSnapshot } =
+    serieEjecutadaDeSemanas({ semanas, obra, subs, avancePorSem });
+
+  const { serie: programadoPct, montos: programado, total: totalPrograma,
+          fuente: fuentePrograma } =
     serieProgramadaDeSemanas({ semanas, obra, programa });
-  const rotulo = ROTULO_PROGRAMADO[fuentePrograma] || ROTULO_PROGRAMADO.sin_programa;
-  const hayPrograma = fuentePrograma === 'programa';
 
-  // La frontera del AVANCE, con el mismo umbral que la otra tarjeta. La del
-  // dinero no existe aquí porque no hay dinero que fronterizar.
-  const idxF = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_AVANCE);
-  const hayTramoViejo = idxF > 0
-    && esquemaPorSemana.slice(0, idxF).some(e => e !== null && e < ESQUEMA_AVANCE);
+  const { serie: pagado, medido: pagadoMedido, anclada: pagadoAnclado,
+          conCorte: semanasConCorte } =
+    seriePagadaDeSemanas({ semanas, historialAvance,
+                           estimaciones, cargadas: estCargadas });
 
-  // Ningún delta cruza la frontera: restar un avance compensado de uno topado
-  // mide el cambio de criterio, no la semana de obra.
-  const deltaSeries = semanas.map((s, i) => {
+  // La frontera del dinero, con el mismo umbral y la misma cuenta que la otra
+  // tarjeta. El tramo viejo se señala punteado y no se corta: cortarlo deja
+  // obras como la 0112 con un solo punto.
+  const fronteraDe = (umbral) => {
+    const idx = esquemaPorSemana.findIndex(e => e !== null && e >= umbral);
+    const hay = idx > 0
+      && esquemaPorSemana.slice(0, idx).some(e => e !== null && e < umbral);
+    return { idx, hay };
+  };
+  const fronteraAvance = fronteraDe(ESQUEMA_AVANCE);
+  const fronteraDinero = fronteraDe(ESQUEMA_DINERO);
+
+  const hayDato = (serie) => serie.some(v => typeof v === 'number');
+  const lineas = [];
+  const ausentes = [];
+  const declarar = (clave, nombre, motivo) => ausentes.push({ clave, nombre, motivo });
+
+  // (a) LO CONSTRUIDO. El porcentaje del rótulo es el de ESTA cantidad sobre el
+  // contrato, no el avance físico: son dos cuentas distintas y no tienen por
+  // qué coincidir.
+  if (hayDato(ejecutado)) {
+    lineas.push({
+      clave: 'ejec', nombre: 'Avance ejecutado', color: COLOR_CURVA.ejec,
+      valores: ejecutado, rotulada: true, medido: ejecutadoMedido,
+      idxFrontera: fronteraDinero.hay ? fronteraDinero.idx : -1,
+      fmt: (v) => presupuesto > 0
+        ? `${fmtDineroCorto(v)} · ${NUM((v / presupuesto) * 100, 0)}%`
+        : fmtDineroCorto(v),
+    });
+  } else {
+    declarar('ejec', 'Avance ejecutado',
+      hayAlgunSnapshot
+        ? 'ningún corte guardado trae el monto ejecutado'
+        : 'esta obra todavía no tiene ningún corte de avance capturado');
+  }
+
+  // (b) LO PROGRAMADO. Misma regla que en la otra tarjeta: sin anexo no hay
+  // línea. El motivo cambia de texto porque quien lo carga es otro y entra por
+  // otro lado: la dependencia no tiene pestaña «Planeación» —su Contrato es de
+  // primer nivel—, así que mandarla ahí sería mandarla a un sitio que no
+  // existe. Un motivo que dice cómo arreglarlo tiene que decirlo bien.
+  if (fuentePrograma === 'programa' && hayDato(programado)) {
+    lineas.push({
+      clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
+      valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+    });
+  } else {
+    declarar('prog', 'Avance programado',
+      fuentePrograma === 'cargando'
+        ? 'leyendo el programa de obra…'
+        : 'no hay programa de obra capturado: carga el anexo en Contrato → Programa de obra');
+  }
+
+  // (c) LO PAGADO. Ver el encabezado de `seriePagadaDeSemanas`: no hay fecha de
+  // pago en el modelo de datos, así que la serie descansa en el corte semanal
+  // congelado y en el ancla de la última semana. Si no hay ni uno ni otro se
+  // declara, nunca se dibuja plana.
+  if (hayDato(pagado)) {
+    lineas.push({
+      clave: 'pagado', nombre: 'Pagado al contratista', color: COLOR_CURVA.pagado,
+      valores: pagado, medido: pagadoMedido, fmt: fmtDineroCorto,
+    });
+  } else {
+    // UN SOLO MOTIVO, y no un ternario, porque la otra rama estaría muerta: con
+    // las estimaciones ya cargadas siempre hay un total vivo que anclar —aunque
+    // sea $0—, así que la línea sólo falta mientras la lista viaja. Un $0 con la
+    // lista cargada NO es un hueco: es la medición, y es la misma que publica el
+    // KPI de lo pagado en esta pantalla. Si aquí se declarara «no se sabe»
+    // mientras el KPI de al lado dice $0, serían dos respuestas a una pregunta.
+    declarar('pagado', 'Pagado al contratista',
+      'leyendo las estimaciones: sin ellas, y sin corte semanal registrado, no ' +
+      'hay con qué fechar lo pagado — en las estimaciones no se captura fecha de pago');
+  }
+
+  const dibuja = (clave) => lineas.some(l => l.clave === clave);
+  const areas = [];
+
+  // (d) LO CONSTRUIDO QUE NO SE HA PAGADO. Es el equivalente del margen para el
+  // municipio y se sombrea igual. Verde cuando va pagando por debajo de lo
+  // construido —le debe al contratista— y rojo cuando pagó por encima, que es
+  // anticipo por amortizar o un pago adelantado a la obra.
+  //
+  // Arranca en `idxPrimerAvance`, igual que el margen: antes de la primera
+  // semana con avance capturado el hueco sale de un ejecutado que no existe.
+  const porPagar = huecoEntreCurvas(ejecutado, pagado, idxPrimerAvance);
+  if (dibuja('ejec') && dibuja('pagado') && hayDato(porPagar)) {
+    areas.push({
+      clave: 'porPagar', nombre: 'Construido y no pagado, en pesos',
+      arriba: 'ejec', abajo: 'pagado', valores: porPagar,
+      colorPos: C.greenDk, colorNeg: C.redDk,
+    });
+  } else {
+    declarar('porPagar', 'Construido y no pagado, en pesos',
+      !dibuja('pagado')
+        ? 'sin la línea de lo pagado no hay hueco que sombrear — no es que esté todo pagado, es que no se sabe'
+        : 'no hay ejecutado capturado contra el que restar lo pagado');
+  }
+
+  // (e) CONTRA EL PROGRAMA. La misma área que en la otra tarjeta, con la misma
+  // cuenta: es el calendario que firmaron las dos partes, no economía de nadie.
+  const contraPrograma = huecoEntreCurvas(ejecutado, programado);
+  if (dibuja('ejec') && dibuja('prog') && hayDato(contraPrograma)) {
+    areas.push({
+      clave: 'atraso', nombre: 'Contra el programa, en pesos',
+      arriba: 'ejec', abajo: 'prog', valores: contraPrograma,
+      colorPos: C.blue, colorNeg: C.yellowDk,
+    });
+  } else {
+    declarar('atraso', 'Contra el programa, en pesos',
+      !dibuja('prog')
+        ? 'sin programa capturado no hay atraso que sombrear'
+        : 'no hay ejecutado capturado que comparar contra el programa');
+  }
+
+  const notas = [];
+  if (dibuja('prog') && presupuesto > 0 && totalPrograma
+      && Math.abs(totalPrograma - presupuesto) / presupuesto > 0.005) {
+    notas.push(`el anexo suma ${fmtDineroCorto(totalPrograma)} y el contrato ` +
+      `capturado ${fmtDineroCorto(presupuesto)}: las dos curvas no cierran a la misma altura`);
+  }
+  if (fronteraDinero.hay) notas.push('el tramo punteado del dinero se guardó recortado por partida');
+  // CUÁNTOS CORTES SOSTIENEN LO PAGADO. Una curva que descansa en un único
+  // punto anclado no es una historia, y sin decirlo se lee como si lo fuera.
+  if (dibuja('pagado')) {
+    notas.push(semanasConCorte === 0
+      ? 'lo pagado sólo se conoce en la última semana: ningún cierre de estas ' +
+        'semanas registró el corte de estimaciones, así que no hay historia que dibujar'
+      : `lo pagado descansa en ${semanasConCorte} de ${semanas.length} cierres ` +
+        `con corte registrado${pagadoAnclado ? ', más el total de hoy en la última semana' : ''}`);
+  }
+
+  return {
+    semanas, lineas, areas, ausentes, notas,
+    avance, programadoPct, programado, ejecutado, pagado, porPagar,
+    contraPrograma, ejecutadoMedido, pagadoMedido, presupuesto, totalPrograma,
+    fuentePrograma, pagadoAnclado, semanasConCorte,
+    fronteraAvance, fronteraDinero, idxPrimerAvance,
+  };
+};
+
+function GraficaDelContrato({obra, historialAvance = [], subs = [], programa,
+                             estimaciones = [], estCargadas = false}) {
+  const [rango, setRango] = useState(12);
+  const semanas = semanasDeVentana(obra, rango);
+  const g = curvaDeGobierno({ semanas, obra, historialAvance, subs, programa,
+                              estimaciones, estCargadas });
+
+  // Los deltas sólo existen en la tabla: la gráfica dibuja acumulados. NINGÚN
+  // DELTA CRUZA LA FRONTERA — restar un avance compensado de uno topado mide el
+  // cambio de criterio, no lo que la obra hizo esa semana.
+  const avanceDelta = semanas.map((s, i) => {
     if (i === 0) return null;
-    if (hayTramoViejo && i === idxF) return null;
-    const a = avanceSeries[i], b = avanceSeries[i - 1];
+    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;
+    const a = g.avance[i], b = g.avance[i - 1];
     if (typeof a !== 'number' || typeof b !== 'number') return null;
     return a - b;
   });
-  const desviacionSeries = semanas.map((s, i) => {
-    const p = programadoSeries[i];
+  const desviacion = semanas.map((s, i) => {
+    const p = g.programadoPct[i];
     if (p === null || p === undefined) return null;
-    if (typeof avanceSeries[i] !== 'number') return null;
-    return avanceSeries[i] - p;
+    if (typeof g.avance[i] !== 'number') return null;
+    return g.avance[i] - p;
   });
 
   const colorDelta = (v) => v > 0 ? C.greenDk : v < 0 ? C.redDk : C.textSec;
@@ -13544,11 +13829,13 @@ function CurvaSDelContrato({obra, historialAvance = [], subs = [], programa}) {
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",
       marginBottom:10,flexWrap:"wrap",gap:8}}>
       <div>
-        <Tit>Avance semana por semana</Tit>
+        <Tit>Lo construido, lo programado y lo pagado</Tit>
+        {/* El subtítulo nombra el eje y el sombreado, y no promete ninguna
+            comparación que la gráfica no vaya a dibujar: cuáles faltan lo dice
+            la leyenda, obra por obra, con el motivo. */}
         <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-          {hayPrograma
-            ? 'Lo ejecutado contra lo programado, en el eje de semanas del contrato'
-            : 'Lo ejecutado, en el eje de semanas del contrato: sin anexo no hay programado'}
+          Todo en pesos acumulados del contrato, sobre un solo eje de semanas ·
+          el hueco sombreado entre lo construido y lo pagado es lo que falta pagar
         </div>
       </div>
       <SelectorVentana rango={rango} onRango={setRango}/>
@@ -13561,30 +13848,28 @@ function CurvaSDelContrato({obra, historialAvance = [], subs = [], programa}) {
       : <div style={{display:"flex",flexDirection:"column",gap:4}}>
           <PanelSemanal
             semanas={semanas}
-            titulo={hayPrograma ? 'AVANCE FÍSICO CONTRA EL PROGRAMA' : 'AVANCE FÍSICO'}
             ejeAbajo={true}
-            altura={150}
-            maxFijo={100}
-            minFijo={0}
-            fmt={fmtPctCorto}
-            pie={rotulo.sub + (hayTramoViejo
-              ? ' · el tramo punteado se calculó con la definición anterior del avance'
-              : '')}
-            series={[
-              {clave:'real', nombre:'Avance real', color:C.greenDk, valores:avanceSeries,
-               idxFrontera: hayTramoViejo ? idxF : -1, rotulada:true},
-              ...(hayPrograma
-                ? [{clave:'prog', nombre:rotulo.kpi, color:C.caliza,
-                    valores:programadoSeries, estilo:'punteada'}]
-                : []),
-            ]}/>
+            altura={200}
+            fmt={fmtDineroCorto}
+            series={g.lineas}
+            areas={g.areas}
+            ausentes={g.ausentes}
+            pie={g.notas.join(' · ')}/>
+
           <TablaSemanas semanas={semanas} columnas={[
-            {titulo:'Avance', valores:avanceSeries, fmt:(v)=>`${NUM(v,1)}%`},
-            {titulo:'Δ semana', valores:deltaSeries, fmt:pp, color:colorDelta, vacio:'—'},
+            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`},
+            {titulo:'Δ semana', valores:avanceDelta, fmt:pp, color:colorDelta,
+             vacio:'—'},
             {titulo:'Programa',
-             valores:programadoSeries, fmt:(v)=>`${NUM(v,1)}%`, vacio:'sin dato'},
-            {titulo:'Contra el programa', valores:desviacionSeries, fmt:pp,
+             valores:g.programadoPct, fmt:(v)=>`${NUM(v,1)}%`, vacio:'sin dato'},
+            {titulo:'Contra el programa', valores:desviacion, fmt:pp,
              color:colorDelta, vacio:'sin dato'},
+            {titulo:'Ejecutado', valores:g.ejecutado, fmt:MXN, vacio:'no disponible'},
+            {titulo:'Programado $', valores:g.programado, fmt:MXN, vacio:'sin dato'},
+            {titulo:'Pagado', valores:g.pagado, fmt:MXN,
+             vacio:'el cierre no registró el corte'},
+            {titulo:'Falta pagar', valores:g.porPagar, fmt:MXNS,
+             color:(v)=>v>=0?C.greenDk:C.redDk, vacio:'no disponible'},
           ]}/>
         </div>}
   </Card>;
@@ -14120,7 +14405,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // cada organización ya están aisladas por las reglas— sino porque esas cifras
 // no existen del lado de quien contrata.
 // ════════════════════════════════════════════════════════════════════════════
-function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvance = [], recorteHistorial = null, notasSemana = {}, onNavTab}){
+function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas = false, historialAvance = [], recorteHistorial = null, notasSemana = {}, onNavTab}){
   const contrato = parseFloat(obra?.presupuesto) || 0;
   const modoVol  = obra?.modoAvance === "volumen";
 
@@ -14356,19 +14641,27 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], historialAvan
       </div>}
     </Card>
 
-    {/* ── La curva del avance ──
+    {/* ── La gráfica del contrato ──
         Va justo debajo de Plazo porque contesta la pregunta que Plazo deja
         abierta: la barra de arriba dice cuánto calendario se consumió, y
         `desvPlazo` dice si al ritmo medido la obra llega; ninguna de las dos
         dice CUÁNDO se abrió la distancia. Eso sólo se ve semana por semana.
 
-        Sin dinero: ni lo recibe ni lo calcula. Ver el encabezado de
-        `CurvaSDelContrato`. */}
-    <CurvaSDelContrato
+        Sin gasto y sin margen: ni los recibe ni los calcula —no entra
+        `gpData`—. Ver el encabezado de `curvaDeGobierno`.
+
+        `estCargadas` entra como prop y no se deduce de `estimaciones.length`:
+        la lista arranca en `[]` y se llena cuando contesta Firestore, y anclar
+        lo pagado en esa ventana clava un $0 que se lee «no se le ha pagado
+        nada». Es una afirmación, no un hueco. Mismo motivo que en
+        `corteDeEstimaciones`. */}
+    <GraficaDelContrato
       obra={obra}
       historialAvance={historialAvance}
       subs={subs}
-      programa={programaObra}/>
+      programa={programaObra}
+      estimaciones={estimaciones}
+      estCargadas={estCargadas}/>
 
     {/* ── Requiere atención ──
         Sólo críticos y altos, igual que en el banner de constructora. Si no
@@ -19408,13 +19701,13 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
         </Card>
       )}
 
-      {/* El programa va debajo del catálogo, y sólo cuando el catálogo no está
-          a medio revisar: en la fase de revisión la página mide varias
-          pantallas y un segundo cargador ahí invita a confundir los archivos
-          —el del catálogo y el del programa salen del mismo expediente—. */}
-      {(fase === 'inicio' || fase === 'confirmado') && (
-        <CargaDelPrograma obra={obra} editar={editar}/>
-      )}
+      {/* El cargador del programa se fue de aquí a Planeación → Contrato →
+          Programa de obra. Estuvo debajo del catálogo porque los dos archivos
+          salen del mismo expediente, y el precio fue doble: había que adivinar
+          que vivía en Presupuesto, y la guarda de fase lo apagaba justo en la
+          revisión del catálogo. El anexo del programa es parte del contrato.
+          NO se deja una copia aquí: dos cargadores que escriben el mismo
+          documento son dos sitios donde divergir el formato aceptado. */}
     </div>
   );
 }
@@ -22843,7 +23136,14 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
       {/* Sub-tabs */}
       <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
-        {[["datos","Datos del contrato"],["plazos","Plazos y ampliaciones"],["documentos","Repositorio de documentos"]].map(([id,lbl])=>(
+        {/* «Programa de obra» va aquí y no en Presupuesto. El anexo del
+            programa es parte del contrato —es el calendario que firmaron las
+            dos partes—, y estaba colgado debajo del catálogo de conceptos, en
+            otra pantalla y apagado si la fase no era `inicio` ni `confirmado`.
+            O sea: quien quería cargarlo tenía que adivinar que vivía en
+            Presupuesto y además dar con la fase correcta. No es una copia —el
+            cargador es el mismo componente—, es un cambio de sitio. */}
+        {[["datos","Datos del contrato"],["plazos","Plazos y ampliaciones"],["programa","Programa de obra"],["documentos","Repositorio de documentos"]].map(([id,lbl])=>(
           <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",
             fontSize:11,borderRadius:8,background:tab===id?C.caliza:C.card,
             border:`0.5px solid ${tab===id?C.caliza:C.border}`,
@@ -23104,6 +23404,15 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── PROGRAMA DE OBRA ──
+          El mismo `CargaDelPrograma` que estaba en Presupuesto, sin fase que lo
+          apague: el programa se puede cargar o reemplazar en cualquier momento
+          de la obra —un convenio modificatorio trae programa nuevo—, y la fase
+          del catálogo de conceptos no tiene nada que decir sobre eso. */}
+      {tab==="programa"&&(
+        <CargaDelPrograma obra={obra} editar={editar}/>
       )}
 
       {/* ── REPOSITORIO DE DOCUMENTOS ── */}
@@ -25962,7 +26271,7 @@ export default function App(){
 
       {/* DASHBOARD ejecutivo — dos componentes, no uno con condicionales (P5) */}
       {screen==="obra"&&tab==="dash"&&obra&&(dep
-        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
+        ? <DashboardDependencia obra={obra} subs={subs} estimaciones={estimaciones} estCargadas={estCargadas} historialAvance={historialAvance} recorteHistorial={recorteHistorial} notasSemana={notasSemana} onNavTab={navTab}/>
         : <Dashboard obra={obra} subs={subs} evidencia={evidencia} evidenciaCargada={evidenciaCargada} maquinaria={maquinaria} materiales={materiales} estimaciones={estimaciones} subcontratos={subcontratos} historialAvance={historialAvance} gpData={gpData} otrosGastos={otrosGastos} nominaHistorial={nominaHistorial} onNavTab={navTab}/>)}
 
       {/* OPERACIÓN: wrapper con sub-tabs */}

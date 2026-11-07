@@ -139,6 +139,15 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // sólo añadía andamiaje que se rompe con cada renombre.
                  'curvaUnicaDeObra', 'COLOR_CURVA', 'fmtDineroCorto',
                  'tramosDeSerie',
+                 // Dos cuentas que ANTES estaban escritas dentro de
+                 // `curvaUnicaDeObra` y el 2026-11-07 salieron a nivel de
+                 // módulo, cuando la gráfica de la dependencia necesitó la
+                 // misma serie ejecutada y la misma resta de curvas: dos
+                 // gráficas que restan igual tienen que restar con la MISMA
+                 // cuenta. Van sin doblar, como todo lo que está bajo examen:
+                 // el dinero que este banco compara contra el KPI sale hoy de
+                 // `serieEjecutadaDeSemanas`, y doblarla sería examinar el doble.
+                 'serieEjecutadaDeSemanas', 'huecoEntreCurvas',
                  // El formateador real, no un doble: los pp de la tabla salen
                  // de él y un `String(v)` escondería un redondeo distinto.
                  'NUM'];
