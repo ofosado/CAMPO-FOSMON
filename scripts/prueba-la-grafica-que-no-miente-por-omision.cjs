@@ -382,6 +382,64 @@ function correr(codigo) {
   // usuario apagó dibuja un hueco contra nada.
   check(!apagado.areasVivas.some(a => a.clave === 'margen'),
     'y el área del margen se va con la línea que la cerraba');
+  // …PERO NO SE DECLARA AUSENTE. Esa desaparición la pidió quien mira, y
+  // explicársela sería ruido. La regla del mandato es sobre lo que la pantalla
+  // no puede dibujar, no sobre lo que el usuario apagó.
+  check(!(apagado.areasMudas || []).some(a => a.clave === 'margen'),
+    'y no se le explica por qué: apagarla fue decisión de quien mira',
+    (apagado.areasMudas || []).map(a => a.clave).join(', ') || 'ninguna');
+
+  // ── 7b · UN ÁREA QUE NO ALCANZA A SOMBREARSE TAMPOCO DESAPARECE ─────────
+  // La misma regla del banco —lo que no se puede dibujar lo dice— aplicada al
+  // caso que se vio en el preview el 2026-11-07, en el tablero del municipio:
+  // las dos líneas EXISTEN, pero sólo coinciden en UNA semana, y una banda de
+  // un solo punto no es una banda. El área se caía de la leyenda sin dejar
+  // rastro y el hueco quedaba sin nombrar, que es exactamente la mentira por
+  // omisión que este banco persigue. No es hipotético: lo pagado descansa hoy
+  // en el ancla de la última semana en las tres obras de dependencia, así que
+  // «construido y no pagado» se esfumaba en las tres.
+  sec('7b. El área que no se puede sombrear se nombra, no se esfuma');
+  const solape = (n) => ejecutar('PanelSemanal', {
+    semanas: g.semanas.map(s => ({...s})),
+    series: [
+      {clave:'arriba', nombre:'Arriba', color:'#000',
+       valores: g.semanas.map(() => 100)},
+      // Dato en `n` semanas y nada en el resto: con una sola no hay banda.
+      {clave:'abajo', nombre:'Abajo', color:'#111',
+       valores: g.semanas.map((s, i) => i < n ? 40 : null)},
+    ],
+    areas: [{clave:'hueco', nombre:'Lo de arriba menos lo de abajo, en pesos',
+             arriba:'arriba', abajo:'abajo',
+             valores: g.semanas.map((s, i) => i < n ? 60 : null),
+             colorPos:'#0a0', colorNeg:'#a00'}],
+    ausentes: [],
+    fmt: String, fmtEje: String, titulo: 'x', pie: null,
+    useState: (v) => [typeof v === 'function' ? v() : v, () => {}],
+    React: { useId: () => ':r0:' },
+    maxFijo: null, minFijo: null, ejeAbajo: true, altura: 150,
+  });
+  // Canario: con DOS semanas de solape sí hay banda. Sin él, la aserción de
+  // abajo pasaría igual si el panel se hubiera roto y no sombreara nunca nada.
+  const dos = solape(2);
+  check(dos.areasVivas.length === 1,
+    'canario: con dos semanas de solape el área sí se sombrea',
+    `${dos.areasVivas.length} área(s)`);
+  check((dos.areasMudas || []).length === 0,
+    'y entonces no hay nada que explicar');
+
+  const una = solape(1);
+  check(una.areasVivas.length === 0,
+    'con una sola semana no se puede sombrear, y no se sombrea',
+    `${una.areasVivas.length} área(s)`);
+  check((una.areasMudas || []).some(a => a.clave === 'hueco'),
+    'pero el área NO desaparece: queda nombrada en la leyenda',
+    (una.areasMudas || []).map(a => a.clave).join(', ') || 'ninguna');
+  const mudo = (una.areasMudas || []).find(a => a.clave === 'hueco') || {};
+  check(/una semana/.test(mudo.motivo || ''),
+    'y con su motivo, que dice qué le faltó', mudo.motivo);
+  check(mudo.nombre === 'Lo de arriba menos lo de abajo, en pesos',
+    'con el MISMO nombre que habría llevado sombreada: quien lee compara',
+    mudo.nombre);
 
   // ── 8 · LAS GUARDAS DE MOLDE ────────────────────────────────────────────
   // Aserciones de molde, no de existencia: lo que se exige es que un patrón que
@@ -455,6 +513,20 @@ const MUTACIONES = [
   ['el área se sigue sombreando contra una línea que el usuario apagó',
     '  const puntosDe = (clave) => {\n    const s = vivos.find(x => x.clave === clave);',
     '  const puntosDe = (clave) => {\n    const s = series.find(x => x.clave === clave);'],
+  // EL DEFECTO TAL COMO ESTABA ESCRITO hasta el 2026-11-07: el área que no
+  // alcanza a sombrearse se cae de la leyenda en silencio. Se muta el bloque
+  // entero —la declaración y el `return null`— porque dejar el `push` sin el
+  // `if` cambiaría otra cosa, y el anclaje lleva el comentario de la línea de
+  // arriba para no calzar en ningún otro `if (idx.length < 2)` del archivo.
+  ['el área que no se puede sombrear se cae de la leyenda sin decir nada',
+    "    if (idx.length < 2) {\n      areasMudas.push({clave:a.clave, nombre:a.nombre,",
+    "    if (idx.length < 2) return null;\n    if (0) {\n      areasMudas.push({clave:a.clave, nombre:a.nombre,"],
+  // Y LA OTRA MITAD DE LA REGLA: declararla SIEMPRE que no se dibuje, también
+  // cuando quien mira la apagó a mano. Eso no es honestidad, es ruido, y el
+  // ruido entrena a no leer la leyenda.
+  ['también se le explica al usuario el área que él mismo apagó',
+    '    const pa = puntosDe(a.arriba), pb = puntosDe(a.abajo);\n    if (!pa || !pb) return null;',
+    "    const pa = puntosDe(a.arriba), pb = puntosDe(a.abajo);\n    if (!pa || !pb) {\n      areasMudas.push({clave:a.clave, nombre:a.nombre, motivo:'una semana no basta'});\n      return null;\n    }"],
 ];
 
 if (process.argv.includes('--contraprueba')) {
@@ -468,7 +540,14 @@ if (process.argv.includes('--contraprueba')) {
     let fallos;
     process.env.CALLADO = '1';
     try { fallos = correr(FUENTE.replace(de, a)); }
-    catch (e) { fallos = [`revienta: ${e.message}`]; }
+    catch (e) {
+      // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
+      // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
+      // realidad nadie detecta, así que es NO ARRANCÓ, que es un 2.
+      console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                    `en vez de romper la semántica: ${e.message}`);
+      process.exit(2);
+    }
     delete process.env.CALLADO;
     if (fallos.length) {
       console.log(`   ✓ ROJO  ${titulo}  ·  ${fallos.length} aserción(es) mordieron`);

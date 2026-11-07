@@ -7,7 +7,9 @@
 // pestañas —avance / gasto / margen—, sin el programa contractual encima, y el
 // tablero del municipio no tenía ninguna gráfica. Ahora la constructora ve UNA
 // gráfica —`TarjetaGraficaUnica`, que pide sus series a `curvaUnicaDeObra`— y
-// la dependencia ve la curva S sola, en `CurvaSDelContrato`.
+// la dependencia ve la suya en `GraficaDelContrato`, que pide las series a
+// `curvaDeGobierno`. Las dos gráficas son componentes aparte a propósito; el
+// porqué está escrito en `curvaDeGobierno`.
 //
 // Por el camino fueron dos paneles apilados y una tercera gráfica de
 // proyección. Las tres dibujaban el mismo ejecutado y el mismo gasto con
@@ -351,7 +353,15 @@ function correr(codigo) {
   };
   const sec = (t) => { if (!process.env.CALLADO) console.log(`\n${t}`); };
 
-  const dep = ejecutar('CurvaSDelContrato', PROPS_DEP());
+  // El 2026-11-07 la gráfica del municipio dejó de calcular sus series en el
+  // prólogo del componente: las pide a `curvaDeGobierno`, igual que la de la
+  // constructora se las pide a `curvaUnicaDeObra`. Lo que este banco afirma no
+  // cambió —sigue siendo que los dos tableros dibujan el mismo eje y el mismo
+  // avance—, cambió de dónde se lee: antes de los locales del prólogo, ahora
+  // del objeto que la cuenta devuelve. Al componente le quedan propios los dos
+  // deltas de la tabla, y por ahí se sigue entrando.
+  const dep = ejecutar('GraficaDelContrato', PROPS_DEP());
+  const gd = dep.g;
   // La tarjeta de la constructora ya no calcula las series en su prólogo: las
   // pide a `curvaUnicaDeObra`, que es el MISMO objeto que va a dibujar el PDF.
   // Lo que le queda propio son los tres deltas de la tabla. Se ejercitan los
@@ -377,10 +387,19 @@ function correr(codigo) {
   check(Array.isArray(dep.semanas) && dep.semanas.length === 10,
     'la ventana del municipio son las 10 semanas del contrato',
     `${dep.semanas?.length} semanas`);
-  check(Array.isArray(dep.esquemaPorSemana) &&
-        dep.esquemaPorSemana.some(e => e === 2) && dep.esquemaPorSemana.some(e => e === 3),
+  // El esquema por semana ya no es un local del componente: lo consume
+  // `curvaDeGobierno` por dentro y sólo publica la frontera. El canario del
+  // fixture se lee de la cuenta que lo produce —`serieAvanceDeSemanas`—, y
+  // aparte se comprueba que el municipio la VEA, que es lo que importa.
+  const serieAvanceDeSemanas = cuenta('serieAvanceDeSemanas');
+  const esqDep = serieAvanceDeSemanas({ semanas: dep.semanas, historialAvance: HISTORIAL,
+                                        subs: SUBS, obra: OBRA }).esquemaPorSemana;
+  check(Array.isArray(esqDep) && esqDep.some(e => e === 2) && esqDep.some(e => e === 3),
     'y el historial cruza de verdad la frontera del avance',
-    `esquemas: ${[...new Set(dep.esquemaPorSemana)].join(', ')}`);
+    `esquemas: ${[...new Set(esqDep)].join(', ')}`);
+  check(gd.fronteraAvance?.hay === true,
+    'y la cuenta del municipio la ve dentro de la ventana',
+    `idx ${gd.fronteraAvance?.idx}`);
 
   // ── 1 · UNA OBRA, UNA CURVA ──────────────────────────────────────────────
   // El punto de haber sacado las cuentas a nivel de módulo. Dos copias del eje
@@ -391,12 +410,12 @@ function correr(codigo) {
         JSON.stringify(con.semanas.map(s => s.key)),
     'el eje de semanas es idéntico en los dos tableros',
     `${dep.semanas[0]?.key} … ${dep.semanas[dep.semanas.length - 1]?.key}`);
-  check(JSON.stringify(dep.avanceSeries) === JSON.stringify(gc.avance),
+  check(JSON.stringify(gd.avance) === JSON.stringify(gc.avance),
     'y el avance físico también, punto por punto',
-    `último: ${dep.avanceSeries?.[9]} vs ${gc.avance?.[9]}`);
-  check(JSON.stringify(dep.programadoSeries) === JSON.stringify(gc.programadoPct),
+    `último: ${gd.avance?.[9]} vs ${gc.avance?.[9]}`);
+  check(JSON.stringify(gd.programadoPct) === JSON.stringify(gc.programadoPct),
     'y el programado, que es contra lo que las dos pantallas acusan',
-    `último: ${dep.programadoSeries?.[9]?.toFixed?.(1)} vs ${gc.programadoPct?.[9]?.toFixed?.(1)}`);
+    `último: ${gd.programadoPct?.[9]?.toFixed?.(1)} vs ${gc.programadoPct?.[9]?.toFixed?.(1)}`);
   // Y la tarjeta de la constructora dibuja LO QUE LE DA LA CUENTA, sin
   // retocarlo de paso. Es lo que permite que el PDF publique las mismas cifras
   // llamando a la cuenta sola, sin montar el componente.
@@ -410,10 +429,10 @@ function correr(codigo) {
   // se teclea: sale de `avanceFisicoPonderado`, la del KPI.
   const avanceFisicoPonderado = cuenta('avanceFisicoPonderado');
   const vivo = avanceFisicoPonderado(SUBS, PRESUPUESTO, true);
-  check(casi(dep.avanceSeries?.[9], vivo),
+  check(casi(gd.avance?.[9], vivo),
     'y el último punto es el avance que publica el KPI, no el del último cierre',
-    `${dep.avanceSeries?.[9]} = ${vivo.toFixed(2)} (el cierre decía 55)`);
-  check(!casi(dep.avanceSeries?.[9], 55) && Math.abs(vivo - 55) > 1,
+    `${gd.avance?.[9]} = ${vivo.toFixed(2)} (el cierre decía 55)`);
+  check(!casi(gd.avance?.[9], 55) && Math.abs(vivo - 55) > 1,
     'y el fixture distingue las dos cosas: el KPI y el cierre no coinciden',
     `KPI ${vivo.toFixed(2)} vs cierre 55`);
 
@@ -445,7 +464,7 @@ function correr(codigo) {
     'y el ejecutado real sigue ahí, que es el guardián de los $2.7M', `${EJEC_REAL}`);
 
   // Y ahora el municipio: se le pasan las mismas props, dinero incluido.
-  const depSinDinero = ejecutar('CurvaSDelContrato', PROPS_DEP(SIN_DINERO));
+  const depSinDinero = ejecutar('GraficaDelContrato', PROPS_DEP(SIN_DINERO));
   const movidosDep = difieren(dep, depSinDinero);
   check(movidosDep.length === 0,
     'quitarle el dinero NO mueve ni un valor de los que el municipio dibuja',
@@ -467,14 +486,14 @@ function correr(codigo) {
     j.setDate(j.getDate() - 3);
     return avanceProgramadoA(OBRA, PROGRAMA, isoDe(j)).pct;
   });
-  check(dep.programadoSeries.every((v, i) => casi(v, alJueves[i], 0.01)),
+  check(gd.programadoPct.every((v, i) => casi(v, alJueves[i], 0.01)),
     'cada semana trae el programado a su jueves',
-    `S${dep.semanas[4]?.sem}: ${dep.programadoSeries[4]?.toFixed(2)}% = ${alJueves[4]?.toFixed(2)}%`);
+    `S${dep.semanas[4]?.sem}: ${gd.programadoPct[4]?.toFixed(2)}% = ${alJueves[4]?.toFixed(2)}%`);
   const brecha = Math.max(...alJueves.map((v, i) => Math.abs(v - alLunes[i])));
   check(brecha > 1,
     'y el fixture distingue de verdad: jueves y lunes no dan lo mismo',
     `hasta ${brecha.toFixed(2)}pp de diferencia`);
-  check(!dep.programadoSeries.every((v, i) => casi(v, alLunes[i], 0.01)),
+  check(!gd.programadoPct.every((v, i) => casi(v, alLunes[i], 0.01)),
     'así que la serie NO es la del lunes');
 
   // ── 4 · SIN ANEXO NO SE DIBUJA LA CUARTA SERIE ───────────────────────────
@@ -483,40 +502,48 @@ function correr(codigo) {
   // hay» y se DICE. Y la obra de este fixture tiene inicio y fin, o sea que la
   // recta se podía calcular: lo que se afirma es que ya no se calcula.
   sec('4. Sin anexo no se dibuja ninguna línea programada, y se dice por qué');
-  const viajando = ejecutar('CurvaSDelContrato', PROPS_DEP({ programa: undefined }));
-  const sinAnexo = ejecutar('CurvaSDelContrato', PROPS_DEP({ programa: null }));
-  check(viajando.programadoSeries.every(v => v === null),
+  const viajando = ejecutar('GraficaDelContrato', PROPS_DEP({ programa: undefined }));
+  const sinAnexo = ejecutar('GraficaDelContrato', PROPS_DEP({ programa: null }));
+  // EL RÓTULO CON SU MOTIVO SE VOLVIÓ `ausentes`. Antes la tarjeta se ponía un
+  // subtítulo explicando por qué faltaba la línea; ahora la línea que no se
+  // puede dibujar entra en la leyenda con su porqué, al lado de las que sí se
+  // dibujan. Lo que se afirma es lo mismo: que no se diga «programado» mientras
+  // la lectura viaja, que no se nombre ninguna recta, y que se diga qué cargar.
+  const motivoProg = (r) => r.g.ausentes.find(a => a.clave === 'prog')?.motivo || '';
+  const dibujada = (r, clave) => r.g.lineas.some(l => l.clave === clave);
+
+  check(viajando.g.programadoPct.every(v => v === null),
     'viajando, el programado de todas las semanas queda en "no se sabe"',
-    `${viajando.programadoSeries.filter(v => v !== null).length} puntos dibujados`);
-  check(viajando.desviacionSeries.every(v => v === null),
+    `${viajando.g.programadoPct.filter(v => v !== null).length} puntos dibujados`);
+  check(viajando.desviacion.every(v => v === null),
     'y por lo tanto no se publica ninguna desviación contra el programa');
-  check(viajando.fuentePrograma === 'cargando',
+  check(viajando.g.fuentePrograma === 'cargando',
     'la leyenda dice que está leyendo, no que sea un programa',
-    String(viajando.fuentePrograma));
-  check(!/program/i.test(viajando.rotulo?.kpi || '') ||
-        /leyendo/i.test(viajando.rotulo?.sub || ''),
-    'y el rótulo no afirma «programado» mientras la lectura viaja',
-    `${viajando.rotulo?.kpi} · ${viajando.rotulo?.sub}`);
-  check(viajando.hayPrograma === false,
+    String(viajando.g.fuentePrograma));
+  check(/leyendo/i.test(motivoProg(viajando)),
+    'y el motivo no afirma «programado» mientras la lectura viaja: dice que lee',
+    motivoProg(viajando));
+  check(!dibujada(viajando, 'prog'),
     'viajando tampoco se dibuja la serie: no hay nada que dibujar todavía');
+  check(viajando.g.ausentes.some(a => a.clave === 'prog'),
+    'pero NO desaparece en silencio: queda nombrada como ausente');
   // El corte del 2026-11-06: con `null` NO aparece una recta en su lugar.
-  check(sinAnexo.programadoSeries.every(v => v === null),
+  check(sinAnexo.g.programadoPct.every(v => v === null),
     'sin anexo el programado NO se sustituye por una recta, ni un punto',
-    `${sinAnexo.programadoSeries.filter(v => v !== null).length} puntos dibujados`);
-  check(sinAnexo.desviacionSeries.every(v => v === null),
+    `${sinAnexo.g.programadoPct.filter(v => v !== null).length} puntos dibujados`);
+  check(sinAnexo.desviacion.every(v => v === null),
     'y la columna «Contra el programa» queda entera en "sin dato"');
-  check(sinAnexo.fuentePrograma === 'sin_programa',
+  check(sinAnexo.g.fuentePrograma === 'sin_programa',
     'la fuente dice que falta el anexo —no «recta», no «cargando»—',
-    String(sinAnexo.fuentePrograma));
-  check(sinAnexo.hayPrograma === false,
-    'y la serie punteada no se le pasa al panel: su nombre no queda en la leyenda');
-  check(!/lineal|recta/i.test(sinAnexo.rotulo?.kpi || '') &&
-        !/lineal|recta/i.test(sinAnexo.rotulo?.sub || ''),
-    'el rótulo no nombra ninguna recta ni nada lineal',
-    `${sinAnexo.rotulo?.kpi} · ${sinAnexo.rotulo?.sub}`);
-  check(/(AE11|DE-5|carga)/i.test(sinAnexo.rotulo?.sub || ''),
-    'dice qué archivo cargar, que es lo único que arregla el hueco',
-    sinAnexo.rotulo?.sub);
+    String(sinAnexo.g.fuentePrograma));
+  check(!dibujada(sinAnexo, 'prog'),
+    'y la serie punteada no se le pasa al panel: su nombre no queda entre las líneas');
+  check(!/lineal|recta/i.test(motivoProg(sinAnexo)),
+    'el motivo no nombra ninguna recta ni nada lineal',
+    motivoProg(sinAnexo));
+  check(/(AE11|DE-5|carga)/i.test(motivoProg(sinAnexo)),
+    'dice qué cargar, que es lo único que arregla el hueco',
+    motivoProg(sinAnexo));
   // El canario de esta sección: la obra del fixture TIENE las dos fechas. Sin
   // esto, el verde de arriba podría venir de un fixture sin plazo, donde la
   // recta no se podía calcular de todas formas.
@@ -528,15 +555,20 @@ function correr(codigo) {
   // Restar un avance compensado de uno topado mide el cambio de criterio, no la
   // semana de obra. En la tabla ese número se lee «avanzó 18 puntos».
   sec('5. Ningún delta cruza la frontera del esquema, en los dos tableros');
-  const idxF = dep.esquemaPorSemana.findIndex(e => e !== null && e >= 3);
-  check(idxF > 0, 'la frontera del avance cae dentro de la ventana', `idx ${idxF}`);
-  check(dep.deltaSeries?.[idxF] === null,
+  // La frontera se lee de la cuenta, que es quien la publica. El índice que se
+  // usa es el MISMO que el componente usa para callar el delta, así que si la
+  // cuenta dejara de verla la aserción de abajo pasaría por la razón
+  // equivocada: por eso se exige `> 0` antes de usarlo.
+  const idxF = gd.fronteraAvance?.idx;
+  check(idxF > 0 && gd.fronteraAvance?.hay,
+    'la frontera del avance cae dentro de la ventana', `idx ${idxF}`);
+  check(dep.avanceDelta?.[idxF] === null,
     'el municipio no publica el delta de la semana que cruza',
-    `idx ${idxF}: ${dep.deltaSeries?.[idxF]}`);
+    `idx ${idxF}: ${dep.avanceDelta?.[idxF]}`);
   check(con.avanceDelta?.[idxF] === null,
     'y la constructora tampoco',
     `idx ${idxF}: ${con.avanceDelta?.[idxF]}`);
-  check(dep.avanceSeries.filter(v => typeof v === 'number').length === 10,
+  check(gd.avance.filter(v => typeof v === 'number').length === 10,
     'y la serie no se corta: el tramo viejo sigue dibujado, punteado');
 
   // ── 6 · EL ÚLTIMO RENGLÓN DE LA TABLA CUADRA ─────────────────────────────
@@ -628,15 +660,25 @@ function correr(codigo) {
 // Cada mutación es una manera realista de volver al defecto, no de romper el
 // andamiaje: el banco sigue arrancando y ejecutando, y tiene que salir ROJO.
 const MUTACIONES = [
+  // LAS TRES PRIMERAS SE REANCLARON el 2026-11-07, cuando el municipio dejó de
+  // calcular en el prólogo del componente. Cada anclaje arrastra la línea
+  // anterior o el comentario que lo precede, porque el cuerpo de
+  // `curvaDeGobierno` está escrito IGUAL que el de `curvaUnicaDeObra` en varios
+  // tramos y `String.replace` muta la PRIMERA aparición: sin el prefijo único,
+  // la mutación heriría la gráfica de la constructora —una función que estas
+  // aserciones no observan— y saldría «PASÓ».
   ['el municipio se saca su propio eje de semanas',
-    'const semanas = semanasDeVentana(obra, rango);\n  const { serie: avanceSeries, esquemaPorSemana } =',
-    'const semanas = semanasDeVentana(obra, 8);\n  const { serie: avanceSeries, esquemaPorSemana } ='],
+    'const semanas = semanasDeVentana(obra, rango);\n  const g = curvaDeGobierno(',
+    'const semanas = semanasDeVentana(obra, 8);\n  const g = curvaDeGobierno('],
   ['el municipio pierde el ancla al avance vivo del KPI',
-    'serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa });\n  const rotulo =',
-    'serieAvanceDeSemanas({ semanas, historialAvance, subs: [], obra });\n  const { serie: programadoSeries, fuente: fuentePrograma } =\n    serieProgramadaDeSemanas({ semanas, obra, programa });\n  const rotulo ='],
+    '                           estCargadas = false }) => {\n  const presupuesto = parseFloat(obra?.presupuesto) || 0;\n\n  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =\n    serieAvanceDeSemanas({ semanas, historialAvance, subs, obra });',
+    '                           estCargadas = false }) => {\n  const presupuesto = parseFloat(obra?.presupuesto) || 0;\n\n  const { avancePorSem, serie: avance, esquemaPorSemana, idxPrimerAvance } =\n    serieAvanceDeSemanas({ semanas, historialAvance, subs: [], obra });'],
+  // La fuga entra por el COMPONENTE, que es donde la frontera se comprueba:
+  // `difieren` compara todos los locales de su prólogo con el dinero puesto y
+  // con el dinero en cero. Un local nuevo que sume `otrosGastos` los mueve.
   ['la economía del contratista se le cuela al municipio',
-    'const idxF = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_AVANCE);',
-    'const gastoDeLaObra = (otrosGastos || []).reduce((t, g) => t + (g.importe || 0), 0);\n  const idxF = esquemaPorSemana.findIndex(e => e !== null && e >= ESQUEMA_AVANCE);'],
+    '  const avanceDelta = semanas.map((s, i) => {\n    if (i === 0) return null;\n    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;\n    const a = g.avance[i], b = g.avance[i - 1];\n    if (typeof a !== \'number\' || typeof b !== \'number\') return null;\n    return a - b;\n  });\n  const desviacion =',
+    '  const gastoDeLaObra = (otrosGastos || []).reduce((t, x) => t + (x.importe || 0), 0);\n  const avanceDelta = semanas.map((s, i) => {\n    if (i === 0) return null;\n    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;\n    const a = g.avance[i], b = g.avance[i - 1];\n    if (typeof a !== \'number\' || typeof b !== \'number\') return null;\n    return a - b;\n  });\n  const desviacion ='],
   ['el programa se mide al lunes de la semana, no a su jueves',
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    return `${j.getFullYear()}-',
     'const j = jueveDeSemanaISO(s.año, s.sem);\n    j.setDate(j.getDate() - 3);\n    return `${j.getFullYear()}-'],
@@ -658,14 +700,40 @@ const MUTACIONES = [
     const p = avanceProgramadoA(obra, programa, isoDelJueves(s)).pct;
     return p === null ? recta(isoDelJueves(s)) : p;
   });`],
-  // Y la forma más barata de que vuelva: pasarle la serie de nulls al panel de
-  // todos modos. No dibuja nada, pero deja su nombre en la leyenda.
+  // Y la forma más barata de que vuelva: dibujar la línea de todos modos. No
+  // pinta nada —son diez nulls— pero deja su nombre en la leyenda, y entonces
+  // la leyenda afirma que hay un programa que no hay.
+  //
+  // El anclaje es la guarda ENTERA de `curvaDeGobierno`, y lo que la distingue
+  // de la de `curvaUnicaDeObra` —escrita igual palabra por palabra— es el
+  // motivo del final, que manda a Contrato y no a Planeación. Antes el anclaje
+  // era el comentario «(b)» de encima, y el 2026-11-07 se reescribió ese
+  // comentario al corregir esa misma ruta: la mutación se quedó sin anclaje y
+  // la contraprueba salió en 2. Así se pudre un anclaje sin que nadie se
+  // entere, porque la suite sólo corre el modo normal. Se ancla al código que
+  // distingue, no a la prosa que lo explica.
   ['el municipio le pasa la serie vacía al panel igual',
-    '  const hayPrograma = fuentePrograma === \'programa\';\n\n  // La frontera del AVANCE',
-    '  const hayPrograma = true;\n\n  // La frontera del AVANCE'],
+    `  if (fuentePrograma === 'programa' && hayDato(programado)) {
+    lineas.push({
+      clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
+      valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+    });
+  } else {
+    declarar('prog', 'Avance programado',
+      fuentePrograma === 'cargando'
+        ? 'leyendo el programa de obra…'
+        : 'no hay programa de obra capturado: carga el anexo en Contrato → Programa de obra');
+  }`,
+    `  lineas.push({
+    clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
+    valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+  });`],
+  // El delta del municipio vive ahora en `GraficaDelContrato` y su guarda está
+  // escrita IGUAL que la de la constructora; el prefijo del comentario es lo
+  // que las separa. Las dos mutaciones existen porque son dos tablas.
   ['el delta del municipio cruza la frontera del esquema',
-    'if (hayTramoViejo && i === idxF) return null;',
-    ''],
+    '  // Los deltas sólo existen en la tabla: la gráfica dibuja acumulados. NINGÚN\n  // DELTA CRUZA LA FRONTERA — restar un avance compensado de uno topado mide el\n  // cambio de criterio, no lo que la obra hizo esa semana.\n  const avanceDelta = semanas.map((s, i) => {\n    if (i === 0) return null;\n    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;',
+    '  // Los deltas, sin frontera.\n  const avanceDelta = semanas.map((s, i) => {\n    if (i === 0) return null;'],
   ['el delta de la constructora cruza la frontera del esquema',
     'if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;',
     ''],
@@ -676,9 +744,23 @@ const MUTACIONES = [
   // acumulado conocido en vez de leer la serie que se dibuja. Es la manera
   // natural de que el sombreado deje de coincidir con el hueco entre las dos
   // curvas sin que nada en la pantalla lo diga.
+  // REANCLADA el 2026-11-07: la resta salió a `huecoEntreCurvas`, que ahora
+  // comparten las dos gráficas. Se muta el SITIO DE LA LLAMADA en
+  // `curvaUnicaDeObra` y no la cuenta compartida, porque mutar la compartida
+  // heriría de paso la gráfica del municipio y el rojo no diría cuál de las dos
+  // se rompió.
   ['el margen se saca su propia cuenta del gasto en vez de leer la serie',
-    "    if (typeof gasto[i] !== 'number') return null;\n    return ejecutado[i] - gasto[i];",
-    '    let gi = 0;\n    for (let j = i; j >= 0; j--) {\n      const x = gastoPorSem[semanas[j].key];\n      if (x && x > 0) { gi = x; break; }\n    }\n    return ejecutado[i] - gi;'],
+    '  const margen = huecoEntreCurvas(ejecutado, gasto, idxPrimerAvance);',
+    `  const margen = ejecutado.map((_, i) => {
+    if (idxPrimerAvance === -1 || i < idxPrimerAvance) return null;
+    if (typeof ejecutado[i] !== 'number') return null;
+    let gi = 0;
+    for (let j = i; j >= 0; j--) {
+      const x = gastoPorSem[semanas[j].key];
+      if (x && x > 0) { gi = x; break; }
+    }
+    return ejecutado[i] - gi;
+  });`],
   // El relleno, de vuelta: las semanas quietas publican el promedio de la
   // ventana en vez del cero medido. La suma de las deltas se despega del
   // acumulado, que es justo lo que la sección 7 vigila.
@@ -708,8 +790,16 @@ if (process.argv.includes('--contraprueba')) {
     }
     let fallos;
     process.env.CALLADO = '1';
+    // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que la
+    // aserción muerda. Contarlo como ROJO deja pasar mutaciones que en realidad
+    // nadie detecta, así que es NO ARRANCÓ, que es un 2.
     try { fallos = correr(FUENTE.replace(de, a)); }
-    catch (e) { fallos = [`revienta: ${e.message}`]; }
+    catch (e) {
+      delete process.env.CALLADO;
+      console.error(`NO ARRANCÓ: la mutación «${titulo}» revienta el trozo ` +
+                    `en vez de romper la semántica: ${e.message}`);
+      process.exit(2);
+    }
     delete process.env.CALLADO;
     if (fallos.length) {
       console.log(`   ✓ ROJO  ${titulo}  ·  ${fallos.length} aserción(es) mordieron`);
