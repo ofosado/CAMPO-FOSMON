@@ -281,6 +281,34 @@ function exigirPuedeOtorgarRol(ambito, rol) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// LA HORA QUE UN DOCUMENTO PUEDE CITAR
+//
+// El reporte ejecutivo lleva impreso «Corte del reporte» en la portada, y ese
+// renglón sale firmado al pie por tres personas. Hasta hoy la fecha la ponía
+// `new Date()` en el navegador: la hora del aparato de quien apretó el botón.
+// Un reloj mal puesto —o un huso distinto— no se nota al leer el PDF, porque
+// la fecha impresa es creíble sin importar cuál sea.
+//
+// La alternativa que NO se tomó era escribir un documento con
+// `FieldValue.serverTimestamp()` y leerlo de vuelta. Eso mete un efecto en lo
+// que es una operación de lectura —generar un PDF no debería dejar rastro en
+// la base— y además cuesta dos viajes. Esta callable cuesta uno y no escribe
+// nada.
+//
+// Pide sesión. No porque la hora sea secreta, sino porque un `onCall` sin
+// autenticación es un extremo abierto de nuestro proyecto que cualquiera puede
+// golpear, y la factura la pagamos nosotros. No consulta el perfil ni el rol:
+// la hora es la misma para todos y una lectura de Firestore aquí sería un
+// gasto por cada PDF, además de una dependencia que puede fallar.
+// ──────────────────────────────────────────────────────────────────────────
+exports.horaDelServidor = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  return { ms: Date.now() };
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // CREAR ORGANIZACIÓN
 //
 // Era `scripts/crear-org-fosmon.cjs`: dar de alta un cliente costaba una

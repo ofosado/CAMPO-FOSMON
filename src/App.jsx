@@ -35,7 +35,11 @@ const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
 // venga vacía. `fsColl` devuelve `[]` cuando la regla niega, así que sin este
 // dato el expediente imprimiría «0% de cobertura» por una lectura fallida: una
 // cifra creíble y falsa, en un documento con tres firmas al pie.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null, evidenciaCargada = true) {
+// `instante` es el sello de tiempo del documento: `{ms, fuente}`, como lo
+// devuelve `pedirHoraDelServidor`. Entra como dato y no se toma de aquí
+// adentro para que la hora impresa sea la del servidor cuando se pudo pedir —
+// ver `selloDeTiempo`, que decide qué se imprime y qué se declara.
+async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null, evidenciaCargada = true, instante = null) {
   // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -107,7 +111,11 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // −$8,612,920. Quitada la copia, este documento usa las mismas tres
   // funciones que el resto, y el signo se decide en un solo sitio.
   const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;
-  const hoy  = new Date().toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
+  // El instante del documento, uno solo. `hoy` es su fecha —va en el
+  // encabezado de cada página y en el nombre del archivo— y `sello.corte` el
+  // renglón de la portada, que además declara de dónde salió la hora.
+  const sello = selloDeTiempo(instante);
+  const hoy  = sello.fecha;
 
   // ── Resolver obra GP del Sheet (para tomar nombre corto + gasto en vivo) ──
   // Lo resuelve `estadoGastoGP`, que es la única respuesta a «¿qué obra del GP
@@ -345,7 +353,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
    ['Inicio de obra:',obra.inicio||''],
    ['Fin programado:',obra.fin||''],
    ['Presupuesto:',MXN(PPTO)],
-   ['Corte del reporte:',hoy],
+   ['Corte del reporte:',sello.corte],
   ].forEach(([lbl,val])=>{
     st(K.ng); fs(7); fw('bold'); T(lbl, xR, yR);
     st(K.gtx); fw('normal');
@@ -895,7 +903,9 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // Este PDF se le entrega al cliente: donde no hay programa va «n/d» y el
   // subtítulo pide el anexo. Antes iba el reparto lineal del plazo, que le
   // afirmaba al cliente que su programa decía esa cifra ese día.
-  const progPdf = avanceProgramadoA(obra, programa, hoyLocalISO());
+  // El día es el del sello, no `hoyLocalISO()`: ésa era una cuarta lectura del
+  // reloj del aparato dentro del mismo documento.
+  const progPdf = avanceProgramadoA(obra, programa, fechaEnZonaObra(sello.momento));
   const pctProgIdeal = progPdf.pct ?? 0;
   const rotPdf = ROTULO_PROGRAMADO[progPdf.fuente] || ROTULO_PROGRAMADO.sin_programa;
   const desviacion = af - pctProgIdeal;
@@ -1061,7 +1071,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const fIni = parseFecha(obra.inicio);
   const fFin = parseFecha(obra.finAmpliado) || parseFecha(obra.fin);
   const fFinOrig = parseFecha(obra.fin);
-  const hoyD = new Date();
+  // El MISMO instante de la portada, no una segunda lectura del reloj.
+  const hoyD = sello.momento;
 
   const hayFechas = fIni && fFin;
   const diasTot = hayFechas ? diasEntre(fIni, fFin) : 0;
@@ -2293,6 +2304,21 @@ const callFn = async (name, data) => {
   }
 };
 
+// La hora con la que se sella un documento que se entrega.
+//
+// Devuelve SIEMPRE un instante utilizable y dice de dónde salió. Cuando la
+// callable no contesta —sin red, sesión vencida, la función caída— se cae al
+// reloj del aparato, pero `fuente` queda en 'equipo' y el documento lo imprime
+// así. Lo que no puede pasar es que un PDF diga «hora del servidor» sobre la
+// hora de una laptop: eso no es un hueco, es una afirmación falsa, y en la
+// portada de un documento firmado.
+const pedirHoraDelServidor = async () => {
+  const r = await callFn('horaDelServidor', {});
+  const ms = Number(r?.data?.ms);
+  if (r?.ok && Number.isFinite(ms) && ms > 0) return { ms, fuente: 'servidor' };
+  return { ms: Date.now(), fuente: 'equipo' };
+};
+
 // Referencias de obra para los sitios que arman la ruta por segmentos y no
 // pasan por los helpers de abajo. `conOrg` vive en src/rutas-org.js: ahí está
 // explicado por qué el discriminante es `tipo` y no la presencia de `orgId`.
@@ -3235,6 +3261,38 @@ const fechaEnZonaObra = (fecha) => {
 // alimenta la serie semanal de gasto—, en la de una estimación nueva, en la de
 // un adjunto y en los días transcurridos de plazo.
 const hoyLocalISO = () => fechaEnZonaObra(new Date());
+
+// ── EL SELLO DE TIEMPO DE UN DOCUMENTO QUE SE ENTREGA ──────────────────────
+//
+// Un reporte tiene UN instante, no varios. Antes el PDF llamaba a `new Date()`
+// en tres sitios —el encabezado de cada página, el «Corte del reporte» de la
+// portada y la línea de HOY de la gráfica de plazo— y nada garantizaba que
+// coincidieran: un documento armado a las 23:59:58 podía salir con la portada
+// de un día y la gráfica del siguiente. Aquí entra un solo instante y de él
+// salen los tres.
+//
+// Y dice de dónde vino la hora. `delServidor` es falso mientras no haya prueba
+// de lo contrario: sin `ms` utilizable se usa el reloj del aparato y el
+// documento lo declara. Un sello que presume origen que no tiene es peor que
+// no llevar sello.
+const SELLO_DEL_SERVIDOR = 'hora del servidor';
+const SELLO_DEL_EQUIPO = 'hora de este equipo · el servidor no contestó';
+
+const selloDeTiempo = (instante) => {
+  const ms = Number(instante?.ms);
+  const medible = Number.isFinite(ms) && ms > 0;
+  const delServidor = medible && instante?.fuente === 'servidor';
+  const momento = new Date(medible ? ms : Date.now());
+  // Con `timeZone` explícito, igual que `fechaEnZonaObra` y por lo mismo: sin
+  // él la portada lleva el huso del aparato que apretó el botón, y el instante
+  // del servidor se imprimiría con el calendario de otro país.
+  const fecha = momento.toLocaleDateString('es-MX',
+    { timeZone: ZONA_OBRA, day: '2-digit', month: 'long', year: 'numeric' });
+  const hora = momento.toLocaleTimeString('es-MX',
+    { timeZone: ZONA_OBRA, hour: '2-digit', minute: '2-digit', hour12: false });
+  return { momento, fecha, delServidor,
+    corte: `${fecha}, ${hora} h · ${delServidor ? SELLO_DEL_SERVIDOR : SELLO_DEL_EQUIPO}` };
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // EL PROGRAMA DE OBRA — PENDIENTES #51
@@ -26341,7 +26399,11 @@ export default function App(){
           // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
           // lecturas —una por sub— de documentos que nunca existieron, porque
           // las reglas denegaban la escritura. Ver PENDIENTES #31.
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra, evidenciaCargada);
+          // La hora con la que se sella el documento. No lanza: cuando la
+          // callable no contesta devuelve el reloj del aparato marcado como
+          // tal, y la portada lo imprime así.
+          const instante = await pedirHoraDelServidor();
+          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra, evidenciaCargada, instante);
         }}
         title="Descargar reporte ejecutivo en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
