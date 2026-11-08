@@ -100,7 +100,7 @@ async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
     subs = [], estimaciones = [], maquinaria = [], materiales = [],
     subcontratos = [], historialAvance = [], gpData = null, otrosGastos = [],
     gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null,
-    evidenciaCargada = true,
+    evidenciaCargada = true, instante = null,
   } = datos;
   const { doc, dibujos } = lienzo();
   const guardados = { window: global.window, document: global.document, alert: global.alert };
@@ -110,7 +110,7 @@ async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
   try {
     await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales,
       subcontratos, branding, historialAvance, gpData, otrosGastos, gpDetalle,
-      nominaHistorial, evidencia, programa, evidenciaCargada);
+      nominaHistorial, evidencia, programa, evidenciaCargada, instante);
   } finally {
     global.window = guardados.window;
     global.document = guardados.document;
