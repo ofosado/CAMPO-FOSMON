@@ -5026,7 +5026,59 @@ const SIN_PROY_POCOS_CIERRES = 'pocosCierres';
 const SIN_PROY_NO_COMPARABLES = 'noComparables';
 const SIN_PROY_SIN_AVANCE = 'sinAvance';
 
+// LA VENTANA DEL RITMO, y el mínimo para que haya ritmo. Con nombre y en un
+// solo sitio porque la ventana se usa DOS veces —la corta, que da el veredicto,
+// y la del expediente completo, que lo contextualiza— y porque el mínimo se
+// dice en pantalla: «1 de 2 cortes cerrados». Un `4` y un `2` tecleados en
+// cada sitio son dos ventanas y dos mínimos que algún día dejan de coincidir
+// con los que la pantalla promete.
+const VENTANA_RITMO = 4;
+const CIERRES_MINIMOS = 2;
+
+// «N de 2 cortes cerrados»: la única forma de decir que faltan cortes.
+//
+// La dicen DOS recuadros de la misma fila —el delta de la semana y la
+// proyección de término—, y los dos esperan lo mismo: dos cortes cerrados.
+// Escrita dos veces, uno decía «requiere 2 cierres» y el otro habría dicho
+// otra cosa, y dos maneras de nombrar la misma falta pegadas en la misma fila
+// se leen como dos faltas distintas.
+const fraseCortesCerrados = (n) => `${Number(n) || 0} de ${CIERRES_MINIMOS} cortes cerrados`;
+
+// La pendiente de la recta que une el PRIMER cierre de una ventana con el
+// ÚLTIMO, en puntos de avance por semana.
+//
+// Es UNA cuenta preguntada dos veces: sobre los últimos cuatro cierres —de ahí
+// sale la fecha de término— y sobre el expediente entero —de ahí sale el
+// renglón que dice si la obra aceleró o se frenó—. Escritas dos veces, el
+// contexto podría contradecir al veredicto que contextualiza.
+//
+// UN RITMO NO SE PROMEDIA SOBRE SEMANAS SIN MEDIR. Las semanas se cuentan por
+// CALENDARIO, no por número de puntos: si entre dos cierres pasaron seis
+// semanas y sólo hay dos puntos, el tramo es de seis semanas. Dividir entre
+// `length - 1` multiplicaría la velocidad por seis y la proyección diría que
+// la obra termina seis veces antes de lo que va a terminar.
+//
+// Y los lunes se restan del calendario en vez de restar números de semana: un
+// año ISO tiene 52 o 53 semanas, así que `(añoB−añoA)*52` se equivoca una
+// semana entera cada vez que cruza un año de 53 —2020, 2026, 2032—. Los lunes
+// de dos claves están a un múltiplo exacto de siete días de distancia.
+const ritmoEntreCierres = (base = []) => {
+  if (base.length < CIERRES_MINIMOS) return null;
+  const pri = base[0], ult = base[base.length - 1];
+  const lunA = lunesDeClaveSemana(pri.clave);
+  const lunB = lunesDeClaveSemana(ult.clave);
+  const tramos = Math.max(Math.round((lunB - lunA) / (7 * 86400000)), 1);
+  return { velocidad: (ult.avance - pri.avance) / tramos, puntos: base.length,
+    tramos, de: pri.clave, a: ult.clave };
+};
+
 // La proyección de término al ritmo de las últimas semanas cerradas.
+//
+// SÓLO CIERRES CERRADOS. `estadoPorSemana` ya filtra a los oficiales, que son
+// los que tienen `fechaCierre`. Un ritmo construido sobre un corte que todavía
+// se puede mover no es un ritmo: el intermedio de la semana en curso crece
+// cada vez que alguien captura, y la fecha de término se movería con él sin que
+// la obra hubiera hecho nada.
 //
 // `avanceActual` es el avance EN VIVO sobre contrato (lo que se ve hoy en la
 // captura), no el del último cierre: la proyección es hacia adelante desde
@@ -5037,37 +5089,44 @@ const SIN_PROY_SIN_AVANCE = 'sinAvance';
 const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()) => {
   const finVigente = finVigenteDe(obra);
   const ampliado = !!obra?.finAmpliado;
+  // CUÁNTOS CORTES CERRADOS TIENE Y CUÁNTOS NECESITA, siempre, incluso en el
+  // caso vacío: es lo que la pantalla dice cuando no puede proyectar, y un
+  // `undefined` ahí se imprimiría como «undefined de 2».
   const vacia = {
     velocidad: null, semanasBase: 0, semanasAFin: null, fechaFin: null,
     desviacionDias: null, finVigente, ampliado, razon: SIN_PROY_POCOS_CIERRES,
+    velocidadLarga: null, puntosLargos: 0,
   };
   if (estados.length === 0) return vacia;
 
   const ultimo = estados[estados.length - 1];
   // Solo cierres comparables en avance con el último: restar a través de un
   // cambio de definición fabrica un salto que no ocurrió.
-  const base = estados.filter(e => sonComparables(e.cierre, ultimo.cierre, 'avance')
-    && e.avance !== null).slice(-4);
-  if (base.length < 2) {
+  const comparables = estados.filter(e => sonComparables(e.cierre, ultimo.cierre, 'avance')
+    && e.avance !== null);
+  const base = comparables.slice(-VENTANA_RITMO);
+  const corto = ritmoEntreCierres(base);
+  if (!corto) {
     // Dos situaciones que el guion mezclaba: o no hay dos cierres, o hay dos
     // pero no se pueden restar entre sí.
     return { ...vacia, semanasBase: base.length,
-      razon: estados.length >= 2 ? SIN_PROY_NO_COMPARABLES : SIN_PROY_POCOS_CIERRES };
+      razon: estados.length >= CIERRES_MINIMOS ? SIN_PROY_NO_COMPARABLES : SIN_PROY_POCOS_CIERRES };
   }
 
-  // Semanas REALES entre el primero y el último de la base, no `length-1`:
-  // si hay semanas sin cierre en medio, contar puntos infla la velocidad.
-  //
-  // Y se cuentan por el calendario, no restando números de semana: un año ISO
-  // tiene 52 o 53 semanas, así que `(añoB-añoA)*52` se equivoca una semana
-  // entera cada vez que cruza un año de 53 —2020, 2026, 2032—. Los lunes de
-  // las dos claves están a un múltiplo exacto de siete días de distancia.
-  const lunA = lunesDeClaveSemana(base[0].clave);
-  const lunB = lunesDeClaveSemana(base[base.length - 1].clave);
-  const tramos = Math.max(Math.round((lunB - lunA) / (7 * 86400000)), 1);
-  const velocidad = (base[base.length - 1].avance - base[0].avance) / tramos;
+  // EL RITMO DEL EXPEDIENTE COMPLETO, con la misma cuenta y la ventana abierta.
+  // No es un segundo veredicto: es el único contexto honesto contra el que
+  // comparar el ritmo de las últimas cuatro. La alternativa —avance de hoy
+  // entre semanas corridas del plazo— divide entre semanas que nadie midió, y
+  // en producción eso miente a gritos: la 0112 va al 99.5% con 0.68 pp/sem
+  // medidos y esa cuenta le atribuye 4.46, porque le faltan once semanas de
+  // arranque al expediente y las cuenta como semanas de avance cero.
+  const largo = ritmoEntreCierres(comparables);
+  const deRitmo = { semanasBase: base.length,
+    velocidadLarga: largo ? largo.velocidad : null, puntosLargos: largo ? largo.puntos : 0 };
+
+  const velocidad = corto.velocidad;
   if (!(velocidad > 0)) {
-    return { ...vacia, velocidad, semanasBase: base.length, razon: SIN_PROY_SIN_AVANCE };
+    return { ...vacia, ...deRitmo, velocidad, razon: SIN_PROY_SIN_AVANCE };
   }
 
   const pendiente = Math.max(100 - (Number(avanceActual) || 0), 0);
@@ -5078,8 +5137,49 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
   const desviacionDias = fVig
     ? Math.round((fechaFin - fVig) / 86400000)
     : null;
-  return { velocidad, semanasBase: base.length, semanasAFin, fechaFin,
+  return { velocidad, ...deRitmo, semanasAFin, fechaFin,
     desviacionDias, finVigente, ampliado, razon: null };
+};
+
+// CUÁNTO TIENE QUE DIFERIR UN RITMO DEL OTRO para que valga un renglón: un
+// tercio. No es un número redondo elegido por redondo. Medido contra
+// producción el 2026-11-07, el cociente entre el ritmo de los últimos cuatro
+// cierres y el del expediente completo, obra por obra:
+//
+//   0112 1.00 · 0114 0.61 · 0125 0.96 · 0126 0.95 · 0127 1.00
+//   0128 y 0131 no dan ritmo: cero cortes cerrados.
+//
+// Hay un hueco limpio. Cuatro obras entre 0.95 y 1.00, donde el renglón sería
+// ruido; y una, la 0114, en 0.61 — el parque lineal de Oaxaca bajó de 1.53 a
+// 0.93 pp/sem, y eso sí es una noticia. Un tercio cae en mitad del hueco, con
+// sitio por los dos lados, y es simétrico: 2/3 y 3/2 son inversos, así que
+// frenarse a la mitad y acelerar al doble pesan igual.
+const UMBRAL_TENDENCIA = 2 / 3;
+
+// Si la obra aceleró o se frenó, en un renglón y con los dos ritmos.
+//
+// UN VEREDICTO, CON SU CONTEXTO — no dos veredictos. La fecha de término y los
+// días contra el plazo salen SIEMPRE del ritmo de los últimos cierres
+// cerrados. Esto no propone otra fecha: avisa de que ese ritmo se movió
+// respecto a como venía la obra, que es lo que decide si hay que creerle a la
+// proyección hoy o esperar otro cierre.
+//
+// DEVUELVE `null` LA MAYORÍA DE LAS VECES, y eso es lo buscado: un renglón que
+// sale siempre no se lee. No hace falta una guarda para la obra cuyo
+// expediente son los MISMOS cuatro cierres de la ventana corta —la 0112 y la
+// 0127 están así hoy—: ahí las dos cuentas reciben la misma lista y devuelven
+// el mismo número, el cociente es 1.00 exacto y el umbral lo calla solo. Nunca
+// se publica «va igual» comparando una cifra consigo misma.
+const tendenciaDeRitmo = (proy) => {
+  const corto = proy?.velocidad, largo = proy?.velocidadLarga;
+  if (!(corto > 0) || !(largo > 0)) return null;
+  const razon = corto / largo;
+  if (razon > UMBRAL_TENDENCIA && razon < 1 / UMBRAL_TENDENCIA) return null;
+  const acelero = razon > 1;
+  return { acelero, razon,
+    frase: `La obra ${acelero ? 'aceleró' : 'se frenó'}: ${NUM(corto, 2)} pp/sem en los `
+      + `últimos ${proy.semanasBase} cierres, contra ${NUM(largo, 2)} pp/sem en los `
+      + `${proy.puntosLargos} del expediente.` };
 };
 
 // Por qué NO hay días de desviación que enseñar, en tres palabras.
@@ -5101,7 +5201,11 @@ const frasePorQueSinDesviacion = (proy) => {
   if (proy.razon === SIN_PROY_SIN_AVANCE)
     return proy.velocidad < 0 ? 'la obra retrocede' : 'la obra no avanza';
   if (proy.razon === SIN_PROY_NO_COMPARABLES) return 'cierres no comparables';
-  if (proy.razon === SIN_PROY_POCOS_CIERRES) return 'requiere 2 cierres';
+  // CUÁNTOS TIENE Y CUÁNTOS NECESITA, no «requiere 2 cierres» a secas. La
+  // frase vieja no distinguía la obra que no ha cerrado ni una semana —la 0128
+  // y la 0131 están así hoy— de la que ya cerró una y le falta la segunda, y
+  // son dos conversaciones distintas con el residente.
+  if (proy.razon === SIN_PROY_POCOS_CIERRES) return fraseCortesCerrados(proy.semanasBase);
   return 'sin plazo vigente capturado';
 };
 
@@ -15116,6 +15220,10 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   // sigue diciendo `kpiDesviacionPlazo` en el renglón de abajo del KPI, que es
   // el único lugar donde el lector las necesita.
   const desvPlazo = kpiDesviacionPlazo(proy);
+  // El contexto del veredicto, cuando lo hay: si el ritmo de los últimos
+  // cierres se separó del de todo el expediente. `null` la mayoría de las
+  // veces, y eso es lo buscado — ver `tendenciaDeRitmo`.
+  const tendencia = tendenciaDeRitmo(proy);
 
   // ── DETECTORES ──
   // Todos comparan AVANCE FÍSICO, así que ambos lados se topan al 100%:
@@ -15207,7 +15315,8 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
         color={semA(avanceActual)} size={12}/>
       <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
         sub={deltaSemana!==null?`vs ${etiquetaSemanaRiel(penultimoEstado, conAño)}`
-          : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables":"requiere 2 cierres"}
+          : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables"
+          : fraseCortesCerrados(estados.length)}
         color={deltaSemana===null?C.textMut:deltaSemana>=0?C.greenDk:C.red} size={12}/>
       <Kpi label="Velocidad prom." value={velocidadProm!==null?`${NUM(velocidadProm,2)} pp/sem`:"—"}
         sub={velocidadProm!==null?`últimos ${proy.semanasBase} cierres`:"sin velocidad medible"}
@@ -15242,6 +15351,18 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
           sub={rotProg.sub} color={C.textMut} size={12}/>
       )}
     </div>
+
+    {/* EL CONTEXTO DEL VEREDICTO, en un renglón. Va pegado a la fila de KPIs,
+        debajo de la proyección que contextualiza y no al lado: al lado sería un
+        sexto recuadro con una sexta cifra, y entonces la pantalla tendría dos
+        velocidades con el mismo rango compitiendo por ser «el ritmo». Aquí es
+        lo que es — la nota al pie del número de arriba. Sale pocas veces: ver
+        `tendenciaDeRitmo`, que devuelve `null` mientras los dos ritmos no se
+        separen de verdad. */}
+    {tendencia && <div style={{fontSize:10,lineHeight:1.5,
+      color:tendencia.acelero?C.greenDk:C.yellow}}>
+      {tendencia.frase}
+    </div>}
 
     {/* EL ARRANQUE QUE FALTA. Va pegado a la serie porque es la advertencia de
         cómo leerla: todo lo que está debajo —la curva, la velocidad, la

@@ -389,12 +389,20 @@ function fotosDe(filas, semilla, { semanas = 4, sinFecha = false } = {}) {
 // guardada bajo una clave que ninguna pantalla busca.
 const claveSnap = (semana, año) => `S${String(semana).padStart(2, '0')}-${año}`;
 
-const semanasDe = (filas, contratado, cuantas) => {
+// `curva` es opcional y por omisión el historial crece en línea recta. Una
+// recta sirve para casi todo, pero hay una cosa que NO se puede ver con ella:
+// el renglón que compara el ritmo de los últimos cierres contra el del
+// expediente completo. Sobre una recta los dos ritmos son el mismo número y la
+// pantalla se calla —correctamente—, así que sin una obra doblada el renglón no
+// se puede revisar en el preview, sólo en una prueba. La curva se pasa como
+// fracciones del avance de hoy, una por semana cerrada y en orden.
+const semanasDe = (filas, contratado, cuantas, curva = null) => {
   const hoy = new Date();
   const out = [];
   for (let k = cuantas; k >= 1; k--) {
     const f = new Date(hoy.getTime() - k * 7 * 86400000);
-    const factor = (cuantas - k + 1) / cuantas;
+    const i = cuantas - k;
+    const factor = curva ? curva[i] : (i + 1) / cuantas;
     const subs = filas.map(s => ({ sec: s.sec, a: Math.round(s.a * factor),
       imp: s.imp, cant: s.cant, pu: s.pu, cantEjec: Math.round(s.cantEjec * factor) }));
     const semana = Math.ceil(((f - new Date(f.getFullYear(), 0, 1)) / 86400000 + 1) / 7);
@@ -563,7 +571,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     data: filas, fecha: new Date(Date.now() - (obra.diasSinCaptura ?? 2) * 86400000).toISOString(),
     por: 'siembra@local',
   });
-  const semanas = semanasDe(filas, obra.contratado, obra.semanas ?? 3);
+  const semanas = semanasDe(filas, obra.contratado, obra.semanas ?? 3, obra.curva);
   await escribir(`${prefijo}obras/${id}/avance/historial`, { semanas });
   // Las notas cuelgan de `avance/notas`, con la MISMA clave que el snapshot
   // (`S40-2026`). Si la clave no coincide, la nota existe en Firestore y la
@@ -727,7 +735,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     nombre: 'Oaxaca Parque Lineal', contrato: 'LO-920-2026-0114', contratado: 38500000,
     cliente: 'Gobierno de Oaxaca', ubicacion: 'Oaxaca de Juárez, Oax.',
     inicio: '2026-03-01', fin: '2026-12-15', semilla: 11, nPartidas: 14,
-    estimaciones: EST_C, semanas: 4, diasSinCaptura: 2, fotosSemanas: 5,
+    estimaciones: EST_C, semanas: 6, diasSinCaptura: 2, fotosSemanas: 5,
+    // Seis cierres doblados, no una recta: esta obra ARRANCÓ fuerte y se frenó.
+    // Las fracciones no se eligieron por estética, reproducen el cociente que
+    // la 0114 de producción trae medido —0.61 entre el ritmo de los últimos
+    // cuatro cierres y el de todo el expediente—, que es el único caso real
+    // fuera de la banda de la pantalla. Con la recta de las demás obras los dos
+    // ritmos coinciden y el renglón se calla, así que sin esta curva el aviso
+    // no se puede mirar en el preview.
+    curva: [0.80, 0.87, 0.927, 0.952, 0.976, 1.00],
     // Diez meses, marzo a diciembre, con arranque lento: 1% el primer mes y el
     // pico en el octavo. Es la forma de una curva S de verdad y suma los
     // $38.5M del contrato. La 0121 se queda SIN programa a propósito, para que

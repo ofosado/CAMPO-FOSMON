@@ -330,11 +330,25 @@ async function correr(codigo) {
   // unificarse las tres gráficas en una. No se reescribió contra otro sujeto
   // porque no hay otro: ese panel ya no está en el tablero.
   //
-  // Lo que se pierde con él, escrito aquí para que no se pierda dos veces:
-  //   · un ritmo no se promedia sobre semanas sin medir,
-  //   · un margen proyectado no se publica sin sustraendo.
-  // Las dos reglas vuelven a tener banco cuando se reconstruya el bloque del
-  // ritmo sobre cortes CERRADOS, que es donde van a vivir.
+  // Lo que se perdió con él eran dos reglas, y el 2026-11-07 —al reconstruirse
+  // el bloque del ritmo sobre cortes CERRADOS— se recuperó UNA. Queda escrito
+  // aquí cuál y dónde, para no tener que acordarse:
+  //
+  //   · «UN RITMO NO SE PROMEDIA SOBRE SEMANAS SIN MEDIR» vive en
+  //     `prueba-desviacion-plazo.cjs`, sección 7: dos cierres separados seis
+  //     semanas dan 2 pp/sem y no 12, y el ritmo del expediente cuenta las
+  //     once semanas reales y no los cinco puntos. La mutación que las tumba
+  //     —dividir entre `base.length - 1`— está en su contraprueba y da 5 rojas.
+  //     Ahí también quedó descartada por medición la otra forma de ese mismo
+  //     promedio: el avance de hoy entre las semanas CORRIDAS del plazo, que a
+  //     la 0112 le atribuye 4.46 pp/sem cuando mide 0.68.
+  //
+  //   · «UN MARGEN PROYECTADO NO SE PUBLICA SIN SUSTRAENDO» sigue sin banco, y
+  //     no por olvido: no hay sujeto. Hoy no existe ningún margen proyectado en
+  //     `src/` ni en `functions/` —el panel que lo publicaba se borró— y una
+  //     prueba sobre una pantalla que no está sólo se comprobaría contra sí
+  //     misma. La regla aplica el día que se vuelva a publicar un margen al
+  //     cierre: tiene que decir de qué se resta.
   //
   // El menos de verdad en el margen negativo —el otro defecto que medía esta
   // sección— sigue cubierto: `MXNS` es la única cuenta que lo pone y la sección

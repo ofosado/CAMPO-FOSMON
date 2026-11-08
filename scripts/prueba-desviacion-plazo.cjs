@@ -65,6 +65,13 @@ const NECESARIOS = [
   'lunesDeClaveSemana', 'sonComparables',
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
   'finVigenteDe', 'estadoPorSemana', 'corteDeEstimaciones', 'FRASE_SIN_CORTE_EST',
+  // La ventana del ritmo, su mínimo, la cuenta única de la pendiente y la frase
+  // que dice cuántos cortes hay: las trae consigo `proyeccionDeAvance` desde
+  // que el ritmo se mide dos veces —ventana corta y expediente completo— con
+  // una sola cuenta. El renglón de la tendencia lo redacta `tendenciaDeRitmo`,
+  // que usa `NUM` — ya pedido arriba con la paleta.
+  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres',
+  'fraseCortesCerrados', 'UMBRAL_TENDENCIA', 'tendenciaDeRitmo',
   'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
@@ -84,6 +91,7 @@ const cuentas = [];
 let kpiContraPlazo = null;   // el <Kpi> del tablero de avance
 let tarjetaPlazo = null;     // el <Card> de «Plazo» del tablero de dependencia
 let fuenteAvance = null;     // el cuerpo del tablero de avance, para el párrafo
+let renglonTendencia = null; // el renglón de «la obra aceleró / se frenó»
 
 const nombreDeFuncionPadre = (p) => {
   let q = p;
@@ -126,6 +134,18 @@ traverse(ast, {
     if (p.node.id?.name !== 'desvPlazo' || !p.node.init) return;
     cuentas.push({ donde: nombreDeFuncionPadre(p), fuente: src.slice(p.node.init.start, p.node.init.end) });
   },
+  // El renglón del contexto, CON SU GUARDA. Se localiza por lo que PINTA —la
+  // frase de la tendencia—, porque no tiene etiqueta: es un `div` suelto. Y se
+  // toma la expresión entera `tendencia && <div…>`, no sólo el `div`: la
+  // conducta que importa incluye no pintar nada cuando no hay tendencia, y eso
+  // vive en la guarda. Capturando sólo el `div` la prueba reventaría al
+  // pasarle `null`, que es el caso normal.
+  JSXExpressionContainer(p) {
+    const e = p.node.expression;
+    if (renglonTendencia || e?.type !== 'LogicalExpression') return;
+    const txt = src.slice(e.start, e.end);
+    if (/\btendencia\.frase\b/.test(txt)) renglonTendencia = txt;
+  },
   JSXElement(p) {
     const abre = p.node.openingElement;
     const txt = src.slice(p.node.start, p.node.end);
@@ -147,17 +167,26 @@ const faltan = NECESARIOS.filter(n => !vistos.has(n));
 if (!kpiContraPlazo) faltan.push('el KPI «Contra el plazo» del tablero de avance');
 if (!tarjetaPlazo)   faltan.push('la tarjeta «Plazo» del tablero de dependencia');
 if (!fuenteAvance)   faltan.push('el tablero de avance');
+if (!renglonTendencia) faltan.push('el renglón de «la obra aceleró / se frenó»');
 if (cuentas.length < 2) faltan.push(`las dos cuentas de desviación (encontradas ${cuentas.length})`);
 if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
-// Se le quita el SIGNO al KPI, que es el defecto específico de comprimir una
-// frase en un número. Todo lo demás queda intacto: el nombre sigue existiendo,
-// las dos pantallas siguen llamándolo, los colores siguen siendo los mismos y
-// las cinco razones siguen diciéndose. Lo único que cambia es que «llegó 27
-// días antes» y «llegó 27 días tarde» pasan a escribirse igual.
-if (process.argv.includes('--contraprueba')) {
-  const sinSigno = `((proy) => {
+// CUATRO MUTACIONES, UNA POR AFIRMACIÓN GRANDE. Todas CONSERVAN EL ANDAMIAJE
+// —el símbolo sigue existiendo, con la misma forma de retorno, y las pantallas
+// lo siguen llamando— y ROMPEN LA SEMÁNTICA. Una mutación que borra un nombre
+// sólo demuestra que el nombre se puede borrar; y una que revienta el archivo
+// mide que el taller sabe parsear, no que la aserción muerda.
+//
+// El anclaje es el RANGO del `init` sacado del AST, no un trozo de texto: un
+// anclaje de texto se muere callado el día que alguien reescribe el comentario
+// de encima o parte el renglón en dos.
+const MUTACIONES = [
+  // 1. El KPI pierde el SIGNO, que es el defecto específico de comprimir una
+  //    frase en un número: «llegó 27 días antes» y «27 días tarde» pasan a
+  //    escribirse igual. Los colores, las cinco razones y las dos pantallas
+  //    quedan intactas.
+  ['el KPI pierde el signo', 'kpiDesviacionPlazo', `((proy) => {
     const porque = frasePorQueSinDesviacion(proy);
     if (porque !== null) return { valor: '—', sub: porque, dias: null, color: C.textMut };
     const d = proy.desviacionDias;
@@ -165,25 +194,90 @@ if (process.argv.includes('--contraprueba')) {
     if (d === 0) return { valor: 'en el plazo', sub: 'justo ' + contra, dias: 0, color: C.greenDk };
     return { valor: Math.abs(d) + ' d', sub: 'de atraso, ' + contra, dias: d,
              color: d > 15 ? C.red : d > 0 ? C.yellow : C.greenDk };
-  })`;
-  const [ini, fin] = rango.kpiDesviacionPlazo;
-  const mutado = path.join(require('os').tmpdir(), 'contraprueba-desviacion-plazo.jsx');
-  fs.writeFileSync(mutado, src.slice(0, ini) + sinSigno + src.slice(fin));
-  console.log('Contraprueba: el KPI pierde el signo. «27 días antes» y «27 días');
-  console.log('tarde» se escriben igual. Todo lo demás queda en su sitio.\n');
-  const r = require('child_process').spawnSync(process.execPath, [__filename, mutado],
-    { encoding: 'utf8' });
-  const rojas = (r.stdout.match(/^FALLA/gm) || []).length;
-  console.log(r.stdout.replace(/^/gm, '  │ '));
-  console.log(rojas > 0
-    ? `Contraprueba correcta: ${rojas} comprobación(es) se cayeron al borrar el signo.`
-    : 'CONTRAPRUEBA EN ROJO: borrar el signo no tumbó nada. La prueba no sirve.');
-  process.exit(rojas > 0 ? 0 : 1);
+  })`],
+  // 2. EL RITMO SE PROMEDIA SOBRE SEMANAS SIN MEDIR: se divide entre el número
+  //    de puntos menos uno en vez de entre las semanas del calendario. Sigue
+  //    devolviendo un ritmo con la misma forma, sigue saliendo de los mismos
+  //    cierres cerrados, y sigue siendo positivo. Lo único que cambia es que un
+  //    hueco de cuatro semanas sin cierre deja de contar como cuatro semanas.
+  ['el ritmo se promedia sobre semanas sin medir', 'ritmoEntreCierres', `((base = []) => {
+    if (base.length < CIERRES_MINIMOS) return null;
+    const pri = base[0], ult = base[base.length - 1];
+    const tramos = Math.max(base.length - 1, 1);
+    return { velocidad: (ult.avance - pri.avance) / tramos, puntos: base.length,
+      tramos, de: pri.clave, a: ult.clave };
+  })`],
+  // 3. EL RENGLÓN DE CONTEXTO SALE SIEMPRE: se le quita el umbral. Sigue
+  //    diciendo los dos ritmos y sigue distinguiendo aceleró de se frenó; lo
+  //    que se rompe es que una obra que va igual que siempre —0.96 del ritmo
+  //    del expediente— pasa a recibir un aviso de que cambió de ritmo.
+  ['el renglón de contexto sale siempre', 'tendenciaDeRitmo', `((proy) => {
+    const corto = proy?.velocidad, largo = proy?.velocidadLarga;
+    if (!(corto > 0) || !(largo > 0)) return null;
+    const razon = corto / largo;
+    const acelero = razon > 1;
+    return { acelero, razon,
+      frase: \`La obra \${acelero ? 'aceleró' : 'se frenó'}: \${NUM(corto, 2)} pp/sem en los \`
+        + \`últimos \${proy.semanasBase} cierres, contra \${NUM(largo, 2)} pp/sem en los \`
+        + \`\${proy.puntosLargos} del expediente.\` };
+  })`],
+  // 4. EL RENGLÓN PUBLICA UN SOLO RITMO. Es el renglón entero, con su palabra y
+  //    su umbral; lo que desaparece es el segundo número, o sea el contexto —y
+  //    sin él «se frenó» no se puede ni leer ni discutir: frenó respecto a qué.
+  ['el renglón se queda con un solo ritmo', 'tendenciaDeRitmo', `((proy) => {
+    const corto = proy?.velocidad, largo = proy?.velocidadLarga;
+    if (!(corto > 0) || !(largo > 0)) return null;
+    const razon = corto / largo;
+    if (razon > UMBRAL_TENDENCIA && razon < 1 / UMBRAL_TENDENCIA) return null;
+    const acelero = razon > 1;
+    return { acelero, razon,
+      frase: \`La obra \${acelero ? 'aceleró' : 'se frenó'}: \${NUM(corto, 2)} pp/sem \`
+        + \`en los últimos \${proy.semanasBase} cierres.\` };
+  })`],
+];
+
+if (process.argv.includes('--contraprueba')) {
+  const tmp = require('os').tmpdir();
+  let todas = 0, mudas = [];
+  for (const [titulo, simbolo, reemplazo] of MUTACIONES) {
+    if (!rango[simbolo]) {
+      console.error(`\nNO ARRANCÓ: la mutación «${titulo}» no halló el rango de ` +
+        `\`${simbolo}\` en ${path.basename(archivo)}. El símbolo cambió de nombre o ` +
+        `de forma: hay que reanclar la mutación, no dar esto por verde.\n`);
+      process.exit(2);
+    }
+    const [ini, fin] = rango[simbolo];
+    const mutado = path.join(tmp, `contraprueba-desviacion-plazo-${simbolo}.jsx`);
+    fs.writeFileSync(mutado, src.slice(0, ini) + reemplazo + src.slice(fin));
+    const r = require('child_process').spawnSync(process.execPath, [__filename, mutado],
+      { encoding: 'utf8' });
+    const rojas = (r.stdout.match(/^FALLA/gm) || []).length;
+    console.log(`\n── ${titulo} — \`${simbolo}\``);
+    if (r.status === 2 || /NO ARRANCÓ/.test(r.stdout + r.stderr)) {
+      console.log((r.stdout + r.stderr).replace(/^/gm, '  │ '));
+      console.error(`\nNO ARRANCÓ: «${titulo}» revienta el banco en vez de ponerlo ` +
+        `rojo. Eso mide que el archivo se puede parsear, no que la aserción muerda.\n`);
+      process.exit(2);
+    }
+    console.log((r.stdout.match(/^FALLA.*$/gm) || ['  (ninguna)']).join('\n').replace(/^/gm, '  │ '));
+    console.log(`  → ${rojas} en rojo`);
+    todas += rojas;
+    if (rojas === 0) mudas.push(titulo);
+  }
+  console.log('');
+  if (mudas.length) {
+    console.log(`CONTRAPRUEBA EN ROJO: ${mudas.length} mutación(es) no tumbaron nada:`);
+    for (const m of mudas) console.log(`  · ${m}`);
+    process.exit(1);
+  }
+  console.log(`Contraprueba correcta: ${MUTACIONES.length} mutaciones, ` +
+    `${todas} comprobación(es) en rojo, ninguna muda.`);
+  process.exit(0);
 }
 
 const app = new Function(`"use strict";\n${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
 const { C, kpiDesviacionPlazo, proyeccionDeAvance, estadoPorSemana, snapshotId,
-  atrasoProyectado,
+  atrasoProyectado, tendenciaDeRitmo,
   ESQUEMA_AVANCE, SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES,
   SIN_PROY_POCOS_CIERRES } = app;
 
@@ -406,6 +500,146 @@ check(!/Al ritmo de los últimos \$\{/.test(fuenteAvance),
 check(SIN_DATO.every(([, extra]) =>
   kpiDesviacionPlazo({ desviacionDias: null, ampliado: false, ...extra }).sub),
   'y las cinco razones del párrafo siguen diciéndose en el KPI');
+
+// ══════════════════════════════════════════════════════════════════════════
+console.log('\n7. El ritmo: cortes cerrados, y cuántos hacen falta\n');
+
+// Un historial de cierres OFICIALES —los únicos que tienen `fechaCierre`— a
+// partir de pares «semanas hacia atrás, avance». Las semanas de hueco se
+// dejan vacías a propósito: un hueco es lo que distingue un ritmo medido de un
+// ritmo promediado sobre semanas que nadie midió.
+const cierresDe = (pares, base = AHORA) => pares
+  .slice().sort((a, b) => b[0] - a[0])
+  .map(([atras, avance]) => {
+    const f = new Date(base - atras * 7 * 86400000);
+    const { semana, año } = app.semanaISO(f);
+    return { id: snapshotId(semana, año), semana, año, tipo: 'oficial',
+      fechaCaptura: f.toISOString(), fechaCierre: f.toISOString(),
+      capturadoPor: 'residente@fosmon.com.mx', subs: [], avancePonderado: avance,
+      contratoRef: 10000000, esquema: ESQUEMA_AVANCE };
+  });
+const proyDe = (pares, avance, obra = obraTarde) =>
+  proyeccionDeAvance(estadoPorSemana(cierresDe(pares)), avance, obra, AHORA);
+
+// (a) CUÁNTOS TIENE Y CUÁNTOS NECESITA. «Requiere 2 cierres» escribía igual la
+//     obra que no ha cerrado ninguna semana y la que ya cerró una — hoy en
+//     producción la 0128 y la 0131 están en cero cierres, y lo que el residente
+//     tiene que oír no es lo mismo en los dos casos.
+const kCero = kpiDesviacionPlazo(proyDe([], 0));
+const kUno  = kpiDesviacionPlazo(proyDe([[1, 22.9]], 22.9));
+check(/\b0 de 2\b/.test(kCero.sub),
+  'sin ningún corte cerrado, el renglón dice cuántos tiene y cuántos necesita',
+  `«${kCero.sub}»`);
+check(/\b1 de 2\b/.test(kUno.sub) && kUno.sub !== kCero.sub,
+  'y con uno dice uno: los dos casos no se escriben igual',
+  `«${kUno.sub}» ≠ «${kCero.sub}»`);
+
+// (b) UN RITMO NO SE PROMEDIA SOBRE SEMANAS SIN MEDIR. Dos cierres a seis
+//     semanas de distancia con 12 pp de diferencia son 2 pp/sem, no 12.
+//     Contar puntos en vez de semanas multiplicaría la velocidad por seis y la
+//     proyección prometería el término seis veces antes.
+const conHueco = proyDe([[7, 30], [1, 42]], 42);
+check(Math.abs(conHueco.velocidad - 2) < 1e-9,
+  '12 pp entre dos cierres separados seis semanas dan 2.00 pp/sem',
+  `${conHueco.velocidad.toFixed(4)} pp/sem`);
+check(Math.abs(conHueco.velocidad - 12) > 1e-6,
+  'y no 12.00, que es lo que sale de dividir entre el número de puntos',
+  `${conHueco.velocidad.toFixed(4)} ≠ 12`);
+// Lo mismo en la ventana larga, que es la cuenta nueva: el expediente completo
+// con un hueco en medio tampoco infla el ritmo contra el que se compara.
+const largoConHueco = proyDe([[12, 10], [11, 16], [8, 22], [5, 28], [1, 40]], 40);
+check(Math.abs(largoConHueco.velocidadLarga - (40 - 10) / 11) < 1e-9,
+  'el ritmo del expediente cuenta las once semanas reales, no los cinco puntos',
+  `${largoConHueco.velocidadLarga.toFixed(4)} pp/sem sobre ${largoConHueco.puntosLargos} cierres`);
+
+// (c) Y NO ES EL AVANCE ENTRE EL PLAZO CORRIDO. Ésa era la otra candidata para
+//     el segundo ritmo, y divide entre semanas que nadie midió: la 0112 va al
+//     99.5% con 0.68 pp/sem medidos y esa cuenta le atribuiría 4.46, porque al
+//     expediente le faltan once semanas de arranque y las cuenta como semanas
+//     de avance cero. Se reproduce la forma de la 0112: obra que arrancó hace
+//     22 semanas y expediente que empieza en la 6.
+const comoLa0112 = proyDe([[6, 96.5], [5, 97.2], [1, 99.5]], 99.5,
+  { inicio: new Date(AHORA - 22 * 7 * 86400000).toISOString().slice(0, 10), fin: '2026-12-31' });
+const delPlazoCorrido = 99.5 / 22;
+check(Math.abs(comoLa0112.velocidadLarga - delPlazoCorrido) > 1,
+  'el ritmo del expediente no es el avance de hoy entre las semanas del plazo',
+  `${comoLa0112.velocidadLarga.toFixed(2)} pp/sem medidos vs ${delPlazoCorrido.toFixed(2)} del plazo corrido`);
+check(comoLa0112.velocidadLarga < delPlazoCorrido,
+  'y el que se publica es el medido, que en esa obra es el más lento de los dos');
+
+// ══════════════════════════════════════════════════════════════════════════
+console.log('\n8. Un veredicto, con su contexto — no dos veredictos\n');
+
+// La forma de la 0114, el parque lineal de Oaxaca: el expediente va a 1.53
+// pp/sem y las últimas cuatro semanas a 0.93. El cociente es 0.61, el único de
+// las siete obras vivas que se sale del umbral.
+const frenada = proyDe([[12, 80], [8, 92], [4, 95.2], [3, 96.1], [2, 97.2], [1, 98.3]], 98.3);
+const tFren = tendenciaDeRitmo(frenada);
+check(!!tFren, 'una obra que bajó a dos tercios de su ritmo recibe el renglón',
+  tFren ? `razón ${tFren.razon.toFixed(2)}` : 'callado');
+check(!!tFren && /se frenó/.test(tFren.frase) && !/aceleró/.test(tFren.frase),
+  'y dice que se frenó, no que aceleró', tFren?.frase);
+// LOS DOS RITMOS, que es lo que hace discutible el aviso: «se frenó» sin el
+// número contra el que se frenó no se puede ni leer.
+const dosNumeros = (f) => (String(f).match(/\d+\.\d+ pp\/sem/g) || []);
+check(dosNumeros(tFren?.frase).length === 2,
+  'el renglón trae los DOS ritmos, no sólo el de las últimas semanas',
+  dosNumeros(tFren?.frase).join('  ·  '));
+check(!!tFren && dosNumeros(tFren.frase)[0] === `${app.NUM(frenada.velocidad, 2)} pp/sem`
+  && dosNumeros(tFren.frase)[1] === `${app.NUM(frenada.velocidadLarga, 2)} pp/sem`,
+  'y son los dos ritmos de la cuenta, no dos cifras tecleadas',
+  `${app.NUM(frenada.velocidad, 2)} y ${app.NUM(frenada.velocidadLarga, 2)}`);
+
+// EL VEREDICTO SIGUE SIENDO UNO, y es el de las últimas cuatro cerradas. Si la
+// fecha de término saliera del ritmo del expediente, la pantalla tendría dos
+// respuestas a «¿cuándo termina?» y el renglón de contexto sería el segundo
+// veredicto que no se quiere.
+const semanasConCorto = Math.ceil((100 - 98.3) / frenada.velocidad);
+const semanasConLargo = Math.ceil((100 - 98.3) / frenada.velocidadLarga);
+check(frenada.semanasAFin === semanasConCorto,
+  'la fecha de término sale del ritmo de los últimos cierres',
+  `${frenada.semanasAFin} semanas`);
+check(frenada.semanasBase === 4 && frenada.puntosLargos === 6,
+  'el veredicto mira cuatro cierres y el contexto los seis del expediente',
+  `${frenada.semanasBase} de ${frenada.puntosLargos}`);
+console.log(`       con el ritmo largo saldrían ${semanasConLargo} semana(s): ese número no se publica`);
+
+// LA OBRA QUE ACELERÓ, para que «se frenó» no sea la única salida posible.
+const acelerada = proyDe([[12, 10], [8, 14], [4, 18], [3, 23], [2, 28], [1, 34]], 34);
+const tAcel = tendenciaDeRitmo(acelerada);
+check(!!tAcel && /aceleró/.test(tAcel.frase) && tAcel.acelero === true,
+  'una obra que duplicó su ritmo recibe el renglón al revés', tAcel?.frase);
+
+// Y EL SILENCIO, que es lo que sale casi siempre. La forma de la 0125: cociente
+// 0.96, dentro del umbral. Un renglón que sale siempre no se lee, y éste
+// aparece para avisar de un cambio, no para rellenar.
+const estable = proyDe([[8, 12], [6, 16], [4, 20], [3, 22], [2, 24], [1, 26]], 26);
+check(tendenciaDeRitmo(estable) === null,
+  'una obra que va al mismo ritmo de siempre no recibe ningún renglón',
+  `razón ${(estable.velocidad / estable.velocidadLarga).toFixed(2)}`);
+// Y la obra cuyo expediente ENTERO son los mismos cuatro cierres de la ventana:
+// los dos ritmos son el mismo número y no hay nada que comparar. Es la forma de
+// la 0112 y de la 0127 hoy.
+const corta = proyDe([[4, 20], [3, 24], [2, 28], [1, 32]], 32);
+check(corta.velocidad === corta.velocidadLarga && tendenciaDeRitmo(corta) === null,
+  'con cuatro cierres en total no se publica un ritmo comparado consigo mismo',
+  `${corta.velocidad.toFixed(2)} = ${corta.velocidadLarga.toFixed(2)}`);
+// Una obra detenida no tiene tendencia que contar: no hay ritmo del que salir.
+check(tendenciaDeRitmo(proyDe([[4, 40], [3, 40], [2, 40], [1, 40]], 40)) === null,
+  'y una obra detenida tampoco: lo que se dice de ella es que no avanza');
+
+// LO QUE SALE PINTADO. El renglón se renderiza de verdad, con el color que le
+// toca, y se comprueba que el texto que llega a pantalla es el de la cuenta.
+const textoFren = pintar(renglonTendencia, { tendencia: tFren, C });
+console.log(`       « ${textoFren} »`);
+check(textoFren.includes(tFren.frase.replace(/\s+/g, ' ')),
+  'el tablero pinta la frase de la cuenta, completa');
+const textoEstable = pintar(renglonTendencia, { tendencia: null, C });
+check(textoEstable === '',
+  'y con la obra estable no pinta nada: ni el renglón vacío',
+  `«${textoEstable}»`);
+check(pintar(renglonTendencia, { tendencia: tAcel, C }).includes('aceleró'),
+  'la obra que aceleró pinta su propia palabra');
 
 // ══════════════════════════════════════════════════════════════════════════
 console.log('');
