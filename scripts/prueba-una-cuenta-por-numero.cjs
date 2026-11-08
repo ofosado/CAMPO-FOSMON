@@ -95,6 +95,10 @@ const DE_MODULO = [
   'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
   'semanaISO', 'snapshotId', 'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
   'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
+  // La ventana del ritmo, su mínimo y la frase que lo dice: las trae consigo
+  // `proyeccionDeAvance` desde que el ritmo se mide dos veces —ventana corta y
+  // expediente completo— con una sola cuenta.
+  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres', 'fraseCortesCerrados',
   'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',

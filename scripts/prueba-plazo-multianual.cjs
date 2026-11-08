@@ -300,10 +300,17 @@ if (!hayCuentaUnica || typeof app.kpiDesviacionPlazo !== 'function'
   };
   const leido = k => `${k.valor} · ${k.sub}`;
 
-  // (a) Un solo cierre: no se puede medir una velocidad.
+  // (a) Un solo cierre: no se puede medir una velocidad. Y lo que se dice no es
+  //     «requiere 2 cierres» a secas: es CUÁNTOS HAY y cuántos se necesitan.
+  //     «Todavía no han cerrado ninguna» y «ya cerraron una» son dos
+  //     conversaciones distintas con el residente, y la frase vieja las
+  //     escribía igual. Por eso se mide también el caso de al lado.
   const kUno = kpi([cierre(48, 2026, 40)]);
-  check(kUno.valor === '—' && /2 cierres/.test(kUno.sub),
-    `con un cierre dice que hacen falta dos (dijo: "${leido(kUno)}")`);
+  check(kUno.valor === '—' && /\b1 de 2\b/.test(kUno.sub),
+    `con un cierre dice que tiene uno de los dos (dijo: "${leido(kUno)}")`);
+  const kCero = kpi([]);
+  check(kCero.valor === '—' && /\b0 de 2\b/.test(kCero.sub) && kCero.sub !== kUno.sub,
+    `y sin ningún cierre no dice lo mismo que con uno (dijo: "${leido(kCero)}")`);
 
   // (b) Dos cierres de esquemas distintos: no se pueden restar.
   const kMix = kpi([cierre(48, 2026, 40, { esquema: 1 }), cierre(49, 2026, 45)]);

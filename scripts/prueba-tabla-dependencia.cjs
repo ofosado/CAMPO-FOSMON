@@ -72,6 +72,10 @@ const RAIZ_NOMBRES = [
   'semanaISO', 'snapshotId',
   'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
   'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
+  // La ventana del ritmo, su mínimo y la frase que lo dice: las trae consigo
+  // `proyeccionDeAvance` desde que el ritmo se mide dos veces —ventana corta y
+  // expediente completo— con una sola cuenta.
+  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres', 'fraseCortesCerrados',
   'frasePorQueSinDesviacion',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
@@ -267,7 +271,7 @@ if (!ordenarPor) {
     fila('tarde',    { atraso: 40,   af: 30 }),
     fila('poco',     { atraso: 5,    af: 70 }),
     fila('adelante', { atraso: -12,  af: 90 }),
-    fila('ciega-alta',{ atraso: null, sinAtraso: 'requiere 2 cierres', af: 85 }),
+    fila('ciega-alta',{ atraso: null, sinAtraso: '1 de 2 cortes cerrados', af: 85 }),
     fila('ciega-baja',{ atraso: null, sinAtraso: 'sin plazo vigente capturado', af: 4 }),
   ];
   const nombres = l => l.map(f => f.nombre);
@@ -464,12 +468,18 @@ const FRASES = [
   { f: 'la obra retrocede',            veces: 1 },
   { f: 'cierres no comparables',       veces: 1 },
   { f: 'sin plazo vigente capturado',  veces: 1 },
-  { f: 'requiere 2 cierres',           veces: 2,
-    por: 'el KPI «Esta semana» dice lo mismo del DELTA semanal, que es otra '
-       + 'cifra con su propia cadena de dos casos; no es una copia de ésta' },
+  // AQUÍ HABÍA UNA EXCEPCIÓN Y YA NO HACE FALTA. «requiere 2 cierres» estaba
+  // escrita DOS veces —en la explicación de la proyección y otra vez dentro
+  // del KPI «Esta semana»— y esta lista lo toleraba porque eran dos cifras
+  // distintas. Pero la FALTA era la misma: dos cortes cerrados. Hoy la redacta
+  // un solo sitio, que además dice cuántos hay —«1 de 2 cortes cerrados»—, y
+  // los dos recuadros la piden ahí. Por eso el conteo vuelve a ser de uno: si
+  // alguien teclea el texto a mano en una de las dos, sube a dos y esto muerde.
+  { f: 'de ${CIERRES_MINIMOS} cortes cerrados', veces: 1,
+    re: /`[^`]*cortes cerrados`/g },
 ];
 const malcontadas = FRASES
-  .map(e => ({ ...e, n: (src.match(new RegExp(`['"\`]${e.f}['"\`]`, 'g')) || []).length }))
+  .map(e => ({ ...e, n: (src.match(e.re || new RegExp(`['"\`]${e.f}['"\`]`, 'g')) || []).length }))
   .filter(e => e.n !== e.veces);
 check(malcontadas.length === 0,
   'ninguna explicación está escrita dos veces sin que se sepa por qué',
