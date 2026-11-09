@@ -52,6 +52,18 @@ funciones. En funciones el diff eran **28 líneas añadidas y cero quitadas** y
 conducta: el redespliegue sólo las pone al día con el `index.js` que ya trae la
 callable.
 
+**Un despliegue se dispara con `--project produccion`, nunca con `firebase use
+produccion`.** Ese día lo hice al revés: `firebase deploy` dio «No project
+active», corrí `firebase use produccion` y eso **dejó el proyecto activo en el
+configstore**. La suite lo cazó al terminar —`prueba-el-destino-se-escribe` en
+rojo, cuatro aserciones— porque su sección final mide justo eso: que un
+`firebase deploy` **a secas** se pare por no tener destino en vez de irse a
+producción. Restaurado con `firebase use --clear`, y la suite volvió a 100.
+**El rojo era un acierto del banco, no ruido**: lo que el banco dice es que el
+remedio obvio al «No project active» desarma la guarda que protege de un
+despliegue accidental. `--project` no toca el configstore; `use` sí, y el
+estado sobrevive a la terminal.
+
 **El canario dejó un rastro que confunde si no se sabe de antemano:** desplegar
 `horaDelServidor` **sola** dejó el verificador diciendo «22 de 23 con otro
 `index.js`», o sea el canal ATRÁS con nada roto. Es el precio del canario y no
