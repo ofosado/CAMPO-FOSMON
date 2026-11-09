@@ -21,6 +21,110 @@ import coteaIconoSolido from "./assets/brand/cotea-icono-solido.svg";
 // (ver vite.config.js `define`). Formato mostrado al usuario: "v2026-09-16 · 34f4c3f".
 // Fecha primero porque es lo que un usuario sabe leer; hash después para nosotros.
 const BUILD_VERSION = `v${__BUILD_DATE__} · ${__BUILD_SHA__}`;
+
+// ── LO QUE UN DOCUMENTO FIRMADO PUEDE DECIR DE UN CAMPO QUE NADIE LLENÓ ─────
+//
+// La carátula del reporte imprime nueve renglones del alta, y los siete que
+// salen de un campo capturado llevaban `|| ''` detrás. Un `|| ''` deja la
+// ETIQUETA en la hoja y el valor en blanco: dice «Residente:» y a la derecha no
+// hay nada. Eso no declara una ausencia; deja un renglón a medias que el lector
+// completa solo, y el lector de esta hoja es quien la firma.
+//
+// Hay tres maneras distintas de que un campo no tenga dato, y las tres acaban
+// en la misma hoja:
+//
+//   1. VACÍO. Nadie lo llenó. Medido en producción el 2026-11-09: `residente` y
+//      `admin` vacíos en la 0127.
+//   2. RELLENO. Alguien tecleó «N/A» porque el formulario le pedía algo. Es una
+//      ausencia DICHA, y es la peor de las tres, porque la carátula la imprime
+//      como si fuera el dato: en la 0128 el pie de firmas saca «N/A» bajo
+//      «Residente de Obra · Elaboró», en el renglón donde va un nombre.
+//      Medido: `admin` dice «N/A» en 0112, 0125, 0128 y 0131.
+//   3. OCUPADO CON OTRA COSA. El campo tiene texto y no es lo que su etiqueta
+//      promete: `contrato` trae el OBJETO de la obra —«REHABILITACIÓN DE
+//      ANDADORES DEL BOULEVARD…»— y no un número de contrato, en cinco de las
+//      siete obras vivas.
+//
+// La regla es una: **el documento declara lo que no tiene, y nunca lo rellena
+// con otra cosa.** Un hueco declarado se puede reclamar al que capturó; un
+// hueco tapado con el dato de al lado es una afirmación falsa con firma al pie.
+const NO_CAPTURADO = '(no capturado)';
+
+// El relleno que alguien teclea cuando no tiene el dato y el formulario insiste.
+// Se trata como ausencia y no como valor, que es justo lo contrario de lo que
+// hacía el `|| ''`: para un `||`, la cadena «N/A» es un valor presente y pasa.
+const RELLENO_DE_CAPTURA = new Set(['n/a', 'na', 'n.a.', 'n/d', 'nd', '-', '--', '—',
+  '.', '..', 'x', 'xx', 'sin dato', 'sin datos', 'pendiente', 'por definir', '0']);
+
+// Devuelve el texto capturado, o `null` si no hay dato que imprimir. `null` y no
+// cadena vacía a propósito: una cadena vacía se cuela por un `||` y vuelve a
+// imprimir el renglón mudo, mientras que un `null` obliga a decidir qué se
+// declara.
+const textoCapturado = (v) => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return RELLENO_DE_CAPTURA.has(s.toLowerCase()) ? null : s;
+};
+
+// Lo que se imprime en un renglón de la carátula: el dato, o la ausencia dicha.
+const comoSeImprime = (v) => textoCapturado(v) ?? NO_CAPTURADO;
+
+// `contrato` es texto libre y en producción guarda tres cosas distintas, medidas
+// el 2026-11-09 sobre las siete obras vivas:
+//
+//   · sólo el número        0125: «6700388901»
+//   · número y luego objeto 0126: «5200011871 “Rehabilitación de estructuras…»
+//   · sólo el objeto        0112, 0127, 0128, 0131: «REHABILITACIÓN DE…»
+//     (y la 0114, «N/A», que es relleno)
+//
+// Lo que se mira es la PRIMERA PALABRA, y es identificador si lleva cinco
+// dígitos y no lleva nada que no quepa en una clave. Lo primero porque es donde
+// va un número de contrato y porque es lo que permite partir la 0126 —número
+// delante, objeto detrás— sin ir a pescar dígitos en medio de la prosa. Los
+// cinco dígitos son el filtro: ninguna palabra de las cinco descripciones
+// vivas los tiene, y los dos números de verdad llevan diez.
+//
+// NO se exige que empiece con cifra, y eso vino de un dato: la obra sembrada
+// del emulador trae «LO-920-2026-0114», que es la forma de una licitación
+// pública y abre con letra. Una primera versión anclaba en `[0-9]` y declaraba
+// ese contrato NO CAPTURADO estando capturado — el defecto que este cambio
+// venía a cerrar, puesto del otro lado.
+//
+// El tope de 32 caracteres y el juego de caracteres permitido son lo que impide
+// que una palabra larguísima con cifras dentro se publique como número; y los
+// cinco dígitos, que un «2026» o un «2 CÁRCAMOS SANITARIOS…» lo hagan.
+//
+// Devuelve las dos piezas por separado para que la carátula pueda decir «el
+// número no se capturó» SIN tirar el objeto, que sí se capturó y es la única
+// descripción de la obra que existe en el alta. Rellenar «Contrato:» con el
+// objeto sería pasar una descripción por un número; tirarlo sería perder un dato
+// que alguien escribió. Lo correcto es rotular cada cosa con su nombre.
+const PRIMERA_PALABRA = /^([A-Za-z0-9][A-Za-z0-9/\-._+#]{3,31})(?:\s+([\s\S]+))?$/;
+const contratoCapturado = (v) => {
+  const s = textoCapturado(v);
+  if (!s) return { numero: null, objeto: null };
+  const m = PRIMERA_PALABRA.exec(s);
+  const digitos = m ? (m[1].match(/\d/g) || []).length : 0;
+  if (m && digitos >= 5) return { numero: m[1], objeto: textoCapturado(m[2]) };
+  return { numero: null, objeto: s };
+};
+
+// La clave de un rubro de gasto es su ETIQUETA COMPLETA, nunca el número.
+//
+// «300 INDIRECTOS» y «300 SUBCONTRATOS» conviven en la misma obra: medido en
+// producción el 2026-11-09, en **14 de las 35** obras de GP, y en la 0112 son
+// $4,148,716.68 contra $1,308,275.54, y en la 0114 $7,710,717.27 contra
+// $2,585,250.71. Los dos parsers del servidor ya indexan por etiqueta completa
+// por este motivo; el que faltaba era el `key` de las dos listas de React, que
+// tomaba `r.id` —«300» para las dos— y con eso React tiene dos hermanas con la
+// misma clave y la reconciliación deja de ser determinista.
+//
+// Existe como función y no tecleada en cada `key` porque son dos listas que
+// tienen que coincidir: si una agrupa distinto que la otra, la misma obra
+// publica dos desgloses de rubro en dos pestañas a un clic de distancia.
+const claveDeRubro = (r) => String(r?.nombre ?? r?.id ?? '');
+
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
@@ -338,27 +442,56 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   // empresa puesto donde el lector espera un lugar — un dato inventado y, con
   // una marca ajena, el nombre del contratista en la portada del cliente. El
   // mismo criterio que `nombreOrg`: sin dato, no hay línea.
-  if (obra.ubicacion) T(obra.ubicacion, ML, 82);
+  //
+  // Aquí se CALLA en vez de declarar «(no capturado)», al contrario que los
+  // renglones del bloque de la derecha, y la diferencia es que este renglón no
+  // lleva etiqueta: es una línea suelta bajo el nombre de la obra. Una etiqueta
+  // sin valor es un renglón a medias que hay que declarar; una línea sin
+  // etiqueta que no se pinta no promete nada. Y el campo **no existe en el
+  // modelo**: medido en producción el 2026-11-09, `ubicacion` no está en
+  // ninguna de las 7 obras vivas y ningún formulario lo escribe —este `if` es
+  // el único sitio del repositorio que lo lee—. Declarar «ubicación no
+  // capturada» en las siete portadas sería reclamarle al usuario un campo que
+  // la aplicación no le ofrece.
+  if (textoCapturado(obra.ubicacion)) T(textoCapturado(obra.ubicacion), ML, 82);
 
   // Datos contrato derecha
   const xR=PW*0.44, yR0=22;
   st(K.ng); fs(9); fw('bold'); T('Datos del contrato', xR, yR0);
   sd(K.gbd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
   let yR=yR0+7;
-  [['Contrato:',obra.contrato||''],
-   ['Cliente:',obra.cliente||''],
-   ['Superintendente:',obra.superintendente||''],
-   ['Residente:',obra.residente||''],
-   ['Administrador:',obra.admin||''],
-   ['Inicio de obra:',obra.inicio||''],
-   ['Fin programado:',obra.fin||''],
-   ['Presupuesto:',MXN(PPTO)],
-   ['Corte del reporte:',sello.corte],
-  ].forEach(([lbl,val])=>{
+  // El número de contrato y el objeto de la obra se rotulan por separado. Los
+  // dos salen del MISMO campo `contrato`, que es texto libre, y en cinco de las
+  // siete obras vivas trae sólo el objeto: imprimirlo bajo «Contrato:» pasa una
+  // descripción por un número de contrato en la portada de un documento que se
+  // firma. El renglón del objeto sólo aparece cuando hay objeto, porque una
+  // etiqueta de más es un hueco de más que declarar.
+  const contr = contratoCapturado(obra.contrato);
+  const filasID = [
+    ['Contrato:', contr.numero ?? NO_CAPTURADO],
+    ...(contr.objeto ? [['Objeto de la obra:', contr.objeto]] : []),
+    ['Cliente:', comoSeImprime(obra.cliente)],
+    ['Superintendente:', comoSeImprime(obra.superintendente)],
+    ['Residente:', comoSeImprime(obra.residente)],
+    ['Administrador:', comoSeImprime(obra.admin)],
+    ['Inicio de obra:', comoSeImprime(obra.inicio)],
+    ['Fin programado:', comoSeImprime(obra.fin)],
+    ['Presupuesto:', MXN(PPTO)],
+    ['Corte del reporte:', sello.corte],
+  ];
+  filasID.forEach(([lbl,val])=>{
     st(K.ng); fs(7); fw('bold'); T(lbl, xR, yR);
-    st(K.gtx); fw('normal');
-    T(doc.splitTextToSize(String(val),PW-xR-MR-28), xR+30, yR);
-    yR+=5;
+    // Una ausencia declarada se pinta en gris apagado y no en el gris del
+    // texto: a simple vista tiene que distinguirse de un dato, o el lector lee
+    // «(no capturado)» como si fuera el contenido del campo.
+    st(val===NO_CAPTURADO ? K.gmu : K.gtx); fw('normal');
+    const lineas = doc.splitTextToSize(String(val),PW-xR-MR-28);
+    T(lineas, xR+30, yR);
+    // El objeto de la obra ocupa varios renglones. Antes el paso era fijo de 5
+    // mm y el renglón siguiente se le encimaba: con un campo de texto libre de
+    // doscientos caracteres eso no es un detalle de maquetación, es la portada
+    // ilegible.
+    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
   });
 
   // 4 KPIs portada — fila horizontal
@@ -685,9 +818,13 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   y = secHead('3  DESGLOSE DE GASTO POR RUBRO', y);
 
   if (gpDetalle && gpDetalle.rubros && Object.keys(gpDetalle.rubros).length > 0) {
+    // La tabla y el pastel recorren `Object.values` de un mapa que el servidor
+    // YA indexa por etiqueta completa, así que los dos rubros que comparten el
+    // 300 llegan aquí como dos entradas y salen como dos renglones. Lo que se
+    // tiró de este `map` fue un `id: r.id` que nadie leía: un «300» duplicado
+    // paseándose por la lista es la invitación a volver a agrupar por ahí.
     const rubArr = Object.values(gpDetalle.rubros)
       .map(r => ({
-        id: r.id,
         nombre: r.nombreCorto || r.nombre || r.id,
         monto: r.grandTotal || 0,
         proveedores: r.proveedores || [],
@@ -2093,15 +2230,29 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const yFirmas=PH-FTR-38;
   sd(K.gbd); lw(0.3); L(ML,yFirmas,ML+CW,yFirmas);
   const fw3=CW/3;
+  // NINGUNA de las tres firmas toma prestado el nombre de otra.
+  //
+  // Decía `obra.residente || obra.superintendente || 'Residente'`, y en la 0127
+  // —residente sin capturar, medido en producción— el pie imprimía al
+  // SUPERINTENDENTE bajo «Residente de Obra · Elaboró». No quedaba vacío:
+  // quedaba ocupado por otra persona, a la que se le atribuía un cargo que no
+  // tiene en el renglón donde firma. Y en la 0128, donde el campo dice «N/A»,
+  // ese texto salía impreso en el lugar del nombre, porque para un `||` la
+  // cadena «N/A» es un valor presente.
+  //
+  // El cargo y el verbo se quedan: la raya existe para firmar a mano, y quitar
+  // la casilla porque falta teclear un nombre estorbaría el trámite que el
+  // documento sirve. Lo que no se queda es un nombre que no es.
   const firmas=[
-    [obra.residente||obra.superintendente||'Residente','Residente de Obra','Elaboró'],
-    [obra.superintendente||'Superintendente','Superintendente de Obra','Revisó'],
-    [obra.admin||'Administrador','Administrador de Obra','Vo.Bo.'],
+    [comoSeImprime(obra.residente),'Residente de Obra','Elaboró'],
+    [comoSeImprime(obra.superintendente),'Superintendente de Obra','Revisó'],
+    [comoSeImprime(obra.admin),'Administrador de Obra','Vo.Bo.'],
   ];
   firmas.forEach(([nombre,cargo,rol],i)=>{
     const fx=ML+i*fw3;
     sd(K.ng); lw(0.4); L(fx+8,yFirmas+14,fx+fw3-8,yFirmas+14);
-    st(K.ng); fs(FS_FI); fw('bold'); T(nombre,fx+fw3/2,yFirmas+20,{align:'center'});
+    st(nombre===NO_CAPTURADO ? K.gmu : K.ng); fs(FS_FI); fw('bold');
+    T(nombre,fx+fw3/2,yFirmas+20,{align:'center'});
     st(K.gtx); fs(7.5); fw('normal'); T(cargo,fx+fw3/2,yFirmas+26,{align:'center'});
     st(K.gmu); fs(7); T(rol,fx+fw3/2,yFirmas+31,{align:'center'});
   });
@@ -16903,7 +17054,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
             {rubrosOrdenados.map((r,i)=>{
               const pctR = totalRubros > 0 ? r.total/totalRubros*100 : 0;
               const col = colorRubro(i);
-              return <div key={r.id} style={{marginBottom:10}}>
+              return <div key={claveDeRubro(r)} style={{marginBottom:10}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
                   <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
                     <div style={{width:8,height:8,borderRadius:"50%",background:col,flexShrink:0}}/>
@@ -17093,7 +17244,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
             const valoresSem = semanas.map(s => r.semanas[s] || 0);
             const maxV = Math.max(...valoresSem, 1);
             const provDelRubro = (r.proveedores || []).sort((a,b)=>b.total-a.total).slice(0,3);
-            return <div key={r.id} style={{marginBottom:18,paddingBottom:14,borderBottom:`0.5px solid ${C.border}`}}>
+            return <div key={claveDeRubro(r)} style={{marginBottom:18,paddingBottom:14,borderBottom:`0.5px solid ${C.border}`}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:8}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
