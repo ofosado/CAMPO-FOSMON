@@ -53,7 +53,7 @@ const cerca = (a, b) => Math.abs(a - b) < 0.005;
 const global = {};
 const rango = {};       // dónde vive cada uno, para poder mutarlo
 let cargador = null;    // el .then() del fsGet de obras/{id}/nomina/historial
-let tarjetaKPI = null;  // el <Card> de "Personal en campo"
+let tarjetaKPI = null;  // el <Kpi> de "Personal campo" del tablero
 const avisos = {};      // los `detect` de nom_001..003, por id
 
 traverse(ast, {
@@ -90,26 +90,33 @@ traverse(ast, {
     if (!/^nom_00[123]$/.test(props.id.value)) return;
     avisos[props.id.value] = src.slice(props.detect.start, props.detect.end);
   },
-  // La tarjeta del tablero se busca por lo que DICE, no por dónde está.
+  // El sitio del tablero se busca por lo que DICE, no por dónde está.
+  //
+  // Era un `<Card>` titulado «Personal en campo — Semana N» con tres Kpis
+  // dentro. Esa tarjeta se quitó: sus tres cifras eran las del KPI de arriba.
+  // La conducta que este banco afirma —que la pantalla diga DE QUÉ SEMANA son
+  // las cifras y si vino rayada— no se fue con ella: subió al KPI, que ahora
+  // la pide a `plantillaDeObra`. El ancla se mueve con la conducta; lo que no
+  // puede es quedarse apuntando a un sitio que ya no existe, porque entonces
+  // este banco deja de mirar y nadie se enteraría.
   JSXElement(p) {
     if (tarjetaKPI) return;
+    if (p.node.openingElement.name.name !== 'Kpi') return;
     const txt = src.slice(p.node.start, p.node.end);
-    if (p.node.openingElement.name.name !== 'Card') return;
-    if (!/Personal en campo/.test(txt)) return;
-    if (!/<Kpi\b/.test(txt)) return;
+    if (!/label="Personal campo"/.test(txt)) return;
     tarjetaKPI = txt;
   },
 });
 
 const NECESARIOS = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina'];
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina', 'plantillaDeObra'];
 const faltan = NECESARIOS.filter(n => !global[n]);
 // Estos tres no se buscan por nombre sino por lo que hacen —la ruta que leen,
 // el texto que pintan, el id del aviso—, así que si no aparecen no es un
 // renombre: es que el sitio dejó de existir. Se reportan igual, porque el
 // efecto es el mismo: la conducta se quedó sin mirar.
 if (!cargador)   faltan.push('el cargador que puebla setNominaHistorial');
-if (!tarjetaKPI) faltan.push('la tarjeta «Personal en campo» del tablero');
+if (!tarjetaKPI) faltan.push('el KPI «Personal campo» del tablero');
 for (const id of ['nom_001', 'nom_002', 'nom_003'])
   if (!avisos[id]) faltan.push(`el aviso ${id}`);
 if (faltan.length) noArranco(faltan, path.basename(archivo));
@@ -141,7 +148,7 @@ if (process.argv.includes('--contraprueba')) {
 const api = new Function(`"use strict";
   ${NECESARIOS.map(n => `const ${n} = ${global[n]};`).join('\n  ')}
   return { ${NECESARIOS.join(', ')} };`)();
-const { heImporte } = api;
+const { heImporte, plantillaDeObra } = api;
 
 const MXN = n => '$' + (n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -193,10 +200,11 @@ check(act.trabajadores.length === 134,
   'la plantilla trae a los 134, no a 35', String(act.trabajadores.length));
 check(H.length === 3, 'cuatro cargas son tres semanas', `${P0126.length} → ${H.length}`);
 
-console.log('\n2. El KPI «Personal en campo» del tablero dice de qué semana habla\n');
-// Se renderiza la tarjeta de verdad y se afirma sobre el texto que produce.
-const _ultNom = H.length > 0 ? H[H.length - 1] : null;
-const dir = _ultNom?.totalDir || 0, ind = _ultNom?.totalInd || 0;
+console.log('\n2. El KPI «Personal campo» del tablero dice de qué semana habla\n');
+// Se renderiza el KPI de verdad y se afirma sobre el texto que produce. La
+// cifra y la procedencia salen de `plantillaDeObra`, ejecutada con el historial
+// que esta misma prueba acaba de armar — no de una segunda cuenta de aquí.
+const plantilla = plantillaDeObra(H);
 const Kpi = ({label, value, sub}) => React.createElement('div', null, `${label}|${value}|${sub} `);
 const Tit = ({children}) => React.createElement('div', null, children);
 const Card = ({children}) => React.createElement('div', null, children);
@@ -204,19 +212,19 @@ const Bdg  = ({children}) => React.createElement('span', null, ' [', children, '
 const C = new Proxy({}, { get: () => '#888' });
 const js = esbuild.transformSync(`(${tarjetaKPI})`, { loader: 'jsx' }).code;
 const pintado = renderToStaticMarkup(
-  new Function('React', 'Card', 'Tit', 'Kpi', 'Bdg', 'C', '_ultNom', 'dir', 'ind',
+  new Function('React', 'Card', 'Tit', 'Kpi', 'Bdg', 'C', 'plantilla',
     'clickableCard', 'onNavTab', 'heImporte', 'MXN', `"use strict"; return ${js};`)(
-    React, Card, Tit, Kpi, Bdg, C, _ultNom, dir, ind,
+    React, Card, Tit, Kpi, Bdg, C, plantilla,
     () => ({}), null, heImporte, MXN));
 const texto = pintado.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 console.log('       « ' + texto + ' »');
 
-check(/Personal en campo — Semana 38/.test(texto),
-  'la tarjeta dice «Personal en campo — Semana 38»');
-check(!/Personal en campo — Semana 39/.test(texto),
+check(/Semana 38/.test(texto), 'el KPI dice que las cifras son de la «Semana 38»');
+check(!/Semana 39/.test(texto),
   'y no la semana del calendario de hoy, que es otra cosa');
-check(/\|134\|/.test(texto), 'el total en pantalla es 134', texto.match(/Total\|(\d+)\|/)?.[1] || '?');
-check(/partes/.test(texto) && /2 partes/.test(texto),
+check(/\|134\|/.test(texto), 'el total en pantalla es 134',
+  texto.match(/Personal campo\|(\S+)\|/)?.[1] || '?');
+check(/2 partes/.test(texto),
   'y avisa que esa semana vino en 2 partes sumadas');
 
 console.log('\n3. Los tres avisos de nómina revisan a los 134, no a 35\n');

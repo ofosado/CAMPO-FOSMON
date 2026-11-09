@@ -5654,6 +5654,46 @@ const semanasDeNomina = (registros) => {
   ];
 };
 
+// ── LA PLANTILLA, CON LA SEMANA DE LA QUE ES ──────────────────────────────
+//
+// El tablero tenía la plantilla en dos sitios: un KPI arriba con «57D · 9I» y
+// una tarjeta abajo que repetía los mismos tres números. Al quitar la tarjeta
+// se iba lo ÚNICO que ella decía y el KPI no: de qué semana son las cifras, y
+// si esa semana llegó en varios archivos.
+//
+// No es un adorno. Midiendo las siete obras vivas, seis van en la semana 45 y
+// la 0114 en la 44: una obra con la plantilla de hace una semana se veía
+// idéntica a las que están al día. Y dos de las siete suman su última semana
+// de dos archivos.
+//
+// Y el caso que obliga a que esto sea una función y no una plantilla de cadena
+// en la pantalla: la 0131 no tiene NINGUNA semana cargada, así que el KPI
+// publicaba un `0` con el mismo aspecto con el que publica un 57. Cero
+// personas medidas y ninguna medición no son el mismo hecho. Con nómina
+// cargada un cero SÍ es una medición y se enseña; sin nómina no hay cifra que
+// enseñar y se dice.
+const plantillaDeObra = (nominaHistorial = []) => {
+  const lista = Array.isArray(nominaHistorial) ? nominaHistorial : [];
+  const ult = lista.length ? lista[lista.length - 1] : null;
+  if (!ult) {
+    return { hayNomina: false, total: null, dir: 0, ind: 0, semana: null,
+      partes: 0, valor: 'sin nómina', sub: 'no se ha cargado nómina' };
+  }
+  const dir = ult.totalDir || 0;
+  const ind = ult.totalInd || 0;
+  const partes = Array.isArray(ult.partes) ? ult.partes.length : 1;
+  // Una carga sin número de semana sí existe —`semanasDeNomina` la conserva
+  // como «suelta»— y entonces la procedencia es justo lo que no se puede
+  // afirmar. Se dice, en vez de dejar el renglón a medias.
+  const semana = ult.semana ? String(ult.semana) : null;
+  return {
+    hayNomina: true, total: dir + ind, dir, ind, semana, partes,
+    valor: String(dir + ind),
+    sub: `${dir}D · ${ind}I · ${semana || 'semana sin número'}`
+      + (partes > 1 ? ` · ${partes} partes` : ''),
+  };
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // DE DÓNDE SE LEE EL HISTORIAL DE NÓMINA — LA BANDERA, NO EL VACÍO
 // ════════════════════════════════════════════════════════════════════════════
@@ -8705,6 +8745,18 @@ const presentacionEconomiaObra = (kpis) => {
   const gastoSinMedir = !kpis.gastoGPMedido;
   const margenIndefinido = kpis.me <= 0 && kpis.gt > 0;
   const conPresupuesto = kpis.presupuesto > 0;
+  // Las dos piezas del tooltip, por separado, para poder juntarlas abajo sin
+  // que ninguna pantalla las componga por su cuenta. Ver `margenFormulaTxt`.
+  const margenTitulo = gastoSinMedir
+    ? (kpis.gastoGPMotivo === 'no-pedida'
+        ? 'El gasto de GP de esta obra todavía no se ha medido: se dio de alta después de la última corrida. No se muestra margen para no inventarlo; la corrida del cron lo llena.'
+        : 'El gasto de GP de esta obra no se pudo medir, así que el margen no se puede afirmar.')
+    : (margenIndefinido
+        ? 'Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.'
+        : undefined);
+  const margenFormulaTxt =
+    'Margen bruto = (Ejecutado + almacén − Gasto total) ÷ (Ejecutado + almacén). '
+    + 'El gasto total es GP + maquinaria propia + otros gastos.';
   return {
     gastoSinMedir, margenIndefinido,
     // El gasto al que le falta GP no se enseña como cifra: le falta dinero.
@@ -8730,13 +8782,27 @@ const presentacionEconomiaObra = (kpis) => {
       : MXNS(kpis.diff),
     margenColor: gastoSinMedir ? C.textMut
       : (margenIndefinido ? C.redDk : nivelMargen(kpis.mpct).color),
-    margenTitulo: gastoSinMedir
-      ? (kpis.gastoGPMotivo === 'no-pedida'
-          ? 'El gasto de GP de esta obra todavía no se ha medido: se dio de alta después de la última corrida. No se muestra margen para no inventarlo; la corrida del cron lo llena.'
-          : 'El gasto de GP de esta obra no se pudo medir, así que el margen no se puede afirmar.')
-      : (margenIndefinido
-          ? 'Sin ejecución: no hay base para calcular el porcentaje. Se muestra el gasto acumulado sin retorno.'
-          : undefined),
+    // ── LA FÓRMULA, Y POR QUÉ NO VA DENTRO DE `margenTitulo` ──────────────
+    //
+    // La tarjeta «Margen bruto de obra» del tablero traía escrito debajo del
+    // título «Ejecutado + almacén − Gasto total». Era lo único que esa tarjeta
+    // decía y el KPI no, así que al quitarla había que subirlo.
+    //
+    // El primer intento fue meterlo en `margenTitulo`, y lo rechazó el banco
+    // `alta-obra-que-gp-no-conoce`: ese campo vale `undefined` cuando el
+    // margen SÍ se pudo medir, y por eso «hay título» significa hoy «hay algo
+    // que no se puede afirmar». Llenarlo siempre con la fórmula no habría
+    // tirado ninguna cifra, pero habría apagado esa señal, y el día que
+    // alguien preguntara `if (pres.margenTitulo)` para saber si hay un hueco
+    // le habría contestado que sí en las siete obras.
+    //
+    // Tres campos porque son tres cosas: qué no se sabe, cómo se cuenta, y lo
+    // que la pantalla enseña. El último se compone UNA vez, aquí, para que las
+    // seis pantallas que publican este margen no lo junten cada una a su modo.
+    margenTitulo,
+    margenFormulaTxt,
+    margenTooltip: margenTitulo ? `${margenTitulo} · ${margenFormulaTxt}`
+                                : margenFormulaTxt,
     margenConFlecha: !gastoSinMedir && !margenIndefinido,
   };
 };
@@ -14213,16 +14279,18 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const totalEst = estTotal;
   // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
   const mNiv = nivelMargen(mpct);
-  const mc = mNiv.color;
   // Personal en campo: leído del último snapshot real de nómina cargada
   // (fix/kpis-en-cero 2026-09-17). Antes usaba una constante hardcoded
   // vacía y siempre devolvía 0/0.
   // - directivos, equipo obra y auditor: nominaHistorial poblado por App.
   // - cliente: la prop llega como [] (regla bloquea lectura) → 0/0 esperado,
   //   pero el KPI no se le renderiza porque cliente no ve el Dashboard.
-  const _ultNom = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
-  const dir = _ultNom?.totalDir || 0;
-  const ind = _ultNom?.totalInd || 0;
+  //
+  // La tarjeta «Personal en campo — Semana N» se fue: sus tres cifras eran las
+  // del KPI de arriba. Lo que ella decía y el KPI no —la semana y las partes—
+  // lo arma `plantillaDeObra`, para que ese criterio viva en un sitio y no en
+  // la plantilla de cadena de cada pantalla.
+  const plantilla = plantillaDeObra(nominaHistorial);
   // (estPag / estPorCob / estTotal salen del bundle de arriba; estProc,
   //  estFact, estRet y estAmort dejaron de mostrarse en el dashboard según el
   //  nuevo diseño de 3 KPIs.)
@@ -14298,14 +14366,22 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         <div>
           {/* El margen se calcula con el gasto: si al gasto le falta un
               sumando, el margen sale inflado. Mismo criterio que la tabla. */}
+          {/* «ejec. vs gastado» decía CONTRA QUÉ sin decir SOBRE QUÉ, y el
+              porcentaje se divide entre lo ejecutado, no entre el contrato.
+              Ahora el denominador va en el rótulo y la fórmula completa en el
+              title, que es lo que decía la tarjeta que se quitó. */}
           <Kpi label="Margen bruto" value={pres.margenAbsTxt}
             sub={pres.gastoSinMedir ? 'no se puede afirmar sin el gasto'
-              : (me>0 ? `${pres.margenTxt} ejec. vs gastado — ${mNiv.nivel}` : 'sin avance ejecutado')}
-            color={pres.margenColor} size={12} title={pres.margenTitulo}/>
+              : (me>0 ? `${pres.margenTxt} de ejec.+almacén — ${mNiv.nivel}` : 'sin avance ejecutado')}
+            color={pres.margenColor} size={12} title={pres.margenTooltip}/>
         </div>
         <div {...clickableCard("operacion","nomina")}>
-          <Kpi label="Personal campo" value={dir+ind}
-            sub={`${dir}D · ${ind}I · ver nómina ›`} color={C.green}/>
+          {/* El valor es `plantilla.valor` y no `dir+ind`: sin nómina cargada
+              esta tarjeta decía `0`, que es lo mismo que publica una obra con
+              cero personas medidas. La 0131 no tiene ninguna semana y se veía
+              como una obra vacía de gente en vez de como una obra sin medir. */}
+          <Kpi label="Personal campo" value={plantilla.valor}
+            sub={plantilla.sub} color={plantilla.hayNomina ? C.green : C.textMut}/>
         </div>
       </div>;
     })()}
@@ -14328,57 +14404,22 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
     {totalRiesgos > 0 && (
       <BannerRiesgos riesgos={riesgos} onNavTab={onNavTab}/>
     )}
-    {/* Esta tarjeta era la que peor mentía: con el gasto sin medir decía
-        «Gasto total $0», «Diferencia +$13,684,113 · margen 100%» y un sello
-        verde de BIEN. Un veredicto de salud sobre una resta a la que le falta
-        el sustraendo. Las tres cifras y el sello salen ahora del mismo bundle
-        que el KPI de arriba. */}
-    <Card accent={pres.margenColor} {...clickableCard("operacion","estimaciones")}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <div><Tit>Margen bruto de obra {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
-          {/* «Monto ejecutado» era el nombre de DOS cifras distintas en este
-              mismo tablero: aquí valía `me` (avance + almacén) y en la tarjeta
-              de estimaciones valía `am` (sólo lo avanzado en campo). En la obra
-              del Parque Lineal la diferencia eran $1,040,000 de almacén, y
-              quien comparaba las dos tarjetas no tenía cómo saber que no era
-              un error de captura. Las dos cuentas son correctas donde están
-              —el margen se mide contra todo el dinero puesto, y sólo se puede
-              facturar lo ejecutado—, así que lo que se separó son los nombres.
-              Pendiente #8 (las tres fórmulas de ejecutado). */}
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>Ejecutado + almacén − Gasto total</div></div>
-        <div style={{background: pres.gastoSinMedir ? C.bg : mNiv.bg,
-          border:`0.5px solid ${pres.margenColor}55`, borderRadius:4,
-          padding:"3px 9px", fontSize:10, fontWeight:700, color:pres.margenColor,
-          whiteSpace:"nowrap"}} title={pres.margenTitulo}>
-          {pres.gastoSinMedir ? 'SIN VEREDICTO'
-            : me === 0 ? 'Sin avance' : mNiv.nivel.toUpperCase()}</div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
-        {[[MXN(me),"Ejecutado + almacén",C.blue,"avance+almacén"],
-          [pres.gastoTxt,"Gasto total",pres.gastoColor,
-           pres.gastoMotivoTxt || "GP+maquinaria+otros"],
-          [pres.gastoSinMedir ? pres.margenAbsTxt : MXND(diff),"Diferencia",pres.margenColor,
-           pres.gastoSinMedir ? 'no se puede afirmar sin el gasto' : `margen ${NUM(mpct,1)}%`]]
-          .map(([v,l,c,s])=>
-          <div key={l} style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${c}`}}>
-            <div style={{fontSize:9,color:C.textMut,marginBottom:2}}>{l}</div>
-            <div style={{fontSize:13,fontWeight:600,color:c}}>{v}</div>
-            <div style={{fontSize:9,color:C.textMut}}>{s}</div>
-          </div>)}
-      </div>
-      {/* La barra dibuja qué parte del contrato va gastada. Sin gasto medido no
-          hay nada que dibujar, y una barra vacía se lee como «no ha gastado». */}
-      {pres.barraGasto !== null && <>
-        <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:9,overflow:"hidden",position:"relative"}}>
-          <div style={{width:`${pres.barraGasto.toFixed(1)}%`,height:"100%",
-            background:`linear-gradient(90deg,${C.caliza},${C.red})`,borderRadius:99}}/>
-          <div style={{position:"absolute",top:0,height:"100%",left:"85%",width:1.5,background:C.yellow}}/>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginTop:3}}>
-          <span>$0</span><span style={{color:C.yellow}}>↑ umbral 15%</span><span>{MXN(obra.presupuesto)}</span>
-        </div>
-      </>}
-    </Card>
+    {/* LA TARJETA «MARGEN BRUTO DE OBRA» SE FUE, Y EL UMBRAL DEL 15% NO SUBIÓ
+        CON ELLA.
+        Sus tres cifras —ejecutado+almacén, gasto total, diferencia— eran las
+        del KPI de arriba, salidas del mismo bundle. El veredicto también: el
+        `sub` del KPI publica el nivel, y los dos estados de «no se sabe»
+        (gasto sin medir, sin avance) ya los dice. La declaración de la
+        fórmula, que era lo único suyo, vive ahora en `margenTitulo` dentro de
+        `presentacionEconomiaObra`, donde la comparten la tabla y la lista.
+        Lo que NO subió es el marcador amarillo rotulado «↑ umbral 15%». Estaba
+        en el 85% de una barra que mide gasto sobre PRESUPUESTO, y el margen
+        del 15% se alcanza cuando el gasto llega al 85% de lo EJECUTADO. Las
+        dos cosas coinciden sólo en una obra terminada. En el Centro de
+        Convenciones —$144.6M de contrato, $52.2M ejecutados— el marcador se
+        pinta donde el margen vale −135%, y lo hace del lado que tranquiliza:
+        sugiere holgura hasta el 85% del contrato. Subirlo habría sido subir un
+        número equivocado a un sitio más visible. */}
     <Card {...clickableCard("operacion","estimaciones")}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <Tit>Estimaciones {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
@@ -14570,25 +14611,6 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       })()}
     </Card>
 
-    <Card {...clickableCard("operacion","nomina")}>
-      {/* El título decía la semana de HOY mientras enseñaba la última nómina
-          cargada, que puede ser de hace un mes. Ahora dice la semana de la que
-          SON las cifras, y avisa si esa semana llegó en varios archivos. */}
-      <Tit>
-        Personal en campo — {_ultNom ? _ultNom.semana : 'sin nómina cargada'}
-        {_ultNom?.partes?.length > 1 && (
-          <span style={{marginLeft:6,verticalAlign:'middle'}}>
-            <Bdg color={C.blue} small>{_ultNom.partes.length} partes · sumadas</Bdg>
-          </span>
-        )}
-        {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}> · ver nómina ›</span>}
-      </Tit>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-        <Kpi label="Total"     value={dir+ind} sub="trabajadores"  color={C.caliza}/>
-        <Kpi label="Directo"   value={dir}     sub="mano de obra"  color={C.blue}/>
-        <Kpi label="Indirecto" value={ind}     sub="administración"color={C.purple}/>
-      </div>
-    </Card>
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
     <Card {...clickableCard("operacion","avance")}>
       <Tit>Lo que pesa — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
