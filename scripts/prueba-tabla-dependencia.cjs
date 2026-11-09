@@ -43,6 +43,7 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
 const noArranco = require('./no-arranco.cjs');
+const { fuenteDe } = require('./extraer-de-app.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
 
@@ -62,22 +63,19 @@ const check = (cond, m, detalle) => {
 };
 
 // ── Extracción del código real ─────────────────────────────────────────────
-// De módulo: la cuenta de la proyección y la frase que la explica.
+// De módulo: la cuenta de la proyección y la frase que la explica. Sólo lo que
+// este banco LLAMA; lo que eso necesita lo resuelve `fuenteDe` siguiendo el
+// grafo del archivo. Enumerar aquí las dependencias era una copia de ese
+// grafo: el 2026-11-09 `proyeccionDeAvance` pasó a apoyarse en
+// `fechaEnZonaObra` y este banco reventó con un `is not defined` en su primera
+// aserción.
+//
 // Anidados en el componente: el comparador que ordena la tabla y la lista de
 // columnas. Viven dentro de `PortafolioDependencia` y no se pueden sacar de
 // otra forma sin reimplementarlos, y reimplementarlos sería probar mi copia.
 const RAIZ_NOMBRES = [
-  'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
-  'semanaISO', 'snapshotId',
-  'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
-  'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
-  // La ventana del ritmo, su mínimo y la frase que lo dice: las trae consigo
-  // `proyeccionDeAvance` desde que el ritmo se mide dos veces —ventana corta y
-  // expediente completo— con una sola cuenta.
-  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres', 'fraseCortesCerrados',
+  'semanaISO', 'snapshotId', 'estadoPorSemana', 'proyeccionDeAvance',
   'frasePorQueSinDesviacion',
-  'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
 ];
 const ANIDADOS = [
@@ -93,25 +91,11 @@ const ANIDADOS = [
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
 const ast = parse(src, OPTS);
-const trozos = [];
-const vistos = new Set();
 const anidados = {};
 let jsxPortafolio = '';
 traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    const d = p.node.declarations[0];
-    if (d?.id?.type === 'Identifier' && RAIZ_NOMBRES.includes(d.id.name)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(d.id.name);
-    }
-  },
   FunctionDeclaration(p) {
     const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && RAIZ_NOMBRES.includes(n)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(n);
-    }
     if (n === 'PortafolioDependencia') jsxPortafolio = src.slice(p.node.start, p.node.end);
   },
   VariableDeclarator(p) {
@@ -126,8 +110,11 @@ traverse(ast, {
 });
 
 // Un nombre ausente NO revienta: queda `undefined` y la aserción que lo use
-// falla, que es justo lo que debe pasar contra la versión vieja.
-const app = new Function(`${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
+// falla, que es justo lo que debe pasar contra la versión vieja. De ahí
+// `tolerante`.
+const { cuerpo, presentes: vistos } =
+  fuenteDe(ARCH_APP, RAIZ_NOMBRES, { tolerante: true });
+const app = new Function(`${cuerpo}\n;return {${vistos.join(',')}};`)();
 const {
   estadoPorSemana, proyeccionDeAvance, frasePorQueSinDesviacion, snapshotId,
 } = app;

@@ -80,6 +80,7 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 const noArranco = require('./no-arranco.cjs');
 const { sinPrecondicion } = noArranco;
+const { fuenteDe } = require('./extraer-de-app.cjs');
 
 const archivo = process.argv[2]
   ? path.resolve(process.argv[2]) : path.join(raiz, 'src/App.jsx');
@@ -100,19 +101,16 @@ const check = (ok, titulo, detalle = '') => {
 const seccion = t => console.log(`\n── ${t} ${'─'.repeat(Math.max(0, 62 - t.length))}`);
 
 // ── El módulo, armado desde el archivo ─────────────────────────────────────
+// Lo que este banco LLAMA. Sus dependencias las resuelve `fuenteDe` siguiendo
+// el grafo del archivo: enumerarlas aquí sería una copia de ese grafo, y las
+// copias se desincronizan sin avisar. El 2026-11-09 `proyeccionDeAvance` pasó a
+// apoyarse en `fechaEnZonaObra` y este banco se cayó a media corrida con un
+// `is not defined`, después de que `IMPRESCINDIBLES` diera la cosecha por
+// buena: la lista comprobaba lo que estaba tecleado, no lo que hacía falta.
 const DE_MODULO = [
-  'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
-  'semanaISO', 'snapshotId', 'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
-  'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
-  // La ventana del ritmo, su mínimo y la frase que lo dice: las trae consigo
-  // `proyeccionDeAvance` desde que el ritmo se mide dos veces —ventana corta y
-  // expediente completo— con una sola cuenta.
-  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres', 'fraseCortesCerrados',
-  'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
-  'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
+  'semanaISO', 'snapshotId', 'estadoPorSemana', 'proyeccionDeAvance',
   'importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseEjecutado',
-  'avanceFisicoPonderado',
+  'avanceFisicoPonderado', 'SIN_PROY_POCOS_CIERRES',
   'atrasoProyectado', 'atrasoDeObra', 'porAtrasoDesc',
   'PERMISOS', 'ROLES_PANEL_EJECUTIVO', 'vePanelEjecutivo',
   'ROLES_SIN_CONCENTRADO', 'ordenInicialDeLista',
@@ -124,23 +122,6 @@ const IMPRESCINDIBLES = ['atrasoDeObra', 'porAtrasoDesc',
   'PERMISOS', 'ROLES_PANEL_EJECUTIVO', 'necesitaDatosDeCartera',
   'ROLES_SIN_CONCENTRADO', 'CLAVES_BULK_DEPENDENCIA'];
 
-const trozos = new Map();   // nombre → texto de la declaración
-traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    const d = p.node.declarations[0];
-    if (d?.id?.type === 'Identifier' && DE_MODULO.includes(d.id.name) && !trozos.has(d.id.name))
-      trozos.set(d.id.name, texto(p.node));
-  },
-  FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && DE_MODULO.includes(n) && !trozos.has(n))
-      trozos.set(n, texto(p.node));
-  },
-});
-const faltan = IMPRESCINDIBLES.filter(n => !trozos.has(n));
-if (faltan.length) noArranco(faltan, path.relative(raiz, archivo));
-
 // `C` entra como proxy: aquí se miden números y orden, no colores, y un `C.red`
 // que faltara reventaría la extracción y saldría NO ARRANCÓ culpando al archivo
 // medido en vez de a este andamiaje.
@@ -148,19 +129,23 @@ if (faltan.length) noArranco(faltan, path.relative(raiz, archivo));
 // `sustituir` es la contraprueba semántica: el nombre sustituido se SACA de las
 // declaraciones y entra como parámetro, así que todo lo que lo llame por cierre
 // —`atrasoDeObra`, entre otros— ve la versión mutada. Es la única forma de
-// preguntar de DÓNDE sale un número en vez de cuánto vale.
+// preguntar de DÓNDE sale un número en vez de cuánto vale. Los dos van en
+// `excluir` por la misma razón: un nombre que además se declarara dentro del
+// cuerpo ganaría sobre el parámetro y la sustitución no se notaría.
 const armar = (sustituir = {}) => {
   const quitar = Object.keys(sustituir);
-  const decls = [...trozos.entries()]
-    .filter(([n]) => !quitar.includes(n))
-    .sort((a, b) => src.indexOf(a[1]) - src.indexOf(b[1]))
-    .map(([, t]) => t);
-  const expuestos = [...trozos.keys()].filter(n => !quitar.includes(n));
+  const { cuerpo, presentes } = fuenteDe(archivo, DE_MODULO,
+    { tolerante: true, excluir: ['C', ...quitar] });
   const params = ['C', ...quitar];
   return new Function(...params,
-    `${decls.join('\n')}\n;return {${expuestos.join(',')}};`)(
+    `${cuerpo}\n;return {${presentes.join(',')}};`)(
     new Proxy({}, { get: () => '#000' }), ...quitar.map(n => sustituir[n]));
 };
+
+const hay = fuenteDe(archivo, DE_MODULO, { tolerante: true }).presentes;
+const faltan = IMPRESCINDIBLES.filter(n => !hay.includes(n));
+if (faltan.length) noArranco(faltan, path.relative(raiz, archivo));
+
 const mod = armar();
 
 // ── Datos ──────────────────────────────────────────────────────────────────

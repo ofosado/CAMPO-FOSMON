@@ -5302,7 +5302,7 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
   // caso vacío: es lo que la pantalla dice cuando no puede proyectar, y un
   // `undefined` ahí se imprimiría como «undefined de 2».
   const vacia = {
-    velocidad: null, semanasBase: 0, semanasAFin: null, fechaFin: null,
+    velocidad: null, semanasBase: 0, tramos: null, semanasAFin: null, fechaFin: null,
     desviacionDias: null, finVigente, ampliado, razon: SIN_PROY_POCOS_CIERRES,
     velocidadLarga: null, puntosLargos: 0,
   };
@@ -5330,7 +5330,13 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
   // medidos y esa cuenta le atribuye 4.46, porque le faltan once semanas de
   // arranque al expediente y las cuenta como semanas de avance cero.
   const largo = ritmoEntreCierres(comparables);
-  const deRitmo = { semanasBase: base.length,
+  // `semanasBase` son CIERRES, no semanas, y el nombre engaña a quien quiera
+  // rotular «al ritmo de las últimas N semanas»: la 0112 promedia 3 cierres
+  // repartidos en 5 semanas de calendario. El tramo ya lo cuenta
+  // `ritmoEntreCierres` —es su divisor— y hasta hoy se quedaba adentro, así
+  // que la pantalla que quisiera decir las semanas tendría que volver a
+  // restar los lunes. Sale aquí para que no haya una segunda resta.
+  const deRitmo = { semanasBase: base.length, tramos: corto.tramos,
     velocidadLarga: largo ? largo.velocidad : null, puntosLargos: largo ? largo.puntos : 0 };
 
   const velocidad = corto.velocidad;
@@ -5342,9 +5348,19 @@ const proyeccionDeAvance = (estados = [], avanceActual, obra, ahora = Date.now()
   const semanasAFin = Math.ceil(pendiente / velocidad);
   const fechaFin = new Date(ahora + semanasAFin * 7 * 86400000);
   // (c) El plazo se mide por fechas reales, no contando semanas.
+  //
+  // Y LOS DOS EXTREMOS SON DÍAS, NO INSTANTES. `fechaFin` arrastra la hora en
+  // que se abrió la pantalla y `finVigente` es la medianoche de acá, así que
+  // restarlos tal cual deja medio día colgando que el redondeo convierte en
+  // uno entero: la misma obra, el mismo día, decía +128 por la mañana y +129
+  // por la tarde. Nadie lo habría reportado —hay que mirar dos veces el mismo
+  // tablero— y cualquiera de las dos lecturas sirve para discutir una multa.
+  // Llevando el término proyectado a su día del calendario la resta da un
+  // entero exacto y la cifra deja de depender de a qué hora se mira.
   const fVig = fechaLocalDeISO(finVigente);
-  const desviacionDias = fVig
-    ? Math.round((fechaFin - fVig) / 86400000)
+  const finProyDia = fechaLocalDeISO(fechaEnZonaObra(fechaFin));
+  const desviacionDias = (fVig && finProyDia)
+    ? Math.round((finProyDia - fVig) / 86400000)
     : null;
   return { velocidad, ...deRitmo, semanasAFin, fechaFin,
     desviacionDias, finVigente, ampliado, razon: null };
@@ -5505,6 +5521,94 @@ const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
 const atrasoProyectado = (obra, info, historialAvance = [], avanceActual, ahora = Date.now()) =>
   proyeccionDeAvance(estadoPorSemana(historialAvance), avanceActual,
     { ...(obra || {}), ...(info || {}) }, ahora);
+
+// ── EL BLOQUE DE PROYECCIÓN AL TÉRMINO, ENTERO ─────────────────────────────
+//
+// Contesta UNA pregunta: al ritmo que vamos, ¿terminamos a tiempo, y si no,
+// con cuántos días de atraso? Todo lo que la rodea —plazo, ritmo actual, ritmo
+// necesario— sale de la MISMA proyección que da el veredicto. El bloque que
+// esto sustituye calculaba su propio `ritmoSem = am / (plazoTranscurrido/7)` y
+// publicaba DOS conclusiones que hoy, en producción, se contradicen: la 0127
+// enseña «Proyección al fin 74.0%» —no llega— junto a un atraso de −8 días
+// —llega ocho días antes—. No eran dos formas de decir lo mismo.
+//
+// EL RITMO SE DICE EN PESOS Y SE MIDE EN PUNTOS, y eso no son dos cuentas.
+// Medido contra producción el 2026-11-09, sobre los mismos dos cierres y con
+// el mismo espaciado por lunes ISO, `velocidad/100 × contrato` coincide al
+// decimal con el dinero que se movió en esa ventana:
+//
+//   0112 $0.17M · 0114 $1.52M · 0125 $2.70M · 0126 $4.36M · 0127 $6.85M
+//   — 0.0% de diferencia en las cinco. La 0128 y la 0131 no proyectan.
+//
+// Por eso el peso es una TRADUCCIÓN de la velocidad y no una segunda medición.
+// Sacarlo del dinero de los cierres por su lado daría otro número en cuanto
+// las dos ventanas dejaran de coincidir, y entonces «hay que acelerar
+// $3.44M/sem» no sería la aceleración que produce los días que el mismo bloque
+// publica tres renglones más arriba.
+//
+// LO QUE NO SE PUEDE CALCULAR SE DECLARA. Son tres cosas distintas y cada una
+// tiene su hueco: no hay veredicto (lo dice `kpiDesviacionPlazo` con sus cinco
+// razones), no hay plazo (falta una de las dos fechas), y no hay ritmo
+// necesario porque el plazo YA VENCIÓ — tres de las siete obras de producción
+// están así hoy, y para ellas «hay que acelerar $X por semana» no existe: no
+// queda plazo dentro del cual acelerar.
+const veredictoDePlazo = (obra, historialAvance = [], avanceActual = 0, ahora = Date.now()) => {
+  const contrato = Number(obra?.presupuesto) || 0;
+  const proy = atrasoProyectado(obra, null, historialAvance, avanceActual, ahora);
+  const kpi = kpiDesviacionPlazo(proy);
+  // UN SOLO RELOJ. `plazoDeObra` toma `hoyLocalISO()` por omisión, que es el
+  // reloj de verdad, mientras la proyección toma `ahora`. Dejarlo así ponía
+  // dos instantes en el mismo bloque: los días transcurridos del plazo se
+  // medirían contra hoy y los días de atraso contra otra fecha. No se nota
+  // nunca en pantalla —ahí los dos son hoy— y rompe en el banco, que es donde
+  // se mueve el tiempo a propósito. Un bloque que sólo cuadra cuando nadie lo
+  // examina no cuadra.
+  const pz = plazoDeObra(obra, fechaEnZonaObra(new Date(ahora)));
+
+  // Sin contrato no hay con qué traducir puntos a pesos. Devolver `null` y no
+  // cero: un «$0/sem» afirmaría que la obra está parada.
+  const enPesos = (pp) => (contrato > 0 && pp != null) ? (pp / 100) * contrato : null;
+
+  const vencido = pz.vencidoDias != null && pz.vencidoDias > 0;
+  const diasRest = vencido ? 0 : (pz.restantes ?? 0);
+  const pendientePP = Math.max(100 - (Number(avanceActual) || 0), 0);
+
+  // El ritmo que haría falta para llegar a la fecha. Mismas unidades que el
+  // ritmo actual, para que la resta signifique algo.
+  let necesarioPP = null, sinNecesario = null;
+  if (pendientePP <= 0) sinNecesario = 'la obra ya está al 100%';
+  else if (vencido) sinNecesario = `el plazo venció hace ${pz.vencidoDias} días: no queda plazo en el que acelerar`;
+  else if (!(diasRest > 0)) sinNecesario = 'falta una fecha del plazo';
+  else necesarioPP = pendientePP / (diasRest / 7);
+
+  const ritmoPP = proy.velocidad;
+  const deltaPP = (necesarioPP != null && ritmoPP != null) ? necesarioPP - ritmoPP : null;
+
+  return {
+    proy, kpi,
+    // El veredicto, en letra larga. Es el MISMO `kpi.dias`; sólo cambia cómo se
+    // escribe, porque en la tarjeta de la dependencia cabe «+46 d» y aquí el
+    // número va en grande y se lee entero.
+    veredicto: kpi.dias == null ? '—'
+      : (kpi.dias === 0 ? 'en el plazo'
+        : `${kpi.dias > 0 ? '+' : '−'}${Math.abs(kpi.dias)} días`),
+    porque: kpi.sub, color: kpi.color, dias: kpi.dias,
+    fechaFin: proy.fechaFin || null,
+    plazoTxt: pz.totalDias != null
+      ? `${pz.transcurridos} de ${pz.totalDias} días transcurridos`
+      : 'falta una fecha del plazo',
+    vencidoDias: vencido ? pz.vencidoDias : null,
+    ritmoPP, ritmoPesos: enPesos(ritmoPP),
+    // De cuántas semanas sale el promedio, con el número que lo produjo: no se
+    // teclea una N en la plantilla. `tramos` son semanas de calendario y
+    // `semanasBase` son cierres, y se dicen las dos porque no son lo mismo:
+    // tres cierres en cinco semanas no es un promedio de tres semanas.
+    ritmoSub: ritmoPP == null ? null
+      : `al ritmo de las últimas ${proy.tramos} semanas · ${proy.semanasBase} cierres cerrados`,
+    necesarioPP, necesarioPesos: enPesos(necesarioPP), sinNecesario,
+    deltaPP, deltaPesos: enPesos(deltaPP),
+  };
+};
 
 // Los días de atraso de UNA obra, armados desde lo que el cargador dejó en
 // memoria para ella (`datosPorObra[id]`).
@@ -14284,7 +14388,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   // Y cómo se DICE tampoco se decide aquí: `presentacionEconomiaObra` ya lo
   // resolvió para la tabla y la tarjeta de la lista.
   const pres = presentacionEconomiaObra(kpis);
-  const {gt, am, alm, me, af, diff, mpct, estPag, estPorCob, estTotal, pctGasto, brecha} = kpis;
+  const {gt, am, alm, me, af, diff, mpct, estPag, estPorCob, estTotal, porEstimar, pctGasto, brecha} = kpis;
   const modoVolObra = kpis.modoVol;
   const totalEst = estTotal;
   // Escala 5 niveles: >=20 Bien · 15-20 Normal · 10-15 Aceptable · 5-10 Atención · <5 Crítico
@@ -14435,15 +14539,33 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         <Tit>Estimaciones {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver detalle ›</span>}</Tit>
         <span style={{fontSize:9,color:C.textMut}}>{estimaciones.length} est. · Amort {obra.pctAnticipo}% · FG {obra.pctFondoGar}%</span>
       </div>
-      {/* 3 KPIs conforme al nuevo diseño:
-          - Estimado: TODAS las estimaciones (aprobadas, en proceso, facturadas, pagadas)
+      {/* - Estimado: TODAS las estimaciones (aprobadas, en proceso, facturadas, pagadas)
           - Por cobrar: en proceso + facturadas + aprobadas (todo lo pendiente de pago)
           - Pagado: solo las pagadas
-      */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:8}}>
+          - Ejecutado sin facturar: `am − estimado`.
+
+          El cuarto llegó aquí porque la tarjeta «Obra ejecutada vs
+          Estimaciones» se fue y era el ÚNICO sitio de la app que enseñaba esa
+          cuenta. De sus tres recuadros, dos repetían KPIs de arriba; éste no,
+          y borrarlo con ellos lo habría perdido sin que nadie lo notara.
+
+          Y NO SE LLAMA «Por estimar», que es como se llamaba allá. Con ese
+          nombre hay otros dos Kpis en la app —el panel de obra y el de
+          cliente— que enseñan `presupuesto − estimado`: el saldo del contrato
+          por facturar, ejecutado o no. Son dos cuentas legítimas y distintas;
+          lo que no puede es que compartan rótulo. Aquí se nombra por lo que
+          mide. (Que las tres copias de cada una vivan en una sola función es
+          otra cosa, y va aparte.)
+
+          Sale del bundle y no de una resta tecleada aquí: `porEstimar` ya
+          existía en `calcularKPIsObra` SIN UN SOLO CONSUMIDOR mientras la
+          tarjeta volvía a escribir `Math.max(am-totalEst,0)` a mano. */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:8}}>
         <Kpi label="Estimado"   value={MXN(estTotal)}  sub={`${(estTotal/obra.presupuesto*100).toFixed(1)}% del contrato`} color={C.blueDk}   size={12}/>
         <Kpi label="Por cobrar" value={MXN(estPorCob)} sub="en proceso + facturado + aprobado" color={C.purpleDk} size={12}/>
         <Kpi label="Pagado"     value={MXN(estPag)}    sub="cobrado y liquidado" color={C.greenDk}  size={12}/>
+        <Kpi label="Ejecutado sin facturar" value={MXN(porEstimar)}
+          sub="obra ejecutada sin facturar" color={porEstimar>0?C.yellow:C.greenDk} size={12}/>
       </div>
     </Card>
     {/* ── SUBCONTRATOS (resumen en Dashboard) ── */}
@@ -14497,129 +14619,77 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       </Card>
     )}
 
-    {/* ── MONTO EJECUTADO vs ESTIMADO ── */}
-    <Card>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <div>
-          {/* «Obra ejecutada» y no «Monto ejecutado»: ese nombre lo usa la
-              tarjeta del margen para `me`, que trae el almacén encima. Aquí la
-              cifra es `am`, lo avanzado en campo, porque es lo único que se
-              puede facturar: material en bodega no se estima. */}
-          <Tit>Obra ejecutada vs Estimaciones</Tit>
-          <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-            Obra ejecutada en campo comparada con lo facturado al cliente
-            · sin almacén
-          </div>
+    {/* ── PROYECCIÓN AL TÉRMINO ──
+        Esta tarjeta era la segunda mitad de «Obra ejecutada vs Estimaciones»,
+        que se fue. De sus tres recuadros, «Obra ejecutada» y «Estimado
+        acumulado» repetían KPIs de arriba; el tercero, «Por estimar (cobrar)»,
+        NO repetía nada —era el único sitio que enseñaba `am − estimado`— y por
+        eso bajó al bloque de Estimaciones en vez de irse con la tarjeta.
+
+        La proyección estaba ANIDADA dentro de esa tarjeta y por eso compartía
+        su `am`: de ahí salía el ritmo. Al quedarse sola deja de tener a mano
+        una cifra en pesos, y eso es lo que la obliga a pedirle el ritmo a la
+        proyección que ya existe en vez de improvisar otro. */}
+    {(()=>{
+      const v = veredictoDePlazo(obra, historialAvance, af);
+      const fFin = v.fechaFin
+        ? v.fechaFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"numeric"})
+        : null;
+      // Un renglón del cuerpo. El valor y su glosa, o la razón de que no haya
+      // valor — nunca el renglón en blanco, que se lee como un cero.
+      const Renglon = ({et, val, glosa}) => <div style={{display:"flex",
+        justifyContent:"space-between",alignItems:"baseline",gap:10,
+        padding:"5px 0",borderTop:`0.5px solid ${C.border}`}}>
+        <span style={{fontSize:9,color:C.textMut,whiteSpace:"nowrap"}}>{et}</span>
+        <span style={{fontSize:10,color:val?C.textSec:C.textMut,fontWeight:val?600:400,
+          textAlign:"right"}}>
+          {val||glosa}
+          {val&&glosa&&<span style={{display:"block",fontSize:8,color:C.textMut,
+            fontWeight:400,marginTop:1}}>{glosa}</span>}
+        </span>
+      </div>;
+      return <Card>
+        <Tit>Proyección al término</Tit>
+        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
+          Al ritmo de los últimos cierres, ¿termina dentro del plazo?
         </div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
-        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.blue}`}}>
-          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Obra ejecutada</div>
-          <div style={{fontSize:13,fontWeight:700,color:C.blue}}>{MXN(am)}</div>
-          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{NUM(am/obra.presupuesto*100,1)}% del presupuesto</div>
-        </div>
-        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",borderLeft:`3px solid ${C.purple}`}}>
-          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Estimado acumulado</div>
-          <div style={{fontSize:13,fontWeight:700,color:C.purple}}>{MXN(totalEst)}</div>
-          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>{NUM(totalEst/obra.presupuesto*100,1)}% del presupuesto</div>
-        </div>
-        <div style={{background:C.bg,borderRadius:8,padding:"9px 11px",
-          borderLeft:`3px solid ${am>=totalEst?C.green:C.yellow}`}}>
-          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>Por estimar (cobrar)</div>
-          <div style={{fontSize:13,fontWeight:700,color:am>=totalEst?C.green:C.yellow}}>{MXN(Math.max(am-totalEst,0))}</div>
-          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>obra ejecutada sin facturar</div>
-        </div>
-      </div>
-      <div style={{marginBottom:10}}>
-        {[
-          ["Obra ejecutada", am, C.blue],
-          ["Estimado acumulado", totalEst, C.purple],
-        ].map(([lbl,val,col])=><div key={lbl} style={{marginBottom:6}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
-            <span>{lbl}</span>
-            <span style={{color:col,fontWeight:600}}>{MXN(val)} · {NUM(val/obra.presupuesto*100,1)}%</span>
-          </div>
-          <div style={{background:"rgba(255,254,249,0.08)",borderRadius:99,height:7,overflow:"hidden"}}>
-            <div style={{width:`${Math.min(val/obra.presupuesto*100,100).toFixed(1)}%`,height:"100%",
-              background:col,borderRadius:99,transition:"width .5s"}}/>
-          </div>
-        </div>)}
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
-          <span>Presupuesto total</span>
-          <span style={{color:C.caliza,fontWeight:600}}>{MXN(obra.presupuesto)} · 100%</span>
-        </div>
-        <div style={{background:"rgba(255,254,249,0.15)",borderRadius:99,height:7,overflow:"hidden"}}>
-          <div style={{width:"100%",height:"100%",background:"rgba(255,254,249,0.1)",borderRadius:99}}/>
-        </div>
-      </div>
-      {(()=>{
-        // El plazo sale de `plazoDeObra`, la MISMA cuenta que la tarjeta de la
-        // dependencia. Aquí había una segunda copia que medía contra
-        // `obra.fin` en vez del fin vigente, así que en una obra ampliada esta
-        // proyección mostraba la obra más atrasada de lo que estaba.
-        const _pz=plazoDeObra(obra);
-        const plazoTotal=_pz.totalDias;
-        const plazoTrans=Math.max(_pz.transcurridos,1);
-        const plazoRest=_pz.restantes ?? 0;
-        const pctPlazo=_pz.pctPlazo;
-        const ritmoSem=am>0&&plazoTrans>0?am/(plazoTrans/7):0;
-        const semRest=plazoRest/7;
-        const proyFin=am+ritmoSem*semRest;
-        // fix/ejecutado-sin-recorte: antes iba Math.min(…,100). Con el
-        // ejecutado ya sin topar, saturar aquí volvía a producir dos cifras
-        // que se contradicen: el KPI decía $24.5M sobre un catálogo de $25.8M
-        // y la proyección decía "100%, dentro de presupuesto". Rebasar el
-        // catálogo es justo lo que hay que ver.
-        const pctProy=obra.presupuesto>0?proyFin/obra.presupuesto*100:0;
-        const rebasa=pctProy>105;
-        const faltaEst=Math.max(obra.presupuesto-totalEst,0);
-        const semsParaEst=ritmoSem>0?Math.ceil(faltaEst/ritmoSem):null;
-        return <div style={{borderTop:`0.5px solid ${C.border}`,paddingTop:10}}>
-          <div style={{fontSize:9,color:C.textMut,fontWeight:600,textTransform:"uppercase",
-            letterSpacing:"0.05em",marginBottom:8}}>Proyección al término de obra</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
-            {[
-              // Un plazo sin medir dice que falta la fecha, no «0%»: sin una de
-              // las dos puntas `plazoDeObra` devuelve `null`, y un cero aquí
-              // afirmaría que la obra acaba de arrancar.
-              ["Plazo transcurrido", pctPlazo!=null?`${NUM(pctPlazo,0)}%`:"—",
-                plazoTotal!=null?`${plazoTrans} de ${plazoTotal} días`:"falta una fecha del plazo",
-                C.caliza],
-              ["Ritmo semanal", MXN(ritmoSem), "avance / semana", C.blue],
-              ["Proyección al fin", `${NUM(pctProy,1)}%`, MXN(proyFin)+" proyectado",
-                rebasa?C.yellow:pctProy>=95?C.green:pctProy>=75?C.yellow:C.red],
-              // Esta tarjeta decía «por estimar» y la de arriba también, con
-              // DOS cifras distintas: arriba es `am − estimado` (obra ya
-              // ejecutada que todavía no se factura) y aquí es
-              // `presupuesto − estimado` (todo el contrato que falta por
-              // facturar, ejecutado o no). Las dos cuentas son legítimas y por
-              // eso no se unifican; lo que no puede es que compartan el nombre
-              // en la misma tarjeta.
-              ["Semanas p/ facturar todo", semsParaEst?`~${semsParaEst} sem`:"—",
-                MXN(faltaEst)+" del contrato sin facturar",
-                semsParaEst&&semsParaEst<=semRest?C.green:C.yellow],
-            ].map(([l,v,s,c])=><div key={l} style={{background:C.bg,borderRadius:7,padding:"8px 10px"}}>
-              <div style={{fontSize:8,color:C.textMut,marginBottom:3}}>{l}</div>
-              <div style={{fontSize:12,fontWeight:700,color:c}}>{v}</div>
-              <div style={{fontSize:8,color:C.textMut,marginTop:2}}>{s}</div>
-            </div>)}
-          </div>
-          {rebasa?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
-            borderRadius:7,padding:"7px 10px",fontSize:10,color:C.yellow}}>
-             Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del catálogo contratado,
-            es decir <b>{MXN(proyFin-obra.presupuesto)}</b> por encima. Ese excedente requiere
-            clasificación: obra adicional a convenir, o sobreejecución por autorizar.
-          </div>:pctProy<95?<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.25)",
-            borderRadius:7,padding:"7px 10px",fontSize:10,color:C.yellow}}>
-             Al ritmo actual la obra terminaría al <b>{NUM(pctProy,1)}%</b> del presupuesto.
-            Se requiere acelerar <b>{MXN((obra.presupuesto-proyFin)/Math.max(semRest,1))}/sem</b> adicionales.
-          </div>:<div style={{background:"rgba(22,163,74,0.1)",border:"0.5px solid rgba(22,163,74,0.25)",
-            borderRadius:7,padding:"7px 10px",fontSize:10,color:C.green}}>
-             Al ritmo actual la obra termina dentro del presupuesto contratado.
+        {/* EL VEREDICTO, AL FRENTE Y EN GRANDE. Con signo, porque «46 días»
+            pelado se lee como lo que le convenga al lector, y con color. */}
+        <div style={{textAlign:"center",padding:"6px 0 10px"}}>
+          <div style={{fontSize:30,fontWeight:800,color:v.color,lineHeight:1.1,
+            letterSpacing:"-0.02em"}}>{v.veredicto}</div>
+          <div style={{fontSize:10,color:C.textMut,marginTop:3}}>{v.porque}</div>
+          {fFin&&<div style={{fontSize:10,color:C.textSec,marginTop:5}}>
+            Término proyectado <b style={{color:C.caliza}}>{fFin}</b>
           </div>}
-        </div>;
-      })()}
-    </Card>
+        </div>
+        <Renglon et="Plazo" val={v.plazoTxt}
+          glosa={v.vencidoDias?`vencido hace ${v.vencidoDias} días`:null}/>
+        <Renglon et="Ritmo actual"
+          val={v.ritmoPesos!=null?`${MXN(v.ritmoPesos)}/sem`:null}
+          glosa={v.ritmoSub||"no se puede calcular el ritmo"}/>
+        <Renglon et="Ritmo necesario"
+          val={v.necesarioPesos!=null?`${MXN(v.necesarioPesos)}/sem`:null}
+          glosa={v.sinNecesario||(v.deltaPesos==null?null
+            :v.deltaPesos>0?`hay que acelerar ${MXN(v.deltaPesos)} por semana`
+            :`va ${MXN(-v.deltaPesos)} por semana por encima del necesario`)}/>
+        {/* LA BASE SE DECLARA. La extrapolación lineal supone que la obra
+            sigue al mismo paso, y eso no es cierto en general: la 0114 bajó de
+            1.53 a 0.93 pp/sem entre el expediente completo y los últimos
+            cierres. Donde ese cambio es grande, `tendenciaDeRitmo` lo dice con
+            los dos ritmos; donde no, calla, y entonces el supuesto se enuncia
+            sin número para no fingir que se midió. */}
+        {(()=>{
+          const t = tendenciaDeRitmo(v.proy);
+          return <div style={{marginTop:8,paddingTop:7,borderTop:`0.5px solid ${C.border}`,
+            fontSize:9,color:C.textMut,lineHeight:1.45}}>
+            {t?.frase?<span style={{color:C.yellow}}>{t.frase} </span>:null}
+            Supone que la obra sigue al mismo paso que en esos cierres; es una
+            recta, no una promesa.
+          </div>;
+        })()}
+      </Card>;
+    })()}
 
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
     <Card {...clickableCard("operacion","avance")}>
@@ -17862,7 +17932,13 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         {(obra.pctAnticipo||0) > 0 &&
           <Kpi label="Por recuperar ant." value={MXN(porRecuperarAnt)}
             sub={`de ${MXN(anticipoPactado)} · anticipo ${obra.pctAnticipo}%`} color={C.orange} size={12}/>}
-        <Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="saldo del contrato" color={C.indigo} size={12}/>
+        {/* «saldo del contrato» no decía QUÉ saldo. Hay dos restas con derecho
+            a llamarse así: ésta, `presupuesto − estimado`, y la del tablero,
+            `am − estimado`, que es obra ya construida y todavía sin factura.
+            Mientras las dos vivían en la misma tarjeta el choque era visible;
+            ahora que viven en pantallas distintas lo es menos, y por eso cada
+            una dice de qué es. */}
+        <Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="del contrato sin facturar" color={C.indigo} size={12}/>
       </div>
     </Card>
     <Card>
@@ -21986,7 +22062,7 @@ function EstimacionesCliente({obra, estimaciones}){
         <Kpi label="Pagado"      value={MXN(pagado)} sub="liquidado"            color={C.greenDk}  size={12}/>
         <Kpi label="Por pagar"   value={MXN(factur)} sub="facturado/aprobado"   color={C.purpleDk} size={12}/>
         <Kpi label="En proceso"  value={MXN(enProc)} sub="en elaboración"       color={C.yellowDk} size={12}/>
-        <Kpi label="Por estimar" value={MXN(porEst)} sub="saldo del contrato"   color={C.blueDk}   size={12}/>
+        <Kpi label="Por estimar" value={MXN(porEst)} sub="del contrato sin facturar" color={C.blueDk}   size={12}/>
       </div>
     </Card>
 
