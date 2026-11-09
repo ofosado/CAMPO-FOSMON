@@ -644,9 +644,18 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     await escribir(`${prefijo}obras/${id}/subcontratos/lista`, {
       data: [{ nombre: 'TERRACERÍAS DEL SURESTE SA', monto: 3400000, pagado: 2100000, concepto: 'Terracerías' }],
     });
+    // LA FORMA ES LA DE PRODUCCIÓN, NO UNA PARECIDA. Esta semana se sembraba
+    // con `semana: 38` y `nPersonas: 34`, y ninguno de los dos campos es el que
+    // lee la app: el importador escribe `semana: 'Semana 38'` y cuenta la gente
+    // en `totalDir`/`totalInd` por tipo de trabajador. El KPI de personal del
+    // tablero salía «0D · 0I · 38» —cero personas donde la siembra quería 34, y
+    // un «38» que no se lee como semana— y el preview, que es donde se verifica
+    // antes de mezclar, enseñaba un defecto que producción no tiene.
     await escribir(`${prefijo}obras/${id}/nomina/historial`, {
-      semanas: [{ id: 'S38-2026', semana: 38, año: 2026, totalNomina: 486000,
-                  totalHEImp: 41000, totalHE: 41000, nPersonas: 34 }],
+      semanas: [{ id: 'S38-2026', semana: 'Semana 38', año: 2026, fecha: '21/9/2026',
+                  archivo: 'NOMINA-S38.xlsx', totalNomina: 486000,
+                  totalHEImp: 41000, totalHE: 41000,
+                  totalDir: 26, totalInd: 8, totalDias: 198 }],
     });
   }
 
