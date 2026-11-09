@@ -814,20 +814,50 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // La 0114 además trae un proveedor que aparece por primera vez en la última
   // semana y otro que sube más del 50%, para que la tarjeta de excepciones y
   // la tabla de abajo tengan en qué coincidir o discrepar.
+  //
   // La pestaña de Gastos arma su obra como `{...resumen, ...detalle}`: el
   // resumen sale de `global/gp_construct` y el detalle de
   // `global/gp_detalle/obras/<id>`, y el detalle GANA. Sembrar sólo el resumen
   // dejaba el preview enseñando el detalle de un volcado de producción que
   // alguien importó al emulador y nadie vuelve a tocar: semanas, proveedores y
   // rubros ajenos encima de los sembrados. Por eso los dos salen de aquí.
+  //
+  // LOS RUBROS VAN CON LA ETIQUETA COMPLETA POR LLAVE, y la 0114 trae DOS que
+  // comparten el número 300. Eso no es un adorno del dato de prueba: en
+  // producción 14 de las 35 obras de GP tienen INDIRECTOS y SUBCONTRATOS
+  // compartiendo el 300, y la consulta por obra los escribe así —
+  // `rubros['300 INDIRECTOS']` y `rubros['300 SUBCONTRATOS']`, cada uno con su
+  // `nombre` entero—. Un preview sembrado con un rubro por número no puede
+  // enseñar el defecto que importa: si la lista agrupa por `r.id`, los dos
+  // caen en la misma cubeta y el dinero de subcontratos se imprime dentro de
+  // indirectos. Con esta forma el recorrido por el preview lo ve o no lo ve.
+  //
+  // Y el rubro trae SUS SEMANAS, porque el escritor de producción siempre se
+  // las pone (`functions/index.js`: `semanas: {}, meses: {}, años: {}` al
+  // crear el rubro). Sembrarlo sin ellas no era "un dato más pobre": la
+  // pestaña de rubros lee `r.semanas[s]` sin red y tronaba la vista entera.
+  // Un dato de prueba más delgado que el que escribe producción esconde el
+  // defecto en lugar de enseñarlo.
   const gpSemanas = ['S38','S39','S40','S41','S42','S43'];
   const GP = {
     '0114': {
       id: '0114', nombre: 'Oaxaca Parque Lineal', grandTotal: 21400000,
-      semanas: { S40: 1850000, S41: 2100000, S42: 1740000, S43: 2310000 },
+      // Los cuatro `grandTotal` suman el de la obra (21,400,000). Si se mueve
+      // uno hay que mover otro: un rubro que no cuadra con su obra haría que
+      // el preview enseñara una discrepancia que el código no tiene.
       rubros: {
-        100: { id: '100', nombreCorto: 'Materiales', grandTotal: 16300000 },
-        400: { id: '400', nombreCorto: 'Maquinaria y equipo', grandTotal: 5100000 },
+        '100 MATERIALES': { id: '100', nombre: '100 MATERIALES',
+          nombreCorto: 'Materiales', grandTotal: 12300000,
+          semanas: { S40: 1060000, S41: 1210000, S42: 1000000, S43: 1330000 } },
+        '300 INDIRECTOS': { id: '300', nombre: '300 INDIRECTOS',
+          nombreCorto: 'Indirectos', grandTotal: 1310000,
+          semanas: { S40: 115000, S41: 130000, S42: 105000, S43: 140000 } },
+        '300 SUBCONTRATOS': { id: '300', nombre: '300 SUBCONTRATOS',
+          nombreCorto: 'Subcontratos', grandTotal: 2590000,
+          semanas: { S40: 225000, S41: 250000, S42: 215000, S43: 280000 } },
+        '400 MAQUINARIA Y EQUIPO': { id: '400', nombre: '400 MAQUINARIA Y EQUIPO',
+          nombreCorto: 'Maquinaria y equipo', grandTotal: 5200000,
+          semanas: { S40: 450000, S41: 510000, S42: 420000, S43: 560000 } },
       },
       proveedores: [
         { nombre: 'Aceros del Istmo', rubroId: '100', rubroNombre: 'Materiales',
@@ -840,13 +870,25 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
         // la tabla de abajo tienen que coincidir en que es uno solo.
         { nombre: 'Rentas Tehuantepec', rubroId: '400', rubroNombre: 'Maquinaria y equipo',
           total: 440000, grandTotal: 440000, semanas: { S43: 440000 } },
+        // Los dos rubros que comparten el 300 traen proveedor propio: en
+        // producción es el proveedor el que crea el rubro, así que un rubro
+        // con dinero y sin proveedor no existe. Ambos empiezan en S40 y suben
+        // menos del 50% en S43, para no inventar una excepción que la tarjeta
+        // de arriba tendría que explicar.
+        { nombre: 'Nómina Indirecta Oaxaca', rubroId: '300', rubroNombre: 'Indirectos',
+          total: 1310000, grandTotal: 1310000,
+          semanas: { S40: 115000, S41: 130000, S42: 105000, S43: 140000 } },
+        { nombre: 'Terracerías del Sur', rubroId: '300', rubroNombre: 'Subcontratos',
+          total: 2590000, grandTotal: 2590000,
+          semanas: { S40: 225000, S41: 250000, S42: 215000, S43: 280000 } },
       ],
     },
     '0121': {
       id: '0121', nombre: 'SIOP Coatza Rehab. Av. Universidad', grandTotal: 19900000,
-      semanas: { S38: 1400000, S40: 1950000, S43: 1620000 },
       rubros: {
-        100: { id: '100', nombreCorto: 'Materiales', grandTotal: 19900000 },
+        '100 MATERIALES': { id: '100', nombre: '100 MATERIALES',
+          nombreCorto: 'Materiales', grandTotal: 19900000,
+          semanas: { S38: 1400000, S40: 1950000, S43: 1620000 } },
       },
       proveedores: [
         { nombre: 'Triturados del Golfo', rubroId: '100', rubroNombre: 'Materiales',
@@ -865,6 +907,23 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // clasificar—. El camino de la hoja quedó como respaldo que un administrador
   // elige, y su lista de columnas la cubre `prueba-parser-gp.cjs`.
   //
+  // La semana de la OBRA se SUMA de sus rubros, no se teclea. Tecleada en los
+  // dos lados, un día una se movía y la otra no, y el preview enseñaba un
+  // tablero que se contradice con su propio desglose: una cuenta por número.
+  //
+  // Y el proveedor se CUELGA de su rubro por `rubroNombre`, que es como lo
+  // escribe producción (`rubroNombre: rubro.nombreCorto`, y el mismo objeto
+  // queda en las dos listas). Sin esto el rubro decía «0 proveedor(es)» al
+  // lado de $12,300,000 — una forma que el escritor no puede producir.
+  for (const o of Object.values(GP)) {
+    o.semanas = {};
+    for (const r of Object.values(o.rubros)) {
+      r.proveedores = o.proveedores.filter((p) => p.rubroNombre === r.nombreCorto);
+      for (const [s, v] of Object.entries(r.semanas)) {
+        o.semanas[s] = (o.semanas[s] || 0) + v;
+      }
+    }
+  }
   // `renglonesLeidos` se CUENTA de lo sembrado, no se teclea: un número que
   // contradijera a las semanas de abajo haría que el preview enseñara una
   // inconsistencia que no existe en el código.
