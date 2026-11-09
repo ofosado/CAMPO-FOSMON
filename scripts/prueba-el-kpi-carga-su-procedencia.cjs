@@ -202,6 +202,35 @@ check(/Semana 37/.test(atrasada.texto) && !/Semana 38/.test(atrasada.texto),
 check(!/partes/.test(atrasada.texto),
   'y una semana que vino en un solo archivo no habla de partes');
 
+// La semana se dice con el número que `semanasDeNomina` parseó, no con el
+// campo crudo. En el emulador llega como `38` a secas y el KPI publicaba
+// «0D · 0I · 38», que no se lee como una semana de nada.
+const cruda = pintaPersonal(semanasDeNomina([{ semana: 38, año: 2026,
+  fecha: '21/9/2026', totalDir: 26, totalInd: 8 }]));
+console.log('       « ' + cruda.texto + ' »');
+check(/Semana 38/.test(cruda.texto),
+  'una semana que llega como «38» a secas se dice «Semana 38»',
+  cruda.texto.match(/\|[^|]*\|([^|]*)\|/)?.[1] || '?');
+
+// Un cero CON nómina cargada sí es una medición y se enseña como cifra. Es el
+// contraste del punto 1: lo que distingue los dos ceros no es el número, es si
+// hay semana de la que hablar.
+//
+// Lo que este banco NO puede afirmar, y conviene que esté dicho donde se lee:
+// una semana que no trae `totalDir`/`totalInd` llega aquí indistinguible de
+// una que midió cero, porque `semanasDeNomina` une las partes sumando y la
+// suma de un campo ausente es 0. Esa distinción hay que hacerla en la unión.
+const ceroMedido = pintaPersonal(semanasDeNomina([{ semana: 'Semana 38',
+  año: 2026, fecha: '21/9/2026', totalDir: 0, totalInd: 0 }]));
+console.log('       « ' + ceroMedido.texto + ' »');
+check(/\|0\|/.test(ceroMedido.texto),
+  'una semana que midió cero directos y cero indirectos sí publica 0',
+  ceroMedido.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+check(ceroMedido.texto.includes(C.green),
+  'y ése sí va en verde: es una medición, no un hueco');
+check(/Semana 38/.test(ceroMedido.texto),
+  'con la semana de la que es, que es lo que la distingue del otro cero');
+
 console.log('\n3. El tablero no vuelve a contar la plantilla por su cuenta\n');
 // Una cuenta por número: el criterio vive en `plantillaDeObra` y el Dashboard
 // lo consume. Mientras la tarjeta existió, el mismo `totalDir + totalInd`

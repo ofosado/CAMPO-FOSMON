@@ -5679,13 +5679,23 @@ const plantillaDeObra = (nominaHistorial = []) => {
     return { hayNomina: false, total: null, dir: 0, ind: 0, semana: null,
       partes: 0, valor: 'sin nómina', sub: 'no se ha cargado nómina' };
   }
+  const partes = Array.isArray(ult.partes) ? ult.partes.length : 1;
+  // La procedencia se dice con el número que `semanasDeNomina` ya parseó, no
+  // con el campo crudo: en el emulador la semana viene como `38` a secas y el
+  // KPI publicaba «0D · 0I · 38», donde ese 38 no se lee como una semana.
+  // Una carga cuya semana no se puede leer sí existe —`semanasDeNomina` la
+  // conserva como «suelta», con `numSemana` nulo— y entonces se enseña el
+  // rótulo tal como vino, que es lo único que se sabe de ella.
+  const semana = ult.numSemana != null ? `Semana ${ult.numSemana}`
+    : (ult.semana ? String(ult.semana) : null);
+  // Aquí NO se distingue una semana sin desglose de una con cero personas, y no
+  // es por omisión: no se puede. `semanasDeNomina` une las partes con una suma
+  // que convierte el campo ausente en 0 antes de que esto lo vea, así que
+  // llegando hasta aquí los dos casos son el mismo 0. La distinción tendría que
+  // hacerse en la unión, que la usan también el PDF, los tres avisos y el
+  // portafolio. Queda anotado y no se finge con un `if` que no puede entrar.
   const dir = ult.totalDir || 0;
   const ind = ult.totalInd || 0;
-  const partes = Array.isArray(ult.partes) ? ult.partes.length : 1;
-  // Una carga sin número de semana sí existe —`semanasDeNomina` la conserva
-  // como «suelta»— y entonces la procedencia es justo lo que no se puede
-  // afirmar. Se dice, en vez de dejar el renglón a medias.
-  const semana = ult.semana ? String(ult.semana) : null;
   return {
     hayNomina: true, total: dir + ind, dir, ind, semana, partes,
     valor: String(dir + ind),
