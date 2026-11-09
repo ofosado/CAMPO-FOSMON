@@ -14759,26 +14759,50 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
               </div>
             </div>
             <Bar pct={((p.imp||0)/maxImpTop)*100} color="rgba(255,254,249,0.3)"/>
-            {/* Dos fotos es lo que cabe en la tarjeta, no lo que hay. Cuando una
-                partida tiene más, se dice el número: «2 de 7» no deja creer que
-                son siete las que se revisaron. */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
-              {[0,1].map(fi=>{
-                const foto=p.fotos[fi];
-                if(foto)return <div key={fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5",position:"relative"}}
-                  onClick={()=>setLbFoto(foto.url)}>
-                  <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}
-                    onError={(e)=>{e.target.style.opacity=0.2;}}/>
-                  <SelloEvidencia ev={foto}/></div>;
-                return <div key={fi} style={{borderRadius:6,aspectRatio:"16/9",
-                  background:"rgba(0,0,0,0.03)",border:"1px dashed rgba(0,0,0,0.10)",
-                  display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
-                  <span style={{fontSize:8,color:C.textMut}}>
-                    {p.sinEvidencia ? "Sin evidencia" : "Sin foto"}
-                  </span>
-                </div>;
-              })}
-            </div>
+            {/* LA TARJETA PINTA LO QUE EL REPARTO LE DIO A ESTA PARTIDA, no dos
+                a cada quien. Hasta hoy la rejilla era `[0,1]` fija, y eso tiraba
+                el reparto proporcional que `seleccionFotografica` acababa de
+                calcular. Medido en producción el 2026-11-09
+                (`medir-lo-que-la-tarjeta-no-ensena.cjs`): de 75 fotos elegidas
+                en las siete obras, la tarjeta pintaba 23 — se tiraban 52. En la
+                0112 la partida que vale el 57.5% del contrato tenía 24 fotos, el
+                reparto le daba 12, y la pantalla le daba las mismas 2 que a una
+                del 5.6%: el reparto las separaba 12× y la pantalla 2×. Con dos
+                huecos fijos la razón en pantalla NO PUEDE pasar de 2, así que la
+                propiedad que se pidió —que la partida de un cuarto del contrato
+                no quede representada igual que una del 5%— era inalcanzable por
+                construcción.
+
+                El tope sigue siendo el del reparto (`TOPE_FOTOS`), compartido
+                con el expediente, y por eso esto NO abre la puerta a que la
+                tarjeta enseñe una foto que el PDF no imprima: pinta un
+                subconjunto del mismo reparto, nunca otro.
+
+                Y EL HUECO SE DECLARA SÓLO CUANDO ES UN HUECO. La rejilla fija
+                rellenaba el segundo cuadro con «Sin foto» aunque la partida
+                tuviera treinta y una: en la 0112 el cuadro decía «Sin foto»
+                justo encima del renglón que decía «1 de 31 fotografías de esta
+                partida». Un hueco declarado donde no hay hueco es la mentira al
+                revés de la galería que se ve completa. Ahora el cuadro vacío es
+                de la partida SIN EVIDENCIA, que es la que el mandato quiere ver
+                aparecer diciendo que no tiene nada. */}
+            {p.sinEvidencia ? (
+              <div style={{borderRadius:6,aspectRatio:"16/9",marginTop:7,
+                background:"rgba(0,0,0,0.03)",border:"1px dashed rgba(0,0,0,0.10)",
+                display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <span style={{fontSize:9,color:C.textMut}}>Sin evidencia fotográfica</span>
+              </div>
+            ) : p.fotos.length > 0 ? (
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginTop:7}}>
+                {p.fotos.map((foto,fi)=>(
+                  <div key={foto.id||fi} style={{borderRadius:6,overflow:"hidden",aspectRatio:"16/9",cursor:"zoom-in",background:"#F0F2F5",position:"relative"}}
+                    onClick={()=>setLbFoto(foto.url)}>
+                    <img src={foto.url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}
+                      onError={(e)=>{e.target.style.opacity=0.2;}}/>
+                    <SelloEvidencia ev={foto}/></div>
+                ))}
+              </div>
+            ) : null}
             {p.disponibles > p.fotos.length && (
               <div style={{fontSize:8,color:C.textMut,marginTop:3}}>
                 {p.fotos.length} de {p.disponibles} fotografías de esta partida
