@@ -399,9 +399,31 @@ async function correr(codigo) {
       `\`${comp}\` no resuelve el fin de plazo con \`new Date(obra.fin)\``,
       'el fin vigente se pide, no se deriva');
   }
-  check(/plazoDeObra\(/.test(cuerpoDe('Dashboard'))
-     && /plazoDeObra\(/.test(cuerpoDe('DashboardDependencia')),
-    'las dos piden el plazo por la misma puerta', '`plazoDeObra`');
+  // La puerta puede ser `plazoDeObra` directamente o una cuenta que lo llame a
+  // él. Que valga la segunda forma no afloja nada: el 2026-11-09 el tablero
+  // dejó de llamarlo a secas y pasó a pedirle todo el bloque a
+  // `veredictoDePlazo`, que es QUIEN llama a `plazoDeObra`. Exigir la cadena
+  // literal habría obligado a conservar una llamada de adorno, que es
+  // justamente la segunda cuenta que esta prueba existe para impedir. Así que
+  // la cadena se sigue por el GRAFO DEL ARCHIVO —`fuenteDe` resuelve el cierre
+  // transitivo— y no por el texto de la pantalla.
+  const { fuenteDe } = require('./extraer-de-app.cjs');
+  const llegaAlPlazo = (comp) => {
+    const cuerpo = sinComentarios(cuerpoDe(comp));
+    if (/plazoDeObra\(/.test(cuerpo)) return 'lo llama';
+    for (const via of ['veredictoDePlazo']) {
+      if (!new RegExp(`\\b${via}\\(`).test(cuerpo)) continue;
+      const cierre = fuenteDe(ARCHIVO, [via], { tolerante: true })
+        .piezas.map(p => p.nombre);
+      if (cierre.includes('plazoDeObra')) return `vía \`${via}\``;
+    }
+    return null;
+  };
+  const puertaTab = llegaAlPlazo('Dashboard');
+  const puertaDep = llegaAlPlazo('DashboardDependencia');
+  check(!!puertaTab && !!puertaDep,
+    'las dos piden el plazo por la misma puerta',
+    `tablero ${puertaTab || 'POR NINGUNA'} · dependencia ${puertaDep || 'POR NINGUNA'}`);
 
   // ── 6 · NINGÚN RÓTULO PUBLICA DOS CIFRAS ─────────────────────────────────
   sec('6. En `Dashboard`, un mismo rótulo no lleva dos expresiones de dinero');
@@ -418,6 +440,20 @@ async function correr(codigo) {
   check(kpis.me !== kpis.am && kpis.me - kpis.am === 800_000,
     'y las dos cuentas siguen existiendo por separado: `me` trae el almacén y `am` no',
     `${MXN(kpis.me)} vs ${MXN(kpis.am)} · almacén ${MXN(kpis.me - kpis.am)}`);
+
+  // Y EL RÓTULO DE `me` DICE QUE TRAE EL ALMACÉN. Hasta hoy esto se vigilaba de
+  // rebote: `me` se llamaba «Obra ejecutada» en dos sitios y la prueba miraba
+  // el choque. Al irse la tarjeta «Obra ejecutada vs Estimaciones» el choque
+  // desapareció y con él la vigilancia, así que la afirmación se escribe
+  // derecha. Importa porque `am` —obra ejecutada DE VERDAD, sin bodega— sigue
+  // existiendo a pocos renglones: un rótulo que no distinga presenta material
+  // comprado y no instalado como obra construida.
+  const rotuloDeMe = (cuerpoTablero0 =>
+    (cuerpoTablero0.match(/<Kpi\s+label="([^"]+)"\s+value=\{MXN\(me\)\}/) || [])[1]
+  )(sinComentarios(cuerpoDe('Dashboard')));
+  check(!!rotuloDeMe && /almac[eé]n/i.test(rotuloDeMe),
+    'y el rótulo de `me` dice que incluye el almacén, en vez de llamarse sólo «ejecutado»',
+    rotuloDeMe ? `«${rotuloDeMe}»` : 'no se halló el KPI de `me` en el tablero');
 
   // ── 7 · EL PDF NO ENTREGA UN GASTO MÁS CHICO QUE LA PANTALLA ─────────────
   sec('7. El papel que se entrega suma el mismo gasto que el tablero');
@@ -461,21 +497,46 @@ async function correr(codigo) {
   // Sin la prosa: la primera versión de la cuenta de abajo salió en rojo
   // contando el COMENTARIO que explica el defecto. Una explicación no es una
   // cifra en pantalla.
-  const cuerpoTablero = sinComentarios(cuerpoDe('Dashboard'));
+  // LAS DOS YA NO COMPARTEN TARJETA, Y POR ESO HAY QUE MIRAR MÁS LEJOS. Al
+  // simplificar la proyección al término se fueron las dos tarjetas que las
+  // enseñaban juntas, así que hoy `presupuesto − estimado` no aparece en el
+  // tablero: vive en `Estimaciones`, en `EstimacionesCliente` y en el PDF. La
+  // versión anterior de esta sección buscaba las dos frases DENTRO de
+  // `Dashboard`, y con el tablero limpio habría bastado con borrar una de las
+  // dos cifras para que la prueba se pusiera verde — una prueba que premia
+  // perder un número no vigila nada. Se mira cada cuenta donde de verdad está.
   const ejecutadoSinFacturar = Math.max(kpis.am - kpis.estTotal, 0);
   const contratoSinFacturar  = Math.max(PRESUPUESTO - kpis.estTotal, 0);
   check(ejecutadoSinFacturar !== contratoSinFacturar,
     'el escenario las separa: son dos importes distintos',
     `${MXN(ejecutadoSinFacturar)} vs ${MXN(contratoSinFacturar)}`);
-  check(/del contrato sin facturar/.test(cuerpoTablero),
-    'la del contrato entero dice que es del contrato',
-    '«del contrato sin facturar»');
+
+  // Las pantallas que publican `presupuesto − estimado`, cada una por su
+  // nombre. Si una deja de existir no se da por buena: se exige que las tres
+  // sigan diciéndolo, porque desaparecer es la otra forma de dejar de aclarar.
+  const DEL_CONTRATO = ['Estimaciones', 'EstimacionesCliente'];
+  const sinAclarar = DEL_CONTRATO.filter(
+    c => !/del contrato sin facturar/.test(sinComentarios(cuerpoDe(c))));
+  check(sinAclarar.length === 0,
+    'la del contrato entero dice que es del contrato, en cada pantalla que la publica',
+    sinAclarar.length ? `callan: ${sinAclarar.join(', ')}`
+      : `${DEL_CONTRATO.join(' · ')} · «del contrato sin facturar»`);
+
+  const cuerpoTablero = sinComentarios(cuerpoDe('Dashboard'));
   check(/obra ejecutada sin facturar/.test(cuerpoTablero),
     'y la de la obra ejecutada dice que es de lo ejecutado',
     '«obra ejecutada sin facturar»');
-  check((cuerpoTablero.match(/por estimar/gi) || []).length <= 1,
-    'y «por estimar» ya no es el nombre de las dos',
-    `${(cuerpoTablero.match(/por estimar/gi) || []).length} aparición(es)`);
+  check(!/del contrato sin facturar/.test(cuerpoTablero),
+    'y el tablero no mezcla las dos: la del contrato no está ahí',
+    'sólo la ejecutada');
+
+  // «Por estimar» a secas sigue siendo el rótulo de `presupuesto − estimado` en
+  // tres sitios, y eso está bien: un nombre, una cuenta. Lo que no puede es que
+  // el tablero —que enseña la OTRA— vuelva a usarlo.
+  const choquesNombre = (cuerpoTablero.match(/por estimar/gi) || []).length;
+  check(choquesNombre === 0,
+    'y «por estimar» no es el nombre de la cuenta del tablero',
+    `${choquesNombre} aparición(es)`);
 
   return fallos;
 }
@@ -484,13 +545,22 @@ async function correr(codigo) {
 // Cada mutación devuelve el archivo a la forma que tenía el defecto. Si alguna
 // sobrevive, la aserción que la vigilaba es decorativa.
 const MUTACIONES = [
+  // Reanclada el 2026-11-09: el tablero dejó de llamar a `plazoDeObra` a secas
+  // —ahora le pide el bloque entero a `veredictoDePlazo`, que es quien lo
+  // llama— así que la mutación entra una puerta más arriba. Conserva el
+  // andamiaje: `v` sale con la misma forma y la tarjeta se pinta igual; lo que
+  // se rompe es que el plazo vuelva a derivarse del fin del CONTRATO, sin
+  // mirar la ampliación.
   ['el plazo del tablero vuelve a medir contra el fin del CONTRATO',
-    'const _pz=plazoDeObra(obra);',
-    'const _pz=(()=>{const f=obra.fin,i=obra.inicio;'
-    + 'const d=(a,b)=>Math.round((new Date(b)-new Date(a))/86400000);'
-    + 'const t=d(i,f),tr=Math.max(d(i,hoyLocalISO()),0);'
-    + 'return {finVigente:f,ampliado:false,totalDias:t,transcurridos:tr,'
-    + 'restantes:Math.max(t-tr,0),pctPlazo:Math.min(tr/t*100,100)};})();'],
+    'const v = veredictoDePlazo(obra, historialAvance, af);',
+    'const v = (()=>{const f=obra.fin,i=obra.inicio;'
+    + 'const d=(a,b)=>(!a||!b)?null:Math.round((new Date(b)-new Date(a))/86400000);'
+    + 'const t=d(i,f),tr=Math.max(d(i,hoyLocalISO())||0,0);'
+    + 'return {veredicto:"—",porque:"",color:C.textMut,dias:null,fechaFin:null,'
+    + 'plazoTxt:t!=null?`${tr} de ${t} días transcurridos`:"falta una fecha del plazo",'
+    + 'vencidoDias:null,proy:{},kpi:{},ritmoPP:null,ritmoPesos:null,ritmoSub:null,'
+    + 'necesarioPP:null,necesarioPesos:null,sinNecesario:"falta una fecha del plazo",'
+    + 'deltaPP:null,deltaPesos:null};})();'],
 
   ['`plazoDeObra` vuelve a resolver el fin sin mirar la ampliación',
     'const finVigente = finVigenteDe(obra);\n  const ampliado = !!finVigente && !!obra?.fin && finVigente !== obra.fin;',
@@ -533,17 +603,20 @@ const MUTACIONES = [
     '  const matActivos = materiales.filter(m=>pf(m.imp)>0);',
     '  const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);'],
 
-  ['el KPI de la tira vuelve a llamarse igual que la tarjeta de estimaciones',
+  ['el KPI de `me` vuelve a llamarse sólo «obra ejecutada», sin el almacén',
     '<Kpi label="Ejecutado + almacén" value={MXN(me)}',
     '<Kpi label="Obra ejecutada" value={MXN(me)}'],
 
-  ['la tarjeta del margen vuelve a llamar «Obra ejecutada» a `me`',
-    '{[[MXN(me),"Ejecutado + almacén",C.blue,"avance+almacén"],',
-    '{[[MXN(me),"Obra ejecutada",C.blue,"avance+almacén"],'],
+  // SE FUE LA MUTACIÓN DE LA TARJETA DEL MARGEN, y no por conveniencia: la
+  // tarjeta que mutaba —el segundo sitio que llamaba «Obra ejecutada» a `me`—
+  // ya no existe, se fue al limpiar el tablero. Su afirmación no se perdió: la
+  // recoge la de arriba, que ahora muerde una aserción escrita derecha sobre el
+  // rótulo en vez de depender de que hubiera dos sitios chocando. Queda escrito
+  // para que nadie la reponga buscando un anclaje que no está.
 
-  ['la cifra del contrato sin facturar vuelve a llamarse «por estimar»',
-    'MXN(faltaEst)+" del contrato sin facturar"',
-    'MXN(faltaEst)+" por estimar"'],
+  ['la cifra del contrato sin facturar vuelve a llamarse «saldo del contrato»',
+    '<Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="del contrato sin facturar"',
+    '<Kpi label="Por estimar"       value={MXN(porEstimar)}  sub="saldo del contrato"'],
 ];
 
 async function main() {

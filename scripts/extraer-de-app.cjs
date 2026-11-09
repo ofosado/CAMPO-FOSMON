@@ -100,7 +100,9 @@ function indexar(archivo) {
   // Los identificadores libres de un trozo: los que usa y no declara. Se
   // calcula parseando el trozo, no leyéndolo con una expresión regular — una
   // regular contaría nombres de propiedad y cadenas.
+  const memo = new Map();
   const libresDe = (fuente) => {
+    if (memo.has(fuente)) return memo.get(fuente);
     const sub = parse(fuente, { sourceType: 'module', plugins: ['jsx'] });
     const libres = new Set();
     traverse(sub, {
@@ -111,6 +113,7 @@ function indexar(archivo) {
         libres.add(n);
       },
     });
+    memo.set(fuente, libres);
     return libres;
   };
 
@@ -137,8 +140,16 @@ function indexar(archivo) {
 // `tolerante` es para el banco cuya contraprueba QUITA un símbolo a propósito
 // y quiere que la aserción salga ROJA en lugar de que el banco no arranque.
 // Por omisión un símbolo raíz ausente es `SimboloPerdido`.
-function fuenteDe(archivo, nombres, { tolerante = false } = {}) {
+//
+// `excluir` son los nombres que el banco va a INYECTAR como parámetro en vez de
+// dejar que vengan del archivo: la paleta cambiada por un proxy, o el símbolo
+// que una contraprueba sustituye para preguntar de dónde sale un número. Tienen
+// que quedar FUERA del cuerpo —si se declaran dentro, la declaración gana sobre
+// el parámetro y la sustitución no se nota—, y además no deben arrastrar sus
+// propias dependencias, que sólo existían para ellos.
+function fuenteDe(archivo, nombres, { tolerante = false, excluir = [] } = {}) {
   const pedidos = [].concat(nombres).flat();
+  const fuera = new Set([].concat(excluir).flat());
   const donde = path.relative(RAIZ, archivo);
   const { decl, libresDe } = indexar(archivo);
 
@@ -150,24 +161,27 @@ function fuenteDe(archivo, nombres, { tolerante = false } = {}) {
   // defined`, que es ruidoso y señala el renglón. Pararse aquí sería negarse a
   // extraer un helper por un identificador que ninguna de sus ramas usa.
   const necesarios = new Map();
-  const pendientes = [...pedidos];
+  const pendientes = pedidos.filter(n => !fuera.has(n));
   while (pendientes.length) {
     const n = pendientes.pop();
     if (necesarios.has(n) || !decl.has(n)) continue;
     const d = decl.get(n);
     necesarios.set(n, d);
-    for (const libre of libresDe(d.fuente)) if (decl.has(libre)) pendientes.push(libre);
+    for (const libre of libresDe(d.fuente)) {
+      if (decl.has(libre) && !fuera.has(libre)) pendientes.push(libre);
+    }
   }
 
   // En el orden en que están en el archivo: ahí se declaran antes de usarse, y
   // reordenar por el grafo rompería las referencias mutuas que sí funcionan por
   // izado.
-  const cuerpo = [...necesarios.values()]
-    .sort((a, b) => a.inicio - b.inicio)
-    .map(d => d.fuente)
-    .join('\n\n');
+  const piezas = [...necesarios.values()].sort((a, b) => a.inicio - b.inicio);
+  const cuerpo = piezas.map(d => d.fuente).join('\n\n');
 
-  return { cuerpo, presentes: pedidos.filter(n => decl.has(n)), faltan };
+  return {
+    cuerpo, piezas, faltan,
+    presentes: pedidos.filter(n => decl.has(n) && !fuera.has(n)),
+  };
 }
 
 // Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya

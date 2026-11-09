@@ -66,6 +66,7 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 const noArranco = require('./no-arranco.cjs');
+const { fuenteDe } = require('./extraer-de-app.cjs');
 const { sinPrecondicion } = noArranco;
 
 const archivo = process.argv[2]
@@ -90,18 +91,15 @@ const seccion = t => console.log(`\n── ${t} ${'─'.repeat(Math.max(0, 62 - 
 //
 // Se extraen con sus dependencias porque la prueba las EJECUTA: una copia mía
 // de `proyeccionDeAvance` se comprobaría contra sí misma (P3).
+//
+// Aquí van sólo las que este banco LLAMA. Las dependencias las resuelve
+// `fuenteDe` siguiendo el grafo del archivo; tenerlas tecleadas era guardar una
+// copia de ese grafo, y el 2026-11-09 esa copia quedó corta —`proyeccionDeAvance`
+// pasó a apoyarse en `fechaEnZonaObra`— y el banco reventó con un `is not
+// defined` en la primera pantalla que medía.
 const DE_MODULO = [
-  'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'sonComparables', 'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
-  'semanaISO', 'snapshotId', 'fechaLocalDeISO', 'hoyLocalISO', 'lunesDeClaveSemana',
-  'finVigenteDe', 'estadoPorSemana', 'proyeccionDeAvance',
-  // La ventana del ritmo, su mínimo y la frase que lo dice: las trae consigo
-  // `proyeccionDeAvance` desde que el ritmo se mide dos veces —ventana corta y
-  // expediente completo— con una sola cuenta.
-  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres', 'fraseCortesCerrados',
+  'semanaISO', 'snapshotId', 'estadoPorSemana', 'proyeccionDeAvance',
   'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
-  'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
-  'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
   'fechaUltimaCapturaDe', 'diasSinCapturaDe', 'atrasoProyectado',
 ];
 // Sin éstas no hay nada que medir: son las cuentas únicas cuya existencia da
@@ -109,31 +107,19 @@ const DE_MODULO = [
 const IMPRESCINDIBLES = ['diasSinCapturaDe', 'atrasoProyectado',
   'estadoPorSemana', 'proyeccionDeAvance'];
 
-const trozos = [];
-const hallados = new Set();
-traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    const d = p.node.declarations[0];
-    if (d?.id?.type === 'Identifier' && DE_MODULO.includes(d.id.name)) {
-      trozos.push(texto(p.node)); hallados.add(d.id.name);
-    }
-  },
-  FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && DE_MODULO.includes(n)) {
-      trozos.push(texto(p.node)); hallados.add(n);
-    }
-  },
-});
-const faltan = IMPRESCINDIBLES.filter(n => !hallados.has(n));
-if (faltan.length) noArranco(faltan, path.relative(raiz, archivo));
-
 // `C` es la paleta. Entra como proxy porque lo que se mide aquí son números y
 // frases, no colores: un `C.red` que falte reventaría la extracción y saldría
-// NO ARRANCÓ culpando al archivo medido en vez de a este andamiaje.
+// NO ARRANCÓ culpando al archivo medido en vez de a este andamiaje. Por eso va
+// en `excluir`: si además se declarara dentro del cuerpo, la declaración
+// ganaría sobre el parámetro y el proxy no serviría de nada.
+const { cuerpo, presentes: hallados } = fuenteDe(archivo, DE_MODULO,
+  { tolerante: true, excluir: ['C'] });
+
+const faltan = IMPRESCINDIBLES.filter(n => !hallados.includes(n));
+if (faltan.length) noArranco(faltan, path.relative(raiz, archivo));
+
 const mod = new Function('C',
-  `${trozos.join('\n')}\n;return {${[...hallados].join(',')}};`)(
+  `${cuerpo}\n;return {${hallados.join(',')}};`)(
   new Proxy({}, { get: () => '#000' }));
 
 // ── Las expresiones de cada pantalla ───────────────────────────────────────

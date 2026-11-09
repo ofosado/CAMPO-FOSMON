@@ -43,6 +43,7 @@ const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
 
 const noArranco = require('./no-arranco.cjs');
+const { fuenteDe } = require('./extraer-de-app.cjs');
 noArranco.vigilarExcepciones();
 
 const archivo = process.argv.find(a => a.endsWith('.jsx')) || path.join(raiz, 'src/App.jsx');
@@ -57,22 +58,28 @@ const check = (ok, titulo, detalle = '') => {
 };
 
 // ── Extracción del código real ─────────────────────────────────────────────
-// Todo lo que hace falta para que la cuenta corra de punta a punta. Se pide por
-// nombre sólo para PODER EJECUTARLO; lo que se afirma más abajo es lo que sale.
+// Lo que este banco LLAMA o MUTA por su nombre. Nada más: las dependencias las
+// resuelve `fuenteDe` siguiendo el grafo del archivo.
+//
+// Hasta hoy esta lista también enumeraba lo que esas funciones necesitan
+// —`ritmoEntreCierres`, `fraseCortesCerrados`, `VENTANA_RITMO`…— y eso era una
+// copia del grafo de dependencias viviendo en un banco. Las copias se
+// desincronizan: el 2026-11-09 `proyeccionDeAvance` pasó a apoyarse en
+// `fechaEnZonaObra` para truncar el término proyectado a su día, y CUATRO
+// bancos reventaron con un `is not defined` a media corrida —éste, el de
+// navegación por atraso, el de la tabla de la dependencia y el de una cuenta
+// por número—, los cuatro después de que su propia comprobación de completitud
+// diera la cosecha por buena. Es la segunda vez que pasa lo mismo; la primera
+// fue `fechaDeTimestamp` el 2026-10-26, y de ahí salió `fuenteDe`. Lo que
+// faltaba era que estos bancos la usaran.
+//
+// Se pide por nombre sólo para PODER EJECUTARLO; lo que se afirma más abajo es
+// lo que sale.
 const NECESARIOS = [
-  'tok', 'C', 'NUM',
-  'fechaLocalDeISO', 'hoyLocalISO', 'snapshotId', 'semanaISO',
-  'lunesDeClaveSemana', 'sonComparables',
+  'tok', 'C', 'NUM', 'snapshotId', 'semanaISO',
   'ESQUEMA_AVANCE', 'ESQUEMA_DINERO', 'ESQUEMA_SNAPSHOT',
-  'finVigenteDe', 'estadoPorSemana', 'corteDeEstimaciones', 'FRASE_SIN_CORTE_EST',
-  // La ventana del ritmo, su mínimo, la cuenta única de la pendiente y la frase
-  // que dice cuántos cortes hay: las trae consigo `proyeccionDeAvance` desde
-  // que el ritmo se mide dos veces —ventana corta y expediente completo— con
-  // una sola cuenta. El renglón de la tendencia lo redacta `tendenciaDeRitmo`,
-  // que usa `NUM` — ya pedido arriba con la paleta.
-  'VENTANA_RITMO', 'CIERRES_MINIMOS', 'ritmoEntreCierres',
-  'fraseCortesCerrados', 'UMBRAL_TENDENCIA', 'tendenciaDeRitmo',
-  'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
+  'estadoPorSemana', 'corteDeEstimaciones', 'FRASE_SIN_CORTE_EST',
+  'ritmoEntreCierres', 'UMBRAL_TENDENCIA', 'tendenciaDeRitmo',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'SIN_PROY_POCOS_CIERRES', 'SIN_PROY_NO_COMPARABLES', 'SIN_PROY_SIN_AVANCE',
   'proyeccionDeAvance', 'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
@@ -82,8 +89,14 @@ const NECESARIOS = [
   'atrasoProyectado',
 ];
 
-const trozos = [];           // declaraciones completas, en orden de fuente
-const vistos = new Set();
+// `tolerante`: un nombre ausente no revienta aquí, se junta con los anclajes de
+// pantalla que tampoco aparecieron y se reporta todo junto más abajo.
+const { cuerpo, presentes, faltan: faltanSimbolos } =
+  fuenteDe(archivo, NECESARIOS, { tolerante: true });
+
+// El rango se guarda para TODA declaración de módulo, no sólo para las pedidas:
+// la contraprueba muta por nombre, y atar el rango a `NECESARIOS` haría que
+// adelgazar esa lista apagara una mutación en silencio.
 const rango = {};            // para poder mutar el original en la contraprueba
 // Las dos expresiones `desvPlazo`, una por pantalla, con el nombre de la
 // función donde viven. Se localizan por lo que ALIMENTAN, no por su posición.
@@ -107,18 +120,9 @@ traverse(ast, {
     if (p.parent.type !== 'Program') return;
     const d = p.node.declarations[0];
     const n = d?.id?.name;
-    if (n && NECESARIOS.includes(n) && !vistos.has(n)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(n);
-      if (d.init) rango[n] = [d.init.start, d.init.end];
-    }
+    if (n && d.init && rango[n] === undefined) rango[n] = [d.init.start, d.init.end];
   },
   FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && n && NECESARIOS.includes(n) && !vistos.has(n)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(n);
-    }
     // El tablero de avance se localiza por el párrafo que YA NO debe pintar.
     if (p.parent.type === 'Program' && /\bdesvPlazo\b/.test(src.slice(p.node.start, p.node.end))
         && /avanceFisicoPonderado/.test(src.slice(p.node.start, p.node.end))
@@ -160,7 +164,7 @@ traverse(ast, {
   },
 });
 
-const faltan = NECESARIOS.filter(n => !vistos.has(n));
+const faltan = [...faltanSimbolos];
 // Estos cuatro no se piden por nombre sino por lo que hacen o lo que dicen. Si
 // no aparecen, no es un renombre: es que el sitio dejó de existir, y el efecto
 // es el mismo — la conducta se quedó sin mirar.
@@ -275,7 +279,7 @@ if (process.argv.includes('--contraprueba')) {
   process.exit(0);
 }
 
-const app = new Function(`"use strict";\n${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
+const app = new Function(`"use strict";\n${cuerpo}\n;return {${presentes.join(',')}};`)();
 const { C, kpiDesviacionPlazo, proyeccionDeAvance, estadoPorSemana, snapshotId,
   atrasoProyectado, tendenciaDeRitmo,
   ESQUEMA_AVANCE, SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES,
