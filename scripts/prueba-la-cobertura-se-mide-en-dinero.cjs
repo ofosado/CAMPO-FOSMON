@@ -55,7 +55,11 @@ const { fuenteDeApp } = require('./extraer-de-app.cjs');
 const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones('src/App.jsx');
 
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+// `textoCorrido` pega los renglones de un mismo párrafo. La banda del veredicto
+// es una frase larga que el generador parte en varios renglones para que quepa,
+// así que buscarla renglón por renglón no la encuentra nunca —y el banco
+// acusaría al papel de callarse algo que sí dice—.
+const { dibujarPDF, textoCorrido } = require('./lienzo-pdf.cjs');
 
 const PEDIDOS = [
   'coberturaDeEvidencia', 'frasesDeCobertura',
@@ -262,7 +266,7 @@ async function correr(fuente) {
     { subs: CAT, ...datos });
 
   const papelChicas = await dibujar({ evidencia: SOLO_CHICAS });
-  const textos = papelChicas.map(d => d.texto);
+  const textos = textoCorrido(papelChicas).map(d => d.texto);
   const pagDe = (re) => {
     const d = papelChicas.find(x => re.test(x.texto));
     return d ? d.pagina : null;
@@ -350,7 +354,7 @@ async function correr(fuente) {
   check(ordenNoLeida.includes('1000 01') && ordenNoLeida.includes(EXTRA.sec),
     'sin cobertura medible el expediente sigue enseñando las fotos que hay',
     `orden impreso: ${ordenNoLeida.join(' → ') || '(ninguna)'}`);
-  const textosNoLeida = papelNoLeida.map(d => d.texto);
+  const textosNoLeida = textoCorrido(papelNoLeida).map(d => d.texto);
   check(textosNoLeida.includes(fNoLeida.detalle),
     'y la banda dice que no se pudo medir, sin publicar un 0%',
     `«${fNoLeida.detalle}»`);

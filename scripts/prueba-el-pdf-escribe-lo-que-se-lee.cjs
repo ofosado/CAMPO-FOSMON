@@ -56,7 +56,8 @@ const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
 
 const { fuenteDe, ARCHIVO } = require('./extraer-de-app.cjs');
-const { dibujarPDF, dibujarPDFInterno } = require('./lienzo-pdf.cjs');
+const { dibujarPDF, dibujarPDFInterno, lienzo,
+        textoCorrido } = require('./lienzo-pdf.cjs');
 const archivo = process.env.ARCHIVO_APP || ARCHIVO;
 
 let fallas = 0, verdes = 0;
@@ -104,7 +105,14 @@ const AÑO = new Date().getFullYear();
 const SELLO = { ms: Date.UTC(2026, 2, 15, 18, 0, 0), fuente: 'servidor' };
 
 const OBRA = {
-  id: '0114', nombre: `Malecón ✓ etapa 2 → 3`, contrato: 'SIOP-2026-001',
+  // El nombre va LARGO a propósito: en la portada se parte en dos renglones
+  // dentro de una caja que ocupa el 38% de la hoja, y ésa es la única manera de
+  // que la §E mire un párrafo de verdad partido. Los nombres de obra de
+  // producción son así de largos —«Construcción del malecón costero, etapa 2»—;
+  // el corto de antes no partía nada y la §E habría dado verde por vacío.
+  id: '0114',
+  nombre: `Construcción del malecón costero ✓ etapa 2 → 3, Coatzacoalcos`,
+  contrato: 'SIOP-2026-001',
   cliente: 'H. Ayuntamiento ≥ Coatzacoalcos', ubicacion: 'Coatzacoalcos, Ver.',
   inicio: `${AÑO - 1}-01-10`, fin: `${AÑO + 1}-12-20`, presupuesto: 38500000,
   gpId: '0114',
@@ -248,12 +256,10 @@ ok(textoImprimible('abc') === 'abc' && textoImprimible(null) === null
 // D · EL PORTÓN NO LE CAMBIA LA FIRMA AL `doc` QUE ENVUELVE
 // ══════════════════════════════════════════════════════════════════════════
 // `doc.text` de jsPDF acepta una LISTA de renglones y pinta uno por renglón.
-// Hoy ninguno de los dos generadores lo llama así —se midió: 362 llamadas,
-// todas con cadena— así que esto no se puede afirmar desde la hoja. Se afirma
-// donde sí se puede: contra el portón, con un `doc` de juguete. Sin esta
-// sección, un portón que aplanara la lista a «a,b» no tendría quien lo viera,
-// y el día que alguien escriba el primer párrafo de varios renglones el
-// defecto saldría en un PDF y no en la suite.
+// Los dos generadores lo llaman así, y la §E lo mira desde la hoja; esta
+// sección mira el PORTÓN, que es el otro sitio donde la lista se puede
+// aplanar: un blindaje que saneara `['a','b']` a `'a,b'` dejaría la hoja
+// correcta en el doble y rota en el PDF de verdad.
 console.log('\n── D · el portón respeta la firma de lo que envuelve ─────────');
 
 const juguete = () => {
@@ -284,6 +290,66 @@ ok(t.head[0][0] === 'Avance >= 75%', 'la cabecera de la tabla se sanea');
 ok(t.body[0][0].content === 'OK PAGADA' && t.body[0][0].styles.fontStyle === 'bold',
   'y la celda con estilos se sanea SIN perder sus estilos');
 ok(t.body[0][1] === '->', 'y la celda que es una cadena pelada también');
+
+// ══════════════════════════════════════════════════════════════════════════
+// E · LO QUE SE MANDÓ PARTIR LLEGA A LA HOJA PARTIDO
+// ══════════════════════════════════════════════════════════════════════════
+// La hermana de la §A. Allá se afirma que cada cadena se puede ESCRIBIR; aquí,
+// que se puede LEER: que está dentro del papel y en los renglones en que se
+// pidió partirla.
+//
+// Pasó de verdad el 2026-11-10, en el preludio de la gráfica única: el ayudante
+// `T` de los dos generadores hacía `String(s)`, y `String(['uno','dos'])` es
+// `'uno,dos'`. Un párrafo de tres renglones salía pegado con comas en una línea
+// de 756 puntos sobre una hoja de 791 que empieza en 40: el final de la frase
+// —«un trecho punteado es un salto sobre semanas sin captura, no una medición»—
+// quedaba fuera del papel. Y en la portada, donde el nombre de la obra sí cabía
+// aplastado, salía con una coma impresa en medio pisando la mitad derecha.
+//
+// Ningún banco lo vio, y la razón vale más que el defecto: el lienzo de mentira
+// devolvía el párrafo entero en un arreglo de UN elemento, así que `String` de
+// ese arreglo era el párrafo y el doble no podía distinguir un generador
+// correcto de uno roto. Ahora el lienzo parte de verdad —con un ancho medio
+// declarado, ver `lienzo-pdf.cjs`— y apunta qué forma tendría cada párrafo
+// aplastado de vuelta.
+console.log('\n── E · lo que se mandó partir llega a la hoja partido ────────');
+
+// El ancho se le pregunta al MISMO lienzo sobre el que dibujaron los dos
+// generadores, en vez de teclear 279: dos sitios con la medida del papel acaban
+// midiendo dos papeles distintos.
+const ANCHO_HOJA = lienzo().doc.internal.pageSize.getWidth();
+
+for (const [quien, hoja] of [['el reporte del cliente', hojaCliente],
+                             ['el documento interno', hojaInterna]]) {
+  // EL CONTROL, PRIMERO, y en ROJO y no en NO ARRANCÓ. Un documento de puras
+  // frases cortas no parte nada y dejaría vacías a las dos aserciones de abajo
+  // —por eso el caso trae un nombre de obra largo—. Pero «no partió nada» es
+  // también lo que se ve cuando alguien aplasta los renglones antes de
+  // dibujarlos, que es el defecto mismo: eso es ROJO, no un banco que no pudo
+  // arrancar.
+  const partidos = textoCorrido(hoja).filter(c => !hoja.some(d => d.texto === c.texto));
+  ok(partidos.length > 0,
+    `${quien}: ${partidos.length} párrafo(s) se reparten de verdad en varios `
+    + 'renglones. Cero querría decir que alguien los pegó antes de dibujarlos');
+
+  const aplastados = hoja.filter(d => d.pegado > 1);
+  ok(aplastados.length === 0,
+    `${quien}: ninguno se dibuja aplastado de vuelta a un solo renglón`
+    + (aplastados.length ? ` — ${aplastados.length} lo está(n), el primero con `
+        + `${aplastados[0].pegado} renglones: «${aplastados[0].texto.slice(0, 60)}…»` : ''));
+
+  // Y QUE NADA TERMINE FUERA DEL PAPEL. Los alineados a la derecha o al centro
+  // se excluyen: su `x` no es el borde izquierdo del texto, así que sumarle el
+  // ancho no significa nada.
+  const izq = hoja.filter(d => d.tabla === undefined && d.x !== undefined
+                               && (!d.align || d.align === 'left'));
+  const fuera = izq.filter(d => d.x + d.ancho > ANCHO_HOJA);
+  ok(fuera.length === 0,
+    `${quien}: ninguno de sus ${izq.length} renglones termina fuera de la hoja`
+    + (fuera.length ? ` — se salen ${fuera.length}, el peor por `
+        + `${Math.round(Math.max(...fuera.map(d => d.x + d.ancho - ANCHO_HOJA)))} mm: `
+        + `«${fuera[0].texto.slice(0, 60)}…»` : ''));
+}
 
 console.log('');
 if (fallas) {
@@ -361,6 +427,25 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         "  '→': '->', '⇒': '->', '←': '<-', '⇐': '<-', '↑': '^', '↓': 'v',",
         "  '⇒': '->', '←': '<-', '⇐': '<-', '↑': '^', '↓': 'v',") },
+
+    // ── E · el párrafo aplastado, en los dos generadores ───────────────────
+    // El defecto tal como estaba el 2026-11-10. Van los dos por separado:
+    // arreglado en uno solo, el otro seguiría sacando párrafos fuera de la hoja
+    // y nadie lo vería.
+    { nombre: 'el reporte del cliente vuelve a aplastar los renglones de un párrafo',
+      hacer: () => src.replace(
+        "  const T  = (s,x,y,o={}) => doc.text(\n"
+        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);\n"
+        + '\n  // Dibuja header/footer en página actual',
+        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);"
+        + '\n\n  // Dibuja header/footer en página actual') },
+    { nombre: 'el documento interno vuelve a aplastar los renglones de un párrafo',
+      hacer: () => src.replace(
+        "  const T  = (s,x,y,o={}) => doc.text(\n"
+        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);\n"
+        + '\n  // El sello de INTERNO',
+        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);"
+        + '\n\n  // El sello de INTERNO') },
   ];
   // NO hay mutación de `lienzo-pdf.cjs`. No hace falta: si el lienzo dejara de
   // contestar lo que el generador instaló encima del `doc`, anotaría la cadena
