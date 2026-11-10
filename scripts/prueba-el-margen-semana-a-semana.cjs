@@ -210,6 +210,41 @@ ok(rSinCorte.cola === 0 && /ningún corte/.test(rSinCorte.motivo || ''),
 ok(new Set([rCero.motivo, rSinGP.motivo, rSinCorte.motivo]).size === 3,
    'los tres motivos medibles son tres textos distintos');
 
+// ── EL GASTO SIN FECHAR. Esta es la forma que el preview sorprendió el
+// 2026-11-09 sobre Oaxaca Parque Lineal: GP trae fechadas cuatro semanas por
+// $8,518,000 de un `grandTotal` de $21,400,000, así que el acumulado semanal
+// arranca casi en cero y el último punto salta a los $21.4M completos. El
+// margen en porcentaje salía de 97.1% a 0.9% y la pantalla lo publicó como
+// «cayó 96.2 puntos en 8 semanas», en CRÍTICO. Las dos cifras son del gasto
+// alcanzando su propia serie, no de la obra.
+const EJEC_LINEAL = Array.from({ length: N }, (_, i) => 1800000 * (i + 1));
+const fSinFechar = curvaUnicaDeObra({
+  semanas: SEMS, obra: f0127.obra, subs: [],
+  historialAvance: EJEC_LINEAL.map((m, i) => ({
+    tipo: 'oficial', año: AÑO, semana: SEMS[i].sem, avance: 10,
+    avancePonderado: 10, montoEjecutado: m })),
+  gpData: { ultimaSemana: `S${DESDE + N - 1}`,
+            obras: { '0127': { id: '0127', grandTotal: 21400000,
+                               semanas: { [`S${DESDE}`]: 2368000,
+                                          [`S${DESDE + 1}`]: 2100000,
+                                          [`S${DESDE + 2}`]: 1740000,
+                                          [`S${DESDE + 3}`]: 2310000 } } } },
+  otrosGastos: [], maquinaria: [], programa: null });
+const rSinFechar = comportamientoDelMargen(fSinFechar);
+
+ok(fSinFechar.gastoSinFechar === true,
+   'la curva ya sabe que parte del gasto llega sin fecha: la bandera es suya, no se vuelve a decidir aquí');
+ok(fSinFechar.gastoMedido === true,
+   'y el gasto SÍ está medido: lo que falla es el reparto por semana, no la medición');
+ok(rSinFechar.pct.filter(p => p !== null).length >= 4,
+   `las semanas traen número —${rSinFechar.pct.filter(p => p !== null).length} de ${N}—, así que el defecto no es que falte el dato`);
+ok(rSinFechar.cola === 0 && rSinFechar.suficiente === false,
+   'y aun así NO hay tramo que leer: con el gasto sin fechar la tendencia entera es del gasto, no del margen');
+ok(/sin fecha/.test(rSinFechar.motivo || '') && /no es comparable/.test(rSinFechar.motivo || ''),
+   `el motivo nombra la fecha que falta y niega la comparación entre semanas: «${rSinFechar.motivo}»`);
+ok(new Set([rCero.motivo, rSinGP.motivo, rSinCorte.motivo, rSinFechar.motivo]).size === 4,
+   'y es un cuarto texto: «sin medir», «en cero», «sin corte» y «sin fechar» no se arreglan igual');
+
 // ════════════════════════════════════════════════════════════════════════════
 // C · SÓLO LA COLA CONTIGUA
 // ════════════════════════════════════════════════════════════════════════════
@@ -352,6 +387,155 @@ ok(rNada.cola === 0 && rNada.renglones.length === 0 && typeof rNada.motivo === '
    'sin curva no hay serie, y se dice en vez de reventar');
 
 // ════════════════════════════════════════════════════════════════════════════
+// G · LA REGLA «MARGEN A LA BAJA» (fin_007)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El umbral —3 pp a lo largo del tramo contiguo de 4+ semanas— se aprobó el
+// 2026-11-09 contra la sensibilidad medida en producción: a 5 pp la regla se
+// queda sin la única obra de la cartera que se deteriora, y a 3 pp sigue
+// señalando una sola de siete.
+//
+// LO QUE SE AFIRMA AQUÍ es la frontera entre las dos respuestas: la regla
+// DISPARA cuando el margen cayó de verdad, y sale NO EVALUABLE —no «sin
+// hallazgo»— cuando la caída está sobre un avance que nadie cerró. Las dos
+// cosas se deciden en sitios distintos a propósito: la evaluabilidad en el
+// dato, el hallazgo en el detector.
+console.log('\n── G · la regla fin_007, con el umbral aprobado ──────────────');
+
+const MOTOR = ['evaluarRiesgos', 'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA',
+               'DATOS_DEL_RIESGO'];
+const { cuerpo: fuenteMotor, faltan: faltanMotor } =
+  fuenteDe(archivo, MOTOR, { tolerante: true });
+if (faltanMotor.length) {
+  console.error(`\nNO ARRANCÓ: faltan en ${archivo}: ${faltanMotor.join(', ')}`);
+  process.exit(2);
+}
+const M = new Function(`"use strict";\n${fuenteMotor}\nreturn { ${MOTOR.join(', ')} };`)();
+
+// GP contestó por esta obra Y CON DINERO. Hace falta: sin esto `fin_001` sale
+// NO EVALUABLE por falta de gasto medido, y la comprobación de que las dos
+// reglas no se duplican mediría otra cosa —una regla que no corrió no «calla».
+const gpConDinero = {
+  ultimaSemana: { año: AÑO, semana: DESDE + N - 1 },
+  semanasDisponibles: SEMS.map(s => ({ año: AÑO, semana: s.sem })),
+  obrasPedidas: ['0127'],
+  obras: { '0127': { id: '0127', nombre: 'Centro de convenciones',
+                     grandTotal: 25000000 } },
+};
+const ctxBase = (comp, extra = {}) => ({
+  obra: f0127.obra, subs: [{ id: 'p1', importe: 45000000 }],
+  historialAvance: [{ tipo: 'oficial', año: AÑO, semana: DESDE + N - 1,
+                      avance: 40, avancePonderado: 40 }],
+  estimaciones: [], programa: null, gpData: gpConDinero,
+  kpis: { me: 40000000, gt: 25000000, mpct: 37.5, brecha: 2, pctGasto: 42, af: 40 },
+  comportamientoMargen: comp, ...extra,
+});
+const dondeEsta = (r, id) =>
+  (['detectados', 'sinHallazgo', 'noEvaluables', 'reventaron']
+    .find(k => r[k].some(x => x.id === id))) || 'EN NINGUNO';
+const hueco = (r, id) => (r.noEvaluables.find(x => x.id === id)?.faltan || [])
+  .find(f => f.dato === 'serieMargen') || null;
+
+ok(M.BIBLIOTECA_RIESGOS.some(p => p.id === 'fin_007'),
+   'la regla fin_007 está en la biblioteca');
+ok(M.RIESGOS_SOLO_CONSTRUCTORA.has('fin_007'),
+   'y NO le llega a una dependencia: el margen es economía del contratista');
+ok(JSON.stringify(M.BIBLIOTECA_RIESGOS.find(p => p.id === 'fin_007').requiere) === '["serieMargen"]',
+   'declara que depende de la serie semanal de margen, y de nada más');
+
+// (a) La obra que se deteriora de verdad: dispara.
+const rLentaRiesgo = M.evaluarRiesgos(ctxBase(rLenta));
+ok(dondeEsta(rLentaRiesgo, 'fin_007') === 'detectados',
+   `la obra que cae ${PP(rLenta.delTramo)} pp en ${rLenta.cola} semanas DISPARA`);
+const hallazgo = rLentaRiesgo.detectados.find(x => x.id === 'fin_007');
+ok(/4\.8/.test(hallazgo.valor) && /pp/.test(hallazgo.valor),
+   `y dice CON QUÉ NÚMERO disparó: valor «${hallazgo.valor}»`);
+ok(/12 semanas/.test(hallazgo.detalle),
+   `el detalle nombra en cuántas semanas cayó: «${hallazgo.detalle}»`);
+ok(/41\.4/.test(hallazgo.extra) && /36\.6/.test(hallazgo.extra),
+   `y el extra trae el tramo de punta a punta: «${hallazgo.extra}»`);
+ok(hallazgo.severidad === 'medio',
+   `4.8 pp es severidad media, no crítica (salió «${hallazgo.severidad}»)`);
+
+// (b) La obra del 0127: la caída es de captura → NO EVALUABLE, no «sin hallazgo».
+const r0127Riesgo = M.evaluarRiesgos(ctxBase(r0127));
+ok(dondeEsta(r0127Riesgo, 'fin_007') === 'noEvaluables',
+   `la forma del 0127 sale NO EVALUABLE: ${r0127.quietas} de ${r0127.cola} semanas con el avance sin cerrar`);
+ok(dondeEsta(r0127Riesgo, 'fin_007') !== 'sinHallazgo',
+   'y NO sale como «evaluada sin hallazgo», que se leería como que no hay riesgo');
+const h0127 = hueco(r0127Riesgo, 'fin_007');
+ok(h0127 !== null
+   && h0127.porQue.includes(`${r0127.cola} semanas del tramo`)
+   && h0127.porQue.includes(`${r0127.quietas} traen`)
+   && /sin cerrar/.test(h0127.porQue),
+   `el hueco dice cuántas semanas del tramo, cuántas quietas y por qué: «${h0127?.porQue}»`);
+
+// (c) La cola corta: no evaluable por otro motivo, y redactado distinto.
+const rCortaRiesgo = M.evaluarRiesgos(ctxBase(rHueco));
+ok(dondeEsta(rCortaRiesgo, 'fin_007') === 'noEvaluables',
+   'con 3 semanas seguidas la regla no es evaluable');
+const hCorta = hueco(rCortaRiesgo, 'fin_007');
+ok(hCorta && /3 semanas seguidas/.test(hCorta.porQue),
+   `y su motivo es el de la cola corta: «${hCorta?.porQue}»`);
+ok(!!hCorta && !!h0127 && hCorta.porQue !== h0127.porQue,
+   'los dos motivos de no evaluabilidad están redactados distinto: se arreglan distinto');
+
+// (c bis) EL CASO DEL PREVIEW. La obra con gasto sin fechar no dispara nada:
+// antes de la guarda esta misma forma salía en CRÍTICO con «−96.2pp».
+const rSinFecharRiesgo = M.evaluarRiesgos(ctxBase(rSinFechar));
+ok(dondeEsta(rSinFecharRiesgo, 'fin_007') === 'noEvaluables',
+   'la obra con gasto sin fechar NO dispara: su «caída» es el ancla del gasto');
+ok(!rSinFecharRiesgo.detectados.some(x => x.id === 'fin_007'),
+   'y no hay hallazgo que imprimir con una cifra que no es de esta obra');
+const hSinFechar = hueco(rSinFecharRiesgo, 'fin_007');
+ok(!!hSinFechar && /sin fecha/.test(hSinFechar.porQue),
+   `y el hueco dice que el gasto llega sin fecha: «${hSinFechar?.porQue}»`);
+
+// (d) La pantalla que todavía no pasa la serie: tampoco miente.
+const rSinSerie = M.evaluarRiesgos(ctxBase(undefined));
+ok(dondeEsta(rSinSerie, 'fin_007') === 'noEvaluables',
+   'una pantalla que no pasa la serie deja la regla no evaluable, no silenciosa');
+ok(/todavía no calcula/.test(hueco(rSinSerie, 'fin_007')?.porQue || ''),
+   `y el hueco culpa a la pantalla, no a la obra: «${hueco(rSinSerie, 'fin_007')?.porQue}»`);
+
+// (e) EL UMBRAL. La obra sana no dispara, y la frontera está donde se aprobó.
+ok(dondeEsta(M.evaluarRiesgos(ctxBase(rAlDia)), 'fin_007') === 'sinHallazgo',
+   'la obra al día, con margen estable, se evalúa y NO dispara: ése es «sin hallazgo»');
+
+// Una serie fabricada a la medida del umbral, para ejercer los dos lados.
+const aLaMedida = (caida, cola = 6) => ({
+  pct: [], cola, minimo: 4, suficiente: true, quietas: 0,
+  desde: 30, hasta: 30 - caida, delTramo: -caida,
+  renglones: [], peorSemana: { delta: -caida / cola, label: 'Sx' }, motivo: null,
+});
+ok(dondeEsta(M.evaluarRiesgos(ctxBase(aLaMedida(2.9))), 'fin_007') === 'sinHallazgo',
+   'una caída de 2.9 pp NO dispara: el umbral aprobado son 3');
+ok(dondeEsta(M.evaluarRiesgos(ctxBase(aLaMedida(3.1))), 'fin_007') === 'detectados',
+   'una de 3.1 pp SÍ dispara');
+ok(M.evaluarRiesgos(ctxBase(aLaMedida(3.1))).detectados
+    .find(x => x.id === 'fin_007').severidad === 'medio',
+   '3.1 pp es media');
+ok(M.evaluarRiesgos(ctxBase(aLaMedida(7))).detectados
+    .find(x => x.id === 'fin_007').severidad === 'alto',
+   '7 pp es alta');
+ok(M.evaluarRiesgos(ctxBase(aLaMedida(12))).detectados
+    .find(x => x.id === 'fin_007').severidad === 'critico',
+   '12 pp es crítica');
+// Y el margen que SUBE no dispara, que es el error de signo más fácil de hacer.
+ok(dondeEsta(M.evaluarRiesgos(ctxBase(aLaMedida(-20))), 'fin_007') === 'sinHallazgo',
+   'un margen que SUBE 20 pp no dispara: la regla es de caída, no de movimiento');
+
+// (f) NO DUPLICA A fin_001, que mide el NIVEL. La 0114 está en +36.6% —sana
+// para fin_001— y es justo la que fin_007 tiene que ver.
+const soloTendencia = M.evaluarRiesgos(ctxBase(rLenta));
+ok(dondeEsta(soloTendencia, 'fin_001') === 'sinHallazgo'
+   && dondeEsta(soloTendencia, 'fin_007') === 'detectados',
+   'con margen sano por nivel (37.5%) y cayendo por tendencia: fin_001 calla y fin_007 dispara');
+ok(M.BIBLIOTECA_RIESGOS.find(p => p.id === 'fin_001').titulo !==
+   M.BIBLIOTECA_RIESGOS.find(p => p.id === 'fin_007').titulo,
+   'y las dos reglas tienen títulos distintos: son dos preguntas, no una repetida');
+
+// ════════════════════════════════════════════════════════════════════════════
 // LA CONTRAPRUEBA
 // ════════════════════════════════════════════════════════════════════════════
 if (process.argv.includes('--contraprueba')) {
@@ -363,8 +547,8 @@ if (process.argv.includes('--contraprueba')) {
         '    if (!(e > 0)) return 0;\n    return m / e * 100;') },
     { nombre: 'la cola deja de exigir que las semanas sean contiguas',
       hacer: () => src.replace(
-        '  let cola = 0;\n  for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;',
-        '  let cola = pct.filter(p => p !== null).length;') },
+        '    for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;',
+        '    cola = pct.filter(p => p !== null).length;') },
     { nombre: 'el mínimo de semanas del reporte se afloja a una',
       hacer: () => src.replace(
         'const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {',
@@ -405,6 +589,45 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         '    if (typeof m !== \'number\' || !Number.isFinite(m)) return null;',
         '    if (typeof m !== \'number\' || !Number.isFinite(m)) return 0;') },
+
+    // ── LAS DE fin_007. Cada una mueve una decisión que se APROBÓ, no un
+    // andamio: el umbral de 3 pp, el filtro de captura, el estado de los
+    // riesgos no evaluables, el signo de la caída y la frontera de la
+    // dependencia.
+    { nombre: 'el umbral aprobado de 3 pp se afloja a 1 pp',
+      hacer: () => src.replace(
+        '      if (caida < 3) return null;',
+        '      if (caida < 1) return null;') },
+    { nombre: 'el filtro de captura se apaga: una caída sobre avance quieto se da por leíble',
+      hacer: () => src.replace(
+        '                    return !!m && m.suficiente === true && !(m.quietas * 2 > m.cola);',
+        '                    return !!m && m.suficiente === true;') },
+    { nombre: 'el tramo corto se da por legible y la regla se evalúa sin tendencia',
+      hacer: () => src.replace(
+        '                    return !!m && m.suficiente === true && !(m.quietas * 2 > m.cola);',
+        '                    return !!m && !(m.quietas * 2 > m.cola);') },
+    { nombre: 'la regla acusa el movimiento y no la caída: un margen que sube dispara',
+      hacer: () => src.replace(
+        '      const caida = -m.delTramo;              // en puntos porcentuales, positiva si cayó',
+        '      const caida = Math.abs(m.delTramo);') },
+    { nombre: 'el margen a la baja se le muestra también a una dependencia',
+      hacer: () => src.replace(
+        "  'fin_007',                                          // margen bruto, por tendencia\n",
+        '') },
+    { nombre: 'la severidad se aplana: toda caída sale media',
+      hacer: () => src.replace(
+        "      const sev = caida >= 10 ? 'critico' : caida >= 6 ? 'alto' : 'medio';",
+        "      const sev = 'medio';") },
+    { nombre: 'el hallazgo deja de decir con qué número disparó',
+      hacer: () => src.replace(
+        '      const cifra = `−${caida.toFixed(1)}pp`;',
+        "      const cifra = '';") },
+    // La que el preview obligó a escribir: sin esta guarda la pantalla afirma
+    // «cayó 96.2 puntos» sobre el gasto llegando a su propia serie.
+    { nombre: 'el gasto sin fechar vuelve a dar tramo, y la caída del ancla se lee como del margen',
+      hacer: () => src.replace(
+        '  if (!curva?.gastoSinFechar)\n    for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;',
+        '  for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;') },
   ];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'margen-semanal-'));
   let n = 0;
