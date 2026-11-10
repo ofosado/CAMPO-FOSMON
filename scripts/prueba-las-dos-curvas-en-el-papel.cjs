@@ -294,12 +294,18 @@ ok(CURVA.lineas.length > 0 && dibujadaFueraDeLeyenda.length === 0,
 ok(textos.some(t => /Lo que esta gr.fica NO dibuja/.test(t)),
   'y el bloque lleva su rótulo escrito, no implícito en que haya una tabla más');
 
-// Las dos secciones del mandato, con su número. No se renumeran para tapar la
-// 5, que todavía no se escribe.
+// Las dos secciones del mandato, con su número. El número no es decorativo: el
+// mandato las pide numeradas y así se citan en las juntas, así que una sección
+// que se corre de lugar manda a buscar al número equivocado. Mientras la 5
+// faltaba, esta prueba exigía que el hueco se viera; ahora que está escrita, lo
+// que se exige es que NADIE más lleve el 5 —un 5 repetido es la misma mentira
+// que el hueco tapado, nomás al revés.
 ok(textos.some(t => /^3\s/.test(t)), 'la gráfica única sale como sección 3');
 ok(textos.some(t => /^7\s/.test(t)), 'la de la dependencia sale como sección 7');
-ok(!textos.some(t => /^5\s/.test(t)),
-  'y la 5 no está: el hueco se deja a la vista en vez de correr los números');
+const cincos = textos.filter(t => /^5\s/.test(t));
+ok(cincos.length === 1 && /^5\s+RESUMEN FOTOGR/.test(cincos[0]),
+  'y el número 5 lo lleva UNA sola sección, la del resumen fotográfico'
+  + (cincos.length === 1 ? '' : ` — lo llevan ${cincos.length}`));
 
 // ══════════════════════════════════════════════════════════════════════════
 // E · LA FRONTERA DE LA SECCIÓN 7
@@ -687,7 +693,7 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         "        T(t.nombre || '', cx+9, cy);",
         '        T(\'\', cx+9, cy);') },
-    { nombre: 'los números de sección se corren para tapar el hueco de la 5',
+    { nombre: 'la de la dependencia se renumera a 5 y dos secciones llevan el mismo número',
       hacer: () => src.replace(
         "  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,",
         "  y = bloqueDeCurva('5  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,") },

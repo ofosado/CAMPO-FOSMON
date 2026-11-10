@@ -2394,7 +2394,8 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
 // alimenta la pantalla: `calcularKPIsObra` y `presentacionEconomiaObra` para la
 // economía y cómo se dice, `curvaUnicaDeObra` + `comportamientoDelMargen` para
 // la serie semanal, `evaluarRiesgos` para los tres estados, `selloDeTiempo`
-// para la hora. Una cuenta hecha aquí adentro sería una segunda cuenta del
+// para la hora, `seleccionFotografica` para qué fotos respaldan el expediente.
+// Una cuenta hecha aquí adentro sería una segunda cuenta del
 // mismo dato, y entonces este documento y el tablero podrían discrepar sobre la
 // misma obra el mismo día — que es exactamente el defecto que ya se pagó en el
 // margen de la 0121, entregado en positivo donde la pantalla lo daba negativo.
@@ -2411,6 +2412,14 @@ async function generarPDFInterno({
   subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
   otrosGastos = [], nominaHistorial = [], programa = null,
   instante = null, organizacion = null, generadoPor = null,
+  // La evidencia, para la sección 5. `evidenciaCargada` entra como dato por la
+  // misma razón que `estCargadas`: `fsColl` devuelve `[]` cuando la regla niega
+  // o la red falla, así que una lectura fallida y una obra sin fotos llegan
+  // aquí idénticas. Con el valor por omisión la sección declara que no pudo
+  // medir la cobertura, que es la verdad mientras nadie diga lo contrario;
+  // deducirlo de `evidencia.length` publicaría «0% · la evidencia no alcanza»
+  // sobre una lectura denegada, y eso es una acusación con cifra inventada.
+  evidencia = [], evidenciaCargada = false,
   // `estCargadas` entra como dato y NO se deduce de `estimaciones.length`, por
   // la misma razón que en la pantalla de la dependencia: una lista vacía que
   // todavía viaja y una obra sin estimaciones se ven igual desde aquí. Con el
@@ -2960,6 +2969,158 @@ async function generarPDFInterno({
   } else {
     y = nota('No hay detalle de rubros del GP para esta obra en esta lectura. Falta el desglose, '
       + 'no el gasto: el indicador de gasto de la sección 2 dice por su cuenta si está medido.', y);
+  }
+
+  // ═══ 5 · EL RESUMEN FOTOGRÁFICO 80/20 ═════════════════════════════════════
+  //
+  // ESTO NO REIMPRIME EL ÁLBUM, Y NO ES UN AHORRO DE PÁGINAS. El reporte del
+  // cliente ya lleva las fotos; lo que cotea no tiene en ningún lado es el
+  // juicio sobre ellas. Las cuatro cosas que esta sección dice no se pueden
+  // leer hojeando quince fotos, y las cuatro salen medidas de producción
+  // (`scripts/medir-el-resumen-fotografico.cjs --prod`, 2026-11-10):
+  //
+  //   1. EL PORCENTAJE SE PUBLICA SIEMPRE, incluso debajo del piso. El reporte
+  //      del cliente se niega a imprimirlo ahí a propósito —un «45.4%» pelón se
+  //      lee como una medición cumplida cuando lo que dice es que el expediente
+  //      no se sostiene—. Hacia adentro la cifra es justo lo que decide a quién
+  //      se manda a fotografiar: 45 y 0 piden cosas distintas. Hoy son TRES de
+  //      siete obras las que caen ahí (0114 45.4%, 0125 y 0131 en 0.0%), así
+  //      que la diferencia de criterio se ejerce, no se supone.
+  //
+  //   2. DE DÓNDE SALEN LAS FOTOS QUE RESPALDAN, EN AGREGADO. En el reporte del
+  //      cliente el sello va foto por foto, en el pie. Aquí importa el total, y
+  //      el caso que lo justifica es la 0112: **94.6% de cobertura, la mejor de
+  //      la cartera, y sus 270 fotos son de archivo, sin un solo autor**. El
+  //      papel del cliente dice «supera el 80% que este expediente exige» y es
+  //      verdad; lo que no dice —porque no es asunto suyo— es que nada de ese
+  //      respaldo se puede atribuir. Quien va a una junta con ese número tiene
+  //      que saberlo antes, no leyéndose quince pies de foto.
+  //
+  //   3. CUÁNTAS ENSEÑA DE CUÁNTAS HAY. El tope son quince. La 0114 tiene 304 y
+  //      el expediente muestra 15: decir «15 fotos» sin decir «de 304» hace
+  //      creer que quince es lo que hay, y manda a tomar fotos a una obra que
+  //      lo que necesita es que se vean las suyas. Pasa en CINCO de siete.
+  //
+  //   4. LAS PARTIDAS GRANDES SIN UNA SOLA FOTO, con nombre e importe. Es la
+  //      lista de trabajo y es corta por construcción. Las siete obras tienen
+  //      al menos una; la 0125 y la 0131 las tienen TODAS.
+  //
+  // NINGUNA CIFRA NUEVA: todo sale de `seleccionFotografica` —la misma función
+  // que reparte las fotos del reporte del cliente y las de la tarjeta del
+  // tablero— y de `frasesDeCobertura`. Si este papel contara por su cuenta,
+  // diría de un expediente un número que el expediente no dice de sí mismo.
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('5  RESUMEN FOTOGRÁFICO · QUÉ RESPALDA ESTE EXPEDIENTE', y);
+
+  const selFoto = seleccionFotografica({ subs, evidencia, evidenciaCargada,
+                                         tope: TOPE_FOTOS });
+  const cob = selFoto.cobertura;
+
+  y = nota('Aquí no van las fotos: van en el reporte que se entrega al cliente. Lo que va aquí '
+    + 'es el juicio sobre ellas, que ese reporte no puede llevar. El criterio es el mismo de allá '
+    + `—las partidas que acumulan el ${COBERTURA_TECHO}% del importe contratado, de mayor a menor, `
+    + 'y las fotos repartidas en proporción a lo que pesa cada una—, así que lo que se cuenta aquí '
+    + 'es exactamente lo que aquel documento imprime.', y);
+
+  if (!cob.medible) {
+    // NO SE PUBLICA NINGÚN NÚMERO. Sin lectura no hay cobertura, y un 0%
+    // impreso aquí sería indistinguible de una obra sin fotos. Los dos motivos
+    // se distinguen porque piden cosas opuestas: uno se arregla reintentando la
+    // lectura, el otro capturando importes en el catálogo.
+    y = nota('LA COBERTURA NO SE PUDO MEDIR, así que esta sección no publica ningún porcentaje. '
+      + (cob.razon === 'no-leida'
+          ? 'No se pudo leer la evidencia de esta obra. NO quiere decir que no haya fotos: quiere '
+            + 'decir que no se sabe. Se arregla volviendo a abrir la obra, no yendo a fotografiar.'
+          : 'El catálogo de esta obra no tiene importes, y la cobertura se pondera por importe. '
+            + 'Se arregla capturando el catálogo, no yendo a fotografiar.'), y);
+  } else {
+    const colorCob = cob.pct >= COBERTURA_TECHO ? colorSev('bajo')
+      : cob.pct >= COBERTURA_PISO ? colorSev('medio') : colorSev('alto');
+
+    // Las que el expediente ENSEÑARÍA, contra las que existen. `disponibles`
+    // ya lo trae cada partida del reparto: no se vuelve a contar aquí.
+    const conFotos = [...selFoto.partidas, ...selFoto.fuera];
+    const mostradas = conFotos.reduce((t, p) => t + p.fotos.length, 0);
+    const haber = conFotos.reduce((t, p) => t + p.disponibles, 0);
+    const deArchivo = conFotos
+      .flatMap(p => p.fotos)
+      .filter(f => !selloDeEvidencia(f).verificada).length;
+
+    y = kpiRow([
+      ['Cobertura del contrato', PCT(cob.pct),
+        `${cob.partidasConFoto} de ${cob.partidas} partidas con foto`, colorCob],
+      ['Corte del 80%', String(cob.hastaTecho),
+        'partidas que hay que cubrir', Q.piz],
+      ['Sin una sola foto', String(selFoto.sinEvidencia.length),
+        'de ese corte', selFoto.sinEvidencia.length ? colorSev('alto') : colorSev('bajo')],
+      ['Fotos que enseña', `${mostradas} de ${haber}`,
+        haber > mostradas ? `${haber - mostradas} no se ven en el expediente` : 'todas caben',
+        haber > mostradas ? colorSev('medio') : Q.mu],
+    ], y);
+
+    // POR QUÉ ESTE NÚMERO NO ESTÁ EN EL PAPEL DEL CLIENTE. Se dice sólo cuando
+    // de verdad difieren: repetirlo arriba del piso sería ruido, y un lector
+    // que ve la nota siempre deja de leerla el día que importa.
+    if (cob.pct < COBERTURA_PISO)
+      y = nota(`El reporte que se entrega al cliente NO imprime este ${PCT(cob.pct)}: allá dice `
+        + '«la evidencia fotográfica no alcanza para respaldar este expediente» y se queda ahí, '
+        + 'porque un porcentaje suelto debajo del piso se lee como una medición cumplida. Aquí sí '
+        + 'va el número, porque hacia adentro es lo que decide a dónde se manda a fotografiar: '
+        + 'una obra en 45% y una en 0% necesitan cosas distintas.', y);
+
+    // EL ORIGEN, EN AGREGADO. El caso que obliga a escribirlo es una obra con
+    // cobertura alta y respaldo sin autor: el número cumple y no se puede
+    // atribuir. Las dos frases están separadas porque son dos severidades.
+    if (mostradas > 0) {
+      st(Q.ng); fs(FS_SEC); fw('bold');
+      T('De dónde salen las fotos que respaldan', ML, y + 4);
+      y += 7;
+      y = nota(`Las ${mostradas} que el expediente enseña: ${fraseOrigenEvidencia(
+          conFotos.flatMap(p => p.fotos))}. `
+        + (deArchivo === mostradas
+            ? 'TODAS son de archivo: se subieron antes de que la app registrara quién tomaba cada '
+              + 'foto, y ese dato no se puede reconstruir. La cobertura de arriba es real y el '
+              + 'respaldo existe; lo que no se puede es atribuirlo a nadie. Un reporte que firma '
+              + 'un residente se apoya hoy en fotos sin autor, y eso se sabe antes de la junta.'
+            : deArchivo > 0
+            ? `${deArchivo} de ellas son de archivo, sin autor que se pueda acreditar; el resto se `
+              + 'capturó en la app, con hora de servidor y con quién la tomó.'
+            : 'Todas se capturaron en la app, con hora de servidor y con quién la tomó.'), y);
+    }
+
+    // CUÁNTAS NO SE VEN. Va aparte del indicador porque el indicador da el
+    // número y esto dice qué hacer con él, que es lo contrario de lo que el
+    // número sugiere a primera vista.
+    if (haber > mostradas)
+      y = nota(`Esta obra tiene ${haber} fotografías vigentes y el expediente enseña ${mostradas}: `
+        + `el tope del reparto es ${TOPE_FOTOS}. Las otras ${haber - mostradas} existen y están `
+        + 'guardadas; no aparecen impresas. Lo que le falta a esta obra NO es tomar más fotos.', y);
+
+    // LA LISTA DE TRABAJO. En tabla y con importe, por la misma razón que en el
+    // reporte del cliente: tres obras de producción tienen el corte entero en
+    // huecos, y media docena de páginas de cajas vacías se hojean sin leerse.
+    if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+    st(Q.ng); fs(FS_SEC); fw('bold');
+    T(`Partidas del corte del ${COBERTURA_TECHO}% SIN una sola fotografía`, ML, y + 4);
+    y += 7;
+    if (selFoto.sinEvidencia.length) {
+      y = autoT(
+        ['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
+        selFoto.sinEvidencia.map(p => [
+          p.s?.sec || '—',
+          String(p.s?.sub || '').slice(0, 64),
+          MXN(p.imp),
+          PCT(p.pesoPct),
+          Number.isFinite(parseFloat(p.s?.a)) ? PCT(parseFloat(p.s.a), 0) : 'sin avance',
+        ]),
+        [24, 125, 44, 28, 30], ML, y,
+        { bodyStyles: { fontSize: FS_SM },
+          columnStyles: { 2:{halign:'right'}, 3:{halign:'right'}, 4:{halign:'right'} } });
+    } else {
+      y = nota(`Ninguna: las ${cob.hastaTecho} partidas que hacen falta para llegar al `
+        + `${COBERTURA_TECHO}% tienen al menos una fotografía.`, y);
+    }
   }
 
   // ═══ 6 · INDICADORES DE RIESGO, EN TRES ESTADOS ═══════════════════════════
@@ -28185,6 +28346,7 @@ export default function App(){
             obra, subs, estimaciones, estCargadas, maquinaria, materiales, subcontratos,
             historialAvance, gpData, gpDetalle: detalle, otrosGastos,
             nominaHistorial, programa: programaObra, instante,
+            evidencia, evidenciaCargada,
             organizacion: nombreOrg(marca, usuario),
             generadoPor: usuario?.nombre || usuario?.email || null,
           });
