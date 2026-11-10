@@ -37,8 +37,10 @@
 //   E. Las cuatro reglas que detectan la AUSENCIA de un dato no pueden
 //      exigirlo: exigírselo las volvería no evaluables justo en el único caso
 //      en que tienen algo que decir.
-//   F. `detectarRiesgos` sigue devolviendo exactamente lo que devolvía. Las dos
-//      pantallas que lo llaman no cambian de conducta en este lote.
+//   F. La lista de los que disparan es SIEMPRE un recorte de un veredicto más
+//      grande, nunca la respuesta entera. (Se dio vuelta en el #127: antes
+//      exigía que el atajo `detectarRiesgos` no cambiara; ahora el atajo no
+//      existe porque el tablero dejó de conformarse con un cuarto.)
 //
 // NO REIMPLEMENTA. El motor entero sale de `src/App.jsx` por `fuenteDe` —cierre
 // transitivo, no una lista tecleada— y se EJECUTA.
@@ -64,7 +66,7 @@ const ok = (c, m) => { if (c) { verdes++; console.log(`  ok   ${m}`); }
                        else { fallas++; console.log(`FALLA  ${m}`); } };
 
 // ── EL MOTOR VIVO ──────────────────────────────────────────────────────────
-const PEDIDOS = ['evaluarRiesgos', 'detectarRiesgos', 'BIBLIOTECA_RIESGOS',
+const PEDIDOS = ['evaluarRiesgos', 'BIBLIOTECA_RIESGOS',
   'RIESGOS_SOLO_CONSTRUCTORA', 'DATOS_DEL_RIESGO', 'MOTIVO_SIN_GASTO'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 if (faltan.length) {
@@ -72,7 +74,7 @@ if (faltan.length) {
   process.exit(2);
 }
 const APP = new Function(`"use strict";\n${cuerpo}\nreturn { ${PEDIDOS.join(', ')} };`)();
-const { evaluarRiesgos, detectarRiesgos, BIBLIOTECA_RIESGOS,
+const { evaluarRiesgos, BIBLIOTECA_RIESGOS,
         RIESGOS_SOLO_CONSTRUCTORA, DATOS_DEL_RIESGO, MOTIVO_SIN_GASTO } = APP;
 
 const TOTAL = BIBLIOTECA_RIESGOS.length;
@@ -260,20 +262,33 @@ ok(['ctr_001', 'ctr_002', 'cmp_001', 'cmp_002']
     .every(id => (BIBLIOTECA_RIESGOS.find(p => p.id === id)?.requiere || []).length === 0),
   'y las cuatro declaran que no dependen de ningún dato');
 
-console.log('\n── F · `detectarRiesgos` NO CAMBIÓ DE CONDUCTA ─────────────────────\n');
+console.log('\n── F · LOS QUE DISPARAN NUNCA SON TODA LA RESPUESTA ────────────────\n');
 
+// ESTA SECCIÓN SE DIO VUELTA EN EL #127, por el mismo motivo que la hizo
+// nacer. Cuando se escribió existía `detectarRiesgos` —un atajo que devolvía
+// sólo `detectados`— y aquí se exigía que siguiera dando lo de siempre, porque
+// en ESE lote las pantallas no cambiaban. En el #127 cambiaron: las dos piden
+// el veredicto completo, y el atajo se fue por no quedarle quien lo llamara.
+//
+// Exigir hoy que el atajo exista sería exigir que el tablero pueda volver a
+// quedarse con un cuarto de la respuesta. Lo que se exige es lo que no puede
+// dejar de ser cierto: que la lista de los que disparan sea SIEMPRE un recorte
+// de un veredicto más grande, para que nadie la publique como si fuera el todo.
 for (const [nombre, ctx] of [['contexto vacío', {}], ['sin GP', sinGP],
                              ['cero medido', medidoCero], ['con dinero', conDinero],
                              ['dependencia', { ...conDinero, tipo: 'dependencia' }]]) {
-  const viejo = detectarRiesgos(ctx);
-  const nuevo = evaluarRiesgos(ctx).detectados;
-  ok(JSON.stringify(ids(viejo)) === JSON.stringify(ids(nuevo)),
-    `«${nombre}»: detectarRiesgos devuelve los mismos [${ids(viejo).join(', ') || '—'}]`);
+  const v = evaluarRiesgos(ctx);
+  const callados = v.sinHallazgo.length + v.noEvaluables.length + v.reventaron.length;
+  const aplican = TOTAL - (ctx.tipo === 'dependencia' ? RIESGOS_SOLO_CONSTRUCTORA.size : 0);
+  ok(v.detectados.length + callados === aplican && callados > 0,
+    `«${nombre}»: disparan ${v.detectados.length} de ${aplican}; las otras ${callados} ` +
+    'se callan, y el veredicto dice por qué cada una');
 }
 // El orden por severidad descendente, que es lo que el banner del tablero lee.
-const sev = ids(detectarRiesgos(conDinero));
+const sev = ids(evaluarRiesgos(conDinero).detectados);
 ok(sev.length > 1, `con dinero disparan ${sev.length} reglas: [${sev.join(', ')}]`);
-const pesos = detectarRiesgos(conDinero).map(x => ({ bajo: 1, medio: 2, alto: 3, critico: 4 })[x.severidad] || 0);
+const pesos = evaluarRiesgos(conDinero).detectados
+  .map(x => ({ bajo: 1, medio: 2, alto: 3, critico: 4 })[x.severidad] || 0);
 ok(pesos.every((p, i) => i === 0 || pesos[i - 1] >= p),
   `y salen de más grave a menos grave: [${pesos.join(' ')}]`);
 

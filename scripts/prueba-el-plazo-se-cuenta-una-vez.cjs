@@ -61,7 +61,7 @@ noArranco.vigilarExcepciones(__filename);
 
 const PEDIDOS = [
   'plazoDeObra', 'frasePlazoRestante', 'finVigenteDe',
-  'detectarRiesgos', 'BIBLIOTECA_RIESGOS',
+  'evaluarRiesgos', 'BIBLIOTECA_RIESGOS',
   'velocidadSemanalGP', 'hoyLocalISO', 'fechaLocalDeISO', 'fechaEnZonaObra',
   'C', 'MXN',
 ];
@@ -295,7 +295,7 @@ function correr(fuente) {
   if (!process.env.CALLADO) console.log('\n§4 · `fin_006` lee el mismo plazo que la tarjeta');
 
   const riesgos = (o, gasto) =>
-    conReloj(MEDIODIA, () => A.detectarRiesgos(contextoGP(o, gasto)));
+    conReloj(MEDIODIA, () => A.evaluarRiesgos(contextoGP(o, gasto)).detectados);
   const de = (lista, id) => lista.find(r => r.id === id) || null;
 
   // Presupuesto chico y quema alta: la regla tiene que disparar, y su `extra`
@@ -350,7 +350,7 @@ function correr(fuente) {
   // Y la regla tampoco puede depender de la hora.
   const disparos = new Set();
   for (let h = 0; h < 24; h++) {
-    const l = conReloj(aLas(h), () => A.detectarRiesgos(contextoGP(enPlazo, 400_000)));
+    const l = conReloj(aLas(h), () => A.evaluarRiesgos(contextoGP(enPlazo, 400_000)).detectados);
     disparos.add(de(l, 'fin_006')?.extra ?? '(callada)');
   }
   check(disparos.size === 1,

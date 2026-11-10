@@ -249,7 +249,7 @@ const NECESARIOS = [
   'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
   'LEXICO', 'lexico', 'PASOS_DEPENDENCIA_BASE', 'PASOS_BIENVENIDA', 'pasosDe',
   'useGPConstruct',
-  'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'detectarRiesgos', 'SEVERIDADES',
+  'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'evaluarRiesgos', 'SEVERIDADES',
   'ALERTA_REGLAS',
   'CLAVES_BULK', 'CLAVES_BULK_DEPENDENCIA', 'datosObraCompletos',
   'MXN', 'avanceFisicoPonderado', 'heImporte',
@@ -538,16 +538,20 @@ const montarGP = () => {
 
   // EL MOTOR SE PIDE POR LA PUERTA, NO SE ARMA A MANO. Aquí había una docena de
   // `const X = ${decl['X']}` escritos uno por uno, y el banco dejó de arrancar
-  // en cuanto `detectarRiesgos` pasó a apoyarse en una pieza nueva: la lista
-  // tecleada no sabía de ella. `fuenteDe` ya calcula el cierre transitivo de lo
-  // que una función necesita, así que la lista deja de existir y con ella el
-  // modo de fallar. `noArranco` sigue cubriendo el caso de que falte un símbolo.
+  // en cuanto el motor pasó a apoyarse en una pieza nueva: la lista tecleada no
+  // sabía de ella. `fuenteDe` ya calcula el cierre transitivo de lo que una
+  // función necesita, así que la lista deja de existir y con ella el modo de
+  // fallar. `noArranco` sigue cubriendo el caso de que falte un símbolo.
   const { cuerpo: fuenteMotor } = require('./extraer-de-app.cjs')
-    .fuenteDe(archivo, ['evaluarRiesgos', 'detectarRiesgos', 'ALERTA_REGLAS',
+    .fuenteDe(archivo, ['evaluarRiesgos', 'ALERTA_REGLAS',
                         'avanceProgramadoA', 'fechaEnZonaObra']);
   const motor = new Function(`"use strict";
     ${fuenteMotor}
-    return { evaluarRiesgos, detectarRiesgos, ALERTA_REGLAS };`)();
+    return { evaluarRiesgos, ALERTA_REGLAS };`)();
+  // Los que DISPARAN, que es lo que esta sección mira. El #127 se llevó el
+  // atajo `detectarRiesgos` cuando el tablero dejó de conformarse con él; el
+  // recorte por `tipo` que aquí se comprueba vive en `evaluarRiesgos`.
+  const disparan = (ctx) => motor.evaluarRiesgos(ctx).detectados;
 
   // Una obra con margen negativo, nómina cara y sin captura reciente: da
   // material a los detectores de las dos familias a la vez.
@@ -570,8 +574,8 @@ const montarGP = () => {
   };
   const kpisC = { me: 2800000, gt: 8000000, mpct: -185, af: 28, pctGasto: 80, brecha: 52 };
 
-  const riesgosC = motor.detectarRiesgos({ ...ctxBase, kpis: kpisC });
-  const riesgosD = motor.detectarRiesgos({
+  const riesgosC = disparan({ ...ctxBase, kpis: kpisC });
+  const riesgosD = disparan({
     tipo: 'dependencia', obra, subs,
     estimaciones: ctxBase.estimaciones, historialAvance: [],
     kpis: { af: 28, me: 2800000 },
@@ -598,7 +602,7 @@ const montarGP = () => {
   // "margen 100%". Así que se le entrega a propósito el contexto COMPLETO de
   // constructora marcado como dependencia: si algo se cuela, es el filtro el
   // que falló, y no hay excusa de dato ausente.
-  const riesgosDconDatos = motor.detectarRiesgos({ ...ctxBase, tipo: 'dependencia', kpis: kpisC });
+  const riesgosDconDatos = disparan({ ...ctxBase, tipo: 'dependencia', kpis: kpisC });
   const coladosConDatos = riesgosDconDatos.filter(r => FAMILIAS_VEDADAS.test(r.id));
   check(coladosConDatos.length === 0,
     'aun entregándole los datos del gasto, la biblioteca se niega a emitirlos',
@@ -705,7 +709,7 @@ const montarGP = () => {
   // existen en las plantillas, no una muestra, porque el que se cuele va a ser
   // justo el que no se le ocurrió a nadie.
   const destinosBiblioteca = [...new Set(
-    motor.detectarRiesgos({ ...ctxBase, kpis: kpisC })
+    disparan({ ...ctxBase, kpis: kpisC })
       .concat(riesgosD)
       .map(r => JSON.stringify([r.tab, r.subTab || null])))].map(JSON.parse);
   const fugas = [];

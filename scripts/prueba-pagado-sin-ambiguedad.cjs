@@ -137,7 +137,7 @@ check(!casi(r.montoAtrasado, 20_000_000),
 check(r.diasPago === 30, 'el plazo sale del contrato, no de una constante', String(r.diasPago));
 
 // Una obra sin `diasPago` no puede quedarse sin plazo ni tomar uno inventado
-// distinto del que usa el resto de la app (30 días, como en detectarRiesgos).
+// distinto del que usa el resto de la app (30 días, como en el motor de riesgos).
 const sinPlazo = montar({ ...obra, diasPago: undefined }, est);
 check(sinPlazo.diasPago === 30, 'sin plazo en el contrato usa 30 días, el mismo default del resto');
 
