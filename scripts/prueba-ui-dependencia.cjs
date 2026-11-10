@@ -536,19 +536,18 @@ const montarGP = () => {
   const { cuerpo: cuentaProgramado } =
     require('./extraer-de-app.cjs').fuenteDe(archivo, ['avanceProgramadoA', 'fechaEnZonaObra']);
 
+  // EL MOTOR SE PIDE POR LA PUERTA, NO SE ARMA A MANO. Aquí había una docena de
+  // `const X = ${decl['X']}` escritos uno por uno, y el banco dejó de arrancar
+  // en cuanto `detectarRiesgos` pasó a apoyarse en una pieza nueva: la lista
+  // tecleada no sabía de ella. `fuenteDe` ya calcula el cierre transitivo de lo
+  // que una función necesita, así que la lista deja de existir y con ella el
+  // modo de fallar. `noArranco` sigue cubriendo el caso de que falte un símbolo.
+  const { cuerpo: fuenteMotor } = require('./extraer-de-app.cjs')
+    .fuenteDe(archivo, ['evaluarRiesgos', 'detectarRiesgos', 'ALERTA_REGLAS',
+                        'avanceProgramadoA', 'fechaEnZonaObra']);
   const motor = new Function(`"use strict";
-    ${cuentaProgramado}
-    const MXN = ${decl['MXN']};
-    const SEVERIDADES = ${decl['SEVERIDADES']};
-    const heImporte = ${decl['heImporte']};
-    const importeCatalogoPartida = ${decl['importeCatalogoPartida']};
-    const importeEjecutadoPartida = ${decl['importeEjecutadoPartida']};
-    const avanceFisicoPonderado = ${decl['avanceFisicoPonderado']};
-    const BIBLIOTECA_RIESGOS = ${decl['BIBLIOTECA_RIESGOS']};
-    const RIESGOS_SOLO_CONSTRUCTORA = ${decl['RIESGOS_SOLO_CONSTRUCTORA']};
-    const detectarRiesgos = ${decl['detectarRiesgos']};
-    const ALERTA_REGLAS = ${decl['ALERTA_REGLAS']};
-    return { detectarRiesgos, ALERTA_REGLAS };`)();
+    ${fuenteMotor}
+    return { evaluarRiesgos, detectarRiesgos, ALERTA_REGLAS };`)();
 
   // Una obra con margen negativo, nómina cara y sin captura reciente: da
   // material a los detectores de las dos familias a la vez.
