@@ -10670,6 +10670,111 @@ function loadObras() {
   return [];
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// EL ESTADO DE UNA OBRA SE GUARDA, O NO SE PROMETE
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Medido en producción el 2026-11-10 (`medir-que-hace-archivar-una-obra.cjs`,
+// sólo lectura): las 7 obras vivas traen `estado: "activa"` guardado y
+// NINGUNA trae `"archivada"`. O sea que archivar nunca persistió: escribía un
+// retrato en `global/historial_obras` y después `setObras(...)`, que es estado
+// de React. Duraba lo que durara la pestaña. Y los 8 retratos que hay son 4
+// pares duplicados de dos obras demo —SCT01 y MUN01, archivadas cuatro veces
+// cada una en mayo—, que es la huella de alguien dándole al botón otra vez
+// porque la obra había vuelto sola.
+//
+// LOS DOS DOCUMENTOS, SIEMPRE, y aquí está la trampa que hace falta nombrar:
+// el estado vive duplicado en `obras/{id}` —el que lista el portafolio— y en
+// `obras/{id}/config/info`. Al hidratar, el merge es `{...o, ...info}`, así
+// que **`config/info` LE GANA a la raíz**. Escribir sólo la raíz deja un
+// cierre que se revierte solo en el siguiente login, sin un error, sin una
+// franja, sin nada: el mismo defecto que esta función viene a cerrar, en la
+// única versión que no se ve al probarla a mano en la misma pestaña.
+//
+// EL QUIÉN ESCRIBE LLEGA POR PARÁMETRO, y no es ceremonia: es lo único que
+// hace esta decisión comprobable. Dentro del componente, `escribir` es `fsSetA`
+// —el que audita—; en el banco es una función que anota a qué ruta le tocó qué,
+// y así la prueba EJECUTA que los dos documentos reciben el estado en vez de
+// leer el código y creerle. También `ahoraISO`: un `new Date()` por dentro
+// haría que el sello no se pudiera afirmar.
+const ESTADOS_DE_OBRA = ['activa', 'pausada', 'cerrada', 'archivada'];
+
+const guardarEstadoDeObra = async (obra, estado, usuario, ahoraISO, escribir) => {
+  if (!obra?.id || !ESTADOS_DE_OBRA.includes(estado)) return null;
+  // El sello va en los DOS, y no sólo el `estado`: si la raíz llevara la fecha
+  // y `config/info` no, el merge de la hidratación la borraría —gana `info`— y
+  // la obra quedaría cerrada sin decir desde cuándo ni por quién. Una insignia
+  // que no puede fechar su propio cierre es la etiqueta, no el cierre.
+  const info = {
+    estado,
+    estadoDesde: ahoraISO,
+    estadoPor: usuario?.correo || usuario?.email || '',
+    estadoPorNombre: usuario?.nombre || '',
+  };
+  const ctx = { modulo: 'obras', entidad: `estado → ${estado}`,
+                obraId: obra.id, obraNombre: obra.contrato || obra.nombre };
+  // `config/info` PRIMERO, y el orden es la decisión, no el estilo: al hidratar
+  // gana `info` sobre la raíz. Si de las dos escrituras sólo entra una, que
+  // entre la que decide. Al revés, el cierre se revertiría en el siguiente
+  // login sin un error de por medio.
+  const okInfo = await escribir(`obras/${obra.id}/config/info`, info, ctx);
+  // `id` en la raíz porque es el documento que lista el portafolio y un
+  // `setDoc` con merge sobre una obra que todavía no tiene raíz la dejaría sin
+  // clave, invisible en la lista.
+  const okRaiz = await escribir(`obras/${obra.id}`, { id: obra.id, ...info }, ctx);
+  return { ok: !!(okInfo && okRaiz), estado, info };
+};
+
+// ── EL CIERRE SE NOTA, Y DICE DESDE CUÁNDO Y POR QUIÉN ─────────────────────
+//
+// La insignia sola no es un cierre: «CERRADA» en gris es una etiqueta, y una
+// etiqueta no responde la única pregunta que se le hace a una obra cerrada —
+// «¿quién la cerró y cuándo?»— que es justamente la que se hace cuando alguien
+// la encuentra cerrada y no esperaba encontrarla así.
+//
+// Y las obras que ya estaban archivadas antes de este cambio NO tienen sello:
+// `archivar` nunca lo escribió. Ésas lo dicen, no se callan y no rellenan. Es
+// la misma regla de `instanteGuardado` unas 4 mil líneas arriba: ausente e
+// ilegible no son el mismo estado y no se imprimen igual.
+//
+// Fuera del JSX por la razón de siempre: una frase decidida dentro del render
+// no se puede ejecutar en un banco.
+const VERBO_DE_ESTADO = { cerrada: 'Cerrada', archivada: 'Archivada' };
+
+const selloDeEstadoLegible = (obra) => {
+  const verbo = VERBO_DE_ESTADO[obra?.estado];
+  if (!verbo) return '';
+  const quien = obra.estadoPorNombre || obra.estadoPor || '';
+  const sufijo = quien ? ` · ${quien}` : '';
+  if (!obra.estadoDesde) return `${verbo} sin registro de cuándo ni por quién`;
+  const d = instanteGuardado(obra.estadoDesde);
+  if (!d) return `${verbo}, con fecha ilegible${sufijo}`;
+  return `${verbo} el ${d.toLocaleDateString('es-MX')}${sufijo}`;
+};
+
+// ── «3 OBRAS ACTIVAS» DEJA DE SER CIERTO EN CUANTO UNA SE CIERRA ──────────
+//
+// Tres sitios rotulaban la misma lista —las NO archivadas— como «obras
+// activas», y hasta hoy eso era verdad porque los únicos dos estados que se
+// guardaban eran `activa` y nada. Con el cierre guardándose, la lista puede
+// traer cerradas, y el número NO cambia: la obra tiene que seguir en el
+// tablero, que es precisamente la condición para poder sumar su facturación
+// del año. Lo que cambia es la palabra. Llamar activa a una obra cerrada es
+// una afirmación falsa aunque la cuenta esté bien, y de las dos cosas que un
+// rótulo dice —cuántas y de qué— ésta se estaba equivocando en la segunda.
+//
+// Una frase para los tres sitios: el saludo, el panel de constructora y el de
+// dependencia decían lo mismo con tres expresiones distintas.
+const fraseObrasDelTablero = (obras) => {
+  const lista = Array.isArray(obras) ? obras : [];
+  const n = lista.length;
+  const cerradas = lista.filter((o) => o?.estado === 'cerrada').length;
+  const s = n === 1 ? '' : 's';
+  if (!cerradas) return `${n} obra${s} activa${s}`;
+  if (cerradas === n) return `${n} obra${s} cerrada${s}`;
+  return `${n} obra${s} · ${cerradas} cerrada${cerradas === 1 ? '' : 's'}`;
+};
+
 // Sin catálogo hardcodeado. Cada obra debe cargar su catálogo desde el módulo Presupuesto.
 const SUBS_INIT = [];
 
@@ -13407,7 +13512,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   return (
     <Card accent={C.caliza} style={{marginBottom:10}}>
       <div style={{marginBottom:12}}>
-        <Tit>Panel principal — {activas.length} obras activas</Tit>
+        <Tit>Panel principal — {fraseObrasDelTablero(activas)}</Tit>
         <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
           Consolidado, excepciones y ranking por margen
         </div>
@@ -14013,7 +14118,7 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
   return (
     <Card accent={C.caliza} style={{marginBottom:10}}>
       <div style={{marginBottom:12}}>
-        <Tit>Panel principal — {activas.length} obra{activas.length!==1?'s':''} activa{activas.length!==1?'s':''}</Tit>
+        <Tit>Panel principal — {fraseObrasDelTablero(activas)}</Tit>
         <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
           Contrato, avance y pendientes de captura
         </div>
@@ -14142,14 +14247,27 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   catalogoGP=null,catalogoEstado='cargando',catalogoError='',catalogoCargando=false,onRefreshCatalogo=null}){
   // Si obras es undefined o no es array, normalizar a array vacío para evitar crashes
   if(!obras||!Array.isArray(obras)) obras = [];
-  const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,archivada:C.textMut};
-  // `puedeGestionar` NO se abre a dependencia, y la omisión es deliberada: con
-  // él van archivar, reactivar y el Historial, y esos tres no persisten —
-  // `archivar` escribe `global/historial_obras` y mueve el estado en memoria,
-  // pero nunca toca `obras/{id}`; `reactivar` sólo toca memoria—. Al recargar,
-  // la obra vuelve a estar activa. Ofrecerlos del lado dependencia sería
-  // prometer un archivado que no existe. Es defecto aparte (ver PENDIENTES) y
-  // afecta también a constructora, así que no se arregla de paso aquí.
+  // `cerrada` en azul, no en gris: una obra cerrada es el final bueno de una
+  // obra —se acabó y se entregó— y archivada es sacarla de la vista. Pintarlas
+  // del mismo gris apagado haría que terminar una obra se viera como guardarla
+  // en un cajón. `terminada` no la escribe nadie para una obra —es vocabulario
+  // de otras entidades— y se deja intacta: borrarla de aquí sólo lograría que,
+  // si algún documento viejo la trae, la insignia caiga al `||C.caliza`.
+  const ec={activa:C.green,terminada:C.blue,pausada:C.yellow,cerrada:C.blueDk,archivada:C.textMut};
+  // `puedeGestionar` NO se abre a dependencia, y la omisión es deliberada: el
+  // estado de la obra es del constructor, y del lado dependencia ofrecer el
+  // botón sería ofrecerle mover algo que no es suyo.
+  //
+  // Los DOS roles que lo tienen —director de operaciones y gerente de
+  // construcción— son `todas_obras:true`, así que esta lista YA es «sólo
+  // directivos», que es la condición que se le pidió a reabrir: se cumple por
+  // construcción y no por una segunda guarda paralela que mañana se
+  // desincronice de ésta.
+  //
+  // Y es más estrecha que «directivo»: el Director General y el Administrador
+  // de Sistema también son `todas_obras:true` y aquí NO entran. Era así para
+  // archivar desde antes y se deja igual — ensanchar el permiso de paso, sin
+  // que nadie lo pidiera, es otro cambio.
   const puedeGestionar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   const puedeEliminar=["director_operaciones","gerente_construccion"].includes(usuario.rol);
   // El alta sí, por los dos lados. Fuente única: `puedeAltaObra`.
@@ -14197,20 +14315,54 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     return l.sort((a,b)=>a.nombre.localeCompare(b.nombre));
   };
 
+  // ── LOS DOS DOCUMENTOS, O NO SE MUEVE LA PANTALLA ────────────────────────
+  //
+  // La pantalla se mueve SÓLO si entraron las dos escrituras. Es la misma regla
+  // que `guardarDatos` del módulo de contrato: dejar la insignia en «CERRADA»
+  // habiendo perdido una escritura es exactamente la avería que esta rama viene
+  // a cerrar. Cuál se cayó lo dice la franja de escrituras perdidas, que es lo
+  // que `fsSetA` levanta al fallar, además de dejar el renglón de auditoría —el
+  // «queda registrado» que se le pidió a reabrir—.
+  const aplicarEstado=async(obra,estado)=>{
+    const r=await guardarEstadoDeObra(obra,estado,usuario,new Date().toISOString(),fsSetA);
+    if(r?.ok) setObras(oo=>oo.map(o=>o.id===obra.id?{...o,...r.info}:o));
+    return r;
+  };
+
+  // El retrato del historial lleva el MISMO sello que la obra, y por eso lo
+  // toma del resultado en vez de calcular su propia fecha: dos `new Date()` en
+  // la misma acción pueden caer en segundos distintos, y entonces el historial
+  // y la insignia discreparían sobre cuándo se archivó. `archivedAt` se
+  // conserva porque el Historial lo lee.
   const archivar=async(id)=>{
-    const snap=JSON.stringify(obras.find(o=>o.id===id));
+    const obra=obras.find(o=>o.id===id);
+    if(!obra) return;
+    const r=await aplicarEstado(obra,"archivada");
+    if(!r?.ok){setConfirmarArchivar(null);return;}
     try{
       const histPrev = await fsGet("global/historial_obras") || {obras:[]};
-      const snap2 = obras.find(o=>o.id===id);
-      histPrev.obras.push({...snap2,archivedAt:new Date().toISOString(),estado:"archivada"});
+      histPrev.obras.push({...obra,...r.info,archivedAt:r.info.estadoDesde});
       await fsSet("global/historial_obras", histPrev);
     }catch(e){console.error('archivar',e);}
-    setObras(oo=>oo.map(o=>o.id===id?{...o,estado:"archivada"}:o));
     setConfirmarArchivar(null);
   };
 
-  const reactivar=(id)=>{
-    setObras(oo=>oo.map(o=>o.id===id?{...o,estado:"activa"}:o));
+  // Cerrar y reabrir son el mismo movimiento con distinto destino, y ninguno de
+  // los dos tiene un paso de confirmación aparte: los dos son reversibles por
+  // el botón de enfrente y los dos quedan registrados con nombre y fecha.
+  // Archivar sí lo tiene, porque saca la obra de la lista.
+  //
+  // `reabrir` es uno solo para los dos regresos —desde cerrada y desde
+  // archivada— porque son el mismo hecho: la obra vuelve a estar activa, con
+  // quién y cuándo. Dos funciones idénticas con nombres distintos sólo dan la
+  // oportunidad de arreglar una y dejar la otra.
+  const cerrar=(id)=>{
+    const obra=obras.find(o=>o.id===id);
+    if(obra) aplicarEstado(obra,"cerrada");
+  };
+  const reabrir=(id)=>{
+    const obra=obras.find(o=>o.id===id);
+    if(obra) aplicarEstado(obra,"activa");
   };
 
   const iniciarEliminar=(obra)=>{
@@ -14422,7 +14574,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
               mismo en la misma pantalla y salían de dos reglas distintas. */}
           {ROL_LABEL[usuario.rol]}
           {nombreOrg(marca, usuario) && ` · ${nombreOrg(marca, usuario)}`}
-          {' · '}{activas.length} obra(s) activa(s)
+          {' · '}{fraseObrasDelTablero(activas)}
         </div>
         {/* Chip de frescura del gasto de GP. UNA sola píldora con dos
             variantes: frescura cuando hay dato (verde/amarillo/rojo por
@@ -14578,6 +14730,13 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       const nombreShort = resolverNombreCortoObra(o, gpData);
       const col=ec[o.estado]||C.caliza;
       const archivada=o.estado==="archivada";
+      // Cerrada NO es archivada: sigue en la lista, sigue abriéndose, sigue
+      // sumando al portafolio del año. Lo que cambia es que ya no se captura
+      // contra ella —y eso lo sostiene la regla de Firestore, no esta
+      // variable—. Por eso `archivada` se queda como está y el cierre entra
+      // como una condición aparte en lugar de ampliarla.
+      const cerrada=o.estado==="cerrada";
+      const sello=selloDeEstadoLegible(o);
       return <div key={o.id} style={{background:C.card,border:`0.5px solid ${archivada?"rgba(255,254,249,0.05)":C.border}`,
         borderRadius:10,padding:"14px 16px",opacity:archivada?0.7:1,
         cursor:archivada?"default":"pointer",transition:"border-color .15s"}}
@@ -14607,6 +14766,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
                 tolera el hueco (`ec[o.estado]||C.caliza`), así que el color ya
                 estaba resuelto y sólo faltaba el texto. */}
             <Bdg color={col}>{(o.estado||'activa').toUpperCase()}</Bdg>
+            {/* El sello va ARRIBA de «Act:», y no debajo, porque cuando una
+                obra está cerrada la fecha de su última actualización dejó de
+                ser la noticia. */}
+            {sello && <span style={{fontSize:9,color:col,fontWeight:600,textAlign:"right"}}>{sello}</span>}
             {o.ultimaAct && <span style={{fontSize:9,color:C.textMut}}>Act: {o.ultimaAct}</span>}
           </div>
         </div>
@@ -14695,15 +14858,23 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:10,color:C.textMut}}>
           <span>{o.superintendente}</span>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {puedeGestionar&&!archivada&&!cerrada&&<button onClick={e=>{e.stopPropagation();cerrar(o.id);}}
+              style={{background:"none",border:`0.5px solid ${alfa(C.blueDk,25)}`,borderRadius:4,
+                padding:"2px 7px",fontSize:9,color:C.blueDk,cursor:"pointer"}}>
+              Cerrar obra
+            </button>}
             {puedeGestionar&&!archivada&&<button onClick={e=>{e.stopPropagation();setConfirmarArchivar(o);}}
               style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
                 padding:"2px 7px",fontSize:9,color:C.red,cursor:"pointer"}}>
               Archivar
             </button>}
-            {puedeGestionar&&archivada&&<button onClick={e=>{e.stopPropagation();reactivar(o.id);}}
+            {/* Un solo botón para los dos regresos, con el rótulo que
+                corresponde: «Reactivar» desde el cajón, «Reabrir» desde el
+                cierre. El hecho es el mismo y la función es la misma. */}
+            {puedeGestionar&&(archivada||cerrada)&&<button onClick={e=>{e.stopPropagation();reabrir(o.id);}}
               style={{background:"none",border:`1px solid ${C.greenBg}`,borderRadius:4,
                 padding:"2px 7px",fontSize:9,color:C.greenDk,cursor:"pointer"}}>
-              Reactivar
+              {archivada?"Reactivar":"Reabrir"}
             </button>}
             {puedeEliminar&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
               style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
