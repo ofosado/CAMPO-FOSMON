@@ -65,7 +65,7 @@ noArranco.vigilarExcepciones('src/App.jsx');
 
 const PEDIDOS = [
   'frescuraDeGP', 'fechaHoraLegible', 'haceCuanto',
-  'atrasoDeEstimacion', 'detectarRiesgos', 'BIBLIOTECA_RIESGOS',
+  'atrasoDeEstimacion', 'evaluarRiesgos', 'BIBLIOTECA_RIESGOS',
   'capturaMasReciente', 'serieAvanceDeSemanas', 'claveSemanaISO',
   'C', '_GP_NOTA',
 ];
@@ -229,7 +229,7 @@ function correr(fuenteCuerpo, fuenteTrozo) {
     kpis: { af: 50 }, programa: null,
   });
   const alerta = (estimaciones, ahora) => conReloj(ahora,
-    () => fn.detectarRiesgos(ctx(estimaciones)).find(r => r.id === 'fin_003') || null);
+    () => fn.evaluarRiesgos(ctx(estimaciones)).detectados.find(r => r.id === 'fin_003') || null);
   const semaforo = (e, ahora) => conReloj(ahora, () => fn.atrasoDeEstimacion(e, DIAS_PAGO));
 
   // El barrido. Para cada hora del día y cada antigüedad, la alerta dispara si

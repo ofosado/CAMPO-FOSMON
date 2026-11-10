@@ -75,7 +75,7 @@ const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones('src/App.jsx');
 
 const PEDIDOS = [
-  'detectarRiesgos', 'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA',
+  'evaluarRiesgos', 'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA',
   'avanceProgramadoA', 'pctProgramadoEnFecha', 'hoyLocalISO',
   // `fechaLocalDeISO` no la usa ninguna aserción: la usan las MUTACIONES que
   // reponen la recta. Al salir la recta de `avanceProgramadoA` esta función
@@ -147,7 +147,7 @@ function correr(fuente) {
   };
   // Lo que `avc_004` publica, o `null` si calla.
   const semaforo = (contexto) =>
-    fn.detectarRiesgos(contexto).find(r => r.id === 'avc_004') || null;
+    fn.evaluarRiesgos(contexto).detectados.find(r => r.id === 'avc_004') || null;
   const pp = (r) => r === null ? null : Number(String(r.valor).replace(/[^\d.]/g, ''));
 
   const HOY_ISO = fn.hoyLocalISO();
@@ -251,10 +251,10 @@ function correr(fuente) {
   // ── 7 · LA FRONTERA DEL MARGEN SIGUE EN PIE ───────────────────────────────
   // Pasarle el programa a la dependencia no puede haber abierto la puerta a la
   // economía del contratista. El anexo es calendario; el margen no.
-  const delMunicipio = fn.detectarRiesgos(ctx(ANEXO_ACUSA, AF_ACUSADA, {
+  const delMunicipio = fn.evaluarRiesgos(ctx(ANEXO_ACUSA, AF_ACUSADA, {
     tipo: 'dependencia',
     kpis: { af: AF_ACUSADA, gt: 900, me: 600, mpct: -50, brecha: 40, pctGasto: 90 },
-  })).map(r => r.id);
+  })).detectados.map(r => r.id);
   // La lista se nombra AQUÍ, no se toma de `RIESGOS_SOLO_CONSTRUCTORA`. Tomarla
   // de allí es preguntarle a la cerradura si está cerrada: quien borre un renglón
   // de la lista borra al mismo tiempo la definición de lo que había que tapar, y

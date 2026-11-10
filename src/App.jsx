@@ -2532,7 +2532,7 @@ async function generarPDFInterno({
   const comportamientoMargen = comportamientoDelMargen(curva);
 
   // ── LOS RIESGOS, CON EL CONTEXTO DEL TABLERO ─────────────────────────────
-  // `evaluarRiesgos` y no `detectarRiesgos`: la lista de los que disparan es
+  // `evaluarRiesgos` y no sólo su `detectados`: la lista de los que disparan es
   // una VISTA de las cuatro, y este documento publica las cuatro. El contexto
   // es el mismo que arma el Dashboard, campo por campo, porque un contexto más
   // pobre convierte riesgos medidos en huecos y el papel acusaría de falta de
@@ -8457,8 +8457,8 @@ const RIESGOS_SOLO_CONSTRUCTORA = new Set([
 ]);
 
 // UNA LISTA VACÍA NO SIGNIFICA QUE NO HAY RIESGO. Ésa es toda la razón de que
-// esta función exista y de que `detectarRiesgos` se haya vuelto una vista de
-// ella. Antes el motor devolvía un solo arreglo, y fuera de él cabían dos cosas
+// esta función exista, y desde el #127 es la única que el tablero pregunta.
+// Antes el motor devolvía un solo arreglo, y fuera de él cabían dos cosas
 // distintas que nadie podía separar:
 //
 //   · la regla midió y encontró algo            → salía en la lista
@@ -8535,10 +8535,40 @@ const evaluarRiesgos = (contexto) => {
   return { detectados, sinHallazgo, noEvaluables, reventaron };
 };
 
-// La vista de siempre: sólo lo que disparó. Los banners del tablero preguntan
-// esto, y es lo que tienen que preguntar. Lo que no podía seguir pasando es que
-// fuera la única pregunta que el motor sabía contestar.
-const detectarRiesgos = (contexto) => evaluarRiesgos(contexto).detectados;
+// LOS HUECOS SE AGRUPAN POR DATO, NO POR REGLA, y la medición es la razón.
+// Leído en producción el 2026-11-10, las siete obras vivas tienen huecos y
+// ninguna tiene pocos: entre 8 y 16 reglas no se pudieron medir, contra 3 a 5
+// que sí disparan. Una lista de una fila por regla sería dos o tres veces más
+// larga que la de los riesgos reales, y ocuparía el sitio de lo urgente con lo
+// pendiente de capturar.
+//
+// Y sobre todo: LO QUE SE VA A ARREGLAR ES EL DATO. «estimaciones capturadas»
+// tumba tres reglas en las siete obras; quien lee no necesita tres renglones
+// que le pidan lo mismo, necesita uno que nombre lo que falta capturar.
+//
+// NO SE PUBLICA UN CONTEO POR DATO, a propósito. Una regla puede estar tumbada
+// por dos datos a la vez —y las hay—, así que la suma de los grupos es mayor
+// que el número de reglas sin medir. Dos cuentas del mismo hecho que pueden
+// discrepar es un defecto esperando: el único número que sale es
+// `noEvaluables.length`, y los grupos nombran, no cuentan. Por eso cada grupo
+// lleva los TÍTULOS de las reglas que tumba; el orden ya dice cuál pesa más.
+const huecosPorDato = (noEvaluables) => {
+  const porDato = new Map();
+  for (const r of (noEvaluables || []))
+    for (const f of (r.faltan || [])) {
+      const k = f.dato || f.nombre;
+      if (!k) continue;
+      if (!porDato.has(k))
+        porDato.set(k, { dato: k, nombre: f.nombre || k, porQue: null, reglas: [] });
+      const e = porDato.get(k);
+      // El primer `porQue` que venga con texto. Es el motivo del DATO, no de la
+      // regla, así que todas las reglas que caen por él traen el mismo.
+      if (!e.porQue && f.porQue) e.porQue = f.porQue;
+      e.reglas.push(r.titulo || r.id);
+    }
+  return [...porDato.values()].sort((a, b) =>
+    b.reglas.length - a.reglas.length || a.nombre.localeCompare(b.nombre, 'es'));
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // NOTIFICACIONES — Sistema in-app
@@ -10042,7 +10072,7 @@ const PERMISOS = {
   // `riesgo` baja a "ver" en todos: la biblioteca de riesgos emite
   // `margen_bajo`, así que dejar que alguien de dependencia configure riesgos
   // es la puerta por la que el margen vuelve a entrar. La emisión misma se
-  // corta en `detectarRiesgos`; esto es el segundo cerrojo.
+  // corta en `evaluarRiesgos`; esto es el segundo cerrojo.
   director_obras:      { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
   subdirector:         { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"editar", riesgo:"ver",    todas_obras:true  },
   jefe_supervision:    { dash:"ver", captura:"editar",  gastos:null,     estimaciones:"ver",    riesgo:"ver",    todas_obras:true  },
@@ -14691,9 +14721,99 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
+// LO QUE NO SE PUDO MEDIR — EL HUECO, EN PANTALLA
+// ════════════════════════════════════════════════════════════════════════════
+//
+// POR QUÉ EXISTE. El motor separa cuatro estados desde el #120 y el documento
+// interno los publica desde el #123, pero el tablero pintaba UNO: `detectados`.
+// Una regla que se calló porque le faltó el dato se veía idéntica a una que
+// midió y no encontró nada — o sea, se veía como «todo bien».
+//
+// No es un detalle de presentación. Medido en producción el 2026-11-10, las
+// SIETE obras vivas callaban más de lo que enseñaban: 76 reglas sin dato contra
+// 29 detectadas. El panel decía «5 indicadores» en el malecón y se guardaba
+// nueve «no sé». Quien lo leía no estaba mal informado: estaba tranquilo.
+//
+// LO QUE ESTE PANEL NO HACE. No pone severidad a un hueco. Un «no sé» no es
+// crítico ni aceptable —no se midió— y pintarlo con el color del semáforo
+// inventaría un juicio que nadie hizo. Va en gris, y el gris es el mensaje.
+//
+// `reventaron` va aparte y en rojo porque no es un hueco de captura: es un
+// defecto nuestro. Juntarlo con los otros le pasaría nuestra falla al cliente.
+// En producción hoy no revienta ninguna, así que esta rama no la ejerce ninguna
+// obra real: la prueba es lo único que la va a ver.
+//
+// `sinHallazgo` SE NOMBRA, no sólo se cuenta —misma regla que en el documento—.
+// «18 sin hallazgo» no dice cuáles, y la que falte de la lista es la que nadie
+// va a notar. Los nombres salen al desplegar, para que la tarjeta cerrada no
+// sepulte lo urgente debajo de dieciocho títulos tranquilizadores.
+function PanelSinDato({noEvaluables = [], reventaron = [], sinHallazgo = []}){
+  const [abierto, setAbierto] = useState(false);
+  const huecos = huecosPorDato(noEvaluables);
+  if (!noEvaluables.length && !reventaron.length) return null;
+
+  return <div style={{marginTop:10,borderTop:`1px solid ${C.border}`,paddingTop:9}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:6}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,fontWeight:700,color:C.textSec,letterSpacing:"0.04em"}}>LO QUE NO SE PUDO MEDIR</span>
+        {noEvaluables.length > 0 && <Bdg color={C.textMut} small>
+          {noEvaluables.length} regla{noEvaluables.length>1?'s':''} sin dato</Bdg>}
+        {reventaron.length > 0 && <Bdg color={C.red} small>
+          {reventaron.length} revent{reventaron.length>1?'aron':'ó'}</Bdg>}
+      </div>
+      <button onClick={()=>setAbierto(!abierto)} style={{background:"none",border:"none",
+        fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
+        {abierto ? "Ocultar detalle ▴" : "Qué reglas y qué midió el resto ▾"}
+      </button>
+    </div>
+
+    {/* LA FRASE VA IMPRESA, igual que en el documento. Un lector que vea la
+        lista de arriba corta tiene que leer en el mismo sitio por qué eso no
+        quiere decir que la obra esté bien. */}
+    <div style={{fontSize:9,color:C.textSec,marginBottom:7,lineHeight:1.45}}>
+      Una lista de riesgos vacía no significa que no haya riesgo: estas reglas no
+      se callaron por estar en orden, se callaron porque les faltó el dato.
+    </div>
+
+    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+      {huecos.map(h => (
+        <div key={h.dato} style={{background:C.bg,borderRadius:6,padding:"7px 10px",
+          borderLeft:`3px solid ${C.border}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>Falta: {h.nombre}</div>
+          {h.porQue && <div style={{fontSize:9,color:C.textSec,marginTop:2,lineHeight:1.4}}>{h.porQue}</div>}
+          {abierto && <div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.4}}>
+            Sin este dato no se pudo medir: {h.reglas.join(' · ')}</div>}
+        </div>
+      ))}
+    </div>
+
+    {reventaron.length > 0 && <div style={{marginTop:7}}>
+      <div style={{fontSize:10,fontWeight:700,color:C.red,marginBottom:4}}>
+        Reventaron · esto es un defecto de cotea, no un hueco de captura</div>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {reventaron.map(r => (
+          <div key={r.id} style={{background:C.bg,borderRadius:6,padding:"7px 10px",
+            borderLeft:`3px solid ${C.red}`,fontSize:9,color:C.textSec}}>
+            <span style={{fontWeight:700,color:C.textPri}}>{r.titulo || r.id}</span>
+            {' — '}{r.error || 'sin mensaje'}
+          </div>
+        ))}
+      </div>
+    </div>}
+
+    {abierto && <div style={{fontSize:9,color:C.textMut,marginTop:8,lineHeight:1.45}}>
+      <span style={{fontWeight:700}}>Midieron y no encontraron nada: </span>
+      {sinHallazgo.length
+        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
+        : 'ninguna — todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.'}
+    </div>}
+  </div>;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // BANNER DE RIESGOS — Dashboard
 // ════════════════════════════════════════════════════════════════════════════
-function BannerRiesgos({riesgos, onNavTab, compacto=false}){
+function BannerRiesgos({riesgos, onNavTab, veredicto}){
   const [expandido, setExpandido] = useState(false);
   // Ordenar de MEJOR a PEOR (Normal → Aceptable → Atención → Crítico)
   // — consistente con la tabla de indicadores del PDF ejecutivo.
@@ -14704,8 +14824,18 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
   const medios   = riesgosOrd.filter(r => r.severidad === 'medio');
   const bajos    = riesgosOrd.filter(r => r.severidad === 'bajo');
   // Colapsado: solo mostrar los que requieren acción (Atención + Crítico).
-  const accent = criticos.length > 0 ? C.red : altos.length > 0 ? '#B84204' :
-                 medios.length > 0 ? C.yellow : C.green;
+  //
+  // EL VERDE NO SE PINTA SOBRE UN «NO SÉ». El acento era verde en cuanto nada
+  // llegaba a aceptable, y con el panel de huecos esa tarjeta se podía pintar
+  // en verde teniendo dieciséis reglas sin dato —que es justo la obra 0131—.
+  // Un hueco no merece color de alarma, pero tampoco puede quedar bajo el color
+  // que dice «revisado y en orden»: va en gris, que es el de no saber.
+  const hayHuecos = (veredicto?.noEvaluables?.length || 0) > 0;
+  const hayReventados = (veredicto?.reventaron?.length || 0) > 0;
+  const accent = (criticos.length > 0 || hayReventados) ? C.red
+               : altos.length > 0 ? '#B84204'
+               : medios.length > 0 ? C.yellow
+               : hayHuecos ? C.textMut : C.green;
   const mostrar = expandido
     ? riesgosOrd
     : riesgosOrd.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
@@ -14719,11 +14849,18 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
         {altos.length > 0    && <Bdg color={SEVERIDADES.alto.color}    small>{altos.length} atención</Bdg>}
         {criticos.length > 0 && <Bdg color={SEVERIDADES.critico.color} small>{criticos.length} crítico{criticos.length>1?'s':''}</Bdg>}
       </div>
-      <button onClick={()=>setExpandido(!expandido)} style={{background:"none",border:"none",
+      {riesgos.length > 0 && <button onClick={()=>setExpandido(!expandido)} style={{background:"none",border:"none",
         fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
         {expandido ? "Solo Atención/Crítico ▴" : `Ver todos (${riesgos.length}) ▾`}
-      </button>
+      </button>}
     </div>
+    {/* LA TARJETA AHORA SE PINTA CON CERO DETECTADOS, porque los huecos solos
+        la justifican. Sin este renglón la lista saldría vacía y sin decir nada,
+        que es el silencio que el panel vino a quitar. */}
+    {riesgos.length === 0 && <div style={{fontSize:10,color:C.textSec,lineHeight:1.45}}>
+      Ninguna de las reglas que SÍ pudieron medir encontró algo. Eso no es un
+      veredicto sobre la obra: mira abajo lo que no se pudo medir antes de leerlo así.
+    </div>}
     <div style={{display:"flex",flexDirection:"column",gap:5}}>
       {mostrar.map((r,i)=>{
         const sevDef = SEVERIDADES[r.severidad] || SEVERIDADES.medio;
@@ -14749,6 +14886,8 @@ function BannerRiesgos({riesgos, onNavTab, compacto=false}){
         </div>;
       })}
     </div>
+    <PanelSinDato noEvaluables={veredicto?.noEvaluables}
+      reventaron={veredicto?.reventaron} sinHallazgo={veredicto?.sinHallazgo}/>
   </Card>;
 }
 
@@ -16041,14 +16180,20 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
                                      programa: programaObra });
     return comportamientoDelMargen(curva);
   }, [obra, historialAvance, subs, gpData, otrosGastos, maquinaria, programaObra]);
-  const riesgos = detectarRiesgos({
+  // `evaluarRiesgos` y no la vista de los que disparan. El tablero pedía sólo
+  // `detectados` y con eso perdía los otros tres estados antes de llegar a la
+  // pantalla: el hueco no es que no se pintara, es que no llegaba.
+  const veredictoRiesgos = evaluarRiesgos({
     obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx,
     nominaHistorial, programa: programaObra, comportamientoMargen,
   });
-  // Para el banner principal, solo mostramos críticos+altos (los medios y bajos van al panel completo)
-  const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
-  const riesgosMed = riesgos.filter(r => r.severidad === 'medio');
-  const totalRiesgos = riesgos.length;
+  const riesgos = veredictoRiesgos.detectados;
+  // LA TARJETA SE PINTA TAMBIÉN SIN RIESGOS DETECTADOS. Antes la guarda era
+  // `riesgos.length > 0`, así que la obra con cero disparos y once reglas sin
+  // dato no enseñaba nada — el caso más peligroso era el único invisible.
+  const hayQueDecirAlgo = riesgos.length > 0
+    || veredictoRiesgos.noEvaluables.length > 0
+    || veredictoRiesgos.reventaron.length > 0;
 
   // ── Wrapper para hacer secciones clickeables ──
   // Acepta tabId principal y opcionalmente subTabId (para navegar a Operación > Avance, etc.)
@@ -16140,8 +16285,8 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
       programa={programaObra}/>
 
     {/* BLOQUE 2: RIESGOS DETECTADOS (biblioteca con motor automático) */}
-    {totalRiesgos > 0 && (
-      <BannerRiesgos riesgos={riesgos} onNavTab={onNavTab}/>
+    {hayQueDecirAlgo && (
+      <BannerRiesgos riesgos={riesgos} onNavTab={onNavTab} veredicto={veredictoRiesgos}/>
     )}
     {/* LA TARJETA «MARGEN BRUTO DE OBRA» SE FUE, Y EL UMBRAL DEL 15% NO SUBIÓ
         CON ELLA.
@@ -16546,12 +16691,19 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
   // municipio tanto como del contratista— pero sin el anexo medía el atraso
   // contra una recta. El anexo no es economía del contratista: es el
   // calendario que las dos partes firmaron, y la frontera no lo toca.
-  const riesgos = detectarRiesgos({
+  //
+  // Y SE PREGUNTA EL VEREDICTO COMPLETO, igual que del otro lado. Medido en
+  // producción el 2026-11-10, aquí también callaban las siete obras: cuatro a
+  // seis reglas sin dato contra tres o cuatro detectadas. El municipio tiene
+  // MÁS derecho a ver el hueco, no menos: no captura él los datos que faltan,
+  // así que un «no se pudo medir» es lo único que le dice qué pedir.
+  const veredictoRiesgos = evaluarRiesgos({
     tipo: 'dependencia',
     obra, subs, estimaciones, historialAvance,
     kpis: { af: avance, me: ejecutado },
     programa: programaObra,
   });
+  const riesgos = veredictoRiesgos.detectados;
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
 
   const pctEjec  = contrato > 0 ? (ejecutado / contrato) * 100 : null;
@@ -16730,9 +16882,15 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
     {/* ── Requiere atención ──
         Sólo críticos y altos, igual que en el banner de constructora. Si no
         hay ninguno no se pinta la tarjeta: un "todo en orden" permanente
-        enseña a ignorar el sitio donde después aparece lo importante. */}
-    {riesgosTop.length > 0 && <Card accent={C.red}>
-      <Tit>Requiere atención</Tit>
+        enseña a ignorar el sitio donde después aparece lo importante.
+        LO QUE SÍ LA PINTA AHORA, aun sin un solo crítico, es un hueco: una
+        regla que no pudo medir no es «todo en orden», y callarla era la misma
+        tranquilidad falsa que el panel de la constructora vino a quitar. El
+        acento deja de ser rojo cuando no hay nada rojo que enseñar. */}
+    {(riesgosTop.length > 0 || veredictoRiesgos.noEvaluables.length > 0
+      || veredictoRiesgos.reventaron.length > 0) && <Card
+      accent={riesgosTop.length > 0 || veredictoRiesgos.reventaron.length > 0 ? C.red : C.textMut}>
+      <Tit>{riesgosTop.length > 0 ? 'Requiere atención' : 'Qué no se pudo medir'}</Tit>
       <div style={{display:"flex",flexDirection:"column",gap:6}}>
         {riesgosTop.map(r => (
           <div key={r.id} onClick={irA(r.tab, r.subTab)}
@@ -16749,6 +16907,12 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
           </div>
         ))}
       </div>
+      {/* EL MISMO COMPONENTE QUE DEL OTRO LADO, no una copia. Dos redacciones
+          del mismo hueco se desincronizan, y el día que una diga el motivo y la
+          otra no, nadie va a notar cuál es la que miente. */}
+      <PanelSinDato noEvaluables={veredictoRiesgos.noEvaluables}
+        reventaron={veredictoRiesgos.reventaron}
+        sinHallazgo={veredictoRiesgos.sinHallazgo}/>
     </Card>}
 
     {/* Lo que dijo quien estuvo ahí. Sin `onGuardar`: la dependencia LEE la
