@@ -13833,6 +13833,107 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// EL COMPORTAMIENTO DEL MARGEN, SEMANA POR SEMANA
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `curvaUnicaDeObra` ya devuelve `margen` en PESOS por semana. Lo que no existía
+// es el margen en PORCENTAJE por semana, que es lo que el reporte necesita para
+// decir «el margen viene cayendo» sin que la frase dependa del tamaño del
+// contrato.
+//
+// NO RECALCULA NADA. Recibe la curva ya hecha y divide sus dos series. Si
+// derivara el margen por su cuenta, el renglón de la tabla y el hueco de la
+// gráfica de la misma semana podrían discrepar, que es el defecto que llevamos
+// un mes cerrando.
+//
+// LA DIVISIÓN LLEVA LA MISMA GUARDA QUE EL KPI: con ejecutado en cero el
+// porcentaje no existe, y no vale cero. En las primeras semanas de cualquier
+// obra el ejecutado es cero, así que la serie arranca en `null` y eso es el
+// dato, no un hueco que rellenar.
+//
+// SÓLO SE LEE LA COLA CONTIGUA. Comparar la semana 46 contra la 41 y llamarlo
+// «cayó en dos semanas» nombra mal el dato. Si la cola no llega al mínimo, se
+// declara y no se promedia: `suficiente` sale en falso y `motivo` dice por qué.
+//
+// Y SE CUENTA EL EJECUTADO QUIETO, que es el hallazgo que obligó a que esta
+// función exista (medición en producción, 2026-11-09, obra 0127): el ejecutado
+// se quedó clavado en $11,104,150 cinco semanas mientras el gasto seguía
+// llegando, así que el margen «cayó» de −103% a −214% y luego «subió» 229
+// puntos en una sola semana cuando por fin se capturó el avance. Ninguno de los
+// dos movimientos fue de la obra: fueron de la captura. Una tabla que imprime
+// esa caída sin decirlo afirma algo falso sobre el dato.
+const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {
+  const semanas = curva?.semanas || [];
+  const margen = curva?.margen || [];
+  const ejecutado = curva?.ejecutado || [];
+
+  const pct = semanas.map((_, i) => {
+    const m = margen[i], e = ejecutado[i];
+    if (typeof m !== 'number' || !Number.isFinite(m)) return null;
+    if (!(e > 0)) return null;
+    return m / e * 100;
+  });
+
+  let cola = 0;
+  for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;
+
+  const vacio = {
+    pct, cola, minimo, suficiente: false, renglones: [],
+    desde: null, hasta: null, delTramo: null, peorSemana: null, quietas: 0,
+  };
+
+  // LOS MOTIVOS SE MIDEN DE LAS SERIES, NO DE UNA BANDERA DE CONVENIENCIA.
+  // `curva.ejecutadoMedido` es un ARREGLO —una bandera por semana—, así que
+  // negarlo nunca es cierto y el motivo que colgaba de ahí era letra muerta.
+  const hayEjecutado = ejecutado.some(v => typeof v === 'number');
+  const hayEjecutadoPositivo = ejecutado.some(v => typeof v === 'number' && v > 0);
+
+  if (!cola) return {
+    ...vacio,
+    motivo: !curva?.gastoMedido
+      ? 'el gasto de esta obra no está medido en GP, así que no hay margen que seguir semana a semana'
+      : !hayEjecutado
+        ? 'no hay ningún corte de avance capturado, así que no hay contra qué medir el gasto'
+        : !hayEjecutadoPositivo
+          ? 'el ejecutado acumulado sigue en cero en toda la ventana: el margen en porcentaje no existe, y no vale cero'
+          : 'la última semana no trae las dos líneas en el mismo corte',
+  };
+
+  const ini = pct.length - cola;
+  const fin = pct.length - 1;
+
+  const renglones = [];
+  for (let i = ini; i <= fin; i++) {
+    const quieto = i > 0 && typeof ejecutado[i] === 'number'
+      && typeof ejecutado[i - 1] === 'number'
+      && ejecutado[i] === ejecutado[i - 1];
+    renglones.push({
+      key: semanas[i]?.key, label: semanas[i]?.label,
+      pesos: margen[i], pct: pct[i],
+      delta: i > ini ? pct[i] - pct[i - 1] : null,
+      ejecutadoQuieto: quieto,
+    });
+  }
+
+  const caidas = renglones.filter(r => r.delta !== null);
+  const peorSemana = caidas.length
+    ? caidas.reduce((a, b) => (b.delta < a.delta ? b : a))
+    : null;
+
+  return {
+    pct, cola, minimo, suficiente: cola >= minimo, renglones,
+    desde: pct[ini], hasta: pct[fin], delTramo: pct[fin] - pct[ini],
+    peorSemana,
+    // Cuántas de las semanas del tramo traen el ejecutado clavado. Si son
+    // varias, el movimiento del margen es de captura y así hay que leerlo.
+    quietas: renglones.filter(r => r.ejecutadoQuieto).length,
+    motivo: cola >= minimo ? null
+      : `sólo hay ${cola} semana${cola === 1 ? '' : 's'} seguida${cola === 1 ? '' : 's'} ` +
+        `con las dos líneas en el mismo corte, y se necesitan ${minimo}`,
+  };
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // UN PANEL DE LÍNEAS SOBRE EL EJE DE SEMANAS
 // ════════════════════════════════════════════════════════════════════════════
 //
