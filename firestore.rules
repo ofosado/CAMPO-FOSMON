@@ -92,10 +92,79 @@ service cloud.firestore {
               && rol() in ['superintendente','residente','administrador_obra','auditor','cliente']
               && (todasObras() || id in obrasAsignadas()));
     }
+    // ── EL CANDADO DE UNA OBRA CERRADA ─────────────────────────────────────
+    //
+    // Cerrar una obra tiene que significar que ya no se puede mover. Si el
+    // candado vive en la pantalla —un botón que no se pinta—, no es un
+    // candado: basta un `can()` movido de sitio, una pestaña vieja abierta o
+    // un guion con las credenciales del usuario para que la captura pase sin
+    // que nadie la haya autorizado. Es la misma familia que el párrafo de
+    // `puedeCapturarEstimacionD` unos renglones más abajo: manda la regla y la
+    // interfaz lo acompaña, nunca al revés.
+    //
+    // DE DÓNDE SE LEE EL ESTADO, Y POR QUÉ DE LOS DOS DOCUMENTOS. El estado
+    // vive dos veces a propósito: `loadObras` hidrata la obra con
+    // `{...raiz, ...info}`, o sea que `config/info` GANA la mezcla y una
+    // escritura que sólo toque la raíz se deshace calladita en el siguiente
+    // login. Por eso `guardarEstadoDeObra` escribe los dos. La regla los lee
+    // en el MISMO orden que la pantalla: si leyera sólo uno, podría quedar una
+    // obra que en pantalla dice «Cerrada» y cuyas capturas pasan — y un
+    // candado que la pantalla cree puesto y la base no es peor que no tener
+    // candado, porque nadie va a volver a revisarlo.
+    //
+    // LO QUE CUESTA: hasta dos lecturas de documento por escritura. Medido el
+    // alcance real, no estimado: 7 obras vivas en producción con captura
+    // semanal. El tope de las reglas es 10 `get`/`exists` por petición y los
+    // tres `writeBatch` de la app van todos a `notificaciones/`, ninguno a
+    // `/obras/`, así que nada se acerca al límite.
+    //
+    // POR QUÉ VA DENTRO DE `puedeEditarObraC` Y NO EN LAS 19 RUTAS. Si el
+    // candado se repite ruta por ruta, la ruta número 20 nace sin él —y este
+    // archivo ya enterró ese defecto tres veces: `config/programa`,
+    // `config/evidencia` y `nomina_historial` cayeron en el `match` final y la
+    // escritura falló callada durante meses (#31). Metido en el ayudante, una
+    // ruta nueva nace con el candado puesto y hay que quitárselo a mano.
+    //
+    // `archivada` entra junto con `cerrada`. Archivar nunca fue un candado
+    // tampoco —sólo sacaba la obra de la lista en siete filtros— y una obra
+    // guardada en el cajón se puede mover todavía menos que una cerrada.
+    function estadoDeObraC(obraId) {
+      let info = get(/databases/$(database)/documents/obras/$(obraId)/config/info);
+      let raiz = get(/databases/$(database)/documents/obras/$(obraId));
+      let porRaiz = raiz == null ? 'activa' : raiz.data.get('estado', 'activa');
+      return info == null ? porRaiz : info.data.get('estado', porRaiz);
+    }
+    function obraCerradaC(obraId) {
+      return estadoDeObraC(obraId) in ['cerrada', 'archivada'];
+    }
+
+    // LA ÚNICA PUERTA QUE QUEDA ABIERTA: volver a abrirla. Es la decisión que
+    // se pidió —«sí, directivo y queda registrado»—, y se expresa acotando los
+    // CAMPOS, no confiando en que quien reabre no toque nada más. Los cuatro
+    // son los que escribe `guardarEstadoDeObra`; `id` va en la lista porque en
+    // el documento raíz se reescribe con su propio valor y un `merge` lo
+    // cuenta como tocado si antes faltaba.
+    //
+    // El «queda registrado» NO lo sostiene esta regla: lo sostiene que la
+    // escritura pase por `fsSetA`, que audita. Y la bitácora es
+    // `/auditoria/{id}` —colección raíz, fuera de `/obras/`— así que el
+    // candado no la alcanza: el rastro de lo que se intentó contra una obra
+    // cerrada se puede dejar aunque la escritura rebote. Es la misma razón por
+    // la que el `create` de la bitácora no mira el rol.
+    function soloMueveElEstado() {
+      return resource != null
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['estado', 'estadoDesde', 'estadoPor', 'estadoPorNombre', 'id']);
+    }
+
+    // El rol va PRIMERO y el candado después, no por estilo: `&&` corta, así
+    // que una sesión que no tenía nada que editar aquí rebota sin pagar las
+    // dos lecturas.
     function puedeEditarObraC(id) {
-      return esDirectivoC()
-          || (esEquipoObraEditor()
-              && (todasObras() || id in obrasAsignadas()));
+      return (esDirectivoC()
+              || (esEquipoObraEditor()
+                  && (todasObras() || id in obrasAsignadas())))
+          && !obraCerradaC(id);
     }
 
     // Puede VER una obra de DEPENDENCIA: directivo (todas) o rol operativo
@@ -226,11 +295,30 @@ service cloud.firestore {
     // ═════════════════════════════════════════════════════════════════════
     match /obras/{obraId} {
       allow read: if puedeVerObraC(obraId);
-      allow create, update, delete: if esDirectivoC();
+      allow create: if esDirectivoC();
+      // El `update` del documento raíz es por donde se CIERRA y por donde se
+      // REABRE, así que no puede quedar cerrado del todo: cuando la obra ya
+      // está cerrada, lo único que admite es mover el estado. Cerrarla pasa
+      // por la primera rama —en ese instante la obra todavía está activa—.
+      allow update: if esDirectivoC()
+                    && (!obraCerradaC(obraId) || soloMueveElEstado());
+      // Y BORRAR TAMPOCO. Es el movimiento más grande de todos: si una obra
+      // cerrada se puede borrar, «ya no se puede mover» tiene justo el hueco
+      // que importa. Para borrarla hay que reabrirla primero, y reabrirla deja
+      // renglón en la bitácora.
+      allow delete: if esDirectivoC() && !obraCerradaC(obraId);
 
+      // `config/info` es el OTRO documento del estado, y el que gana la mezcla
+      // al hidratar. Misma puerta que la raíz, por la misma razón y con los
+      // mismos campos: sin esto, cerrar una obra la dejaría cerrada para
+      // siempre, porque reabrirla exige escribir aquí.
+      //
+      // La segunda rama no amplía nada en una obra ABIERTA: ahí el directivo
+      // ya pasa por la primera.
       match /config/info {
         allow read: if puedeVerObraC(obraId);
-        allow write: if puedeEditarObraC(obraId);
+        allow write: if puedeEditarObraC(obraId)
+                     || (esDirectivoC() && soloMueveElEstado());
       }
       match /config/parametros {
         allow read: if puedeVerObraC(obraId);
@@ -271,7 +359,10 @@ service cloud.firestore {
       }
       match /config/permisos {
         allow read: if puedeVerObraC(obraId);
-        allow write: if esDirectivoC();
+        // Con el candado explícito porque esta ruta no pasa por
+        // `puedeEditarObraC`: repartir accesos a una obra cerrada es mover la
+        // obra. Para hacerlo hay que reabrirla.
+        allow write: if esDirectivoC() && !obraCerradaC(obraId);
       }
       // LA BANDERA DEL CORTE DE EVIDENCIA. Decide, por obra, si la galería lee
       // la subcolección nueva o el mapa viejo incrustado en `avance/subs`.
@@ -369,7 +460,9 @@ service cloud.firestore {
       match /bitacora/{id} {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow create: if puedeEditarObraC(obraId);
-        allow update, delete: if esDirectivoC();
+        // Igual que `config/permisos`: el candado explícito, porque la
+        // corrección de un renglón de bitácora no pasa por el ayudante.
+        allow update, delete: if esDirectivoC() && !obraCerradaC(obraId);
       }
 
       // Una foto por documento. Es el destino de la migración del #30, y es
