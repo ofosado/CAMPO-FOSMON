@@ -340,5 +340,60 @@ const PP = n => n === null || n === undefined ? '  —  '
     `${medidas.filter(m => m.comp.suficiente).length} de ${medidas.length}`);
   for (const m of medidas.filter(m => !m.comp.suficiente))
     console.log(`    ${m.obraId}  declara: ${m.comp.motivo}`);
+
+  // ── 5 · ¿QUÉ DISPARARÍA CADA UMBRAL? ─────────────────────────────────────
+  //
+  // Esto es lo que hay que ver ANTES de escribir la regla «margen cayendo». No
+  // alcanza con saber de qué tamaño son los saltos: hay que saber a QUIÉN
+  // señalaría cada umbral y si a esa obra le pasa algo de verdad. Un umbral que
+  // dispara en la obra cuya captura va atrasada no mide la obra, mide la
+  // captura, y el reporte acabaría acusando al residente de un deterioro que
+  // no existe.
+  console.log('');
+  console.log('5 · ¿QUÉ DISPARARÍA CADA UMBRAL?');
+  console.log('');
+
+  // (a) Las caídas de una semana, separadas por si el ejecutado se movió.
+  const caidas = medidas.flatMap(m => m.comp.renglones
+    .filter(r => r.delta !== null && r.delta < 0)
+    .map(r => ({ obraId: m.obraId, label: r.label, d: r.delta, quieto: r.ejecutadoQuieto })));
+  console.log('  (a) LAS CAÍDAS DE UNA SEMANA, dentro del tramo contiguo:');
+  for (const corte of [1, 2, 3, 5, 10]) {
+    const hits = caidas.filter(c => c.d <= -corte);
+    const sobreQuieto = hits.filter(c => c.quieto);
+    console.log(`      ${String(corte).padStart(2)}pp o más: ${String(hits.length).padStart(2)} caída(s)` +
+      `  ·  ${sobreQuieto.length} de ellas con el EJECUTADO QUIETO` +
+      (hits.length ? `  [${hits.map(c => c.obraId + ':' + c.label + (c.quieto ? '*' : '')).join(' ')}]` : ''));
+  }
+  console.log('      (* = esa semana el avance no se cerró: el margen se movió por el gasto solo)');
+
+  // (b) El tramo completo, con y sin el filtro de captura. La pregunta de
+  // fondo: ¿qué obras quedarían señaladas, y son las que están mal?
+  console.log('');
+  console.log('  (b) EL TRAMO COMPLETO (sólo obras con 4+ semanas seguidas):');
+  const elegibles = medidas.filter(m => m.comp.suficiente);
+  const capturaFloja = (m) => m.comp.quietas * 2 > m.comp.cola;
+  console.log('      obra  tramo      quietas   ¿la captura manda?');
+  for (const m of elegibles)
+    console.log(`      ${m.obraId}  ${(PP(m.comp.delTramo) + ' pp').padEnd(11)}${String(m.comp.quietas)}/${m.comp.cola}` +
+      `       ${capturaFloja(m) ? 'SÍ — no se puede medir la obra' : 'no'}`);
+  console.log('');
+  for (const corte of [2, 3, 4, 5, 8]) {
+    const crudo = elegibles.filter(m => m.comp.delTramo <= -corte);
+    const limpio = crudo.filter(m => !capturaFloja(m));
+    console.log(`      umbral ${String(corte).padStart(2)}pp en el tramo:` +
+      ` ${crudo.length} obra(s) [${crudo.map(m => m.obraId).join(' ') || '—'}]` +
+      `  ·  descontando las de captura floja: ${limpio.length} [${limpio.map(m => m.obraId).join(' ') || '—'}]`);
+  }
+  console.log('');
+  const fuera = elegibles.filter(capturaFloja);
+  console.log(`  obras que el filtro de captura dejaría en NO EVALUABLE: ` +
+    `${fuera.length} de ${elegibles.length}  [${fuera.map(m => m.obraId).join(' ') || '—'}]`);
+  console.log('  No es que no tengan riesgo: es que su margen se movió sobre un');
+  console.log('  avance que nadie cerró, y eso no se puede leer como deterioro.');
+  console.log('');
+  console.log(`  CUÁNTO PESA LA MUESTRA: de ${medidas.length} obras vivas, ` +
+    `${elegibles.length} llegan a 4 semanas seguidas y ${elegibles.length - fuera.length} ` +
+    `quedan legibles. Cualquier umbral que salga de aquí descansa en esas pocas.`);
   console.log('');
 })();
