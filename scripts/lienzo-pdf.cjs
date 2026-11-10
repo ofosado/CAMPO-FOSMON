@@ -40,6 +40,15 @@ function lienzo() {
   };
   const doc = new Proxy(base, {
     get(o, k) {
+      // LO QUE EL GENERADOR HAYA INSTALADO ENCIMA, PRIMERO. `blindarTextoDelPDF`
+      // envuelve `text`, `autoTable` y `splitTextToSize` del `doc` para que
+      // ningún carácter que las fuentes del PDF no sepan escribir llegue a la
+      // hoja. Si este trap contestara su propia versión antes de mirar lo
+      // asignado, el banco anotaría la cadena ORIGINAL y mediría un documento
+      // que no es el que se imprime: justo la clase de error que el blindaje
+      // viene a tapar. `addPage`, `setPage` y `autoTable` no están en `base`,
+      // así que mientras nadie los asigne esto no cambia nada.
+      if (k in o) return o[k];
       if (k === 'addPage') return () => { pagina += 1; };
       if (k === 'setPage') return (i) => { pagina = Number(i) || pagina; };
       // Las TABLAS también son texto que el generador manda dibujar, y hasta
@@ -69,7 +78,6 @@ function lienzo() {
         base.lastAutoTable = { finalY: 50 };
         return undefined;
       };
-      if (k in o) return o[k];
       return (...args) => {
         if (k === 'text') {
           const [v, x, y, opts] = args;
@@ -95,22 +103,20 @@ function lienzo() {
 // cobertura necesita el 2, el 13, el 14 y el 15, y los tres últimos son
 // `evidencia`, `programa` y `evidenciaCargada`, que es precisamente el que
 // distingue «no hay fotos» de «no se pudieron leer».
-async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
-  const {
-    subs = [], estimaciones = [], maquinaria = [], materiales = [],
-    subcontratos = [], historialAvance = [], gpData = null, otrosGastos = [],
-    gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null,
-    evidenciaCargada = true, instante = null,
-  } = datos;
+// El `window` con jsPDF ya cargado, montado y desmontado alrededor de UNA
+// corrida del generador. Está aparte porque lo necesitan los dos generadores
+// —el reporte ejecutivo y el documento interno— y una segunda copia del montaje
+// es una segunda copia de la parte que importa: `alert` silenciado y `window`
+// devuelto como estaba. Un banco que se deja el `window` puesto envenena a los
+// que corren después en el mismo proceso.
+async function conJsPDFFalso(correr) {
   const { doc, dibujos } = lienzo();
   const guardados = { window: global.window, document: global.document, alert: global.alert };
   global.window = { jspdf: { jsPDF: function () { return doc; } }, _atLoaded: true };
   global.document = { createElement: () => ({}), head: { appendChild: () => {} } };
   global.alert = () => {};
   try {
-    await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales,
-      subcontratos, branding, historialAvance, gpData, otrosGastos, gpDetalle,
-      nominaHistorial, evidencia, programa, evidenciaCargada, instante);
+    await correr();
   } finally {
     global.window = guardados.window;
     global.document = guardados.document;
@@ -119,4 +125,23 @@ async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
   return dibujos;
 }
 
-module.exports = { lienzo, dibujarPDF };
+async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
+  const {
+    subs = [], estimaciones = [], maquinaria = [], materiales = [],
+    subcontratos = [], historialAvance = [], gpData = null, otrosGastos = [],
+    gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null,
+    evidenciaCargada = true, instante = null,
+  } = datos;
+  return conJsPDFFalso(() => generarPDFObra(obra, subs, estimaciones, maquinaria,
+    materiales, subcontratos, branding, historialAvance, gpData, otrosGastos,
+    gpDetalle, nominaHistorial, evidencia, programa, evidenciaCargada, instante));
+}
+
+// El documento interno. Recibe UN objeto y se le pasa tal cual: `generarPDFInterno`
+// toma sus parámetros por nombre, así que aquí no hay orden que respetar ni
+// comas que contar — y un campo nuevo del generador no obliga a tocar esto.
+async function dibujarPDFInterno(generarPDFInterno, datos = {}) {
+  return conJsPDFFalso(() => generarPDFInterno(datos));
+}
+
+module.exports = { lienzo, dibujarPDF, dibujarPDFInterno, conJsPDFFalso };

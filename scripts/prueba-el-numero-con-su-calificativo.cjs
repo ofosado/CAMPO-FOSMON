@@ -150,6 +150,7 @@ async function correr(codigo) {
   const estadoGastoGP = cuenta('estadoGastoGP');
   const calcularKPIsObra = cuenta('calcularKPIsObra');
   const presentacionEconomiaObra = cuenta('presentacionEconomiaObra');
+  const textoImprimible = cuenta('textoImprimible');
 
   // ── 0 · EL ESCENARIO DICE LO QUE CREO QUE DICE ───────────────────────────
   // Sin esto, todo lo de abajo podría pasar por la razón equivocada.
@@ -494,10 +495,18 @@ async function correr(codigo) {
 
   check(dice(pdfMedido, '19,900,000'),
     'canario: el documento de la 0121 SÍ publica su gasto medido');
-  check(tejaDe(pdfMedido, 'MARGEN BRUTO').pie.startsWith(MENOS),
+  // En el PAPEL el menos no es el mismo carácter que en la pantalla, y eso es
+  // correcto: las fuentes estándar del PDF no saben escribir U+2212, así que
+  // `textoImprimible` lo cambia por el guion antes de llegar a la hoja. Lo que
+  // estas dos comprobaciones afirman es que la cifra SALE CON SIGNO —el defecto
+  // era un `Math.abs` que se lo comía—, no cuál es el glifo. Se pregunta al
+  // propio portón del generador en vez de teclear `'-'` aquí: si mañana el
+  // sustituto cambia, esto sigue midiendo el signo y no una cadena copiada.
+  const MENOS_EN_HOJA = textoImprimible(MENOS);
+  check(tejaDe(pdfMedido, 'MARGEN BRUTO').pie.startsWith(MENOS_EN_HOJA),
     'canario: y la tarjeta del margen lleva su importe CON el menos',
     `${tejaDe(pdfMedido, 'MARGEN BRUTO').valor} / ${tejaDe(pdfMedido, 'MARGEN BRUTO').pie}`);
-  check(valorDe(pdfMedido, 'MARGEN BRUTO').startsWith(MENOS),
+  check(valorDe(pdfMedido, 'MARGEN BRUTO').startsWith(MENOS_EN_HOJA),
     'canario y #101 en el papel: el margen negativo de la 0121 se entrega CON '
     + 'su menos, que es lo que el `Math.abs` del PDF se comía',
     valorDe(pdfMedido, 'MARGEN BRUTO'));

@@ -125,6 +125,91 @@ const contratoCapturado = (v) => {
 // publica dos desgloses de rubro en dos pestañas a un clic de distancia.
 const claveDeRubro = (r) => String(r?.nombre ?? r?.id ?? '');
 
+// ── LO QUE LAS FUENTES DEL PDF SABEN ESCRIBIR ────────────────────────────
+// Los dos generadores usan las fuentes estándar de jsPDF (helvetica), que están
+// limitadas a WinAnsi. Cuando un texto trae un carácter que no está ahí, jsPDF
+// NO avisa: cambia esa cadena entera a UTF-16 y el lector la pinta como basura.
+// El 2026-11-09 el reporte que se entrega al cliente llevaba NUEVE cadenas así
+// —«✓ PAGADA», «Avance ≥ 75%», «Operación → Nómina»— y ninguna prueba lo vio,
+// porque todas miran la cadena de JavaScript y el destrozo pasa después, al
+// serializar. Se ve en el PDF, y hasta ese día nadie había abierto uno.
+//
+// Los sustitutos son los de texto llano, no adornos: «->» por la flecha, «>=»
+// por el mayor-o-igual, el guion corriente por el menos de tipografía. Lo que
+// no esté en la tabla sale como «?» A PROPÓSITO: un carácter nuevo que nadie
+// previó tiene que verse como un hueco, no desaparecer. Una cadena que se
+// adelgaza en silencio es la que acaba firmada.
+const WINANSI_EXTRA = new Set([...'€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ']);
+const SUSTITUTOS_PDF = new Map(Object.entries({
+  '→': '->', '⇒': '->', '←': '<-', '⇐': '<-', '↑': '^', '↓': 'v',
+  '≥': '>=', '≤': '<=', '≠': '!=', '≈': '~',
+  '−': '-', '‒': '-', '―': '-',     // menos y rayas tipográficas
+  '✓': 'OK', '✔': 'OK', '✗': 'X', '✘': 'X',
+  '●': '•', '▪': '•', '■': '•', '□': '•', '◦': '•',
+  '⚑': '!', '⚠': '!', '★': '*', '☆': '*',
+  '\u00A0': ' ', '\u202F': ' ', '\u2009': ' ', '\u200B': '',
+}));
+// Las dos van como `const` y no como `function` a propósito: así las arrastra
+// solo el preludio de `taller-de-app.cjs`, que resuelve las dependencias de
+// nivel superior siguiendo los `const` —igual que las otras quince de
+// `generarPDFObra`—. Como `function` hay que doblarlas a mano en cada banco, y
+// un banco que las doble con un `undefined` deja el papel en blanco.
+const textoImprimible = (v) => {
+  if (v === null || v === undefined) return v;
+  const s = String(v);
+  let fuera = false;
+  for (const c of s) {
+    const n = c.codePointAt(0);
+    if (!((n >= 32 && n <= 126) || (n >= 0xA0 && n <= 0xFF) || WINANSI_EXTRA.has(c))) {
+      fuera = true; break;
+    }
+  }
+  if (!fuera) return s;                      // el caso de siempre, sin tocar
+  let out = '';
+  for (const c of s) {
+    const n = c.codePointAt(0);
+    if ((n >= 32 && n <= 126) || (n >= 0xA0 && n <= 0xFF) || WINANSI_EXTRA.has(c)) out += c;
+    else if (SUSTITUTOS_PDF.has(c)) out += SUSTITUTOS_PDF.get(c);
+    else if (c === '\n' || c === '\t') out += c;
+    else out += '?';
+  }
+  return out;
+};
+
+// EL ÚNICO PORTÓN. Se envuelve el `doc`, no cada sitio que escribe: entre los
+// dos generadores hay cientos de `text()` y tres `autoTable()`, y una tabla de
+// sustitutos que haya que recordar aplicar en cada uno es una tabla que el
+// próximo renglón olvida. `autoTable` se envuelve además de `text` porque sus
+// celdas se miden y se parten ANTES de llegar a `text`, y una celda medida con
+// el carácter de verdad y pintada con el sustituto se sale de su columna.
+// `splitTextToSize` y `getTextWidth` van por lo mismo: miden lo que se va a
+// pintar, no lo que se pidió pintar.
+const blindarTextoDelPDF = (doc) => {
+  const sanear = (v) => (Array.isArray(v) ? v.map(textoImprimible) : textoImprimible(v));
+  const celda = (c) => (c && typeof c === 'object' && 'content' in c
+    ? { ...c, content: textoImprimible(c.content) }
+    : textoImprimible(c));
+  const filas = (f) => (Array.isArray(f)
+    ? f.map(r => (Array.isArray(r) ? r.map(celda) : celda(r))) : f);
+
+  const textoOriginal = doc.text.bind(doc);
+  doc.text = (v, ...resto) => textoOriginal(sanear(v), ...resto);
+
+  const partirOriginal = doc.splitTextToSize.bind(doc);
+  doc.splitTextToSize = (v, ...resto) => partirOriginal(sanear(v), ...resto);
+
+  if (typeof doc.getTextWidth === 'function') {
+    const anchoOriginal = doc.getTextWidth.bind(doc);
+    doc.getTextWidth = (v, ...resto) => anchoOriginal(sanear(v), ...resto);
+  }
+
+  const tablaOriginal = doc.autoTable.bind(doc);
+  doc.autoTable = (opts = {}, ...resto) => tablaOriginal(
+    { ...opts, head: filas(opts.head), body: filas(opts.body) }, ...resto);
+
+  return doc;
+};
+
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
@@ -204,7 +289,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   };
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
-  const doc = new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});
+  const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));
   const pf   = n => parseFloat(n)||0;
   // `MXN` NO se redefine aquí. Había una copia local idéntica en salida a la de
   // arriba —se comprobó caso por caso, incluido `NaN` y el redondeo de 0.5— y
@@ -2275,6 +2360,579 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   } catch(e) {
     console.error('Error generando PDF:',e);
     alert(`Error al generar PDF:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
+  }
+}
+
+// ── EL DOCUMENTO INTERNO DE COTEA ──────────────────────────────────────────
+//
+// DOS COMPONENTES, NO UNA BANDERA. Esto no es `generarPDFObra` con un
+// `if (interno)`: son dos documentos con dos criterios opuestos sobre lo mismo.
+//
+//   · `generarPDFObra` es el reporte ejecutivo DEL CONTRATISTA. Lleva su marca,
+//     se entrega al cliente, lo firman tres personas. Por eso se CALLA todo lo
+//     que no puede afirmar: un hueco de captura publicado ahí es un reclamo
+//     contra uno mismo en el papel que cobra.
+//   · éste es el documento DE COTEA, y se lee hacia adentro. Publica los huecos
+//     a propósito, porque un hueco es justamente lo que un documento interno
+//     sirve para ir a cerrar, y porque el error que un reporte no puede
+//     permitirse es callarse porque no sabe.
+//
+// Con una bandera habría un cuerpo con treinta condicionales y los dos
+// criterios enredados: el día que el reporte del cliente gane un renglón, el
+// interno lo gana sin que nadie lo decida — y al revés, que es peor, porque
+// aquí se imprime la lista de lo que no se pudo medir.
+//
+// NINGUNA CIFRA NUEVA. Cada número de este papel sale de la función que ya
+// alimenta la pantalla: `calcularKPIsObra` y `presentacionEconomiaObra` para la
+// economía y cómo se dice, `curvaUnicaDeObra` + `comportamientoDelMargen` para
+// la serie semanal, `evaluarRiesgos` para los tres estados, `selloDeTiempo`
+// para la hora. Una cuenta hecha aquí adentro sería una segunda cuenta del
+// mismo dato, y entonces este documento y el tablero podrían discrepar sobre la
+// misma obra el mismo día — que es exactamente el defecto que ya se pagó en el
+// margen de la 0121, entregado en positivo donde la pantalla lo daba negativo.
+//
+// Los parámetros van POR NOMBRE. `generarPDFObra` lleva quince posicionales y
+// contar comas hasta el decimoquinto es el error que no se ve en la revisión.
+//
+// `organizacion` y `generadoPor` son datos de identificación, no marca: la
+// cabecera de cada página firma cotea, y de qué organización es la obra se
+// imprime como un campo más — que es lo que permite que el mismo documento
+// sirva para cualquier organización sin cambiarle el logotipo.
+async function generarPDFInterno({
+  obra, subs = [], estimaciones = [], maquinaria = [], materiales = [],
+  subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
+  otrosGastos = [], nominaHistorial = [], programa = null,
+  instante = null, organizacion = null, generadoPor = null,
+} = {}) {
+  if (!window.jspdf) {
+    await new Promise((res,rej)=>{ const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+  }
+  await new Promise((res,rej)=>{
+    if(window._atLoaded) return res();
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
+  });
+  const { jsPDF } = window.jspdf;
+
+  try {
+  // ── LA MARCA DE COTEA ─────────────────────────────────────────────────────
+  // Los dos colores de la marca, y no los de `tokens.css`: aquélla es la paleta
+  // de la APLICACIÓN —la que viste el tablero de la constructora— y ésta la del
+  // producto. Un documento de cotea pintado con los tokens del inquilino se
+  // vuelve el documento del inquilino.
+  const Q = {
+    piz: [74, 85, 96],      // #4A5560 — el gris pizarra
+    nar: [255, 107, 53],    // #FF6B35 — el naranja
+    wh:  [255, 255, 255],
+    ng:  [26, 30, 34],
+    bg:  [243, 244, 246],
+    lt:  [249, 250, 251],
+    bd:  [214, 217, 221],
+    tx:  [74, 85, 96],
+    mu:  [148, 155, 164],
+  };
+  // Los colores de severidad NO se teclean: salen de `SEVERIDADES`, que es lo
+  // que pinta el semáforo de la pantalla. Tecleados aquí, el día que un nivel
+  // cambie de color el papel y la pantalla dirían dos cosas del mismo riesgo.
+  const deHex = (h) => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16),
+                        parseInt(h.slice(5,7),16)];
+  const colorSev = (sev) => {
+    const s = SEVERIDADES[sev];
+    return s ? deHex(s.color) : Q.mu;
+  };
+  const labelSev = (sev) => SEVERIDADES[sev]?.label || String(sev || '—');
+
+  // CON QUÉ NÚMERO DISPARÓ. La columna lleva ese rótulo, así que una raya
+  // debajo se lee como «el papel no lo trae» cuando lo que pasa es otra cosa:
+  // dos reglas de la biblioteca —los días de pago y el catálogo de conceptos—
+  // publican `valor: '—'` A PROPÓSITO, porque lo que disparó es la AUSENCIA de
+  // una captura y no hay cifra que citar. Eso se escribe con palabras.
+  //
+  // El cero NO entra aquí: «0 cierres semanales» es el número con el que esa
+  // regla disparó, y taparlo con una frase borraría la única cifra que tiene.
+  const disparoCon = (v) => {
+    const s = (v === null || v === undefined) ? '' : String(v).trim();
+    return (s === '' || s === '—' || s === '-')
+      ? 'sin cifra: lo que disparó es la ausencia de una captura'
+      : s;
+  };
+
+  const PW=279, PH=216;
+  const ML=14, MR=14, MT=16, MB=14;
+  const HDR=14, FTR=10;
+  const CW=PW-ML-MR;
+  const CY0=HDR+MT;
+
+  const FS_SEC=10, FS_TH=8, FS_TD=8.5, FS_SM=7.5, FS_KL=7, FS_KV=15;
+
+  const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));
+  const PCT = (n,d=1) => `${(n||0).toFixed(d)}%`;
+  // Puntos porcentuales con signo. El margen semana a semana se mueve en PP, no
+  // en por ciento: «cayó 5%» y «cayó 5 pp» son dos cosas y sólo una es la que
+  // mide esta tabla.
+  const PP = (n) => n === null || n === undefined || !Number.isFinite(n)
+    ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(1)} pp`;
+
+  const sello = selloDeTiempo(instante);
+  const hoy = sello.fecha;
+  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
+
+  // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──────────────
+  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,
+                                gpData, otrosGastos);
+  // Y DICHA donde se dice para la pantalla. `pres` ya resolvió los tres estados
+  // del gasto y del margen —sin medir, indefinido, normal— y sus cadenas. Lo
+  // único que no se puede reusar son sus colores: son colores de CSS y aquí
+  // hacen falta ternas RGB, así que el color se deriva del estado que `pres` ya
+  // decidió, nunca de un umbral teclado otra vez.
+  const pres = presentacionEconomiaObra(kpis);
+  const PPTO = kpis.presupuesto;
+  const colorMargen = pres.gastoSinMedir ? Q.mu
+    : pres.margenIndefinido ? colorSev('critico')
+    : kpis.mpct < 10 ? colorSev('alto')
+    : kpis.mpct < 15 ? colorSev('medio') : colorSev('bajo');
+
+  // ── LA SERIE SEMANAL, CON LA MISMA VENTANA QUE EL TABLERO ────────────────
+  // DOCE semanas, fijas, igual que el `useMemo` del Dashboard que alimenta a
+  // `fin_007`. Si este papel usara otra ventana, la tabla del margen de la
+  // sección de dinero y el riesgo de la sección de riesgos saldrían de dos
+  // series distintas en el mismo documento, y el riesgo acusaría con una cifra
+  // que no se puede encontrar tres páginas antes.
+  const VENTANA = 12;
+  const semanas = semanasDeVentana(obra, VENTANA);
+  const curva = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
+                                   otrosGastos, maquinaria, programa });
+  const comportamientoMargen = comportamientoDelMargen(curva);
+
+  // ── LOS RIESGOS, CON EL CONTEXTO DEL TABLERO ─────────────────────────────
+  // `evaluarRiesgos` y no `detectarRiesgos`: la lista de los que disparan es
+  // una VISTA de las cuatro, y este documento publica las cuatro. El contexto
+  // es el mismo que arma el Dashboard, campo por campo, porque un contexto más
+  // pobre convierte riesgos medidos en huecos y el papel acusaría de falta de
+  // dato a quien sí lo capturó.
+  const kpisCtx = { gt: kpis.gt, am: kpis.am, alm: kpis.alm, me: kpis.me,
+                    af: kpis.af, diff: kpis.diff, mpct: kpis.mpct,
+                    pctGasto: kpis.pctGasto, brecha: kpis.brecha };
+  const veredicto = evaluarRiesgos({
+    obra, subs, maquinaria, materiales, estimaciones, subcontratos,
+    historialAvance, gpData, kpis: kpisCtx, nominaHistorial, programa,
+    comportamientoMargen,
+  });
+
+  let pagNum = 0;
+  const sf = c => doc.setFillColor(...c);
+  const sd = c => doc.setDrawColor(...c);
+  const st = c => doc.setTextColor(...c);
+  const fs = n => doc.setFontSize(n);
+  const fw = s => doc.setFont('helvetica',s);
+  const lw = n => doc.setLineWidth(n);
+  const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
+  const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
+  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);
+
+  // El sello de INTERNO va en el marco de CADA página, no sólo en la portada.
+  // Un documento interno se reenvía por hoja: la página que alguien imprime y
+  // deja sobre un escritorio tiene que decir lo que es sin la portada al lado.
+  const SELLO_INTERNO = 'DOCUMENTO INTERNO · USO DE COTEA · NO ES EL REPORTE QUE SE ENTREGA AL CLIENTE';
+
+  function pageFrame() {
+    pagNum++;
+    sf(Q.piz); R(0,0,PW,HDR);
+    sf(Q.nar); R(0,0,3,HDR);
+    st(Q.wh); fs(9); fw('bold'); T('cotea', ML, 5.5);
+    fs(6.5); fw('normal'); T('Documento interno', ML, 9.8);
+    fs(8); fw('bold'); T(nombreCorto, PW-MR, 5.5, {align:'right'});
+    fs(6.5); fw('normal'); T(hoy, PW-MR, 9.8, {align:'right'});
+    // Banda naranja con el sello, bajo el encabezado y a todo lo ancho.
+    sf(Q.nar); R(0,HDR,PW,4);
+    st(Q.wh); fs(6); fw('bold');
+    T(SELLO_INTERNO, PW/2, HDR+2.8, {align:'center'});
+    sf(Q.bg); R(0,PH-FTR,PW,FTR);
+    sf(Q.piz); R(0,PH-FTR,PW,0.6);
+    st(Q.mu); fs(6); fw('normal');
+    T('cotea · documento interno', ML, PH-3.5);
+    T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
+    T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
+  }
+
+  function secHead(txt, y) {
+    sf(Q.piz); R(ML,y,CW,8);
+    sf(Q.nar); R(ML,y,2,8);
+    st(Q.wh); fs(FS_SEC); fw('bold');
+    T(txt, ML+5, y+5.8);
+    return y+8+3;
+  }
+
+  function kpiBox(lbl,val,sub,col,x,y,w) {
+    const h=18;
+    sf(Q.wh); sd(Q.bd); lw(0.2); R(x,y,w,h,'FD');
+    sf(col); R(x,y,1.5,h);
+    st(Q.mu); fs(FS_KL); fw('normal'); T(String(lbl).toUpperCase(), x+3, y+5);
+    st(Q.ng); fs(String(val).length>9?10:FS_KV); fw('bold'); T(val, x+3, y+13);
+    st(Q.mu); fs(FS_KL); fw('normal'); T(sub, x+3, y+17);
+  }
+
+  function kpiRow(items, y) {
+    const n=items.length, gap=2;
+    const w=(CW-(n-1)*gap)/n;
+    items.forEach(([lbl,val,sub,col],i)=>kpiBox(lbl,val,sub,col, ML+i*(w+gap), y, w));
+    return y+20;
+  }
+
+  function autoT(head, body, colW, x, y, opts={}) {
+    const tableW = colW.reduce((s,w)=>s+w,0);
+    const callerColStyles = opts.columnStyles || {};
+    const mergedColStyles = {};
+    colW.forEach((w,i)=>{ mergedColStyles[i] = { cellWidth:w, ...(callerColStyles[i]||{}) }; });
+    const { columnStyles:_d, ...restOpts } = opts;
+    doc.autoTable({
+      head:[head], body, startY:y,
+      // EL MARCO DE LAS PÁGINAS QUE PONE AUTOTABLE. La tabla de no evaluables
+      // puede traer veinte renglones y partirse sola; sin este enganche, las
+      // páginas que ella agrega salen SIN encabezado y sin la banda de
+      // «documento interno». Una hoja de este papel que no diga lo que es, es
+      // justo la hoja que acaba fuera. `pageNumber` es el índice de la página
+      // DENTRO de la tabla: la primera ya venía enmarcada por quien la llamó.
+      didDrawPage: (d) => { if (d?.pageNumber > 1) pageFrame(); },
+      margin:{left:x, right:PW-x-tableW, top:CY0-5}, tableWidth:tableW, rowPageBreak:'avoid',
+      styles:{ fontSize:FS_TD, cellPadding:2.2, textColor:Q.tx, lineColor:Q.bd,
+               lineWidth:0.2, font:'helvetica', fontStyle:'normal',
+               overflow:'linebreak', minCellHeight:0 },
+      headStyles:{ fillColor:Q.piz, textColor:Q.wh, fontSize:FS_TH,
+                   fontStyle:'bold', cellPadding:2.2, minCellHeight:0 },
+      alternateRowStyles:{ fillColor:Q.lt, textColor:Q.tx },
+      columnStyles: mergedColStyles,
+      ...restOpts,
+    });
+    return doc.lastAutoTable.finalY + 3;
+  }
+
+  // Un párrafo de advertencia: caja con filete naranja. Devuelve la Y de abajo.
+  function nota(txt, y, ancho=CW) {
+    const lineas = doc.splitTextToSize(String(txt), ancho-10);
+    const n = Array.isArray(lineas) ? lineas.length : 1;
+    const h = 5 + n*3.6;
+    sf(Q.lt); sd(Q.bd); lw(0.2); R(ML,y,ancho,h,'FD');
+    sf(Q.nar); R(ML,y,1.5,h);
+    st(Q.tx); fs(FS_SM); fw('normal');
+    T(lineas, ML+5, y+5);
+    return y+h+3;
+  }
+
+  // ═══ 1 · IDENTIFICACIÓN ═══════════════════════════════════════════════════
+  pagNum = 1;
+  sf(Q.piz); R(0,0,PW*0.42,PH);
+  sf(Q.bg);  R(PW*0.42,0,PW*0.58,PH);
+  sf(Q.nar); R(0,0,PW*0.42,5);
+
+  st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  // El sello de la portada, en caja naranja y antes del nombre de la obra: lo
+  // primero que se lee es qué clase de papel es éste.
+  sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 16);
+  st(Q.wh); fs(11); fw('bold'); T('DOCUMENTO INTERNO', ML+4, 55);
+  fs(6.5); fw('normal');
+  T('Uso de cotea · no es el reporte que se entrega al cliente', ML+4, 60.5);
+
+  st(Q.wh); fs(7.5); fw('normal'); T('OBRA', ML, 76);
+  fs(14); fw('bold');
+  T(doc.splitTextToSize(nombreCorto, PW*0.38), ML, 83);
+
+  // El renglón del corte, también en la mitad oscura: la hora es parte de la
+  // identificación y `sello.corte` ya declara de dónde salió.
+  st(Q.mu); fs(7); fw('normal');
+  T('CORTE', ML, PH-34);
+  st(Q.wh); fs(7.5);
+  T(doc.splitTextToSize(sello.corte, PW*0.38), ML, PH-29);
+
+  const xR=PW*0.44, yR0=24;
+  st(Q.ng); fs(9); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
+  sd(Q.bd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
+  let yR=yR0+8;
+  const contr = contratoCapturado(obra?.contrato);
+  // `semanas` puede venir vacío —obra sin fecha de inicio—, y entonces la
+  // ventana medida NO se declara con un rango inventado: se dice que no hay.
+  const ventanaTxt = semanas.length
+    ? `${semanas[0].label}–${semanas[semanas.length-1].label} (${semanas.length} semanas)`
+    : 'sin semanas en la ventana: la obra no trae fecha de inicio capturada';
+  const filasID = [
+    ['Obra:', comoSeImprime(obra?.nombre)],
+    ['Clave:', comoSeImprime(obra?.id)],
+    ['Contrato:', contr.numero ?? NO_CAPTURADO],
+    ...(contr.objeto ? [['Objeto:', contr.objeto]] : []),
+    ['Cliente:', comoSeImprime(obra?.cliente)],
+    ['Organización:', comoSeImprime(organizacion)],
+    ['Inicio de obra:', comoSeImprime(obra?.inicio)],
+    ['Fin programado:', comoSeImprime(obra?.fin)],
+    ['Contratado:', MXN(PPTO)],
+    ['Ventana medida:', ventanaTxt],
+    ['Corte del documento:', sello.corte],
+    ['Generado por:', comoSeImprime(generadoPor)],
+  ];
+  filasID.forEach(([lbl,val])=>{
+    st(Q.ng); fs(7); fw('bold'); T(lbl, xR, yR);
+    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fw('normal');
+    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-34);
+    T(lineas, xR+34, yR);
+    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
+  });
+
+  sf(Q.bg); R(0,PH-FTR,PW,FTR);
+  sf(Q.piz); R(0,PH-FTR,PW,0.6);
+  st(Q.mu); fs(6); fw('normal');
+  T('cotea · documento interno', PW*0.44, PH-3.5);
+  T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
+
+  // ═══ 2 · INDICADORES ══════════════════════════════════════════════════════
+  doc.addPage(); pageFrame();
+  let y = CY0 + 4;
+  y = secHead('2  INDICADORES', y);
+
+  // Las cadenas salen de `pres`, no de un ternario escrito aquí. Donde `pres`
+  // dice «sin medir» este papel imprime «sin medir», y el color se apaga: un
+  // margen que no se pudo medir no es verde ni rojo.
+  y = kpiRow([
+    ['Avance físico', PCT(kpis.af), 'ponderado del contrato',
+      kpis.af>=75 ? colorSev('bajo') : kpis.af>=40 ? colorSev('medio') : colorSev('alto')],
+    ['Ejecutado', MXN(kpis.me),
+      PPTO>0 ? `${PCT(kpis.me/PPTO*100)} del contrato` : 'sin contratado capturado', Q.piz],
+    ['Gasto total', pres.gastoTxt,
+      pres.pctGastoTxt || pres.gastoMotivoTxt || '—',
+      pres.gastoSinMedir ? Q.mu : Q.nar],
+    ['Margen bruto', pres.margenTxt, pres.margenAbsTxt, colorMargen],
+  ], y);
+
+  y = kpiRow([
+    ['Contratado', MXN(PPTO), 'presupuesto de la obra', Q.piz],
+    ['Estimado', MXN(kpis.estTotal), 'suma de estimaciones', Q.piz],
+    ['Cobrado', MXN(kpis.estPag),
+      kpis.estTotal>0 ? `${PCT(kpis.estPag/kpis.estTotal*100)} de lo estimado` : 'sin estimaciones', Q.piz],
+    ['Por cobrar', MXN(kpis.estPorCob), 'aprobado, facturado y en proceso', Q.nar],
+  ], y);
+
+  // LO QUE ESTE DOCUMENTO NO PUEDE AFIRMAR, dicho en una caja y no deducible de
+  // un guión en una celda. Es la diferencia entre el papel del cliente y éste:
+  // allá el hueco se calla, aquí se nombra con su motivo.
+  const huecos = [];
+  if (pres.gastoSinMedir)
+    huecos.push(`El gasto de GP de esta obra no está medido (${pres.gastoMotivoTxt}). `
+      + 'Sin ese sumando, el gasto total está incompleto y el margen no se puede afirmar: '
+      + 'los dos renglones dicen «sin medir» y su semáforo está apagado.');
+  if (pres.margenIndefinido)
+    huecos.push('Hay gasto y no hay ejecución capturada: el margen en porcentaje no existe. '
+      + 'El absoluto sí es real, y es pérdida.');
+  if (!(PPTO > 0))
+    huecos.push('La obra no trae presupuesto capturado, así que ningún porcentaje contra el '
+      + 'contrato se publica en este documento.');
+  if (!curva.ejecutadoMedido?.some(Boolean))
+    huecos.push('Ninguna semana de la ventana trae un corte de avance cerrado, '
+      + 'así que la serie semanal no tiene contra qué medir el gasto.');
+  if (huecos.length) {
+    st(Q.ng); fs(FS_SEC); fw('bold'); T('Lo que este documento NO puede afirmar', ML, y+4);
+    y += 7;
+    for (const h of huecos) y = nota(h, y);
+  } else {
+    y = nota('Los cuatro indicadores de arriba están medidos: el gasto de GP de esta obra '
+      + 'entró en la última corrida y hay cortes de avance en la ventana.', y);
+  }
+
+  // ═══ 4 · CÓMO VAMOS EN DINERO ═════════════════════════════════════════════
+  // El número de sección es el 4 del mandato. Las secciones 3 y 7 —las dos
+  // gráficas— y la 5 —el resumen fotográfico— todavía no están escritas, y los
+  // números NO se corren para tapar el hueco: renumerar cada vez que una
+  // sección aterriza deja al lector de dos cortes seguidos comparando la «3» de
+  // uno con la «3» del otro, que no son la misma sección.
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('4  CÓMO VAMOS EN DINERO · EL MARGEN SEMANA A SEMANA', y);
+
+  const cm = comportamientoMargen;
+  if (cm.renglones.length) {
+    // El tramo, en una línea, antes de la tabla: de cuánto a cuánto y en
+    // cuántas semanas. Las tres cifras salen de `comportamientoDelMargen`.
+    st(Q.ng); fs(FS_SEC); fw('bold');
+    T(`${cm.cola} semanas seguidas con las dos líneas en el mismo corte`, ML, y+4);
+    st(Q.tx); fs(FS_SM); fw('normal');
+    T(`${PCT(cm.desde)} → ${PCT(cm.hasta)} · ${PP(cm.delTramo)} en el tramo`,
+      PW-MR, y+4, {align:'right'});
+    y += 8;
+
+    const cuerpo = cm.renglones.map(r => [
+      r.label || '—',
+      MXNS(r.pesos),
+      PCT(r.pct),
+      PP(r.delta),
+      r.ejecutadoQuieto ? 'el avance no se movió' : '',
+    ]);
+    y = autoT(
+      ['Semana', 'Margen', 'Margen %', 'Cambio', 'Observación'],
+      cuerpo,
+      [22, 40, 26, 26, CW-114],
+      ML, y,
+      { columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}} }
+    );
+
+    if (cm.quietas)
+      y = nota(`${cm.quietas} de las ${cm.cola} semanas del tramo traen el avance ejecutado `
+        + 'clavado en la cifra de la semana anterior. En esas semanas lo que mueve el margen es '
+        + 'el gasto contra un ejecutado que no se cerró, así que el movimiento es de CAPTURA y '
+        + 'no de obra.', y);
+    if (cm.peorSemana && cm.peorSemana.delta < 0)
+      y = nota(`La peor semana del tramo es ${cm.peorSemana.label}, con ${PP(cm.peorSemana.delta)}.`, y);
+    if (!cm.suficiente)
+      y = nota(`El tramo no alcanza para hablar de tendencia: ${cm.motivo}.`, y);
+  } else {
+    // SIN TRAMO NO SE DIBUJA UNA TABLA VACÍA NI SE IMPRIME UN CERO: se imprime
+    // el motivo, que es el dato que hay.
+    y = nota(`No hay serie semanal de margen que publicar: ${cm.motivo}.`, y);
+  }
+
+  // ── Composición del gasto por rubro ──────────────────────────────────────
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('4  CÓMO VAMOS EN DINERO · COMPOSICIÓN DEL GASTO POR RUBRO', y);
+
+  const rubros = Object.values(gpDetalle?.rubros || {})
+    .map(r => ({ nombre: r.nombreCorto || r.nombre || r.id, monto: r.grandTotal || 0 }))
+    .filter(r => r.monto > 0)
+    .sort((a,b) => b.monto - a.monto);
+  if (rubros.length) {
+    const totRub = rubros.reduce((t,r)=>t+r.monto, 0);
+    y = autoT(
+      ['Rubro', 'Monto', '% del gasto GP', '% del contratado'],
+      [
+        ...rubros.map(r => [
+          String(r.nombre).slice(0,60), MXN(r.monto),
+          PCT(r.monto/totRub*100),
+          PPTO>0 ? PCT(r.monto/PPTO*100) : '—',
+        ]),
+        [{content:'TOTAL GP', styles:{fontStyle:'bold'}},
+         {content:MXN(totRub), styles:{fontStyle:'bold', halign:'right'}},
+         {content:'100.0%', styles:{fontStyle:'bold', halign:'right'}},
+         {content:PPTO>0 ? PCT(totRub/PPTO*100) : '—', styles:{fontStyle:'bold', halign:'right'}}],
+      ],
+      [CW-150, 50, 50, 50], ML, y,
+      { columnStyles:{1:{halign:'right'},2:{halign:'right'},3:{halign:'right'}} }
+    );
+    // EL TOTAL DE LOS RUBROS Y EL GASTO DE GP DEL KPI SON LA MISMA CUENTA, y si
+    // discrepan hay que decirlo aquí: dos páginas antes está el otro número. La
+    // tolerancia es de un peso, por el redondeo de los dos lados.
+    if (pres.gastoSinMedir)
+      y = nota('El desglose de arriba viene del detalle del GP, pero el gasto de GP de esta obra '
+        + 'no está medido para el indicador: los rubros se publican y el total NO se usa como '
+        + 'gasto de la obra.', y);
+    else if (Math.abs(totRub - kpis.gastoGP) > 1)
+      y = nota(`El total de los rubros (${MXN(totRub)}) no cuadra con el gasto de GP del `
+        + `indicador (${MXN(kpis.gastoGP)}): difieren ${MXNS(totRub - kpis.gastoGP)}. `
+        + 'Las dos cifras salen del mismo volcado, así que la diferencia es un defecto de lectura '
+        + 'y no una interpretación.', y);
+  } else {
+    y = nota('No hay detalle de rubros del GP para esta obra en esta lectura. Falta el desglose, '
+      + 'no el gasto: el indicador de gasto de la sección 2 dice por su cuenta si está medido.', y);
+  }
+
+  // ═══ 6 · INDICADORES DE RIESGO, EN TRES ESTADOS ═══════════════════════════
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('6  INDICADORES DE RIESGO, EN TRES ESTADOS', y);
+
+  const { detectados, sinHallazgo, noEvaluables, reventaron } = veredicto;
+
+  // LA FRASE VA IMPRESA, no implícita en que haya tres tablas. Un lector que
+  // encuentre la primera vacía tiene que leer en el mismo renglón por qué eso
+  // no quiere decir que la obra esté bien.
+  y = nota('UNA LISTA VACÍA NO SIGNIFICA QUE NO HAY RIESGO. Una regla puede callarse porque midió '
+    + 'y no encontró nada, o porque le faltó el dato para medir. Los dos casos salen abajo por '
+    + 'separado, y cada riesgo detectado dice con qué número disparó.', y);
+
+  y = kpiRow([
+    ['Detectados', String(detectados.length), 'midieron y encontraron', colorSev('alto')],
+    ['No evaluables', String(noEvaluables.length), 'les faltó un dato', Q.mu],
+    ['Sin hallazgo', String(sinHallazgo.length), 'midieron y no encontraron', colorSev('bajo')],
+    ['Reventaron', String(reventaron.length), 'defecto nuestro, no hueco suyo',
+      reventaron.length ? colorSev('critico') : Q.mu],
+  ], y);
+
+  st(Q.ng); fs(FS_SEC); fw('bold'); T('Detectados · con qué número disparó', ML, y+4);
+  y += 7;
+  if (detectados.length) {
+    y = autoT(
+      ['Nivel', 'Riesgo', 'Disparó con', 'Qué dice'],
+      detectados.map(r => [
+        labelSev(r.severidad),
+        r.titulo || r.id,
+        disparoCon(r.valor),
+        [r.detalle, r.extra].filter(Boolean).join(' · ') || '—',
+      ]),
+      [24, 56, 40, CW-120], ML, y,
+      { didParseCell: (d) => {
+          if (d.section === 'body' && d.column.index === 0)
+            d.cell.styles.textColor = colorSev(detectados[d.row.index]?.severidad);
+        } }
+    );
+  } else {
+    y = nota('Ninguna regla de las que SÍ pudieron medir encontró algo. Eso no es un veredicto '
+      + 'sobre la obra: mira la lista de no evaluables de abajo antes de leerlo como tal.', y);
+  }
+
+  if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+  st(Q.ng); fs(FS_SEC); fw('bold'); T('No evaluables · qué dato falta', ML, y+4);
+  y += 7;
+  if (noEvaluables.length) {
+    y = autoT(
+      ['Riesgo', 'Dato que falta', 'Por qué no se pudo medir'],
+      noEvaluables.map(r => [
+        r.titulo || r.id,
+        r.faltan.map(f => f.nombre || f.dato).join(' · '),
+        r.faltan.map(f => f.porQue).filter(Boolean).join(' · ')
+          || 'el dato no está en esta lectura',
+      ]),
+      [56, 60, CW-116], ML, y
+    );
+  } else {
+    y = nota('Ninguna regla se quedó sin dato: todas las que aplican a esta obra pudieron medir.', y);
+  }
+
+  if (reventaron.length) {
+    if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+    st(colorSev('critico')); fs(FS_SEC); fw('bold');
+    T('Reventaron · esto es un defecto de cotea, no un hueco de captura', ML, y+4);
+    y += 7;
+    y = autoT(
+      ['Riesgo', 'Qué falló'],
+      reventaron.map(r => [r.titulo || r.id, r.error || 'sin mensaje']),
+      [70, CW-70], ML, y
+    );
+  }
+
+  if (y > 160) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+  st(Q.ng); fs(FS_SEC); fw('bold'); T('Sin hallazgo · midieron y no encontraron nada', ML, y+4);
+  y += 6;
+  st(Q.tx); fs(FS_SM); fw('normal');
+  // Se NOMBRAN, no se cuentan. «22 reglas sin hallazgo» no dice cuáles, y la que
+  // falta de la lista es la que nadie va a notar.
+  T(doc.splitTextToSize(
+      sinHallazgo.length
+        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
+        : 'Ninguna: todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.',
+      CW), ML, y+3);
+
+  // ── PIE CON TOTAL DE PÁGINAS ──────────────────────────────────────────────
+  const totalPaginas = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPaginas; i++) {
+    doc.setPage(i);
+    sf(Q.bg); R(PW/2-25, PH-6, 50, 4, 'F');
+    st(Q.mu); fs(6); fw('normal');
+    T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
+  }
+
+  doc.save(`Interno_cotea_${String(nombreCorto).replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`);
+
+  } catch(e) {
+    console.error('Error generando el documento interno:',e);
+    alert(`Error al generar el documento interno:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
   }
 }
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
@@ -27090,6 +27748,42 @@ export default function App(){
           <polyline points="9 15 12 12 15 15"/>
         </svg>
         Reporte ejecutivo
+      </button>}
+      {/* EL DOCUMENTO INTERNO DE COTEA — botón propio, generador propio.
+          No es una casilla «¿interno?» junto al otro botón: son dos papeles con
+          criterios opuestos sobre el mismo hueco —ver `generarPDFInterno`— y un
+          control compartido los volvería un papel con dos modos.
+          La misma guarda que el reporte ejecutivo: este documento publica el
+          margen y el gasto de la constructora, y una dependencia no lee la
+          economía de su contratista. */}
+      {obra&&vaElReporteEjecutivo(usuario)&&<button onClick={async ()=>{
+          let detalle = null;
+          try {
+            const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
+            if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
+          } catch (e) { console.warn('gpDetalle no disponible', e); }
+          let programaObra = null;
+          try { programaObra = await fsGet(`obras/${obra.id}/config/programa`); }
+          catch (e) { console.warn('programa de obra no disponible', e); }
+          const instante = await pedirHoraDelServidor();
+          await generarPDFInterno({
+            obra, subs, estimaciones, maquinaria, materiales, subcontratos,
+            historialAvance, gpData, gpDetalle: detalle, otrosGastos,
+            nominaHistorial, programa: programaObra, instante,
+            organizacion: nombreOrg(marca, usuario),
+            generadoPor: usuario?.nombre || usuario?.email || null,
+          });
+        }}
+        title="Descargar el documento interno de cotea (no se entrega al cliente)"
+        style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,
+          margin:"4px 12px 4px 0",padding:"5px 13px",fontSize:11,fontWeight:600,
+          color:C.textSec,cursor:"pointer",
+          display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M7 8h10M7 12h10M7 16h6"/>
+        </svg>
+        Documento interno
       </button>}
     </div>}
 
