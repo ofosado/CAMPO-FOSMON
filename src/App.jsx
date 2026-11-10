@@ -6403,10 +6403,102 @@ const SEVERIDADES = {
   critico: {color:'#A32D2D', bg:'#FCEBEB', label:'Crítico',   peso: 4},   // rojo
 };
 
+// El renglón de esta obra dentro del volcado de GP. La clave de CAMPO y la de
+// GP no son la misma cadena —CAMPO usa cuatro dígitos y a veces un sufijo, GP
+// usa el `gpId`— así que el cruce va por las dos. Estaba escrito SEIS VECES
+// idénticas dentro de la biblioteca, y la séptima iba a ser la del chequeo de
+// datos de aquí abajo: seis copias de un cruce son seis sitios donde
+// desincronizarlo, y el chequeo que dice «esta obra no está en GP» tiene que
+// responder exactamente lo que responden los detectores, o declararía que falta
+// un dato que sí está, o lo contrario.
+const obraEnGP = (obra, gpData) =>
+  Object.values(gpData?.obras || {})
+    .find(o => o.id === obra?.id?.slice(0, 4) || o.id === obra?.gpId) || null;
+
+// Por qué NO se midió el gasto, dicho con el nombre del dato que falta y no
+// con un «no se pudo». Las claves son los `motivo` que devuelve
+// `estadoGastoGP` cuando `medido` es falso; los demás motivos de esa función
+// son mediciones válidas (`sin-cheques` es cero medido, no cero inventado).
+//
+// La pantalla de economía ya tiene su propia redacción para esto en tres
+// sitios, y distingue sólo dos casos de los cuatro. No se tocó aquí porque
+// cambiar lo que esas tres pantallas dicen es un cambio de pantalla con su
+// propia verificación; queda anotado como pendiente aparte.
+const MOTIVO_SIN_GASTO = {
+  'sin-documento':      'no hay corrida del gasto de GP todavía',
+  'no-pedida':          'la corrida del gasto todavía no incluye esta obra',
+  'no-se-puede-saber':  'la corrida no dice qué obras se le pidieron',
+  'sin-match':          'esta obra no se cruzó con ninguna de GP (falta capturar el gpId)',
+};
+
+// ── DE QUÉ DATO DEPENDE CADA RIESGO ─────────────────────────────────────────
+//
+// POR QUÉ ESTO EXISTE. Un detector que no encuentra su dato devuelve `null`, y
+// `null` es exactamente lo que devuelve un detector que midió y no halló nada.
+// O sea que el motor no distinguía «no hay riesgo de costo» de «no sé si hay
+// riesgo de costo porque esta obra no tiene gasto medido». Las dos cosas
+// salían como una lista corta, y una lista corta se lee como tranquilidad.
+//
+// Hoy en producción eso pasa de verdad, no en teoría: las obras 0128 y 0131
+// tienen `gastoGP = 0`, así que su margen sale del 100% y su brecha sale
+// negativa, y `fin_001` y `fin_002` se callan las dos. El tablero de esas dos
+// obras afirma hoy que no hay riesgo de margen cuando lo que pasa es que nadie
+// midió el gasto.
+//
+// LA DECLARACIÓN ES DECLARATIVA A PROPÓSITO. Lo alternativo era que cada
+// detector devolviera un marcador de «no pude», lo que obligaba a tocar los 31
+// y arriesgaba cambiar qué dispara. Esto no toca ni una línea de la lógica de
+// detección: la plantilla declara de qué dato depende y el motor comprueba el
+// dato ANTES de llamar al detector.
+//
+// `hay` lee SÓLO del contexto, nunca de fuera, para que la respuesta no dependa
+// de en qué pantalla se preguntó.
+const DATOS_DEL_RIESGO = {
+  catalogo:     { nombre: 'el catálogo de conceptos',             hay: c => !!c.subs?.length },
+  cierres:      { nombre: 'al menos una semana cerrada',          hay: c => (c.historialAvance || []).some(s => s.tipo === 'oficial') },
+  avance:       { nombre: 'algún avance capturado',               hay: c => (c.historialAvance || []).some(s => s.avance !== null && s.avance !== undefined) },
+  estimaciones: { nombre: 'estimaciones capturadas',              hay: c => !!c.estimaciones?.length },
+  // DOS DATOS DISTINTOS, NO UNO CON DOS NOMBRES. «¿Se midió el gasto de esta
+  // obra?» la contesta `estadoGastoGP`, que es la respuesta autorizada y trae
+  // el motivo. «¿Está el renglón de esta obra en la corrida?» la contesta el
+  // cruce que usan los detectores de proveedor, que es más débil —no tiene el
+  // match por nombre—. Un riesgo que lee montos consolidados depende del
+  // primero; uno que recorre proveedores depende del segundo. Declararlos con
+  // un solo nombre haría que una regla saliera «evaluada sin hallazgo» cuando
+  // en realidad su detector no encontró con qué trabajar.
+  gastoMedido:  { nombre: 'el gasto de esta obra medido en GP',
+                  hay: c => estadoGastoGP(c.obra, c.gpData).medido,
+                  porQue: c => MOTIVO_SIN_GASTO[estadoGastoGP(c.obra, c.gpData).motivo] || null },
+  renglonGP:    { nombre: 'el renglón de esta obra en la corrida de GP', hay: c => !!obraEnGP(c.obra, c.gpData) },
+  // ESTOS DOS NO SE JUNTAN, y la prueba del plazo lo demostró. La primera
+  // versión los pedía con un solo nombre, y eso declaró `fin_006` más estricto
+  // que su propio detector: `fin_006` usa `semanasDisponibles` y nunca mira
+  // `ultimaSemana`, así que exigírsela lo volvió «no evaluable» en una obra
+  // donde sí dispara, y cuatro aserciones de
+  // `prueba-el-plazo-se-cuenta-una-vez` se pusieron en rojo.
+  //
+  // LA REGLA QUE QUEDA: el requisito se copia de la guarda del detector, no se
+  // afloja ni se aprieta. Más estricto esconde detrás de un «no sé» un riesgo
+  // que existe; más laxo manda a «sin hallazgo» una regla que no pudo medir.
+  semanasGP:      { nombre: 'semanas de gasto en GP para comparar', hay: c => !!c.gpData?.semanasDisponibles?.length },
+  ultimaSemanaGP: { nombre: 'la última semana de la corrida de GP',  hay: c => !!c.gpData?.ultimaSemana },
+  nomina:       { nombre: 'nómina capturada de la obra',          hay: c => !!c.nominaHistorial?.length },
+  almacen:      { nombre: 'movimientos de almacén',               hay: c => !!c.materiales?.length },
+  maquinaria:   { nombre: 'costos de maquinaria',                 hay: c => !!c.maquinaria?.length },
+  subcontratos: { nombre: 'subcontratos capturados',              hay: c => !!c.subcontratos?.length },
+  plazo:        { nombre: 'la fecha de término del contrato',     hay: c => !!finVigenteDe(c.obra) },
+  programa:     { nombre: 'el programa de obra contractual',      hay: c => !!c.programa },
+  presupuesto:  { nombre: 'el presupuesto del contrato',          hay: c => Number(c.obra?.presupuesto) > 0 },
+  anticipo:     { nombre: 'el porcentaje de anticipo del contrato', hay: c => Number(c.obra?.pctAnticipo) > 0 },
+  ejecutado:    { nombre: 'monto ejecutado mayor que cero',       hay: c => Number(c.kpis?.me) > 0 },
+  kpis:         { nombre: 'los indicadores consolidados de la obra', hay: c => !!c.kpis },
+};
+
 const BIBLIOTECA_RIESGOS = [
   // ── FINANCIEROS ──
   {
     id: 'fin_001', categoria: 'financiero',
+    requiere: ['kpis', 'gastoMedido', 'ejecutado'],
     titulo: 'Margen bruto en zona crítica',
     descripcion: 'El margen bruto está por debajo del umbral mínimo aceptable',
     tab: 'operacion', subTab: 'estimaciones',
@@ -6420,6 +6512,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'fin_002', categoria: 'financiero',
+    requiere: ['kpis', 'gastoMedido'],
     titulo: 'Brecha entre gasto y avance',
     descripcion: 'Se está gastando más rápido que el avance físico de la obra',
     tab: 'operacion', subTab: 'avance',
@@ -6433,6 +6526,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'fin_003', categoria: 'cobranza',
+    requiere: ['estimaciones'],
     titulo: 'Estimaciones atrasadas en cobro',
     descripcion: 'Hay estimaciones facturadas vencidas según el plazo contractual',
     tab: 'operacion', subTab: 'estimaciones',
@@ -6461,6 +6555,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'fin_004', categoria: 'cobranza',
+    requiere: ['estimaciones'],
     titulo: 'Concentración de cuentas por cobrar',
     descripcion: 'Mucho monto facturado pendiente de cobro vs lo cobrado',
     tab: 'operacion', subTab: 'estimaciones',
@@ -6477,6 +6572,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'fin_005', categoria: 'financiero',
+    requiere: ['estimaciones', 'anticipo'],
     titulo: 'Anticipo no recuperado',
     descripcion: 'Falta amortizar mucho anticipo recibido del cliente',
     tab: 'operacion', subTab: 'estimaciones',
@@ -6495,12 +6591,13 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'fin_006', categoria: 'financiero',
+    requiere: ['kpis', 'renglonGP', 'semanasGP'],
     titulo: 'Velocidad de quema insostenible',
     descripcion: 'A ritmo actual el presupuesto se agota antes del fin contractual',
     tab: 'gastos',
     detect: ({obra, gpData, kpis}) => {
       if (!gpData?.obras || !kpis) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP) return null;
       // La MISMA cuenta que el KPI «Velocidad prom.» de la pestaña Gastos, no
       // una copia: si discreparan, la excepción y el renglón que la explica
@@ -6539,6 +6636,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── PLAZOS ──
   {
     id: 'plz_001', categoria: 'plazo',
+    requiere: ['plazo'],
     titulo: 'Plazo contractual vencido',
     descripcion: 'La fecha fin del contrato (o última ampliación) ya pasó',
     tab: 'planeacion', subTab: 'contrato',
@@ -6552,6 +6650,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'plz_002', categoria: 'plazo',
+    requiere: ['plazo'],
     titulo: 'Plazo a punto de vencer',
     descripcion: 'Quedan 30 días o menos para el fin contractual',
     tab: 'planeacion', subTab: 'contrato',
@@ -6566,6 +6665,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'plz_003', categoria: 'plazo',
+    requiere: ['plazo', 'cierres', 'avance'],
     titulo: 'No terminará en plazo a ritmo actual',
     descripcion: 'Proyección con velocidad histórica no alcanza el 100% en fecha fin',
     tab: 'operacion', subTab: 'avance',
@@ -6595,6 +6695,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── AVANCE FÍSICO ──
   {
     id: 'avc_001', categoria: 'avance',
+    requiere: ['catalogo'],
     titulo: 'Frentes sin iniciar',
     descripcion: 'Hay subsecciones que no han empezado ejecución',
     tab: 'operacion', subTab: 'avance',
@@ -6608,6 +6709,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'avc_002', categoria: 'avance',
+    requiere: ['catalogo', 'cierres'],
     titulo: 'Partidas estancadas',
     descripcion: 'Subsecciones con avance entre 1-99% sin movimiento ≥2 semanas',
     tab: 'operacion', subTab: 'avance',
@@ -6629,6 +6731,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'avc_003', categoria: 'avance',
+    requiere: ['catalogo', 'cierres'],
     titulo: 'Partidas con retroceso',
     descripcion: 'Subsecciones donde el % bajó vs semana anterior',
     tab: 'operacion', subTab: 'avance',
@@ -6648,6 +6751,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'avc_004', categoria: 'avance',
+    requiere: ['kpis', 'programa'],
     titulo: 'Avance rezagado contra el programa',
     descripcion: 'El avance real va por debajo del programa contractual',
     tab: 'operacion', subTab: 'avance',
@@ -6711,6 +6815,7 @@ const BIBLIOTECA_RIESGOS = [
   // fuera de scope de este fix — este PR solo repara lo roto, no agrega.
   {
     id: 'nom_001', categoria: 'nomina',
+    requiere: ['nomina'],
     titulo: 'Trabajadores con horas extra excesivas',
     descripcion: 'Personal con ≥20 horas extra por semana',
     tab: 'operacion', subTab: 'nomina',
@@ -6725,6 +6830,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'nom_002', categoria: 'nomina',
+    requiere: ['nomina'],
     titulo: 'Costo de horas extra alto',
     descripcion: 'Las horas extra superan el 15% del total de nómina',
     tab: 'operacion', subTab: 'nomina',
@@ -6743,6 +6849,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'nom_003', categoria: 'nomina',
+    requiere: ['nomina'],
     titulo: 'Posibles anomalías en cálculo',
     descripcion: 'Trabajadores con total >2.5× su salario base',
     tab: 'operacion', subTab: 'nomina',
@@ -6758,6 +6865,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── MATERIALES / ALMACÉN ──
   {
     id: 'mat_001', categoria: 'materiales',
+    requiere: ['almacen'],
     titulo: 'Material en tránsito por mucho tiempo',
     descripcion: 'Material marcado como En tránsito sin actualización',
     tab: 'operacion', subTab: 'almacen',
@@ -6770,6 +6878,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'mat_002', categoria: 'materiales',
+    requiere: ['almacen'],
     titulo: 'Material en fabricación pendiente',
     descripcion: 'Material en proceso de fabricación con tiempo de espera',
     tab: 'operacion', subTab: 'almacen',
@@ -6783,6 +6892,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── MAQUINARIA ──
   {
     id: 'maq_001', categoria: 'maquinaria',
+    requiere: ['maquinaria', 'presupuesto'],
     titulo: 'Costo de maquinaria alto vs presupuesto',
     descripcion: 'La maquinaria propia representa más del 8% del presupuesto',
     tab: 'operacion', subTab: 'maquinaria',
@@ -6798,6 +6908,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── SUBCONTRATOS ──
   {
     id: 'sub_001', categoria: 'subcontratos',
+    requiere: ['subcontratos'],
     titulo: 'Subcontratos con desfase obra vs pago',
     descripcion: 'Subcontratistas con >20pp de diferencia entre avance físico y pago',
     tab: 'operacion', subTab: 'subcontratos',
@@ -6819,6 +6930,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'sub_002', categoria: 'subcontratos',
+    requiere: ['subcontratos'],
     titulo: 'Subcontratos con catálogo no cuadrado',
     descripcion: 'Suma del catálogo difiere >5% del monto contratado',
     tab: 'operacion', subTab: 'subcontratos',
@@ -6836,6 +6948,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'sub_003', categoria: 'subcontratos',
+    requiere: ['subcontratos'],
     titulo: 'Pagos programados pendientes',
     descripcion: 'Subs con pagos programados a punto de ejecutarse',
     tab: 'operacion', subTab: 'subcontratos',
@@ -6854,12 +6967,13 @@ const BIBLIOTECA_RIESGOS = [
   // ── GASTOS / PROVEEDORES ──
   {
     id: 'gst_001', categoria: 'financiero',
+    requiere: ['renglonGP'],
     titulo: 'Concentración de proveedores',
     descripcion: 'Top 3 proveedores concentran >55% del gasto',
     tab: 'gastos',
     detect: ({obra, gpData}) => {
       if (!gpData?.obras) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP?.proveedores?.length) return null;
       const ord = [...obraGP.proveedores].sort((a,b)=>(b.total||0)-(a.total||0));
       const total = ord.reduce((t,p)=>t+(p.total||0), 0);
@@ -6873,12 +6987,13 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'gst_002', categoria: 'financiero',
+    requiere: ['renglonGP', 'ultimaSemanaGP'],
     titulo: 'Anomalía de gasto semanal',
     descripcion: 'Gasto de la última semana es >2× el promedio histórico',
     tab: 'gastos',
     detect: ({obra, gpData}) => {
       if (!gpData?.obras || !gpData.ultimaSemana) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP) return null;
       const semanas = gpData.semanasDisponibles || [];
       if (semanas.length < 4) return null;
@@ -6894,12 +7009,13 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'gst_003', categoria: 'financiero',
+    requiere: ['renglonGP', 'ultimaSemanaGP'],
     titulo: 'Proveedores nuevos esta semana',
     descripcion: 'Proveedores que aparecen por primera vez',
     tab: 'gastos',
     detect: ({obra, gpData}) => {
       if (!gpData?.obras || !gpData.ultimaSemana) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP?.proveedores?.length) return null;
       const nuevos = proveedoresNuevosGP(obraGP.proveedores, gpData.semanasDisponibles, gpData.ultimaSemana);
       if (nuevos.length === 0) return null;
@@ -6909,12 +7025,13 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'gst_004', categoria: 'financiero',
+    requiere: ['renglonGP', 'ultimaSemanaGP', 'semanasGP'],
     titulo: 'Proveedor con incremento súbito',
     descripcion: 'Algún proveedor facturó >50% más vs semana anterior',
     tab: 'gastos',
     detect: ({obra, gpData}) => {
       if (!gpData?.obras || !gpData.ultimaSemana || !gpData.semanasDisponibles?.length) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP?.proveedores?.length) return null;
       const incs = incrementosDeProveedorGP(obraGP.proveedores, gpData.semanasDisponibles, gpData.ultimaSemana);
       if (incs.length === 0) return null;
@@ -6923,12 +7040,13 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'gst_005', categoria: 'financiero',
+    requiere: ['renglonGP', 'semanasGP'],
     titulo: 'Proveedores activos sin movimiento reciente',
     descripcion: 'Proveedores con gasto histórico sin facturar en 4+ semanas',
     tab: 'gastos',
     detect: ({obra, gpData}) => {
       if (!gpData?.obras || !gpData.semanasDisponibles?.length) return null;
-      const obraGP = Object.values(gpData.obras).find(o => o.id === obra.id?.slice(0,4) || o.id === obra.gpId);
+      const obraGP = obraEnGP(obra, gpData);
       if (!obraGP?.proveedores?.length) return null;
       // Cuatro SEGUIDAS, no las cuatro últimas de la lista: con un hueco en
       // medio «sin facturar en 4 semanas» abarcaría cinco.
@@ -6945,6 +7063,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── CONTRACTUALES ──
   {
     id: 'ctr_001', categoria: 'contractual',
+    requiere: [],
     titulo: 'Días de pago no configurados',
     descripcion: 'No se ha definido el plazo contractual de pago de estimaciones',
     tab: 'planeacion', subTab: 'contrato',
@@ -6955,6 +7074,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'ctr_002', categoria: 'contractual',
+    requiere: [],
     titulo: 'ID GP no vinculado',
     descripcion: 'La obra no tiene asignado el código de GP Construct',
     tab: 'planeacion', subTab: 'contrato',
@@ -6968,6 +7088,7 @@ const BIBLIOTECA_RIESGOS = [
   // ── COMPLIANCE ──
   {
     id: 'cmp_001', categoria: 'compliance',
+    requiere: [],
     // Las plantillas de riesgo son datos puros: no tienen `usuario` en alcance
     // y pasárselo sería atravesar el motor de riesgos entero. La salida es no
     // nombrar la ruta del menú. «Sube el Excel en Presupuesto» nombraba una
@@ -6984,6 +7105,7 @@ const BIBLIOTECA_RIESGOS = [
   },
   {
     id: 'cmp_002', categoria: 'compliance',
+    requiere: [],
     titulo: 'Sin cierres semanales registrados',
     descripcion: 'Aún no se ha cerrado ninguna semana',
     tab: 'operacion', subTab: 'avance',
@@ -7018,38 +7140,89 @@ const RIESGOS_SOLO_CONSTRUCTORA = new Set([
   'ctr_002',                                          // vinculación con GP
 ]);
 
-// Motor de detección: evalúa todas las plantillas y devuelve las que disparen.
+// UNA LISTA VACÍA NO SIGNIFICA QUE NO HAY RIESGO. Ésa es toda la razón de que
+// esta función exista y de que `detectarRiesgos` se haya vuelto una vista de
+// ella. Antes el motor devolvía un solo arreglo, y fuera de él cabían dos cosas
+// distintas que nadie podía separar:
+//
+//   · la regla midió y encontró algo            → salía en la lista
+//   · la regla midió y no encontró nada         → no salía
+//   · la regla NO PUDO medir por falta de dato  → no salía, igual que la de arriba
+//
+// Y había una cuarta, peor, que no se veía desde ninguna parte: si el detector
+// reventaba, el `catch` se lo comía en silencio y un defecto de programación se
+// contaba como «no hay riesgo». Un reporte que se calla porque no sabe se lee
+// igual que uno que dice que todo está bien, y es el único error que un reporte
+// no puede permitirse.
+//
+// Los cuatro estados salen por separado y cada uno dice por qué. `noEvaluables`
+// NOMBRA EL DATO QUE FALTA, que es lo único que vuelve el hueco accionable:
+// «margen bruto: no evaluable, el gasto de esta obra no está medido en GP» se
+// puede ir a arreglar; una lista corta no.
+//
+// `reventaron` no se mezcla con `noEvaluables` a propósito: no es que falte un
+// dato del cliente, es que nuestro código falló. Juntarlos haría pasar un
+// defecto nuestro por un hueco suyo.
+//
 // `contexto.tipo` es el tipo de organización; ausente o "constructora" evalúa
 // la biblioteca completa, o sea la conducta de siempre.
-const detectarRiesgos = (contexto) => {
-  const detectados = [];
+const evaluarRiesgos = (contexto) => {
+  const detectados = [], sinHallazgo = [], noEvaluables = [], reventaron = [];
   const soloContrato = contexto?.tipo === 'dependencia';
+  const ctx = contexto || {};
   for (const plantilla of BIBLIOTECA_RIESGOS) {
     if (soloContrato && RIESGOS_SOLO_CONSTRUCTORA.has(plantilla.id)) continue;
+
+    // La ficha que llevan los tres estados que NO disparan. No lleva `detect`
+    // ni `requiere`: quien consume un hueco no tiene nada que ejecutar.
+    const ficha = { id: plantilla.id, categoria: plantilla.categoria,
+                    titulo: plantilla.titulo, descripcion: plantilla.descripcion,
+                    tab: plantilla.tab, subTab: plantilla.subTab };
+
+    // EL DATO SE COMPRUEBA ANTES DE LLAMAR AL DETECTOR, no dentro de él. Así la
+    // lógica de detección no se tocó —no cambia qué dispara— y la respuesta «no
+    // pude» no depende de que 31 detectores se acuerden de darla.
+    let faltan;
     try {
-      const r = plantilla.detect(contexto);
-      if (r) {
-        detectados.push({
-          ...plantilla,
-          severidad: r.severidad,
-          // El título puede depender del dato y no sólo de la regla: cuando el
-          // detector mide contra algo que puede variar, el nombre tiene que
-          // variar con ello, o el semáforo nombra una medición que no hizo.
-          // `ALERTA_REGLAS`, el otro motor, ya lo permitía.
-          titulo: r.titulo || plantilla.titulo,
-          valor: r.valor,
-          detalle: r.detalle,
-          extra: r.extra,
-        });
-      }
-    } catch(e) {
-      // Detector con error: ignorar silenciosamente
+      faltan = (plantilla.requiere || [])
+        .map(k => ({ k, d: DATOS_DEL_RIESGO[k] }))
+        .filter(({ d }) => d && !d.hay(ctx))
+        .map(({ k, d }) => ({ dato: k, nombre: d.nombre, porQue: d.porQue ? d.porQue(ctx) : null }));
+    } catch (e) {
+      // Si revienta el propio chequeo del dato tampoco se sabe nada, y es el
+      // mismo defecto de programación: va a `reventaron`, no a «sin hallazgo».
+      reventaron.push({ ...ficha, error: `al comprobar los datos: ${e?.message || e}` });
+      continue;
     }
+    if (faltan.length) { noEvaluables.push({ ...ficha, faltan }); continue; }
+
+    let r;
+    try { r = plantilla.detect(ctx); }
+    catch (e) { reventaron.push({ ...ficha, error: e?.message || String(e) }); continue; }
+
+    if (!r) { sinHallazgo.push(ficha); continue; }
+    detectados.push({
+      ...plantilla,
+      severidad: r.severidad,
+      // El título puede depender del dato y no sólo de la regla: cuando el
+      // detector mide contra algo que puede variar, el nombre tiene que
+      // variar con ello, o el semáforo nombra una medición que no hizo.
+      // `ALERTA_REGLAS`, el otro motor, ya lo permitía.
+      titulo: r.titulo || plantilla.titulo,
+      valor: r.valor,
+      detalle: r.detalle,
+      extra: r.extra,
+    });
   }
   // Ordenar por severidad descendente
   detectados.sort((a,b) => (SEVERIDADES[b.severidad]?.peso||0) - (SEVERIDADES[a.severidad]?.peso||0));
-  return detectados;
+  return { detectados, sinHallazgo, noEvaluables, reventaron };
 };
+
+// La vista de siempre: sólo lo que disparó. Los banners del tablero preguntan
+// esto, y es lo que tienen que preguntar. Lo que no podía seguir pasando es que
+// fuera la única pregunta que el motor sabía contestar.
+const detectarRiesgos = (contexto) => evaluarRiesgos(contexto).detectados;
 
 // ════════════════════════════════════════════════════════════════════════════
 // NOTIFICACIONES — Sistema in-app
