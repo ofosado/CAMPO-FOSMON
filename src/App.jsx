@@ -395,7 +395,15 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   const lw = n => doc.setLineWidth(n);
   const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
   const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
-  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);
+  // `T` recibe TAMBIÉN el arreglo que devuelve `splitTextToSize`, y lo pasa tal
+  // cual: `doc.text` dibuja un renglón por elemento. Hasta hoy hacía `String(s)`,
+  // y `String(['uno','dos'])` es `'uno,dos'`: los renglones salían PEGADOS CON
+  // COMAS en una sola línea que se va de la hoja por la derecha. No es un
+  // defecto de estética —el final de la frase queda fuera del papel y no se
+  // lee—, y sólo aparece en los párrafos que de verdad se parten en dos, que
+  // son los largos: justo los que explican cómo leer una cifra.
+  const T  = (s,x,y,o={}) => doc.text(
+    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);
 
   // Dibuja header/footer en página actual
   function pageFrame() {
@@ -2403,6 +2411,13 @@ async function generarPDFInterno({
   subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
   otrosGastos = [], nominaHistorial = [], programa = null,
   instante = null, organizacion = null, generadoPor = null,
+  // `estCargadas` entra como dato y NO se deduce de `estimaciones.length`, por
+  // la misma razón que en la pantalla de la dependencia: una lista vacía que
+  // todavía viaja y una obra sin estimaciones se ven igual desde aquí. Con el
+  // valor por omisión —`false`— la sección 7 declara que no pudo fechar lo
+  // pagado, que es la verdad mientras nadie diga lo contrario; deducirlo
+  // publicaría «$0 pagado» sobre una lista que no había llegado.
+  estCargadas = false,
 } = {}) {
   if (!window.jspdf) {
     await new Promise((res,rej)=>{ const s=document.createElement('script');
@@ -2531,7 +2546,11 @@ async function generarPDFInterno({
   const lw = n => doc.setLineWidth(n);
   const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
   const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
-  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);
+  // Ver la nota del mismo ayudante en `generarPDFObra`: un arreglo se pasa tal
+  // cual porque `String(['uno','dos'])` pega los renglones con una coma y el
+  // párrafo se sale de la hoja.
+  const T  = (s,x,y,o={}) => doc.text(
+    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);
 
   // El sello de INTERNO va en el marco de CADA página, no sólo en la portada.
   // Un documento interno se reenvía por hoja: la página que alguien imprime y
@@ -2620,6 +2639,104 @@ async function generarPDFInterno({
     st(Q.tx); fs(FS_SM); fw('normal');
     T(lineas, ML+5, y+5);
     return y+h+3;
+  }
+
+  // ── EL BLOQUE DE UNA GRÁFICA ──────────────────────────────────────────────
+  //
+  // Las dos secciones de curva —la 3 y la 7— salen de aquí y no de dos copias.
+  // Lo que hace honesta a una gráfica no es el trazo: es lo que lleva debajo
+  // —la leyenda de lo que SÍ se dibujó, las series ausentes con su motivo y
+  // las notas de lectura—. Con dos copias, la que un día se queda sin el pie
+  // es la que sigue viéndose completa.
+  //
+  // `dibujarCurvaEnPDF` pinta y devuelve el parte de lo que pintó. Aquí se
+  // escribe lo que ese parte delata: una serie que quedó en puntos sueltos, y
+  // una gráfica que no pudo dibujar nada.
+  function bloqueDeCurva(titulo, curva, preludio) {
+    doc.addPage(); pageFrame();
+    let yy = CY0 + 4;
+    yy = secHead(titulo, yy);
+    if (preludio) {
+      st(Q.tx); fs(FS_SM); fw('normal');
+      const ls = doc.splitTextToSize(String(preludio), CW);
+      T(ls, ML, yy+3);
+      yy += 3 + (Array.isArray(ls) ? ls.length : 1) * 3.6;
+    }
+
+    const r = dibujarCurvaEnPDF(doc, curva, { x:ML, y:yy, w:CW, h:86,
+      fs:FS_KL, gris:Q.mu, tinta:Q.ng });
+    yy = r.y;
+
+    if (r.parte.vacia) {
+      // EL MARCO VACÍO NO SE DIBUJA. Una rejilla con sus cifras y sin ninguna
+      // curva encima se lee como una obra en ceros, que es una afirmación que
+      // nadie midió. Se dice que no hay nada que dibujar, y abajo por qué.
+      yy = nota('Ninguna serie de esta gráfica tiene dato en la ventana, así que '
+        + 'no se dibuja el eje: una rejilla con sus cifras y sin curvas encima se '
+        + 'lee como una obra en ceros. Las series y su motivo van abajo.', yy+4);
+    } else {
+      // LA LEYENDA NOMBRA SÓLO LO QUE ESTÁ EN EL DIBUJO. Una leyenda que
+      // incluye las ausentes manda a buscar una línea que no existe, y quien no
+      // la encuentra concluye que vale cero.
+      yy += 2;
+      st(Q.ng); fs(FS_KL); fw('bold'); T('QUÉ ES CADA TRAZO', ML, yy);
+      yy += 4;
+      const trazos = [
+        ...(curva.lineas || []).map(l => ({ tipo:'linea', nombre:l.nombre,
+          col: rgbDeColorToken(l.color) || Q.mu, punteada: l.estilo === 'punteada' })),
+        ...(curva.areas || []).map(a => ({ tipo:'area', nombre:a.nombre,
+          col: rgbDeColorToken(a.colorPos) || Q.mu,
+          col2: rgbDeColorToken(a.colorNeg) || Q.mu })),
+      ];
+      const porFila = 3, anchoIt = CW / porFila;
+      trazos.forEach((t,i) => {
+        const cx = ML + (i % porFila) * anchoIt;
+        const cy = yy + Math.floor(i / porFila) * 5;
+        if (t.tipo === 'linea') {
+          sd(t.col); lw(0.7);
+          if (doc.setLineDashPattern) doc.setLineDashPattern(t.punteada ? [1.4,1.1] : [], 0);
+          L(cx, cy-1, cx+7, cy-1);
+          if (doc.setLineDashPattern) doc.setLineDashPattern([], 0);
+        } else {
+          // Dos cuadros y no uno: el área cambia de color según el signo, y un
+          // solo cuadro diría que el sombreado siempre significa lo mismo.
+          sf(t.col);  R(cx, cy-2.6, 3.5, 2.6);
+          sf(t.col2); R(cx+3.5, cy-2.6, 3.5, 2.6);
+        }
+        st(Q.tx); fs(FS_KL); fw('normal');
+        T(t.nombre || '', cx+9, cy);
+      });
+      yy += Math.ceil(trazos.length / porFila) * 5 + 3;
+    }
+
+    // LAS QUE ESTÁN EN LA LEYENDA Y NO TRAEN LÍNEA. Medido en producción: tres
+    // de las treinta y seis series de las siete obras vivas no dibujaban nada
+    // —una sola semana medida, o dos de las que una viene sin medir—, y la
+    // leyenda las nombraba igual con su color.
+    for (const s of r.parte.soloPuntos)
+      yy = nota(`«${s.nombre}» no traza línea en esta ventana: tiene `
+        + `${s.puntos === 1 ? 'una sola semana medida' : `${s.puntos} semanas medidas sueltas`}`
+        + ', y va marcada con un punto. Una línea entre semanas que nadie midió '
+        + 'afirmaría una medición que no existe.', yy);
+
+    // LO AUSENTE, CON SU MOTIVO. El mismo principio que lleva escrito la
+    // sección 6: una gráfica con dos de sus series se lee como una gráfica
+    // completa, y el que la lee no tiene cómo saber qué le falta.
+    const aus = curva.ausentes || [];
+    if (aus.length) {
+      if (yy > 168) { doc.addPage(); pageFrame(); yy = CY0 + 4; }
+      st(Q.ng); fs(FS_SEC); fw('bold');
+      T('Lo que esta gráfica NO dibuja, y por qué', ML, yy+4);
+      yy += 7;
+      yy = autoT(['Serie', 'Por qué no está'],
+        aus.map(a => [a.nombre || a.clave, a.motivo || 'sin motivo declarado']),
+        [70, CW-70], ML, yy);
+    } else {
+      yy = nota('Todas las series de esta gráfica están dibujadas: ninguna se '
+        + 'quedó fuera por falta de dato.', yy);
+    }
+    for (const n of (curva.notas || [])) yy = nota(`Para leer el dibujo: ${n}.`, yy);
+    return yy;
   }
 
   // ═══ 1 · IDENTIFICACIÓN ═══════════════════════════════════════════════════
@@ -2738,12 +2855,24 @@ async function generarPDFInterno({
       + 'entró en la última corrida y hay cortes de avance en la ventana.', y);
   }
 
+  // ═══ 3 · LA GRÁFICA ÚNICA ═════════════════════════════════════════════════
+  // La MISMA `curva` que ya se calculó para la sección 4: no se vuelve a pedir.
+  // Recalculada aquí, el día que alguien cambiara una ventana el dibujo y la
+  // tabla del margen contarían la misma semana con dos cuentas.
+  y = bloqueDeCurva('3  LA GRÁFICA ÚNICA · LA OBRA EN PESOS, SEMANA A SEMANA', curva,
+    `Lo ejecutado, lo programado y el gasto sobre las mismas ${VENTANA} semanas, `
+    + 'en pesos acumulados. El sombreado entre lo ejecutado y el gasto es el '
+    + 'margen bruto: verde donde se gana, rojo donde se pierde. El eje arranca '
+    + 'en cero aunque aplaste las curvas, porque cortarlo por abajo agranda a la '
+    + 'vista el hueco entre dos líneas, que es justo lo que esta gráfica mide. '
+    + 'Un trecho punteado es un salto sobre semanas sin captura, no una medición.');
+
   // ═══ 4 · CÓMO VAMOS EN DINERO ═════════════════════════════════════════════
-  // El número de sección es el 4 del mandato. Las secciones 3 y 7 —las dos
-  // gráficas— y la 5 —el resumen fotográfico— todavía no están escritas, y los
-  // números NO se corren para tapar el hueco: renumerar cada vez que una
-  // sección aterriza deja al lector de dos cortes seguidos comparando la «3» de
-  // uno con la «3» del otro, que no son la misma sección.
+  // El número de sección es el 4 del mandato. La 5 —el resumen fotográfico—
+  // todavía no está escrita, y los números NO se corren para tapar el hueco:
+  // renumerar cada vez que una sección aterriza deja al lector de dos cortes
+  // seguidos comparando la «5» de uno con la «5» del otro, que no son la misma
+  // sección.
   doc.addPage(); pageFrame();
   y = CY0 + 4;
   y = secHead('4  CÓMO VAMOS EN DINERO · EL MARGEN SEMANA A SEMANA', y);
@@ -2918,6 +3047,27 @@ async function generarPDFInterno({
         ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
         : 'Ninguna: todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.',
       CW), ML, y+3);
+
+  // ═══ 7 · LA MISMA OBRA, COMO LA VE LA DEPENDENCIA ═════════════════════════
+  //
+  // `curvaDeGobierno` y no un filtro sobre la curva de arriba. La frontera no
+  // es qué series se esconden: es que esta curva NO CALCULA gasto ni margen.
+  // Un filtro deja la economía del contratista viva en el objeto, a una línea
+  // de distancia de reaparecer; y quien la escondiera tendría que acertar cada
+  // vez que se agregue una serie. Medido contra producción: lo que devuelve
+  // `curvaDeGobierno` no trae ninguna clave de la economía del contratista a
+  // ninguna profundidad, y el banco lo vuelve a comprobar en cada corrida.
+  //
+  // Va en el documento INTERNO porque es lo que el municipio ve de esta obra, y
+  // quien firma necesita saberlo antes de la junta. Este papel no se entrega.
+  const curvaGob = curvaDeGobierno({ semanas, obra, historialAvance, subs,
+                                     programa, estimaciones, estCargadas });
+  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,
+    'Las mismas semanas y el mismo eje, con lo único que la dependencia puede '
+    + 'ver: lo construido, lo programado y lo pagado al contratista. NO LLEVA '
+    + 'GASTO NI MARGEN, y no es un recorte de presentación: la economía del '
+    + 'contratista no es de la dependencia. Aquí el sombreado es lo construido y '
+    + 'todavía no pagado, que sí es asunto suyo.');
 
   // ── PIE CON TOTAL DE PÁGINAS ──────────────────────────────────────────────
   const totalPaginas = doc.internal.getNumberOfPages();
@@ -4646,6 +4796,271 @@ const tramosDeSigno = (difs, xs) => {
     }
   }
   return out.filter(t => t.hasta > t.desde);
+};
+
+// ── LOS PUNTOS QUE NINGÚN TRAMO CUBRE ──────────────────────────────────────
+//
+// `tramosDeSerie` arma TRECHOS, y un trecho necesita dos puntos. Una serie con
+// una sola semana medida devuelve CERO tramos y por tanto no dibuja nada —y
+// sin embargo está en `lineas`, o sea que la leyenda la nombra y le pinta su
+// color—. El lector busca una línea que no está y concluye lo que no es: que
+// la serie vale cero, o que la obra no tiene nada de eso.
+//
+// NO ES UN CASO DE LABORATORIO. Medido contra producción el 2026-11-10: de las
+// 36 líneas que las dos gráficas dibujan en las siete obras vivas, TRES no
+// dibujaban nada —`pagado` de la 0112, y `ejec` y `pagado` de la 0131—. Y hay
+// un segundo camino al mismo sitio: dos puntos de los que uno viene sin medir
+// también dan cero tramos, porque `tramosDeSerie` descarta lo no medido antes
+// de emparejar.
+//
+// Devuelve los puntos MEDIDOS que no cubre ningún tramo, para que quien dibuja
+// los marque. Van aparte y no dentro de `tramosDeSerie` porque un trecho y un
+// punto suelto se dibujan distinto, y colarlos en la lista de trechos
+// obligaría a cada consumidor a distinguirlos —o a no distinguirlos, que es
+// peor: un trecho de un punto es una línea de largo cero—.
+const puntosSinTramo = ({ pts = [], medido = null, idxFrontera = -1 }) => {
+  const tramos = tramosDeSerie({ pts, medido, idxFrontera });
+  const cubierto = new Set();
+  for (const t of tramos) for (let i = t.desde; i <= t.hasta; i++) cubierto.add(i);
+  // LA MISMA CONDICIÓN que usa `tramosDeSerie` para decidir si una semana
+  // tiene dato. Si aquí se relajara, un punto que el trecho descarta por no
+  // medido saldría marcado, y la marca diría lo contrario que la línea.
+  const conDato = (i) => !!pts[i] && (!medido || medido[i] !== false);
+  return pts.map((_, i) => i)
+            .filter(i => conDato(i) && !cubierto.has(i))
+            .map(i => ({ i, p: pts[i] }));
+};
+
+// ── LOS COLORES, EN TERNA, PARA QUIEN NO SABE LEER CSS ──────────────────────
+//
+// `C.blueDk` y los suyos ya no son colores: son `var(--c-blueDk)`, punteros a
+// `src/styles/tokens.css`. Al navegador le basta. A jsPDF no: quiere tres
+// números, y un `var(...)` le llega como cadena y pinta negro sin avisar.
+//
+// SE INDEXA POR NOMBRE DE TOKEN Y NO POR SERIE. Así la curva sigue decidiendo
+// de qué color va cada línea —es ella quien elige el token— y aquí vive sólo
+// la equivalencia. Indexado por serie, el día que el ejecutado cambiara de
+// token el papel seguiría pintando el color viejo y nadie lo notaría.
+//
+// Los valores están COPIADOS de `tokens.css` porque el bundle no deja leer ese
+// archivo en tiempo de ejecución. Una copia se desincroniza, así que el banco
+// `prueba-las-dos-curvas-en-el-papel` LEE el CSS y compara terna por terna: si
+// alguien mueve un token y no mueve esta tabla, sale en rojo.
+const RGB_DE_TOKEN = {
+  caliza:  [13, 22, 25],    textPri: [13, 22, 25],
+  textSec: [85, 94, 107],   textMut: [154, 160, 172],
+  border:  [232, 234, 240], borderM: [208, 212, 220],
+  green:   [99, 153, 34],   greenDk: [59, 109, 17],
+  red:     [226, 75, 74],   redDk:   [163, 45, 45],
+  blue:    [55, 138, 221],  blueDk:  [24, 95, 165],
+  yellow:  [239, 159, 39],  yellowDk:[133, 79, 11],
+};
+
+// `var(--c-blueDk)` → `[24,95,165]`. Devuelve `null` si el color no es un
+// token conocido, y no un gris de respaldo: quien dibuja decide qué hacer con
+// la ausencia, y el banco comprueba que ninguna de las dos curvas use un token
+// que falte en la tabla. Un respaldo silencioso pintaría dos series del mismo
+// gris y las volvería indistinguibles sin que nada lo dijera.
+const rgbDeColorToken = (css) => {
+  const m = /^var\(--c-([A-Za-z]+)\)$/.exec(String(css || '').trim());
+  return (m && RGB_DE_TOKEN[m[1]]) ? RGB_DE_TOKEN[m[1]] : null;
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA CURVA, DIBUJADA EN EL PAPEL
+// ════════════════════════════════════════════════════════════════════════════
+//
+// UNA SOLA RUTINA PARA LAS DOS GRÁFICAS. `curvaUnicaDeObra` y `curvaDeGobierno`
+// devuelven la MISMA forma —`{semanas, lineas, areas, ausentes, notas}`— y eso
+// no es casualidad: comparten las cuentas a propósito. Dos dibujantes serían
+// dos criterios sobre qué se puntea y qué se declara, y la sección 3 y la 7 del
+// mismo documento acabarían contando la misma semana de dos maneras.
+//
+// Lo que esta función NO hace es decidir qué se dibuja. Eso ya lo decidió la
+// curva: lo que pudo medir está en `lineas` y lo que no, en `ausentes` con su
+// motivo. Aquí sólo se pinta, y se pinta TAMBIÉN lo que falta.
+//
+// LAS CUATRO REGLAS QUE LA HACEN HONESTA:
+//
+//   1. EL EJE ARRANCA EN CERO. Cortarlo por abajo para «aprovechar el alto» es
+//      la mentira clásica de una gráfica: el hueco entre dos curvas —que aquí
+//      ES el mensaje, porque sombreamos el margen— se ve varias veces más
+//      grande de lo que es. Medido en producción, la 0114 se mueve entre $80M
+//      y $161M: con el eje cortado en $80M, un margen de $4M ocuparía un
+//      quinto del alto. Arranca en cero aunque aplaste la curva.
+//
+//   2. NINGÚN TRECHO SE INVENTA. La partición en trechos es `tramosDeSerie`,
+//      la misma de la pantalla: sólido donde hay semanas seguidas medidas,
+//      PUNTEADO donde el trecho salta semanas sin captura, y atenuado donde el
+//      tramo es de una definición vieja. Un trazo continuo sobre un hueco
+//      afirma una medición que nadie hizo.
+//
+//   3. UN PUNTO SUELTO SE MARCA. Ver `puntosSinTramo`: una serie con una sola
+//      semana medida no produce trechos y la leyenda la nombraría igual.
+//
+//   4. LO AUSENTE SE IMPRIME CON SU MOTIVO. Una gráfica con dos de las cuatro
+//      series se lee como una gráfica completa. Es el mismo principio que la
+//      sección 6 lleva escrito: una lista vacía no significa que no haya nada.
+//
+// Devuelve la Y de abajo y el parte de lo dibujado, que es lo que el banco
+// interroga para no tener que leer píxeles.
+const dibujarCurvaEnPDF = (doc, curva, caja = {}) => {
+  const { x = 14, y = 30, w = 251, h = 92, fs = 7, gris = [148, 155, 164],
+          tinta = [26, 30, 34] } = caja;
+  const semanas = curva?.semanas || [];
+  const lineas  = curva?.lineas || [];
+  const parte = { dibujadas: [], soloPuntos: [], sinColor: [], areas: [],
+                  tramos: 0, punteados: 0, marcas: 0, ejeMax: 0, vacia: false };
+
+  const sd = c => doc.setDrawColor(...c);
+  const sf = c => doc.setFillColor(...c);
+  const st = c => doc.setTextColor(...c);
+  const solido = () => { if (doc.setLineDashPattern) doc.setLineDashPattern([], 0); };
+
+  // ── EL ALCANCE DEL EJE ────────────────────────────────────────────────────
+  // Sólo de las líneas que SE DIBUJAN. Tomarlo de las series crudas dejaría
+  // sitio reservado para una curva que no aparece, y el dibujo saldría
+  // encogido en la mitad de abajo sin que nada explicara por qué.
+  const vals = lineas.flatMap(l => (l.valores || []).filter(v =>
+    typeof v === 'number' && Number.isFinite(v)));
+  if (!semanas.length || !vals.length) {
+    parte.vacia = true;
+    return { parte, y: y };
+  }
+  // El techo. El piso es cero salvo que alguna serie baje de ahí: un eje que
+  // corta por abajo una serie negativa la borraría del dibujo.
+  const crudoMax = Math.max(...vals, 0);
+  const piso = Math.min(...vals, 0);
+  const techo = crudoMax > piso ? crudoMax : piso + 1;
+  parte.ejeMax = techo;
+
+  const X0 = x + 20, X1 = x + w - 4;
+  const Y0 = y + 4, Y1 = y + h - 10;
+  const px = (i) => semanas.length === 1
+    ? (X0 + X1) / 2
+    : X0 + (X1 - X0) * (i / (semanas.length - 1));
+  const py = (v) => Y1 - (Y1 - Y0) * ((v - piso) / (techo - piso));
+
+  // ── LA REJILLA Y SUS CIFRAS ───────────────────────────────────────────────
+  doc.setLineWidth(0.15); solido();
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(fs - 0.5);
+  for (let k = 0; k <= 4; k++) {
+    const v = piso + (techo - piso) * (k / 4);
+    const yy = py(v);
+    sd([226, 229, 234]); doc.line(X0, yy, X1, yy);
+    st(gris); doc.text(fmtDineroCorto(v), X0 - 2, yy + 1.2, { align: 'right' });
+  }
+  // Las semanas. Si no caben todas se rotula una de cada dos, nunca una de
+  // cada tres: con doce semanas, de tres en tres el ojo pierde la cuenta.
+  const paso = semanas.length > 14 ? 2 : 1;
+  st(gris);
+  semanas.forEach((s, i) => {
+    if (i % paso) return;
+    doc.text(String(s.label || ''), px(i), Y1 + 4, { align: 'center' });
+  });
+  sd([208, 212, 220]); doc.setLineWidth(0.3);
+  doc.line(X0, Y1, X1, Y1);
+  // La línea del cero, si el eje baja de ahí: sin ella no se ve dónde la
+  // serie cambia de lado.
+  if (piso < 0) { sd([154, 160, 172]); doc.setLineWidth(0.2); doc.line(X0, py(0), X1, py(0)); }
+
+  // ── LAS ÁREAS, DEBAJO DE TODO ─────────────────────────────────────────────
+  // El hueco entre dos curvas, partido donde cambia de signo. El corte sale de
+  // `tramosDeSigno`, que es el que usa la pantalla: tiene dentro la
+  // interpolación del cruce, y repetir esa fórmula aquí es la manera de que un
+  // día el papel y la pantalla pongan la frontera del rojo en semanas
+  // distintas.
+  const serieDe = (clave) => lineas.find(l => l.clave === clave);
+  for (const a of (curva.areas || [])) {
+    const arriba = serieDe(a.arriba), abajo = serieDe(a.abajo);
+    if (!arriba || !abajo) continue;
+    const cPos = rgbDeColorToken(a.colorPos) || gris;
+    const cNeg = rgbDeColorToken(a.colorNeg) || gris;
+    const xs = semanas.map((_, i) => px(i));
+    const difs = (a.valores || []).map((v, i) =>
+      (typeof v === 'number' && Number.isFinite(v)
+       && typeof arriba.valores?.[i] === 'number'
+       && typeof abajo.valores?.[i] === 'number') ? v : null);
+    const porSigno = tramosDeSigno(difs, xs);
+    if (!porSigno.length) continue;
+    parte.areas.push({ clave: a.clave, tramos: porSigno.length,
+                       signos: porSigno.map(t => (t.signo ? '+' : '−')).join('') });
+    // Un polígono por tramo de signo: se recorre la de arriba hacia la derecha
+    // y la de abajo de vuelta, interpolando en los dos extremos para que el
+    // relleno acabe exactamente donde el cruce, y no en la semana de al lado.
+    const enX = (serie, xq) => {
+      for (let i = 0; i < semanas.length - 1; i++) {
+        const xa = xs[i], xb = xs[i + 1];
+        const va = serie.valores?.[i], vb = serie.valores?.[i + 1];
+        if (typeof va !== 'number' || typeof vb !== 'number') continue;
+        if (xq >= xa - 0.001 && xq <= xb + 0.001) {
+          const t = (xb - xa) > 0 ? (xq - xa) / (xb - xa) : 0;
+          return va + (vb - va) * t;
+        }
+      }
+      return null;
+    };
+    for (const t of porSigno) {
+      const dentro = semanas.map((_, i) => i)
+        .filter(i => xs[i] > t.desde + 0.001 && xs[i] < t.hasta - 0.001
+                     && typeof arriba.valores?.[i] === 'number'
+                     && typeof abajo.valores?.[i] === 'number');
+      const vIniA = enX(arriba, t.desde), vIniB = enX(abajo, t.desde);
+      const vFinA = enX(arriba, t.hasta), vFinB = enX(abajo, t.hasta);
+      if (vIniA === null || vIniB === null || vFinA === null || vFinB === null) continue;
+      const poli = [[t.desde, py(vIniA)]];
+      for (const i of dentro) poli.push([xs[i], py(arriba.valores[i])]);
+      poli.push([t.hasta, py(vFinA)], [t.hasta, py(vFinB)]);
+      for (const i of [...dentro].reverse()) poli.push([xs[i], py(abajo.valores[i])]);
+      poli.push([t.desde, py(vIniB)]);
+      sf(t.signo ? cPos : cNeg);
+      if (doc.setGState && doc.GState) doc.setGState(new doc.GState({ opacity: 0.13 }));
+      doc.lines(
+        poli.slice(1).map((p, k) => [p[0] - poli[k][0], p[1] - poli[k][1]]),
+        poli[0][0], poli[0][1], [1, 1], 'F', true);
+      if (doc.setGState && doc.GState) doc.setGState(new doc.GState({ opacity: 1 }));
+    }
+  }
+
+  // ── LAS LÍNEAS ────────────────────────────────────────────────────────────
+  for (const l of lineas) {
+    const col = rgbDeColorToken(l.color);
+    if (!col) parte.sinColor.push(l.clave);
+    const color = col || gris;
+    const pts = semanas.map((_, i) => {
+      const v = l.valores?.[i];
+      return (typeof v === 'number' && Number.isFinite(v)) ? [px(i), py(v)] : null;
+    });
+    const iF = (typeof l.idxFrontera === 'number') ? l.idxFrontera : -1;
+    const tramos = tramosDeSerie({ pts, medido: l.medido, idxFrontera: iF });
+    const esPunteada = l.estilo === 'punteada';
+    sd(color);
+    for (const t of tramos) {
+      parte.tramos++;
+      const interpolado = !t.medido || !t.vigente;
+      if (interpolado) parte.punteados++;
+      doc.setLineWidth(t.medido && t.vigente ? (esPunteada ? 0.5 : 0.7) : 0.5);
+      if (doc.setLineDashPattern)
+        doc.setLineDashPattern((interpolado || esPunteada) ? [1.4, 1.1] : [], 0);
+      for (let k = 1; k < t.pts.length; k++)
+        doc.line(t.pts[k - 1][0], t.pts[k - 1][1], t.pts[k][0], t.pts[k][1]);
+    }
+    solido();
+    // Los puntos que ningún trecho cubre. Sin esta marca la serie está en la
+    // leyenda y no en el dibujo.
+    const sueltos = puntosSinTramo({ pts, medido: l.medido, idxFrontera: iF });
+    for (const s of sueltos) {
+      parte.marcas++;
+      sf(color); doc.circle(s.p[0], s.p[1], 0.9, 'F');
+    }
+    if (tramos.length === 0 && sueltos.length > 0)
+      parte.soloPuntos.push({ clave: l.clave, nombre: l.nombre, puntos: sueltos.length });
+    parte.dibujadas.push({ clave: l.clave, nombre: l.nombre,
+                           tramos: tramos.length, sueltos: sueltos.length });
+  }
+  solido();
+  st(tinta);
+  return { parte, y: Y1 + 8 };
 };
 
 // Quién lee el anexo. Una sola vez, aquí, porque son ya tres los tableros que
@@ -27767,7 +28182,7 @@ export default function App(){
           catch (e) { console.warn('programa de obra no disponible', e); }
           const instante = await pedirHoraDelServidor();
           await generarPDFInterno({
-            obra, subs, estimaciones, maquinaria, materiales, subcontratos,
+            obra, subs, estimaciones, estCargadas, maquinaria, materiales, subcontratos,
             historialAvance, gpData, gpDetalle: detalle, otrosGastos,
             nominaHistorial, programa: programaObra, instante,
             organizacion: nombreOrg(marca, usuario),

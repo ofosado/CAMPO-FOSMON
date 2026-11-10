@@ -58,7 +58,12 @@ const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
 
 const { fuenteDe, ARCHIVO } = require('./extraer-de-app.cjs');
-const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
+// `textoCorrido` pega los renglones que salieron de UNA llamada a `text`. Los
+// riesgos sin hallazgo se nombran dentro de un párrafo largo que el generador
+// parte para que quepa en la caja, así que un `includes` renglón por renglón
+// pierde justo el nombre que queda a caballo del corte: el banco acusaría al
+// papel de no nombrar una regla que sí nombra.
+const { dibujarPDFInterno, textoCorrido } = require('./lienzo-pdf.cjs');
 const archivo = process.env.ARCHIVO_APP || ARCHIVO;
 
 let fallas = 0, verdes = 0;
@@ -273,7 +278,7 @@ ok(sinCotea.length === 0,
 
 // Y la organización aparece como VALOR de un campo, no como marca. Una sola
 // vez, en la portada, con su rótulo al lado.
-const todos = hojaLimpia.map(x => x.texto);
+const todos = textoCorrido(hojaLimpia).map(x => x.texto);
 const vecesOrg = todos.filter(t => /FOSMON Construcciones/.test(t)).length;
 ok(vecesOrg === 1 && portada.includes('Organización:')
    && portada.includes('FOSMON Construcciones'),
@@ -424,7 +429,7 @@ const rayas = eRecien.veredicto.detectados.filter(r => String(r.valor ?? '').tri
 ok(rayas.length >= 1,
   `la obra recién dada de alta trae ${rayas.length} regla(s) que disparan sin cifra, `
   + 'que es lo que esta comprobación necesita');
-const hojaRecien = (await dibujar(dRecien)).map(x => x.texto);
+const hojaRecien = textoCorrido(await dibujar(dRecien)).map(x => x.texto);
 ok(rayas.every(() => hojaRecien.includes(FRASE_SIN_CIFRA)),
   'una regla que dispara por una captura ausente lo dice con palabras, no con una raya');
 const detRecien = eRecien.veredicto.detectados;
