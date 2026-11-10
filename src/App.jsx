@@ -6492,6 +6492,37 @@ const DATOS_DEL_RIESGO = {
   anticipo:     { nombre: 'el porcentaje de anticipo del contrato', hay: c => Number(c.obra?.pctAnticipo) > 0 },
   ejecutado:    { nombre: 'monto ejecutado mayor que cero',       hay: c => Number(c.kpis?.me) > 0 },
   kpis:         { nombre: 'los indicadores consolidados de la obra', hay: c => !!c.kpis },
+  // LA SERIE SEMANAL DE MARGEN, Y POR QUÉ SE RECIBE EN VEZ DE CALCULARSE AQUÍ.
+  // El margen semanal necesita el gasto COMPLETO —GP más maquinaria más otros
+  // gastos—, y el contexto del motor no trae `otrosGastos`. Calcularla aquí
+  // daría un margen que no es el de la gráfica de la misma pantalla, y el
+  // riesgo acusaría con una cifra que el usuario no puede encontrar en ningún
+  // lado. Así que la calcula quien tiene todos los insumos y la pasa hecha.
+  //
+  // DOS MOTIVOS DISTINTOS DE NO EVALUABILIDAD, y los dos van aquí y no en el
+  // detector: la evaluabilidad la decide el dato, el hallazgo lo decide la
+  // regla. Mezclarlos es lo que el #120 vino a separar.
+  //
+  //   · no hay tramo contiguo de 4 semanas → no hay tendencia que leer.
+  //   · más de la mitad del tramo trae el ejecutado QUIETO → el margen se
+  //     movió porque el gasto siguió llegando contra un avance que nadie
+  //     cerró. Medido en producción el 2026-11-09: la obra 0127 «cayó» 110
+  //     puntos en cuatro semanas con el ejecutado clavado en $11,104,150, y
+  //     cinco de las seis obras con tramo legible traen semanas quietas. Leer
+  //     eso como deterioro acusa al residente de algo que no pasó.
+  serieMargen:  { nombre: 'la serie semanal de margen, con tramo legible',
+                  hay: c => {
+                    const m = c.comportamientoMargen;
+                    return !!m && m.suficiente === true && !(m.quietas * 2 > m.cola);
+                  },
+                  porQue: c => {
+                    const m = c.comportamientoMargen;
+                    if (!m) return 'esta pantalla todavía no calcula la serie semanal de margen';
+                    if (m.suficiente !== true) return m.motivo;
+                    return `de las ${m.cola} semanas del tramo, ${m.quietas} traen el avance ` +
+                      'sin cerrar: el margen se movió por el gasto solo, y eso no se puede leer ' +
+                      'como deterioro de la obra';
+                  } },
 };
 
 const BIBLIOTECA_RIESGOS = [
@@ -6508,6 +6539,56 @@ const BIBLIOTECA_RIESGOS = [
       if (kpis.mpct < 6) return {severidad:'alto', valor:`${kpis.mpct.toFixed(1)}%`, detalle:'Margen bajo el umbral crítico (6%)', extra:`Ejecutado ${MXN(kpis.me)} vs gastado ${MXN(kpis.gt)}`};
       if (kpis.mpct < 15) return {severidad:'medio', valor:`${kpis.mpct.toFixed(1)}%`, detalle:'Margen en vigilancia (15%)', extra:`Mantener atención`};
       return null;
+    },
+  },
+  // EL MARGEN QUE VIENE CAYENDO. Es TENDENCIA, no nivel, y por eso no duplica
+  // a `fin_001`: la 0114 está en +36.6% —sana para `fin_001`, que dispara bajo
+  // 15%— y lleva diez semanas bajando. Son dos preguntas distintas sobre el
+  // mismo número y las dos tienen que poder disparar solas.
+  //
+  // EL UMBRAL ESTÁ MEDIDO, NO ELEGIDO: 3 pp a lo largo del tramo contiguo,
+  // aprobado el 2026-11-09 con la sensibilidad en la mano
+  // (`medir-la-serie-semanal-de-margen.cjs` §5, producción, corrida S46):
+  //
+  //     2 pp → dispara 0114     3 pp → dispara 0114
+  //     4 pp → dispara 0114     5 pp → NO DISPARA EN NINGUNA
+  //
+  // A 5 pp la regla se queda sin la única obra de la cartera que de verdad se
+  // deteriora. A 3 pp hay holgura contra la mediana de los saltos (−0.2 pp) y
+  // sigue señalando una sola obra de siete.
+  //
+  // POR TRAMO Y NO POR SEMANA, que es la decisión que de verdad importa. De
+  // las 14 caídas semanales de la cartera, 10 están sobre un ejecutado que
+  // nadie movió, y de las 3 que pasan de 10 puntos, las 3. Una regla por
+  // semana señalaría captura atrasada, no deterioro. Y al revés: la 0114 cae
+  // 4.7 pp en diez semanas sin que ninguna semana suelta pase de 1.7, así que
+  // una regla por semana no la vería nunca.
+  //
+  // LA CLÁUSULA DE DESPLOME EN UNA SEMANA NO SE ESCRIBIÓ, a propósito y con
+  // acuerdo: hoy no dispararía en ninguna obra, porque las tres caídas grandes
+  // son todas captura. Un umbral sin una sola observación detrás no es un
+  // umbral.
+  //
+  // LA VENTANA LA FIJA QUIEN PASA LA SERIE, y tiene que ser fija: si saliera
+  // del selector de la gráfica, el riesgo aparecería y desaparecería porque el
+  // usuario movió un menú.
+  {
+    id: 'fin_007', categoria: 'financiero',
+    requiere: ['serieMargen'],
+    titulo: 'Margen a la baja',
+    descripcion: 'El margen bruto viene cayendo semana con semana',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({comportamientoMargen}) => {
+      const m = comportamientoMargen;
+      if (!m) return null;
+      const caida = -m.delTramo;              // en puntos porcentuales, positiva si cayó
+      if (caida < 3) return null;
+      const cifra = `−${caida.toFixed(1)}pp`;
+      const tramo = `${m.cola} semanas: ${m.desde.toFixed(1)}% → ${m.hasta.toFixed(1)}%`;
+      const sev = caida >= 10 ? 'critico' : caida >= 6 ? 'alto' : 'medio';
+      return { severidad: sev, valor: cifra,
+               detalle: `El margen cayó ${caida.toFixed(1)} puntos en ${m.cola} semanas seguidas`,
+               extra: tramo };
     },
   },
   {
@@ -7129,7 +7210,8 @@ const BIBLIOTECA_RIESGOS = [
 // indistinguible de uno que se calló porque no hay riesgo, y `ctr_002` de
 // hecho pediría capturar un `gpId` que en dependencia no significa nada.
 const RIESGOS_SOLO_CONSTRUCTORA = new Set([
-  'fin_001',                                          // margen bruto
+  'fin_001',                                          // margen bruto, por nivel
+  'fin_007',                                          // margen bruto, por tendencia
   'fin_002',                                          // brecha gasto vs avance
   'fin_006',                                          // velocidad de quema del presupuesto
   'nom_001', 'nom_002', 'nom_003',                    // nómina
@@ -13862,6 +13944,21 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
 // puntos en una sola semana cuando por fin se capturó el avance. Ninguno de los
 // dos movimientos fue de la obra: fueron de la captura. Una tabla que imprime
 // esa caída sin decirlo afirma algo falso sobre el dato.
+//
+// Y EL GASTO SIN FECHAR MATA LA TENDENCIA ENTERA, no sólo su último punto.
+// Esto lo encontró el preview, no una prueba: sobre Oaxaca Parque Lineal la
+// pantalla afirmó «el margen cayó 96.2 puntos en 8 semanas seguidas», de 97.1%
+// a 0.9%, en CRÍTICO. Ninguna de esas dos cifras es el margen de esa obra. GP
+// trae fechadas cuatro semanas por $8.5M de un total de $21.4M, así que el
+// acumulado semanal arranca casi en cero y el ancla del último punto le mete
+// los $12.9M que nunca estuvieron fechados. La «caída» es el gasto llegando a
+// su propia serie. La tabla de la misma pantalla ya se niega a imprimir el
+// delta de ese último punto por esta razón; negarse ahí y afirmar una
+// tendencia aquí sería la misma serie contestando dos cosas.
+//
+// En producción, el 2026-11-09, ninguna de las siete obras traía la bandera
+// puesta —por eso ninguna prueba lo vio y por eso el umbral se calibró sobre
+// series limpias—, pero la bandera existe porque el caso ocurre.
 const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {
   const semanas = curva?.semanas || [];
   const margen = curva?.margen || [];
@@ -13875,7 +13972,8 @@ const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {
   });
 
   let cola = 0;
-  for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;
+  if (!curva?.gastoSinFechar)
+    for (let i = pct.length - 1; i >= 0 && pct[i] !== null; i--) cola++;
 
   const vacio = {
     pct, cola, minimo, suficiente: false, renglones: [],
@@ -13892,11 +13990,13 @@ const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {
     ...vacio,
     motivo: !curva?.gastoMedido
       ? 'el gasto de esta obra no está medido en GP, así que no hay margen que seguir semana a semana'
-      : !hayEjecutado
-        ? 'no hay ningún corte de avance capturado, así que no hay contra qué medir el gasto'
-        : !hayEjecutadoPositivo
-          ? 'el ejecutado acumulado sigue en cero en toda la ventana: el margen en porcentaje no existe, y no vale cero'
-          : 'la última semana no trae las dos líneas en el mismo corte',
+      : curva?.gastoSinFechar
+        ? 'parte del gasto de esta obra llega sin fecha, así que el acumulado por semana no es comparable entre semanas: lo que se movería es el gasto alcanzando su serie, no el margen'
+        : !hayEjecutado
+          ? 'no hay ningún corte de avance capturado, así que no hay contra qué medir el gasto'
+          : !hayEjecutadoPositivo
+            ? 'el ejecutado acumulado sigue en cero en toda la ventana: el margen en porcentaje no existe, y no vale cero'
+            : 'la última semana no trae las dos líneas en el mismo corte',
   };
 
   const ini = pct.length - cola;
@@ -14690,9 +14790,26 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
   const programaObra = useProgramaDeObra(obra?.id);
   // KPIs consolidados que el motor de detección usa
   const kpisCtx = {gt, am, alm, me, af, diff, mpct, pctGasto, brecha};
+  // LA SERIE SEMANAL DE MARGEN PARA `fin_007`, con VENTANA FIJA de 12 semanas.
+  // No sale del selector de `TarjetaGraficaUnica`: si saliera, el riesgo
+  // aparecería y desaparecería porque el usuario movió un menú, y un riesgo
+  // que depende de un control de la vista no es un riesgo de la obra.
+  //
+  // Se calcula aquí —y no dentro del motor— porque aquí están TODOS los
+  // insumos del gasto, incluido `otrosGastos`, que el contexto del motor no
+  // lleva. Con un insumo de menos el margen de la regla no sería el de la
+  // gráfica de esta misma pantalla, y el riesgo acusaría con una cifra que el
+  // usuario no puede encontrar en ningún lado.
+  const comportamientoMargen = useMemo(() => {
+    const sem = semanasDeVentana(obra, 12);
+    const curva = curvaUnicaDeObra({ semanas: sem, obra, historialAvance, subs,
+                                     gpData, otrosGastos, maquinaria,
+                                     programa: programaObra });
+    return comportamientoDelMargen(curva);
+  }, [obra, historialAvance, subs, gpData, otrosGastos, maquinaria, programaObra]);
   const riesgos = detectarRiesgos({
     obra, subs, maquinaria, materiales, estimaciones, subcontratos, historialAvance, gpData, kpis: kpisCtx,
-    nominaHistorial, programa: programaObra,
+    nominaHistorial, programa: programaObra, comportamientoMargen,
   });
   // Para el banner principal, solo mostramos críticos+altos (los medios y bajos van al panel completo)
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
