@@ -7359,11 +7359,18 @@ const escribirHistorialNomina = async (obraId, formato, historial, tocadas, ctx)
 // Fallo al escribir el snapshot semanal. Tiene tipo propio para que el
 // llamador lo distinga de "no había nada que guardar", que también devolvía
 // `null` y por eso el cierre semanal no podía diferenciar éxito de fracaso.
+// Lleva los HECHOS, no la frase. Antes traía el párrafo ya redactado, y ésa
+// era la raíz del defecto de abajo: para redactarlo había que decidir si la
+// captura de avance se había guardado, y eso aquí NO se sabe —la escritura del
+// avance la hace el llamador, varias líneas antes—. La frase se arma donde
+// están los dos datos; aquí sólo se guarda con qué armarla.
 class ErrorSnapshot extends Error {
-  constructor(mensaje, causa) {
-    super(mensaje);
+  constructor(causa, semanas, obraId) {
+    super(causa?.message || 'no se pudo guardar el histórico semanal');
     this.name = 'ErrorSnapshot';
     this.causa = causa;
+    this.semanas = semanas;
+    this.obraId = obraId;
   }
 }
 
@@ -7387,9 +7394,39 @@ const tamañoFirestore = v => {
 };
 
 // El mensaje que verá quien acaba de cerrar la semana. Tiene que decir qué
-// pasó, que su captura NO se perdió, y qué hacer. Un "Error al guardar" a
-// secas manda al residente a recapturar lo que ya está guardado.
-const mensajeFalloSnapshot = (err, semanas, obraId) => {
+// pasó, qué fue de su captura, y qué hacer. Un "Error al guardar" a secas
+// manda al residente a recapturar lo que ya está guardado.
+//
+// LA FRASE QUE AFIRMABA SIN SABER. Hasta hoy este mensaje decía, fijo, «Tu
+// captura de avance SÍ quedó guardada». Era cierto para el caso que lo motivó
+// —la 0114 y su documento de histórico rozando el límite de 1 MiB, donde el
+// avance sí había entrado y lo único caído era el punto del histórico— y es
+// falso en cuanto la escritura del avance también se rechaza. Que es
+// exactamente lo que pasa con una obra cerrada: la regla niega las DOS, y el
+// 2026-11-10 lo vi en pantalla sobre la 0128 —tres escrituras perdidas, nada
+// en la base— debajo de un modal que afirmaba que la captura estaba a salvo.
+//
+// Mandar a alguien a su casa creyendo que lo que capturó quedó guardado es
+// peor que un "Error al guardar" a secas: con el error vuelve a capturar, con
+// esta frase no vuelve nunca.
+//
+// Por eso `quedoLaCaptura` es un parámetro y no una suposición, y `motivo` es
+// la razón en palabras cuando la obra no admite escrituras: sin él, el aviso
+// sabe que falló pero no por qué, y el residente reintenta contra un candado.
+const mensajeFalloSnapshot = (e, quedoLaCaptura, motivo = null) => {
+  const err = e?.causa;
+  const semanas = e?.semanas;
+  const obraId = e?.obraId;
+  // El motivo MANDA sobre el resto del diagnóstico. Si la obra no admite
+  // escrituras, medir el tamaño del historial y hablar de compactarlo sería
+  // mandar a sistemas a arreglar algo que no está roto.
+  if (motivo) {
+    return `${motivo}\n\n` +
+      `Por eso ni el reporte semanal ni tu captura de avance quedaron ` +
+      `guardados: la base los rechazó.\n\n` +
+      `Anota lo que capturaste antes de salir de esta pantalla — al recargar ` +
+      `se pierde.`;
+  }
   const bytes = tamañoFirestore({ semanas });
   // La medición local solo cuenta el arreglo `semanas`. Firestore puede
   // rechazar por tamaño sin que esa cuenta lo refleje —el documento tiene más
@@ -7403,16 +7440,34 @@ const mensajeFalloSnapshot = (err, semanas, obraId) => {
     // misma frase y hace que no se crea ninguno de los dos números.
     const cuanto = midePasado
       ? ` (${Math.round(bytes / 1024)} KB de 1024 KB máximo)` : '';
-    return `El historial semanal de esta obra llegó al límite de tamaño que ` +
-      `permite Firestore${cuanto}, ` +
-      `así que el reporte de esta semana NO se pudo agregar.\n\n` +
+    const cabeza = `El historial semanal de esta obra llegó al límite de ` +
+      `tamaño que permite Firestore${cuanto}, ` +
+      `así que el reporte de esta semana NO se pudo agregar.\n\n`;
+    if (!quedoLaCaptura) {
+      // El límite explica el histórico, no el avance: son dos documentos. Que
+      // los dos cayeran a la vez quiere decir que hay algo más, y mandar a
+      // compactar sin decirlo dejaría la mitad del problema sin nombre.
+      return cabeza +
+        `Y tu captura de avance TAMPOCO quedó guardada, que es un problema ` +
+        `aparte: anótala antes de salir de esta pantalla. Después avisa a ` +
+        `sistemas con el número de obra ${obraId}.`;
+    }
+    return cabeza +
       `Tu captura de avance SÍ quedó guardada: lo que falta es el punto del ` +
       `histórico. Avisa a sistemas para que compacte el historial de la obra ` +
       `${obraId}; es un arreglo de minutos y no pierdes nada.`;
   }
+  const porque = err?.message || 'error desconocido';
+  if (!quedoLaCaptura) {
+    return `No se pudo guardar el reporte semanal en el histórico, y tu ` +
+      `captura de avance TAMPOCO quedó guardada: ${porque}.\n\n` +
+      `Anota lo que capturaste antes de salir de esta pantalla — al recargar ` +
+      `se pierde. Reintentar el cierre no la recupera: lo que falló fue la ` +
+      `escritura, no el cierre.`;
+  }
   return `No se pudo guardar el reporte semanal en el histórico.\n\n` +
     `Tu captura de avance SÍ quedó guardada. Lo que falló es el punto del ` +
-    `histórico: ${err?.message || 'error desconocido'}.\n\n` +
+    `histórico: ${porque}.\n\n` +
     `Vuelve a intentar el cierre. Si sigue fallando, avisa a sistemas.`;
 };
 
@@ -7654,7 +7709,7 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
         recorte ? { semanas: recortadas, recorte } : { semanas: recortadas },
         { merge: true });
     } catch (err) {
-      throw new ErrorSnapshot(mensajeFalloSnapshot(err, recortadas, obraId), err);
+      throw new ErrorSnapshot(err, recortadas, obraId);
     }
     return snap;
   } catch (e) {
@@ -10692,10 +10747,17 @@ function ConceptoFotos({fotos,onAdd,onAnular=null}){
     style={{background:"none",border:"none",color:C.blue,fontSize:9,padding:"0 0 4px",cursor:"pointer"}}>
     {verViejas ? `ocultar anteriores (${viejas.length})` : `ver anteriores (${viejas.length})`}
   </button>}
-  <div className="fotodrop" style={{fontSize:9,padding:"5px 8px"}} onClick={()=>ref.current?.click()}>
-     {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
-  </div>
-  <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>
+  {/* Sin `onAdd` no hay dónde poner la foto, así que tampoco se ofrece. El
+      cuadro era un botón siempre: con un `onAdd` vacío abría el selector de
+      archivos, se tragaba la imagen y no pasaba nada —ni guardado ni aviso—.
+      Eso es peor que un rechazo. Queda el conteo, que es un dato y no una
+      oferta. */}
+  {onAdd
+    ? <div className="fotodrop" style={{fontSize:9,padding:"5px 8px"}} onClick={()=>ref.current?.click()}>
+        {fotos.length>0?`${fotos.length} foto(s)`:"Agregar foto"}
+      </div>
+    : fotos.length>0 && <div style={{fontSize:9,padding:"5px 8px",color:C.textMut}}>{fotos.length} foto(s)</div>}
+  {onAdd && <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>leer(e.target.files)}/>}
   <Lightbox url={lb} onClose={()=>setLb(null)}/>
   {porAnular && <ModalAnularFoto ev={porAnular} onCancel={()=>setPorAnular(null)}
     onAnular={async motivo=>{ await onAnular(porAnular, motivo); setPorAnular(null); }}/>}
@@ -10849,6 +10911,50 @@ const selloDeEstadoLegible = (obra) => {
   const d = instanteGuardado(obra.estadoDesde);
   if (!d) return `${verbo}, con fecha ilegible${sufijo}`;
   return `${verbo} el ${d.toLocaleDateString('es-MX')}${sufijo}`;
+};
+
+// ── LO QUE LA REGLA NIEGA, LA PANTALLA NO LO OFRECE ───────────────────────
+//
+// El candado del cierre vive en `firestore.rules` y ahí es donde tiene que
+// vivir: una obra cerrada no se mueve aunque la escritura venga de un guion,
+// de otra pestaña o de una versión vieja del front. Eso ya está y está
+// probado. Lo que NO estaba es la otra mitad.
+//
+// Probado en el preview el 2026-11-10 sobre la 0128 recién cerrada: la
+// pantalla de captura seguía ofreciendo «Guardar registro» y «Cerrar semana»,
+// el residente los apretaba, y lo que recibía era una franja roja de
+// escrituras perdidas —`obras/0128/avance/materiales · permission-denied`— y
+// tres cambios tirados. La regla hizo su trabajo. La pantalla hizo que el
+// residente perdiera la captura para enterarse.
+//
+// Un botón es una promesa de que la acción se puede hacer. Ofrecer el que la
+// regla va a rechazar convierte el candado en una trampa, y encima entrena a
+// leer la franja roja como ruido normal del guardado.
+//
+// Devuelve la razón EN PALABRAS, no un booleano, porque los dos sitios que lo
+// usan tienen que decirla: la pantalla de captura para explicar por qué no hay
+// botón, y el aviso de fallo para explicar por qué no quedó. Un `true` obliga
+// a cada sitio a redactar su propia versión de la misma frase, y las dos
+// versiones se separan.
+//
+// `archivada` entra junto con `cerrada` aunque la ruta de pantalla sea otra
+// —una obra archivada ni siquiera se abre desde la tarjeta—: el inventario de
+// lo que no se puede escribir no puede depender de qué camino tomó quien
+// llegó. Si mañana se abre una archivada por un enlace directo, esto ya está.
+const motivoParaNoEscribir = (obra) => {
+  const estado = obra?.estado;
+  if (estado !== 'cerrada' && estado !== 'archivada') return null;
+  const sello = selloDeEstadoLegible(obra);
+  const quees = estado === 'cerrada' ? 'Esta obra está cerrada' : 'Esta obra está archivada';
+  // Sólo la inicial del verbo baja de caja. Un `toLowerCase()` a la frase
+  // entera parece inofensivo y se lleva por delante el NOMBRE de quien cerró
+  // —«Gerencia» salía «gerencia»—, que es justo el dato por el que el sello
+  // existe: la pregunta que se le hace a una obra cerrada es quién la cerró.
+  const desde = sello ? ` (${sello[0].toLowerCase()}${sello.slice(1)})` : '';
+  const comoSeAbre = estado === 'cerrada'
+    ? 'Para volver a capturar contra ella hay que reabrirla desde el listado de obras, y eso queda registrado.'
+    : 'Para volver a capturar contra ella hay que reactivarla desde el listado de obras.';
+  return `${quees}${desde}: no admite capturas ni cierres de semana. ${comoSeAbre}`;
 };
 
 // ── «3 OBRAS ACTIVAS» DEJA DE SER CIERTO EN CUANTO UNA SE CIERRA ──────────
@@ -15031,7 +15137,12 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
                 padding:"2px 7px",fontSize:9,color:C.greenDk,cursor:"pointer"}}>
               {archivada?"Reactivar":"Reabrir"}
             </button>}
-            {puedeEliminar&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
+            {/* `allow delete` de `obras/{id}` exige `!obraCerradaC(id)`: borrar
+                una obra cerrada se rechaza. Ofrecerlo igual mandaba a teclear
+                la confirmación de borrado —que pide el número de obra— para
+                recibir un `permission-denied` al final. La salida existe y es
+                «Reabrir», que está al lado. */}
+            {puedeEliminar&&!cerrada&&<button onClick={e=>{e.stopPropagation();iniciarEliminar(o);}}
               style={{background:"none",border:`0.5px solid rgba(220,38,38,0.3)`,borderRadius:4,
                 padding:"2px 7px",fontSize:9,color:C.red,cursor:"pointer",opacity:0.7}}>
               Eliminar
@@ -17326,10 +17437,19 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
   // dejó a la 0114 siete semanas sin histórico sin que nadie se enterara. El
   // aviso se queda hasta que el usuario lo cierra.
   const[falloSnapshot,setFalloSnapshot]=useState(null);
+  // La razón, en palabras, por la que esta obra no admite escrituras. Decide
+  // dos cosas: que no se ofrezcan los botones, y qué dice el aviso si alguien
+  // llega a disparar el guardado por otro camino.
+  const motivoNoEscribir = motivoParaNoEscribir(obra);
+  // Si la captura de avance quedó o no. Se lee del booleano que `fsSetA` ya
+  // devolvía y que esta función TIRABA, que es lo que obligaba al aviso de
+  // fallo a suponerlo. Vive fuera del `try` porque el `catch` la necesita.
+  const quedo = { captura: false };
   async function guardar(tipoSnapshot = "intermedio", nota = null) {
     setEstado("saving");
     setFalloSnapshot(null);
     setFalloNota(false);
+    quedo.captura = false;
     try {
       // Guardar avance + datos completos de cada subsección incluyendo fotos
       // (las fotos se guardan en s.fotos[s.sec] = [...])
@@ -17356,7 +17476,7 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
         data: delCatalogo.map(paraDisco),
         fecha: new Date().toISOString()
       };
-      await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
+      quedo.captura = await fsSetA(`obras/${obra.id}/avance/subs`, avanceData,
         { modulo:"avance_fisico", entidad:`captura ${tipoSnapshot}`, obraId:obra.id, obraNombre:obra.contrato||obra.nombre,
           meta:{ tipo: tipoSnapshot, nSubs: delCatalogo.length, avancePromedio: delCatalogo.reduce((s,x)=>s+(x.a||0),0)/(delCatalogo.length||1) } });
       // Las extraordinarias se escriben SIEMPRE que la obra tenga alguna, no
@@ -17429,13 +17549,24 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
       // (avance, maquinaria, almacén) sigue con el aviso efímero de siempre:
       // ahí el usuario ve de inmediato que no se guardó y reintenta.
       if (e instanceof ErrorSnapshot) {
-        setFalloSnapshot({ mensaje: e.message, tipo: tipoSnapshot });
+        setFalloSnapshot({
+          mensaje: mensajeFalloSnapshot(e, quedo.captura, motivoNoEscribir),
+          tipo: tipoSnapshot });
       } else {
         setTimeout(()=>setEstado("idle"), 3000);
       }
     }
   }
   const labels_map = {idle:"Guardar registro", saving:"Guardando...", saved:"Guardado", error:"Error al guardar"};
+  // Obra cerrada o archivada: en vez de los botones, la razón. Deshabilitarlos
+  // y dejarlos a la vista diría «ahora no» —y manda a probar otra vez—; lo que
+  // pasa es «no, y así va a seguir hasta que alguien la reabra».
+  if (motivoNoEscribir) return (
+    <div style={{marginTop:6,padding:"10px 12px",borderRadius:8,
+      border:`0.5px solid ${alfa(C.caliza,35)}`,background:alfa(C.caliza,8)}}>
+      <div style={{fontSize:11,lineHeight:1.5,color:C.textSec}}>{motivoNoEscribir}</div>
+    </div>
+  );
   return (
     <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:6}}>
       <button onClick={()=>guardar("intermedio")} disabled={estado==="saving"}
@@ -18380,7 +18511,20 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   const tab = forceTab || tabLocal;
   const ocultarTabs = !!forceTab;
   const[exp,setExp]=useState({});
-  const editar=can(rol,"captura","editar");
+  // `can(...)` resuelve el permiso del ROL, que es una de las dos puertas. La
+  // otra es el estado de la obra: una obra cerrada tiene la escritura negada en
+  // la regla de Firestore, y los controles de captura —el input de avance, el
+  // «anular» de las fotos, el cuadro para subir una, el alta de
+  // extraordinarias— tienen que irse por esa vía igual que por la del rol.
+  //
+  // Se separan porque el AVISO de arriba no es el mismo. Si se hubiera dejado
+  // `editar` solo y el banner colgado de `!editar`, una obra cerrada habría
+  // mostrado «tu rol no tiene permiso para editar este módulo», que es falso:
+  // el permiso está, lo que no está es la obra abierta. El motivo del cierre ya
+  // lo dice `GuardarAvanceBtn` al pie de esta misma pantalla, donde estaban los
+  // botones y donde el residente mira.
+  const puedeCapturarElRol=can(rol,"captura","editar");
+  const editar=puedeCapturarElRol && !motivoParaNoEscribir(obra);
   // Sube la foto a Firebase Storage y guarda solo la URL en Firestore (no base64).
   // Esto evita que el documento Firestore crezca demasiado y permite cargar
   // miles de fotos sin afectar el rendimiento de carga.
@@ -18443,7 +18587,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   const rMat=(i,f,v)=>setMateriales(mm=>mm.map((m,j)=>{if(j!==i)return m;const u={...m,[f]:v};u.imp=Math.round((parseFloat(u.vol)||0)*(parseFloat(u.pu)||0));return u;}));
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
-    {!editar&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
+    {!puedeCapturarElRol&&<div style={{background:"rgba(202,138,4,0.1)",border:"0.5px solid rgba(202,138,4,0.3)",
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
        Vista de solo lectura — tu rol no tiene permiso para editar este módulo.
     </div>}
@@ -18647,7 +18791,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             <div style={{marginTop:8}}>
               <ConceptoFotos
                 fotos={fotosArr}
-                onAdd={editar ? (foto=>addFoto(s, foto)) : (()=>{})}
+                onAdd={editar ? (foto=>addFoto(s, foto)) : null}
                 onAnular={editar ? anularFoto : null}/>
               {!editar && fotosArr.length === 0 && (
                 <div style={{fontSize:9,color:C.textMut,padding:"4px 0"}}>Sin fotos cargadas.</div>
@@ -18946,7 +19090,13 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
 
     {tab==="nomina"&&obra&&<Nomina obra={obra} rol={rol} onHistorialCambio={onNominaHistorialCambio}/>}
 
-    {tab!=="nomina"&&editar&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
+    {/* Cuelga del ROL, no de `editar`. Sobre una obra cerrada `editar` es
+        falso y este bloque es justamente el que imprime POR QUÉ: si se monta
+        con `editar`, la pantalla se queda muda —sin botones, sin inputs, sin
+        «anular», y sin una línea que explique nada—, que es peor que ofrecer
+        lo negado. Con el rol sin permiso sigue sin montarse: ahí el aviso de
+        solo-lectura de arriba ya dice lo suyo. */}
+    {tab!=="nomina"&&puedeCapturarElRol&&<GuardarAvanceBtn obra={obra} subs={subs} maquinaria={maquinaria} materiales={materiales}
       onSaved={()=>{ if (setCambiosPendientes) setCambiosPendientes(false); }} usuario={usuario}
       onGuardarNota={onGuardarNota}
       estimaciones={estimaciones} estCargadas={estCargadas}

@@ -108,7 +108,12 @@ const nada = () => {};
 const vacio = () => ({});
 const DEL_ENTORNO = {
   React,
-  CASO: {}, ErrorHistorialNomina: Error, ErrorSnapshot: Error,
+  // `ErrorHistorialNomina` y `ErrorSnapshot` ESTABAN aquí, aplastadas a
+  // `Error` a secas, porque `extraer-de-app` no indexaba clases y había que
+  // taparlas con algo. Ya vienen del archivo, y las de verdad: un
+  // `e instanceof ErrorSnapshot` dentro del código extraído ahora distingue
+  // lo mismo que distingue en la app, en vez de ser cierto para cualquier error.
+  CASO: {},
   addDoc: async () => ({}), collection: vacio, conOrg: p => p,
   conReintentoDePermiso: async (f) => f(), construirRastro: vacio,
   deleteDoc: async () => {}, deleteObject: async () => {}, doc: vacio,

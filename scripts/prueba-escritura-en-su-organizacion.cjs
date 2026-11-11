@@ -406,7 +406,13 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
                       'maquinaria', 'materiales',
                       'obra', 'usuario', 'fsSetA', 'crearSnapshotAvance', 'onHistorialNuevo',
                       'onSaved', 'notifARoles', 'ErrorSnapshot',
-                      'onGuardarNota', 'snapshotId'];
+                      'onGuardarNota', 'snapshotId',
+                      // Del componente, no de `guardar`: `quedo` recoge si la
+                      // captura entró —antes se tiraba— y `motivoNoEscribir`
+                      // es la razón por la que una obra cerrada no admite
+                      // escrituras. Aquí la obra está activa, así que es null
+                      // y el guardado corre entero, que es lo que §5 mide.
+                      'quedo', 'motivoNoEscribir', 'mensajeFalloSnapshot'];
     const args = {
       setEstado: () => {}, setFalloSnapshot: () => {}, setFalloNota: () => {},
       // La nota de la semana NO entra por aquí. §5 mide qué RUTAS pide el
@@ -424,6 +430,8 @@ function declaracionInterna({ codigo, ast }, contenedor, interna) {
       onHistorialNuevo: () => {}, onSaved: () => {},
       notifARoles: async () => {},
       ErrorSnapshot: class extends Error {},
+      quedo: { captura: false }, motivoNoEscribir: null,
+      mensajeFalloSnapshot: () => '',
     };
     const fabrica = new Function(...LIBRES_G,
       `${fuenteSeSuscribe}\n${fuenteGuardar}; return guardar;`);

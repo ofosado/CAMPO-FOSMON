@@ -104,8 +104,22 @@ const montar = () => new Function(
    ${preludio.replace('escrituras++;', '_inc();')}
    const docObra = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
    const crearSnapshotAvance = ${decl['crearSnapshotAvance']};
-   return { crearSnapshotAvance, cuenta: () => _e, ErrorSnapshot };`
+   return { crearSnapshotAvance, cuenta: () => _e, ErrorSnapshot,
+            mensajeFalloSnapshot };`
 );
+
+// El AVISO que verá quien cerró la semana. Ya no es `error.message`: el error
+// lleva los HECHOS y la frase se arma donde además se sabe si la captura de
+// avance quedó, que es un dato del llamador y no de esta función. El cambio
+// vino de que la frase «Tu captura de avance SÍ quedó guardada» era fija, y
+// sobre una obra cerrada —donde la regla niega las dos escrituras— era falsa.
+//
+// Esta prueba sigue juzgando lo mismo que juzgaba: lo que el residente LEE.
+// Por eso pasa `true` donde antes el mensaje lo daba por hecho — ése es el
+// caso de la 0114 que la trajo al mundo— y hay una comprobación nueva para el
+// otro, que antes ni existía.
+const avisoDe = (mod, resultado, quedoLaCaptura = true, motivo = null) =>
+  mod.mensajeFalloSnapshot(resultado.lanzo, quedoLaCaptura, motivo);
 
 const correr = async (modo, historial = []) => {
   const mod = montar()(0, modo, historial, null, conOrgReal);
@@ -116,9 +130,9 @@ const correr = async (modo, historial = []) => {
   try {
     const r = await mod.crearSnapshotAvance('0114', subs, 'pcastillo@fosmon.com.mx',
       'oficial', false, 3000000);
-    return { devolvio: r, lanzo: null, escrituras: mod.cuenta() };
+    return { devolvio: r, lanzo: null, escrituras: mod.cuenta(), mod };
   } catch (e) {
-    return { devolvio: undefined, lanzo: e, escrituras: mod.cuenta() };
+    return { devolvio: undefined, lanzo: e, escrituras: mod.cuenta(), mod };
   }
 };
 
@@ -141,11 +155,21 @@ const correr = async (modo, historial = []) => {
   check(lleno.devolvio === undefined,
     'y no devuelve nada que el llamador pueda confundir con éxito');
 
+  check(Array.isArray(lleno.lanzo?.semanas) && lleno.lanzo?.obraId === '0114',
+    'y el error lleva los hechos —las semanas y la obra— para que el aviso se arme arriba',
+    `obra ${lleno.lanzo?.obraId} · ${lleno.lanzo?.semanas?.length} semana(s)`);
+
   // 3) El mensaje tiene que servirle a quien cerró la semana, no a sistemas.
-  const m = lleno.lanzo?.message || '';
+  const m = avisoDe(lleno.mod, lleno, true);
   check(/límite de tamaño/i.test(m), 'el mensaje dice que el historial llegó al límite');
   check(/captura de avance SÍ quedó guardada/i.test(m),
     'y le dice que su captura NO se perdió — sin eso, recaptura lo que ya está');
+  // El mismo fallo con la captura PERDIDA. Es el caso de la obra cerrada: la
+  // regla niega el avance y el histórico, y el aviso no puede prometer el uno
+  // porque el otro suele quedar.
+  const mPerdido = avisoDe(lleno.mod, lleno, false);
+  check(!/captura de avance SÍ quedó guardada/i.test(mPerdido),
+    'y si la captura NO quedó, no lo promete', mPerdido.replace(/\n+/g, ' | '));
   check(/0114/.test(m), 'nombra la obra, para que sistemas sepa cuál compactar');
   check(!/undefined|NaN|\[object/.test(m), 'el mensaje no trae basura', m.slice(0, 60) + '…');
   // Firestore puede rechazar por tamaño sin que la medición local lo confirme
@@ -159,17 +183,26 @@ const correr = async (modo, historial = []) => {
   const gordo = [{ id: 'S1', subs: Array.from({ length: 4000 },
     (_, i) => ({ sec: 'P-' + i, sub: 'X'.repeat(240), a: 50, imp: 1000 })) }];
   const pesado = await correr('lleno', gordo);
-  check(/\d{3,} KB de 1024 KB/.test(pesado.lanzo?.message || ''),
+  const mPesado = avisoDe(pesado.mod, pesado, true);
+  check(/\d{3,} KB de 1024 KB/.test(mPesado),
     'y cuando sí lo respalda, la cifra aparece',
-    (pesado.lanzo?.message || '').match(/\d+ KB de 1024 KB/)?.[0] || 'no salió');
+    mPesado.match(/\d+ KB de 1024 KB/)?.[0] || 'no salió');
 
   // 4) Un fallo de red también se propaga, con otro mensaje.
   const red = await correr('red');
+  const mRed = avisoDe(red.mod, red, true);
   check(red.lanzo?.name === 'ErrorSnapshot', 'un fallo de red también se propaga');
-  check(/Vuelve a intentar/i.test(red.lanzo?.message || ''),
+  check(/Vuelve a intentar/i.test(mRed),
     'y ese sí invita a reintentar, porque puede ser pasajero');
-  check(!/límite de tamaño/i.test(red.lanzo?.message || ''),
+  check(!/límite de tamaño/i.test(mRed),
     'sin culpar al tamaño cuando el problema es otro');
+  // Con una razón de por medio —la obra cerrada— reintentar es mandar a chocar
+  // contra el candado. El aviso tiene que decir la razón y nada más.
+  const mCerrada = avisoDe(red.mod, red, false,
+    'Esta obra está cerrada: no admite capturas ni cierres de semana.');
+  check(/est[áa] cerrada/i.test(mCerrada) && !/Vuelve a intentar/i.test(mCerrada),
+    'y con la obra cerrada se dice la razón, sin mandar a reintentar contra el candado',
+    mCerrada.replace(/\n+/g, ' | '));
 
   // 5) La causa original se conserva para el log.
   check(!!lleno.lanzo?.causa, 'conserva la causa original para diagnóstico',

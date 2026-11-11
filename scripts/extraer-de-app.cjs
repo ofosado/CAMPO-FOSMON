@@ -95,6 +95,19 @@ function indexar(archivo) {
         fuente: src.slice(p.node.start, p.node.end),
       });
     },
+    // Las clases faltaban, y el hueco se notaba al revés de como se esperaría:
+    // no al pedir una —eso daba `SimboloPerdido`, que es ruidoso— sino al pedir
+    // la función que la USA. `mensajeFalloSnapshot` lee los campos de un
+    // `ErrorSnapshot`; sin esto, el cierre transitivo dejaba el nombre fuera y
+    // el banco reventaba con un `is not defined` a media corrida.
+    ClassDeclaration(p) {
+      if (!p.node.id || p.scope.parent?.parent) return;
+      if (decl.has(p.node.id.name)) return;
+      decl.set(p.node.id.name, {
+        nombre: p.node.id.name, inicio: p.node.start,
+        fuente: src.slice(p.node.start, p.node.end),
+      });
+    },
   });
 
   // Los identificadores libres de un trozo: los que usa y no declara. Se
