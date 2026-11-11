@@ -413,9 +413,12 @@ function montarEscritura() {
     getFirestore: () => ({}), initializeApp: () => ({}),
     encolarRastro: () => {}, rutaAuditoria: () => 'auditoria',
     conOrg: conOrgReal,
-    ErrorHistorialNomina: class ErrorHistorialNomina extends Error {
-      constructor(m, c) { super(m); this.name = 'ErrorHistorialNomina'; this.causa = c; }
-    },
+    // `ErrorHistorialNomina` ERA un stub aquí: una copia a mano de la clase
+    // del archivo, puesta porque `extraer-de-app` sólo indexaba `const` y
+    // `function` y la dejaba fuera del cierre transitivo. Ahora la trae de
+    // verdad, y la copia sobraba — peor, podía desincronizarse: este banco
+    // comprueba `r.name === 'ErrorHistorialNomina'`, que la copia cumplía
+    // aunque la clase de la app hubiera dejado de cumplirlo.
   };
   const nombres = Object.keys(stubs);
   const mod = new Function(...nombres, `"use strict";\n${cuerpo}\n` +
