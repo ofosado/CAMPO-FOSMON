@@ -46,7 +46,7 @@ noArranco.vigilarExcepciones(__filename);
 // que los demás bancos apuntan a un `src/App.jsx` mutado por `ARCHIVO_APP`.
 const CORREDOR = process.env.ARCHIVO_CORREDOR || path.join(__dirname, 'contraprueba.cjs');
 if (!fs.existsSync(CORREDOR)) noArranco([path.basename(CORREDOR)], path.dirname(CORREDOR));
-const { revisarAnclajes, correr, cuenta, normalizar } = require(CORREDOR);
+const { revisarAnclajes, exigirAnclajes, correr, cuenta, normalizar } = require(CORREDOR);
 
 const CALLADO = !!process.env.CALLADO;
 const fallos = [];
@@ -192,7 +192,12 @@ ok(cuenta('aaaa', 'aa') === 2, 'no cuenta solapándose', 'aa en aaaa → 2, no 3
     titulo: 'el tope se va a 0 y el redondeo también',
     cambios: [
       ['const tope = 100;', 'const tope = 0;'],
-      ['const UMBRAL = 7;', 'const UMBRAL = 0;'],     // nunca existió
+      // `NO-EXISTE:` no es adorno: es la marca con la que
+      // `prueba-ningun-anclaje-apunta-al-vacio` sabe que este anclaje está
+      // ausente A PROPÓSITO y no por un fuente que se movió. Sin la marca, el
+      // vigilante tendría razón en señalarlo, y un vigilante que se ignora en
+      // un renglón se ignora en todos.
+      ['NO-EXISTE: const UMBRAL = 7;', 'NO-EXISTE: const UMBRAL = 0;'],
     ],
   }];
   const q = revisarAnclajes(parcial, FUENTE);
@@ -214,7 +219,7 @@ ok(cuenta('aaaa', 'aa') === 2, 'no cuenta solapándose', 'aa en aaaa → 2, no 3
   // existe en ningún fuente. Un verde que mide la mitad y reporta el doble.
   const mutadoViejo = FUENTE
     .replace('const tope = 100;', 'const tope = 0;')
-    .replace('const UMBRAL = 7;', 'const UMBRAL = 0;');
+    .replace('NO-EXISTE: const UMBRAL = 7;', 'NO-EXISTE: const UMBRAL = 0;');
   ok(mutadoViejo !== FUENTE,
     '§3 el mutante a medias pasaba el filtro viejo', '`mutado === src` es falso: el primer cambio sí aplicó');
 
@@ -224,7 +229,7 @@ ok(cuenta('aaaa', 'aa') === 2, 'no cuenta solapándose', 'aa en aaaa → 2, no 3
   ok(detectado.status === 1,
     '§3 y el banco lo detectaba, apuntando cobertura a un anclaje inexistente',
     `salida ${detectado.status} — «ROJA» por el cambio 1, cobrada también por el 2`);
-  ok(!mutadoViejo.includes('const UMBRAL = 0;'),
+  ok(!mutadoViejo.includes('NO-EXISTE: const UMBRAL = 0;'),
     '§3 aunque el segundo cambio no dejó rastro alguno en el mutante');
 }
 
@@ -300,6 +305,56 @@ ok(cuenta('aaaa', 'aa') === 2, 'no cuenta solapándose', 'aa en aaaa → 2, no 3
     'un reemplazo idéntico al anclaje se rechaza', (q[0] || '').split('\n')[0]);
 }
 
+// ── LOS ANCLAJES DE LA CONTRAPRUEBA, COMPROBADOS EN EL ARRANQUE NORMAL ─────
+//
+// Las ocho mutaciones de la contraprueba de aquí abajo anclan en
+// `contraprueba.cjs`, y nadie las vuelve a mirar: `npm test` no corre ninguna
+// contraprueba. `prueba-ningun-anclaje-apunta-al-vacio` tampoco las ve, porque
+// ese vigilante lee anclajes de `.replace('…')` y éstas se declaran como
+// `{ de, a }`. Así que se comprueban aquí, que es para esto que el corredor
+// parte el trabajo en barato y caro: si uno se queda viejo, es NO ARRANCÓ hoy
+// y no un adorno descubierto en seis meses.
+const FUENTE_CORREDOR = fs.readFileSync(CORREDOR, 'utf8')
+  // La única reescritura previa a mutar: el `require` relativo de
+  // `no-arranco.cjs`, porque el mutante vive en /tmp y de ahí no resuelve. Se
+  // declara para que nadie la confunda con una mutación.
+  .replace("require('./no-arranco.cjs')",
+           `require(${JSON.stringify(path.join(__dirname, 'no-arranco.cjs'))})`);
+
+const MUTACIONES_DEL_CORREDOR = [
+  // §1 RANCIA: si el anclaje ausente no se declara, el fuente se mueve y la
+  // contraprueba se vuelve adorno sin avisar.
+  { titulo: 'el anclaje ausente deja de ser RANCIA', de: 'if (n === 0) {', a: 'if (false) {' },
+  // §2 AMBIGUA: sin esto, `veces` es decorativo y un anclaje repetido cubre
+  // un renglón creyendo cubrir un patrón.
+  { titulo: '`veces` deja de ser una igualdad', de: '} else if (n !== veces) {', a: '} else if (false) {' },
+  // §1/§2: la queja existe pero sale como rojo, que manda a buscar una
+  // regresión del producto donde lo que hay es un anclaje viejo.
+  { titulo: 'la queja de anclaje sale como rojo y no como NO ARRANCÓ',
+    de: '  if (!callado) console.error(salida);\n  process.exit(NO_ARRANCO);',
+    a: '  if (!callado) console.error(salida);\n  process.exit(1);' },
+  // §3b: EL GUARDA QUE NOMBRA EL #124. Esto es exactamente el filtro viejo.
+  { titulo: 'vuelve el filtro viejo: basta con que algo haya cambiado',
+    de: 'if (puestos !== veces || mutado === antes)', a: 'if (mutado === antes)' },
+  // §4 MUDA: un mutante que revienta el banco se cobraría como detectado.
+  { titulo: 'el mutante que revienta el banco cuenta como detectado',
+    de: 'if (r.status === NO_ARRANCO) {', a: 'if (false) {' },
+  // §5 PASÓ: el sobreviviente se calla y la contraprueba sale verde midiendo nada.
+  { titulo: 'el sobreviviente no se cuenta', de: '      sobrevivieron++;', a: '      sobrevivieron += 0;' },
+  // El conteo: un anclaje corto que se solapa contaría de más y `veces`
+  // pediría números imposibles.
+  { titulo: 'el conteo se solapa consigo mismo', de: 'n++; i = j + aguja.length;', a: 'n++; i = j + 1;' },
+  // El rechazo del reemplazo idéntico, que es una mutación que no muta.
+  { titulo: 'un reemplazo idéntico al anclaje se acepta', de: 'if (de === a) {', a: 'if (false) {' },
+];
+
+// Sólo contra el corredor DE VERDAD. Cuando este banco corre como hijo de su
+// propia contraprueba, el corredor que lee ya está mutado y justo el anclaje
+// de esa mutación no está — exigirlo ahí convertiría cada mutante en un
+// NO ARRANCÓ y la contraprueba no mediría nada.
+if (!process.env.ARCHIVO_CORREDOR)
+  exigirAnclajes(MUTACIONES_DEL_CORREDOR, FUENTE_CORREDOR, { archivo: CORREDOR });
+
 try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* da igual */ }
 
 if (fallos.length) {
@@ -322,46 +377,11 @@ if (!process.argv.includes('--contraprueba') || process.env.SIN_CONTRAPRUEBA) pr
 // muta es el del repositorio y el mutado es una copia en /tmp. Si el que muta
 // estuviera roto, las mutaciones no aplicarían y la salida sería NO ARRANCÓ,
 // no verde.
-//
-// La única reescritura que se le hace al fuente antes de mutarlo es el `require`
-// relativo de `no-arranco.cjs`, porque el mutante vive en /tmp y de ahí no
-// resuelve. Se declara aquí para que nadie la confunda con una mutación.
 {
   const { correr, veredicto } = require(CORREDOR);
-  const FUENTE_CORREDOR = fs.readFileSync(CORREDOR, 'utf8')
-    .replace("require('./no-arranco.cjs')",
-             `require(${JSON.stringify(path.join(__dirname, 'no-arranco.cjs'))})`);
-
-  const mutaciones = [
-    // §1 RANCIA: si el anclaje ausente no se declara, el fuente se mueve y la
-    // contraprueba se vuelve adorno sin avisar.
-    { titulo: 'el anclaje ausente deja de ser RANCIA', de: 'if (n === 0) {', a: 'if (false) {' },
-    // §2 AMBIGUA: sin esto, `veces` es decorativo y un anclaje repetido cubre
-    // un renglón creyendo cubrir un patrón.
-    { titulo: '`veces` deja de ser una igualdad', de: '} else if (n !== veces) {', a: '} else if (false) {' },
-    // §1/§2: la queja existe pero sale como rojo, que manda a buscar una
-    // regresión del producto donde lo que hay es un anclaje viejo.
-    { titulo: 'la queja de anclaje sale como rojo y no como NO ARRANCÓ',
-      de: '  if (!callado) console.error(salida);\n  process.exit(NO_ARRANCO);',
-      a: '  if (!callado) console.error(salida);\n  process.exit(1);' },
-    // §3b: EL GUARDA QUE NOMBRA EL #124. Esto es exactamente el filtro viejo.
-    { titulo: 'vuelve el filtro viejo: basta con que algo haya cambiado',
-      de: 'if (puestos !== veces || mutado === antes)', a: 'if (mutado === antes)' },
-    // §4 MUDA: un mutante que revienta el banco se cobraría como detectado.
-    { titulo: 'el mutante que revienta el banco cuenta como detectado',
-      de: 'if (r.status === NO_ARRANCO) {', a: 'if (false) {' },
-    // §5 PASÓ: el sobreviviente se calla y la contraprueba sale verde midiendo nada.
-    { titulo: 'el sobreviviente no se cuenta', de: '      sobrevivieron++;', a: '      sobrevivieron += 0;' },
-    // El conteo: un anclaje corto que se solapa contaría de más y `veces`
-    // pediría números imposibles.
-    { titulo: 'el conteo se solapa consigo mismo', de: 'n++; i = j + aguja.length;', a: 'n++; i = j + 1;' },
-    // El rechazo del reemplazo idéntico, que es una mutación que no muta.
-    { titulo: 'un reemplazo idéntico al anclaje se acepta', de: 'if (de === a) {', a: 'if (false) {' },
-  ];
-
   console.log('CONTRAPRUEBA — se rompe el corredor y este banco tiene que verlo\n');
   const sobrevivieron = correr({
-    mutaciones,
+    mutaciones: MUTACIONES_DEL_CORREDOR,
     src: FUENTE_CORREDOR,
     archivo: CORREDOR,
     extension: '.cjs',
@@ -369,5 +389,5 @@ if (!process.argv.includes('--contraprueba') || process.env.SIN_CONTRAPRUEBA) pr
     banco: __filename,
     comoCorrer: (ruta) => ({ env: { ARCHIVO_CORREDOR: ruta, CALLADO: '1' } }),
   });
-  process.exit(veredicto(sobrevivieron, mutaciones.length));
+  process.exit(veredicto(sobrevivieron, MUTACIONES_DEL_CORREDOR.length));
 }
