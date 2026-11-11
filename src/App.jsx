@@ -4195,6 +4195,105 @@ const ordenDeEstimaciones = (a, b) => {
   return na - nb;
 };
 
+// ── LO FACTURADO DEL AÑO, Y EL HUECO QUE NO CABE EN ÉL ──────────────────────
+//
+// POR QUÉ EXISTE. Se pidió poder cerrar una obra terminada sin que desaparezca
+// del tablero, «para poder sumar lo facturado del año». O sea: la cifra del
+// año es la razón por la que la obra cerrada se queda. Si la cifra miente, el
+// cierre no sirvió de nada.
+//
+// LA CUENTA. Una estimación entra al año SÓLO si trae `fechaFact` y esa fecha
+// cae en el año. No hay segunda vía: ni el periodo, ni la fecha de captura, ni
+// «es del año porque la obra es de este año». Medido contra producción el
+// 2026-11-10, de $287,437,918 de histórico hay $105,741,937 en ocho
+// estimaciones que NO traen fecha de factura. Colocarlas en el año por
+// cualquiera de esas vías sería inventar $105M de calendario.
+//
+// POR QUÉ EL HUECO SE PARTE EN DOS. Las ocho no son el mismo caso:
+//
+//   · Cuatro están en `Facturada` o `Pagada` y sin fecha. Eso es un HUECO: el
+//     dinero se facturó y la fecha no se tecleó. Son $32,575,838 y son las que
+//     la alarma nombra, porque hay algo que corregir — teclear la fecha, o
+//     terminar el proceso que la produce.
+//
+//   · Cuatro están `En proceso` o `Aprobada`. No se han facturado, así que no
+//     tienen fecha que teclear y están BIEN. Son $73,166,100. Meterlas en la
+//     misma alarma sería mandar a corregir lo que no está roto, que es el
+//     defecto del #126 con otra cara: el problema de una lista no es que sea
+//     larga, es que sea falsa.
+//
+// Las ocho se quedan fuera de la suma del año. Las cuatro primeras se nombran.
+//
+// LA CUENTA SALE UNA VEZ. El total del año, el hueco y la lista de la alarma
+// salen todos de aquí, así que el KPI no puede decir una cifra y la alarma
+// otra. Es la misma razón por la que `diasSinCapturaDe` es una función y no
+// tres restas.
+const ESTATUS_YA_FACTURADO = ['Facturada', 'Pagada'];
+
+const anioDeFechaFact = (e) => {
+  const t = String(e?.fechaFact || '');
+  const m = /^(\d{4})-\d{2}-\d{2}/.exec(t);
+  return m ? Number(m[1]) : null;
+};
+
+// `obrasConEstimaciones` es [{ obra, estimaciones }]. Llega la obra entera y no
+// sólo su nombre porque la alarma tiene que poder mandar al usuario a la fila
+// exacta, y para eso necesita el `id`.
+function facturadoDelAnio(obrasConEstimaciones = [], anio) {
+  const normal = (s) => String(s || '').trim().toLowerCase();
+  const yaFacturado = new Set(ESTATUS_YA_FACTURADO.map(normal));
+  const monto = (e) => {
+    const n = parseFloat(e?.monto);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  let delAnio = 0, cuantasDelAnio = 0;
+  let sinFecha = 0, cuantasSinFecha = 0;
+  const aCorregir = [], todaviaNo = [];
+
+  for (const { obra, estimaciones } of obrasConEstimaciones) {
+    for (const e of (Array.isArray(estimaciones) ? estimaciones : [])) {
+      const a = anioDeFechaFact(e);
+      if (a === anio) { delAnio += monto(e); cuantasDelAnio++; continue; }
+      if (a !== null) continue;             // fechada en otro año: ni suma ni es hueco
+      sinFecha += monto(e); cuantasSinFecha++;
+      const fila = {
+        obraId: obra?.id, obra,
+        rotulo: rotuloEstimacion(e),
+        estatus: e?.estatus || '',
+        monto: monto(e),
+      };
+      (yaFacturado.has(normal(e?.estatus)) ? aCorregir : todaviaNo).push(fila);
+    }
+  }
+
+  const suma = (l) => l.reduce((t, f) => t + f.monto, 0);
+  return {
+    anio,
+    monto: delAnio, cuantas: cuantasDelAnio,
+    sinFecha: { monto: sinFecha, cuantas: cuantasSinFecha },
+    aCorregir, montoACorregir: suma(aCorregir),
+    todaviaNo,  montoTodaviaNo: suma(todaviaNo),
+  };
+}
+
+// La alarma, agrupada por obra: una obra con tres estimaciones sin fechar es un
+// renglón, no tres. Devuelve [] cuando no hay nada que corregir — y eso es
+// silencio honesto, no una lista vacía que se lea como tranquilidad.
+function alarmasDeFacturaSinFecha(resumen, nombreDe = (o) => o?.nombre || o?.id) {
+  const porObra = new Map();
+  for (const f of (resumen?.aCorregir || [])) {
+    if (!porObra.has(f.obraId)) porObra.set(f.obraId, { obra: f.obra, filas: [] });
+    porObra.get(f.obraId).filas.push(f);
+  }
+  return [...porObra.entries()].map(([obraId, { obra, filas }]) => ({
+    obraId,
+    monto: filas.reduce((t, f) => t + f.monto, 0),
+    rotulos: filas.map((f) => f.rotulo),
+    nombre: nombreDe(obra),
+  }));
+}
+
 // ── EL CORTE DE ESTIMACIONES ────────────────────────────────────────────────
 // Lo estimado y lo pagado AL MOMENTO DEL CIERRE. Hasta ahora el cierre semanal
 // congelaba el avance físico y el dinero ejecutado, pero no estos dos, así que
@@ -13188,6 +13287,19 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   consolidado.margenPct = consolidado.ejecutado > 0
     ? (consolidado.margenAbs / consolidado.ejecutado) * 100 : 0;
 
+  // ── LO FACTURADO DEL AÑO ──
+  // Se cuenta sobre `activas`, que es el MISMO conjunto que el consolidado y
+  // que la tabla de abajo. Una obra CERRADA sigue aquí —ése es el motivo por
+  // el que el cierre no la saca del tablero—; una ARCHIVADA no, y además sus
+  // datos ni siquiera se cargan (ver el efecto que arma `datosPorObra`: filtra
+  // por `estado !== "archivada"`). Así que archivar sí baja esta cifra, y por
+  // eso se declara abajo en vez de dejar que el número encoja en silencio.
+  const anioEnCurso = new Date().getFullYear();
+  const facturado = facturadoDelAnio(
+    kpisPorObra.map(({ obra, d }) => ({ obra, estimaciones: d.estimaciones || [] })),
+    anioEnCurso);
+  const obrasArchivadas = obras.length - activas.length;
+
   // Personal consolidado — suma del ÚLTIMO snapshot de nómina de cada obra.
   // Misma fuente que la columna Personal de la tabla (bloque 3).
   const personalAgg = kpisPorObra.reduce((t, { d }) => {
@@ -13362,6 +13474,23 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
         }
       }
     }
+  }
+
+  // (d) Estimaciones ya facturadas o pagadas, sin fecha de factura. Es el
+  // único grupo accionable del hueco del año: hay una fecha que teclear, o un
+  // proceso que terminar. Las que todavía no se facturan NO entran aquí —no
+  // hay nada que corregir en ellas— y por eso la alarma sale de
+  // `alarmasDeFacturaSinFecha` y no de la lista completa de sin fechar.
+  //
+  // Va por obra y no por estimación: tres filas de la misma obra son un viaje,
+  // no tres. El rótulo de cada una se nombra porque sin él la alarma dice «ve
+  // a buscar» en vez de «ve a esta fila».
+  for (const a of alarmasDeFacturaSinFecha(facturado, (o) => resolverNombreCortoObra(o, gpData))) {
+    excepciones.push({
+      obraId: a.obraId,
+      tipo: 'factura_sin_fecha',
+      texto: `${a.nombre} — ${a.rotulos.join(', ')} sin fecha de factura (${MXN(a.monto)}): no suman al año`,
+    });
   }
 
   // ── BLOQUE 3 — Tabla, ordenada por margen ascendente ──
@@ -13618,6 +13747,32 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                 ? `${obrasSinPrevNom} obra${obrasSinPrevNom > 1 ? 's' : ''} sin snapshot previo`
                 : 'primera semana con nómina')}
           color={C.purpleDk}
+        />
+        {/* Facturado del año. El renglón de abajo NO es un matiz: es la parte
+            del dinero que la cifra no pudo colocar en el año porque no trae
+            fecha de factura. Sin él, $181M se leen como «todo lo del año» y
+            quedan $105M invisibles. La cifra no se ajusta para taparlo —no se
+            sabe de qué año es ese dinero—, se declara. */}
+        <_KpiConDelta
+          label={`Facturado ${anioEnCurso}`}
+          valor={MXN(facturado.monto)}
+          valorSub={`${facturado.cuantas} ${facturado.cuantas === 1 ? 'estimación' : 'estimaciones'} con fecha de factura`}
+          deltaValor={null}
+          deltaSub={facturado.sinFecha.cuantas > 0
+            ? `${MXN(facturado.sinFecha.monto)} sin fecha de factura: fuera del año`
+            : (obrasArchivadas > 0 ? null : 'todas las estimaciones están fechadas')}
+          nota={[
+            facturado.montoACorregir > 0
+              ? `${MXN(facturado.montoACorregir)} ya facturados o pagados y sin fecha: ésos son el hueco que se corrige tecleando la fecha.`
+              : null,
+            facturado.montoTodaviaNo > 0
+              ? `${MXN(facturado.montoTodaviaNo)} todavía no se facturan, así que no hay fecha que teclear: no están mal, pero tampoco son del año.`
+              : null,
+            obrasArchivadas > 0
+              ? `${obrasArchivadas} obra${obrasArchivadas > 1 ? 's' : ''} archivada${obrasArchivadas > 1 ? 's' : ''}: su facturación no entra a esta cifra.`
+              : null,
+          ].filter(Boolean).join(' ') || null}
+          color={C.purple}
         />
       </div>
 
