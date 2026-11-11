@@ -159,8 +159,8 @@ if (process.argv.includes('--contraprueba')) {
       (t) => t.replace('T(B.dominio, PW-MR, PH-3.5,',
         "T('campo-fosmon.netlify.app', PW-MR, PH-3.5,")],
     ['APP', 'la ubicación vacía se rellena con el nombre de la empresa',
-      (t) => t.replace('if (obra.ubicacion) T(obra.ubicacion, ML, 82);',
-        "T(obra.ubicacion||'FOSMON Construcciones', ML, 82);")],
+      (t) => t.replace('if (textoCapturado(obra.ubicacion)) T(textoCapturado(obra.ubicacion), ML, 82);',
+        "T(textoCapturado(obra.ubicacion)||'FOSMON Construcciones', ML, 82);")],
   ];
 
   let vistas = 0;
