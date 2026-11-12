@@ -96,22 +96,31 @@ if (faltan.length) {
 const construir = (fuente) =>
   new Function(`"use strict";\n${fuente}\nreturn { ${PEDIDOS.join(', ')} };`)();
 
-// ── El calendario del fixture, anclado al mes en curso ─────────────────────
+// ── El calendario del fixture, anclado al DÍA de hoy ───────────────────────
 //
-// `inicio` es el día 1 del mes de hace OCHO meses y el programa dura DOCE. Así
-// los índices 0..7 son meses enteramente pasados, el 8 es el mes en curso y
-// 9..11 están enteramente por venir. Dejando el índice 8 en cero, el acumulado
-// programado a hoy no depende del día del mes.
+// `inicio` es hoy hace OCHO meses y el programa dura DOCE. Así los índices 0..7
+// son meses enteramente pasados, el 8 es el mes en curso y 9..11 están
+// enteramente por venir. Dejando el índice 8 en cero, el acumulado programado a
+// hoy no depende del día del mes.
+//
+// EL ANCLA ES EL MISMO DÍA DEL MES, no el día 1, y eso no es cosmético: lo
+// programado está cuantizado por meses y no se mueve, pero la recta de abajo
+// avanza TODOS los días. Anclando al día 1, hoy se iba corriendo dentro del mes
+// en curso y la recta se acercaba al anexo que acusa hasta rebasarlo: el
+// 2026-11-12 el canario falló por una décima (90 > 90.1). Anclando al mismo día
+// del mes, la distancia de hoy al inicio y al fin es constante salvo por el
+// largo de los meses, y la recta se queda quieta entre 66.3 y 67.1 — medido día
+// por día sobre los 400 siguientes.
 const HOY = new Date();
-const ANCLA = new Date(HOY.getFullYear(), HOY.getMonth() - 8, 1);
+const ANCLA = new Date(HOY.getFullYear(), HOY.getMonth() - 8, HOY.getDate());
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-` +
   `${String(d.getDate()).padStart(2, '0')}`;
 
 const INICIO = iso(ANCLA);
-// Fin a cuatro meses vista del mes en curso: la obra lleva ~8 de ~12 meses, o
-// sea que la recta ronda los dos tercios. El número exacto no se teclea; se
-// calcula abajo con la cuenta del repositorio.
-const FIN = iso(new Date(HOY.getFullYear(), HOY.getMonth() + 4, 1));
+// Fin a cuatro meses vista: la obra lleva ~8 de ~12 meses, o sea que la recta
+// ronda los dos tercios. El número exacto no se teclea; se calcula abajo con la
+// cuenta del repositorio.
+const FIN = iso(new Date(HOY.getFullYear(), HOY.getMonth() + 4, HOY.getDate()));
 
 const programaDe = (montos) => ({
   inicio: INICIO,
@@ -166,9 +175,31 @@ function correr(fuente) {
   check(pctAbsuelve.fuente === 'programa' && pctAcusa.fuente === 'programa',
     'los dos anexos del fixture se leen como programa',
     `${pctAbsuelve.fuente} · ${pctAcusa.fuente}`);
-  check(pctAbsuelve.pct < rectaPct - 20 && pctAcusa.pct > rectaPct + 20,
+
+  // EL UMBRAL NO SE TECLEA: SE LE PREGUNTA A LA REGLA. Aquí había un 20 escrito
+  // a mano y el 2026-11-12 el fixture lo rozó por una décima. Un número tecleado
+  // que hoy alcanza es la próxima trampa: no dice de dónde salió, así que cuando
+  // vuelva a fallar nadie sabrá si sobra margen o sobra regla. Se barre el avance
+  // real hacia abajo con el anexo que acusa y se anota dónde la regla deja de
+  // callar; ese es su umbral, dicho por ella. El día que alguien lo mueva, el
+  // fixture se re-ancla solo en vez de pasar por costumbre.
+  const umbralPP = (() => {
+    for (let d = 0; d <= 90; d += 0.1) {
+      if (semaforo(ctx(ANEXO_ACUSA, pctAcusa.pct - d)) !== null) return d;
+    }
+    return null;
+  })();
+  // El rótulo tiene que aguantar el `null`: con la mutación que le esconde el
+  // anexo a la cuenta la regla no dispara nunca y el barrido no halla umbral.
+  // Eso tiene que salir ROJO —el fixture dejó de poder medirse— y no reventar,
+  // porque reventar es un 2 y la contraprueba lo cuenta como «no arrancó».
+  const uTxt = umbralPP === null ? 'sin umbral' : `${umbralPP.toFixed(1)}pp`;
+  check(typeof umbralPP === 'number',
+    'canario: la regla tiene un umbral que se puede medir barriendo el avance',
+    umbralPP === null ? 'nunca disparó en 90pp de barrido' : uTxt);
+  check(pctAbsuelve.pct < rectaPct - umbralPP && pctAcusa.pct > rectaPct + umbralPP,
     'y quedan uno muy por debajo y otro muy por encima de la recta de aquel entonces',
-    `absuelve ${pctAbsuelve.pct.toFixed(1)}% · recta ${rectaPct.toFixed(1)}% · acusa ${pctAcusa.pct.toFixed(1)}%`);
+    `absuelve ${pctAbsuelve.pct.toFixed(1)}% · recta ${rectaPct.toFixed(1)}% · acusa ${pctAcusa.pct.toFixed(1)}% · umbral ${uTxt}`);
   check(!!OBRA.inicio && !!OBRA.fin,
     'canario: la obra tiene inicio y fin, o sea que esa recta SÍ se podía calcular',
     `${OBRA.inicio} → ${OBRA.fin}`);
@@ -190,9 +221,12 @@ function correr(fuente) {
   // Esta es la que protege al municipio: el contratista va de verdad atrasado
   // contra lo que firmó, con un avance que la recta habría absuelto.
   const acuConAnexo = semaforo(ctx(ANEXO_ACUSA, AF_ACUSADA));
-  check(AF_ACUSADA < rectaPct + 15 && AF_ACUSADA > pctAbsuelve.pct,
+  // Dicho con el umbral de la regla, no con otro número tecleado: contra la
+  // recta ese avance NO se acusaba —la distancia cabía en el umbral— y contra el
+  // anexo sí. Es exactamente el caso que el #51 fue a arreglar.
+  check(rectaPct - AF_ACUSADA <= umbralPP && AF_ACUSADA > pctAbsuelve.pct,
     'canario: ese avance quedaba dentro del umbral contra la recta de aquel entonces',
-    `avance ${AF_ACUSADA}% · recta ${rectaPct.toFixed(1)}%`);
+    `avance ${AF_ACUSADA}% · recta ${rectaPct.toFixed(1)}% · umbral ${uTxt}`);
   check(acuConAnexo !== null,
     'con el anexo cargado el semáforo SÍ la acusa',
     acuConAnexo ? `${acuConAnexo.severidad} ${acuConAnexo.valor}` : 'no disparó');
@@ -238,6 +272,28 @@ function correr(fuente) {
   // esté muerta.
   check(semaforo(ctx(ANEXO_ACUSA, 0)) !== null,
     'canario: con anexo y ese mismo avance la regla sigue viva');
+
+  // Y CALLAR NO ES DESAPARECER. Que la regla no dispare sin anexo es la mitad:
+  // la otra es que el hueco se vea. Sin el anexo la regla tiene que quedar en
+  // `noEvaluables` —«no se pudo medir», nombrando el dato que falta— y NO en
+  // `sinHallazgo`, que se lee como «medí y está bien». La diferencia la paga el
+  // municipio, que no captura él el anexo: «no disparó» no le dice qué pedir.
+  //
+  // Esta es la cerradura de verdad. Lo que impide que la regla mida contra una
+  // recta no es el guardia del detector sino `requiere: ['kpis', 'programa']`,
+  // que hace que el motor ni la llame. Sin esta aserción se podía quitar el
+  // anexo de `requiere` y la prueba entera seguía en verde.
+  const vered = fn.evaluarRiesgos(ctx(null, AF_ABSUELTA));
+  const hueco = vered.noEvaluables.find(r => r.id === 'avc_004');
+  const callada = vered.sinHallazgo.some(r => r.id === 'avc_004');
+  check(!!hueco && !callada,
+    'sin anexo la regla sale como «no se pudo medir», no como «medí y no hallé nada»',
+    hueco ? `no evaluable · falta ${hueco.faltan.map(f => f.dato).join(', ')}`
+      : callada ? 'quedó en sinHallazgo: el hueco se lee como tranquilidad'
+        : 'no apareció en ningún estado');
+  check(!!hueco && hueco.faltan.some(f => f.dato === 'programa'),
+    'y el hueco NOMBRA el anexo, que es lo único que le dice al municipio qué pedir',
+    hueco ? hueco.faltan.map(f => `${f.dato}: ${f.nombre}`).join(' · ') : '—');
 
   // ── 6 · AL MUNICIPIO LE LLEGA, Y MEDIDO CONTRA EL ANEXO ───────────────────
   const depConAnexo = semaforo(ctx(ANEXO_ACUSA, AF_ACUSADA, { tipo: 'dependencia' }));
@@ -300,59 +356,104 @@ const RECTA = `
 const DETECTA = 'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
   '      if (p.pct === null) return null;';
 
+// LA PUERTA, QUE NO ES EL DETECTOR. Quien repone la recta tiene que abrir las
+// DOS cerraduras, y la de arriba es `requiere`: sin el anexo en el contexto el
+// motor clasifica la regla como «sin dato» y nunca llama a `detect`, así que una
+// recta puesta dentro del detector es código muerto y la mutación no vuelve al
+// defecto — se queda sin probar nada.
+//
+// Esto no se vio en su momento porque el canario del calendario estaba en rojo
+// por su cuenta: cada mutación «salía roja» por el canario y no por la
+// aserción, o sea que la contraprueba se estaba comprobando contra su propia
+// avería. Arreglado el canario, las dos mutaciones de la recta sobrevivieron, y
+// ahí apareció que lo que de verdad sostiene la conducta es `requiere`.
+//
+// Y es realista: quien ve la tarjeta vacía en las 7 obras vivas quita el anexo
+// de `requiere` justamente para que la tarjeta aparezca.
+const PUERTA = "id: 'avc_004', categoria: 'avance',\n    requiere: ['kpis', 'programa'],";
+const SIN_PUERTA = "id: 'avc_004', categoria: 'avance',\n    requiere: ['kpis'],";
+
+// Cada mutación es `[titulo, [[de, a], ...]]`. Son VARIAS sustituciones y no una
+// porque volver al defecto de la recta pide abrir dos cerraduras, y una mutación
+// que abre sólo la de abajo no llega al defecto: cambia código muerto.
 const MUTACIONES = [
   // El defecto que cerró el #51: tener el anexo y no usarlo.
   ['el detector no le pasa el anexo cargado a la cuenta',
-    'const p = avanceProgramadoA(obra, programa, hoyLocalISO());',
-    'const p = avanceProgramadoA(obra, null, hoyLocalISO());'],
+    [['const p = avanceProgramadoA(obra, programa, hoyLocalISO());',
+      'const p = avanceProgramadoA(obra, null, hoyLocalISO());']]],
   // El defecto del 2026-11-06, y el modo realista de volver a él: la tarjeta se
-  // ve vacía en las 7 obras vivas y alguien la rellena con el plazo.
+  // ve vacía en las 7 obras vivas y alguien la rellena con el plazo. Para eso
+  // tiene que sacar el anexo de `requiere` —si no, la regla ni se evalúa— y
+  // después reponer la recta en el detector.
   ['repone la recta del plazo donde no hay anexo',
-    DETECTA,
-    'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
-    '      if (p.pct === null) {' + RECTA + '\n      }\n' +
-    '      if (p.pct === null) return null;'],
+    [[PUERTA, SIN_PUERTA],
+     [DETECTA,
+      'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
+      '      if (p.pct === null) {' + RECTA + '\n      }\n' +
+      '      if (p.pct === null) return null;']]],
   // La rendija más fina: sólo mientras la lectura del anexo va en camino. Dura
   // un parpadeo por recarga, así que a mano no se ve; es exactamente el tipo de
   // cosa que tiene que atrapar un banco y no un par de ojos.
   ['afirma un atraso mientras la lectura del anexo va en camino',
-    DETECTA,
-    'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
-    '      if (p.pct === null && programa === undefined) {' + RECTA + '\n      }\n' +
-    '      if (p.pct === null) return null;'],
+    [[PUERTA, SIN_PUERTA],
+     [DETECTA,
+      'const p = avanceProgramadoA(obra, programa, hoyLocalISO());\n' +
+      '      if (p.pct === null && programa === undefined) {' + RECTA + '\n      }\n' +
+      '      if (p.pct === null) return null;']]],
+  // Abrir la puerta SOLA, sin reponer nada. Es la mutación que faltaba: dice que
+  // lo que sostiene la conducta es `requiere` y no el guardia del detector, y
+  // separa las dos de arriba de su propio andamiaje. Tiene que salir roja por el
+  // hueco que se pierde —la regla pasa de «sin dato» a «no disparó», y el
+  // municipio deja de ver que le falta el anexo— no por un atraso publicado.
+  ['la regla deja de pedir el anexo y la falta del dato se vuelve un «no disparó»',
+    [[PUERTA, SIN_PUERTA]]],
   // El título volviendo al de antes del #51 — el que publicaba el Dashboard de
   // la 0114 el 2026-11-04. Mide contra el anexo y nombra el plazo: la misma
   // afirmación falsa, más chica y más difícil de ver.
   ['el título vuelve a nombrar el plazo en vez del programa',
-    "    titulo: 'Avance rezagado contra el programa',\n" +
-    "    descripcion: 'El avance real va por debajo del programa contractual',",
-    "    titulo: 'Avance vs plazo desbalanceado',\n" +
-    "    descripcion: 'El avance real va por debajo del programa contractual',"],
+    [["    titulo: 'Avance rezagado contra el programa',\n" +
+      "    descripcion: 'El avance real va por debajo del programa contractual',",
+      "    titulo: 'Avance vs plazo desbalanceado',\n" +
+      "    descripcion: 'El avance real va por debajo del programa contractual',"]]],
   // Esconderle el atraso al municipio.
   ['al municipio se le esconde el atraso de su contratista',
-    "const RIESGOS_SOLO_CONSTRUCTORA = new Set([\n  'fin_001',",
-    "const RIESGOS_SOLO_CONSTRUCTORA = new Set([\n  'avc_004',\n  'fin_001',"],
+    [["const RIESGOS_SOLO_CONSTRUCTORA = new Set([\n  'fin_001',",
+      "const RIESGOS_SOLO_CONSTRUCTORA = new Set([\n  'avc_004',\n  'fin_001',"]]],
   // La frontera del margen, por el otro lado.
   ['la economía del contratista se le abre al municipio',
-    "  'fin_001',                                          // margen bruto",
-    '  // margen bruto'],
+    [["  'fin_001',                                          // margen bruto",
+      '  // margen bruto']]],
   // Rederivar el atraso en vez de usar la cuenta.
   ['el semáforo rederiva el atraso por su cuenta',
-    'const desv = p.pct - kpis.af;',
-    'const desv = (p.pct - kpis.af) * 1.1;'],
+    [['const desv = p.pct - kpis.af;',
+      'const desv = (p.pct - kpis.af) * 1.1;']]],
 ];
 
 if (process.argv.includes('--contraprueba')) {
   console.log('CONTRAPRUEBA · cada mutación tiene que salir en ROJO\n');
   let sobrevivieron = 0;
-  for (const [titulo, de, a] of MUTACIONES) {
-    if (!cuerpo.includes(de)) {
-      console.error(`NO ARRANCÓ: la mutación «${titulo}» no halló su anclaje en la fuente`);
-      process.exit(2);
+  for (const [titulo, cambios] of MUTACIONES) {
+    // Cada sustitución tiene que hallar su anclaje Y tiene que cambiar algo. Lo
+    // segundo no es redundante: el anclaje puede aparecer y la sustitución
+    // escribir lo mismo que ya estaba, y entonces la mutación «sobrevive» por no
+    // haber ocurrido. Eso no es una aserción que no muerde, es un 2.
+    let mutado = cuerpo;
+    for (const [de, a] of cambios) {
+      if (!mutado.includes(de)) {
+        console.error(`NO ARRANCÓ: la mutación «${titulo}» no halló su anclaje en la fuente:\n` +
+                      `            ${JSON.stringify(de.slice(0, 70))}`);
+        process.exit(2);
+      }
+      const antes = mutado;
+      mutado = mutado.replace(de, a);
+      if (mutado === antes) {
+        console.error(`NO ARRANCÓ: una sustitución de «${titulo}» no cambió nada`);
+        process.exit(2);
+      }
     }
     let fallos;
     process.env.CALLADO = '1';
-    try { fallos = correr(cuerpo.replace(de, a)); }
+    try { fallos = correr(mutado); }
     catch (e) {
       // Reventar NO es salir en rojo: mide que el taller sabe parsear, no que
       // la aserción muerda. Contarlo como ROJO deja pasar mutaciones que en
