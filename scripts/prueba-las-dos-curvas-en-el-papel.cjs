@@ -114,7 +114,12 @@ const HUECO = [3, 4];   // índices sin corte capturado
 const historialAvance = [];
 SEMS.forEach((s, i) => {
   if (HUECO.includes(i)) return;
-  historialAvance.push({ tipo: 'oficial', año: AÑO, semana: s.sem,
+  // El año es el de CADA semana, no el de hoy: la ventana de doce semanas cae
+  // en dos años cuando hoy es enero, febrero o marzo, y las del año anterior
+  // etiquetadas con `AÑO` no las encuentra nadie. Medido con el reloj en el
+  // 2027-03-12: el mínimo de la serie salía en $0 —las semanas huérfanas— y con
+  // eso la §A se cumplía por vacío, que es la forma educada de no medir nada.
+  historialAvance.push({ tipo: 'oficial', año: s.año, semana: s.sem,
     avance: 10, avancePonderado: 10, montoEjecutado: 12000000 + 1800000 * i });
 });
 let prev = 0;

@@ -139,7 +139,14 @@ const armar = ({ ejec, gastoAcum, grandTotal = null, conGP = true }) => {
   const historialAvance = [];
   ejec.forEach((m, i) => {
     if (m === null) return;
-    historialAvance.push({ tipo: 'oficial', año: AÑO, semana: SEMS[i].sem,
+    // El año es el de CADA semana, no el de hoy. Las doce semanas de la ventana
+    // caben en dos años cuando hoy cae en enero, febrero o marzo, y entonces
+    // etiquetar todas con `AÑO` deja sin pareja a las del año anterior: el
+    // generador no las encuentra, la serie sale en ceros y la §C se queda sin
+    // tramo que medir. Medido el 2026-11-12 con el reloj puesto en el
+    // 2027-03-12: «la serie del caso limpio trae 0 semanas de tramo, con las 4
+    // que pide el reporte». No era el reporte: era el caso.
+    historialAvance.push({ tipo: 'oficial', año: SEMS[i].año, semana: SEMS[i].sem,
                            avance: 10, avancePonderado: 10, montoEjecutado: m });
   });
   const semanasGP = {};
