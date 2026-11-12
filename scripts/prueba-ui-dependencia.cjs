@@ -60,15 +60,17 @@
 //          el renombre a cotea el producto ya tiene marca propia y la guardia
 //          sobra, pero la REGLA no: se afirma barriendo el JSX, porque lo que
 //          se cumple «por construcción» se rompe callado.
-//   · borrar `EMB_WHITE`/`EMB_NEGRO` del archivo
-//        → 1 roja, y ésta va en la otra dirección. El emblema del contratista
-//          sigue siendo correcto en la portada de SU reporte; lo que no puede
-//          es llegar a pantalla. Una prueba que sólo empuja hacia un lado
-//          acaba pidiendo que se borre lo que no estorba.
+//   · REPONER `EMB_WHITE`/`EMB_NEGRO` en el archivo
+//        → 1 roja. Hasta el 2026-11-12 esta mutación era la contraria —BORRAR
+//          los emblemas— y era correcta: el del contratista estaba bien en la
+//          portada de SU reporte, y una prueba que sólo empuja hacia un lado
+//          acaba pidiendo que se borre lo que no estorba. Ese reporte se
+//          retiró y los dos PNG quedaron sin nadie que los lea, o sea a un
+//          `<img>` de la pantalla del municipio.
 //   · el pie pinta `PRODUCTO.descriptor` sin preguntar si hay
 //        → 1 roja. Hoy está vacío —no hay eslogan decidido— y sin preguntar
 //          el pie dice «cotea — » con la raya colgando.
-//   · el pie del reporte ejecutivo vuelve a la sigla vieja
+//   · el pie de un PDF vuelve a la sigla vieja
 //        → 2 rojas, y hubo que ensanchar el barrido para que las hubiera:
 //          miraba sólo JSX y eso es un `T(…)` de jsPDF. Un PDF que el cliente
 //          descarga y archiva es donde una marca vieja dura más.
@@ -76,8 +78,12 @@
 //        → 1 roja. Lo encontró la captura del preview, no la prueba: la
 //          pantalla de acceso le decía al municipio de quién es la app antes
 //          de que nadie se identificara, en letra chica.
-//   · `vaElReporteEjecutivo = () => true`
-//        → 1 roja: se le ofrece el PDF con margen, gasto, almacén y nómina.
+//   · `papelDeLaObra = () => 'interno'`
+//        → 2 rojas: al municipio se le ofrece el PDF con margen, gasto,
+//          almacén y nómina. Y la gemela, `() => 'art73'`, también sale en
+//          rojo: la constructora se queda sin su documento interno. El
+//          predicado viejo era un sí/no y dejaba sin vigilar el caso de hoy —
+//          que a cada lado se le ofrezca ALGO, y que no sea el del otro.
 //   · volver a escribir «FOSMON CONSTRUCCIONES» a mano en el encabezado
 //        → 1 roja, la del barrido. El defecto original eran DOS sitios con la
 //          misma cadena literal; arreglar uno dejaba el otro.
@@ -243,7 +249,7 @@ const NECESARIOS = [
   'SUBTABS_OPERACION_DEPENDENCIA', 'SUBTABS_PLANEACION_DEPENDENCIA',
   'RUTAS_SOLO_CONSTRUCTORA', 'seSuscribe',
   'DESTINOS_DEPENDENCIA', 'destinoNav', 'navTab',
-  'PRODUCTO', 'nombreOrg', 'vaElReporteEjecutivo',
+  'PRODUCTO', 'nombreOrg', 'papelDeLaObra',
   'vanLasOT', 'vaElInterruptorOT',
   'CAMPOS_CONTRATO', 'camposContrato', 'ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato',
   'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
@@ -791,18 +797,27 @@ const montarGP = () => {
   // que en dependencia no se piden, así que habría impreso Gasto $0 y Margen
   // 100% con el logo de FOSMON en la portada.
   //
+  // DESDE EL 2026-11-12 LA PREGUNTA DEVUELVE CUÁL, NO CUÁNTOS. Ya no se
+  // pregunta si el reporte ejecutivo «va» —ese papel se retiró— sino qué papel
+  // le toca a cada lector: `papelDeLaObra` devuelve `'interno'` o `'art73'`, y
+  // cada lado tiene exactamente un botón. Afirmar sobre un predicado de
+  // sí/no dejaba sin vigilar el caso que de verdad importa hoy: que a una
+  // dependencia se le ofrezca ALGO. Un `false` para los dos lados habría
+  // pasado la versión vieja de esta comprobación con el municipio sin manera
+  // de imprimir nada.
+  //
   // No se afirma que exista ningún nombre (P3): se le pregunta a `nombreOrg`
-  // qué cadena entrega la pantalla y a los dos predicados qué se ofrece.
+  // qué cadena entrega la pantalla y a los predicados qué se ofrece.
   seccion('La barra de arriba');
 
   const bar = new Function(`"use strict";
       const esDependencia = ${decl['esDependencia']};
       const PRODUCTO = ${decl['PRODUCTO']};
       const nombreOrg = ${decl['nombreOrg']};
-      const vaElReporteEjecutivo = ${decl['vaElReporteEjecutivo']};
+      const papelDeLaObra = ${decl['papelDeLaObra']};
       const vanLasOT = ${decl['vanLasOT']};
       const vaElInterruptorOT = ${decl['vaElInterruptorOT']};
-      return { PRODUCTO, nombreOrg, vaElReporteEjecutivo,
+      return { PRODUCTO, nombreOrg, papelDeLaObra,
                vanLasOT, vaElInterruptorOT };`)();
 
   const DEP  = { rol: 'supervisor_obra', tipo: 'dependencia',  orgId: 'coatzacoalcos' };
@@ -866,13 +881,30 @@ const montarGP = () => {
     'ninguna pantalla pinta el emblema del contratista: la marca en pantalla es la del producto',
     marcaAjena.length ? '\n        ' + marcaAjena.join('\n        ') : 'ninguna');
 
-  // El emblema de FOSMON sigue existiendo donde SÍ es suyo —la portada del
-  // reporte ejecutivo— y eso no es un descuido. Por eso la comprobación de
-  // arriba mira el JSX y no la fuente entera: el PDF no es JSX, lo arma
-  // `generarPDFObra` con jsPDF, y a una dependencia no se le ofrece.
-  check(/EMB_(WHITE|NEGRO)/.test(src),
-    'y el emblema del contratista no se borró del mundo: sigue en su propio reporte',
-    'EMB_WHITE / EMB_NEGRO, que usa `generarPDFObra`');
+  // Y LA AFIRMACIÓN SE DIO VUELTA EL 2026-11-12. Hasta ese día esto decía lo
+  // contrario —que `EMB_WHITE`/`EMB_NEGRO` siguieran EXISTIENDO— y estaba bien
+  // dicho: el emblema del contratista era correcto en la portada de su propio
+  // reporte, y una prueba que sólo empuja hacia un lado acaba pidiendo que se
+  // borre lo que no estorba. Lo que cambió no es el criterio: es que ese
+  // reporte se retiró, y con él el único sitio que leía los dos emblemas. Dos
+  // PNG en base64 sin nadie que los lea no son una reserva, son lo que el
+  // propio archivo llama un arma cargada: están a un `<img>` de la pantalla
+  // del municipio, y el barrido de arriba no los vería porque mira elementos
+  // JSX y esto son constantes. Así que ahora se afirma que no están, y se
+  // afirma sobre el PROGRAMA ENTERO —no sólo el JSX— porque el otro camino
+  // para que vuelvan es un `addImage` dentro de un PDF.
+  //
+  // Se barre el AST y no el texto, y eso no es un detalle: la primera versión
+  // probaba la expresión regular contra la fuente cruda y salía en rojo por el
+  // COMENTARIO que explica la eliminación. Una nota que cuenta que algo se
+  // fue no es el algo.
+  const emblemaAjeno = new Set();
+  traverse(ast, {
+    Identifier(p) { if (/^EMB_/.test(p.node.name)) emblemaAjeno.add(p.node.name); },
+  });
+  check(emblemaAjeno.size === 0,
+    'y el emblema del contratista no lo nombra ninguna parte del programa',
+    emblemaAjeno.size ? [...emblemaAjeno].join(' | ') : 'ningún EMB_*');
 
   // ── El descriptor ──────────────────────────────────────────────────────────
   // Vacío a propósito mientras no haya eslogan decidido. Lo que se afirma no es
@@ -970,11 +1002,17 @@ const montarGP = () => {
     'ninguna casilla usa el dominio del contratista de ejemplo',
     dominioAjeno.length ? dominioAjeno.join(' | ') : 'ninguna');
 
-  // El PDF.
-  check(bar.vaElReporteEjecutivo(DEP) === false,
-    'a una dependencia no se le ofrece el reporte ejecutivo  ·  margen, gasto, almacén y nómina');
-  check(bar.vaElReporteEjecutivo(CONS) === true,
-    'y a una constructora sí: es su reporte');
+  // El PDF. Cada lector tiene UN papel, y no es el mismo.
+  check(bar.papelDeLaObra(DEP) === 'art73',
+    'a una dependencia le toca el informe del Art. 73, no el papel con margen y nómina',
+    bar.papelDeLaObra(DEP));
+  check(bar.papelDeLaObra(CONS) === 'interno',
+    'y a una constructora el documento interno: margen, gasto, almacén y nómina son suyos',
+    bar.papelDeLaObra(CONS));
+  // Que sea UNO, no una lista. La forma vieja de este defecto era un segundo
+  // botón al lado del primero, y el que se manda por error no se recoge.
+  check(bar.papelDeLaObra(DEP) !== bar.papelDeLaObra(CONS),
+    'y los dos papeles no son el mismo: ninguno de los dos lados descarga el del otro');
 
   // ── EL BARRIDO DE NOMBRES PROPIOS ──────────────────────────────────────────
   // Que no haya quedado una copia escrita a mano del nombre de la organización

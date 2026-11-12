@@ -35,6 +35,12 @@
 //     importe pero sin describir desaparecía del documento QUE SE ENTREGA, y
 //     el margen del papel salía MEJOR que el de la pantalla. De las cuatro
 //     sumas de maquinaria del archivo, tres no filtran; ésa era la única.
+//     Al retirarse el reporte ejecutivo (2026-11-12) la afirmación se midió
+//     sobre el papel que de verdad se descarga, el documento interno, y quedó
+//     más fuerte: ese papel no tiene una suma propia que pueda discrepar, le
+//     pide el bloque a `calcularKPIsObra`. Se afirman el gasto total y el
+//     margen, que es lo que publica; el importe renglón por renglón no, porque
+//     su desglose es por rubro del GP.
 //
 // 5 · NINGÚN RÓTULO PUBLICA DOS CIFRAS. Se recorre el JSX de `Dashboard` por
 //     AST, se emparejan los rótulos literales con la expresión de dinero que
@@ -455,16 +461,36 @@ async function correr(codigo) {
     'y el rótulo de `me` dice que incluye el almacén, en vez de llamarse sólo «ejecutado»',
     rotuloDeMe ? `«${rotuloDeMe}»` : 'no se halló el KPI de `me` en el tablero');
 
-  // ── 7 · EL PDF NO ENTREGA UN GASTO MÁS CHICO QUE LA PANTALLA ─────────────
-  sec('7. El papel que se entrega suma el mismo gasto que el tablero');
+  // ── 7 · EL PDF NO PUBLICA UN GASTO MÁS CHICO QUE LA PANTALLA ─────────────
+  sec('7. El papel que se descarga suma el mismo gasto que el tablero');
+  // REANCLADA EL 2026-11-12, Y LA AFIRMACIÓN QUEDÓ MÁS FUERTE. El defecto
+  // original era que el papel que se entrega REHACÍA la suma del gasto con un
+  // filtro propio —«sólo los renglones con descripción»— y le salía un gasto
+  // más chico y un margen mejor que a la pantalla. Ese papel, el reporte
+  // ejecutivo, se retiró: el único que descarga una constructora es el
+  // documento interno, y no rehace la suma: le pide el bloque a
+  // `calcularKPIsObra`, la misma función que alimenta el tablero. Así que ya no
+  // se afirma «las dos sumas coinciden» sino que hay UNA SOLA suma.
+  //
+  // Y POR ESO SE FUERON LAS DOS ASERCIONES QUE BUSCABAN EL IMPORTE DE CADA
+  // RENGLÓN. Este papel no publica maquinaria renglón por renglón —su desglose
+  // es por rubro del GP— así que pedirle el importe de un renglón es pedirle
+  // una tabla que no tiene: la aserción se pondría verde el día que alguien
+  // imprimiera ese importe en cualquier otro sitio. Donde el defecto SÍ se
+  // vería es en las dos cifras que este papel publica de verdad, el gasto
+  // total y el margen, y las dos se afirman contra la cuenta del tablero. La
+  // contraprueba vuelve a meter el filtro por descripción, ahora en la llamada
+  // que este papel hace, para comprobar que muerden.
   const papel = await alPapel(funcion, PROPS(LA_AMPLIADA));
   const dice = (s) => papel.textos.some(t => t.includes(s));
+  const RECORTE = MAQ_SIN_DESCRIBIR + ALM_SIN_DESCRIBIR;
 
-  check(dice(MXN(MAQ_SIN_DESCRIBIR)),
-    'el renglón de maquinaria sin describir SALE en el documento, con su importe',
-    MXN(MAQ_SIN_DESCRIBIR));
-  check(dice(MXN(ALM_SIN_DESCRIBIR)),
-    'y el de almacén sin describir también', MXN(ALM_SIN_DESCRIBIR));
+  check(dice(MXN(kpis.gt)),
+    'el gasto total del papel es el del tablero, con los renglones sin describir dentro',
+    `${MXN(kpis.gt)} (tablero) · recortando lo no descrito daría ${MXN(kpis.gt - RECORTE)}`);
+  check(!dice(MXN(kpis.gt - RECORTE)),
+    'y no publica el gasto recortado que salía de tirar lo que nadie describió',
+    MXN(kpis.gt - RECORTE));
   check(dice(MXNS(kpis.diff)) || dice(MXN(kpis.diff)),
     'el margen del PDF es el MISMO que el del tablero',
     `${MXNS(kpis.diff)} (tablero) · el PDF filtrado publicaba ${MXNS(kpis.diff + MAQ_SIN_DESCRIBIR)}`);
@@ -485,9 +511,9 @@ async function correr(codigo) {
     `${MXNS(kpisD.diff)}`);
   check(diceD(MXNS(kpisD.diff)) || diceD(MXN(kpisD.diff)),
     'y el PDF publica ese mismo margen', MXNS(kpisD.diff));
-  check(diceD(MXN(MAQ_SIN_DESCRIBIR)),
-    'el importe del renglón sigue en el papel cuando sí trae descripción',
-    MXN(MAQ_SIN_DESCRIBIR));
+  check(kpisD.gt === kpis.gt && diceD(MXN(kpisD.gt)),
+    'y el mismo gasto total: describir un renglón no mueve lo que el papel publica',
+    `${MXN(kpisD.gt)} descrito · ${MXN(kpis.gt)} sin describir`);
 
   // ── 9 · LAS DOS FRASES DE «SIN FACTURAR» NO SE LLAMAN IGUAL ──────────────
   // `am − estimado` (obra ejecutada que todavía no se factura) y
@@ -595,13 +621,29 @@ const MUTACIONES = [
     + '  const restantes = totalDias != null ? Math.max(totalDias - transcurridos, 0) : null;\n'
     + '  const pctPlazo = (totalDias && totalDias > 0) ? Math.min((transcurridos/totalDias)*100,100) : null;'],
 
-  ['el PDF vuelve a tirar el renglón de maquinaria sin describir',
-    '  const maqActivos = maquinaria.filter(m=>pf(m.imp)>0);',
-    '  const maqActivos = maquinaria.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);'],
+  // REANCLADAS EL 2026-11-12. Mordían el prólogo del reporte ejecutivo, que
+  // armaba sus propias listas (`maqActivos`, `matActivos`) con un filtro por
+  // descripción y luego sumaba sobre ellas. Ese papel se retiró y con él sus
+  // dos listas, así que las mutaciones se mueven al único sitio donde el papel
+  // que hoy se descarga puede volver a inventarse una suma: la llamada a
+  // `calcularKPIsObra`. El filtro se mete en el argumento, que es la forma en
+  // que el defecto reaparecería de verdad —alguien «limpiando» la lista antes
+  // de pasarla— y NO se toca la función del tablero, porque mutarla movería
+  // las dos cuentas a la vez y la prueba no notaría nada: es justo la
+  // propiedad que este banco afirma.
+  ['el papel vuelve a tirar la maquinaria sin describir antes de sumarla',
+    '  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,\n'
+    + '                                gpData, otrosGastos);',
+    '  const kpis = calcularKPIsObra(obra, subs,\n'
+    + '    maquinaria.filter(m=>m.desc&&String(m.desc).trim()), materiales, estimaciones,\n'
+    + '                                gpData, otrosGastos);'],
 
-  ['el PDF vuelve a tirar el renglón de almacén sin describir',
-    '  const matActivos = materiales.filter(m=>pf(m.imp)>0);',
-    '  const matActivos = materiales.filter(m=>m.desc&&m.desc.trim()&&pf(m.imp)>0);'],
+  ['el papel vuelve a tirar el almacén sin describir antes de sumarlo',
+    '  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,\n'
+    + '                                gpData, otrosGastos);',
+    '  const kpis = calcularKPIsObra(obra, subs, maquinaria,\n'
+    + '    materiales.filter(m=>m.desc&&String(m.desc).trim()), estimaciones,\n'
+    + '                                gpData, otrosGastos);'],
 
   ['el KPI de `me` vuelve a llamarse sólo «obra ejecutada», sin el almacén',
     '<Kpi label="Ejecutado + almacén" value={MXN(me)}',

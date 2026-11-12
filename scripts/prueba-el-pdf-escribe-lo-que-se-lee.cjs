@@ -3,10 +3,19 @@
 // pinta.
 //
 // QUÉ SE AFIRMA. Que NINGUNA cadena que los dos generadores mandan dibujar
-// —texto libre y celdas de tabla, en el reporte del cliente y en el documento
+// —texto libre y celdas de tabla, en el informe del Art. 73 y en el documento
 // interno— lleva un carácter fuera de WinAnsi, que es todo lo que las fuentes
 // estándar de jsPDF saben escribir. Y que el blindaje que lo consigue no se
 // cobra los acentos por delante.
+//
+// EL 2026-11-12 el papel del cliente cambió de generador —`generarPDFObra` se
+// retiró y lo que una dependencia descarga es `generarPDFArt73`— y el blindaje
+// se mudó: antes cada generador montaba el suyo y ahora los dos lo reciben de
+// `andamioDeCotea`, que es también donde vive el `T` que respeta los renglones
+// partidos. El banco sigue mirando LAS DOS HOJAS, porque el riesgo es por
+// lector y no por función; lo que cambia es que ahora una sola mutación
+// enrojece las dos, y eso es la mejora: hay UNA puerta de la fuente, no dos que
+// se pueden arreglar a medias.
 //
 // POR QUÉ EXISTE. jsPDF no avisa. Cuando una cadena trae un carácter que la
 // fuente no tiene, la serializa en UTF-16 y el lector la pinta como basura. El
@@ -56,15 +65,19 @@ const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
 
 const { fuenteDe, ARCHIVO } = require('./extraer-de-app.cjs');
-const { dibujarPDF, dibujarPDFInterno, lienzo,
-        textoCorrido } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno, lienzo, textoCorrido } = require('./lienzo-pdf.cjs');
 const archivo = process.env.ARCHIVO_APP || ARCHIVO;
 
 let fallas = 0, verdes = 0;
 const ok = (c, m) => { if (c) { verdes++; console.log(`  ok   ${m}`); }
                        else { fallas++; console.log(`FALLA  ${m}`); } };
 
-const PEDIDOS = ['generarPDFObra', 'generarPDFInterno', 'textoImprimible',
+// REAPUNTADO EL 2026-11-12. El papel del cliente era `generarPDFObra`, que se
+// retiró: lo que una dependencia descarga hoy es el informe del Art. 73. Las
+// dos hojas siguen siendo dos, y el banco sigue mirando las dos, porque el
+// riesgo es por LECTOR: un carácter ilegible en el papel que sale de la oficina
+// con el sello del municipio no es el mismo incidente que uno en el interno.
+const PEDIDOS = ['generarPDFArt73', 'generarPDFInterno', 'textoImprimible',
                  'blindarTextoDelPDF', 'MXNS'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 if (faltan.length) {
@@ -79,7 +92,7 @@ try {
   console.error(`\nNO ARRANCÓ: no se pudo montar lo extraído de ${archivo}: ${e.message}`);
   process.exit(2);
 }
-const { generarPDFObra, generarPDFInterno, textoImprimible, blindarTextoDelPDF, MXNS } = APP;
+const { generarPDFArt73, generarPDFInterno, textoImprimible, blindarTextoDelPDF, MXNS } = APP;
 
 // ── QUÉ SABE ESCRIBIR LA FUENTE ────────────────────────────────────────────
 // WinAnsi, dicho aquí por su DEFINICIÓN y no copiando la del generador: los
@@ -146,9 +159,15 @@ const hojaDe = async (quien, correr) => {
 
 (async () => {
 
-const hojaCliente = await hojaDe('el reporte del cliente', () => dibujarPDF(
-  generarPDFObra, {}, OBRA,
-  { subs: SUBS, estimaciones: ESTIMACIONES, instante: SELLO }));
+// Las dos por el mismo camino: los dos generadores toman todo por nombre, así
+// que ya no hace falta el `dibujarPDF` posicional que existía sólo para el
+// papel viejo. El del Art. 73 recibe `estCargadas` para que la §A y la §E
+// miren un documento con sus tablas llenas: con la bandera en falso el papel
+// declara que no pudo medir y se queda sin la mitad de sus cadenas.
+const hojaCliente = await hojaDe('el informe del Art. 73', () => dibujarPDFInterno(
+  generarPDFArt73,
+  { obra: OBRA, subs: SUBS, estimaciones: ESTIMACIONES, instante: SELLO,
+    estCargadas: true, evidenciaCargada: true }));
 
 const hojaInterna = await hojaDe('el documento interno', () => dibujarPDFInterno(
   generarPDFInterno,
@@ -160,7 +179,7 @@ const hojaInterna = await hojaDe('el documento interno', () => dibujarPDFInterno
 // ══════════════════════════════════════════════════════════════════════════
 console.log('\n── A · la hoja sólo lleva lo que la fuente escribe ───────────');
 
-for (const [quien, hoja] of [['el reporte del cliente', hojaCliente],
+for (const [quien, hoja] of [['el informe del Art. 73', hojaCliente],
                              ['el documento interno', hojaInterna]]) {
   const malas = hoja
     .map(d => ({ d, malos: ilegibles(d.texto) }))
@@ -176,7 +195,7 @@ for (const [quien, hoja] of [['el reporte del cliente', hojaCliente],
 // Y las CELDAS DE TABLA aparte, nombradas: no pasan por el `text()` del
 // generador, las coloca el plugin. Si el blindaje se hubiera puesto sólo en
 // `text()`, esta aserción sería la única en rojo.
-for (const [quien, hoja] of [['el reporte del cliente', hojaCliente],
+for (const [quien, hoja] of [['el informe del Art. 73', hojaCliente],
                              ['el documento interno', hojaInterna]]) {
   const celdas = hoja.filter(d => d.tabla);
   if (!celdas.length) {
@@ -210,12 +229,13 @@ ok(ilegibles(textoImprimible(MXNS(-1000))).length === 0
    && /^-\$/.test(textoImprimible(MXNS(-1000))),
   `pero a la hoja llega con guion corriente: «${textoImprimible(MXNS(-1000))}»`);
 
-// Los que el generador trae escritos. Si el reporte dejara de imprimirlos, esta
-// comprobación lo diría en vez de dar verde por un documento que cambió.
-const crudoCliente = fs.readFileSync(archivo, 'utf8');
-ok(/✓\s*PAGADA|✓ PAGADA/.test(crudoCliente) || /Avance ≥/.test(crudoCliente)
-   || /Operación →/.test(crudoCliente),
-  'el reporte del cliente sigue trayendo escritos los caracteres del hallazgo');
+// Los que el programa trae ESCRITOS, no metidos por el caso. Si el repo dejara
+// de traerlos, esta comprobación lo diría en vez de dar verde por un documento
+// que cambió y un caso que ya es el único que aporta caracteres raros.
+const crudoApp = fs.readFileSync(archivo, 'utf8');
+ok(/✓\s*PAGADA|✓ PAGADA/.test(crudoApp) || /Avance ≥/.test(crudoApp)
+   || /Operación →/.test(crudoApp),
+  'el programa sigue trayendo escritos los caracteres del hallazgo');
 
 // ══════════════════════════════════════════════════════════════════════════
 // C · LOS SUSTITUTOS DICEN LO MISMO, Y NO SE COMEN LOS ACENTOS
@@ -319,7 +339,7 @@ console.log('\n── E · lo que se mandó partir llega a la hoja partido ─�
 // midiendo dos papeles distintos.
 const ANCHO_HOJA = lienzo().doc.internal.pageSize.getWidth();
 
-for (const [quien, hoja] of [['el reporte del cliente', hojaCliente],
+for (const [quien, hoja] of [['el informe del Art. 73', hojaCliente],
                              ['el documento interno', hojaInterna]]) {
   // EL CONTROL, PRIMERO, y en ROJO y no en NO ARRANCÓ. Un documento de puras
   // frases cortas no parte nada y dejaría vacías a las dos aserciones de abajo
@@ -365,13 +385,13 @@ if (process.argv.includes('--contraprueba')) {
   console.log('\n── CONTRAPRUEBA ─────────────────────────────────────────────');
   const src = fs.readFileSync(archivo, 'utf8');
   const MUTANTES = [
-    { nombre: 'el blindaje se cae del reporte del cliente',
-      hacer: () => src.replace(
-        "  const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));\n"
-        + '  const pf   = n => parseFloat(n)||0;',
-        "  const doc = new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});\n"
-        + '  const pf   = n => parseFloat(n)||0;') },
-    { nombre: 'el blindaje se cae del documento interno',
+    // ERAN DOS —una por generador— y el 2026-11-12 son una. No es que se haya
+    // perdido cobertura: el `doc` blindado se montaba dos veces, una en cada
+    // generador, y ahora lo monta `andamioDeCotea` y los dos lo reciben. Una
+    // sola mutación tiene que enrojecer las DOS hojas de la §A, y eso es más
+    // fuerte que lo de antes: con dos puertas, arreglar una dejaba la otra
+    // sirviendo basura a su lector sin que el banco pudiera distinguirlo.
+    { nombre: 'el blindaje se cae del andamio, y con él de los dos papeles',
       hacer: () => src.replace(
         "  const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));\n"
         + '  const PCT = (n,d=1) => `${(n||0).toFixed(d)}%`;',
@@ -428,24 +448,16 @@ if (process.argv.includes('--contraprueba')) {
         "  '→': '->', '⇒': '->', '←': '<-', '⇐': '<-', '↑': '^', '↓': 'v',",
         "  '⇒': '->', '←': '<-', '⇐': '<-', '↑': '^', '↓': 'v',") },
 
-    // ── E · el párrafo aplastado, en los dos generadores ───────────────────
-    // El defecto tal como estaba el 2026-11-10. Van los dos por separado:
-    // arreglado en uno solo, el otro seguiría sacando párrafos fuera de la hoja
-    // y nadie lo vería.
-    { nombre: 'el reporte del cliente vuelve a aplastar los renglones de un párrafo',
+    // ── E · el párrafo aplastado ───────────────────────────────────────────
+    // El defecto tal como estaba el 2026-11-10. También eran dos —un `T` por
+    // generador— y por la misma mudanza son una: el `T` que respeta el arreglo
+    // de renglones vive en el andamio. La §E recorre las dos hojas, así que
+    // esta mutación tiene que sacar párrafos fuera del papel en las dos.
+    { nombre: 'el `T` del andamio vuelve a aplastar los renglones de un párrafo',
       hacer: () => src.replace(
         "  const T  = (s,x,y,o={}) => doc.text(\n"
-        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);\n"
-        + '\n  // Dibuja header/footer en página actual',
-        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);"
-        + '\n\n  // Dibuja header/footer en página actual') },
-    { nombre: 'el documento interno vuelve a aplastar los renglones de un párrafo',
-      hacer: () => src.replace(
-        "  const T  = (s,x,y,o={}) => doc.text(\n"
-        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);\n"
-        + '\n  // El sello de INTERNO',
-        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);"
-        + '\n\n  // El sello de INTERNO') },
+        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);",
+        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);") },
   ];
   // NO hay mutación de `lienzo-pdf.cjs`. No hace falta: si el lienzo dejara de
   // contestar lo que el generador instaló encima del `doc`, anotaría la cadena

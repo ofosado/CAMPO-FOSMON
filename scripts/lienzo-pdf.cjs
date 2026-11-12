@@ -1,6 +1,6 @@
 // Un jsPDF de mentira para mover el generador de verdad.
 //
-// `generarPDFObra` llama decenas de métodos de jsPDF y lo único que a un banco
+// Los generadores llaman decenas de métodos de jsPDF y lo único que a un banco
 // le interesa es QUÉ TEXTO manda dibujar, EN QUÉ PÁGINA y EN QUÉ POSICIÓN. Un
 // `Proxy` contesta a cualquier método que no esté previsto —así un método nuevo
 // no tumba el banco— y anota los `text()`. Los que sí están previstos son los
@@ -8,9 +8,9 @@
 // contestara `undefined`, el PDF reventaría a media página y el banco diría «no
 // dice tal cosa» cuando lo que pasó es que no llegó.
 //
-// Vive aparte porque lo usan dos bancos (#43 y la dirección del producto). Dos
-// copias de un doble se desincronizan, y entonces cada banco mide un generador
-// distinto del que mide el otro.
+// Vive aparte porque lo usan diez bancos. Dos copias de un doble se
+// desincronizan, y entonces cada banco mide un generador distinto del que mide
+// el otro.
 
 'use strict';
 
@@ -197,19 +197,12 @@ function lienzo() {
 // CDN: sin eso el banco pediría red, y un banco que pide red da rojo el día que
 // no hay.
 //
-// `datos` son los argumentos que algún banco necesita de verdad; el resto van
-// vacíos. Se pasan POR NOMBRE y no como una lista posicional más larga porque
-// `generarPDFObra` ya lleva quince parámetros y contar comas hasta el
-// decimoquinto es la clase de error que no se ve en la revisión: el banco de la
-// cobertura necesita el 2, el 13, el 14 y el 15, y los tres últimos son
-// `evidencia`, `programa` y `evidenciaCargada`, que es precisamente el que
-// distingue «no hay fotos» de «no se pudieron leer».
 // El `window` con jsPDF ya cargado, montado y desmontado alrededor de UNA
 // corrida del generador. Está aparte porque lo necesitan los dos generadores
-// —el reporte ejecutivo y el documento interno— y una segunda copia del montaje
-// es una segunda copia de la parte que importa: `alert` silenciado y `window`
-// devuelto como estaba. Un banco que se deja el `window` puesto envenena a los
-// que corren después en el mismo proceso.
+// —el informe del Art. 73 y el documento interno— y una segunda copia del
+// montaje es una segunda copia de la parte que importa: `alert` silenciado y
+// `window` devuelto como estaba. Un banco que se deja el `window` puesto
+// envenena a los que corren después en el mismo proceso.
 // LO QUE EL GENERADOR GRITÓ NO SE TIRA. Los dos generadores envuelven todo su
 // cuerpo en un `try/catch` que avisa por `alert` y se traga la excepción: el
 // PDF sale corto y nada en la hoja dice que reventó. Con el `alert` silenciado
@@ -240,23 +233,19 @@ async function conJsPDFFalso(correr) {
   return dibujos;
 }
 
-async function dibujarPDF(generarPDFObra, branding, obra, datos = {}) {
-  const {
-    subs = [], estimaciones = [], maquinaria = [], materiales = [],
-    subcontratos = [], historialAvance = [], gpData = null, otrosGastos = [],
-    gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null,
-    evidenciaCargada = true, instante = null,
-  } = datos;
-  return conJsPDFFalso(() => generarPDFObra(obra, subs, estimaciones, maquinaria,
-    materiales, subcontratos, branding, historialAvance, gpData, otrosGastos,
-    gpDetalle, nominaHistorial, evidencia, programa, evidenciaCargada, instante));
-}
-
-// El documento interno. Recibe UN objeto y se le pasa tal cual: `generarPDFInterno`
-// toma sus parámetros por nombre, así que aquí no hay orden que respetar ni
-// comas que contar — y un campo nuevo del generador no obliga a tocar esto.
-async function dibujarPDFInterno(generarPDFInterno, datos = {}) {
-  return conJsPDFFalso(() => generarPDFInterno(datos));
+// Cualquiera de los dos papeles. Recibe UN objeto y se le pasa tal cual: los
+// dos generadores toman sus parámetros POR NOMBRE, así que aquí no hay orden
+// que respetar ni comas que contar — y un campo nuevo del generador no obliga a
+// tocar esto.
+//
+// EL `dibujarPDF` POSICIONAL SE BORRÓ EL 2026-11-12, con `generarPDFObra`. Era
+// una lista de quince argumentos en la que había que contar comas hasta el
+// decimoquinto para pasarle `instante`, y ése es el error que no se ve en la
+// revisión. Ya no queda ningún banco que lo llame: medido antes de borrarlo.
+// El nombre se queda —`dibujarPDFInterno`— porque renombrarlo tocaría los diez
+// bancos que lo usan sin cambiar nada de lo que afirman.
+async function dibujarPDFInterno(generar, datos = {}) {
+  return conJsPDFFalso(() => generar(datos));
 }
 
 // LOS PÁRRAFOS, VUELTOS A PEGAR. Un banco que busca una frase con `includes`
@@ -294,5 +283,5 @@ function textoCorrido(dibujos) {
 const papelDice = (dibujos, frase) =>
   textoCorrido(dibujos).some(d => d.texto.includes(frase));
 
-module.exports = { lienzo, dibujarPDF, dibujarPDFInterno, conJsPDFFalso,
+module.exports = { lienzo, dibujarPDFInterno, conJsPDFFalso,
                    textoCorrido, papelDice };

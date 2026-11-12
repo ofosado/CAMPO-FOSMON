@@ -59,12 +59,20 @@ noArranco.vigilarExcepciones('src/App.jsx');
 // es una frase larga que el generador parte en varios renglones para que quepa,
 // así que buscarla renglón por renglón no la encuentra nunca —y el banco
 // acusaría al papel de callarse algo que sí dice—.
-const { dibujarPDF, textoCorrido } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno, textoCorrido } = require('./lienzo-pdf.cjs');
 
+// REAPUNTADO EL 2026-11-12. El expediente fotográfico era del papel del
+// cliente, `generarPDFObra`, que se retiró. Las fotos y el veredicto de
+// cobertura no se fueron con él: se mudaron a la sección 7 del informe del
+// Art. 73, que es el papel que una dependencia descarga y archiva, y es donde
+// el veredicto importa —el expediente que se puede pedir es ése—. El documento
+// interno NO lleva las fotos a propósito, y eso lo afirma
+// `prueba-el-resumen-fotografico-en-el-papel`: aquí sólo se mide el papel que
+// de verdad las enseña.
 const PEDIDOS = [
   'coberturaDeEvidencia', 'frasesDeCobertura',
   'COBERTURA_TECHO', 'COBERTURA_PISO',
-  'generarPDFObra',
+  'generarPDFArt73',
 ];
 
 const { cuerpo, faltan } = fuenteDeApp(PEDIDOS, { tolerante: true });
@@ -262,8 +270,8 @@ async function correr(fuente) {
   // Ejecutado, no leído. Y comparado contra `frasesDeCobertura`, no contra una
   // cadena tecleada: si el PDF redactara su propia versión del veredicto, los
   // dos textos se separarían y el que se quede viejo afirmaría lo que ya no es.
-  const dibujar = (datos) => dibujarPDF(fn.generarPDFObra, {}, OBRA,
-    { subs: CAT, ...datos });
+  const dibujar = (datos) => dibujarPDFInterno(fn.generarPDFArt73,
+    { obra: OBRA, subs: CAT, evidenciaCargada: true, ...datos });
 
   const papelChicas = await dibujar({ evidencia: SOLO_CHICAS });
   const textos = textoCorrido(papelChicas).map(d => d.texto);
@@ -279,7 +287,7 @@ async function correr(fuente) {
   // el hueco que importa —la partida grande que no tiene con qué respaldarse—
   // se pierde entre los que sólo son sitio de sobra. Lo que se afirma es la
   // relación, no el número: tres fotos caben en una hoja y no se parten en dos.
-  const hojasFoto = papelChicas.filter(d => /EVIDENCIA FOTOGRÁFICA/.test(d.texto));
+  const hojasFoto = papelChicas.filter(d => /RESPALDO FOTOGRÁFICO/.test(d.texto));
   check(hojasFoto.length === 1 && !/\bde \d+\)/.test(hojasFoto[0].texto),
     'con tres fotos el expediente abre UNA hoja de evidencia, no dos con nueve huecos',
     `abrió ${hojasFoto.length}: ${hojasFoto.map(h => h.texto).join(' | ') || '(ninguna)'}`);
@@ -312,7 +320,7 @@ async function correr(fuente) {
   const papelDosHojas = await dibujar({
     evidencia: Array.from({ length: 8 }, () => foto('1000 01')),
   });
-  const hojas2 = papelDosHojas.filter(d => /EVIDENCIA FOTOGRÁFICA/.test(d.texto));
+  const hojas2 = papelDosHojas.filter(d => /RESPALDO FOTOGRÁFICO/.test(d.texto));
   check(hojas2.length === 2 && /\(1 de 2\)/.test(hojas2[0].texto) &&
         /\(2 de 2\)/.test(hojas2[1].texto),
     'ocho fotos abren dos hojas, y cada una dice cuál de cuántas es',
@@ -409,19 +417,30 @@ const MUTACIONES = [
   ['la lista de trabajo se estira hasta el 100% y deja de ser corta',
     'if ((acum / total) * 100 >= COBERTURA_TECHO) break;',
     'if ((acum / total) * 100 >= 100) break;'],
-  // El PDF.
+  // EL PAPEL. Cinco de estas siete se reapuntaron el 2026-11-12: el expediente
+  // fotográfico dejó de ser una pila de ayudantes propios del papel del cliente
+  // —`drawBandaCobertura`, `drawHuecosDeEvidencia`, `fotos12`, `POR_HOJA`— y es
+  // la sección 7 del informe del Art. 73, escrita en línea. Las mutaciones son
+  // las mismas mentiras; lo que cambió es dónde se tecleaban.
+  //
+  // Las dos del REPARTO —el orden y el apéndice de extraordinarias— NO se
+  // movieron, y eso dice algo: viven en `seleccionFotografica`, que es la cuenta
+  // que el tablero y el papel comparten. El papel nunca tuvo su propio reparto.
   ['el expediente deja de imprimir el veredicto',
-    'if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));',
-    'if (conBanda) yf = drawHuecosDeEvidencia(yf);'],
+    "      st(Q.ng); fs(8.5); fw('bold'); T(fc.titulo, ML + 5, yf + 5.5);\n"
+    + "      st(Q.tx); fs(7); fw('normal');\n"
+    + '      T(lsC, ML + 5, yf + 9.5);',
+    "      st(Q.ng); fs(8.5); fw('bold');\n"
+    + "      st(Q.tx); fs(7); fw('normal');"],
   ['la banda se repite en todas las hojas y se vuelve membrete',
-    'const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, h === 0);',
-    'const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, true);'],
+    "    if (h === 0) {\n      // LA ADVERTENCIA DE LA FECHA VA EN LA PRIMERA HOJA Y COMPLETA.",
+    '    if (true) {\n      // LA ADVERTENCIA DE LA FECHA VA EN LA PRIMERA HOJA Y COMPLETA.'],
   ['las hojas vuelven a ser dos siempre, con los huecos que haga falta',
-    'const hojas = Math.max(1, Math.ceil(fotos12.length / POR_HOJA));',
+    'const hojas = fotos.length ? Math.ceil(fotos.length / FOTOS_POR_HOJA) : 1;',
     'const hojas = 2;'],
   ['el expediente deja de declarar las partidas grandes sin evidencia',
-    'if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));',
-    'if (conBanda) yf = drawBandaCobertura(yf);'],
+    '      if (sel.sinEvidencia.length) {',
+    '      if (false) {'],
   ['el PDF enseña las fotos en un orden distinto del que midió',
     'const enCorte = cobertura.porImporte.slice(0, cobertura.hastaTecho);',
     'const enCorte = [...cobertura.porImporte].reverse().slice(0, cobertura.hastaTecho);'],
@@ -430,8 +449,8 @@ const MUTACIONES = [
                  || b.imp - a.imp)`,
     '    .sort((a, b) => b.imp - a.imp)'],
   ['el PDF sólo enseña fotos de las partidas que ponderan',
-    'for (const p of [...seleccion.partidas, ...seleccion.fuera]) {',
-    'for (const p of [...seleccion.partidas]) {'],
+    'for (const p of [...sel.partidas, ...sel.fuera]) {',
+    'for (const p of [...sel.partidas]) {'],
 ];
 
 (async () => {

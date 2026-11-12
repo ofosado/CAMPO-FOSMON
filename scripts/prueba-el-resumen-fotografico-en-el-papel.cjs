@@ -417,11 +417,18 @@ ok(dice(B.trozo, 'Aquí no van las fotos'),
 
 // EL SELLO DE INTERNO EN LA PÁGINA DE LA SECCIÓN. Es la sección que publica lo
 // que el cliente no ve; una hoja suelta de ésta sobre un escritorio tiene que
-// decir lo que es.
+// decir lo que es — y, desde el 2026-11-12, DECIR CUÁL ES EL OTRO. El sello
+// decía sólo «no es el reporte que se entrega al cliente», y una prohibición
+// sola deja a quien la lee sin salida: con dos papeles en pantalla era un
+// aviso, con uno solo de cada lado hay que nombrar el que sí se entrega. Se
+// exigen las dos mitades, porque quedarse con la primera es como estaba.
 const pagsDe5 = [...new Set(B.trozo.map(d => d.pagina))];
-ok(pagsDe5.length > 0 && pagsDe5.every(p => B.hoja.some(d =>
-      d.pagina === p && String(d.texto).includes('NO ES EL REPORTE QUE SE ENTREGA AL CLIENTE'))),
-  `las ${pagsDe5.length} página(s) de la sección llevan el sello de documento interno`);
+const selloEn = (p) => B.hoja.filter(d => d.pagina === p).map(d => String(d.texto));
+ok(pagsDe5.length > 0 && pagsDe5.every(p =>
+      selloEn(p).some(t => /DOCUMENTO INTERNO/.test(t)
+                        && /EL QUE SE ENTREGA ES EL INFORME DE AVANCE/.test(t))),
+  `las ${pagsDe5.length} página(s) de la sección llevan el sello de documento `
+  + 'interno, y el sello nombra el papel que sí se entrega');
 
 // ══════════════════════════════════════════════════════════════════════════
 console.log(`\n${verdes} en verde · ${fallas} en rojo`);
@@ -436,14 +443,18 @@ if (process.argv.includes('--contraprueba')) {
 
   const MUTANTES = [
     // A · el porcentaje y la frontera entre los dos documentos
-    { nombre: 'la sección se calla el porcentaje debajo del piso, como el del cliente',
+    // REANCLADAS EL 2026-11-12: el papel que se entrega dejó de ser «el
+    // reporte del cliente» —ése se retiró— y es el informe de avance del Art.
+    // 73, así que las notas de la app lo nombran por su nombre. Lo que
+    // afirman las aserciones no cambió.
+    { nombre: 'la sección se calla el porcentaje debajo del piso, como el que se entrega',
       hacer: () => src.replace(
-        "    if (cob.pct < COBERTURA_PISO)\n      y = nota(`El reporte que se entrega al cliente NO imprime este ${PCT(cob.pct)}:",
-        "    if (false)\n      y = nota(`El reporte que se entrega al cliente NO imprime este ${PCT(cob.pct)}:") },
-    { nombre: 'la nota de «el cliente no ve este número» sale en todas las bandas',
+        "    if (cob.pct < COBERTURA_PISO)\n      y = nota(`El informe de avance NO imprime este ${PCT(cob.pct)}:",
+        "    if (false)\n      y = nota(`El informe de avance NO imprime este ${PCT(cob.pct)}:") },
+    { nombre: 'la nota de «el que se entrega no lleva este número» sale en todas las bandas',
       hacer: () => src.replace(
-        '    if (cob.pct < COBERTURA_PISO)\n      y = nota(`El reporte que se entrega al cliente',
-        '    if (true)\n      y = nota(`El reporte que se entrega al cliente') },
+        '    if (cob.pct < COBERTURA_PISO)\n      y = nota(`El informe de avance',
+        '    if (true)\n      y = nota(`El informe de avance') },
     { nombre: 'el corte del 80% se cuenta aquí en vez de tomarse de la cuenta',
       hacer: () => src.replace(
         "      ['Corte del 80%', String(cob.hastaTecho),",
@@ -523,7 +534,7 @@ if (process.argv.includes('--contraprueba')) {
     // F · lo que la sección no es
     { nombre: 'no se avisa que el álbum va en el otro documento',
       hacer: () => src.replace(
-        "  y = nota('Aquí no van las fotos: van en el reporte que se entrega al cliente.",
+        "  y = nota('Aquí no van las fotos: van en el informe de avance.",
         "  y = nota('Lo que sigue.  ") },
   ];
 

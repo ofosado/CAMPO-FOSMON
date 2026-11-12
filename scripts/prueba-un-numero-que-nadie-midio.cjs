@@ -33,6 +33,35 @@
 // produjera de verdad los estados distintos, todo lo de abajo pasaría por
 // vacío.
 //
+// ── POR QUÉ LA SECCIÓN 4 CAMBIÓ DE SITIO EL 2026-11-12 ─────────────────────
+//
+// `generarPDFObra` se retiró y el papel se partió en dos: `generarPDFArt73`
+// para la dependencia y `generarPDFInterno` para la constructora. Con el papel
+// viejo se fue la RELACIÓN DE ESTIMACIONES: ninguno de los dos imprime ya un
+// renglón por estimación. Medido, no supuesto — `rotuloEstimacion` no aparece
+// dentro de ningún generador, y dibujados los dos papeles con dos estimaciones
+// cargadas no sale un solo texto que empiece con «EST-».
+//
+// Así que las tres afirmaciones de la sección 4 —«no se dibuja EST-NaN», «la
+// numerada sale rotulada», «el TOTAL de la tabla es la suma de sus renglones»—
+// se quedaron sin tabla que mirar. No se les busca un anclaje parecido: lo que
+// queda del mismo defecto en los papeles de hoy es su mitad que importaba más.
+//
+// El defecto nunca fue el rótulo: era que una fila sin `no` perdiera su DINERO.
+// El filtro viejo `e.no && e.monto > 0` la sacaba de la tabla y su importe
+// seguía dentro del total DE ESA MISMA TABLA — un expediente firmado con un
+// total que no cuadra con sus renglones y un faltante sin nombre. Hoy los dos
+// papeles publican el agregado y no los renglones, así que la pregunta se hace
+// sobre el agregado: con una estimación numerada de $100,000 y una SIN NUMERAR
+// de $200,000, los dos papeles tienen que publicar $300,000. Y ninguno de los
+// dos puede imprimir un «NaN» en ninguna hoja, que es la otra cara del mismo
+// relleno.
+//
+// Al reanclar eso se midió algo que esta rama no arregla y que queda anotado en
+// `PENDIENTES.md`: cada papel suma las estimaciones por su cuenta —el Art. 73
+// con `corteDeEstimaciones`, el interno con `estTotal`— y las dos cuentas no
+// tienen la misma robustez. Por eso aquí hay una mutación por papel.
+//
 // Uso:  node scripts/prueba-un-numero-que-nadie-midio.cjs
 //       node scripts/prueba-un-numero-que-nadie-midio.cjs --contraprueba
 //
@@ -105,16 +134,35 @@ if (process.argv.includes('--contraprueba')) {
     // una mutación en el sitio de llamada se iría en «NO LA VE» y daría la
     // impresión falsa de que nadie la cubre.
 
-    // ── El PDF deja de usar la cuenta única ─────────────────────────────────
-    ['app', 'la tabla de estimaciones del PDF se vuelve a rotular sola',
-      (t) => t.replace('        rotuloEstimacion(e),\n        e.periodo||\'\',',
-        "        `EST-${String(e.no).padStart(2,'0')}`,\n        e.periodo||'',")],
-    ['app', 'el detalle de estimaciones del PDF se vuelve a rotular solo',
-      (t) => t.replace('      T(rotuloEstimacion(d), ML, rowY + 5);',
-        "      T(`EST-${String(d.no).padStart(2,'0')}`, ML, rowY + 5);")],
-    ['app', 'el expediente vuelve a descartar la estimación sin etiqueta, con su dinero',
-      (t) => t.replace('  const estActivas=estimaciones.filter(e=>e.monto>0);',
-        '  const estActivas=estimaciones.filter(e=>e.no&&e.monto>0);')],
+    // ── Los dos papeles vuelven a perder dinero sin dueño ───────────────────
+    // REANCLADAS el 2026-11-12. Las tres de antes apuntaban a la relación de
+    // estimaciones del papel viejo, que ya no existe (ver el encabezado).
+    //
+    // Y al reanclarlas salió un hallazgo que esta rama NO arregla: la suma de
+    // las estimaciones se cuenta DOS VECES, con dos robusteces distintas. El
+    // informe del Art. 73 la saca de `corteDeEstimaciones` (`parseFloat`); el
+    // documento interno, de `estTotal` dentro de `calcularKPIsObra` (`||0`,
+    // que no lee un monto guardado como texto). Son dos papeles del mismo mes
+    // sobre la misma obra, en manos de dos lectores que se hablan, y pueden
+    // discrepar. Es un «una cuenta por número» esperando, y unificar una cuenta
+    // de dinero no entra en una rama que parte un papel en dos: va a
+    // `PENDIENTES.md` medido.
+    //
+    // Mientras eso siga así, cada papel necesita SU mutación: una sola no los
+    // pone rojos a los dos, y presentarla como si lo hiciera sería decir que el
+    // banco cubre dos cuentas cubriendo una.
+    ['app', 'el total del informe del Art. 73 vuelve a descartar la fila sin número, con su dinero',
+      (t) => t.replace('    estimado: estimaciones.reduce((t, e) => t + monto(e), 0),',
+        '    estimado: estimaciones.filter(e => e?.no).reduce((t, e) => t + monto(e), 0),')],
+    ['app', 'el total del documento interno vuelve a descartar la fila sin número',
+      (t) => t.replace('  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);',
+        '  const estTotal  = estimaciones.filter(e=>e.no).reduce((t,e) => t + (e.monto||0), 0);')],
+    ['app', 'el monto sin capturar vuelve a envenenar el total del Art. 73: dice NaN',
+      (t) => t.replace('  const monto = e => parseFloat(e?.monto) || 0;',
+        '  const monto = e => parseFloat(e?.monto);')],
+    ['app', 'el monto sin capturar vuelve a envenenar el total del interno: dice NaN',
+      (t) => t.replace('  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);',
+        '  const estTotal  = estimaciones.reduce((t,e) => t + e.monto, 0);')],
 
     // ── El correo del lunes vuelve a rellenar ───────────────────────────────
     ['fn', 'el 999 regresa a `calcularKpisObra`',
@@ -198,25 +246,26 @@ const seccion = (t) => { if (!CALLADO) console.log('\n' + t); };
 
 // ── el código vivo, de los dos archivos ────────────────────────────────────
 const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
 
 let noDeEstimacion; let siguienteNoDeEstimacion; let rotuloEstimacion;
 let ROTULO_EST_SIN_NUMERO; let ordenDeEstimaciones; let APP_dias;
-let generarPDFObra;
+let generarPDFArt73; let generarPDFInterno;
 let bloqueCaptura; let avisoDeCaptura; let correoResumenSemanal;
 let FN_dias; let FN_kpis;
 
 try {
   const pa = fuenteDe(ARCH_APP, ['noDeEstimacion', 'siguienteNoDeEstimacion',
     'rotuloEstimacion', 'ROTULO_EST_SIN_NUMERO', 'ordenDeEstimaciones',
-    'diasSinCapturaDe', 'generarPDFObra']);
+    'diasSinCapturaDe', 'generarPDFArt73', 'generarPDFInterno']);
   if (pa.faltan.length) noArranco(pa.faltan, 'src/App.jsx');
   ({ noDeEstimacion, siguienteNoDeEstimacion, rotuloEstimacion,
     ROTULO_EST_SIN_NUMERO, ordenDeEstimaciones,
-    diasSinCapturaDe: APP_dias, generarPDFObra } =
+    diasSinCapturaDe: APP_dias, generarPDFArt73, generarPDFInterno } =
     new Function(`"use strict";\n${pa.cuerpo}\nreturn { noDeEstimacion, `
       + `siguienteNoDeEstimacion, rotuloEstimacion, ROTULO_EST_SIN_NUMERO, `
-      + `ordenDeEstimaciones, diasSinCapturaDe, generarPDFObra };`)());
+      + `ordenDeEstimaciones, diasSinCapturaDe, generarPDFArt73, `
+      + `generarPDFInterno };`)());
 
   const pf = fuenteDe(ARCH_FN, ['bloqueCaptura', 'avisoDeCaptura',
     'diasSinCapturaDe', 'correoResumenSemanal']);
@@ -450,78 +499,72 @@ seccion('3bis. EL ACUMULADO DE LA EST-01 NO LLEVA DINERO DE UNA FILA SIN LUGAR')
     [`el orden salió ${JSON.stringify(ord2.map(rotuloEstimacion))}`]);
 }
 
-// Aquí no se busca una cadena en el archivo: se MUEVE el generador de PDF con
-// un lienzo falso y se mira qué texto manda a dibujar. El PDF es el peor sitio
-// donde puede salir un «EST-NaN» porque se imprime, se firma y se entrega.
-// Vive en una función porque dibujar el PDF es asíncrono.
+// Aquí no se busca una cadena en el archivo: se MUEVEN los dos generadores con
+// un lienzo falso y se mira qué texto mandan a dibujar. El papel es el peor
+// sitio donde puede salir un número inventado porque se imprime, se firma y se
+// entrega. Vive en una función porque dibujar el PDF es asíncrono.
 async function seccionDelPDF() {
-  seccion('4. Y EL EXPEDIENTE QUE SE ENTREGA FIRMADO TAMPOCO');
+  seccion('4. Y LOS DOS PAPELES QUE SE ENTREGAN FIRMADOS TAMPOCO');
   const obra = {
     id: '0199', nombre: 'Obra de prueba', contrato: 'CT-199', cliente: 'SIOP',
     presupuesto: 1000000, pctAnticipo: 10, pctFondoGar: 5,
     inicio: haceDias(60), fin: haceDias(-60),
   };
+  // Tres estimaciones y tres huecos distintos a propósito: una completa, una
+  // SIN NÚMERO con dinero —la que el filtro viejo tiraba—, y una numerada SIN
+  // MONTO, que es por donde entra el NaN. La suma honesta de las tres es
+  // $300,000, y ese número NO se teclea en la afirmación: se arma aquí abajo
+  // sumando la fixture, para que cambiar la fixture no obligue a cambiar dos
+  // sitios y dejar uno viejo.
   const estimaciones = [
     { no: 1, monto: 100000, periodo: 'ene', estatus: 'Pagada' },
     { monto: 200000, periodo: 'feb', estatus: 'En proceso' },
+    { no: 3, periodo: 'mar', estatus: 'En proceso' },
   ];
-  let dibujos;
-  try {
-    dibujos = await dibujarPDF(generarPDFObra, {}, obra, { estimaciones });
-  } catch (e) {
-    noArranco([`el PDF no se pudo dibujar: ${e && e.message}`], 'src/App.jsx');
-  }
-  const textos = dibujos.map((x) => x.texto);
-  // `EST-` a secas y `EST-NaN` son las dos formas en que este generador
-  // publicaba el hueco. Se miran los dos. El encabezado de columna dice
-  // «EST / PERIODO», así que se pide el guion: sin él, el encabezado se cuela
-  // entre los rótulos y la cuenta de abajo sale de más.
-  const rotulos = textos.filter((t) => /^EST-/.test(t));
-  const sucios = rotulos.filter((t) => /NaN|undefined|null/.test(t) || t === 'EST-');
-  exigir(sucios.length === 0,
-    'el PDF no manda a dibujar ningún «EST-NaN» ni «EST-» a secas',
-    sucios.length ? [`dibujó: ${sucios.slice(0, 5).join(' · ')}`] : null);
-  exigir(rotulos.includes('EST-01'),
-    'la estimación numerada sí sale rotulada en el PDF',
-    [`rótulos dibujados: ${rotulos.join(' · ') || '(ninguno)'}`]);
-  exigir(rotulos.includes(ROTULO_EST_SIN_NUMERO),
-    'y la que no tiene número sale diciendo que no lo tiene',
-    [`rótulos dibujados: ${rotulos.join(' · ') || '(ninguno)'}`]);
+  const TOTAL = estimaciones.reduce((t, e) => t + (parseFloat(e.monto) || 0), 0);
+  const MXN_ESP = `$${TOTAL.toLocaleString('en-US')}`;
 
-  // Y la afirmación que de verdad paga esta sección, sobre LA TABLA, no sobre
-  // el desglose de al lado. El filtro pedía `e.no && e.monto > 0`, pero el
-  // TOTAL sale de `te`, que suma TODAS las estimaciones. Una fila sin etiqueta
-  // salía de la tabla y seguía dentro del total DE ESA MISMA TABLA: el
-  // expediente firmado enseñaba un total que no cuadra con sus renglones, y el
-  // faltante sin nombre ni renglón.
-  // LA tabla de estimaciones, no cualquier tabla: el expediente lleva una
-  // docena y varias tienen columna de montos. Se la identifica por su
-  // contenido —la que rotula la EST-01— y no por su número de orden, que
-  // cambia cada vez que alguien agrega una hoja.
-  const cualTabla = (dibujos.find((d) => d.tabla && d.texto === 'EST-01') || {}).tabla;
-  if (!cualTabla) {
-    mal('la tabla de estimaciones del expediente se encuentra en el lienzo',
-      ['ninguna celda de tabla rotula EST-01 — las dos afirmaciones de abajo '
-        + 'no se pueden hacer']);
+  exigir(estimaciones.filter((e) => !('no' in e)).length === 1
+    && estimaciones.filter((e) => !('monto' in e)).length === 1
+    && TOTAL === 300000,
+    'la fixture del papel trae un hueco de número, un hueco de monto, y suma 300000',
+    [`sumó ${TOTAL}; sin los dos huecos, esta sección pasaría por vacío`]);
+
+  const PAPELES = [['el informe del Art. 73', generarPDFArt73],
+                   ['el documento interno', generarPDFInterno]];
+  for (const [cual, generar] of PAPELES) {
+    let dibujos;
+    try {
+      dibujos = await dibujarPDFInterno(generar,
+        { obra, subs: [], estimaciones, estCargadas: true });
+    } catch (e) {
+      noArranco([`${cual} no se pudo dibujar: ${e && e.message}`], 'src/App.jsx');
+    }
+    const textos = dibujos.map((x) => String(x.texto));
+    if (textos.length < 20)
+      noArranco([`${cual} sólo dibujó ${textos.length} textos`,
+        'Con el papel casi vacío, «no imprime un NaN» se cumple por no haber '
+        + 'impreso nada.'], 'src/App.jsx');
+
+    // El relleno, en la forma que tiene hoy: ya no es un rótulo «EST-NaN»
+    // —ningún papel imprime renglón por estimación— sino un NaN que se cuela a
+    // una cifra de dinero. Se barre la hoja entera porque el agregado aparece
+    // en la tabla de la carátula Y en la prosa.
+    const sucios = textos.filter((t) => /NaN|undefined|null/.test(t));
+    exigir(sucios.length === 0,
+      `${cual} no manda a dibujar ningún NaN, undefined ni null`,
+      sucios.length ? [`dibujó: ${sucios.slice(0, 5).join(' · ')}`] : null);
+
+    // Y la afirmación que de verdad paga esta sección: el dinero de la fila SIN
+    // NÚMERO está dentro del total que el papel publica. El filtro viejo la
+    // sacaba de la relación y su importe se quedaba en el total, de modo que el
+    // papel firmado enseñaba un faltante sin nombre. Hoy no hay relación, pero
+    // el total sigue siendo lo que se entrega — y tiene que ser el de todas.
+    exigir(textos.includes(MXN_ESP),
+      `${cual} publica ${MXN_ESP}: el dinero de la fila sin número está dentro`,
+      [`no dibujó ${MXN_ESP}. Cifras de dinero en la hoja: `
+        + `${[...new Set(textos.filter((t) => /^\$[\d,]+$/.test(t)))].join(' · ') || '(ninguna)'}`]);
   }
-  const col = (n) => dibujos
-    .filter((d) => d.tabla === cualTabla && d.celda === n).map((d) => d.texto);
-  const primeraCol = col(0);
-  exigir(primeraCol.includes('EST-01') && primeraCol.includes(ROTULO_EST_SIN_NUMERO),
-    'las DOS estimaciones con dinero salen en la tabla del expediente, numeradas o no',
-    [`la primera columna de las tablas trae: ${primeraCol.join(' · ') || '(nada)'}`]);
-  // El renglón TOTAL de la tabla y sus propios renglones tienen que cuadrar.
-  // Se lee de la tabla dibujada, no se recalcula: recalcularlo aquí sería
-  // comprobar el banco contra sí mismo.
-  const iTotal = primeraCol.indexOf('TOTAL');
-  const montos = col(2);
-  const centavos = (s) => Number(String(s).replace(/[^0-9.-]/g, ''));
-  const renglones = montos.filter((_, i) => i !== iTotal).reduce(
-    (t, m) => t + (centavos(m) || 0), 0);
-  exigir(iTotal >= 0 && centavos(montos[iTotal]) === renglones,
-    'y el TOTAL de la tabla es la suma de los renglones DE LA TABLA',
-    [`TOTAL dibujado: ${montos[iTotal]} · suma de los renglones: ${renglones}`,
-      `columna de montos: ${montos.join(' · ') || '(nada)'}`]);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
