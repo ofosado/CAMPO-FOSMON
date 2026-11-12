@@ -37,18 +37,21 @@
 //
 //   §1  Las cuentas de captura —`textoCapturado`, `comoSeImprime`,
 //       `contratoCapturado`— movidas con los SIETE valores de producción.
-//   §2  El PDF entero, dibujado sobre el lienzo falso, con el alta de la 0127
-//       (residente y admin vacíos) y con la de la 0128 («N/A» en los dos). Se
-//       mira QUÉ TEXTO sale AL LADO DE QUÉ ETIQUETA y DEBAJO DE QUÉ CARGO: la
-//       posición es la afirmación. Un `includes` sobre todo el documento se
-//       cumpliría con el renglón de «Superintendente:», que sí lleva ese
-//       nombre con razón.
+//   §2  LOS DOS PAPELES enteros —el informe del Art. 73 que se entrega y el
+//       documento interno—, dibujados sobre el lienzo falso, con el alta de la
+//       0127 (residente y admin vacíos) y con la de la 0128 («N/A» en los
+//       dos). Se mira QUÉ TEXTO sale AL LADO DE QUÉ ETIQUETA: la posición es la
+//       afirmación. Y se mira lo que NO sale: ninguno de los dos rotula un
+//       cargo de obra, así que el nombre del superintendente no aparece en
+//       ninguna parte y no hay renglón donde pueda caer prestado.
 //   §3  La expresión que está EN EL `key=` de las dos listas de rubros, sacada
 //       por AST del sitio donde vive y ejecutada contra los cinco rubros reales
 //       de la 0112. No se mira el texto del archivo: se agrupa el dinero con
 //       esa expresión y se compara cada cubeta contra el total del rubro.
-//   §4  La tabla de rubros del PDF, con el detalle de la 0112: los dos 300
-//       tienen que salir como dos renglones con sus dos montos.
+//   §4  La tabla de rubros del documento interno, con el detalle de la 0112:
+//       los dos 300 tienen que salir como dos renglones con sus dos montos. El
+//       informe del Art. 73 no recibe el detalle del gasto, así que no tiene
+//       esa tabla que mirar.
 //
 // ── LA CONTRAPRUEBA ────────────────────────────────────────────────────────
 // Siete mutaciones. Cada una tiene que salir ROJO (1); una que salga 2 es el
@@ -65,9 +68,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion, noArranco } = require('./no-arranco.cjs');
+// El módulo ES la función; las otras tres puertas son propiedades suyas.
+// Destructurar `noArranco` de ahí lo deja en `undefined` sin ruido.
+const noArranco = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion } = noArranco;
 const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
 const { libresDe, OPTS } = require('./taller-de-app.cjs');
 
 const RAIZ = path.join(__dirname, '..');
@@ -87,20 +93,44 @@ if (process.argv.includes('--contraprueba')) {
       (t) => t.replace(
         "const RELLENO_DE_CAPTURA = new Set(['n/a', 'na', 'n.a.', 'n/d', 'nd', '-', '--', '—',\n  '.', '..', 'x', 'xx', 'sin dato', 'sin datos', 'pendiente', 'por definir', '0']);",
         'const RELLENO_DE_CAPTURA = new Set([]);')],
-    ['el pie vuelve a tomar prestado al superintendente para firmar de residente',
-      (t) => t.replace("    [comoSeImprime(obra.residente),'Residente de Obra','Elaboró'],",
-        "    [obra.residente||obra.superintendente||'Residente','Residente de Obra','Elaboró'],")],
+    // EL PIE DE FIRMAS, DE VUELTA. El anclaje viejo —`[comoSeImprime(
+    // obra.residente),'Residente de Obra','Elaboró']`— se fue con
+    // `generarPDFObra`, así que esta mutación ya no puede quitarle una guarda:
+    // tiene que PONER el pie. Es la forma realista de la regresión, porque la
+    // tentación es exactamente ésa —«al documento le faltan las firmas»— y
+    // quien la siga tiene a mano el `||` que la aplicación ya usa en la
+    // pantalla de alta. Entra justo antes del renglón que explica por qué no
+    // las hay, para que el papel se contradiga como se contradiría de verdad.
+    ['alguien le repone el pie de firmas y vuelve a prestar al superintendente',
+      (t) => t.replace(
+        "  y = nota('Este informe no lleva renglones de firma porque el sistema no conoce los cargos '",
+        "  [[obra?.residente || obra?.superintendente || 'Residente',\n"
+        + "    'Residente de Obra', 'Elaboró']].forEach(([n, c, v], i) => {\n"
+        + '    T(String(n), ML + i * 70, y + 10); T(c, ML + i * 70, y + 14);\n'
+        + '    T(v, ML + i * 70, y + 18);\n'
+        + '  });\n'
+        + "  y = nota('Este informe no lleva renglones de firma porque el sistema no conoce los cargos '")],
+    // Las dos de la identificación van con `/g`: el bloque se armó una vez por
+    // papel, y una mutación que tocara sólo el primero diría que el banco
+    // cubre los dos cuando cubre uno.
     ['«Contrato:» se rellena con la descripción de la obra',
-      (t) => t.replace("    ['Contrato:', contr.numero ?? NO_CAPTURADO],",
-        "    ['Contrato:', comoSeImprime(obra.contrato)],")],
+      (t) => t.replace(/ {4}\['Contrato:', contr\.numero \?\? NO_CAPTURADO\],/g,
+        "    ['Contrato:', comoSeImprime(obra?.contrato)],")],
     ['el objeto de la obra se tira en vez de rotularse aparte',
-      (t) => t.replace("    ...(contr.objeto ? [['Objeto de la obra:', contr.objeto]] : []),",
+      (t) => t.replace(/ {4}\.\.\.\(contr\.objeto \? \[\['Objeto:', contr\.objeto\]\] : \[\]\),\n/g,
         '')],
     ['los rubros se vuelven a agrupar por el número de tres dígitos',
       (t) => t.replace(/key=\{claveDeRubro\(r\)\}/g, 'key={r.id}')],
-    ['la portada declara ausente un campo que la aplicación nunca ofrece',
-      (t) => t.replace('  if (textoCapturado(obra.ubicacion)) T(textoCapturado(obra.ubicacion), ML, 82);',
-        '  T(comoSeImprime(obra.ubicacion), ML, 82);')],
+    // El campo fantasma. Antes la portada tenía un renglón de `ubicacion` con
+    // una guarda, y la mutación le quitaba la guarda. Los papeles nuevos no lo
+    // tienen en ninguna forma, así que ahora la mutación lo AÑADE: es lo que
+    // haría quien lea el modelo de la pantalla de alta y suponga que el campo
+    // existe. La hoja terminaría reclamándole al usuario un dato que ningún
+    // formulario le ofrece capturar.
+    ['la identificación le abre renglón a un campo que la aplicación nunca ofrece',
+      (t) => t.replace(/ {4}\['Organización:', comoSeImprime\(organizacion\)\],/g,
+        "    ['Ubicación:', comoSeImprime(obra?.ubicacion)],\n"
+        + "    ['Organización:', comoSeImprime(organizacion)],")],
   ];
 
   let vistas = 0;
@@ -217,7 +247,8 @@ const fuenteApp = fs.readFileSync(ARCH_APP, 'utf8');
 let APP;
 try {
   APP = fuenteDe(ARCH_APP, ['textoCapturado', 'comoSeImprime', 'contratoCapturado',
-    'NO_CAPTURADO', 'claveDeRubro', 'generarPDFObra', 'MXN'], { tolerante: true });
+    'NO_CAPTURADO', 'claveDeRubro', 'generarPDFArt73', 'generarPDFInterno', 'MXN'],
+  { tolerante: true });
 } catch (e) {
   if (e instanceof SimboloPerdido) noArranco(e.faltantes, path.relative(RAIZ, ARCH_APP));
   throw e;
@@ -230,14 +261,15 @@ const armar = (expr) => new Function(
 )(...Array(6).fill(() => {}));
 
 let textoCapturado, comoSeImprime, contratoCapturado, NO_CAPTURADO, claveDeRubro,
-  generarPDFObra, MXN;
+  generarPDFArt73, generarPDFInterno, MXN;
 try {
   textoCapturado = armar('textoCapturado');
   comoSeImprime = armar('comoSeImprime');
   contratoCapturado = armar('contratoCapturado');
   NO_CAPTURADO = armar('NO_CAPTURADO');
   claveDeRubro = armar('claveDeRubro');
-  generarPDFObra = armar('generarPDFObra');
+  generarPDFArt73 = armar('generarPDFArt73');
+  generarPDFInterno = armar('generarPDFInterno');
   // El formateador se SACA de la aplicación, no se vuelve a escribir aquí. Un
   // `toLocaleString` tecleado en el banco es una segunda cuenta del mismo
   // número: el día que la hoja cambie de formato, el banco diría que el monto
@@ -360,15 +392,41 @@ try {
     'cero descripciones tiradas',
     objetoPerdido.length ? objetoPerdido.join(', ') : 'ninguna');
 
-  // ═══ §2 · EL DOCUMENTO: QUÉ SALE AL LADO DE QUÉ ETIQUETA ═════════════════
+  // ═══ §2 · LOS DOS DOCUMENTOS: QUÉ SALE AL LADO DE QUÉ ETIQUETA ═══════════
   //
-  // Dibujado de verdad sobre el lienzo falso. Lo que se mira es la POSICIÓN:
-  // un `includes` sobre el documento entero se cumpliría con el renglón de
-  // «Superintendente:», que lleva ese nombre con razón.
-  const dibujarCon = async (obra) => {
+  // Dibujados de verdad sobre el lienzo falso. Lo que se mira es la POSICIÓN:
+  // un `includes` sobre el documento entero se cumpliría con cualquier renglón
+  // que mencione lo mismo por otra razón.
+  //
+  // DOS PAPELES DESDE EL 2026-11-12, Y NINGUNO LLEVA PIE DE FIRMAS.
+  // `generarPDFObra` se retiró; quedan `generarPDFArt73` —el que se entrega— y
+  // `generarPDFInterno`. Los dos se miran, porque la identificación se armó dos
+  // veces y un `|| ''` que vuelva puede volver en una sola.
+  //
+  // Y EL PIE DE FIRMAS NO EXISTE YA EN NINGUNO DE LOS DOS. Este banco nació
+  // porque ese pie imprimía al superintendente bajo «Residente de Obra ·
+  // Elaboró». Al partir el papel se decidió algo más fuerte que arreglar el
+  // `||`: no imprimir cargos. El informe del Art. 73 lo DICE —«no lleva
+  // renglones de firma porque el sistema no conoce los cargos de quien lo
+  // suscribe»—, y quién firma lo define el expediente de cada dependencia.
+  //
+  // Eso cambia dos aserciones viejas y hay que decir cuáles, porque las dos
+  // afirmaban lo contrario de lo que afirma este corte:
+  //
+  //   · «bajo Superintendente de Obra firma el superintendente» se RETIRA. Ese
+  //     renglón ya no se imprime. Lo que ocupa su lugar es más fuerte y se
+  //     afirma abajo: el nombre del superintendente no sale en NINGUNA parte de
+  //     ninguno de los dos papeles, así que no hay renglón donde pueda caer
+  //     prestado. No se le busca anclaje parecido: afirmar sobre otro renglón
+  //     con el nombre de esa aserción sería cambiarle el sujeto.
+  //   · «las tres casillas de firma siguen ahí para firmarse a mano» se RETIRA
+  //     por lo mismo, y con ella el motivo que la sostenía. Se cambió de
+  //     decisión: una casilla rotulada con un cargo que la organización no
+  //     capturó inventa el puesto aunque el nombre vaya en blanco.
+  const dibujarCon = async (generar, obra) => {
     try {
-      return await dibujarPDF(generarPDFObra, {}, obra,
-        { instante: { ms: Date.UTC(2026, 10, 9, 18, 0, 0), fuente: 'servidor' } });
+      return await dibujarPDFInterno(generar, { obra, subs: [],
+        instante: { ms: Date.UTC(2026, 10, 9, 18, 0, 0), fuente: 'servidor' } });
     } catch (e) {
       sinPrecondicion('el PDF no se pudo dibujar',
         [e.message.split('\n')[0],
@@ -388,103 +446,107 @@ try {
     return { falta: false, textos: a.map((d) => d.texto) };
   };
 
-  // El nombre que firma bajo un cargo: mismo `x` que el cargo —los tres van
-  // centrados en su tercio— y la `y` más alta de las tres (nombre, cargo,
-  // verbo se dibujan de arriba abajo).
-  const firmaBajo = (dibujos, cargo) => {
-    const c = dibujos.find((d) => d.texto === cargo && d.align === 'center');
-    if (!c) return { falta: true };
-    const col = dibujos.filter((d) => d.pagina === c.pagina && d.align === 'center'
-      && d.x === c.x && d.y < c.y).sort((p, q) => q.y - p.y);
-    return { falta: false, nombre: col.length ? col[0].texto : null };
-  };
+  // Los cargos que el pie retirado rotulaba, y los verbos de sus casillas. Se
+  // buscan para afirmar que NO están: mientras exista el catálogo de roles en
+  // la aplicación, estas cadenas pueden volver a una hoja por copia.
+  const CARGOS = ['Residente de Obra', 'Administrador de Obra', 'Superintendente de Obra'];
+  const VERBOS = ['Elaboró', 'Revisó', 'Vo.Bo.'];
 
-  for (const [etiqueta, obra] of [['0127, sin capturar', OBRA_0127],
-    ['0128, con «N/A» tecleado', OBRA_0128]]) {
-    const dib = await dibujarCon(obra);
-    if (dib.length < 20)
-      sinPrecondicion(`el PDF de la ${etiqueta} sólo dibujó ${dib.length} textos`,
-        ['Con el dibujo casi vacío cualquier «no aparece» se cumple por vacío.']);
+  const PAPELES = [['el informe del Art. 73', generarPDFArt73],
+    ['el documento interno', generarPDFInterno]];
 
-    // (a) El renglón del residente DECLARA la ausencia.
-    const vRes = valorJuntoA(dib, 'Residente:');
-    if (vRes.falta)
-      sinPrecondicion(`no se halló la etiqueta «Residente:» en la portada de la ${etiqueta}`,
-        ['Sin la etiqueta no hay renglón que mirar, y el banco saldría verde por vacío.']);
-    check(vRes.textos.includes(NO_CAPTURADO),
-      `${etiqueta}: la portada declara que el residente no se capturó`,
-      `«${NO_CAPTURADO}» al lado de «Residente:»`,
-      vRes.textos.map((t) => `«${t}»`).join(' · ') || 'nada a la derecha');
+  for (const [papel, generar] of PAPELES) {
+    for (const [etiqueta, obra] of [['0127, sin capturar', OBRA_0127],
+      ['0128, con «N/A» tecleado', OBRA_0128]]) {
+      const donde = `${papel} de la ${etiqueta}`;
+      const dib = await dibujarCon(generar, obra);
+      if (dib.length < 20)
+        sinPrecondicion(`${donde} sólo dibujó ${dib.length} textos`,
+          ['Con el dibujo casi vacío cualquier «no aparece» se cumple por vacío.']);
+      const textos = dib.map((d) => String(d.texto));
 
-    // (b) Y NO pone ahí el nombre del superintendente, que es lo que hacía.
-    check(!vRes.textos.some((t) => t === obra.superintendente),
-      `${etiqueta}: el renglón del residente no trae el nombre del superintendente`,
-      `cero apariciones de «${obra.superintendente}» en ese renglón`,
-      vRes.textos.map((t) => `«${t}»`).join(' · ') || 'nada a la derecha');
+      // (a) El contrato. En las dos obras `contrato` trae prosa, así que el
+      // número se declara ausente Y el objeto sale con su propia etiqueta.
+      const vCon = valorJuntoA(dib, 'Contrato:');
+      if (vCon.falta)
+        sinPrecondicion(`no se halló la etiqueta «Contrato:» en la identificación de ${donde}`,
+          ['Sin la etiqueta no hay renglón que mirar.']);
+      check(vCon.textos.includes(NO_CAPTURADO),
+        `${donde}: el número de contrato se declara ausente y no se tapa con la descripción`,
+        `«${NO_CAPTURADO}» al lado de «Contrato:»`,
+        vCon.textos.map((t) => `«${String(t).slice(0, 40)}»`).join(' · ') || 'nada');
 
-    // (c) El mismo criterio, en el renglón que se firma. Éste es el que
-    // atribuía un cargo a quien no lo tiene.
-    const fRes = firmaBajo(dib, 'Residente de Obra');
-    if (fRes.falta)
-      sinPrecondicion(`no se halló el cargo «Residente de Obra» en el pie de la ${etiqueta}`,
-        ['Sin el pie no se puede mirar a quién atribuye el cargo.']);
-    check(fRes.nombre === NO_CAPTURADO,
-      `${etiqueta}: bajo «Residente de Obra» no firma nadie prestado`,
-      `«${NO_CAPTURADO}»`, `«${fRes.nombre}»`);
+      const vObj = valorJuntoA(dib, 'Objeto:');
+      const esperaObjeto = contratoCapturado(obra.contrato).objeto;
+      check(!vObj.falta && vObj.textos.some((t) => String(t).startsWith(String(esperaObjeto).slice(0, 30))),
+        `${donde}: la descripción capturada sale rotulada como objeto de la obra`,
+        `«${String(esperaObjeto).slice(0, 30)}…» bajo «Objeto:»`,
+        vObj.falta ? 'no hay renglón de objeto' : vObj.textos.map((t) => `«${String(t).slice(0, 34)}»`).join(' · '));
 
-    const fAdm = firmaBajo(dib, 'Administrador de Obra');
-    check(!fAdm.falta && fAdm.nombre === NO_CAPTURADO,
-      `${etiqueta}: bajo «Administrador de Obra» tampoco`,
-      `«${NO_CAPTURADO}»`, `«${fAdm.nombre}»`);
+      // (b) NINGÚN CARGO ATRIBUIDO A NADIE. Es el corte entero dicho en una
+      // aserción: sin renglón de cargo no hay renglón donde un nombre pueda
+      // caer prestado, y el nombre que caía era el del superintendente.
+      const cargos = textos.filter((t) => CARGOS.includes(t));
+      check(cargos.length === 0,
+        `${donde}: no rotula ningún cargo de obra`,
+        'cero apariciones de «Residente de Obra», «Administrador de Obra» y «Superintendente de Obra»',
+        cargos.join(' · ') || 'ninguna');
+      const verbos = textos.filter((t) => VERBOS.includes(t));
+      check(verbos.length === 0,
+        `${donde}: no abre casillas de firma`,
+        'cero apariciones de «Elaboró», «Revisó» y «Vo.Bo.»',
+        verbos.join(' · ') || 'ninguna');
+      const super_ = textos.filter((t) => t.includes(obra.superintendente));
+      check(super_.length === 0,
+        `${donde}: el nombre del superintendente no se imprime en ninguna parte`,
+        `cero apariciones de «${obra.superintendente}»`,
+        super_.length ? `${super_.length} en «${String(super_[0]).slice(0, 40)}»` : 'ninguna');
 
-    // (d) El superintendente SÍ firma lo suyo: declarar ausencias no puede
-    // vaciar los renglones que sí tienen dato.
-    const fSup = firmaBajo(dib, 'Superintendente de Obra');
-    check(!fSup.falta && fSup.nombre === obra.superintendente,
-      `${etiqueta}: bajo «Superintendente de Obra» firma el superintendente`,
-      `«${obra.superintendente}»`, `«${fSup.nombre}»`);
+      // (c) Y EL RELLENO TECLEADO NO LLEGA A LA HOJA. En la 0128 «N/A» está en
+      // `residente` y en `admin`, que ya no se imprimen; lo que se afirma es
+      // que ningún campo lo publica como si fuera un valor.
+      const naSuelto = textos.filter((t) => t.trim() === 'N/A');
+      check(naSuelto.length === 0,
+        `${donde}: ningún renglón publica «N/A» como valor capturado`,
+        'cero renglones que digan sólo «N/A»',
+        `${naSuelto.length} renglón(es)`);
 
-    // (e) La raya y el verbo se quedan: la casilla existe para firmarse a
-    // mano, y quitarla por falta de un nombre tecleado estorbaría el trámite.
-    const verbos = dib.filter((d) => ['Elaboró', 'Revisó', 'Vo.Bo.'].includes(d.texto));
-    check(verbos.length === 3,
-      `${etiqueta}: las tres casillas de firma siguen ahí para firmarse a mano`,
-      'los tres verbos: Elaboró · Revisó · Vo.Bo.',
-      verbos.map((d) => d.texto).join(' · ') || 'ninguno');
-
-    // (f) El contrato. En las dos obras `contrato` trae prosa, así que el
-    // número se declara ausente Y el objeto sale con su propia etiqueta.
-    const vCon = valorJuntoA(dib, 'Contrato:');
-    if (vCon.falta)
-      sinPrecondicion(`no se halló la etiqueta «Contrato:» en la portada de la ${etiqueta}`,
-        ['Sin la etiqueta no hay renglón que mirar.']);
-    check(vCon.textos.includes(NO_CAPTURADO),
-      `${etiqueta}: el número de contrato se declara ausente y no se tapa con la descripción`,
-      `«${NO_CAPTURADO}» al lado de «Contrato:»`,
-      vCon.textos.map((t) => `«${String(t).slice(0, 40)}»`).join(' · ') || 'nada');
-
-    const vObj = valorJuntoA(dib, 'Objeto de la obra:');
-    const esperaObjeto = contratoCapturado(obra.contrato).objeto;
-    check(!vObj.falta && vObj.textos.some((t) => String(t).startsWith(String(esperaObjeto).slice(0, 30))),
-      `${etiqueta}: la descripción capturada sale rotulada como objeto de la obra`,
-      `«${String(esperaObjeto).slice(0, 30)}…» bajo «Objeto de la obra:»`,
-      vObj.falta ? 'no hay renglón de objeto' : vObj.textos.map((t) => `«${String(t).slice(0, 34)}»`).join(' · '));
-
-    // (g) LA CUENTA DE LAS AUSENCIAS. El documento declara exactamente las que
-    // tiene etiqueta para declarar: dos renglones de la portada —residente y
-    // administrador—, el número de contrato, y los dos nombres del pie. Cinco.
-    // Ni una más: `ubicacion` no existe en el modelo y la portada se CALLA,
-    // porque ese renglón no lleva etiqueta y una línea que no se pinta no
-    // promete nada. Declarar ahí sería reclamarle al usuario un campo que la
-    // aplicación no le ofrece.
-    const declaradas = dib.filter((d) => d.texto === NO_CAPTURADO);
-    check(declaradas.length === 5,
-      `${etiqueta}: el documento declara las cinco ausencias que sabe rotular, y ni una más`,
-      '5 declaraciones: residente y administrador en la portada, el número de '
-        + 'contrato, y los dos nombres del pie',
-      `${declaradas.length} declaración(es) en las páginas `
-        + `${[...new Set(declaradas.map((d) => d.pagina))].join(', ') || '—'}`);
+      // (d) LA CUENTA DE LAS AUSENCIAS, Y AL LADO DE QUÉ ETIQUETAS. El
+      // documento declara exactamente las que tiene etiqueta para declarar:
+      // el número de contrato, la organización y quién lo generó. Tres.
+      //
+      // Ni una más, y aquí está lo que se defendía con `ubicacion`: ese campo
+      // no existe en el modelo, ningún formulario lo escribe, y la hoja NO le
+      // pone renglón. Declarar «(no capturado)» junto a una etiqueta
+      // «Ubicación:» sería reclamarle al usuario un campo que la aplicación no
+      // le ofrece. La cuenta es la que lo sostiene: un renglón nuevo para un
+      // campo fantasma la mueve.
+      const declaradas = dib.filter((d) => d.texto === NO_CAPTURADO);
+      const junto = declaradas.map((d) => {
+        const lbl = dib.filter((q) => q.pagina === d.pagina && q.y === d.y && q.x < d.x)
+          .sort((p, q) => q.x - p.x)[0];
+        return lbl ? String(lbl.texto) : '—';
+      });
+      const esperadas = ['Contrato:', 'Organización:', 'Generado por:'];
+      check(declaradas.length === esperadas.length
+        && esperadas.every((e) => junto.includes(e)),
+      `${donde}: declara las tres ausencias que sabe rotular, y ni una más`,
+      `3 declaraciones, junto a ${esperadas.join(' · ')}`,
+      `${declaradas.length} declaración(es) junto a ${junto.join(' · ') || '—'}`);
+    }
   }
+
+  // (e) Y EL PAPEL QUE SE ENTREGA DICE POR QUÉ NO TRAE FIRMAS. Un documento
+  // oficial sin renglón de firma, y sin decir por qué, se lee como un documento
+  // incompleto; dicho, es una decisión. Quién lo firma lo define el expediente
+  // de cada dependencia, y el sistema no conoce esos cargos.
+  const art73 = await dibujarCon(generarPDFArt73, OBRA_0127);
+  const declara = art73.map((d) => String(d.texto))
+    .some((t) => /no lleva renglones de firma porque el sistema no conoce los cargos/.test(t));
+  check(declara,
+    'el informe del Art. 73 dice por qué no lleva renglones de firma',
+    'el renglón que explica que el sistema no conoce los cargos de quien lo suscribe',
+    declara ? 'lo dice' : 'no lo dice');
 
   // ═══ §3 · EL DINERO DE UN RUBRO NO SE MUDA AL DE AL LADO ═════════════════
   //
@@ -579,11 +641,16 @@ try {
           + listas.map(({ clave }) => `«${clave(r)}»`).join(' ≠ ')).join(' · ')
       : 'coinciden en los cinco');
 
-  // ═══ §4 · LA TABLA DE RUBROS DEL PDF ═════════════════════════════════════
+  // ═══ §4 · LA TABLA DE RUBROS DEL DOCUMENTO INTERNO ═══════════════════════
   //
-  // El mismo dinero, en la hoja que se entrega. El servidor ya indexa por
+  // El mismo dinero, en la hoja que lo lleva. El servidor ya indexa por
   // etiqueta completa, así que los dos 300 llegan como dos entradas; lo que se
   // afirma es que salen como DOS renglones con sus dos montos.
+  //
+  // VA SOBRE EL DOCUMENTO INTERNO Y NO SOBRE EL QUE SE ENTREGA, porque el
+  // informe del Art. 73 no recibe `gpDetalle`: el gasto del contratista no es
+  // de la dependencia. La frontera es de otros bancos; aquí sólo se mira el
+  // papel que sí publica el desglose.
   const gpDetalle = {
     grandTotal: RUBROS_0112.reduce((t, r) => t + r.grandTotal, 0),
     rubros: Object.fromEntries(RUBROS_0112.map((r) => [r.nombre,
@@ -592,9 +659,9 @@ try {
   };
   let hoja;
   try {
-    hoja = await dibujarPDF(generarPDFObra, {},
-      { ...OBRA_0127, id: '0112', presupuesto: 38500000 },
-      { gpDetalle, instante: { ms: Date.UTC(2026, 10, 9, 18, 0, 0), fuente: 'servidor' } });
+    hoja = await dibujarPDFInterno(generarPDFInterno, {
+      obra: { ...OBRA_0127, id: '0112', presupuesto: 38500000 }, subs: [], gpDetalle,
+      instante: { ms: Date.UTC(2026, 10, 9, 18, 0, 0), fuente: 'servidor' } });
   } catch (e) {
     sinPrecondicion('el PDF con el detalle de rubros no se pudo dibujar',
       [e.message.split('\n')[0]]);

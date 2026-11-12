@@ -50,9 +50,10 @@
 //
 // CÓMO MIDE. Las cinco fuentes se **leen de sus archivos y se ejecutan**:
 // `APP_URL`, `SITIO_PUBLICO` y `FROM_EMAIL` salen por AST de
-// `functions/index.js`; el pie del PDF sale de DIBUJAR el PDF con
-// `generarPDFObra` y sin marca —el caso de una organización sin `dominio`
-// propio—; el CORS se parsea y se le aplica la regla de coincidencia de
+// `functions/index.js`; el pie del PDF sale de DIBUJAR LOS DOS PAPELES
+// —`generarPDFArt73`, el que se entrega, y `generarPDFInterno`—, que desde el
+// 2026-11-12 ya no reciben marca: el pie es la cara pública para cualquier
+// organización; el CORS se parsea y se le aplica la regla de coincidencia de
 // orígenes; el `SITIO` por omisión del verificador se extrae y se evalúa con un
 // `process` falso, para medir el valor por omisión y no lo que traiga el
 // ambiente de quien corre la suite; y `landing/_redirects` se parsea renglón a
@@ -73,9 +74,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion, noArranco } = require('./no-arranco.cjs');
+// El módulo ES la función; las otras tres puertas son propiedades suyas.
+// Destructurar `noArranco` de ahí lo deja en `undefined` sin ruido.
+const noArranco = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion } = noArranco;
 const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
 
 vigilarExcepciones('functions/index.js, src/App.jsx, storage.cors.json, '
   + 'landing/_redirects y scripts/verificar-despliegue.cjs');
@@ -118,12 +122,20 @@ if (process.argv.includes('--contraprueba')) {
     ['FN', 'la cara pública se muda al subdominio y el PDF manda al cliente a la contraseña',
       (t) => t.replace('const SITIO_PUBLICO = "https://cotea.com.mx";',
         'const SITIO_PUBLICO = "https://app.cotea.com.mx";')],
+    // REANCLADAS el 2026-11-12. El anclaje era `branding.dominio || 'cotea.com.mx'`:
+    // el pie leía el dominio de la organización y caía en la cara pública. Al
+    // partir el papel en dos —`generarPDFArt73` y `generarPDFInterno`— el
+    // `branding` salió de los generadores y el pie imprime la cara pública
+    // SIEMPRE, que es lo que este banco quería de origen. El anclaje nuevo son
+    // las tres copias de ese pie: el marco de cada página y la portada de cada
+    // papel. Con `/g` a propósito — una mutación que tocara sólo la primera
+    // diría que el banco cubre los tres sitios cubriendo uno.
     ['APP', 'el pie del PDF manda a donde hace falta sesión',
-      (t) => t.replace("branding.dominio    || 'cotea.com.mx'",
-        "branding.dominio    || 'app.cotea.com.mx'")],
+      (t) => t.replace(/T\('cotea\.com\.mx', PW-MR, PH-3\.5, \{align:'right'\}\);/g,
+        "T('app.cotea.com.mx', PW-MR, PH-3.5, {align:'right'});")],
     ['APP', 'el pie del PDF vuelve a la dirección más vieja',
-      (t) => t.replace("branding.dominio    || 'cotea.com.mx'",
-        "branding.dominio    || 'campo-fosmon.netlify.app'")],
+      (t) => t.replace(/T\('cotea\.com\.mx', PW-MR, PH-3\.5, \{align:'right'\}\);/g,
+        "T('campo-fosmon.netlify.app', PW-MR, PH-3.5, {align:'right'});")],
     // ── El bucket ───────────────────────────────────────────────────────────
     ['CORS', 'el origen de la app desaparece de la lista del bucket',
       (t) => t.replace('      "https://app.cotea.com.mx",\n', '')],
@@ -198,7 +210,7 @@ if (process.argv.includes('--contraprueba')) {
 let FN, APP, VERIF;
 try {
   FN = fuenteDe(ARCH_FN, ['APP_URL', 'SITIO_PUBLICO', 'FROM_EMAIL'], { tolerante: true });
-  APP = fuenteDe(ARCH_APP, ['generarPDFObra'], { tolerante: true });
+  APP = fuenteDe(ARCH_APP, ['generarPDFArt73', 'generarPDFInterno'], { tolerante: true });
   VERIF = fuenteDe(ARCH_VERIF, ['SITIO'], { tolerante: true });
 } catch (e) {
   if (e instanceof SimboloPerdido)
@@ -221,12 +233,14 @@ const armarAPP = (e) => new Function(
 const armarVERIF = (e) => new Function('process',
   `"use strict";\n${VERIF.cuerpo}\nreturn (${e});`)({ env: {} });
 
-let APP_URL, SITIO_PUBLICO, FROM_EMAIL, generarPDFObra, SITIO_VERIF, CORS, REDIR;
+let APP_URL, SITIO_PUBLICO, FROM_EMAIL, SITIO_VERIF, CORS, REDIR;
+let generarPDFArt73, generarPDFInterno;
 try {
   APP_URL = armarFN('APP_URL');
   SITIO_PUBLICO = armarFN('SITIO_PUBLICO');
   FROM_EMAIL = armarFN('FROM_EMAIL');
-  generarPDFObra = armarAPP('generarPDFObra');
+  generarPDFArt73 = armarAPP('generarPDFArt73');
+  generarPDFInterno = armarAPP('generarPDFInterno');
   SITIO_VERIF = armarVERIF('SITIO');
 } catch (e) {
   sinPrecondicion('no se pudo montar el código extraído',
@@ -373,34 +387,45 @@ else falla('el verificador mide el origen del bundle',
   `mide «${SITIO_VERIF}» — ahí no está el bundle, así que el veredicto del front `
   + 'no hablaría del front');
 
-// §6. El pie del PDF de una organización sin dominio propio dice la cara
-// PÚBLICA, no la de la app. El cliente que archiva ese PDF puede no tener
-// cuenta, y la dirección queda impresa para siempre. Dibujado, no leído.
-let dibujos;
-try {
-  dibujos = await dibujarPDF(generarPDFObra, {},
-    { id: 'OB-2026-000001', nombre: 'SIOP COATZA MALECON', contrato: 'SIOP-2026-001' });
-} catch (e) {
-  sinPrecondicion('el PDF no se pudo dibujar',
-    [e.message.split('\n')[0],
-     'El jsPDF falso contesta a cualquier método, así que esto es el generador',
-     'pidiendo algo que el doble no sabe devolver. Sin dibujo no hay qué afirmar.']);
-}
-if (dibujos.length < 20)
-  sinPrecondicion(`el PDF sólo dibujó ${dibujos.length} textos`,
-    ['Con el dibujo casi vacío, lo de abajo se cumpliría por no haber impreso nada.']);
+// §6. El pie de LOS DOS papeles dice la cara PÚBLICA, no la de la app. El
+// cliente que archiva el informe puede no tener cuenta, y la dirección queda
+// impresa para siempre. Dibujado, no leído.
+//
+// Desde el 2026-11-12 son dos papeles y ninguno recibe `branding`: el pie
+// imprime la cara pública siempre, para cualquier organización. Antes el pie
+// era `branding.dominio || 'cotea.com.mx'` y lo que este banco medía era el
+// caso del || —una organización sin dominio propio—; ahora el caso del || es
+// el único que hay, y los dos papeles tienen que pasarlo. El informe del
+// Art. 73 es el que importa más: es el que sale de la casa.
+for (const [cual, generar] of [['el informe del Art. 73', generarPDFArt73],
+  ['el documento interno', generarPDFInterno]]) {
+  let dibujos;
+  try {
+    dibujos = await dibujarPDFInterno(generar, {
+      obra: { id: 'OB-2026-000001', nombre: 'SIOP COATZA MALECON', contrato: 'SIOP-2026-001' },
+    });
+  } catch (e) {
+    sinPrecondicion(`${cual} no se pudo dibujar`,
+      [e.message.split('\n')[0],
+       'El jsPDF falso contesta a cualquier método, así que esto es el generador',
+       'pidiendo algo que el doble no sabe devolver. Sin dibujo no hay qué afirmar.']);
+  }
+  if (dibujos.length < 20)
+    sinPrecondicion(`${cual} sólo dibujó ${dibujos.length} textos`,
+      ['Con el dibujo casi vacío, lo de abajo se cumpliría por no haber impreso nada.']);
 
-const direccionesImpresas = [...new Set(dibujos
-  .map(d => d.texto)
-  .filter(t => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(t) && !t.includes(' ')))];
-if (direccionesImpresas.length === 1 && direccionesImpresas[0] === HOST_PUBLICO)
-  ok(`el PDF sin marca imprime la cara pública (${HOST_PUBLICO}), y sólo ésa`);
-else falla('el PDF sin marca imprime la cara pública',
-  `sólo «${HOST_PUBLICO}»`,
-  `imprimió: ${direccionesImpresas.map(d => `«${d}»`).join(', ') || 'ninguna dirección'}`
-  + (direccionesImpresas.includes(HOST_APP)
-    ? ' — es la de la app, que manda a la pantalla de contraseña a quien archiva el PDF'
-    : ''));
+  const direccionesImpresas = [...new Set(dibujos
+    .map(d => String(d.texto))
+    .filter(t => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(t) && !t.includes(' ')))];
+  if (direccionesImpresas.length === 1 && direccionesImpresas[0] === HOST_PUBLICO)
+    ok(`${cual} imprime la cara pública (${HOST_PUBLICO}), y sólo ésa`);
+  else falla(`${cual} imprime la cara pública`,
+    `sólo «${HOST_PUBLICO}»`,
+    `imprimió: ${direccionesImpresas.map(d => `«${d}»`).join(', ') || 'ninguna dirección'}`
+    + (direccionesImpresas.includes(HOST_APP)
+      ? ' — es la de la app, que manda a la pantalla de contraseña a quien archiva el PDF'
+      : ''));
+}
 
 // §7. El remitente y el producto son de la misma casa, y esa casa no es la del
 // contratista. Un correo cuyo sobre y cuyos enlaces no coinciden se parece a

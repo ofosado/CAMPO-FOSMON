@@ -398,7 +398,7 @@ async function correr(codigo) {
       "{titulo:'Gastoacumulado',valores:g.gasto,fmt:MXN,vacio:'sinmedir'}"),
     'la columna «Gasto acumulado» declara qué dice cuando la serie viene vacía');
 
-  // ── 8 · EL PAPEL QUE SE ENTREGA ──────────────────────────────────────────
+  // ── 8 · EL PAPEL QUE SE DESCARGA ─────────────────────────────────────────
   // El PDF era la CUARTA copia de «¿qué obra del GP es ésta?», y la peor: caía
   // al match difuso aunque `gpId` estuviera capturado y no cuadrara. La 0129
   // comparte «COAT» y «REHAB» con la 0121, así que el reporte ejecutivo —el
@@ -410,26 +410,38 @@ async function correr(codigo) {
   // que además TAPABA a `MXNS`, así que el margen de la 0121 se entregaba como
   // `$16,000,000` donde la cuenta dice −$16,000,000.
   //
+  // REANCLADA EL 2026-11-12, sobre el papel que de verdad se descarga. El
+  // reporte ejecutivo se retiró y el único PDF de una constructora es el
+  // documento interno, que NO tiene una cuarta copia que romper: no resuelve la
+  // obra del GP ni formatea el dinero por su cuenta —pide `calcularKPIsObra` y
+  // `presentacionEconomiaObra`, los mismos que la pantalla— así que el incidente
+  // no se puede reproducir ahí sin romper también el tablero. Lo que sigue
+  // habiendo, y es lo que esta sección mide, son los SITIOS DE PUBLICACIÓN: las
+  // tejas de indicadores, la caja de lo que no se puede afirmar, la leyenda de
+  // la gráfica, la tabla del margen semanal y los tres estados del riesgo. Cada
+  // uno puede imprimir un cero donde hay un hueco, y cada uno se afirma abajo.
+  //
+  // Dos sitios del papel viejo no tienen dónde aterrizar y se retiran dichos:
+  // la PORTADA con sus cuatro tejas de economía —la del documento interno es de
+  // identificación, contrato y fechas, y no publica gasto ni margen— y la tabla
+  // de proyección con «Ritmo GP semanal» y «Fin proy. por gasto», que se fue
+  // con `ProyeccionAvanceGasto` el 2026-11-06 y nunca llegó a este papel. No se
+  // reponen buscándoles un anclaje parecido: lo que cada aserción afirmaba
+  // —que un hueco no se publique como cero— lo afirman las de abajo sobre los
+  // sitios donde el hueco SÍ se publica hoy.
+  //
   // Se afirma sobre las CADENAS que salieron al papel, no sobre el código.
-  sec('8. El PDF que se entrega no le cuelga a una obra el gasto de otra');
+  sec('8. El PDF que se descarga no le cuelga a una obra el gasto de otra');
   const pdfHueco  = await alPapel(funcion, PROPS(LA_NUEVA));
   const pdfMedido = await alPapel(funcion, PROPS(LA_MEDIDA));
 
   const dice = (papel, s) => papel.textos.some(t => t.includes(s));
-  const valorDe = (papel, etiqueta, col = 1) => {
-    const c = papel.celdas.find(x => x.fila[0] === etiqueta && x.col === col);
-    return c ? c.texto : `(no hay renglón «${etiqueta}»)`;
-  };
-  const celdaDe = (papel, etiqueta, col = 1) =>
-    papel.celdas.find(x => x.fila[0] === etiqueta && x.col === col);
-  // Las tarjetas no son una tabla: `kpiBox` manda al papel exactamente tres
+  // Las tejas no son una tabla: `kpiBox` manda al papel exactamente tres
   // cadenas seguidas —rótulo en mayúsculas, valor y pie—, así que se leen por
-  // posición. Son sitios de publicación aparte de la tabla, y los dos
-  // sobrevivientes de la primera contraprueba estaban justo aquí.
-  //
-  // La PORTADA no usa `kpiBox`: tiene su propio bucle y dibuja sólo rótulo y
-  // valor, nunca el pie. Por eso `pie` sólo se pide a las tarjetas del
-  // resumen, y por eso en la portada el motivo no se puede afirmar.
+  // posición. El resumen financiero del papel viejo sí era una tabla, y por eso
+  // este archivo tenía además un `valorDe`/`celdaDe` que buscaba por renglón;
+  // en el documento interno esos números salen por teja, así que los dos
+  // ayudantes se fueron con la tabla que leían.
   const tejaDe = (papel, rotulo) => {
     const i = papel.textos.indexOf(rotulo);
     return i === -1 ? { valor: `(no hay teja «${rotulo}»)`, pie: '' }
@@ -439,83 +451,98 @@ async function correr(codigo) {
   check(!dice(pdfHueco, '19,900,000'),
     'el documento de la 0129 NO imprime en ninguna parte los $19.9M de la 0121',
     pdfHueco.textos.filter(t => t.includes('19,9')).join(' | ') || 'cero veces');
-  // La portada: es lo primero que lee quien recibe el reporte, y las cuatro
-  // tarjetas son el resumen entero de la obra.
-  check(tejaDe(pdfHueco, 'GASTO GP').valor === 'sin medir',
-    'la tarjeta «Gasto GP» de la PORTADA dice «sin medir», no `$0`',
-    tejaDe(pdfHueco, 'GASTO GP').valor);
-  check(tejaDe(pdfHueco, 'MARGEN').valor === 'sin medir',
-    'y la tarjeta «Margen» de la PORTADA no publica un porcentaje de margen',
-    tejaDe(pdfHueco, 'MARGEN').valor);
-  // Las del resumen financiero sí llevan pie, y el pie es el importe: es el
-  // sitio que sobrevivió a la primera contraprueba porque no lo mediía nadie.
-  check(tejaDe(pdfHueco, 'GASTO TOTAL GP').valor === 'sin medir'
-     && tejaDe(pdfHueco, 'GASTO TOTAL GP').pie === 'la corrida no la incluye',
-    'la tarjeta «Gasto total GP» del resumen dice «sin medir» Y por qué',
-    `${tejaDe(pdfHueco, 'GASTO TOTAL GP').valor} / ${tejaDe(pdfHueco, 'GASTO TOTAL GP').pie}`);
-  check(tejaDe(pdfHueco, 'MARGEN BRUTO').valor === 'sin medir'
-     && tejaDe(pdfHueco, 'MARGEN BRUTO').pie === 'sin medir',
-    'y la de «Margen bruto» no publica ni el porcentaje ni el importe',
-    `${tejaDe(pdfHueco, 'MARGEN BRUTO').valor} / ${tejaDe(pdfHueco, 'MARGEN BRUTO').pie}`);
-  check(valorDe(pdfHueco, 'GASTO GP') === 'sin medir',
-    'el renglón GASTO GP del resumen financiero dice «sin medir», no `$0`',
-    valorDe(pdfHueco, 'GASTO GP'));
-  check(valorDe(pdfHueco, 'MARGEN BRUTO') === 'sin medir',
-    'y el renglón MARGEN BRUTO tampoco afirma un margen que no se pudo medir',
-    valorDe(pdfHueco, 'MARGEN BRUTO'));
-  // El color de esa celda ES el veredicto: verde ahí afirma «margen sano» sin
-  // que nadie lo haya medido, y es la afirmación más silenciosa de todas.
-  check(!celdaDe(pdfHueco, 'MARGEN BRUTO')?.estilos?.fillColor,
-    'la celda del margen se queda sin color: sin gasto no hay veredicto que pintar',
-    JSON.stringify(celdaDe(pdfHueco, 'MARGEN BRUTO')?.estilos || {}));
-  check(valorDe(pdfHueco, 'Ritmo GP semanal') === 'sin medir',
-    'el ritmo de gasto semanal no se publica como `$0.00M`',
-    valorDe(pdfHueco, 'Ritmo GP semanal'));
-  check(valorDe(pdfHueco, 'Fin proy. por gasto') === 'sin medir',
-    'ni una fecha de fin proyectada a partir de un gasto que no existe',
-    valorDe(pdfHueco, 'Fin proy. por gasto'));
-  check(valorDe(pdfHueco, 'Fin proy. por gasto', 2) === 'no se puede proyectar sin el gasto',
-    'y la columna de referencia dice por qué, no un `—` mudo',
-    valorDe(pdfHueco, 'Fin proy. por gasto', 2));
-  // La tabla de riesgos: aquí el defecto no era un número, era un NIVEL. Con el
-  // gasto en cero el margen sale máximo y el indicador se clasificaba «Bien».
-  const riesgoMargen = pdfHueco.celdas.find(x => x.fila[1] === 'Margen bruto' && x.col === 3);
-  check(riesgoMargen?.texto === '—',
-    'el indicador de riesgo «Margen bruto» sale SIN nivel, no en «Bien»',
-    riesgoMargen ? riesgoMargen.texto : '(no hay renglón)');
-  const riesgoRatio = pdfHueco.celdas.find(x => x.fila[1] === 'Gasto vs ejecución' && x.col === 3);
-  check(riesgoRatio?.texto === '—',
-    'y «Gasto vs ejecución» tampoco: un cociente de 0.00x no es un «Bien»',
-    riesgoRatio ? riesgoRatio.texto : '(no hay renglón)');
-  // El silencio en una sección de alertas se lee como «aquí no hay nada».
-  check(dice(pdfHueco, 'El margen bruto no se pudo medir'),
-    'las observaciones DICEN que el margen no se pudo medir, en vez de callarse');
-  check(dice(pdfHueco, 'Gasto GP: la corrida no incluye esta obra'),
-    'la leyenda de la gráfica explica la serie que falta');
+
+  // SITIO 1 · las tejas de la sección 2. Es el resumen de la obra en cuatro
+  // renglones, y lo primero que alguien lee después de la portada. El pie no
+  // es decoración: es el único lugar del papel donde el hueco lleva su motivo.
+  const tGasto = tejaDe(pdfHueco, 'GASTO TOTAL');
+  check(tGasto.valor === 'sin medir'
+     && tGasto.pie === 'la corrida del gasto todavía no la incluye',
+    'la teja «Gasto total» dice «sin medir» Y por qué, no `$0`',
+    `${tGasto.valor} / ${tGasto.pie}`);
+  // Al margen no se le pide una cadena concreta: se le pide que NO publique un
+  // porcentaje ni un importe. Un hueco se delata como `0.0%` o como `$0`, y
+  // cualquiera de los dos afirma un margen que nadie midió.
+  const tMargen = tejaDe(pdfHueco, 'MARGEN BRUTO');
+  check(!tMargen.valor.includes('%') && !tMargen.pie.includes('$')
+     && /sin medir/.test(tMargen.pie),
+    'y la de «Margen bruto» no publica ni porcentaje ni importe, y nombra el hueco',
+    `${tMargen.valor} / ${tMargen.pie}`);
+
+  // SITIO 2 · la caja de lo que no se puede afirmar. Sin ella las dos tejas de
+  // arriba dicen «sin medir» y el lector tiene que adivinar el alcance: si es
+  // sólo el gasto el que falta, o si el margen que no está también depende.
+  check(pdfHueco.textos.some(t => /el gasto total está incompleto/.test(t)
+                              && /el margen no se puede afirmar/.test(t)),
+    'la caja de huecos dice que sin ese sumando el margen NO se puede afirmar',
+    pdfHueco.textos.filter(t => /gasto total está incompleto/.test(t)).join(' | ')
+      || '(no hay caja)');
+
+  // SITIO 3 · la leyenda de la gráfica. Una serie que no se dibuja se lee como
+  // «esta obra no gastó» si nadie dice que no se midió.
+  check(dice(pdfHueco, 'el gasto de esta obra no está medido: GP no la conoce con esta clave'),
+    'la leyenda de la gráfica explica la serie de gasto que falta');
+  check(dice(pdfHueco, 'no es que no haya margen, es que no se sabe'),
+    'y la del margen distingue «no hay margen» de «no se sabe»');
+
+  // SITIO 4 · la tabla del margen semanal. Es el sitio más fácil de llenar con
+  // ceros, porque una columna de pesos acepta `$0` en cada semana sin
+  // protestar, y doce ceros seguidos se leen como una obra sin margen.
+  check(dice(pdfHueco, 'No hay serie semanal de margen que publicar'),
+    'la tabla del margen semanal se declara ausente en vez de imprimir ceros');
+
+  // SITIO 5 · los tres estados del riesgo. Aquí el defecto no era un número,
+  // era un VEREDICTO: con el gasto en cero el margen sale máximo y el riesgo
+  // se clasificaba solo. La tabla de DETECTADOS es la única que sale por
+  // `autoTable`, así que lo que se afirma es que el margen no está en ella.
+  const detectados = pdfHueco.celdas
+    .filter(c => c.col === 1).map(c => String(c.texto));
+  check(!detectados.includes('Margen bruto en zona crítica')
+     && !detectados.includes('Brecha entre gasto y avance'),
+    'ni el margen ni la brecha entran en los riesgos DETECTADOS: sin el gasto '
+    + 'no hay número con el que disparar',
+    detectados.join(' | ') || '(tabla vacía)');
+  // Y no se callan: pasan a «No evaluables» con el dato que falta. El orden
+  // importa, porque es lo que distingue un riesgo descartado de uno pendiente.
+  const iNoEval = pdfHueco.textos.indexOf('No evaluables · qué dato falta');
+  const iMargen = pdfHueco.textos.indexOf('Margen bruto en zona crítica');
+  check(iNoEval !== -1 && iMargen > iNoEval
+     && dice(pdfHueco, 'la corrida del gasto todavía no incluye esta obra'),
+    'el margen aparece bajo «No evaluables», con el dato que le falta',
+    `No evaluables en ${iNoEval} · Margen en ${iMargen}`);
 
   check(dice(pdfMedido, '19,900,000'),
     'canario: el documento de la 0121 SÍ publica su gasto medido');
+  check(tejaDe(pdfMedido, 'GASTO TOTAL').valor === '$19,900,000'
+     && tejaDe(pdfMedido, 'GASTO TOTAL').pie === '204.1% del contrato',
+    'canario: con el gasto medido la teja publica la cifra y su proporción',
+    `${tejaDe(pdfMedido, 'GASTO TOTAL').valor} / ${tejaDe(pdfMedido, 'GASTO TOTAL').pie}`);
   // En el PAPEL el menos no es el mismo carácter que en la pantalla, y eso es
   // correcto: las fuentes estándar del PDF no saben escribir U+2212, así que
   // `textoImprimible` lo cambia por el guion antes de llegar a la hoja. Lo que
-  // estas dos comprobaciones afirman es que la cifra SALE CON SIGNO —el defecto
+  // estas comprobaciones afirman es que la cifra SALE CON SIGNO —el defecto
   // era un `Math.abs` que se lo comía—, no cuál es el glifo. Se pregunta al
   // propio portón del generador en vez de teclear `'-'` aquí: si mañana el
   // sustituto cambia, esto sigue midiendo el signo y no una cadena copiada.
   const MENOS_EN_HOJA = textoImprimible(MENOS);
-  check(tejaDe(pdfMedido, 'MARGEN BRUTO').pie.startsWith(MENOS_EN_HOJA),
-    'canario: y la tarjeta del margen lleva su importe CON el menos',
-    `${tejaDe(pdfMedido, 'MARGEN BRUTO').valor} / ${tejaDe(pdfMedido, 'MARGEN BRUTO').pie}`);
-  check(valorDe(pdfMedido, 'MARGEN BRUTO').startsWith(MENOS_EN_HOJA),
+  const tMargenM = tejaDe(pdfMedido, 'MARGEN BRUTO');
+  check(tMargenM.valor.startsWith(MENOS_EN_HOJA)
+     && tMargenM.pie.startsWith(MENOS_EN_HOJA),
     'canario y #101 en el papel: el margen negativo de la 0121 se entrega CON '
-    + 'su menos, que es lo que el `Math.abs` del PDF se comía',
-    valorDe(pdfMedido, 'MARGEN BRUTO'));
-  check(valorDe(pdfMedido, 'MARGEN BRUTO').includes('16,000,000'),
+    + 'su menos, en el porcentaje y en el importe',
+    `${tMargenM.valor} / ${tMargenM.pie}`);
+  check(tMargenM.pie.includes('16,000,000'),
     'canario: y sin comerse la magnitud al ponerle el signo',
-    valorDe(pdfMedido, 'MARGEN BRUTO'));
-  check(!!celdaDe(pdfMedido, 'MARGEN BRUTO')?.estilos?.fillColor,
-    'canario: con el gasto medido la celda del margen SÍ lleva su veredicto',
-    JSON.stringify(celdaDe(pdfMedido, 'MARGEN BRUTO')?.estilos || {}));
+    tMargenM.pie);
+  // El NIVEL, que es lo que el hueco se clasificaba solo: con el gasto medido
+  // el margen sí entra en detectados, y entra en rojo.
+  const filaCritica = pdfMedido.celdas.find(
+    c => c.col === 0 && c.fila[1] === 'Margen bruto en zona crítica');
+  check(filaCritica?.texto === 'Crítico'
+     && Array.isArray(filaCritica?.estilos?.textColor),
+    'canario: con el gasto medido el margen SÍ se clasifica, y en «Crítico»',
+    filaCritica ? `${filaCritica.texto} · ${JSON.stringify(filaCritica.estilos)}`
+                : '(no hay renglón)');
   check(!dice(pdfMedido, 'sin medir'),
     'canario: y el documento medido no dice «sin medir» en ninguna parte',
     pdfMedido.textos.filter(t => t.includes('sin medir')).join(' | ') || 'cero veces');
@@ -593,65 +620,60 @@ const MUTACIONES = [
     '  const kpis = { ...calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones, gpData, otrosGastos),\n    gt: resolverGastoGP(obra, gpData), gastoGPMedido: true };'],
 
   // ── Las del papel ────────────────────────────────────────────────────────
-  // La primera es la que importa: devuelve al PDF la CUARTA copia del
-  // resolvedor, con el match difuso que le colgaba a la 0129 los $19.9M de la
-  // 0121. Es la mutación que reproduce el incidente en el documento que se
-  // entrega, y la que ninguna aserción veía antes de la sección 8.
-  // LA DECLARACIÓN DE `_gpEstado` SE CONSERVA, y no es un detalle de forma: más
-  // abajo `generarPDFObra` saca de ahí `totGP`. Borrarla la volvía una variable
-  // libre, el taller se negaba a correr el trozo —«nadie los dobla»— y la
-  // mutación salía ROJA POR REVENTAR, o sea midiendo que el taller sabe parsear
-  // en vez de que la aserción muerda. Lo que se muta es la RESOLUCIÓN y el
-  // veredicto, que es el defecto: volver al match difuso y decir «medido»
-  // siempre. Corregido el 2026-11-07.
-  ['el PDF vuelve a resolver la obra del GP por parecido de nombre',
-    '  const _gpEstado = estadoGastoGP(obra, gpData);\n  const obraGP = _gpEstado.obraGP;\n  const gastoGPMedido = _gpEstado.medido;',
-    `  const _gpEstado = estadoGastoGP(obra, gpData);
-  const obraGP = (() => {
-    const ob = gpData?.obras || {};
-    const pal = (s) => String(s || '').toUpperCase().split(/[^A-Z0-9]+/).filter(w => w.length > 3);
-    const mias = pal(obra?.nombre);
-    let mejor = null, score = 0;
-    for (const k of Object.keys(ob)) {
-      const s = pal(ob[k].nombre).filter(w => mias.includes(w)).length;
-      if (s > score) { score = s; mejor = ob[k]; }
-    }
-    return score >= 2 ? mejor : null;
-  })();
-  const gastoGPMedido = true;`],
-  ['el PDF publica el gasto en cero en vez de decir que no lo midió',
-    "  const gpTxt        = gastoGPMedido ? MXN(totGP)   : 'sin medir';",
-    '  const gpTxt        = MXN(totGP);'],
-  ['el PDF vuelve a afirmar un margen calculado con un gasto incompleto',
-    "  const margenTxt    = gastoGPMedido ? MXNS(mg)     : 'sin medir';",
-    '  const margenTxt    = MXNS(mg);'],
-  ['el PDF recupera su propio `MXN` con `Math.abs`, que tapaba a `MXNS`',
-    '  const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;',
-    "  const MXN  = n => `$${Math.abs(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0})}`;\n"
-    + '  const MXNS = MXN;\n'
-    + '  const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;'],
-  ['la celda del margen del PDF se vuelve a pintar de verde sin veredicto',
-    '       if(d.row.index === 5 && gastoGPMedido){',
-    '       if(d.row.index === 5){'],
-  // El renglón del fin proyectado por gasto es el único sitio que distingue
-  // los DOS motivos por los que `finProyGP` sale `null` —sin fechas, o sin
-  // gasto— así que la mutación va ahí: devolverle el `—` mudo, que dice «no
-  // aplica» donde lo que pasa es que falta un insumo.
-  ['el fin proyectado por gasto vuelve al `—` mudo en vez de decir que falta el gasto',
-    "     gastoGPMedido ? fmtDDMMMYYY(finProyGP) : 'sin medir',\n     !gastoGPMedido ? 'no se puede proyectar sin el gasto' :",
-    '     fmtDDMMMYYY(finProyGP),\n     false ? \'\' :'],
-  ['el ritmo de gasto semanal del PDF vuelve a publicarse como `$0.00M`',
-    "    ['Ritmo GP semanal',\n     gastoGPMedido ? `$${(ritmoG_semanal/1e6).toFixed(2)}M` : 'sin medir',\n     gastoGPMedido ? 'al ritmo actual' : 'la corrida no incluye esta obra'],",
-    "    ['Ritmo GP semanal', `$${(ritmoG_semanal/1e6).toFixed(2)}M`, 'al ritmo actual'],"],
-  ['el indicador de riesgo del margen vuelve a salir en «Bien» con el gasto en cero',
-    "    const n = gastoGPMedido ? clasificarMasAltoMejor(mpct, [20, 15, 10, 5])\n                            : {nivel:'—', tc:K.gmu, bg:K.glt};",
-    '    const n = clasificarMasAltoMejor(mpct, [20, 15, 10, 5]);'],
-  ['«Gasto vs ejecución» vuelve a clasificar un cociente de 0.00x como «Bien»',
-    "    const n = gastoGPMedido ? clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05])\n                            : {nivel:'—', tc:K.gmu, bg:K.glt};",
-    '    const n = clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05]);'],
-  ['las observaciones del PDF se vuelven a callar cuando el margen no se pudo medir',
-    "  if (me > 0 && !gastoGPMedido) {\n    obs.push([NIVELES.atencion,\n      'El margen bruto no se pudo medir: la corrida de gasto de GP no incluye ' +\n      'esta obra. Verifica la clave de GP en Planeación → Contrato.']);\n  } else if (me > 0) {",
-    '  if (me > 0) {'],
+  // REANCLADAS EL 2026-11-12. Eran diez y quedan tres, y la cuenta no es un
+  // recorte de ambición: es que el papel sobre el que mordían ya no existe.
+  //
+  // Siete se fueron SIN sustituto, y cada una por una razón distinta que vale
+  // la pena dejar escrita, porque la tentación al ver una mutación huérfana es
+  // buscarle un anclaje parecido y así volverla una mutación que muerde otra
+  // cosa con el nombre de la vieja:
+  //
+  //  · «el PDF vuelve a resolver la obra del GP por parecido de nombre» era LA
+  //    mutación de esta sección: devolvía la cuarta copia del resolvedor. El
+  //    documento interno no tiene copia que devolver —le pide el bloque a
+  //    `calcularKPIsObra`, el mismo de la pantalla— así que para reproducir el
+  //    incidente aquí habría que romper el resolvedor compartido, y entonces la
+  //    mutación ya no diría nada del papel: diría que el tablero y el papel se
+  //    mueven juntos, que es lo que se quiere. Lo que de verdad protege ese
+  //    número hoy es `prueba-una-sola-pregunta-a-gp`, sobre `estadoGastoGP`.
+  //  · «su propio `MXN` con `Math.abs`» y «el gasto en cero» / «el margen con
+  //    un gasto incompleto» (`gpTxt`, `margenTxt`): el papel ya no formatea.
+  //    Las tres viven arriba, sobre `MXNS` y sobre `presentacionEconomiaObra`,
+  //    que es donde el formato se decide una vez para los dos lectores.
+  //  · «la celda del margen se pinta de verde» (`d.row.index === 5`): el
+  //    resumen financiero era una tabla con un renglón número 5. Ahora son
+  //    tejas, y el color de una teja sale por `setFillColor`, que `papelDeMentira`
+  //    no graba. No se repone con un anclaje de adorno: lo que ese color
+  //    afirmaba —un veredicto sobre un hueco— lo afirma ahora la aserción de
+  //    los riesgos detectados, que sí es observable.
+  //  · «el ritmo de gasto semanal» y «el fin proyectado por gasto» se fueron
+  //    con `ProyeccionAvanceGasto` el 2026-11-06, igual que las cinco de la
+  //    sección 5b.
+  //  · los dos niveles de riesgo (`clasificarMasAltoMejor`,
+  //    `clasificarMasBajoMejor`) y el callarse de las observaciones ya no
+  //    dependen de un `gastoGPMedido` leído en el papel: el papel pide
+  //    `evaluarRiesgos`, y la compuerta que manda un riesgo sin insumo a «No
+  //    evaluables» es `if (faltan.length)`. Esa mutación YA EXISTE, en
+  //    `prueba-tres-estados-del-riesgo`, dos veces. No se duplica aquí: dos
+  //    bancos mutando el mismo anclaje se estorban el día que el anclaje cambie
+  //    y los dos salen en 2 por la misma razón. Las aserciones de los tres
+  //    estados de arriba son guardas sobre la conducta que ese banco muerde.
+  //
+  // Las tres que quedan muerden los SITIOS DE PUBLICACIÓN del papel, y las tres
+  // van en el ARGUMENTO —en lo que el papel le pasa a `kpiRow`, en lo que
+  // consulta para abrir la caja de huecos—, nunca en `presentacionEconomiaObra`.
+  // Es deliberado: si se mutara el traductor, el tablero y el papel publicarían
+  // el cero a la vez, y lo que esta sección afirma es precisamente que el papel
+  // no tiene un camino propio para publicarlo.
+  ['la teja del gasto vuelve a publicar el cero en vez de decir «sin medir»',
+    "    ['Gasto total', pres.gastoTxt,\n      pres.pctGastoTxt || pres.gastoMotivoTxt || '—',\n      pres.gastoSinMedir ? Q.mu : Q.nar],",
+    "    ['Gasto total', MXN(kpis.gt),\n      `${PCT(kpis.pctGasto)} del contrato`,\n      Q.nar],"],
+  ['la teja del margen vuelve a afirmar un porcentaje y un importe sobre el hueco',
+    "    ['Margen bruto', pres.margenTxt, pres.margenAbsTxt, colorMargen],",
+    "    ['Margen bruto', PCT(kpis.mpct), MXNS(kpis.diff), colorMargen],"],
+  ['la caja de lo que no se puede afirmar se calla sobre el gasto sin medir',
+    '  const huecos = [];\n  if (pres.gastoSinMedir)\n    huecos.push(',
+    '  const huecos = [];\n  if (false)\n    huecos.push('],
 ];
 
 async function main() {

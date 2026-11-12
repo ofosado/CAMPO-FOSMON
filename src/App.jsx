@@ -126,10 +126,10 @@ const contratoCapturado = (v) => {
 const claveDeRubro = (r) => String(r?.nombre ?? r?.id ?? '');
 
 // ── LO QUE LAS FUENTES DEL PDF SABEN ESCRIBIR ────────────────────────────
-// Los dos generadores usan las fuentes estándar de jsPDF (helvetica), que están
+// Los generadores usan las fuentes estándar de jsPDF (helvetica), que están
 // limitadas a WinAnsi. Cuando un texto trae un carácter que no está ahí, jsPDF
 // NO avisa: cambia esa cadena entera a UTF-16 y el lector la pinta como basura.
-// El 2026-11-09 el reporte que se entrega al cliente llevaba NUEVE cadenas así
+// El 2026-11-09 el reporte ejecutivo —el papel que se retiró— llevaba NUEVE así
 // —«✓ PAGADA», «Avance ≥ 75%», «Operación → Nómina»— y ninguna prueba lo vio,
 // porque todas miran la cadena de JavaScript y el destrozo pasa después, al
 // serializar. Se ve en el PDF, y hasta ese día nadie había abierto uno.
@@ -151,8 +151,8 @@ const SUSTITUTOS_PDF = new Map(Object.entries({
 }));
 // Las dos van como `const` y no como `function` a propósito: así las arrastra
 // solo el preludio de `taller-de-app.cjs`, que resuelve las dependencias de
-// nivel superior siguiendo los `const` —igual que las otras quince de
-// `generarPDFObra`—. Como `function` hay que doblarlas a mano en cada banco, y
+// nivel superior siguiendo los `const` —igual que `andamioDeCotea` y el resto
+// de los ayudantes—. Como `function` hay que doblarlas a mano en cada banco, y
 // un banco que las doble con un `undefined` deja el papel en blanco.
 const textoImprimible = (v) => {
   if (v === null || v === undefined) return v;
@@ -254,2138 +254,6 @@ const precargarFotosDelPDF = async (lista, plazoMs = 8000) => {
   return lista;
 };
 
-// ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
-// branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
-// Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
-// `programa` es el programa de obra guardado (`obras/{id}/config/programa`), o
-// null si esta obra no tiene uno cargado. Entra como parámetro y no se lee aquí
-// adentro a propósito: este generador no toca Firestore, lo llama quien ya tiene
-// los datos. Cuando viene null el PDF NO publica avance programado: va «n/d» y
-// una observación que pide el anexo —ver `avanceProgramadoA`—. Hasta el
-// 2026-11-06 caía al reparto lineal del plazo con una etiqueta que lo decía, y
-// la etiqueta no alcanza en un documento que se entrega al cliente.
-// `evidenciaCargada` entra como parámetro propio y NO se deduce de que la lista
-// venga vacía. `fsColl` devuelve `[]` cuando la regla niega, así que sin este
-// dato el expediente imprimiría «0% de cobertura» por una lectura fallida: una
-// cifra creíble y falsa, en un documento con tres firmas al pie.
-// `instante` es el sello de tiempo del documento: `{ms, fuente}`, como lo
-// devuelve `pedirHoraDelServidor`. Entra como dato y no se toma de aquí
-// adentro para que la hora impresa sea la del servidor cuando se pudo pedir —
-// ver `selloDeTiempo`, que decide qué se imprime y qué se declara.
-async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos = [], branding = {}, historialAvance = [], gpData = null, otrosGastos = [], gpDetalle = null, nominaHistorial = [], evidencia = [], programa = null, evidenciaCargada = true, instante = null) {
-  // ── CARGA DE LIBRERÍAS ────────────────────────────────────────────────────
-  if (!window.jspdf) {
-    await new Promise((res,rej)=>{ const s=document.createElement('script');
-      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
-  }
-  await new Promise((res,rej)=>{
-    if(window._atLoaded) return res();
-    const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
-    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
-  });
-  const { jsPDF } = window.jspdf;
-
-  try {
-  // ── BRANDING (con defaults FOSMON) ────────────────────────────────────────
-  // Para vender CAMPO a otra empresa: pasar { logoBlanco, logoNegro, empresa, dominio }
-  const B = {
-    logoBlanco: branding.logoBlanco || (typeof EMB_WHITE!=='undefined' ? EMB_WHITE : null),
-    logoNegro:  branding.logoNegro  || (typeof EMB_NEGRO!=='undefined' ? EMB_NEGRO : null),
-    empresa:    branding.empresa    || 'FOSMON Construcciones',
-    empresaCorta: branding.empresaCorta || 'FOSMON',
-    // Por omisión va la dirección del PRODUCTO, no la del contratista: una
-    // organización sin `dominio` propio llevaba «campo-fosmon.netlify.app»
-    // impreso en el pie de cada página de su PDF.
-    dominio:    branding.dominio    || 'cotea.com.mx',
-  };
-
-  // ── CONSTANTES DE DISEÑO ──────────────────────────────────────────────────
-  // Página letter landscape: 279 × 216 mm
-  const PW=279, PH=216;
-  const ML=14, MR=14, MT=16, MB=14;  // márgenes
-  const HDR=14, FTR=10;               // header y footer
-  const CW=PW-ML-MR;                  // 251mm ancho de contenido
-  const CY0=HDR+MT;                   // Y inicio contenido = 27mm
-  const CYmax=PH-FTR-MB;             // Y máximo = 192mm → 165mm disponibles
-
-  // Tipografía
-  const FS_SEC=10;   // section header
-  const FS_TH=8;     // table header
-  const FS_TD=8.5;   // table body
-  const FS_SM=7.5;   // small / notas
-  const FS_KL=7;     // KPI label
-  const FS_KV=15;    // KPI value grande
-  const FS_FI=8.5;   // firmas
-
-  // Paleta
-  const K = {
-    ng:[13,22,25], wh:[255,255,255],
-    bg:[240,242,245], glt:[248,249,251], gbd:[220,223,228],
-    gtx:[85,94,107], gmu:[154,160,172],
-    vd:[99,153,34], vk:[59,109,17], vb:[234,243,222],
-    rd:[226,75,74], rk:[163,45,45], rb:[252,235,235],
-    az:[55,138,221], ak:[24,95,165], ab:[230,241,251],
-    am:[239,159,39], ak2:[133,79,11], ab2:[250,238,218],
-    mo:[127,119,221], mk:[60,52,137], mb:[238,237,254],
-    na:[217,119,6],
-  };
-
-  // ── HELPERS ───────────────────────────────────────────────────────────────
-  const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));
-  const pf   = n => parseFloat(n)||0;
-  // `MXN` NO se redefine aquí. Había una copia local idéntica en salida a la de
-  // arriba —se comprobó caso por caso, incluido `NaN` y el redondeo de 0.5— y
-  // su único efecto era TAPAR a `MXNS` y `MXND`: con `MXN` local a la vista,
-  // nadie dentro de este archivo podía usar las variantes con signo sin
-  // escribir el menos a mano. Y se escribió a mano: el margen de la 0121 se
-  // entregaba como `$8,612,920` en el reporte donde la pantalla dice
-  // −$8,612,920. Quitada la copia, este documento usa las mismas tres
-  // funciones que el resto, y el signo se decide en un solo sitio.
-  const PCT  = (n,d=1) => `${(n||0).toFixed(d)}%`;
-  // El instante del documento, uno solo. `hoy` es su fecha —va en el
-  // encabezado de cada página y en el nombre del archivo— y `sello.corte` el
-  // renglón de la portada, que además declara de dónde salió la hora.
-  const sello = selloDeTiempo(instante);
-  const hoy  = sello.fecha;
-
-  // ── Resolver obra GP del Sheet (para tomar nombre corto + gasto en vivo) ──
-  // Lo resuelve `estadoGastoGP`, que es la única respuesta a «¿qué obra del GP
-  // es ésta?» con las guardas puestas. Aquí había una CUARTA copia, y era la
-  // peor de todas: caía al match difuso aunque `gpId` estuviera capturado y no
-  // cuadrara, que es justo el caso de una obra recién dada de alta. La 0129
-  // «AYU-COAT-REHABILITACION DEL MALECON» comparte «COAT» y «REHAB» con la 0121
-  // «SIOP Coatza Rehab. Av. Universidad» —score 2, el umbral— así que el
-  // reporte que se ENTREGA le colgaba a la obra nueva los $19.9M de la otra.
-  // El resto del archivo tenía la guarda desde el incidente; este documento no.
-  const _gpEstado = estadoGastoGP(obra, gpData);
-  const obraGP = _gpEstado.obraGP;
-  const gastoGPMedido = _gpEstado.medido;
-
-  // Nombre corto: quita el prefijo de 4 dígitos y el sufijo tipo "0526".
-  // Ej: "0125 TAMSA VER SERVICIOS ESPECIALIZADOS 0526" → "TAMSA VER SERVICIOS ESPECIALIZADOS".
-  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
-
-  // KPIs derivados — con campos reales del app
-  // Se filtra por IMPORTE, nunca por descripción. Antes pedía además
-  // `m.desc.trim()`, y un renglón con importe pero sin describir desaparecía
-  // del documento: no se listaba y —peor— no entraba en `totMaq`/`totAlm`, o
-  // sea que el margen del PDF salía MEJOR que el de la pantalla, porque el
-  // tablero (`calcularKPIsObra`) suma esos renglones sin preguntar por la
-  // descripción. De las cuatro sumas de maquinaria del archivo, tres no
-  // filtran; ésta era la única, y era la del papel que se entrega.
-  //
-  // Un renglón sin describir es un hueco de captura, y así se ve: sale con su
-  // importe y la celda de descripción vacía. Dinero sin explicar se señala, no
-  // se descuenta. El importe en cero sí se omite —ese renglón no mueve ningún
-  // total y en blanco sólo estorba—.
-  const matActivos = materiales.filter(m=>pf(m.imp)>0);
-  const maqActivos = maquinaria.filter(m=>pf(m.imp)>0);
-  const totAlm  = matActivos.reduce((t,m)=>t+pf(m.imp),0);
-  const totMaq  = maqActivos.reduce((t,m)=>t+pf(m.imp),0);
-  // Gasto GP: el valor del veredicto. Cuando no está medido vale 0 y el
-  // documento tiene que DECIRLO donde publique gasto o margen, no imprimir el
-  // cero: ver `gastoGPMedido`.
-  const totGP = _gpEstado.valor;
-  // Otros gastos manuales (Gastos → Otros gastos)
-  const totOtros = (otrosGastos || []).reduce((t,o)=>t+(parseFloat(o.importe)||0), 0);
-  // Gasto total = GP + maquinaria propia + otros gastos
-  // (mismo criterio que Dashboard y Panel Ejecutivo — evita discrepancias)
-  const totGast = totGP + totMaq + totOtros;
-  // Mismas funciones que el dashboard: el PDF es el documento que se entrega,
-  // no puede discrepar de la pantalla. Dinero sin topar, físico topado a 100%.
-  const modoVolPDF = (obra?.modoAvance === "volumen");
-  const am      = desgloseEjecutado(subs, modoVolPDF).total;
-  const me      = am + totAlm;
-  const af      = avanceFisicoPonderado(subs, obra.presupuesto, modoVolPDF);
-  const mg      = me - totGast;
-  const mpct    = me>0 ? mg/me*100 : 0;
-  const PPTO    = obra.presupuesto||1;
-
-  // ── Lo que este documento puede AFIRMAR sobre el gasto ───────────────────
-  //
-  // Cuando `estadoGastoGP` no midió, `totGP` vale cero, y entonces `totGast`
-  // es un gasto parcial —sólo maquinaria y otros— y `mg` es un margen
-  // INFLADO: `me` menos casi nada. En la pantalla eso ya se resolvió (el KPI
-  // dice «sin medir» y la tarjeta de margen trae «SIN VEREDICTO»); aquí
-  // importa más, porque este PDF es lo que se ENTREGA y nadie que lo lea
-  // tiene cómo saber que el cero era un hueco.
-  //
-  // Se decide una vez y los sitios de abajo sólo imprimen. El nivel del
-  // semáforo también se apaga: un margen que no se pudo medir no es verde ni
-  // rojo, y pintarlo verde es la forma más silenciosa de afirmar algo falso.
-  const gpTxt        = gastoGPMedido ? MXN(totGP)   : 'sin medir';
-  const gastoTxt     = gastoGPMedido ? MXN(totGast) : 'sin medir';
-  const margenTxt    = gastoGPMedido ? MXNS(mg)     : 'sin medir';
-  const margenPctTxt = gastoGPMedido ? PCT(mpct)    : 'sin medir';
-  const gastoPctTxt  = gastoGPMedido ? PCT(totGast/PPTO*100)+' presup.'
-                                     : 'la corrida no la incluye';
-  const te      = estimaciones.reduce((t,e)=>t+e.monto,0);
-  // Normalizar estatus para comparación robusta (sin importar acentos o mayúsculas)
-  const normEst = s => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
-  const pag     = estimaciones.filter(e=>normEst(e.estatus)==='pagada').reduce((t,e)=>t+e.monto,0);
-  const pco     = estimaciones.filter(e=>['facturada','aprobada'].includes(normEst(e.estatus))).reduce((t,e)=>t+e.monto,0);
-  const epc     = estimaciones.filter(e=>normEst(e.estatus).includes('proceso')).reduce((t,e)=>t+e.monto,0);
-
-  let pagNum = 0;
-
-  // ── DRAW HELPERS ──────────────────────────────────────────────────────────
-  const sf = c => doc.setFillColor(...c);
-  const sd = c => doc.setDrawColor(...c);
-  const st = c => doc.setTextColor(...c);
-  const fs = n => doc.setFontSize(n);
-  const fw = s => doc.setFont('helvetica',s);
-  const lw = n => doc.setLineWidth(n);
-  const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
-  const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
-  // `T` recibe TAMBIÉN el arreglo que devuelve `splitTextToSize`, y lo pasa tal
-  // cual: `doc.text` dibuja un renglón por elemento. Hasta hoy hacía `String(s)`,
-  // y `String(['uno','dos'])` es `'uno,dos'`: los renglones salían PEGADOS CON
-  // COMAS en una sola línea que se va de la hoja por la derecha. No es un
-  // defecto de estética —el final de la frase queda fuera del papel y no se
-  // lee—, y sólo aparece en los párrafos que de verdad se parten en dos, que
-  // son los largos: justo los que explican cómo leer una cifra.
-  const T  = (s,x,y,o={}) => doc.text(
-    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);
-
-  // Dibuja header/footer en página actual
-  function pageFrame() {
-    pagNum++;
-    // Header: fondo negro
-    sf(K.ng); R(0,0,PW,HDR);
-    // Barra azul decorativa izquierda
-    sf(K.ak); R(0,0,3,HDR);
-    // Logo (branded)
-    try { if(B.logoBlanco)
-      doc.addImage(B.logoBlanco,'PNG',ML,2,6.9,8,'','FAST');
-    } catch(e){}
-    // Textos header
-    st(K.wh); fs(9); fw('bold');
-    T("cotea", ML+10, 5);
-    fs(6.5); fw('normal');
-    T(`Reporte ejecutivo · ${B.empresa}`, ML+10, 9.5);
-    fs(8); fw('bold');
-    T(nombreCorto, PW-MR, 5, {align:'right'});
-    fs(6.5); fw('normal');
-    // Solo la fecha en la línea de abajo. Antes se ponía `obra.contrato`
-    // pero cuando era muy largo (ej. Oaxaca con la descripción completa
-    // del contrato SIOP) se sobreponía con "Reporte ejecutivo · FOSMON"
-    // de la izquierda, creando el "texto desastre" en el header.
-    T(hoy, PW-MR, 9.5, {align:'right'});
-    // Footer (la página total se reescribe al final cuando ya conocemos totalPages)
-    sf([232,234,240]); R(0,PH-FTR,PW,FTR);
-    sf(K.ng); R(0,PH-FTR,PW,0.6);
-    st(K.gmu); fs(6); fw('normal');
-    T(`cotea — ${B.empresa} · Documento confidencial`, ML, PH-3.5);
-    T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
-    T(B.dominio, PW-MR, PH-3.5, {align:'right'});
-  }
-
-  // Dibuja una sección header (barra oscura + título)
-  function secHead(txt, y, col=K.ng) {
-    sf(col); R(ML,y,CW,8);
-    sf(K.wh); R(ML,y,2,8);
-    st(K.wh); fs(FS_SEC); fw('bold');
-    T(txt, ML+5, y+5.8);
-    return y+8+3; // retorna Y siguiente
-  }
-
-  // Dibuja un KPI box — retorna nada, dibuja directo
-  function kpiBox(lbl,val,sub,col,x,y,w) {
-    const h=18;
-    sf(K.wh); sd(K.gbd); lw(0.2); R(x,y,w,h,'FD');
-    sf(col); R(x,y,1.5,h);
-    st(K.gmu); fs(FS_KL); fw('normal'); T(lbl.toUpperCase(), x+3, y+5);
-    st(K.ng); fs(val.length>9?10:FS_KV); fw('bold'); T(val, x+3, y+13);
-    st(K.gmu); fs(FS_KL); fw('normal'); T(sub, x+3, y+17);
-  }
-
-  // Dibuja fila de N KPIs — retorna Y siguiente
-  function kpiRow(items, y) {
-    const n=items.length, gap=2;
-    const w=(CW-(n-1)*gap)/n;
-    items.forEach(([lbl,val,sub,col],i)=>{
-      kpiBox(lbl,val,sub,col, ML+i*(w+gap), y, w);
-    });
-    return y+20;
-  }
-
-  // Tabla autoTable con posición X explícita — clave para 2 columnas sin solapamiento
-  function autoT(head, body, colW, x, y, opts={}) {
-    const tableW = colW.reduce((s,w)=>s+w,0);
-    // Combinar columnStyles del caller con cellWidth de colW
-    const callerColStyles = opts.columnStyles || {};
-    const mergedColStyles = {};
-    colW.forEach((w,i)=>{
-      mergedColStyles[i] = { cellWidth:w, ...(callerColStyles[i]||{}) };
-    });
-    const { columnStyles:_discard, ...restOpts } = opts;
-    const base = {
-      head:[head], body,
-      startY: y,
-      margin: {left:x, right:PW-x-tableW},
-      tableWidth: tableW,
-      rowPageBreak: 'avoid',
-      styles: {
-        fontSize:FS_TD, cellPadding:2.2,
-        textColor:K.gtx, lineColor:K.gbd, lineWidth:0.2,
-        font:'helvetica', fontStyle:'normal',
-        overflow:'linebreak', minCellHeight:0,
-      },
-      headStyles: {
-        fillColor:K.ng, textColor:K.wh,
-        fontSize:FS_TH, fontStyle:'bold',
-        cellPadding:2.2, minCellHeight:0,
-      },
-      alternateRowStyles: { fillColor:K.glt, textColor:K.gtx },
-      columnStyles: mergedColStyles,
-      ...restOpts,
-    };
-    doc.autoTable(base);
-    return doc.lastAutoTable.finalY + 3;
-  }
-
-  // Línea separadora
-  function hrLine(y) {
-    sd(K.gbd); lw(0.2); L(ML,y,ML+CW,y); return y+2;
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 1 — PORTADA
-  // ════════════════════════════════════════════════════════════════════════
-  pagNum=1;
-  // Mitad izquierda oscura
-  sf(K.ng); R(0,0,PW*0.42,PH);
-  // Mitad derecha clara
-  sf(K.bg); R(PW*0.42,0,PW*0.58,PH);
-
-  // Logo FOSMON izquierda — 22×35.8mm (ratio 447:516 → h=w*1.154)
-  try {
-    if(typeof EMB_WHITE!=='undefined')
-      doc.addImage(EMB_WHITE,'PNG',ML,22,22,25.4,'','FAST');
-  } catch(e){}
-
-  // Textos izquierda
-  st(K.wh); fs(26); fw('bold'); T("cotea", ML, 58);
-  fs(7.5); fw('normal'); T('REPORTE DE AVANCE DE OBRA', ML, 64);
-  sd(K.wh); lw(0.4); L(ML, 66.5, ML+55, 66.5);
-  fs(13); fw('bold');
-  const nomLines=doc.splitTextToSize(nombreCorto, PW*0.38);
-  T(nomLines, ML, 74);
-  fs(7.5); fw('normal');
-  // Ese renglón es la UBICACIÓN de la obra. Si no se capturó, no se pinta: lo
-  // que había tecleado ahí era «FOSMON Construcciones», o sea el nombre de la
-  // empresa puesto donde el lector espera un lugar — un dato inventado y, con
-  // una marca ajena, el nombre del contratista en la portada del cliente. El
-  // mismo criterio que `nombreOrg`: sin dato, no hay línea.
-  //
-  // Aquí se CALLA en vez de declarar «(no capturado)», al contrario que los
-  // renglones del bloque de la derecha, y la diferencia es que este renglón no
-  // lleva etiqueta: es una línea suelta bajo el nombre de la obra. Una etiqueta
-  // sin valor es un renglón a medias que hay que declarar; una línea sin
-  // etiqueta que no se pinta no promete nada. Y el campo **no existe en el
-  // modelo**: medido en producción el 2026-11-09, `ubicacion` no está en
-  // ninguna de las 7 obras vivas y ningún formulario lo escribe —este `if` es
-  // el único sitio del repositorio que lo lee—. Declarar «ubicación no
-  // capturada» en las siete portadas sería reclamarle al usuario un campo que
-  // la aplicación no le ofrece.
-  if (textoCapturado(obra.ubicacion)) T(textoCapturado(obra.ubicacion), ML, 82);
-
-  // Datos contrato derecha
-  const xR=PW*0.44, yR0=22;
-  st(K.ng); fs(9); fw('bold'); T('Datos del contrato', xR, yR0);
-  sd(K.gbd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
-  let yR=yR0+7;
-  // El número de contrato y el objeto de la obra se rotulan por separado. Los
-  // dos salen del MISMO campo `contrato`, que es texto libre, y en cinco de las
-  // siete obras vivas trae sólo el objeto: imprimirlo bajo «Contrato:» pasa una
-  // descripción por un número de contrato en la portada de un documento que se
-  // firma. El renglón del objeto sólo aparece cuando hay objeto, porque una
-  // etiqueta de más es un hueco de más que declarar.
-  const contr = contratoCapturado(obra.contrato);
-  const filasID = [
-    ['Contrato:', contr.numero ?? NO_CAPTURADO],
-    ...(contr.objeto ? [['Objeto de la obra:', contr.objeto]] : []),
-    ['Cliente:', comoSeImprime(obra.cliente)],
-    ['Superintendente:', comoSeImprime(obra.superintendente)],
-    ['Residente:', comoSeImprime(obra.residente)],
-    ['Administrador:', comoSeImprime(obra.admin)],
-    ['Inicio de obra:', comoSeImprime(obra.inicio)],
-    ['Fin programado:', comoSeImprime(obra.fin)],
-    ['Presupuesto:', MXN(PPTO)],
-    ['Corte del reporte:', sello.corte],
-  ];
-  filasID.forEach(([lbl,val])=>{
-    st(K.ng); fs(7); fw('bold'); T(lbl, xR, yR);
-    // Una ausencia declarada se pinta en gris apagado y no en el gris del
-    // texto: a simple vista tiene que distinguirse de un dato, o el lector lee
-    // «(no capturado)» como si fuera el contenido del campo.
-    st(val===NO_CAPTURADO ? K.gmu : K.gtx); fw('normal');
-    const lineas = doc.splitTextToSize(String(val),PW-xR-MR-28);
-    T(lineas, xR+30, yR);
-    // El objeto de la obra ocupa varios renglones. Antes el paso era fijo de 5
-    // mm y el renglón siguiente se le encimaba: con un campo de texto libre de
-    // doscientos caracteres eso no es un detalle de maquetación, es la portada
-    // ilegible.
-    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
-  });
-
-  // 4 KPIs portada — fila horizontal
-  const kpY=PH-28, kpW=(PW*0.50)/4-2, kpX=PW*0.44;
-  [[`Avance`,PCT(af),'del presupuesto', af>=75?K.vk:af>=40?K.am:K.rd],
-   ['Ejecutado',MXN(me),PCT(me/PPTO*100)+' contrato',K.ak],
-   ['Gasto GP',gastoTxt,gastoPctTxt,gastoGPMedido?K.rk:K.gmu],
-   ['Margen',margenPctTxt,margenTxt,
-    !gastoGPMedido?K.gmu:mpct<10?K.rk:mpct<15?K.ak2:K.vk],
-  ].forEach(([lbl,val,sub,col],i)=>{
-    const x=kpX+i*(kpW+2);
-    sf(K.wh); sd(col); lw(0.3); R(x,kpY,kpW,16,'FD');
-    sf(col); R(x,kpY,1.5,16);
-    st(K.gmu); fs(6); fw('normal'); T(lbl.toUpperCase(),x+3,kpY+5);
-    st(K.ng); fs(val.length>9?9:11); fw('bold'); T(val,x+3,kpY+12);
-  });
-
-  // Footer portada
-  sf([232,234,240]); R(0,PH-FTR,PW,FTR);
-  sf(K.ng); R(0,PH-FTR,PW,0.6);
-  st(K.gmu); fs(6); fw('normal');
-  // Leídos de `B`, no tecleados. El marco de cada página ya firma con
-  // `B.empresa` (líneas de `pageFrame`): esta portada tecleaba la suya, así que
-  // el mismo documento podía decir dos nombres distintos — y `B.dominio` se
-  // calculaba arriba para nada.
-  T(`cotea · ${B.empresa}`, ML, PH-3.5);
-  T(B.dominio, PW-MR, PH-3.5, {align:'right'});
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 2 — RESUMEN FINANCIERO
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  let y=CY0;
-
-  y=secHead('1  RESUMEN FINANCIERO', y);
-  // Contratado · Ejecutado · Por ejecutar van SIEMPRE juntos: es la lectura
-  // completa del contrato. El volumen ejecutado por encima de una partida no
-  // se separa aquí — se compensa con las partidas que quedaron cortas, y el
-  // detalle de qué partida se pasó vive en la hoja de catálogo.
-  const porEjecutar = Math.max(PPTO - me, 0);
-  y=kpiRow([
-    ['Avance fisico',   PCT(af),         PCT(af)+' del contrato',       K.vk],
-    ['Contratado',      MXN(PPTO),       'importe de contrato',         K.gtx],
-    ['Ejecutado',       MXN(me),         PCT(me/PPTO*100)+' del contrato', K.ak],
-    ['Por ejecutar',    MXN(porEjecutar),PCT(porEjecutar/PPTO*100)+' rest.', K.gtx],
-  ], y)+2;
-  y=kpiRow([
-    ['Gasto total GP',  gastoTxt,        gastoPctTxt,  gastoGPMedido?K.rk:K.gmu],
-    ['Margen bruto',    margenPctTxt,    margenTxt,
-     !gastoGPMedido?K.gmu:mpct<10?K.rk:mpct<15?K.ak2:K.vk],
-    ['Total estimado',  MXN(te),         PCT(te/PPTO*100)+' contrato', K.mk],
-    ['Por estimar',     MXN(PPTO-te),    PCT((PPTO-te)/PPTO*100)+' rest.',K.gtx],
-  ], y)+2;
-
-  // ── 2 columnas usando X explícita ─────────────────────────────────────
-  const LW=CW*0.42, RW=CW-LW-5;
-  const xL=ML, xR2=ML+LW+5;
-
-  // Columna izquierda: datos del contrato
-  const contBody=[
-    ['Contrato',obra.contrato||''],['Cliente',obra.cliente||''],
-    ['Inicio',obra.inicio||''],['Fin programado',obra.fin||''],
-    ['Superintendente',obra.superintendente||''],
-    ['Residente',obra.residente||''],['Administrador',obra.admin||''],
-    ['Presupuesto',MXN(PPTO)],
-  ];
-  const yAfterCont = autoT(
-    ['Campo','Valor'], contBody,
-    [LW*0.38,LW*0.62], xL, y,
-    {didParseCell:(d)=>{
-      if(d.column.index===0){d.cell.styles.fontStyle='bold';d.cell.styles.textColor=K.ng;}
-    }}
-  );
-
-  // Columna derecha: KPIs financieros clave, sin rubros (los rubros ahora
-  // viven en su propia hoja "Desglose por rubro" con pie chart).
-  const kpiSummary = [
-    ['GASTO GP',       gpTxt],
-    ['MAQUINARIA',     MXN(totMaq)],
-    ['OTROS GASTOS',   MXN(totOtros)],
-    ['GASTO TOTAL',    gastoTxt],
-    ['ESTIMADO',       MXN(te)],
-    ['MARGEN BRUTO',   gastoGPMedido ? `${margenTxt} · ${margenPctTxt}`
-                                     : 'sin medir'],
-  ];
-  const yAfterRub = autoT(
-    ['Concepto','Monto'], kpiSummary,
-    [RW*0.55, RW*0.45], xR2, y,
-    {columnStyles:{1:{halign:'right', fontStyle:'bold'}},
-     didParseCell:(d)=>{
-       if(d.column.index === 0){
-         d.cell.styles.fontStyle='bold'; d.cell.styles.textColor=K.ng;
-       }
-       // Destacar fila GASTO TOTAL y MARGEN BRUTO
-       if(d.row.index === 3){
-         d.cell.styles.fillColor=K.ab2; d.cell.styles.textColor=K.ak2;
-       }
-       // Sin gasto medido la fila del margen se queda en gris: el color de
-       // este renglón ES el veredicto, y no hay veredicto que dar.
-       if(d.row.index === 5 && gastoGPMedido){
-         const val = mpct;
-         const bg = val<10?K.rb : val<15?K.ab2 : K.vb;
-         const tc = val<10?K.rk : val<15?K.ak2 : K.vk;
-         d.cell.styles.fillColor=bg; d.cell.styles.textColor=tc;
-       }
-     }}
-  );
-  y=Math.max(yAfterCont, yAfterRub)+2;
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG — ESTIMACIONES AL CLIENTE (hoja propia + gráfica mensual)
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('2  ESTIMACIONES AL CLIENTE', y);
-
-  // Las estimaciones que tienen dinero adentro. El filtro pedía ADEMÁS que
-  // tuvieran `no`, y eso descartaba la fila del expediente sin descartarla del
-  // TOTAL: `te` (arriba) suma TODAS las estimaciones, así que una estimación
-  // sin numerar desaparecía de la tabla y seguía contada en el renglón TOTAL de
-  // esa misma tabla. El documento salía con tres firmas al pie, una tabla que
-  // no cuadra con su propio total, y la diferencia sin nombre ni renglón.
-  //
-  // Faltar el `no` es faltar la ETIQUETA, no el dinero. La etiqueta la pone
-  // `rotuloEstimacion`, que dice que falta; el monto se imprime porque existe.
-  const estActivas=estimaciones.filter(e=>e.monto>0);
-  const aT=te*(obra.pctAnticipo||10)/100;
-  const fgT=te*(obra.pctFondoGar||5)/100;
-
-  // TABLA: 4 columnas que suman CW=251mm exacto
-  // No(16) + Periodo(58) + Monto(48) + Estatus(36) + MtoEfectivo = 251
-  const C0=16, C1=58, C2=48, C3=36, C4=CW-C0-C1-C2-C3;
-  const EST_SC={'pagada':K.vk,'facturada':K.mk,'en proceso':K.ak2,'aprobada':K.vk};
-
-  let estRows;
-  if (estActivas.length > 0) {
-    estRows = estActivas.map(e=>{
-      const ef=e.monto*(1-(obra.pctAnticipo||10)/100-(obra.pctFondoGar||5)/100);
-      return [
-        rotuloEstimacion(e),
-        e.periodo||'',
-        MXN(e.monto),
-        e.estatus||'',
-        MXN(ef),
-      ];
-    });
-    estRows.push(['TOTAL','',MXN(te),'',MXN(te-aT-fgT)]);
-  } else {
-    // Sin estimaciones capturadas: mostrar renglón vacío con indicación
-    estRows = [['—','Sin estimaciones capturadas','—','—','—']];
-  }
-
-  // Usar doc.autoTable directamente — sin wrapper, control total
-  doc.autoTable({
-    head:[['No.','Periodo','Monto bruto','Estatus','Mto. efectivo']],
-    body: estRows,
-    startY: y,
-    margin: {left:ML, right:MR},
-    tableWidth: CW,
-    styles:{
-      fontSize:FS_TD, cellPadding:2.5,
-      textColor:K.gtx, lineColor:K.gbd, lineWidth:0.2,
-      overflow:'linebreak', minCellHeight:0,
-    },
-    headStyles:{fillColor:K.ng,textColor:K.wh,fontSize:FS_TH,fontStyle:'bold',cellPadding:2.5},
-    alternateRowStyles:{fillColor:K.glt,textColor:K.gtx},
-    columnStyles:{
-      0:{cellWidth:C0, halign:'center'},
-      1:{cellWidth:C1, halign:'left'},
-      2:{cellWidth:C2, halign:'right'},
-      3:{cellWidth:C3, halign:'center'},
-      4:{cellWidth:C4, halign:'right'},
-    },
-    didParseCell:(d)=>{
-      const ri=d.row.index;
-      // Fila TOTAL — fondo negro
-      if(ri===estRows.length-1){
-        d.cell.styles.fillColor=K.ng;
-        d.cell.styles.textColor=K.wh;
-        d.cell.styles.fontStyle='bold';
-        return;
-      }
-      // Color de estatus
-      if(d.column.index===3 && estActivas[ri]){
-        const col=EST_SC[normEst(estActivas[ri].estatus||'')]||K.gtx;
-        d.cell.styles.textColor=col;
-        d.cell.styles.fontStyle='bold';
-      }
-    },
-  });
-  y=doc.lastAutoTable.finalY+4;
-
-  // KPIs en fila horizontal debajo de la tabla
-  y=kpiRow([
-    ['Pagado',     MXN(pag), 'cobrado y liquidado',   K.vk],
-    ['Por cobrar', MXN(pco), 'facturado + aprobado',  K.mk],
-    ['En proceso', MXN(epc), 'en elaboración',         K.ak2],
-    ['Total est.', MXN(te),  PCT(te/PPTO*100)+' contrato', K.ak],
-  ], y) + 4;
-
-  // ── GRÁFICA DE ESTIMACIONES: barras apiladas por estimación ──────────
-  // Cada barra horizontal representa una estimación. Se apila:
-  //   [efectivo neto (verde)] + [anticipo amortizado (naranja)] + [fondo garantía (rojo)]
-  // Y arriba se dibuja una línea acumulada de "efectivo pagado a la fecha".
-  // Da mucha más información que las barras mensuales anteriores.
-  if (estActivas.length > 0) {
-    const pctAnt = (obra.pctAnticipo || 10) / 100;
-    const pctFG  = (obra.pctFondoGar || 5) / 100;
-    // Desglose por estimación
-    const desglose = estActivas.map(e => {
-      const bruto = e.monto || 0;
-      const ant = bruto * pctAnt;
-      const fg  = bruto * pctFG;
-      const ef  = bruto - ant - fg;
-      const pagada = normEst(e.estatus) === 'pagada';
-      return { no: e.no, bruto, ant, fg, ef, pagada, periodo: e.periodo || '' };
-    });
-    // Acumulados
-    let acumBruto = 0, acumEfectivo = 0;
-    const acumRows = desglose.map(d => {
-      acumBruto += d.bruto;
-      if (d.pagada) acumEfectivo += d.ef;
-      return { acumBruto, acumEfectivo };
-    });
-
-    st(K.ng); fs(FS_SEC); fw('bold');
-    T('Composición por estimación', ML, y + 4);
-    st(K.gmu); fs(7); fw('normal');
-    T(`Anticipo ${(pctAnt*100).toFixed(0)}% · Fondo garantía ${(pctFG*100).toFixed(0)}%`, PW-MR, y+4, {align:'right'});
-    y += 7;
-
-    const chartH = 8;                       // altura por barra
-    const rowGap = 4;                       // separación entre barras
-    const labelW = 46;                      // ancho de etiqueta izquierda
-    const acumW  = 48;                      // ancho de columna acumulado
-    const barX = ML + labelW;
-    const barW = CW - labelW - acumW - 8;
-    // Max bruto para escala
-    const maxBruto = Math.max(...desglose.map(d => d.bruto), 1);
-
-    // Encabezado
-    st(K.gmu); fs(6.5); fw('bold');
-    T('EST / PERIODO',        ML, y);
-    T('EFECTIVO · AMORTIZ. · F.G.', barX + barW/2, y, {align:'center'});
-    T('ACUMULADO',            ML + CW, y, {align:'right'});
-    y += 3;
-    sd(K.gbd); lw(0.2); L(ML, y, ML+CW, y);
-    y += 3;
-
-    desglose.forEach((d, i) => {
-      const rowY = y;
-      const totalWpx = (d.bruto / maxBruto) * barW;
-      const efW = totalWpx * (d.ef / d.bruto);
-      const anW = totalWpx * (d.ant / d.bruto);
-      const fgW = totalWpx * (d.fg / d.bruto);
-
-      // Etiqueta izquierda
-      st(K.ng); fs(7); fw('bold');
-      T(rotuloEstimacion(d), ML, rowY + 5);
-      st(K.gmu); fs(6); fw('normal');
-      T((d.periodo || '—').slice(0, 22), ML + 14, rowY + 5);
-
-      // Fondo pálido (representa 100% del bruto)
-      sf(K.glt); R(barX, rowY, totalWpx, chartH, 'F');
-      // Segmento efectivo (verde)
-      sf(K.vd); R(barX, rowY, efW, chartH, 'F');
-      // Segmento anticipo (naranja/ámbar)
-      sf(K.am); R(barX + efW, rowY, anW, chartH, 'F');
-      // Segmento fondo garantía (rojo)
-      sf(K.rd); R(barX + efW + anW, rowY, fgW, chartH, 'F');
-      // Borde
-      sd(K.gbd); lw(0.15); doc.rect(barX, rowY, totalWpx, chartH, 'S');
-      // Etiqueta de monto bruto adentro (si cabe) o afuera
-      st(K.wh); fs(6.5); fw('bold');
-      const bruto_lbl = MXN(d.bruto);
-      if (totalWpx > 30) {
-        T(bruto_lbl, barX + 2, rowY + 5.5);
-      } else {
-        st(K.ng);
-        T(bruto_lbl, barX + totalWpx + 2, rowY + 5.5);
-      }
-      // Chip pagada (opcional)
-      if (d.pagada) {
-        st(K.vk); fs(5.5); fw('bold');
-        T('✓ PAGADA', barX + totalWpx - 12, rowY - 0.5);
-      }
-      // Columna acumulado a la derecha
-      st(K.ng); fs(7); fw('bold');
-      T(MXN(acumRows[i].acumBruto), ML + CW, rowY + 3.5, {align:'right'});
-      st(K.gmu); fs(6); fw('normal');
-      T(`efectivo cobrado ${MXN(acumRows[i].acumEfectivo)}`, ML + CW, rowY + 7, {align:'right'});
-
-      y = rowY + chartH + rowGap;
-    });
-
-    y += 2;
-
-    // Leyenda de colores
-    const legItems = [
-      [K.vd, 'Efectivo neto'],
-      [K.am, `Anticipo amortiz. (${(pctAnt*100).toFixed(0)}%)`],
-      [K.rd, `Fondo garantía (${(pctFG*100).toFixed(0)}%)`],
-    ];
-    let lx = ML;
-    legItems.forEach(([c, txt]) => {
-      sf(c); R(lx, y, 3, 3, 'F');
-      st(K.gtx); fs(6.5); fw('normal');
-      T(txt, lx + 5, y + 2.5);
-      lx += 4 + doc.getTextWidth(txt) + 8;
-    });
-    y += 6;
-  }
-
-  // Variables compartidas que usan secciones siguientes (totales, ejecución)
-  const subsActivos=subs.filter(s=>s.imp>0);
-  const totImp=subsActivos.reduce((t,s)=>t+s.imp,0);
-  const totEjec=desgloseEjecutado(subsActivos, modoVolPDF).total;
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 3 — DESGLOSE DE GASTO POR RUBRO (con pie chart + top proveedores)
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y = CY0;
-  y = secHead('3  DESGLOSE DE GASTO POR RUBRO', y);
-
-  if (gpDetalle && gpDetalle.rubros && Object.keys(gpDetalle.rubros).length > 0) {
-    // La tabla y el pastel recorren `Object.values` de un mapa que el servidor
-    // YA indexa por etiqueta completa, así que los dos rubros que comparten el
-    // 300 llegan aquí como dos entradas y salen como dos renglones. Lo que se
-    // tiró de este `map` fue un `id: r.id` que nadie leía: un «300» duplicado
-    // paseándose por la lista es la invitación a volver a agrupar por ahí.
-    const rubArr = Object.values(gpDetalle.rubros)
-      .map(r => ({
-        nombre: r.nombreCorto || r.nombre || r.id,
-        monto: r.grandTotal || 0,
-        proveedores: r.proveedores || [],
-      }))
-      .filter(r => r.monto > 0)
-      .sort((a,b) => b.monto - a.monto);
-    const totRub = rubArr.reduce((t,r) => t + r.monto, 0);
-
-    // ── Pie chart a la izquierda ──────────────────────────────────────
-    const pieCx = ML + 45;
-    const pieCy = y + 45;
-    const pieR = 34;
-
-    // Paleta de colores rotativa para segmentos
-    const paleta = [K.ak, K.vd, K.am, K.mo, K.rd, K.na, K.ak2, K.vk, K.mk, K.rk];
-
-    // Dibujar cada segmento como polígono aproximado
-    let acumAngle = -Math.PI / 2;   // empieza arriba (12 en punto)
-    rubArr.forEach((r, i) => {
-      const frac = r.monto / totRub;
-      const angleSpan = frac * 2 * Math.PI;
-      const angleEnd = acumAngle + angleSpan;
-      const steps = Math.max(6, Math.ceil(frac * 40));
-      // Puntos del polígono: centro → arco → centro
-      const puntos = [[pieCx, pieCy]];
-      for (let s = 0; s <= steps; s++) {
-        const a = acumAngle + (angleSpan * s / steps);
-        puntos.push([pieCx + pieR * Math.cos(a), pieCy + pieR * Math.sin(a)]);
-      }
-      // Dibujar polígono con doc.lines (necesita paths relativos)
-      sf(paleta[i % paleta.length]);
-      sd(K.wh); lw(0.4);
-      // Usamos triangle fan: dibujar N triángulos desde el centro
-      for (let s = 0; s < steps; s++) {
-        const a1 = acumAngle + (angleSpan * s / steps);
-        const a2 = acumAngle + (angleSpan * (s+1) / steps);
-        const p1 = [pieCx + pieR * Math.cos(a1), pieCy + pieR * Math.sin(a1)];
-        const p2 = [pieCx + pieR * Math.cos(a2), pieCy + pieR * Math.sin(a2)];
-        // Triángulo con doc.lines: paths relativos desde el punto de inicio
-        doc.lines([
-          [p1[0] - pieCx, p1[1] - pieCy],       // centro → p1
-          [p2[0] - p1[0], p2[1] - p1[1]],       // p1 → p2
-          [pieCx - p2[0], pieCy - p2[1]],       // p2 → centro
-        ], pieCx, pieCy, [1, 1], 'F');
-      }
-      acumAngle = angleEnd;
-    });
-
-    // Etiqueta al centro del pie
-    sf(K.wh); doc.circle(pieCx, pieCy, 12, 'F');
-    st(K.ng); fs(6.5); fw('normal');
-    T('GASTO GP', pieCx, pieCy - 2, {align:'center'});
-    fs(8); fw('bold');
-    T(MXN(totRub), pieCx, pieCy + 2.5, {align:'center'});
-
-    // ── Tabla de rubros a la derecha (con chips de color) ─────────────
-    // Layout con más aire: cada fila = 9mm de alto, chip 4×4mm centrado
-    // verticalmente con el texto, columnas alineadas a la derecha con
-    // suficiente separación entre monto/%. Antes las filas eran 6mm y
-    // los chips se veían amontonados con el nombre.
-    const tabX = ML + 100;
-    const tabW = CW - 100;
-    const HDR_H = 7;       // altura del header negro
-    const ROW_H = 9;       // altura por fila de rubro
-    const CHIP_S = 4;      // lado del chip cuadrado de color
-
-    // Encabezado
-    sf(K.ng); R(tabX, y, tabW, HDR_H, 'F');
-    st(K.wh); fs(7); fw('bold');
-    T('RUBRO',    tabX + 10,          y + 4.5);
-    T('MONTO',    tabX + tabW - 68,   y + 4.5, {align:'right'});
-    T('% GP',     tabX + tabW - 35,   y + 4.5, {align:'right'});
-    T('% PPTO',   tabX + tabW - 4,    y + 4.5, {align:'right'});
-
-    let ry = y + HDR_H;
-    rubArr.slice(0, 12).forEach((r, i) => {
-      // Fondo alternado sutil para leer mejor
-      if (i % 2 === 1) {
-        sf(K.glt); R(tabX, ry, tabW, ROW_H, 'F');
-      }
-      // Chip de color, centrado verticalmente con el texto (baseline en
-      // ry + ROW_H/2 + 1). El chip queda a ry + (ROW_H - CHIP_S)/2.
-      const chipY = ry + (ROW_H - CHIP_S) / 2;
-      sf(paleta[i % paleta.length]);
-      R(tabX + 3, chipY, CHIP_S, CHIP_S, 'F');
-      // Texto (nombre del rubro)
-      const textY = ry + ROW_H / 2 + 1.5;
-      st(K.ng); fs(8); fw('bold');
-      T(String(r.nombre).slice(0, 40), tabX + 10, textY);
-      fs(8); fw('normal');
-      T(MXN(r.monto),                       tabX + tabW - 68, textY, {align:'right'});
-      T(PCT(r.monto/totRub*100),            tabX + tabW - 35, textY, {align:'right'});
-      T(PCT(PPTO>0 ? r.monto/PPTO*100 : 0), tabX + tabW - 4,  textY, {align:'right'});
-      // Línea divisora ligera al pie de la fila
-      sd(K.gbd); lw(0.15);
-      L(tabX, ry + ROW_H, tabX + tabW, ry + ROW_H);
-      ry += ROW_H;
-    });
-
-    // Fila TOTAL — con más contraste
-    sf(K.ng); R(tabX, ry, tabW, ROW_H, 'F');
-    st(K.wh); fs(8.5); fw('bold');
-    const totY = ry + ROW_H / 2 + 1.5;
-    T('TOTAL GP', tabX + 10, totY);
-    T(MXN(totRub), tabX + tabW - 68, totY, {align:'right'});
-    T('100.0%', tabX + tabW - 35, totY, {align:'right'});
-    T(PCT(PPTO>0 ? totRub/PPTO*100 : 0), tabX + tabW - 4, totY, {align:'right'});
-    ry += ROW_H + 4;
-
-    // ── Top proveedores del rubro más grande ────────────────────────
-    // Ubicado debajo del pie chart y de la tabla, cuando ambos ya terminaron
-    const yLower = Math.max(pieCy + pieR + 10, ry + 4);
-    const rubroTop = rubArr[0];
-    if (rubroTop && rubroTop.proveedores && rubroTop.proveedores.length > 0) {
-      const provOrd = [...rubroTop.proveedores]
-        .sort((a,b) => (b.total||0) - (a.total||0))
-        .slice(0, 15);
-      const totProvRubro = provOrd.reduce((t,p) => t + (p.total||0), 0);
-      st(K.ng); fs(FS_SEC); fw('bold');
-      T(`Top ${provOrd.length} proveedores de "${rubroTop.nombre}"`, ML, yLower + 3);
-      st(K.gmu); fs(7); fw('normal');
-      T(`Total del rubro: ${MXN(rubroTop.monto)}`, PW-MR, yLower + 3, {align:'right'});
-
-      const provBody = provOrd.map((p, i) => [
-        i + 1,
-        String(p.nombre || '—').slice(0, 60),
-        MXN(p.total || 0),
-        PCT(rubroTop.monto > 0 ? (p.total||0)/rubroTop.monto*100 : 0),
-      ]);
-
-      autoT(
-        ['#', 'Proveedor / Concepto', 'Monto acumulado', '% del rubro'],
-        provBody,
-        [10, CW*0.60, CW*0.20, CW*0.14],
-        ML, yLower + 6,
-        {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}}}
-      );
-    }
-  } else {
-    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 30, 'FD');
-    st(K.gmu); fs(12); fw('bold');
-    T('Detalle GP no disponible', ML + CW/2, y + 14, {align:'center'});
-    st(K.gmu); fs(8); fw('normal');
-    T('Abre la pestaña Gastos de esta obra en cotea al menos una vez antes',
-      ML + CW/2, y + 20, {align:'center'});
-    T('de generar el PDF, para que se cargue el detalle GP del Sheet.',
-      ML + CW/2, y + 25, {align:'center'});
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 4 — ALMACÉN (materiales en tránsito)
-  // Almacén y Maquinaria son OPCIONALES: si no hay datos capturados, la
-  // slide no se dibuja (antes salía un placeholder que no aportaba valor).
-  // ════════════════════════════════════════════════════════════════════════
-  if (matActivos.length > 0) {
-    doc.addPage(); pageFrame();
-    y=CY0;
-    y=secHead('4  ALMACÉN · MATERIALES EN TRÁNSITO', y);
-    const matBody = [
-      ...matActivos.map(m => [m.desc||'', m.concepto||'', m.vol||'', m.und||'', MXN(pf(m.imp))]),
-      ['TOTAL ALMACÉN', '', '', '', MXN(totAlm)],
-    ];
-    autoT(
-      ['Material', 'Condición', 'Vol.', 'Und', 'Importe'], matBody,
-      [CW*0.42, CW*0.22, CW*0.10, CW*0.10, CW*0.16],
-      ML, y,
-      {columnStyles:{2:{halign:'right'}, 4:{halign:'right'}},
-       didParseCell:(d) => {
-         if (d.row.index === matActivos.length) {
-           d.cell.styles.fillColor = K.ng; d.cell.styles.textColor = K.wh;
-           d.cell.styles.fontStyle = 'bold';
-         }
-       }}
-    );
-  }
-
-  if (maqActivos.length > 0) {
-    doc.addPage(); pageFrame();
-    y=CY0;
-    y=secHead('5  MAQUINARIA PROPIA EN OBRA', y);
-    const maqBody = [
-      ...maqActivos.map(m => [m.desc||'', m.vol||'', m.und||'', MXN(pf(m.pu||0)), MXN(pf(m.imp))]),
-      ['TOTAL MAQUINARIA', '', '', '', MXN(totMaq)],
-    ];
-    autoT(
-      ['Equipo', 'Cant.', 'Unidad', 'P.U.', 'Importe'], maqBody,
-      [CW*0.50, CW*0.10, CW*0.10, CW*0.15, CW*0.15],
-      ML, y,
-      {columnStyles:{1:{halign:'center'}, 3:{halign:'right'}, 4:{halign:'right'}},
-       didParseCell:(d) => {
-         if (d.row.index === maqActivos.length) {
-           d.cell.styles.fillColor = K.ng; d.cell.styles.textColor = K.wh;
-           d.cell.styles.fontStyle = 'bold';
-         }
-       }}
-    );
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 4 — GRÁFICA VISUAL DE AVANCE (top partidas + comparativo)
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('6  GRÁFICA DE AVANCE FÍSICO', y);
-
-  // KPIs resumen arriba
-  const subsConAv = subs.filter(s=>s.imp>0);
-  const subsCompletadas = subsConAv.filter(s=>s.a>=100).length;
-  const subsEnProgreso  = subsConAv.filter(s=>s.a>0 && s.a<100).length;
-  const subsSinIniciar  = subsConAv.filter(s=>s.a===0).length;
-  // El avance programado a hoy. Sale de `avanceProgramadoA` —la única cuenta
-  // del repositorio— y vale `null` cuando la obra no tiene anexo cargado.
-  // Este PDF se le entrega al cliente: donde no hay programa va «n/d» y el
-  // subtítulo pide el anexo. Antes iba el reparto lineal del plazo, que le
-  // afirmaba al cliente que su programa decía esa cifra ese día.
-  // El día es el del sello, no `hoyLocalISO()`: ésa era una cuarta lectura del
-  // reloj del aparato dentro del mismo documento.
-  const progPdf = avanceProgramadoA(obra, programa, fechaEnZonaObra(sello.momento));
-  const pctProgIdeal = progPdf.pct ?? 0;
-  const rotPdf = ROTULO_PROGRAMADO[progPdf.fuente] || ROTULO_PROGRAMADO.sin_programa;
-  const desviacion = af - pctProgIdeal;
-  y=kpiRow([
-    ['Avance real',     PCT(af),              `${subsConAv.length} partidas activas`, af>=75?K.vk:af>=40?K.am:K.rd],
-    [rotPdf.kpi, progPdf.pct === null ? 'n/d' : PCT(pctProgIdeal), rotPdf.sub, K.ak],
-    ['Desviación',      progPdf.pct === null ? 'n/d' : `${desviacion>=0?'+':''}${desviacion.toFixed(1)}%`,
-      progPdf.pct === null ? 'no hay programa contra el que medir'
-        : (desviacion>=0?'sobre el programa':'bajo el programa'),
-      desviacion>=0?K.vk:K.rk],
-    ['Completadas',     `${subsCompletadas}`, `${subsEnProgreso} en curso · ${subsSinIniciar} sin iniciar`, K.mk],
-  ], y)+3;
-
-  // Top partidas por importe. Distribuidas en hasta 2 hojas (9 por hoja
-  // → hasta 18 partidas representativas). Se elimina el código/clave y
-  // solo se muestra la descripción, que ahora tiene mucho más espacio.
-  const topAll = [...subsConAv].sort((a,b)=>b.imp-a.imp).slice(0, 18);
-  const PART_POR_HOJA = 9;
-
-  if (topAll.length === 0) {
-    st(K.gmu); fs(10); fw('italic');
-    T('No hay partidas con presupuesto cargado. Carga el catálogo en Planeación → Presupuesto.',
-      ML+10, y+15);
-  } else {
-    // Layout: descripción amplia a la izq (sin código), barra horizontal
-    // con marcador de "programado", % al final.
-    const rowH = 14;
-    const barX = ML + 145;                    // más espacio para la descripción
-    const barW = CW - 145 - 22;               // barra + 22mm para etiqueta de %
-    const descX = ML;
-    const descW = 143;                        // ancho disponible para descripción
-    // Truncar texto para que no invada la barra
-    const truncar = (txt, n) => {
-      const t = String(txt || '').trim();
-      if (!t) return '';
-      return t.length <= n ? t : t.slice(0, n - 1).trimEnd() + '…';
-    };
-
-    const dibujarHoja = (partidas, yStart, esPrimera) => {
-      let yy = yStart;
-      // Encabezado de la sección
-      st(K.gmu); fs(7); fw('bold');
-      T('PARTIDA', descX, yy+4);
-      // El encabezado nombra lo que hay en la columna. Sin anexo no se dibuja
-      // la marca del programado, así que «REAL VS PROGRAMADO» prometía una
-      // comparación que la hoja no traía — y éste es el papel que se firma.
-      T(progPdf.pct === null ? 'AVANCE REAL' : 'AVANCE REAL VS PROGRAMADO', barX, yy+4);
-      T('%', barX+barW+12, yy+4, {align:'center'});
-      yy += 7;
-      sd(K.gbd); lw(0.3); L(ML, yy, ML+CW, yy);
-      yy += 3;
-
-      partidas.forEach((s, idx) => {
-        const pctReal = Math.min(100, s.a||0);
-        const colReal = pctReal>=75?K.vd : pctReal>=40?K.am : K.rd;
-        const colKReal = pctReal>=75?K.vk : pctReal>=40?K.ak2 : K.rk;
-
-        // SOLO descripción (sin código/clave).
-        // Prioridad: s.sub (descripción del catálogo); fallback a s.sec si
-        // s.sub es vacío (obras viejas donde sec quedó con la descripción).
-        const descRaw = (s.sub && s.sub.trim())
-          ? s.sub
-          : (s.sec || '');
-        // Aproximadamente 62-64 caracteres caben en descW a fontSize 8.5
-        const descMostrar = truncar(descRaw, 62);
-
-        // Descripción (una sola línea, sin código)
-        st(K.ng); fs(8.5); fw('bold');
-        T(descMostrar, descX, yy+4.5);
-        // Importe (más abajo, más chico)
-        st(K.gmu); fs(6.5); fw('normal');
-        T(MXN(s.imp), descX, yy+8.5);
-
-        // Fondo de la barra
-        sf(K.glt); doc.rect(barX, yy+2, barW, 5, 'F');
-        sd(K.gbd); lw(0.15); doc.rect(barX, yy+2, barW, 5, 'S');
-
-        // Barra de avance real
-        if (pctReal > 0) {
-          sf(colReal); doc.rect(barX, yy+2, barW * pctReal/100, 5, 'F');
-        }
-
-        // Marcador vertical de "% programado"
-        if (pctProgIdeal > 0 && pctProgIdeal <= 100) {
-          const xProg = barX + barW * pctProgIdeal/100;
-          sd(K.na); lw(0.6);
-          doc.line(xProg, yy+1, xProg, yy+8);
-          sf(K.na); doc.triangle(xProg-1.2, yy+1, xProg+1.2, yy+1, xProg, yy+2.2, 'F');
-        }
-
-        // Etiqueta de % al final
-        st(colKReal); fs(9); fw('bold');
-        T(`${pctReal.toFixed(0)}%`, barX+barW+12, yy+6, {align:'center'});
-
-        yy += rowH;
-        if (idx < partidas.length-1) {
-          sd(K.gbd); lw(0.1);
-          L(ML, yy-0.5, ML+CW, yy-0.5);
-        }
-      });
-
-      // Leyenda al pie del gráfico
-      yy += 4;
-      sf(K.glt); sd(K.gbd); lw(0.2); R(ML, yy, CW, 9, 'FD');
-      st(K.gtx); fs(7); fw('normal');
-      sf(K.vd); R(ML+4, yy+3, 3, 3, 'F'); T('Avance ≥ 75%', ML+9, yy+5.3);
-      sf(K.am); R(ML+42, yy+3, 3, 3, 'F'); T('40 a 74%', ML+47, yy+5.3);
-      sf(K.rd); R(ML+70, yy+3, 3, 3, 'F'); T('< 40%', ML+75, yy+5.3);
-      // El triángulo sólo se explica si se dibujó, y se nombra por lo que es.
-      // Sin programa cargado no hay marca ni leyenda: una leyenda que nombra
-      // algo que no está en el dibujo es una afirmación sin respaldo.
-      if (progPdf.pct !== null) {
-        sf(K.na); doc.triangle(ML+96, yy+3, ML+99.5, yy+3, ML+97.7, yy+5.5, 'F');
-        T('Programa contractual', ML+102, yy+5.3);
-      }
-      st(K.gmu); fs(6.5);
-      T(`Top ${topAll.length} partidas por importe · ${MXN(topAll.reduce((t,s)=>t+s.imp,0))} de ${MXN(totImp)}`,
-        PW-MR, yy+5.3, {align:'right'});
-      return yy;
-    };
-
-    // Hoja 1: primeras 9
-    dibujarHoja(topAll.slice(0, PART_POR_HOJA), y, true);
-
-    // Hoja 2: siguientes 9 (si aplica)
-    if (topAll.length > PART_POR_HOJA) {
-      doc.addPage(); pageFrame();
-      let yh2 = CY0;
-      yh2 = secHead('6b  GRÁFICA DE AVANCE FÍSICO (continuación)', yh2);
-      dibujarHoja(topAll.slice(PART_POR_HOJA, PART_POR_HOJA*2), yh2, false);
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 5 — PROYECCIÓN Y PLAZOS
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('7  PROYECCIÓN AL TÉRMINO · PLAZOS DE OBRA', y);
-
-  // ── Gráfica de proyección BASADA EN FECHAS REALES ─────────────────
-  // Antes usaba semanas hardcoded (semsReales=5, semsTot=15). Ahora las
-  // fechas vienen del contrato (obra.inicio, obra.fin) y todo se calcula
-  // en base al plazo real. El eje X muestra fechas (dd/mmm) además de la
-  // semana ISO — es lo más estándar en construcción.
-
-  const parseFecha = (s) => {
-    if (!s) return null;
-    const d = new Date(s);
-    return isNaN(d) ? null : d;
-  };
-  const fmtDDMMM = (d) => {
-    if (!d) return '—';
-    const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-    return `${String(d.getDate()).padStart(2,'0')}/${meses[d.getMonth()]}`;
-  };
-  const fmtDDMMMYYY = (d) => {
-    if (!d) return '—';
-    return `${fmtDDMMM(d)}/${String(d.getFullYear()).slice(2)}`;
-  };
-  const diasEntre = (a, b) => a && b ? Math.round((b - a) / 86400000) : 0;
-
-  const fIni = parseFecha(obra.inicio);
-  const fFin = parseFecha(obra.finAmpliado) || parseFecha(obra.fin);
-  const fFinOrig = parseFecha(obra.fin);
-  // El MISMO instante de la portada, no una segunda lectura del reloj.
-  const hoyD = sello.momento;
-
-  const hayFechas = fIni && fFin;
-  const diasTot = hayFechas ? diasEntre(fIni, fFin) : 0;
-  const diasTransc = hayFechas ? Math.max(0, Math.min(diasTot, diasEntre(fIni, hoyD))) : 0;
-  const diasRest = Math.max(0, diasTot - diasTransc);
-  const pctPlazo = diasTot > 0 ? (diasTransc / diasTot) * 100 : 0;
-
-  // Área de gráfica
-  const GX=ML, GY=y, GW=CW, GH=54;
-  const GPL=22, GPB=12, GPR=18, GPT=8;
-  const gw=GW-GPL-GPR, gh=GH-GPB-GPT;
-  const PM = PPTO / 1e6;
-  const maxV = Math.max(PM, totGP/1e6*1.3, me/1e6*1.3) * 1.1 || 1;
-
-  const gxT = (fecha) => {
-    if (!hayFechas) return GX + GPL;
-    const frac = Math.max(0, Math.min(1, diasEntre(fIni, fecha) / diasTot));
-    return GX + GPL + frac * gw;
-  };
-  const gyV = (v) => GY + GPT + (1 - Math.min(v, maxV)/maxV) * gh;
-
-  // Fondo blanco con borde
-  sf(K.wh); sd(K.gbd); lw(0.2); R(GX+GPL, GY+GPT, gw, gh, 'FD');
-
-  if (hayFechas) {
-    // Grid Y con montos
-    [0, maxV*0.25, maxV*0.5, maxV*0.75, maxV].forEach(v => {
-      const gy2 = gyV(v);
-      sd(K.gbd); lw(0.15); doc.setLineDashPattern([2,2],0);
-      if (v < maxV) L(GX+GPL, gy2, GX+GPL+gw, gy2);
-      doc.setLineDashPattern([],0);
-      st(K.gmu); fs(6); fw('normal');
-      T(`$${v.toFixed(0)}M`, GX+GPL-1, gy2+1.5, {align:'right'});
-    });
-    // Línea presupuesto
-    sf(K.ng); lw(0.4); doc.setLineDashPattern([3,2],0);
-    L(GX+GPL, gyV(PM), GX+GPL+gw, gyV(PM));
-    doc.setLineDashPattern([],0);
-    st(K.ng); fs(6); fw('bold'); T('Ppto', GX+GPL+gw+1, gyV(PM)+1.5);
-
-    // Zona sombreada = plazo restante (hoy → fin)
-    if (hoyD < fFin && hoyD > fIni) {
-      sf([244,250,240]); R(gxT(hoyD), GY+GPT, gxT(fFin) - gxT(hoyD), gh, 'F');
-    }
-
-    // Línea vertical HOY
-    if (hoyD >= fIni && hoyD <= fFin) {
-      sd(K.gmu); lw(0.4); doc.setLineDashPattern([1.5,2],0);
-      L(gxT(hoyD), GY+GPT, gxT(hoyD), GY+GPT+gh);
-      doc.setLineDashPattern([],0);
-      st(K.gmu); fs(6); fw('bold');
-      T('HOY', gxT(hoyD), GY+GPT-2, {align:'center'});
-      T(fmtDDMMM(hoyD), gxT(hoyD), GY+GPT+gh+9.5, {align:'center'});
-    }
-
-    // Marcador de fin programado
-    sd(K.vk); lw(0.5); doc.setLineDashPattern([3,2],0);
-    L(gxT(fFin), GY+GPT, gxT(fFin), GY+GPT+gh);
-    doc.setLineDashPattern([],0);
-    st(K.vk); fs(6); fw('bold');
-    T('FIN', gxT(fFin), GY+GPT-2, {align:'center'});
-    T(fmtDDMMM(fFin), gxT(fFin), GY+GPT+gh+9.5, {align:'center'});
-
-    // Fechas iniciales / etiquetas del eje X (5 tics equidistantes)
-    const numTics = 5;
-    for (let i = 0; i <= numTics; i++) {
-      const t = new Date(fIni.getTime() + (fFin - fIni) * i / numTics);
-      const xt = gxT(t);
-      st(K.gmu); fs(5.5); fw('normal');
-      T(fmtDDMMM(t), xt, GY+GPT+gh+4, {align:'center'});
-      sd(K.gbd); lw(0.15);
-      L(xt, GY+GPT+gh, xt, GY+GPT+gh+1.5);
-    }
-
-    // Líneas de datos: ritmo lineal desde inicio hasta hoy + proyección
-    // hasta el fin del plazo (asumiendo mismo ritmo).
-    const ritmoG_dia = diasTransc > 0 ? (totGP / 1e6) / diasTransc : 0;
-    const ritmoM_dia = diasTransc > 0 ? (me   / 1e6) / diasTransc : 0;
-    const proyGpFin  = totGP/1e6 + ritmoG_dia * diasRest;
-    const proyMeFin  = me/1e6    + ritmoM_dia * diasRest;
-
-    // GP (rojo): real y proyectada. Sin gasto medido NO se dibuja: una recta
-    // pegada al cero es la afirmación «esta obra no ha gastado nada», y la
-    // proyección punteada que sale de ella dice además que no gastará.
-    if (gastoGPMedido) {
-      sd(K.rk); lw(0.9); doc.setLineDashPattern([],0);
-      L(gxT(fIni), gyV(0), gxT(hoyD), gyV(totGP/1e6));
-      sd(K.rk); lw(0.6); doc.setLineDashPattern([3,3],0);
-      L(gxT(hoyD), gyV(totGP/1e6), gxT(fFin), gyV(Math.min(proyGpFin, maxV)));
-      doc.setLineDashPattern([],0);
-      sf(K.rk); doc.circle(gxT(hoyD), gyV(totGP/1e6), 1.5, 'F');
-    }
-
-    // Monto ejecutado (azul): real y proyectada
-    sd(K.ak); lw(0.9); doc.setLineDashPattern([],0);
-    L(gxT(fIni), gyV(0), gxT(hoyD), gyV(me/1e6));
-    sd(K.ak); lw(0.6); doc.setLineDashPattern([3,3],0);
-    L(gxT(hoyD), gyV(me/1e6), gxT(fFin), gyV(Math.min(proyMeFin, maxV)));
-    doc.setLineDashPattern([],0);
-    sf(K.ak); doc.circle(gxT(hoyD), gyV(me/1e6), 1.5, 'F');
-
-    // Etiquetas con valor de HOY
-    if (gastoGPMedido) {
-      st(K.rk); fs(6.5); fw('bold');
-      T(`$${(totGP/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(totGP/1e6)-1.5);
-    }
-    st(K.ak); fs(6.5); fw('bold');
-    T(`$${(me/1e6).toFixed(1)}M`, gxT(hoyD)+3, gyV(me/1e6)+2.5);
-
-    y = GY + GH + 6;
-
-    // Leyenda compacta
-    st(K.gtx); fs(7); fw('normal');
-    if (gastoGPMedido) {
-      sf(K.rk); R(GX, y, 5, 2.5, 'F'); T('Gasto GP',   GX+7,  y+2.2);
-    } else {
-      // La leyenda no nombra una serie que no está en la gráfica, y dice por
-      // qué falta — si no, se lee como una gráfica a la que le falló el dibujo.
-      st(K.gmu); T('Gasto GP: la corrida no incluye esta obra', GX, y+2.2);
-      st(K.gtx);
-    }
-    sf(K.ak); R(GX+70, y, 5, 2.5, 'F'); T('Monto ejecutado', GX+77, y+2.2);
-    st(K.gmu); T('— — proyección al plazo',  GX+125, y+2.2);
-    y += 6;
-  } else {
-    // Sin fechas capturadas
-    st(K.gmu); fs(9); fw('italic');
-    T('Captura fechas de inicio y fin en Planeación → Contrato para ver la gráfica de proyección.',
-      GX + GW/2, GY + GH/2, {align:'center'});
-    y = GY + GH + 6;
-  }
-
-  // ── Indicadores esenciales del plazo (una sola tabla, sin duplicados) ──
-  const ritmoG_semanal = diasTransc > 0 ? (totGP / diasTransc * 7) : 0;
-  const ritmoM_semanal = diasTransc > 0 ? (me    / diasTransc * 7) : 0;
-  // Sin gasto medido `totGP` vale 0, así que `ritmoG_semanal` vale 0 y esto ya
-  // sale `null` — no hace falta preguntar aquí por el veredicto. Pero sale
-  // `null` por el MISMO camino que «no hay fechas capturadas», y ahí sí se
-  // distinguen: quien decide qué se imprime es el renglón de abajo, que es el
-  // único sitio donde está escrito qué significa cada hueco.
-  const finProyGP = hayFechas && ritmoG_semanal > 0
-    ? new Date(hoyD.getTime() + ((PPTO - totGP) / ritmoG_semanal) * 7 * 86400000)
-    : null;
-  const finProyME = hayFechas && ritmoM_semanal > 0
-    ? new Date(hoyD.getTime() + ((PPTO - me) / ritmoM_semanal) * 7 * 86400000)
-    : null;
-
-  const proyBody = [
-    ['Inicio contrato',    fmtDDMMMYYY(fIni),   ''],
-    ['Fin programado',     fmtDDMMMYYY(fFinOrig || fFin),
-     obra.finAmpliado ? `Ampliado a ${fmtDDMMMYYY(parseFecha(obra.finAmpliado))}` : 'Sin ampliación'],
-    ['Corte actual',       fmtDDMMMYYY(hoyD),   `Semana ISO ${(() => { const t=new Date(hoyD); t.setDate(t.getDate()+4-(t.getDay()||7)); const s=Math.ceil((((t-new Date(t.getFullYear(),0,1))/86400000)+1)/7); return s; })()}`],
-    ['Días transcurridos', `${diasTransc}`,     `de ${diasTot} · ${PCT(pctPlazo)}`],
-    ['Días restantes',     `${diasRest}`,       diasRest > 0 ? `hasta ${fmtDDMMMYYY(fFin)}` : 'Plazo vencido'],
-    ['Ritmo GP semanal',
-     gastoGPMedido ? `$${(ritmoG_semanal/1e6).toFixed(2)}M` : 'sin medir',
-     gastoGPMedido ? 'al ritmo actual' : 'la corrida no incluye esta obra'],
-    ['Ritmo avance semanal',`$${(ritmoM_semanal/1e6).toFixed(2)}M`,'al ritmo actual'],
-    ['Fin proy. por gasto',
-     gastoGPMedido ? fmtDDMMMYYY(finProyGP) : 'sin medir',
-     !gastoGPMedido ? 'no se puede proyectar sin el gasto' :
-     finProyGP && finProyGP > fFin ? `${Math.round((finProyGP-fFin)/86400000)} días tarde` :
-     finProyGP ? `${Math.round((fFin-finProyGP)/86400000)} días holgura` : '—'],
-    ['Fin proy. por avance',fmtDDMMMYYY(finProyME),
-     finProyME && finProyME > fFin ? `${Math.round((finProyME-fFin)/86400000)} días tarde` :
-     finProyME ? `${Math.round((fFin-finProyME)/86400000)} días holgura` : '—'],
-  ];
-  autoT(
-    ['Indicador','Valor','Referencia'], proyBody,
-    [CW*0.28, CW*0.20, CW*0.52], ML, y,
-    {columnStyles:{1:{halign:'right',fontStyle:'bold',textColor:K.ng}, 2:{textColor:K.gmu}},
-     didParseCell:(d) => {
-       // Colorear "tarde" en rojo, "holgura" en verde
-       if (d.column.index === 2) {
-         const txt = String(d.cell.text[0] || '').toLowerCase();
-         if (txt.includes('tarde') || txt.includes('vencid')) d.cell.styles.textColor = K.rk;
-         else if (txt.includes('holgura')) d.cell.styles.textColor = K.vk;
-       }
-     }}
-  );
-  y = doc.lastAutoTable.finalY;
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 5 — PERSONAL · NÓMINA · TOP PROVEEDORES
-  // (La sección de MAQUINARIA se dibuja en su propia página junto con
-  //  ALMACÉN — no se duplica aquí como antes.)
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('8  PERSONAL EN CAMPO · NÓMINA · TOP PROVEEDORES', y);
-
-  // Solo usa datos reales de nómina cargada. Si no hay, muestra placeholder.
-  // fix/kpis-en-cero (2026-09-17): lee del snapshot real vía parámetro
-  // nominaHistorial. Antes leía la constante hardcoded vacía NOMINA_S18 y el
-  // PDF siempre mostraba "Nómina pendiente de cargar" aunque hubiera datos.
-  // `nominaHistorial` llega ya como CALENDARIO (ver `semanasDeNomina`), así
-  // que "la última" es la última semana rayada con sus partes sumadas, no el
-  // último archivo subido. El PDF es un documento que se entrega: cuando leía
-  // por posición, el de Cangrejera decía 35 trabajadores donde había 134,
-  // porque esa semana llegó en dos archivos y sólo se imprimía el segundo.
-  const _ultNominaPDF = nominaHistorial.length > 0 ? nominaHistorial[nominaHistorial.length - 1] : null;
-  const nomData = Array.isArray(_ultNominaPDF?.trabajadores) ? _ultNominaPDF.trabajadores : [];
-  const _partesPDF = _ultNominaPDF?.partes?.length || 1;
-  const hayNomina = nomData.length > 0;
-  const dir = nomData.filter(p => p.tipo === 'D').length;
-  const ind = nomData.filter(p => p.tipo === 'I').length;
-  const tot = dir + ind;
-  const conHE = nomData.filter(p => (p.horasExtra || 0) > 0).length;
-
-  if (hayNomina) {
-    // De qué semana SON estas cifras. Sin esto, el lector del PDF no tiene cómo
-    // saber si mira la semana pasada o una de hace un mes, ni que el total sale
-    // de sumar dos archivos.
-    st(K.gmu); fs(8); fw('normal');
-    T(`${_ultNominaPDF.semana || 'semana sin identificar'}` +
-      (_partesPDF > 1 ? ` · rayada en ${_partesPDF} archivos, sumados` : ''), ML, y + 3);
-    y += 6;
-    y = kpiRow([
-      ['Total personal',  String(tot),   'trabajadores en sitio', K.ng],
-      ['Directo',         String(dir),   'mano de obra',          K.ak],
-      ['Indirecto',       String(ind),   'administración',        K.mk],
-      ['Con horas extra', String(conHE), 'de esta semana',        K.ak2],
-    ], y) + 2;
-  } else {
-    // Placeholder cuando no hay nómina cargada
-    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 22, 'FD');
-    st(K.gmu); fs(11); fw('bold');
-    T('Nómina pendiente de cargar', ML + CW/2, y + 10, {align:'center'});
-    st(K.gmu); fs(8); fw('normal');
-    T('El Administrador de Obra sube el Excel semanal desde Operación → Nómina.',
-      ML + CW/2, y + 16, {align:'center'});
-    y += 26;
-  }
-
-  // Top nómina y top proveedores — SECUENCIALES, no lado a lado.
-  // (Antes iban en 2 columnas y cuando no había datos se amontonaban.)
-
-  // Sub-título top nómina
-  st(K.ng); fs(FS_SEC); fw('bold');
-  T('Top nómina de la semana', ML, y + 4);
-  y += 7;
-
-  const nom5 = nomData.slice().sort((a,b) => (b.total||0) - (a.total||0)).slice(0,5);
-  const nomBody = nom5.length > 0
-    ? nom5.map((pe,i) => [
-        i+1, pe.nombre||'', pe.categoria||pe.cat||'',
-        `${(pe.horasExtra||0).toFixed(0)}h`, MXN(pe.total||0),
-      ])
-    : [['—','Sin nómina capturada','—','—','—']];
-  autoT(
-    ['#','Trabajador','Categoría','HE hrs','Total semana'], nomBody,
-    [10, CW*0.44, CW*0.24, CW*0.12, CW*0.20], ML, y,
-    {columnStyles:{0:{halign:'center'},3:{halign:'right'},4:{halign:'right'}},
-     didParseCell:(d) => {
-       if (nom5.length === 0) {
-         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
-         return;
-       }
-       if (d.column.index === 3) {
-         const he = parseFloat(d.cell.text[0]) || 0;
-         d.cell.styles.textColor = he >= 20 ? K.rk : K.ak2;
-         d.cell.styles.fontStyle = 'bold';
-       }
-       if (d.column.index === 4) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = K.ng; }
-     }}
-  );
-  y = doc.lastAutoTable.finalY + 6;
-
-  // Sub-título top proveedores
-  st(K.ng); fs(FS_SEC); fw('bold');
-  T('Top proveedores acumulados', ML, y + 4);
-  y += 7;
-
-  const provs = Array.isArray(obra.proveedores) && obra.proveedores.length > 0
-    ? obra.proveedores : [];
-  const totPv = provs.reduce((t,p) => t + p[1], 0);
-  const pvBody = provs.length > 0
-    ? provs.slice(0, 8).map(([nm,mt],i) => [i+1, nm.slice(0,60), MXN(mt), PCT(totPv>0 ? mt/totPv*100 : 0)])
-    : [['—','Sin datos en esta obra','—','—']];
-  autoT(
-    ['#','Proveedor','Monto acumulado','% del top'], pvBody,
-    [10, CW*0.60, CW*0.20, CW*0.15], ML, y,
-    {columnStyles:{0:{halign:'center'},2:{halign:'right'},3:{halign:'right'}},
-     didParseCell:(d) => {
-       if (provs.length === 0) {
-         d.cell.styles.textColor = K.gmu; d.cell.styles.fontStyle = 'italic';
-       }
-     }}
-  );
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAG 6 — INDICADORES DE RIESGO · OBSERVACIONES
-  // ════════════════════════════════════════════════════════════════════════
-  doc.addPage(); pageFrame();
-  y=CY0;
-  y=secHead('9  INDICADORES DE RIESGO · OBSERVACIONES', y);
-
-  // Indicadores de riesgo con ESCALA DE 5 NIVELES:
-  //   Bien       (verde oscuro)  — óptimo
-  //   Normal     (verde claro)   — sano, sin acción
-  //   Aceptable  (amarillo)      — vigilancia sugerida
-  //   Atención   (naranja)       — requiere seguimiento
-  //   Crítico    (rojo)          — acción inmediata
-  // Cada indicador tiene su propia función de clasificación con umbrales
-  // específicos; están comentados por si necesitan ajuste después.
-
-  const NIVELES = {
-    bien:      { nivel:'Bien',      tc:[59,109,17], bg:[218,236,196] },   // verde oscuro
-    normal:    { nivel:'Normal',    tc:K.vk,        bg:K.vb            }, // verde
-    aceptable: { nivel:'Aceptable', tc:[133,79,11], bg:[250,238,218]   }, // amarillo/ámbar
-    atencion:  { nivel:'Atención',  tc:[184,66,4],  bg:[254,237,215]   }, // naranja
-    critico:   { nivel:'Crítico',   tc:K.rk,        bg:K.rb            }, // rojo
-  };
-  // Ayudas para clasificar: "más bajo es mejor" o "más alto es mejor"
-  const clasificarMasAltoMejor = (v, umbrales) => {
-    // umbrales = [bien, normal, aceptable, atencion]  (crítico = por debajo de todos)
-    if (v >= umbrales[0]) return NIVELES.bien;
-    if (v >= umbrales[1]) return NIVELES.normal;
-    if (v >= umbrales[2]) return NIVELES.aceptable;
-    if (v >= umbrales[3]) return NIVELES.atencion;
-    return NIVELES.critico;
-  };
-  const clasificarMasBajoMejor = (v, umbrales) => {
-    // umbrales = [bien, normal, aceptable, atencion]
-    if (v <= umbrales[0]) return NIVELES.bien;
-    if (v <= umbrales[1]) return NIVELES.normal;
-    if (v <= umbrales[2]) return NIVELES.aceptable;
-    if (v <= umbrales[3]) return NIVELES.atencion;
-    return NIVELES.critico;
-  };
-
-  const totProvsObra = provs.reduce((t,p) => t + (p[1]||0), 0);
-  const top3Pct = totProvsObra > 0
-    ? provs.slice(0,3).reduce((t,p) => t + (p[1]||0), 0) / totProvsObra * 100
-    : 0;
-  const sinCobrarPct = te > 0 ? (pco + epc) / te * 100 : 0;
-  const frentesSinIniciar = subs.filter(s => (s.a||0) === 0 && (s.imp||0) > 0).length;
-  const trabHE20 = nomData.filter(p => (p.horasExtra||0) >= 20).length;
-
-  const rsgBodyCalc = [];
-  let idxRiesgo = 1;
-
-  // 1. MARGEN BRUTO — más alto es mejor
-  // Umbrales: ≥20 Bien, 15-20 Normal, 10-15 Aceptable, 5-10 Atención, <5 Crítico
-  // Sin gasto medido el renglón se queda SIN nivel y lo dice. Clasificarlo
-  // daría «Bien»: `mg` sería `me` menos casi nada, o sea el margen más alto
-  // posible, justo en la obra de la que menos se sabe. El renglón no se omite
-  // —un indicador que desaparece no se nota— se publica sin veredicto.
-  if (me > 0) {
-    const n = gastoGPMedido ? clasificarMasAltoMejor(mpct, [20, 15, 10, 5])
-                            : {nivel:'—', tc:K.gmu, bg:K.glt};
-    rsgBodyCalc.push([idxRiesgo++, 'Margen bruto', margenPctTxt, n,
-      gastoGPMedido
-        ? `Ejecutado ${MXN(me)} · Gasto ${gastoTxt} · Margen ${margenTxt}`
-        : `Ejecutado ${MXN(me)} · el gasto de GP no incluye esta obra`]);
-  }
-
-  // 2. AVANCE vs PROGRAMA — más alto es mejor (avance real - avance programado)
-  //
-  // Este renglón se llamaba «Avance vs programa» pero restaba la RECTA DEL
-  // PLAZO, y en el detalle escribía «Programado», que es lo que un residente
-  // entiende como el programa de obra autorizado. Ahora sólo existe cuando hay
-  // programa cargado: un semáforo que dice «vs programa» sin programa es una
-  // cifra inventada con otro nombre, y uno que dice «vs recta» sigue
-  // calificando a la obra contra algo que nadie firmó. Sin anexo, el renglón
-  // no sale — la falta la publica la tabla de arriba con «n/d».
-  if (progPdf.pct !== null) {
-    const desv = af - progPdf.pct;   // positivo = adelantado, negativo = atrasado
-    // Umbrales: ≥0 Bien, -3 Normal, -8 Aceptable, -15 Atención, <-15 Crítico
-    const n = clasificarMasAltoMejor(desv, [0, -3, -8, -15]);
-    rsgBodyCalc.push([idxRiesgo++, 'Avance vs programa',
-      `${desv >= 0 ? '+' : ''}${desv.toFixed(1)}pp`, n,
-      `Real ${PCT(af)} · Programa ` +
-      `${PCT(progPdf.pct)}${hayFechas ? ` · ${diasRest} días restantes` : ''}`]);
-  }
-
-  // 3. GASTO vs AVANCE — proporción sana: por cada $ ejecutado, cuánto se gastó
-  // Ideal: gasto/ejecución ≈ 1 - margen_esperado (ej. 0.8 para margen 20%)
-  // Umbrales: <=0.75 Bien, <=0.85 Normal, <=0.95 Aceptable, <=1.05 Atención, >1.05 Crítico
-  // Misma razón que el margen: el cociente con el gasto sin medir sale ~0 y
-  // eso es «Bien» por el camino más corto.
-  if (me > 0) {
-    const ratio = totGast / me;
-    const n = gastoGPMedido ? clasificarMasBajoMejor(ratio, [0.75, 0.85, 0.95, 1.05])
-                            : {nivel:'—', tc:K.gmu, bg:K.glt};
-    rsgBodyCalc.push([idxRiesgo++, 'Gasto vs ejecución',
-      gastoGPMedido ? `${ratio.toFixed(2)}x` : 'sin medir', n,
-      gastoGPMedido
-        ? `Por cada $1 ejecutado se ha gastado $${ratio.toFixed(2)}`
-        : 'El gasto de GP no incluye esta obra: no hay cociente que publicar']);
-  }
-
-  // 4. ESTIMACIONES SIN COBRAR — más bajo es mejor
-  // Umbrales: ≤10 Bien, ≤25 Normal, ≤40 Aceptable, ≤60 Atención, >60 Crítico
-  if (te > 0) {
-    const n = clasificarMasBajoMejor(sinCobrarPct, [10, 25, 40, 60]);
-    rsgBodyCalc.push([idxRiesgo++, 'Estimaciones sin cobrar', PCT(sinCobrarPct), n,
-      `${MXN(pco + epc)} pendientes de ${MXN(te)}`]);
-  }
-
-  // 5. FRENTES SIN INICIAR — % del total de partidas
-  if (subs.length > 0) {
-    const pctSin = (frentesSinIniciar / subs.length) * 100;
-    // Umbrales: ≤10 Bien, ≤25 Normal, ≤45 Aceptable, ≤65 Atención, >65 Crítico
-    const n = clasificarMasBajoMejor(pctSin, [10, 25, 45, 65]);
-    rsgBodyCalc.push([idxRiesgo++, 'Frentes sin iniciar', `${frentesSinIniciar}`, n,
-      `de ${subs.length} partidas con importe (${PCT(pctSin)})`]);
-  }
-
-  // 6. CONCENTRACIÓN DE PROVEEDORES — más bajo es mejor
-  // Umbrales: ≤30 Bien, ≤45 Normal, ≤60 Aceptable, ≤75 Atención, >75 Crítico
-  if (provs.length >= 3) {
-    const n = clasificarMasBajoMejor(top3Pct, [30, 45, 60, 75]);
-    rsgBodyCalc.push([idxRiesgo++, 'Concentración de proveedores', PCT(top3Pct), n,
-      `Top 3 acumulan ${PCT(top3Pct)} del gasto en proveedores`]);
-  }
-
-  // 7. TRABAJADORES CON HE EXCESIVAS — solo si hay nómina
-  if (hayNomina) {
-    // Umbrales: 0 Bien, ≤2 Normal, ≤4 Aceptable, ≤7 Atención, >7 Crítico
-    const n = clasificarMasBajoMejor(trabHE20, [0, 2, 4, 7]);
-    rsgBodyCalc.push([idxRiesgo++, 'Trabajadores con HE ≥ 20 hrs', `${trabHE20}`, n,
-      trabHE20 === 0 ? 'Sin horas extra excesivas'
-      : `${trabHE20} trabajador(es) con HE excesivas — revisar turnos`]);
-  }
-
-  // Si NO hay ningún indicador (obra muy nueva), placeholder
-  if (rsgBodyCalc.length === 0) {
-    rsgBodyCalc.push([1,'Sin datos suficientes','—',
-      {nivel:'—', tc:K.gmu, bg:K.glt},
-      'Captura estimaciones, avance y nómina para ver indicadores de riesgo']);
-  }
-  // Ordenar de mejor a peor: Bien → Normal → Aceptable → Atención → Crítico
-  const ordenNivel = { 'Bien':1, 'Normal':2, 'Aceptable':3, 'Atención':4, 'Crítico':5 };
-  rsgBodyCalc.sort((a, b) => (ordenNivel[a[3]?.nivel] || 99) - (ordenNivel[b[3]?.nivel] || 99));
-  // Renumerar tras ordenar
-  rsgBodyCalc.forEach((r, i) => { r[0] = i + 1; });
-  const rsgBody = rsgBodyCalc;
-
-  // Cada fila ahora es [n, titulo, val, {nivel,tc,bg}, desc]
-  const rsgBodyClean = rsgBody.map(([n, titulo, val, nivelObj, desc]) =>
-    [n, titulo, val, nivelObj?.nivel || '—', desc]);
-  const col4w = CW - 10 - CW*0.30 - 32 - 30 - 6;
-  autoT(
-    ['#','Indicador','Valor','Nivel','Descripción'], rsgBodyClean,
-    [10, CW*0.30, 32, 30, col4w], ML, y,
-    {columnStyles:{0:{halign:'center'}, 2:{halign:'right',fontStyle:'bold'}, 3:{halign:'center',fontStyle:'bold'}},
-     didParseCell:(d) => {
-       if (d.column.index === 3) {
-         const nivelObj = rsgBody[d.row.index]?.[3];
-         if (nivelObj) {
-           d.cell.styles.textColor = nivelObj.tc;
-           d.cell.styles.fillColor = nivelObj.bg;
-         }
-       }
-     }}
-  );
-  y = doc.lastAutoTable.finalY + 3;
-
-  // Leyenda de la escala
-  st(K.gmu); fs(6.5); fw('bold');
-  T('ESCALA DE NIVELES:', ML, y + 3);
-  let lx = ML + 32;
-  ['bien','normal','aceptable','atencion','critico'].forEach(k => {
-    const n = NIVELES[k];
-    sf(n.bg); R(lx, y + 0.5, 3, 3, 'F');
-    st(n.tc); fs(6.5); fw('bold');
-    T(n.nivel, lx + 4, y + 3);
-    lx += 4 + doc.getTextWidth(n.nivel) + 8;
-  });
-  y += 6;
-
-  y=secHead('Observaciones y alertas', y);
-  // Observaciones alineadas a la nueva escala de 5 niveles.
-  const obs = [];
-  // Margen (mismos umbrales de la tabla)
-  // El caso sin medir va ARRIBA y con nivel: si se cae por los umbrales,
-  // `mpct` sale altísimo —`me` menos casi nada— y el documento no dice NADA
-  // del margen, que es peor que decir un número malo. El silencio en una
-  // sección de alertas se lee como «aquí no hay nada que ver».
-  if (me > 0 && !gastoGPMedido) {
-    obs.push([NIVELES.atencion,
-      'El margen bruto no se pudo medir: la corrida de gasto de GP no incluye ' +
-      'esta obra. Verifica la clave de GP en Planeación → Contrato.']);
-  } else if (me > 0) {
-    if (mpct < 5) obs.push([NIVELES.critico, `Margen bruto ${PCT(mpct)} — muy bajo, revisar productividad y sobrecostos.`]);
-    else if (mpct < 10) obs.push([NIVELES.atencion, `Margen bruto ${PCT(mpct)} — revisar productividad y desperdicios.`]);
-    else if (mpct < 15) obs.push([NIVELES.aceptable, `Margen bruto ${PCT(mpct)} — dentro de rango aceptable pero mejorable.`]);
-  }
-  // Estimaciones sin cobrar
-  if (epc > 0) obs.push([NIVELES.atencion,
-    `${MXN(epc)} en proceso de facturación — dar seguimiento con el cliente.`]);
-  // HE excesivas
-  if (trabHE20 >= 5) obs.push([NIVELES.critico,
-    `${trabHE20} trabajador(es) con HE ≥ 20 hrs — revisar organización de turnos.`]);
-  else if (trabHE20 >= 3) obs.push([NIVELES.aceptable,
-    `${trabHE20} trabajador(es) con HE ≥ 20 hrs — vigilar rendimiento.`]);
-  // Anticipo por recuperar
-  if (obra.pctAnticipo && te > 0) {
-    const porRecuperar = te * (obra.pctAnticipo / 100);
-    if (porRecuperar > 0) obs.push([{nivel:'FINANCIERO', tc:K.mk, bg:K.mb},
-      `Anticipo por recuperar: ${MXN(porRecuperar)}`]);
-  }
-  // Desviación contra lo programado — sólo contra el programa cargado.
-  // Declarar «atraso significativo» es la afirmación más fuerte del reporte:
-  // va a una junta. Antes salía también del reparto lineal del plazo, con la
-  // advertencia a un lado; la advertencia no la lee nadie y la palabra
-  // «atraso» sí. Sin anexo no se acusa a la obra: se dice que falta el anexo.
-  if (progPdf.pct !== null) {
-    const desv = af - progPdf.pct;
-    const contra = `programa ${PCT(progPdf.pct)}`;
-    if (desv < -15) obs.push([NIVELES.critico,
-      `Atraso significativo: avance real ${PCT(af)} vs ${contra} (${desv.toFixed(1)}pp).`]);
-    else if (desv < -8) obs.push([NIVELES.atencion,
-      `Retraso: avance real ${PCT(af)} vs ${contra} (${desv.toFixed(1)}pp).`]);
-  } else obs.push([NIVELES.atencion,
-    'Sin programa de obra cargado: no se puede medir atraso ni adelanto. ' +
-    'Carga el AE11 o el DE-5 en Planeación → Programa.']);
-  if (obs.length === 0) obs.push([NIVELES.bien,
-    'No se detectaron alertas automáticas con los datos actuales de la obra.']);
-
-  // Tabla plana de observaciones — nueva estructura: [nivelObj, texto]
-  const obsBody = obs.map(([nivelObj, txt]) => [nivelObj.nivel.toUpperCase(), txt]);
-  autoT(
-    ['Nivel','Observación'], obsBody,
-    [28, CW - 28], ML, y,
-    {columnStyles:{0:{halign:'center', fontStyle:'bold'}, 1:{halign:'left'}},
-     didParseCell:(d) => {
-       const r = obs[d.row.index];
-       if (!r) return;
-       if (d.column.index === 0) {
-         d.cell.styles.textColor = r[0].tc;
-         d.cell.styles.fillColor = r[0].bg;
-       }
-     }}
-  );
-
-  // ════════════════════════════════════════════════════════════════════════
-  // SUBCONTRATOS: resumen ejecutivo + slide individual por subcontrato
-  // Si NO hay subcontratos, un slide con placeholder informativo y ya.
-  // ════════════════════════════════════════════════════════════════════════
-  if (!subcontratos || subcontratos.length === 0) {
-    doc.addPage(); pageFrame();
-    y = CY0;
-    y = secHead('SUBCONTRATOS', y);
-    sf(K.glt); sd(K.gbd); lw(0.3); R(ML, y, CW, 26, 'FD');
-    st(K.gmu); fs(12); fw('bold');
-    T('Sin subcontratos registrados en esta obra', ML + CW/2, y + 12, {align:'center'});
-    st(K.gmu); fs(8); fw('normal');
-    T('Los subcontratistas activos se registran en Operación → Subcontratos.',
-      ML + CW/2, y + 19, {align:'center'});
-  } else {
-    doc.addPage(); pageFrame();
-    y = CY0;
-    y = secHead('RESUMEN EJECUTIVO DE SUBCONTRATOS', y);
-
-    // KPIs resumen
-    // "Pagado" alineado con el detalle del sub y con la UI (ago-2026):
-    // estimaciones Pagadas + pagos legacy sin origenEstimacionId
-    // (para no doble-contar cuando la estimación pagada ya generó un pago).
-    const _neEstResumen = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-    const pagadoDeSub = (s) => {
-      const ests = (s.estimaciones||[])
-        .filter(e => _neEstResumen(e.estatus) === 'pagada')
-        .reduce((t,e)=>t+pf(e.monto), 0);
-      const legacy = (s.pagos||[])
-        .filter(p => p.estatus==='pagado' && !p.origenEstimacionId)
-        .reduce((t,p)=>t+pf(p.monto), 0);
-      return ests + legacy;
-    };
-    const totContratado = subcontratos.reduce((t,s)=>t+pf(s.monto), 0);
-    const totEjecutado  = subcontratos.reduce((t,s)=>t + desgloseEjecutado(
-      s.conceptos||[], (s.modoAvance||"porcentaje")==="volumen").total, 0);
-    const totPagado = subcontratos.reduce((t,s)=>t + pagadoDeSub(s), 0);
-    const activos = subcontratos.filter(s=>(s.estado||'activa')==='activa').length;
-
-    y = kpiRow([
-      ['Subcontratos',     `${subcontratos.length}`, `${activos} activos`, K.ng],
-      ['Monto contratado', MXN(totContratado), 'suma de contratos',       K.ak],
-      ['Ejecutado físico', MXN(totEjecutado),  totContratado>0?PCT(totEjecutado/totContratado*100)+' del total':'',  K.vk],
-      ['Pagado',           MXN(totPagado),     totContratado>0?PCT(totPagado/totContratado*100)+' del total':'',     K.mo],
-    ], y) + 3;
-
-    // Tabla resumen de subcontratos
-    const subRows = subcontratos.map(s => {
-      const modoVolS = (s.modoAvance||"porcentaje")==="volumen";
-      const ejec   = desgloseEjecutado(s.conceptos||[], modoVolS).total;
-      const avPct  = avanceFisicoPonderado(s.conceptos||[], contratoDeSub(s), modoVolS);
-      const pag    = pagadoDeSub(s);
-      const finPct = pf(s.monto) > 0 ? (pag/pf(s.monto))*100 : 0;
-      const pendiente = pf(s.monto) - pag;
-      return [
-        s.nombre || s.id || '—',
-        s.proveedor || '—',
-        (s.estado || 'activa').toUpperCase(),
-        MXN(pf(s.monto)),
-        PCT(avPct, 0),
-        MXN(pag),
-        PCT(finPct, 0),
-        MXN(pendiente),
-      ];
-    });
-    // Fila de totales
-    subRows.push([
-      '', 'TOTAL', '', MXN(totContratado), '',
-      MXN(totPagado), '', MXN(totContratado - totPagado)
-    ]);
-
-    autoT(
-      ['Subcontrato', 'Proveedor', 'Estado', 'Contratado', '% Avance', 'Pagado', '% Pagado', 'Por pagar'],
-      subRows,
-      [42, 50, 22, 30, 18, 30, 18, 41],
-      ML, y,
-      {
-        bodyStyles: { fontSize: FS_TD - 0.5 },
-        columnStyles: {
-          2: { halign:'center', fontSize: FS_SM },
-          3: { halign:'right' },
-          4: { halign:'center', fontStyle:'bold' },
-          5: { halign:'right' },
-          6: { halign:'center' },
-          7: { halign:'right', fontStyle:'bold' },
-        },
-        didParseCell: (d) => {
-          const ri = d.row.index;
-          // Fila TOTAL
-          if (ri === subRows.length - 1) {
-            d.cell.styles.fillColor = K.ng;
-            d.cell.styles.textColor = K.wh;
-            d.cell.styles.fontStyle = 'bold';
-            return;
-          }
-          const s = subcontratos[ri];
-          if (!s) return;
-          // Color al % avance
-          if (d.column.index === 4) {
-            const av = parseFloat(d.cell.text[0]) || 0;
-            d.cell.styles.textColor = av >= 75 ? K.vk : av >= 40 ? K.ak2 : K.rk;
-          }
-          // Color al estado
-          if (d.column.index === 2) {
-            const est = (s.estado || 'activa').toLowerCase();
-            d.cell.styles.textColor =
-              est === 'terminada' ? K.vk :
-              est === 'pausada' ? K.ak2 :
-              est === 'cancelada' ? K.rk : K.ak;
-          }
-        },
-      }
-    );
-    y = doc.lastAutoTable.finalY + 4;
-
-    // Nota al pie
-    st(K.gmu); fs(7); fw('italic');
-    T(`El detalle de cada subcontrato (catálogo y estimaciones) aparece en las hojas siguientes.`,
-      ML, y+3);
-
-    // ──────────────────────────────────────────────────────────────────────
-    // PÁGINAS DE SUBCONTRATOS — una por cada subcontrato, INMEDIATAMENTE
-    // después del resumen ejecutivo (antes estaban al final del PDF, muy
-    // lejos del resumen).
-    // ──────────────────────────────────────────────────────────────────────
-    for (const sub of subcontratos) {
-      doc.addPage();
-      pageFrame();
-      let ySub = CY0;
-      ySub = secHead(`SUBCONTRATO · ${sub.nombre || sub.id}`.toUpperCase(), ySub, K.ng);
-
-      // KPIs del subcontrato
-      // Pagado = estimaciones Pagadas + pagos legacy sin origenEstimacionId
-      // (mismo criterio que la app tras el refactor de subs).
-      const modoVolSubPDF = (sub.modoAvance||"porcentaje")==="volumen";
-      const totalCat = (sub.conceptos||[]).reduce((t,c)=>t+pf(c.importe), 0);
-      const ejecSub = desgloseEjecutado(sub.conceptos||[], modoVolSubPDF).total;
-      const avSub = avanceFisicoPonderado(sub.conceptos||[], contratoDeSub(sub), modoVolSubPDF);
-      const _neEstPDF = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-      const pagSubEsts = (sub.estimaciones||[])
-        .filter(e => _neEstPDF(e.estatus) === 'pagada')
-        .reduce((t,e)=>t+pf(e.monto), 0);
-      const pagSubLegacy = (sub.pagos||[])
-        .filter(p => p.estatus==='pagado' && !p.origenEstimacionId)
-        .reduce((t,p)=>t+pf(p.monto), 0);
-      const pagSub = pagSubEsts + pagSubLegacy;
-      const finSub = pf(sub.monto) > 0 ? (pagSub/pf(sub.monto))*100 : 0;
-      ySub = kpiRow([
-        ['Monto contratado', MXN(pf(sub.monto)), sub.proveedor||'Sin proveedor', K.ng],
-        ['Total catálogo',   MXN(totalCat),      `${(sub.conceptos||[]).length} conceptos`, K.az],
-        ['Ejecutado',        MXN(ejecSub),       `${PCT(avSub)} físico`, K.vd],
-        ['Pagado',           MXN(pagSub),        `${PCT(finSub)} financiero`, K.mo],
-      ], ySub);
-
-      // Datos generales
-      ySub = secHead('Datos del subcontrato', ySub, K.gtx);
-      const datosSub = [
-        ['Proveedor',   sub.proveedor||'—'],
-        ['Estado',      (sub.estado||'activa').toUpperCase()],
-        ['Inicio',      sub.fechaInicio||'—'],
-        ['Fin',         sub.fechaFin||'—'],
-        ['Descripción', sub.descripcion||'—'],
-      ];
-      ySub = autoT(['Campo','Valor'], datosSub, [50, CW-50], ML, ySub, {
-        bodyStyles: {fontSize: FS_SM},
-      });
-
-      // Balance físico-financiero (bloque destacado)
-      {
-        const deltaMonto = ejecSub - pagSub;
-        const deltaPct   = avSub - finSub;
-        const positivo   = deltaMonto >= 0;
-        const absPct     = Math.abs(deltaPct);
-        const col        = absPct < 5 ? K.vk : absPct < 15 ? K.ak2 : K.rk;
-        const bg         = absPct < 5 ? K.vb : absPct < 15 ? K.ab2 : K.rb;
-        const etiqueta   = positivo ? "Rezago de pago" : "Adelanto de pago";
-        const explicacion = positivo
-          ? "El sub ha ejecutado más obra que lo pagado."
-          : "Al sub se le ha pagado más de lo ejecutado.";
-        const bloqueH = 14;
-        sf(bg); doc.rect(ML, ySub, CW, bloqueH, 'F');
-        st(K.gtx); fs(FS_KL); fw('bold');
-        doc.text('BALANCE FÍSICO-FINANCIERO', ML + 3, ySub + 4.5);
-        st(col); fs(FS_TD); fw('bold');
-        doc.text(etiqueta, ML + 3, ySub + 9.5);
-        st(K.gmu); fs(6.5); fw('normal');
-        doc.text(explicacion, ML + 3, ySub + 12.5);
-        st(col); fs(FS_KV - 2); fw('bold');
-        doc.text(MXND(deltaMonto), ML + CW - 3, ySub + 6, { align: 'right' });
-        fs(FS_KL); doc.text(`${positivo ? '+' : ''}${deltaPct.toFixed(1)} pp`, ML + CW - 3, ySub + 11, { align: 'right' });
-        ySub += bloqueH + 3;
-      }
-
-    // La gráfica semanal del subcontrato se retiró el 2026-09-22: prometía una
-    // serie que nunca pudo existir. `obras/{id}/subcontratos/historial_*` no
-    // tiene regla en firestore.rules y cae en el `match /{document=**}` que lo
-    // deniega todo, así que la escritura llevaba meses rebotando en silencio
-    // (`fsSet` se traga el fallo) y la lectura devolvía siempre vacío. Ningún
-    // usuario la vio funcionar. Ver PENDIENTES #31.
-
-      // Catálogo de conceptos
-      if ((sub.conceptos||[]).length > 0) {
-        const yDisp = CYmax - ySub;
-        if (yDisp > 30) {
-          ySub = secHead('Catálogo de conceptos', ySub, K.gtx);
-          const filas = sub.conceptos.map(c => [
-            c.clave||'—',
-            (c.desc||'').substring(0,60),
-            c.unidad||'',
-            fmtCant(pf(c.cantidad), c.pu),
-            MXN(pf(c.pu)),
-            MXN(pf(c.importe)),
-            PCT(pf(c.avance),0),
-          ]);
-          ySub = autoT(
-            ['Clave','Descripción','Und','Cant.','P.U.','Importe','Avance'],
-            filas, [25, 100, 18, 25, 30, 35, 18], ML, ySub,
-            {
-              bodyStyles: {fontSize: FS_SM, halign:'left'},
-              columnStyles: {
-                3: {halign:'right'},
-                4: {halign:'right'},
-                5: {halign:'right', fontStyle:'bold'},
-                6: {halign:'right', fontStyle:'bold'},
-              },
-            });
-        }
-      }
-
-      // Estimaciones del sub (reemplaza al viejo "Historial de pagos")
-      // Cada estimación trae su estatus (En proceso / Autorizada / Pagada);
-      // el total pagado equivale a la suma de las estimaciones Pagadas.
-      const estsSub = Array.isArray(sub.estimaciones) ? sub.estimaciones : [];
-      if (estsSub.length > 0 && (CYmax - ySub) > 25) {
-        ySub = secHead('Historial de estimaciones', ySub, K.gtx);
-        const estFilas = estsSub.map(e => [
-          rotuloEstimacion(e),
-          e.fecha || '—',
-          (e.periodo || e.referencia || '').substring(0, 60),
-          MXN(pf(e.monto)),
-          (e.estatus || 'En proceso').toUpperCase(),
-        ]);
-        ySub = autoT(
-          ['No.','Fecha','Periodo / Referencia','Monto','Estatus'],
-          estFilas, [22, 30, 118, 40, 41], ML, ySub,
-          {
-            bodyStyles: {fontSize: FS_SM},
-            columnStyles: {
-              3: {halign:'right', fontStyle:'bold'},
-              4: {halign:'center'},
-            },
-          });
-      }
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // PAGS — FOTOGRAFÍAS
-  //
-  // EL ORDEN ES POR IMPORTE, DE MAYOR A MENOR. Doce fotos no caben todas, así
-  // que el criterio decide qué se ve, y lo que se ve es lo que el expediente
-  // afirma haber respaldado. Hasta el 2026-11-05 el orden era por DELTA DE
-  // AVANCE DE LA SEMANA, con el número de fotos como desempate. Eso responde a
-  // otra pregunta —«¿qué se movió esta semana?»— y para un expediente tiene dos
-  // fallas: la partida de $10 millones nunca sale si esta semana no se tocó, y
-  // «más fotos» premia a quien repite la misma toma. La cobertura se pondera
-  // por importe, así que las fotos que la sostienen se enseñan en ese orden.
-  //
-  // Las fotos salen de `evidenciaDePartida`, la misma cuenta que lee la galería.
-  // Antes esta función aplanaba `s.fotos` por su cuenta: era una de tres copias
-  // del mismo recorrido, y la copia de la galería se quedó sin `.flat()` y dejó
-  // invisibles todas las fotos de producción en la pantalla del cliente
-  // (PENDIENTES #32). Con una sola cuenta, el PDF y la pantalla no pueden
-  // enseñar fotos distintas.
-  //
-  // El orden de las que PONDERAN sale de `cobertura.porImporte`, que es el
-  // mismo arreglo con el que se calculó el porcentaje: así el documento no
-  // puede publicar un número sacado de un orden y enseñar las fotos de otro.
-  //
-  // Pero el candidato es TODA partida con foto, no sólo las que ponderan. Las
-  // extraordinarias no entran en el denominador y las partidas sin importe
-  // tampoco, y las dos pueden tener fotos reales: dejarlas fuera del expediente
-  // haría invisible evidencia que existe. Van después, también por importe.
-  // Esto también es lo que salva el caso de que la cobertura no se pueda medir:
-  // el mapa queda vacío, todo cae al orden por importe, y las fotos se siguen
-  // enseñando en lugar de desaparecer con el porcentaje.
-  // ════════════════════════════════════════════════════════════════════════
-
-  // EL CRITERIO NO SE DECIDE AQUÍ. `seleccionFotografica` es la misma función
-  // que usa el tablero: quiénes entran, cuántas le tocan a cada una y quién
-  // aparece sin fotos se deciden una vez. Antes esto era un reparto propio de
-  // dos pases con un tope de 12 tecleado cuatro veces, y el tablero tenía otro
-  // reparto distinto al lado de un comentario que afirmaba que era el mismo.
-  const seleccion = seleccionFotografica({
-    subs, evidencia, evidenciaCargada, tope: TOPE_FOTOS });
-  const cobertura = seleccion.cobertura;
-  const fraseCobertura = frasesDeCobertura(cobertura);
-
-  // El pie de cada foto. La fecha NO se rellena con la de hoy: antes decía
-  // `f.fecha || hoy`, así que una foto sin fecha salía impresa, en un reporte
-  // firmado, con la fecha del día en que se generó el PDF. Es inventar un dato
-  // de campo. Si no hay fecha, lo dice.
-  //
-  // El `% avance` va en el pie porque el resumen fotográfico afirma dos cosas a
-  // la vez —esto es lo que pesa y así va— y la segunda no se puede leer de una
-  // foto. Sale de `s.a`, el mismo campo que pinta la barra de la partida: no es
-  // una cifra nueva.
-  const pieDeFoto = (s, f) => ({
-    sec: s.sec, sub: s.sub || '',
-    conc: f.sub || s.sub || '',
-    pct: Number.isFinite(parseFloat(s?.a)) ? parseFloat(s.a) : null,
-    fecha: f.fechaServidor || f.fechaDeclarada || '',
-    sello: selloDeEvidencia(f).texto,
-    url: f.url || null,
-  });
-
-  // El orden en que salen es el del reparto: las del corte del 80% de mayor a
-  // menor importe, y después las que no ponderan con el sitio que haya sobrado.
-  const fotosAll = [];
-  for (const p of [...seleccion.partidas, ...seleccion.fuera]) {
-    for (const f of p.fotos) fotosAll.push(pieDeFoto(p.s, f));
-  }
-
-  // Si NO hay fotos reales, mostrar placeholders informativos (sin datos DEMO)
-  const fotos12 = fotosAll.length > 0 ? fotosAll : Array.from({length:6}, (_,i) => ({
-    sec:'—', sub:'', conc:'Sin fotos capturadas', pct:null, fecha:'', sello:'', url:null,
-  }));
-
-  await precargarFotosDelPDF(fotos12);
-
-  const FW=(CW-8)/3, FH=FW*0.64;
-
-  // La banda de cobertura. Va SÓLO en la primera página de evidencia: repetirla
-  // la volvería decorado, y lo que dice es un veredicto.
-  //
-  // El color lo decide el veredicto, no el gusto: debajo del piso es rojo
-  // porque el expediente está diciendo que no se puede respaldar, y lo que no
-  // se pudo medir es ámbar —ni acusa ni absuelve— porque un «no se pudo leer»
-  // pintado de rojo se lee como una obra sin fotos, que es justo la confusión
-  // que esto existe para evitar.
-  function drawBandaCobertura(yf) {
-    const [borde, fondo, tinta] = !cobertura.medible ? [K.am, K.ab2, K.ak2]
-      : cobertura.pct >= COBERTURA_TECHO ? [K.vd, K.vb, K.vk]
-      : cobertura.pct >= COBERTURA_PISO ? [K.az, K.ab, K.ak]
-      : [K.rd, K.rb, K.rk];
-    const lineas = doc.splitTextToSize(fraseCobertura.detalle, CW - 8);
-    const h = 9 + lineas.length * 3.6;
-    sf(fondo); sd(borde); lw(0.3); R(ML, yf, CW, h, 'FD');
-    st(tinta); fs(8.5); fw('bold'); T(fraseCobertura.titulo, ML + 4, yf + 5.5);
-    fs(7); fw('normal');
-    lineas.forEach((ln, i) => T(ln, ML + 4, yf + 9.5 + i * 3.6));
-    return yf + h + 3;
-  }
-
-  // LAS PARTIDAS GRANDES QUE NO TIENEN CON QUÉ RESPALDARSE. Hasta el 2026-11-06
-  // esto no se imprimía en ningún sitio: la rejilla de fotos filtraba por
-  // `fotos.length > 0`, así que una partida del corte del 80% sin una sola foto
-  // simplemente no aparecía. El dato existía —`cobertura.faltan`— y la hoja lo
-  // callaba. **Omitir del expediente justo a la partida que más pesa y menos
-  // respaldo tiene convierte el hueco en silencio donde más importa.**
-  //
-  // Va en TABLA y no en recuadros vacíos, y no por estética: tres obras de
-  // producción están en 0% de cobertura, y ahí el corte entero son huecos. Media
-  // docena de páginas de cajas grises se hojean sin leerse; una tabla con el
-  // importe y el peso de cada una se lee.
-  function drawHuecosDeEvidencia(yf) {
-    if (!seleccion.sinEvidencia.length) return yf;
-    const filas = seleccion.sinEvidencia.map(p => [
-      p.s?.sec || '—',
-      (p.s?.sub || '').slice(0, 64),
-      MXN(p.imp),
-      NUM(p.pesoPct, 1) + '%',
-      Number.isFinite(parseFloat(p.s?.a)) ? NUM(parseFloat(p.s.a), 0) + '%' : 'sin avance',
-    ]);
-    st(K.rk); fs(8.5); fw('bold');
-    T(`Partidas de mayor importe SIN evidencia fotográfica: ` +
-      `${seleccion.sinEvidencia.length} de ${seleccion.partidas.length}`, ML, yf + 3.5);
-    yf += 6;
-    return autoT(
-      ['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
-      filas, [24, 125, 44, 28, 30], ML, yf,   // suma 251 = CW, igual que las otras tablas
-      { bodyStyles: { fontSize: FS_SM },
-        columnStyles: { 2: {halign:'right'}, 3: {halign:'right'}, 4: {halign:'right'} } }) + 3;
-  }
-
-  function drawFotoPage(fotos6, title, conBanda = false) {
-    doc.addPage(); pageFrame();
-    let yf=CY0;
-    yf=secHead(title, yf)+2;
-    if (conBanda) yf = drawHuecosDeEvidencia(drawBandaCobertura(yf));
-    // 2 filas × 3 fotos
-    for(let row=0;row<2;row++){
-      const rowF=fotos6.slice(row*3,(row+1)*3);
-      rowF.forEach((foto,col)=>{
-        const fx=ML+col*(FW+4), fy=yf;
-        // Placeholder / foto
-        sf(K.bg); sd(K.gbd); lw(0.2); R(fx,fy,FW,FH,'FD');
-        if(foto.url){
-          try {
-            // Detectar formato: data:image/png o data:image/jpeg
-            const fmt = /^data:image\/(png|jpeg|jpg)/i.exec(foto.url);
-            const tipo = fmt && /png/i.test(fmt[1]) ? 'PNG' : 'JPEG';
-            doc.addImage(foto.url, tipo, fx, fy, FW, FH, '', 'FAST');
-          } catch(e) {
-            console.warn('PDF addImage falló para', foto.sec, e?.message || e);
-            st(K.gmu); fs(6); fw('normal');
-            T('Foto no disponible', fx+FW/2, fy+FH/2, {align:'center'});
-          }
-        } else {
-          st(K.gmu); fs(10); fw('bold'); T(foto.sec,fx+FW/2,fy+FH/2-3,{align:'center'});
-          fs(6); fw('normal'); T('Sin foto — Capturar avance',fx+FW/2,fy+FH/2+4,{align:'center'});
-        }
-        // Pie de foto
-        sf(K.ng); R(fx,fy+FH,FW,7,'F');
-        st(K.wh); fs(7); fw('bold');
-        T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`,
-          fx+2,fy+FH+4.5);
-        // El sello va en el pie del reporte impreso por la misma razón que en la
-        // pantalla: una foto de archivo no tiene autor y nunca lo va a tener, y
-        // el PDF lo firma un residente. Si saliera igual que una captura en
-        // vivo, el reporte afirmaría una verificación que no ocurrió.
-        fs(5.5); fw('normal'); st(K.gmu);
-        T(foto.sello||'',fx+FW-1,fy+FH+4.5,{align:'right'});
-        fs(6); fw('normal'); st(K.gmu);
-        T((foto.conc||'').slice(0,32),fx+2,fy+FH+6.5);
-        // El relleno de «sin fotos» no lleva sello, y tampoco «sin fecha»: ahí
-        // no hay foto de la cual decir que le falta la fecha.
-        T(foto.sello ? (foto.fecha||'sin fecha') : '',fx+FW-1,fy+FH+6.5,{align:'right'});
-      });
-      yf+=FH+7+4;
-    }
-    st(K.gmu); fs(6.5); fw('normal');
-    T('Las fotos se agregan desde Capturar avance → Volúmenes.',ML,yf);
-    return yf+6;
-  }
-
-  // Las páginas salen de cuántas fotos haya, no de un dos tecleado. Con el tope
-  // en 15 y seis por hoja son tres; con una obra de cuatro fotos es una. Antes
-  // eran siempre dos, así que una obra con cinco fotos imprimía una hoja entera
-  // de recuadros grises que se leen como «aquí falta algo» cuando lo que pasaba
-  // es que no había más que enseñar.
-  const POR_HOJA = 6;
-  const hojas = Math.max(1, Math.ceil(fotos12.length / POR_HOJA));
-  let yF2 = CY0;
-  for (let h = 0; h < hojas; h++) {
-    const titulo = `${8 + h}  EVIDENCIA FOTOGRÁFICA` +
-      (hojas > 1 ? ` (${h + 1} de ${hojas})` : '');
-    const y = drawFotoPage(fotos12.slice(h * POR_HOJA, (h + 1) * POR_HOJA), titulo, h === 0);
-    if (h === 0) yF2 = y;
-  }
-
-  // Firmas al final de pág 8
-  const yFirmas=PH-FTR-38;
-  sd(K.gbd); lw(0.3); L(ML,yFirmas,ML+CW,yFirmas);
-  const fw3=CW/3;
-  // NINGUNA de las tres firmas toma prestado el nombre de otra.
-  //
-  // Decía `obra.residente || obra.superintendente || 'Residente'`, y en la 0127
-  // —residente sin capturar, medido en producción— el pie imprimía al
-  // SUPERINTENDENTE bajo «Residente de Obra · Elaboró». No quedaba vacío:
-  // quedaba ocupado por otra persona, a la que se le atribuía un cargo que no
-  // tiene en el renglón donde firma. Y en la 0128, donde el campo dice «N/A»,
-  // ese texto salía impreso en el lugar del nombre, porque para un `||` la
-  // cadena «N/A» es un valor presente.
-  //
-  // El cargo y el verbo se quedan: la raya existe para firmar a mano, y quitar
-  // la casilla porque falta teclear un nombre estorbaría el trámite que el
-  // documento sirve. Lo que no se queda es un nombre que no es.
-  const firmas=[
-    [comoSeImprime(obra.residente),'Residente de Obra','Elaboró'],
-    [comoSeImprime(obra.superintendente),'Superintendente de Obra','Revisó'],
-    [comoSeImprime(obra.admin),'Administrador de Obra','Vo.Bo.'],
-  ];
-  firmas.forEach(([nombre,cargo,rol],i)=>{
-    const fx=ML+i*fw3;
-    sd(K.ng); lw(0.4); L(fx+8,yFirmas+14,fx+fw3-8,yFirmas+14);
-    st(nombre===NO_CAPTURADO ? K.gmu : K.ng); fs(FS_FI); fw('bold');
-    T(nombre,fx+fw3/2,yFirmas+20,{align:'center'});
-    st(K.gtx); fs(7.5); fw('normal'); T(cargo,fx+fw3/2,yFirmas+26,{align:'center'});
-    st(K.gmu); fs(7); T(rol,fx+fw3/2,yFirmas+31,{align:'center'});
-  });
-
-  // ── PIE DE PÁGINA CON TOTAL DE PÁGINAS ──────────────────────────────────
-  // Sobrescribe "Página X" por "Página X de N" ahora que conocemos el total
-  const totalPaginas = doc.internal.getNumberOfPages();
-  for (let i = 1; i <= totalPaginas; i++) {
-    doc.setPage(i);
-    // Cubrir el texto anterior con fondo del footer y rescribir
-    sf([232,234,240]); R(PW/2-25, PH-6, 50, 4, 'F');
-    st(K.gmu); fs(6); fw('normal');
-    T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
-  }
-
-  // ── GUARDAR ──────────────────────────────────────────────────────────────
-  const nombre=`Reporte_cotea_${(nombreCorto||'Obra').replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`;
-  doc.save(nombre);
-
-  } catch(e) {
-    console.error('Error generando PDF:',e);
-    alert(`Error al generar PDF:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
-  }
-}
 
 // ── EL ANDAMIO DE UN PAPEL DE COTEA ────────────────────────────────────────
 //
@@ -2486,9 +354,9 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
   const lw = n => doc.setLineWidth(n);
   const R  = (x,y,w,h,sty='F') => doc.rect(x,y,w,h,sty);
   const L  = (x1,y1,x2,y2) => doc.line(x1,y1,x2,y2);
-  // Ver la nota del mismo ayudante en `generarPDFObra`: un arreglo se pasa tal
-  // cual porque `String(['uno','dos'])` pega los renglones con una coma y el
-  // párrafo se sale de la hoja.
+  // Un arreglo se pasa TAL CUAL y no se convierte a cadena: `splitTextToSize`
+  // devuelve renglones ya partidos, y `String(['uno','dos'])` los pega con una
+  // coma en un solo renglón que se sale de la hoja.
   const T  = (s,x,y,o={}) => doc.text(
     Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);
 
@@ -2685,24 +553,31 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
            pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva };
 };
 
-// ── EL DOCUMENTO INTERNO DE COTEA ──────────────────────────────────────────
+// ── EL DOCUMENTO INTERNO DE COTEA · EL PAPEL DE LA CONSTRUCTORA ────────────
 //
-// DOS COMPONENTES, NO UNA BANDERA. Esto no es `generarPDFObra` con un
-// `if (interno)`: son dos documentos con dos criterios opuestos sobre lo mismo.
+// EL ÚNICO que descarga una constructora. Hasta el 2026-11-12 había dos
+// —éste y un «reporte ejecutivo» con la marca del contratista— y eran el mismo
+// papel con dos criterios sobre el mismo hueco: el ejecutivo se callaba lo que
+// no podía afirmar porque lo firmaban tres personas, y éste lo publicaba a
+// propósito. Dos papeles del mismo lado obligan a elegir cuál mandar cada vez,
+// y el que se mandó por error no se puede recoger. Quedó éste, que es el que
+// sirve para trabajar.
 //
-//   · `generarPDFObra` es el reporte ejecutivo DEL CONTRATISTA. Lleva su marca,
-//     se entrega al cliente, lo firman tres personas. Por eso se CALLA todo lo
-//     que no puede afirmar: un hueco de captura publicado ahí es un reclamo
-//     contra uno mismo en el papel que cobra.
-//   · éste es el documento DE COTEA, y se lee hacia adentro. Publica los huecos
-//     a propósito, porque un hueco es justamente lo que un documento interno
-//     sirve para ir a cerrar, y porque el error que un reporte no puede
-//     permitirse es callarse porque no sabe.
+// DOS COMPONENTES, NO UNA BANDERA, Y AHORA EL OTRO ES EL DEL MUNICIPIO. Esto
+// no es `generarPDFArt73` con un `if (interno)`:
 //
-// Con una bandera habría un cuerpo con treinta condicionales y los dos
-// criterios enredados: el día que el reporte del cliente gane un renglón, el
-// interno lo gana sin que nadie lo decida — y al revés, que es peor, porque
-// aquí se imprime la lista de lo que no se pudo medir.
+//   · éste es el documento DE COTEA y se lee HACIA ADENTRO. Publica el margen,
+//     el gasto por rubro, el almacén y la nómina, y publica los huecos a
+//     propósito: un hueco es justamente lo que un documento interno sirve para
+//     ir a cerrar.
+//   · el del Art. 73 se lee HACIA AFUERA, lo archiva quien paga la obra, y la
+//     economía del contratista no está en él — no porque la esconda, sino
+//     porque no la recibe.
+//
+// Y por eso la bandera sería peor aquí que en cualquier otro sitio: pondría la
+// economía del contratista a UNA LÍNEA de reaparecer en el papel del
+// municipio, y quien la escondiera tendría que acertar cada vez que se agregue
+// una sección. La frontera que de verdad aguanta es la firma de la función.
 //
 // NINGUNA CIFRA NUEVA. Cada número de este papel sale de la función que ya
 // alimenta la pantalla: `calcularKPIsObra` y `presentacionEconomiaObra` para la
@@ -2714,8 +589,9 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
 // misma obra el mismo día — que es exactamente el defecto que ya se pagó en el
 // margen de la 0121, entregado en positivo donde la pantalla lo daba negativo.
 //
-// Los parámetros van POR NOMBRE. `generarPDFObra` lleva quince posicionales y
-// contar comas hasta el decimoquinto es el error que no se ve en la revisión.
+// Los parámetros van POR NOMBRE, los dieciséis. El papel que se retiró llevaba
+// quince POSICIONALES, y contar comas hasta el decimoquinto es el error que no
+// se ve en la revisión.
 //
 // `organizacion` y `generadoPor` son datos de identificación, no marca: la
 // cabecera de cada página firma cotea, y de qué organización es la obra se
@@ -2766,7 +642,17 @@ async function generarPDFInterno({
   // página que alguien imprime y deja sobre un escritorio tiene que decir lo
   // que es sin la portada al lado. Pedir la banda es DECISIÓN DE ESTE PAPEL,
   // no del andamio: el informe del Art. 73 usa el mismo andamio y no la lleva.
-  const SELLO_INTERNO ='DOCUMENTO INTERNO · USO DE COTEA · NO ES EL REPORTE QUE SE ENTREGA AL CLIENTE';
+  // Y DICE CUÁL ES EL OTRO. Una prohibición sola deja a quien la lee sin
+  // salida: «no mandes esto» y entonces qué mando. Antes la respuesta no
+  // existía —había dos papeles de la constructora y ninguno del cliente—, así
+  // que la banda sólo podía prohibir. Ahora nombra el informe de avance, que
+  // es el que sí se entrega.
+  //
+  // «INFORME DE AVANCE» Y NO «ART. 73» EN LA BANDA: el nombre legal es el que
+  // le da una dependencia, y el cliente de una obra no siempre es una
+  // dependencia. La banda tiene que ser verdad en cada hoja de cada obra; el
+  // nombre con su artículo va en la portada, donde cabe el paréntesis.
+  const SELLO_INTERNO ='DOCUMENTO INTERNO · USO DE COTEA · EL QUE SE ENTREGA ES EL INFORME DE AVANCE';
   const A = andamioDeCotea({ jsPDF, nombreCorto, fecha: hoy,
     rotulo: 'Documento interno', banda: SELLO_INTERNO,
     pieIzq: 'cotea · documento interno' });
@@ -2830,10 +716,14 @@ async function generarPDFInterno({
   st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
   // El sello de la portada, en caja naranja y antes del nombre de la obra: lo
   // primero que se lee es qué clase de papel es éste.
-  sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 16);
+  sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 19.5);
   st(Q.wh); fs(11); fw('bold'); T('DOCUMENTO INTERNO', ML+4, 55);
   fs(6.5); fw('normal');
   T('Uso de cotea · no es el reporte que se entrega al cliente', ML+4, 60.5);
+  // El segundo renglón, que es el que la banda no puede llevar: aquí sí cabe
+  // el nombre legal. Medido contra la caja —desde ML+4 hasta donde termina, 85
+  // mm— el renglón más largo de los dos ocupa 65.
+  T('Lo que se entrega es el informe de avance (Art. 73)', ML+4, 64.2);
 
   st(Q.wh); fs(7.5); fw('normal'); T('OBRA', ML, 76);
   fs(14); fw('bold');
@@ -2912,8 +802,15 @@ async function generarPDFInterno({
   ], y);
 
   // LO QUE ESTE DOCUMENTO NO PUEDE AFIRMAR, dicho en una caja y no deducible de
-  // un guión en una celda. Es la diferencia entre el papel del cliente y éste:
-  // allá el hueco se calla, aquí se nombra con su motivo.
+  // un guión en una celda.
+  //
+  // Esto se leía antes como la diferencia contra el papel del cliente —«allá el
+  // hueco se calla, aquí se nombra»—, y con el reporte ejecutivo retirado la
+  // frase ya no describe nada: el informe del Art. 73 también publica sus
+  // huecos, en su sección 6. Lo que distingue a esta caja es DE QUÉ son los
+  // huecos: aquí, de la economía del contratista —gasto de GP sin medir, margen
+  // indefinido, obra sin presupuesto—, que es justamente lo que aquel papel no
+  // recibe. El criterio es el mismo en los dos y lo que cambia es el lector.
   const huecos = [];
   if (pres.gastoSinMedir)
     huecos.push(`El gasto de GP de esta obra no está medido (${pres.gastoMotivoTxt}). `
@@ -3060,11 +957,11 @@ async function generarPDFInterno({
   //      siete obras las que caen ahí (0114 45.4%, 0125 y 0131 en 0.0%), así
   //      que la diferencia de criterio se ejerce, no se supone.
   //
-  //   2. DE DÓNDE SALEN LAS FOTOS QUE RESPALDAN, EN AGREGADO. En el reporte del
-  //      cliente el sello va foto por foto, en el pie. Aquí importa el total, y
+  //   2. DE DÓNDE SALEN LAS FOTOS QUE RESPALDAN, EN AGREGADO. En el informe de
+  //      avance el sello va foto por foto, en el pie. Aquí importa el total, y
   //      el caso que lo justifica es la 0112: **94.6% de cobertura, la mejor de
-  //      la cartera, y sus 270 fotos son de archivo, sin un solo autor**. El
-  //      papel del cliente dice «supera el 80% que este expediente exige» y es
+  //      la cartera, y sus 270 fotos son de archivo, sin un solo autor**. Aquel
+  //      papel dice «supera el 80% que este expediente exige» y es
   //      verdad; lo que no dice —porque no es asunto suyo— es que nada de ese
   //      respaldo se puede atribuir. Quien va a una junta con ese número tiene
   //      que saberlo antes, no leyéndose quince pies de foto.
@@ -3090,8 +987,15 @@ async function generarPDFInterno({
                                          tope: TOPE_FOTOS });
   const cob = selFoto.cobertura;
 
-  y = nota('Aquí no van las fotos: van en el reporte que se entrega al cliente. Lo que va aquí '
-    + 'es el juicio sobre ellas, que ese reporte no puede llevar. El criterio es el mismo de allá '
+  // LO QUE ESTA NOTA AFIRMA DEL OTRO PAPEL TIENE QUE SER VERDAD DEL OTRO
+  // PAPEL. Antes nombraba un «reporte que se entrega al cliente» que ya no
+  // existe; ahora nombra el informe de avance, y se comprobó que el criterio
+  // es literalmente el mismo: `generarPDFArt73` llama a `seleccionFotografica`
+  // con el mismo `tope` y publica la cobertura con `frasesDeCobertura`, las
+  // dos funciones que se usan aquí. Si algún día aquel papel reparte por su
+  // cuenta, esta nota se vuelve mentira y hay que venir a borrarla.
+  y = nota('Aquí no van las fotos: van en el informe de avance. Lo que va aquí '
+    + 'es el juicio sobre ellas, que ese informe no puede llevar. El criterio es el mismo de allá '
     + `—las partidas que acumulan el ${COBERTURA_TECHO}% del importe contratado, de mayor a menor, `
     + 'y las fotos repartidas en proporción a lo que pesa cada una—, así que lo que se cuenta aquí '
     + 'es exactamente lo que aquel documento imprime.', y);
@@ -3132,11 +1036,15 @@ async function generarPDFInterno({
         haber > mostradas ? colorSev('medio') : Q.mu],
     ], y);
 
-    // POR QUÉ ESTE NÚMERO NO ESTÁ EN EL PAPEL DEL CLIENTE. Se dice sólo cuando
+    // POR QUÉ ESTE NÚMERO NO ESTÁ EN EL INFORME DE AVANCE. Se dice sólo cuando
     // de verdad difieren: repetirlo arriba del piso sería ruido, y un lector
     // que ve la nota siempre deja de leerla el día que importa.
+    //
+    // Y la frase que se le atribuye es la que aquel papel imprime de verdad:
+    // debajo del piso, `frasesDeCobertura` devuelve ese título exacto y sin
+    // porcentaje, y el Art. 73 imprime ese título. No es una paráfrasis.
     if (cob.pct < COBERTURA_PISO)
-      y = nota(`El reporte que se entrega al cliente NO imprime este ${PCT(cob.pct)}: allá dice `
+      y = nota(`El informe de avance NO imprime este ${PCT(cob.pct)}: allá dice `
         + '«la evidencia fotográfica no alcanza para respaldar este expediente» y se queda ahí, '
         + 'porque un porcentaje suelto debajo del piso se lee como una medición cumplida. Aquí sí '
         + 'va el número, porque hacia adentro es lo que decide a dónde se manda a fotografiar: '
@@ -3171,7 +1079,7 @@ async function generarPDFInterno({
         + 'guardadas; no aparecen impresas. Lo que le falta a esta obra NO es tomar más fotos.', y);
 
     // LA LISTA DE TRABAJO. En tabla y con importe, por la misma razón que en el
-    // reporte del cliente: tres obras de producción tienen el corte entero en
+    // informe de avance: tres obras de producción tienen el corte entero en
     // huecos, y media docena de páginas de cajas vacías se hojean sin leerse.
     if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
     st(Q.ng); fs(FS_SEC); fw('bold');
@@ -10382,396 +8290,6 @@ const ensureXLSX = () => {
 // es `director_operaciones`. Un default que miente es peor que ninguno.
 
 
-// ── EMBLEMA FOSMON ─────────────────────────────────────────────────────────
-const EMB_WHITE = "data:image/png;base64,"
-  + "iVBORw0KGgoAAAANSUhEUgAAAN8AAAECCAYAAAB+LgJpAAA2lklEQVR42u29e7ycVX3v//6u55mZ"
-  + "HQgIigWU4hVrRcVKvRQQwz0JJCEQIgpoOT21v3p+tfZobU+rIl6qrbanp/Vle3pOES9cJIGQQLgJ"
-  + "BqwiUlC5CAhWUbSAIHey57ms9Tl/PM/sPXsyO9d9mdlZn9crrySzn5m993zmvb5rre96vl+IGihJ"
-  + "MklOUjrh8bPOclL+Jvnsk/LFA1JxdH39LvLt70j+EqlYKGmXntdLJSWSLL67UVGTQ5f2eew1Ktt/"
-  + "Lp99Sz7PNKbRBdU1P5snn/1AkuTbXj77D8n/jYriaEnz+oDoIohREbgauF4YpOy1Kjf+hVTcJJ+V"
-  + "48Dlkm9nkoI0esQ4fO07JZXyba9u+fZPJf9ZSUdLakUQoyJwfYHTvlL7fVL5Tfm86AGuqKJaO8i3"
-  + "axg3gU9d1xQK7S4Kg+Sze6TsryQdIqkZQYza2YBzPY+/QGX7vfLleil/ZlLgQqaxP1uCb+K1fUAs"
-  + "gnx2t3z2V5J+R1Ijgjg7SuNbMH3AAQkQzCwAZf343lCsgGQRoVhA0tp17Ekh8yADM8x23BszG/M4"
-  + "ZAEImKW45iuB/wHlnwN3qWyvImmtA243s7IbRCAAMjNFVyN8gw6cqz+s3cA9H/JlkB5LyBbiWrsB"
-  + "4EINXPU/zBKYpoBj5gCHEMo0BqI1DyRJDyQUH8Zxm5SvhcZlEcQI3zAC56vHn9oLWifWwB2Ha+1e"
-  + "IZb2AW4GZVSRtRdE51JovB54PaH4CM6+L7XXgF1q1vpBPxDr3zcqwjcIwD2xJ8xbREgXE4rFuOae"
-  + "AwHc1oAYgqAbxPRgSA8m5GdJxc3g15HbemuNg9g1tfYxGkb4ZgI4zMyPA6c9wC8CW1gDt1d1VWMw"
-  + "gdv8+rAfiA1ID4X0UNL8E1LxHfDrgPVmdlfX1DqCGOGbEeB2g/Jo0ImEvAIOwDWqjQ1JmA0+cFsN"
-  + "YltgHRAPg/QwQv5J+fJKXLgGGheb2UMRxAjfVABngKunVzVwj+wGexwFOp6QLcK1Xti1aRLqzYik"
-  + "hm7uvCFmE6emagvrgJgsrf7kn5bPv478NSQjq83s4S4QXT2ARRAjfJMBt8rBKVYDJyBU5yTLYyvg"
-  + "wiJcWgMnCJlqMJOxncS5LjOro2JnahrqNe18XLIUGksJ+afly+twfi0015nZr+qBKYIY4dtShFML"
-  + "eCOUiwn5Kbjmy+pVWy9wtlMPXtXvX02rQykox0EkWQbJMkL+hOSvxOdfI8n7gWhUu6aK8O18wHUi"
-  + "XIuieCMNLSbkK3DJyyGtgWsLLAK3rSAKI2nsAe7tJCNvJ9gTUnElPlxF8uxaM3uyy5edEsR0J4HO"
-  + "9QEuBQ4itJdDsZLUHQBJnUDIQWUJOMy5CNx2gGhAKAQKYIbrgMjbCTws+StAV8FTV/eA2NmkmvMg"
-  + "pjvJ5yGMAVcUB9HQEiiWgx2IG6nNziHUwDkzsAjc1GzW1BGxG8Tm3mBnAmfCrg9LxRVVRGxeaWZP"
-  + "x8g3d6aZCXl+IE2dSChOIrEDodEFXFYB132eMu7JTTOIeWft7MZATDiTkD0oZevArYf062b2bIRv"
-  + "OMFLzMyrbP8RzdbfAGm1H1n0By5qpqemaR8Q9wX7A+APIN8g6TgzKyTZXJyCzuUPXpVsS/R8ICVk"
-  + "GdCIwA08iAWu1SCwD460Gi13aObT/a0U4ZtRuaKeSKZ1Pi5qkEGsNsIMVGzvAqDaYLvedR8G78yG"
-  + "GD+PG+GboQgYbwwd1pnLdoA3tsGGDDFSfymrjwh2XzO7YSF6HDWH1vnOzILaT71Syv4en9+J8o1Q"
-  + "bCTkP5L8v0j5m80sCNls360f4YuaA9BhY+Cp/WFa8++G5h+DRpDOJ4Qvg54C9/vQ+LZ8+58QqZlp"
-  + "NgGMGw9RcwE/M7MgP/oZaH0A/J3g32XJyHcnQpr/DtjncK3/j5A/T9LpQFndhDLzmzERvqhhn2rW"
-  + "KaXsHbjmB6C4B546FHZ7sZT9V3wYAYwkfcCscan0xNGEkStxrVPw2Y2Wjvx9fdqpjPBFRW2bQrWl"
-  + "Fv6y+q+9x2yvp+Tb5+BaB0P2OMY8SEfk27dD67dx+bvB/zvGn0s6x8yemo1cYlzzRQ1z1HNmJoX8"
-  + "EFzzVZDfbNbcUK/jPCF/jOTxX8e1noPPvolrvRayRWat26G8EdfaG8q3VK+2asZZiPBFDbPqz69e"
-  + "Dg6Cv0UKnQgmUBOeewAUr8HcnoTyYbCfVHC6qwHh/W9Wr3HKjG+8xGln1FxQikRVVmBMBa41n5Dd"
-  + "jGs2KkxHzzDb5Y4qauaPAQahOcsjR1TUUOvpunTHc7rWbSkha+OS5ZD9BaEMBPdeSSNV5PMHVtHR"
-  + "Ho/wRUVtu+pIpzugLMGOlfSc+v7NJlgG6RVmI58Cfzeu9Qayp19aAZocDRiJu3Hia0X4oqK2qCqp"
-  + "LjMbuQfKq6rbk7J310fH8vp86PMkJTguglDSar1OxbMroPEqQvsWrr/xB/VOZ4QvKmpbGaz/ej/4"
-  + "JyA9W0X7eFzrWFzrQDN71My82cjHoP0i8Clp6/8SSo9L3m9HHFHOFgcRvqi5EP2c2ci94P8bkJK2"
-  + "Lidkn4PiZZJ2rf5kv0VI/5iQfgHcc3D+VLPmNzpJ+tn42eNuZ9QcAXBDatY6X/mz95K0/gHXeifw"
-  + "zuo+XVVLQAcQfgjZH5nN+5qktPe2owhfVNQ2A3hEWSfdbwEOkfK34sMCjP2BBOcegHAzpFeZzSvq"
-  + "iFfO5s8c4Yuag1NQC2bNG4Ab+l03m1PNuOaLmusAmqREUqP6+6Kuf8sGAbwY+YZNolNsCChtwleq"
-  + "U/nxjn3GarX48fcKev5NhC9qK6FT9WEyS7FWfRwqqT9MXmAtIMU5CMEDFuvVDL6iQYMMnORRCLim"
-  + "4Vop5gL4DVD8ATx9a3XhizOcew+U5xH0JK6V4Fqufo2yBjdqABUj3+BBV7Ubq9o0d4r7PkQI5+GS"
-  + "1WaNm/pMsa4FrpW0DxRvB3cqlrwRS1IQhLyKks4cilPTGPmi+kU54VoO10oJFAR/JeTv4snRV1ky"
-  + "7wNmzZvqy9Oepyf1Lt9DZs3/yapLDqEICyD/X4T80ToaJgiL0TBGvqgJUS5JIe30NLgfp/Nwza+a"
-  + "2R1dgKVUzUNCb36qqySeAZ381Q3ADZI+gS9WkCQrkB2Ja9YFatsBTGCu6s0eFSPfThPlNB7lCBsh"
-  + "XEJZnohrvMqs9SEzu0OSacOGtN4eL7d0+NfMZGZltdV+UVLnsx61tPnPZsnReA4jtD9LyH+OG3FV"
-  + "RLRONAzRnBj55nKUEy5NIKnXcuXdeH8hSesLZvZAvyjHdhT26dpqnxANrdm8EbhR0ifBLwNOATsW"
-  + "12rU0bDqvQ6uLuMeFeEb4igHHiMd24EM+VM4Ww/uXEivt7SRd0Hiauim7NhTDeKE/uhm9gTwReCL"
-  + "kl5LaK/EpStxIwcACZQQfN2fMKYsInzDIkOEegrnGgm4tLpP09+KLy8gaZ1nZg/1RDnfHa2m7Ucb"
-  + "71NocH0CC7yZ3Q7cLv3kE5T7LsKlp4NfiGvtUg0Wmah+gRgNI3wDHuWwFNeqN0+yx8DOxzUvAb5h"
-  + "aeq7IpBNdZTbwWjYBtYAayTtD8WZYKfgWgdW0dBDKGMCP8I3KMBRd1sFXDMBSwmlkP8GLlyEK1ab"
-  + "7fbLPlFuYDY3JkbDsWnvz4CzJX0KyiPBnYEvTyBp7V79IhmIkvE+9VHboTiCbe/miVTizMZyaKF4"
-  + "kJD/LS49zJJ0gVnz82a7/bLOwSVdO5YDmWOrd0q9mUlnneXqe91ys8ZVZslpJOUrIfsg+FuwFFwr"
-  + "xTWs3rn19bnTqG1aoczdWWBabbtnH4PmhwmZx+q2xNs/rQyAjW2eVEV7rgW/iidHL7U99nhskrXc"
-  + "sL6HnWg41tOu7nF3GJSnEPw7cK09q4vz6jjbjkZDKeBajpDdgWu90czasTPtzhzlehPhFD8m+Itw"
-  + "IxeZ2ffGL92QwoK+ifChHJknSVkwnsD/OL69nKTxNswdjqX1cbasTuDHTZoI3/ZHOVdHOUfIR3Hh"
-  + "agjnQeNyS5rt7g9lHeXKufqWdDZpuqIhZvYw8M/AP0v5myFfSeBU3Mi+9SAFIcSURYRvW6Jcmo4l"
-  + "wkNxF2g1rnmumf2kZ1q53YnwuRYN63OnN0mPfwxYCslpYIfjWlVn2JjAj/BNEuW6E+GOkD2Nsysg"
-  + "fBnX+JqZTWsifNijYf3euOohewL4EvAltdsH0Ahn4uxU3MhLiAn8nYaptPo7+5gkybdLhUwKmaQs"
-  + "yI96+XYpeVUKkspvS/l/l7Rf72vVH66ordik6ZxHHX/sZ/Ok4iSpXCvf3qiOfDvIt0v5dhjzxrd9"
-  + "/bXbJY10DXpRQw1fZXZRATj2AXhM8p+TiqOks1zX810nRRDfze32wFWbUN2Pjb5Yyj8sFXeNm1BK"
-  + "vl3It32Eb+7BV8q3syq6SfJFkMpvSPl7pGf27RPlotlTHQ17BjJJTUmLpOJ8+fbT44PhqJdUyLdv"
-  + "i/ANP3wf74pyD0vZ/5LyQ3uuTWKUm81ouHF/le33yRffUShqr7K7InxDa3JlsMr2h6Tyeil7l/TE"
-  + "c2OUG7hoOHGqXxRHSP5f5LMbInzDb/JInygXN08GD8SeaPiLXSJ0Qz6adgEXo9zw+NfsN1WN/g3s"
-  + "OmKTokLWbx0Yo94wRb++Hia13xHEAVszNKRypdR+f30AGJWj75HK/zJx+mlxvTdYHtqEAbJoL1LZ"
-  + "/qCk+QAq2suk9h9LD+4a1+wDF+WyV1cbK/md9a7mzWNf89nq+rH/kM8+I+Vv6DuSxlLrM+vhhj47"
-  + "nmr/hXx+W73b+VM9/HAFnx/9m2oLNHtAyv5Jef7GnkE3RsMZnpLsIpXvkC9XS0U2fkpFXr59zTh8"
-  + "7XMkeanewlZRSuXXpOz39dRTz48j6axGuRFJSyS/Wj57ZjzpriCff3cMPrU/UmXi824Pb5Ly/yY9"
-  + "sWdcWkyPWa4zfeyKcq+Tz86Wz3487lXeOSGR11Huui74vlg/lsm3C6n7dEv2sHz291J+uLoqOce8"
-  + "35TPVHo81Muk7JNSft+4GUXHw2LshMsYfNlH68fyPh7+St6fI+Vv6R6g4wmlqYpyjz66u8rs96Ty"
-  + "a/J50ZU09xPOBvp2uRn4qmNlPuucJyzHTryEUvLlN6X8j+KJl2mbqcyTspWSv1w+H530fGf38bJN"
-  + "4ev2cOLZ3FBIKm+t1vujL47RcNunJMn4Y2c5SW+Sb39evv1gnyjnxw7jjh/K3TJ8E6/f9Kynssel"
-  + "4vNScUwcSbfVx4uSTaNcfrCUfUbK7u8T5fp5uGX4tuzhM1LxJalYJt3bGlQP01mGrlM5q2T8HrHn"
-  + "1M0+3kko31Td5iMIWV1WzxxmU/NzV/eVTSyf7hp7gPtD0B8SyttUti8gaX3FzH4x/nOP37Eegeu+"
-  + "p29lx8Pn4fPlJOmpBL+gKi5FfYc7nTvcp8HDrHM/5q6QnAGcQXjJ3Srb55Gwxszu6o6GjN+PuXPA"
-  + "16cuSJBuacBBR4BWErLluFZ1DMxyCFmnLkgyrT+YubqobdG5WTTBtQ6C9CBC/iGpvBL0FUivNrOs"
-  + "53cJc7HGyDZ42Lmn73DIVxCyt5G0fg0AV3Y8nP7796rXd4RSUHpQghv5TUg/QSg+IhWX4sMakual"
-  + "danE6vfZsCFlwYIZr7eTzqBhfaLc6EvBlkH6TnCvAwMXOlHOwGzKRsjtHkkt4JL5kJwCnEIo7pOy"
-  + "CyF8ob6z3e8s0bCnjksnyu0NxQqCexv4t0AT3DTNVLbZQ+uKhq4J6UoSVkL+Iyk7H7jErHWbHXFE"
-  + "Z/BIugaU4Yavf5RTC8pjwa0klCfhmt2Vkf2MRLntG0k7NV0OAD4MxQck/zUIX4L0SjPb2P0BZcgr"
-  + "l20uylVTtvJIcKcTsuNxredWV+SgshxMD4Mg61SfeznwESj/h3x5A86fB81VZvZsz7R0Wj1Mp8mw"
-  + "TkkBPz5Ctl+J50Qo3wXpK6spieudkgxmWYtqJE0mriuSeeCWgltKyB+QH70AN7LKzG7pmobN6Eg6"
-  + "A+vx/SA7g1C+DZccVM1UGlWUkwznZj7K7ZCHroFLj4bkaEL+CalYS6Ev0mj+e6dMSNcG0pQvLdKp"
-  + "HiHrwqt1jcdf7AJ7nwCsgLCUpNEaj3IKszIlmbKR1At8ZyT9deCDhPL98uXXcf4CnmqvM7NfzeRI"
-  + "OoVRLvTMVI4D9446ys2vrsgA+drDhGGqibRJNJThWi8Eew+N8g8I5U1S+Ao8c4GZPTldmzTpjpmF"
-  + "gWzTKJe9hsC7CFqBS15UDxw9UW5ApiVTM5JWU2ZnKTSPgeQY5vOI/Oj5VSvn5je7RtLuPg0aEOj6"
-  + "RbmXQH4mFCuh8RvVTCUFn3ms069hrnhoEPJxD13zUEgOJezycSm/BGwVpBum2sN0B0bIeuFdfXNJ"
-  + "u4BfAfZOgj8c12h0hfip3V4eTBNTAp11Bbjm88H+GMr3SuU3IVwAjdVm9sggRMOetWknyu2Gz5eS"
-  + "pCsgPw6a8yoPu8r+uSEHbqs8bKtKOzX3Ans3hHeDv1XKzwN/6WZKSE4PfD3FUj3jBVRfD+XvEfKl"
-  + "uOYLqw+en7nt5YEyEBuLBp2R1CzFmm+B5C2E/GOSXw/hy3DbN8ysmOlo2BPl6pE8fwNBJ0PxdpLm"
-  + "/tWV3etx58ai/E7hobMJHkKKax0MycGE8HHJrwZ3Mffdd01X2mmbPXRbNmusaUankYaXHt1dyt8N"
-  + "/puE8juQ/iGu+UJCOxAyTwiqPnQ7cV1G60qTdN4Xl+4F7l2QXEs46BYp/6D07Avq8vJVkxIp7a6i"
-  + "NlVRrnNap1PKXtLzpPJMyV8J9m1c88+gsT8hqz300cOOh1anLEJWVgl89y5gHS978XfrW58OmOjh"
-  + "hq06zpZuIcrVO3VnB+miBJYvAHcqoVyGa1R3BLjuRLiL5+f6mrhJAj/FtV4LvJagv5SKqyj5Mml6"
-  + "zSQFerU9wNE/EX4Y5CdD/g5oVolw6kS4lOCih5vfpOkk8ElwrVcBf13PaNaA1kBymZmNbo2H6ZYX"
-  + "3htfBOlycO8AewO48e1lVIXoubqWm651Rfda2KW7Q7KSlJWE4m6p/VVonWtmP+3a/NjqdUX/RPgz"
-  + "+0DzJIJbCeXh0LS+R/ZiFfft8TDgkha4U4FTofixlK2G5hfr42wdDzdJO6WTJMKbUC4CdzKhXI5r"
-  + "zK+cndAUMYn3n+7wSEpPAv83gY8Ssj+T/DX48qskzXWd5O9kCfzNJMLfAu4MQnkirrHneCI8G6xE"
-  + "+NBHwwlpp5cCHyQU75PKG/D+SyTNSzqHMLo32tKJjS/aB4BbTijPwKWvrqaVycTNE4v9HaZhJO2X"
-  + "wF9G0lwG+f1Sdj6FXWJmt9KnKUtP85J98dlp4E8De101U0nHo1yVk4seTruHrgnJMSTJMYT8r+Xb"
-  + "aynt/1ir9b1OyiKVNA/8kuqMZXkSNEaqWWpbiFABF82axZH0xcBfkBR/Jl9ejfOXwOgaswmNOFv1"
-  + "ca/fJWSLSFq7jc9UyhjlZsXDCcfZXgD8IWn5+1J5E/hzoXlRSsjvxDVfOrb52b29bETDBmYktRSS"
-  + "xfWfT0jPLDSbf5uk5xLy9bjmmysL0/GD6XGmMige1gl8l0J6GCSHEfJPp7jmSyuDpaE87rXTjKRj"
-  + "CXyPa+0DSb1TyXzgFRBEKEtQGqPcgG7SBHUfwtgrJWShPioU36SBNrBO4Ks6UNS19gtABvVIGxtP"
-  + "Dr6HACFXbFA4rDZOHC0jcEMYDSN4UVGzpAhfVFSELyoqwhcVFRXhi4qK8EVFRUX4oqIifFFRURG+"
-  + "qKgIX1RUVIQvKirCFxUVFeGLiorwRUVF+OJbEBUV4YuKivBFRUVF+LZVnfIK2vSx2D99yDzs9avf"
-  + "Y0Ot4S+WJNU1K5Xg0s7vM9J1RRNIq0acvrv7bSy9MFAeKoAZLu0Uf9q1Kr83FiRSXAoqO4Wbh74E"
-  + "Sjr8wLUMOg1J8odxXIJLVtVVnIHifxKyx8FOwLX2Z7zUdwRxYIBruKo6MxDyh3DJFTguZZ99Risf"
-  + "21+CcldCOAHXeAXmKg8nVlAfOg9N1YdwWIALSEbSdGMz5pA/jEvXUBbXkrauNrNnJnn6rpTZUaQc"
-  + "D7YImr8+9sVObcxhMFHyuFYC7aPM5n1d0n6E/N9xjX0IRcAGeCnR8RA6wHU8fByXXgG6CpJ1ZvZU"
-  + "/6f/ZARe/GZCewm4JbjGAWO1o4ZwMB1s+MbNopqOJJ03+le41irIruPRp6+25z//6a6nJDDWQ7C3"
-  + "P/w4iJRHgY4naDGuud/YciPkgw3isME3qYf547j0StA18MxlPRW4ez3sbv4yDmK532GkLCGEk8Y9"
-  + "HB4QBw++yc16Apdeh8+vIBlZb2YP95rFZtpp9WnuWT/+yG743ReTuIWEsBjXaZsVIBTdxYQtwreD"
-  + "HpI/Dem1UK6D0XU9wDm43sECv2UPrzezI7pA1C5QLgAWEsLyYRlMBwO+CWYlydhSNGRP4tLrwK/n"
-  + "2eJKmz//wW0BbjPfbhIQ9RzIF0K6kFBOBNEXARtrb20Rvkk9VFUWvdEZNJ/BJddCuAYaF5vZLycC"
-  + "h2M7WmNvxsNdoDwC3PGE8iRcc+9BBXH24JscuI24xgYo10JxudkE4Pq2yNrBH6O3vVbn8T0gPx7c"
-  + "CRAWQnOProjox3bhZtrEQYJvzENT1Uui0YlwOSG5EoVrSBoX98xSptPDiSA+8shu7Ln7IpL0KEKx"
-  + "HNd6/kB4OCvwTRgdk3R8szXfCOn19ZRynZk9MJ1mbQeIz8O3l5E0j4GyC0QPoZxZE2cbvsrDysfu"
-  + "CEeeg/sOaB2E9WYjd8+yh70RcTfwiwh2NBQn41rPnTUPZwy+yYALRRvct3BhDTQuM7OfzYZZ2wUi"
-  + "+TJIjyeUx+Ka82fUxNmAb1LgipxgNyO/jqR1uZndPaAe9oD49K9B8wRIlhDKI3Gt3WcDxOmBb1Kz"
-  + "yjaB7yB/OUlrjZn9xyCZtQUTE3paM0vaB4qTITmWUB6Fa+5a/54QfAlyYDalJs4UfELVZtMmHpbA"
-  + "9/F+DQmXmo3c1fNebXUL68EA8dkXQLoYkuMnglhC8NMK4tTBNzlwOfBt8JfDROC6zBo44LYCxN7W"
-  + "zPvg2ytIGscS/HG4ZrOODhDC1IE4nfB1A2eWYs2JwOHXgV0Gzdt7BqG0M7sZBh8n9/DZF+LTxSTJ"
-  + "SQT/Vlxz3nSCuOPwSWET4EJR4Oz7eH8pSevSujH8wI+OUwjib0C2DJKlhPBGXLMxEUQcVfNKGwj4"
-  + "Oh52AxcK4fgBhIugdRmsusNspR9W4LbDwxfh20tJmosJZS+IJVV2f4dA3D74+ppVFhBuw9kaaFwK"
-  + "3DPMo+MUmnggZCfUIL6hP4hmVe+2GYRPBFDASLFWx0Phwj0E1uCalwG3mlkRPRx9MbAEGktBh0E6"
-  + "MhUgbj18/YDDQ/A/xLEWml+qgfM7i1mbMdEBbuKJDAyyA8FOADuFwEHjh4i3AcQdga9zJrYbuOom"
-  + "grsJWoOzy6Fxq5nl0cPJQGwfgOdEkmQJgTfi0tb2zmo2D19ndIT6AHMNHP6HwGXg1kP6bTPLdnaz"
-  + "NmOgbQqiEsgPAi0huGVgrx0DUTlIk4O4rfBNBlwo7ge3ujrixTcjcFsGsdvD+vED8NlykvQE0Jsg"
-  + "bW4LiJvCN3bHQDdwAMWPCH4tIV1Pmt7YA1xSD6HRrO0CkYMI+VKcnQT2akhtExA7t89sDXzjHjpc"
-  + "s275XQPn0tUQroL0RjMbjcDt+Kymfvw38dlyzJ2Ms9dAuunyovcWKIVM8u0g3y7k20Hd8tn9UvEP"
-  + "UrFQ0kjPN0vqP/F2nO0AUZKrP/ATNqIkHSKffUo+u0ehGPcitFV7VD84emT9nP3kswclH+SzTL7t"
-  + "pdDt4YNS8QUVxdGS5vX5ftHDqfTwoosSSa+R8r+U8lvl86KPh14hExVwoRe4f5SKRZuYtWFDNGum"
-  + "TLz33paUHypln5If/aHka4NKSQrS6BH1818on/2iZ9B8UD4/VypPkR7fIwI3W4PphrQCMfu0lN0z"
-  + "7qFUwSdJvv2Q5P9ZRftE6Re7xAg3cBGxpaI4Ur74W/nsx3XkO67+2ovksyfl8yek/AtStrI6lzpx"
-  + "qhQ9HAAPVRwpP/p3Unav5IXUXq6HH54fgRsaE+dJxQnS6Mvq/+8pFSdJen4Eblg8vLclFQsicMNj"
-  + "YtJrYr/NgOjhgHu4YcOYh9az2yW24/64qOk3jj47pX2uix4Ok4dScZykVpx2Ds20M5FGj5A27l/9"
-  + "//E9pPyQSXYyXfRwUD3Uq6sNF2X3VgvB4shNQbylEU2cdbNSSb8tn50t3/5uveFybP21/VW2H5GK"
-  + "B6TiM1JxjH6xyaZZBHFmfXT9lgiSfkNl+8/ki+/JFzkTc3te8tm9Uva3FYh3NqOJszo6Hiw/eraU"
-  + "f08+9xPSCRNTDQ927WFLvv1T+dHPVqmKTWY10cOZBe4VUv5BqfimVLTHfcrVSbJ7+Xah0NZEENt3"
-  + "qmz/ZZWruCiJJk45dGmfx14jtf9cKm6RinLcj6yToM3rPN9kSfYuDgvJZ/fIZ5+SdIikOJhOqYdn"
-  + "TQ5c2f6glG0C3FiS3bdDv+Nl9QHq7rOAZUHwd+C4BFprgbt2pjsWpnjRPeGwbvVY/mrQ8V13PtSG"
-  + "5hB6znluy/GyiffkiRDurTxsXg58Jx6CnxoP68dfAsUSgjsB/OG45hYPXG/hYHWfe/UoC+B2vL+Y"
-  + "pLXazO7rs+M29PfqzYBZ+0B2BiFZjtNvQ2PrbjXaloPVk98cK4K+jwtr65tjb4sgbo+Hoy/B2xKS"
-  + "9HgIb4FGzz1/m7+BeutuKZr8LvUMuBnvL6tvmr1vSz/wTmZWb9mJfaFYAe44CAugseuWRsc+L759"
-  + "txRNBmIoPY7b8H4dSWsdcHsEcULZidBzt/t+4BZDYxnBH7Ejd7tv+820k4EYigzsZuQvq+uz/Ghn"
-  + "AnFy4J7ZF5orwB1bm1UD1ynWI9um8hJTcTPtZPVZQuHBbsP5VdC6zMx+0GdWM9c97FfnZT9IFxGS"
-  + "E6A8AtfabXuB2zH4NgWxXynAdk8pwJ/ORRAnr3D21POhtYyQHAvlwnGzpqA61lSXkZh0MM0LnLu5"
-  + "rtuy3qz1gznuYW+pwfn4/ESSdAWhOHJKPZwS+LYGxJCP4pIbIKyH8jKzXYYaxM2UFNwL3z6RpHkM"
-  + "oVg4beXoprWA0mZAxN2MirUk875iZg/OEQ83re3p8+MxdzT4ZbjWXtPi4ZTD1x/EidWoyTdCcgP4"
-  + "S6C8wmzX/9zSHHvAgdsT/EKwZTVwz5lOs6Ydvk08lMB6a3U+C8l14Dvl3x/qesp2l3+fReB2BX8C"
-  + "2NGEchmu2V3VOtSD0YCXDtxWEEP2FC79Ot6vJyuvsF0ngLjdfRhmwKw98PkikuZxhHzxuFlzvGiu"
-  + "JMyFalYz1vjkGUi+jg/XkOQXm80fKBA3D1x2JDSOq8vIv6AHuBnp5zBb5eIndq/x2VMkjevw5RqS"
-  + "5pruHnszCeIW5v+LSdLFdQOVGRsdBwK+rfEw5M/g0ivw+dUkI2vN7Fc9INrMetjbyejBXWGvI8Ad"
-  + "RyiX45ovHHvSLPVnHJBGKRN67z2Ca6zBl9eRNK80s6enE8RJa6s88shu7LXbUeCOBy2ETtupmR0d"
-  + "Bw6+rfGQ/AlwV1WdidrrzJ4zrSB2DZrWUx9nBDiEkC0H6wVu1nv4DVqLMBsv+AOE/Je45hq8v44k"
-  + "uXKqIuLkxYwe3BX2Orpumrmop+HiYLSXGvQWYcJIurvOZk/gGldWXaeaV5vZE1MB4mYKUlXAkZ9A"
-  + "YCmu8bJB7V47qM0xeypvASF/sKvy1vVmtnFbQNyMWS3gDYT8eOBUXPPFgzQ6Dg18m27WBGS9IP4S"
-  + "l1yBD1eRPHuV2XOfnCIPG1D8DkEnAktw6cvHvucA920fhrbQm4JI/gCkayBc3QfECcfb+hewVYui"
-  + "eAMNWwxhBUoOwDrT3rbABrel8FC2hVYA65nVZL/ENdZXfdgfv9Jsk9be6vKwT1toNaB4A+gEsCXg"
-  + "Xj027R0HbtNyfRG+HQJxYj3RkP0cZxdD81K4/yazl7QneXoKvJaQL8fxtgnAqT7AbINt1lDCt1Wz"
-  + "muznOK6gZD1p6zoze3Yzke/N1ZTSluLswM3WOB1wDQ98WwQxQCjvg3AZTqth3k1mJil7DdhJwHKC"
-  + "vXqrK0NH+GYQxNb4zxzyn+GaV8LoeXz0r79lZ58dpI0vgvRU0Ing3tQXOGeGGKpbo4YTvn4mGinW"
-  + "qFgK2TcsGXkrgHz7y7jW6XVPgu1rThLhm8HBtGGVh/nd/PKxN9i++z4rZR+F5llDPWj2Ucqwq1qX"
-  + "Vb9HKIo6EhZdVwSgJOQBrIHZ8P/Oc00TPfS4lkAFznWDVVY7znPHQzfHbHS1idZnkHHDPEruTCju"
-  + "LB666HVUVIQvKirCFxUVFeGLiorwRUVFRfiioiJ8UVFREb6oqAhfVFRUhC8qKsIXFRUV4YuKivBF"
-  + "RUX4oqKiInxRURG+qKioCF9U1NyFr6qfETVc6nQT6v5/1FA5KDlc05ACko8gDrAM1W26PeOlFqj/"
-  + "3axqYxI9HHzoAlKJS80RiodwLYdrJThnSCUhGjhIIyRSibDapyahfBKSx6oLnh4FPQDO4ZqNMQ8r"
-  + "UKMGykOp9jAllBsdrvlyfH4mobyBYAWulZK0YjSc3Uml6vfe45qGa6XIieBvhuJ9uPYroPFdSWa2"
-  + "+6O4jQsgfyeEdQQqD13L1aZHD2fNw1Ax5FKrPTHwt0Lx33Gt16Z1deBzgXMlvRryM4EVuNb+1asU"
-  + "47Uuh6QS8FCPkOBxlkKrKu7rs0cxnYdPVtFIv22WbhLR6p4HXwa+rCx7Dc18BcFOxbVeASR178Do"
-  + "4Yx7OFJVWgvZkzi7CMIl8M1rO63L0k57JTPzZnYn8H5JH6r7Ub+DwDG4Vqt6kXbdTcjcQPYxGF6z"
-  + "6g5Nrar0YSg9+OuRv5Akv9Rs90e7Lk/paTjZ09X3DuAOSX9FWR5H6k4nlItwrfn1BwGQjx5OcZSj"
-  + "nua7ZgKWQukJ5U1IF5L5NbbryC96PAxpbaIf24CpepyNAhcAF0g6AJ+tIHHvxI28shpJSwg+jqQ7"
-  + "uvAe731eRbmQ/xzHebjmKjO7dezSDRtSFiwIVM1Dyk0j3yYeOjPLgHXAOkn7QXYmJKfgmq8BS+o+"
-  + "g9XmTfRwCjxs1o0/8v8E1oJ9Ade8xazaie7pwlRFvh4TQ5+R9D7gU5L+DspFBLcC/IrxaDiAbbQG"
-  + "P8p1+hM4KIuq25IuxDUvN7O6bZYhhU6UK7f2W9Qehp4+8j8HPi7p05TlEaTuDEJxAq61R/VzjZVg"
-  + "jx5u+0yl9tDfAP5CeOKrZns/02em4ntfKp3EwMlG0kuBS6XRj+KzpVhyBq75uirMjvUkt2GvoT99"
-  + "I2SSQt2ohfI+Qjgf17zEzG7vnZKYWdgW6LbgYafFVgFcA1wjaW8oTgP3NnBvxKVpVzSkmpZGDzfv"
-  + "YXE/wV9K6c61Vuu2Lg/HWpxtzkO3NSOpmZWSTFIiyZnN+5GlI3/H9257I/iFUJ5DKJ+u0hWtyrTO"
-  + "1urOPEL2bi97vxHCxZTlUvj5ay1pfdTMbu96b83Mys4MZKpkZtrUQ3vYrPl3rLrkEEyHQ/mPhPJX"
-  + "tYcJLnpYeRg8Cl0pAp9BWA/+NHjoVZbM+xNrtW7DDElp7aHfGg/T7RxJO9GwAK4GrpY2fhSKJeBO"
-  + "x9ybsDQFgc8C1XN3jgW+QgBT3aO8bv5R3lFtnoSvmCU/6xflOu/tdGqSaFgC/wb8m6SPQ7EckpXg"
-  + "FlTRkE5L7J3Iwz5RLhR3o/AVEi42S364rVFuuyLf1kfDXR4wa36ej378MNChEP43oXiIZGRiAn8u"
-  + "Jn87UQ6Bq3/f4J+E8CUoF+HSgy0d+SuzXX423VFuO6Ohk5SY2SNmzX8xS44GHULIPwv5L8YPYSRz"
-  + "38MJifCwkVCeT1mejLv/tyoPR37Y46HfXg/TaRlJzz77JuAmSX8K+SmQnkaww3GteiRtV9FhmEfS"
-  + "CdvLjQRcZ937LZwuxDUvNrMH+yy8NRNRbhs9VK+HZs2bgZulxz6BZ0mVdtIRuNZI7aHAwhzwsPr9"
-  + "xzwU4G+D8GVcWGPW+vF0zVTSKTax7Gpab2b2NHAOcI6k3yK0z8AlJ+FGXlQvWIcvgT/WjNNSrNVJ"
-  + "ETyKc+dDegnOvtG1vezq92KHNk9mGMRy/Ge/3tUJ/K8AX5H00uoQhr0dN/IyOmknQknQsHpYJ8Lz"
-  + "J3DppRAugHSDWVpMt4fpzI2k9j3ge5I+BP5ksKUEluJazfF1hTSQyd+x7WUZbqTuAVgG8F/Hh4tJ"
-  + "mpeY2S/7RLmhnZ71SVkEM/sx8GFJn6TMFuLSd4E/Ftfapboiq2cDg+hhZ6aiOkVgadXJ1/87hC/i"
-  + "Ri802+PxSaLctCid2ZEUM7ONdI5CSa+C7CRITse1fqN61gAl8PsuvPNf4LgAmqvN7Ds9C2/qNUDJ"
-  + "HNEkG21tOmmnjRv3p5mdTpK8A9c6kPHjbIORwB877tWVCA/ZL3HJWhz/Csm/d47szfRMJZ3hkZSe"
-  + "5O9dwF2SPgvlCeBOJPiTcK159Zs08wn88Sjn6ijnoGhD+BpoFa65biwRboZCmDSJOtc0STT8GfBX"
-  + "0p2fhd84AtzpBL8U19q9ej8zEOXseNh9ZK8oofwWLnwR11pdL4lmdaaSDtBIuhpYLY2+HLLlhOQ0"
-  + "XOug6mfsOgrlzNA0JH/7J1HvA62C8AWz5o/6TUnmUpTbwY22nLG007P7gZ0E7lQs/R0smZjAd+am"
-  + "18MJR/YewHExrnmumW2SCGeSI3s7jbpTFl2PNSQtlPy58u3H1FHIJN8u5NtBIdOEP75dSpJ8+7qx"
-  + "1/HtL9aPFX2uD/LtUr4dxl7fZ89I/hIVxUnST0b6/Izx1MfWenjWWU5FsUC+/blt8NDXft2uhx+e"
-  + "X7129tEteliOdnlYZJK/WMreLj2468Sfc0MaPZzcRFdHlq7HnniulP//Uvlt+bx+k0MFmx/18lnY"
-  + "Jvh821fXlhpXcbuUf0ja+KI+ZsWDx9sOYo+Hz+wj5e+WL78uX3R5OOrHBsBtga/ysJCKbg/vldp/"
-  + "qSw7sOfnSaKHOxwNz3LK80Mk/3/kswfH3/SxkbTYDHx5ZV5bXVHuMcmfJxWLJDVilJsWD13Xif7O"
-  + "44fIZ38nZf85bkbe62E/+PKxiDnmYXtU3p+vojhZ0rzo4YyMpI/uLpW/J5XfkIp6+Cslycu3r+mC"
-  + "7wuSSoWs45ak8iYpf6+kfXu+TyqdFUfIGfNQe6rM3in59fJ5eywaVh5+bxy+9kckFeMedmYq7T+T"
-  + "2q/Y1MMY5WZyJH29fPYPUvbTejS8eRy+bFUd5X4pn31eKo7oWVu6OELOxtJiQy+Ir5Af/Wv57L7a"
-  + "r590Rb5P174+Ip9/oZqp3NmMHg7WSLqLlP1uNSJWgFZrxfxPpKf26jNCRrMGY2lhXY+1pOxUKftr"
-  + "SbvUkW+FyvZHJO0Zo9xgbtL0RkPrc10SR8ihioY2mddzwUObYwYakNBzLKjeTBE9tU+iBtI/x3je"
-  + "sNfX6N+QGToSpypDuYQYiTOU4TU0rTZc2p+X/BoV7SXSva3NrTeiZmW9l0x8LD9U8v8kn13bSR1E"
-  + "j4bO3Fsa9WL9y+MphvzuOmf0sj5rwRgNZy3KPfsCKX+PVH5LvqiT7NndnVlLhG9Y4fPtcyWV8qN5"
-  + "V3J9VCrXqcze1icxG3dBpy/KuQnT/6I4uopy7Se6kuZeUiHfvm2uw5fuBN7Xi3VTXYsk4JIRSJaQ"
-  + "JEsIxf1SdgE0L65rZXZugRqrzRHx2W7o6htyrWTsIPaz+0FyBvhTSJPfAqtuIA+ZB1m9B5hCrJw2"
-  + "FyJfv7OdnQPVvuswbimV16jMzpT0vD6bNPHDsG1Rrit3d29LKk6Q/IXy2VNdUW7TA9bdZztj5JuL"
-  + "sdA6W9eMR0NLoXkMSXIMIX9YPrsAZxdhzZs6t5z0VB2OW96bRDkmRrnR0ZfSdP8F7GRIXwmASyBk"
-  + "3TdLpzvre5bu9J+a6gPgCAiyTr39vcHeB+V78eWNUnE+iV9jZg91R0N28rxTT/6tutH2Zz+bxwv2"
-  + "PoEkPQ1fHIdr1gWXsvFq3Wbxcxfhm7AytKqHARDy8QI7rnkYJIcR8k9KxQWUrCZN/60rGnaXHtBO"
-  + "Al33Wq5+H7LXE8JKcCtxzZcAkGwS5ZL4QYvwbc20NMVQXSJPuMae4N5D6t9DKL+vsn0BmT/PzLq6"
-  + "z2xIYUGYi5s0PcWwOuUkngv+RAIrQUfhmv2K7MbPWIRvez5xGObq0nJFHQ1Jca3XQfo6RrIPyxdX"
-  + "4NJzga/X/Sx6G81oyIFz9Xjkx6Nc/hbQckJ+Kq65b3VF3hvloiJ8UxwNu0d2l86vSquzklDcK59d"
-  + "SB6+YGb3j206DGE07Ckl36nV8mvgVwArkd6KNcCpThFAXS4wfp4ifDOySQOhVFW/E1d3gf0IzfxP"
-  + "JX8NZfgSaXpFXRxq4A8H91SVC1QFkBMo3wosh/wd0HxudfVYlEswi+u4CN+sRcOelEUyD9wyUrcM"
-  + "ih9L2UXQvLCunFVN2+pml4MQDftHuWdfCI13gH8buIPrGfR4lDNLYpSL8A1aNHQEL/Cdup8vBf6c"
-  + "UHxAKq8BVsEza/tURp7RaNhnTVrq3ntbvOQlR5O60wjFElyjaiM9se5mjHIRvmGIhtYVDV0KyWJg"
-  + "MWHeg/LZhTi72Kz5rZlM4PdNhGvj/pD+LoG34zqJ8HTi5onFz0mEb2ijoaoEvmQkrX3B/oRQvk/y"
-  + "G/D5apJitZk9Mh3RsIpy1yewYDwRrkd2w+9+PEmykuAX4hrzxnstxER4hG9OQVgn8M0mJvBJjyQZ"
-  + "OZJgH5P8+RDWQnrDVCTwe6Jc5/V+i9BeQUhOJ2nsX0U5xUR4hG+nmpbWCfzOcbbGXuDeC7wXyltV"
-  + "tr9KUn5lM/39trh50pUI3xP8EgJvh+Jo3EhMhEf4dnIJG9vA6E7gW+tgkvRgAh+S/GUQzof02k5N"
-  + "k65uT74nynUamVRRLs9/h0QnE/LTcc29q0R4iInwCF9U32jYHZFcuju406o/5Q9Uti8iCefWXYF6"
-  + "n97pALUXvjgZc6fidDg0HKirE3BMhA+S4ug3iJs0ZgmhFKHtq02Q9ECS1tkEd4/kV0nZKZ0mLlUp"
-  + "vfxwqTgH8ntIGv+MSxag4AhZSciFueo1Ld6gGiNf1FZGQ+uXwF8BzRWw9wLgBmAfglbjGs+vmlLG"
-  + "414RvqipjYbjCfwC10phDCxH3QqW4C0mwuO0M2r61oZJ7VvPrqfFuicRvqioqAhfVFSELyoqKsIX"
-  + "FRXhi4qK8EVFRUX4oqIifFFRURG+qKgIX1RUVIQvKirCFxUVFeGLiorwRUVFRfiioiJ8UVFREb6o"
-  + "qAjfTElsctd31JD4FuEbcnXKK5RIEcKBxk2iqjsawBrM8bIYc7iA0sEd0B6rhpnWCNDpR+Cpuu7E"
-  + "micDAZwCmOGaDqxZf+FRoIiRbwhlZqUkw7X+FDgU8v9NyB/AtQzXSnEtQxJSjIizAZyCRwq4huFG"
-  + "ElzLEYqHIZwD+Urc08d3elYMc2vtnTTyjZmWATcCN0raFcqjQMcTwmJca7/qPRCEvKqNGSPidE4p"
-  + "A2C4hgNX1yTNH8elV4CuwjXXmdlTO8tbku4kvnf6GzwLrAPWSZpPmR1F6hYTtATX2reaCUQQpwE4"
-  + "cGkCSacI8BO4xhVQfg03us5sj8d6vWIa+xRG+GY2AnZ6GXQ6smJmzwBrgbWS/hT8IkiOIxTH41q/"
-  + "NhFEdfocRBC3H7hncPY1KNfhWuvMrAe4611XD8EY+eboNNT3AfEp4KvAVyU9B/xCsIWEcnENYvV5"
-  + "8nmgeo0IYn/gVHXhbXSmlM/guBZffI2kvNhs5OGeCOeo2p6FMWB3Iu205eInAVFm9uREEPMTwS2E"
-  + "sJBkZI8xEEPRadG1c4I4GXDkOcFfiQvX4JoXm1k3cJ2K2zstcBG+bQPxi8AXJT0P8mUEdyz4hbjW"
-  + "c6pnewjlzgFiBVwFXS9wlN8BrQOttyS9exLgOnm8qAjfVoGY1Iv/XwHnAOdIT+2F1zKS5mKCPxbX"
-  + "mj9nQdwUuHpwKnJCeTPy6yhZbyONuyJwEb6pBrHsA+KjwL8C/yppH3x7BUnzGII/CtfatXp2CcGX"
-  + "IAdmQwWiULXJ1AtcWUL5fbxfQ8Kllozc1cNpWr8/IQIX4ZtuEL2ZPQR8DvjcOIiNYwnhOFyrPq1R"
-  + "QAiDDWI3cGYp1hoHLhS34cJaaF3GqlV32MqVvhe4epoegYvwDQKI7VdCtpSQLAO9AddqTASRKp81"
-  + "2yBKYRPgQiGs/AHer8LbZTTX3m4WgYvwDQ+I9wD3CD6DsgMhOx6SpZODaDZjbZtFAAWMFNeqt/xL"
-  + "QXEPQWtwzcuAWy1tFBG4CN8wgugAZ2Yl1roTuFPibyA7ELIlkKwg2EFVl9kZALHaOPETgROE/B4c"
-  + "l4BdDo1bLbE8AhfhG3YQAxDqaGhjINIBUX+Dyw+CbEk1NbXXjoGoHKQdB3EicMb4Odb7celqynAV"
-  + "P/npN+0Vr8gicFFzWpJMkqs/4N2PJ5JeL2UflfLbFQqNKWSSbxfybV//u6y+MHpk/dz95LMHpSD5"
-  + "zMu3w9j1Cp0XkXz2E8l/RtJRkub1fP+0/rniqZ2onRnEWxpSfqj86Kflsx9K5TiIyiTfzvrD50v5"
-  + "rPtiyWcPScW5KopjJgEuicBFRRD7R8SmpEOk7JPy2Q/kCz9O1gT4Hqppk3z2c/n8HKlYIT2+RwQu"
-  + "KmrbQEw2AfEnPxmRdIx8+x/li2el4qjq+o3711PK1So3niZpz57XcxG4wdT/Ay1n0VN4PQoSAAAA"
-  + "AElFTkSuQmCC";
-const EMB_NEGRO = "data:image/png;base64,"
-  + "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";
 // Aquí estaba `EmblemaFOSMON`, el componente que pintaba el emblema del
 // contratista en pantalla. Se va con el renombre: los tres sitios que lo
 // usaban —acceso, barra y pie— son del PRODUCTO y ahora llevan `MarcaCotea`.
@@ -10781,9 +8299,13 @@ const EMB_NEGRO = "data:image/png;base64,"
 // lo encuentra con autocompletar y lo pone sin pensarlo. Que haya que
 // escribirlo de nuevo es justamente el costo que se quiere cobrar.
 //
-// `EMB_NEGRO` y `EMB_WHITE` se quedan: los usa `generarPDFObra`, que es el
-// reporte de FOSMON y lleva su emblema con toda razón. Ése no se le ofrece a
-// una dependencia (`vaElReporteEjecutivo`).
+// Y el 2026-11-12 se fueron también `EMB_NEGRO` y `EMB_WHITE`, los dos PNG en
+// base64. Se quedaban por un solo lector: la portada del reporte ejecutivo,
+// que era el documento de FOSMON y llevaba su emblema con toda razón. Retirado
+// ese papel —ver `papelDeLaObra`—, los 390 renglones de base64 quedaron sin
+// lector, y la regla es la de arriba: el emblema que nadie pinta es el que
+// alguien va a pintar sin pensarlo. Los dos papeles que quedan son de cotea y
+// firman cotea; de qué organización es la obra se imprime como un campo más.
 
 /**
  * La marca del PRODUCTO.
@@ -10794,9 +8316,9 @@ const EMB_NEGRO = "data:image/png;base64,"
  * de otro no. Con marca propia el hueco ya no hace falta y la guardia tampoco:
  * cotea es el mismo producto para los dos, igual que `PRODUCTO.nombre`.
  *
- * El emblema del contratista no desaparece del mundo: sigue en la portada del
- * reporte ejecutivo, que es el documento de FOSMON y que a una dependencia no
- * se le ofrece (`vaElReporteEjecutivo`).
+ * Y desde el 2026-11-12 el emblema del contratista no está en ninguna parte:
+ * su único lector era la portada del reporte ejecutivo, que se retiró. Los dos
+ * papeles que quedan —el interno y el del Art. 73— firman cotea.
  *
  * `variante` y `tamano` como en el `Logo.jsx` del paquete, con las dos reglas
  * del manual que siempre se rompen aplicadas solas: por debajo de 32 px la
@@ -10970,23 +8492,28 @@ const nombreOrg = (marca, usuario) =>
 // barriendo el armazón en busca de `EmblemaFOSMON`.
 
 /**
- * ¿Se le ofrece a esta sesión el botón de «Reporte ejecutivo» (PDF)?
+ * ¿Qué papel descarga esta sesión?
  *
- * No a una dependencia. `generarPDFObra` es el reporte de la constructora
- * completo: portada con el emblema de FOSMON y pie «cotea · FOSMON
- * Construcciones», y adentro RESUMEN FINANCIERO con margen bruto, DESGLOSE DE
- * GASTO POR RUBRO, ALMACÉN y PERSONAL · NÓMINA · TOP PROVEEDORES.
+ * UN PAPEL POR LECTOR, Y UNO SOLO. Antes había tres funciones y una sola
+ * pregunta —«¿es dependencia?»— que repartía dos botones a la constructora y
+ * ninguno al municipio. Los dos de la constructora decían casi lo mismo con
+ * criterios distintos sobre el mismo hueco, y el municipio se quedaba sin nada
+ * que archivar. Ahora la pregunta devuelve CUÁL, no CUÁNTOS: cada lector ve un
+ * botón, y el que no es su papel no existe en su pantalla.
  *
- * Y el problema no es sólo que enseñe lo ajeno: en una dependencia esas rutas
- * no se piden (P5), así que los arreglos llegan vacíos y el PDF no diría «no
- * disponible» — imprimiría Gasto $0 y Margen 100%. Un número falso, con el
- * logo del contratista, firmado y descargado por el municipio.
+ * Por qué el municipio no puede ver el papel de la constructora: ese documento
+ * publica margen, gasto por rubro, almacén y nómina. Y el daño no es sólo
+ * enseñar lo ajeno — en una dependencia esas rutas no se piden (P5), así que
+ * los arreglos llegarían vacíos y el papel no diría «no disponible»:
+ * imprimiría Gasto $0 y Margen 100%. Un número falso, firmado y descargado por
+ * quien paga la obra.
  *
- * El corte es no ofrecer el botón, por lo mismo que no se pide la ruta. El
- * reporte que la dependencia sí necesita es el semanal del Art. 73, que se
- * construye aparte y queda anotado como pendiente.
+ * Por qué la constructora no ve el del municipio: el informe del Art. 73 es
+ * una obligación de transparencia DE LA DEPENDENCIA, que lo publica y lo
+ * archiva en su expediente. Dárselo también al contratista sería devolverle el
+ * segundo botón que se acaba de quitar, con otro nombre.
  */
-const vaElReporteEjecutivo = usuario => !esDependencia(usuario);
+const papelDeLaObra = usuario => esDependencia(usuario) ? 'art73' : 'interno';
 
 /**
  * ¿Va el bloque de Órdenes de Trabajo en Avance físico?
@@ -25929,8 +23456,9 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       })()}
     </Card>
 
-    {/* Aquí iba la gráfica semanal del sub. Retirada el 2026-09-22: ver la
-        nota en `generarPDFObra`. Nunca hubo serie que graficar. */}
+    {/* Aquí iba la gráfica semanal del sub. Retirada el 2026-09-22: se
+        alimentaba de un documento por subcontrato que NUNCA existió, porque las
+        reglas negaban esa escritura. Nunca hubo serie que graficar. #31. */}
 
     {/* Sub-tabs */}
     <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0}}>
@@ -27413,6 +24941,10 @@ const PASOS_DEPENDENCIA_BASE = [
   { t:"Entra a una obra", d:"El Dashboard de cada obra te da el estado de un vistazo: avance, lo estimado y lo que requiere atención." },
   { t:"Registra el contrato", d:"En Contrato capturas a qué empresa se adjudicó, bajo qué modalidad, el monto y el origen de los recursos." },
   { t:"Carga el catálogo", d:"En Contrato → Catálogo de conceptos sube el archivo de conceptos y precios. Sin él no se puede capturar avance." },
+  // El paso que hasta hoy no se podía prometer. Se agrega AHORA, no antes,
+  // porque el botón existe: un tutorial que manda a una pantalla inexistente
+  // enseña que el tutorial no sirve.
+  { t:"Descarga el informe de avance", d:"Dentro de una obra, el botón de arriba a la derecha genera el informe del Art. 73 en PDF: avance físico contra avance financiero, incidencias, observaciones y respaldo fotográfico." },
 ];
 
 const PASOS_BIENVENIDA = {
@@ -27461,7 +24993,7 @@ const PASOS_BIENVENIDA = {
     { t:"Auditor Interno", d:"Tienes acceso completo a las obras asignadas pero en solo lectura. Puedes ver todo sin poder modificar nada." },
     { t:"Dashboard", d:"Al entrar a una obra verás los KPIs clave, tendencias semanales y semáforo de riesgos." },
     { t:"Operación y Gastos", d:"Consulta avance físico, fotos, estimaciones, subcontratos y todos los gastos de la obra." },
-    { t:"Reporte ejecutivo", d:"En cada obra puedes descargar el PDF ejecutivo desde el botón arriba a la derecha." },
+    { t:"Documento interno", d:"En cada obra puedes descargar el documento interno de cotea en PDF desde el botón arriba a la derecha." },
   ],
   cliente: [
     { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
@@ -27477,8 +25009,9 @@ const PASOS_BIENVENIDA = {
   // trataba como si él fuera el contratista cobrándose a sí mismo.
   //
   // Los pasos nombran sólo lo que existe en su menú —Dashboard, Avance,
-  // Evidencia, Contrato— y no prometen el informe del Art. 73, que todavía no
-  // está. Un tutorial que manda a una pantalla inexistente enseña que el
+  // Evidencia, Contrato— y desde el 2026-11-12 también el informe del Art. 73,
+  // que ya tiene botón. Antes no se prometía, y por la misma razón por la que
+  // ahora sí: un tutorial que manda a una pantalla inexistente enseña que el
   // tutorial no sirve.
   director_obras: PASOS_DEPENDENCIA_BASE,
   subdirector: [
@@ -29841,51 +27374,12 @@ export default function App(){
         border:"0.5px solid rgba(202,138,4,0.25)"}}>
         ● Cambios sin guardar
       </span>}
-      {/* Por qué una dependencia no ve este botón: ver `vaElReporteEjecutivo`. */}
-      {obra&&vaElReporteEjecutivo(usuario)&&<button onClick={async ()=>{
-          // Cargar el detalle GP de esta obra para tener rubros reales en el PDF
-          let detalle = null;
-          try {
-            const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
-            if (obraGPId && cargarDetalleObra) detalle = await cargarDetalleObra(obraGPId);
-          } catch (e) { console.warn('gpDetalle no disponible', e); }
-          // El programa de obra, igual que el detalle: una lectura, aquí, antes
-          // de armar el PDF. Si falla o no hay, queda null y el reporte cae a la
-          // recta del plazo diciéndolo. Lo que NO puede pasar es que un error de
-          // lectura se vuelva un «Avance programado» que en realidad es la recta.
-          let programaObra = null;
-          try { programaObra = await fsGet(`obras/${obra.id}/config/programa`); }
-          catch (e) { console.warn('programa de obra no disponible', e); }
-          // Aquí se leía el historial semanal de cada subcontrato para las
-          // gráficas de tendencia del PDF. Retirado el 2026-09-22: eran N
-          // lecturas —una por sub— de documentos que nunca existieron, porque
-          // las reglas denegaban la escritura. Ver PENDIENTES #31.
-          // La hora con la que se sella el documento. No lanza: cuando la
-          // callable no contesta devuelve el reloj del aparato marcado como
-          // tal, y la portada lo imprime así.
-          const instante = await pedirHoraDelServidor();
-          await generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, subcontratos, {}, historialAvance, gpData, otrosGastos, detalle, nominaHistorial, evidencia, programaObra, evidenciaCargada, instante);
-        }}
-        title="Descargar reporte ejecutivo en PDF"
-        style={{background:C.caliza,border:"none",borderRadius:6,
-          margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
-          display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="12" y1="18" x2="12" y2="12"/>
-          <polyline points="9 15 12 12 15 15"/>
-        </svg>
-        Reporte ejecutivo
-      </button>}
-      {/* EL DOCUMENTO INTERNO DE COTEA — botón propio, generador propio.
-          No es una casilla «¿interno?» junto al otro botón: son dos papeles con
-          criterios opuestos sobre el mismo hueco —ver `generarPDFInterno`— y un
-          control compartido los volvería un papel con dos modos.
-          La misma guarda que el reporte ejecutivo: este documento publica el
-          margen y el gasto de la constructora, y una dependencia no lee la
-          economía de su contratista. */}
-      {obra&&vaElReporteEjecutivo(usuario)&&<button onClick={async ()=>{
+      {/* EL PAPEL DE LA CONSTRUCTORA — el único que descarga, y lleva margen,
+          gasto por rubro, almacén y nómina. Por eso una dependencia no lo ve:
+          no lee la economía de su contratista. Ver `papelDeLaObra`.
+          Aquí había DOS botones, éste y «Reporte ejecutivo», que decían casi lo
+          mismo con criterios opuestos sobre el mismo hueco. Quedó uno. */}
+      {obra&&papelDeLaObra(usuario)==='interno'&&<button onClick={async ()=>{
           let detalle = null;
           try {
             const obraGPId = obra?.gpId || (/^\d{4}/.test(obra?.id||'') ? obra.id.slice(0,4) : null);
@@ -29905,15 +27399,49 @@ export default function App(){
           });
         }}
         title="Descargar el documento interno de cotea (no se entrega al cliente)"
-        style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,
-          margin:"4px 12px 4px 0",padding:"5px 13px",fontSize:11,fontWeight:600,
-          color:C.textSec,cursor:"pointer",
+        style={{background:C.caliza,border:"none",borderRadius:6,
+          margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
           display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="3" width="18" height="18" rx="2"/>
           <path d="M7 8h10M7 12h10M7 16h6"/>
         </svg>
         Documento interno
+      </button>}
+      {/* EL PAPEL DEL MUNICIPIO — el informe de avance del Art. 73.
+          LO QUE NO SE LE PASA ES LA MITAD DE LA DECISIÓN: ni `maquinaria`, ni
+          `materiales`, ni `subcontratos`, ni `gpData`, ni `otrosGastos`, ni
+          `nominaHistorial`. `generarPDFArt73` no los recibe porque no los
+          tiene, y aquí no se leen: la lectura del detalle de GP que el papel de
+          la constructora hace arriba no ocurre de este lado, así que la
+          economía del contratista no llega ni al montón de datos del botón.
+          `estCargadas` SÍ va, y no es un detalle: sin él una lista que todavía
+          viaja y una obra sin estimaciones llegan iguales, y el informe
+          imprimiría «$0 pagado» en un documento que se archiva. */}
+      {obra&&papelDeLaObra(usuario)==='art73'&&<button onClick={async ()=>{
+          let programaObra = null;
+          try { programaObra = await fsGet(`obras/${obra.id}/config/programa`); }
+          catch (e) { console.warn('programa de obra no disponible', e); }
+          const instante = await pedirHoraDelServidor();
+          await generarPDFArt73({
+            obra, subs, estimaciones, estCargadas, historialAvance,
+            programa: programaObra, instante,
+            evidencia, evidenciaCargada,
+            organizacion: nombreOrg(marca, usuario),
+            generadoPor: usuario?.nombre || usuario?.email || null,
+          });
+        }}
+        title="Descargar el informe de avance del Art. 73 en PDF"
+        style={{background:C.caliza,border:"none",borderRadius:6,
+          margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
+          display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/>
+          <polyline points="9 15 12 12 15 15"/>
+        </svg>
+        Informe de avance
       </button>}
     </div>}
 

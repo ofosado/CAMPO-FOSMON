@@ -29,7 +29,10 @@
 
 const path = require('path');
 const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
-const { noArranco, NO_ARRANCO } = require('./no-arranco.cjs');
+// El módulo ES la función; `NO_ARRANCO` y las otras puertas son propiedades
+// suyas. Destructurar `noArranco` de ahí lo deja en `undefined` sin ruido.
+const noArranco = require('./no-arranco.cjs');
+const { NO_ARRANCO } = noArranco;
 
 let fallas = 0;
 const check = (ok, que, detalle = '') => {

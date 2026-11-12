@@ -12,9 +12,9 @@
 //   · El prólogo de cálculo de DENTRO de un componente. No es un símbolo que se
 //     pueda pedir: es el tramo de sentencias antes del primer `return`, y hay
 //     que cortarlo por AST y correrlo con los hooks doblados.
-//   · `generarPDFObra`, que es una `async function` de dos mil líneas cuyo
-//     `return` viene al final. Lo que se afirma del PDF son las CADENAS que
-//     salen al papel, así que hay que dejarlo dibujar entero.
+//   · Los generadores de PDF, `async function` de mil líneas cuyo `return`
+//     viene al final. Lo que se afirma del PDF son las CADENAS que salen al
+//     papel, así que hay que dejarlos dibujar enteros.
 //
 // Y una tercera razón, la que justifica que esto sea un módulo y no otra copia
 // pegada en cada banco: `taller` recibe el CÓDIGO COMO TEXTO, no la ruta. Eso
@@ -179,15 +179,15 @@ function taller(codigo) {
     return codigo.slice(comps[nombre].start, comps[nombre].end);
   }
 
-  // Como `cuenta`, pero para lo declarado con `function`. Hace falta porque
-  // `generarPDFObra` es una `async function` de nivel superior y no se puede
+  // Como `cuenta`, pero para lo declarado con `function`. Hace falta porque los
+  // generadores de PDF son `async function` de nivel superior y no se pueden
   // ejercitar con `correr`: `correr` corta en el primer `return`, y el del PDF
-  // viene al final, después de las dos mil líneas que dibujan el documento. Y
+  // viene al final, después de las mil líneas que dibujan el documento. Y
   // dibujarlas es justo lo que hay que ejercitar: lo que se afirma son las
-  // CADENAS que salen al papel que se entrega.
+  // CADENAS que salen al papel.
   //
-  // Se midió antes de escribirlo: las quince dependencias de `generarPDFObra`
-  // —`estadoGastoGP`, `MXN`, `MXNS`, `desgloseEjecutado`, …— son todas consts
+  // Se midió antes de escribirlo: las dependencias del generador
+  // —`andamioDeCotea`, `MXN`, `MXNS`, `calcularKPIsObra`, …— son todas consts
   // de nivel superior, así que `preludioPara` las trae enteras y NINGUNA se
   // dobla. Lo único que se dobla es el papel.
   // `entornoExtra` es por donde entra el navegador de mentira. No vale ponerlo
@@ -265,14 +265,24 @@ function papelDeMentira() {
 // Correr el generador del PDF con el papel de mentira puesto. Devuelve lo que
 // el documento dijo.
 //
-// El `catch` de `generarPDFObra` se COME cualquier excepción —`console.error` y
-// un `alert`— así que si no se interceptara, un generador roto daría la prueba
-// en verde con el papel en blanco. Por eso `alert` vuelve a lanzar: un PDF que
-// no se pudo armar sale por la puerta del 2, no por la del 0.
+// EL PAPEL ES EL DOCUMENTO INTERNO, desde el 2026-11-12. Antes era el reporte
+// ejecutivo, que se retiró: una constructora descarga un solo papel. Lo que los
+// dos bancos que entran por aquí afirman —que el gasto del papel suma lo mismo
+// que el tablero, y que a una obra no se le cuelga el gasto de otra— se afirma
+// ahora del papel que de verdad se descarga, que es lo que importa de ellos.
+//
+// Y los argumentos van POR NOMBRE porque el generador los toma por nombre. Lo
+// que se le pasa a `generarPDFInterno` es `props` tal cual: un campo nuevo del
+// generador no obliga a tocar esto, y no hay comas que contar.
+//
+// El `catch` del generador se COME cualquier excepción —`console.error` y un
+// `alert`— así que si no se interceptara, un generador roto daría la prueba en
+// verde con el papel en blanco. Por eso `alert` vuelve a lanzar: un PDF que no
+// se pudo armar sale por la puerta del 2, no por la del 0.
 async function alPapel(funcion, props) {
   const papel = papelDeMentira();
   const falla = [];
-  const generar = funcion('generarPDFObra', {
+  const generar = funcion('generarPDFInterno', {
     // El jsPDF ya está «cargado», así que las dos esperas de CDN pasan de
     // largo. Si algún día dejan de pasar de largo, `document.createElement`
     // devuelve un objeto cuyo `onload` nadie llama: la promesa se queda
@@ -286,16 +296,17 @@ async function alPapel(funcion, props) {
     // `timeout`.
     fetch: () => { throw new Error('el PDF pidió red: esta prueba no la tiene'); },
     FileReader: function FileReader() {},
-    EMB_WHITE: undefined, EMB_NEGRO: undefined,
   });
-  await generar(
-    props.obra, props.subs, props.estimaciones, props.maquinaria,
-    props.materiales, props.subcontratos, {}, props.historialAvance,
-    props.gpData, props.otrosGastos, null, props.nominaHistorial,
-    props.evidencia, props.programa ?? null);
-  if (falla.length) throw new Error(`generarPDFObra reventó: ${falla[0]}`);
+  // Las dos banderas de «ya llegó la lista» se ponen en `true` porque los dos
+  // bancos que entran por aquí siembran listas de verdad y lo que afirman es
+  // sobre el gasto, no sobre la lectura. Dejarlas en su omisión —`false`, que
+  // es la correcta para el generador— haría que el papel declarara que no pudo
+  // medir y los bancos medirían ese hueco en vez de la cuenta que vienen a ver.
+  await generar({ ...props, gpDetalle: null,
+                  estCargadas: true, evidenciaCargada: true });
+  if (falla.length) throw new Error(`generarPDFInterno reventó: ${falla[0]}`);
   if (!papel.doc.guardado) {
-    throw new Error('generarPDFObra terminó sin guardar nada: no llegó al final');
+    throw new Error('generarPDFInterno terminó sin guardar nada: no llegó al final');
   }
   return papel;
 }

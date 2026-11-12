@@ -45,6 +45,13 @@
 // que el PDF —la única cosa de todo esto que sale impresa, se firma y se
 // entrega al cliente— era la superficie SIN comprobar. La sección 6 la cubre.
 //
+// Y DESDE EL 2026-11-12 SON DOS PAPELES. `generarPDFObra` se retiró: el que se
+// entrega es `generarPDFArt73` —el informe de avance de la dependencia— y el de
+// la constructora es `generarPDFInterno`, que lleva su sello de uso interno. La
+// sección 6 mira los dos, porque el programado se puede publicar mal en cada
+// uno por su lado, y el motivo que dice CÓMO cargar el anexo tiene que ser
+// distinto en cada papel: quien lo carga es otra persona y entra por otro lado.
+//
 // Uso:  node scripts/prueba-pantalla-dice-de-donde-sale-el-programado.cjs
 //       node scripts/prueba-pantalla-dice-de-donde-sale-el-programado.cjs --contraprueba
 //
@@ -53,7 +60,7 @@
 'use strict';
 
 const { fuenteDeApp } = require('./extraer-de-app.cjs');
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
 const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones('src/App.jsx');
 
@@ -64,7 +71,7 @@ noArranco.vigilarExcepciones('src/App.jsx');
 // es la contraprueba comprobándose contra su propio andamiaje.
 const PEDIDOS = [
   'avanceProgramadoA', 'ROTULO_PROGRAMADO', 'pctProgramadoEnFecha', 'ALERTA_REGLAS',
-  'fechaLocalDeISO', 'generarPDFObra',
+  'fechaLocalDeISO', 'generarPDFArt73', 'generarPDFInterno',
 ];
 
 const { cuerpo, faltan } = fuenteDeApp(PEDIDOS, { tolerante: true });
@@ -228,7 +235,7 @@ async function correr(fuente) {
   check(regla.evaluar(OBRA_PELADA, { avancePct: 0, programa: null }, hoy) === null,
     'sin fechas ni programa tampoco se levanta');
 
-  // ── 6 · EL PDF, QUE ES LO QUE SE FIRMA Y SE ENTREGA ───────────────────────
+  // ── 6 · LOS DOS PAPELES, QUE ES LO QUE SE FIRMA Y SE ENTREGA ──────────────
   //
   // De todas las superficies de este corte, ésta es la única que sale del
   // aparato: se imprime, se guarda en un expediente y la lee alguien que no
@@ -236,50 +243,100 @@ async function correr(fuente) {
   // PDF entregado es la peor versión del defecto, porque sobrevive a cualquier
   // arreglo posterior de la app.
   //
-  // Se mueve el generador DE VERDAD con un jsPDF de mentira y se mira qué
-  // texto manda a dibujar. Las partidas hacen falta: sin ellas el generador
+  // Se mueven los generadores DE VERDAD con un jsPDF de mentira y se mira qué
+  // texto mandan a dibujar. Las partidas hacen falta: sin ellas el generador
   // toma la rama de «no hay catálogo cargado» y nunca llega a la gráfica donde
   // vive la marca del programa, así que el banco pasaría por no haber mirado.
+  //
+  // LO QUE SE FUE CON `generarPDFObra`, Y POR QUÉ NO SE LE BUSCÓ ANCLAJE NUEVO.
+  // El papel viejo publicaba el programado como una TEJA —rótulo, cifra y pie—
+  // y como encabezado de la columna de barras, y este banco afirmaba sobre las
+  // dos: que la teja llevara `ROT.sin_programa.kpi`, que su cifra dijera «n/d»
+  // y nunca «0%», que la desviación dijera por qué no se midió, y que el
+  // encabezado no prometiera «VS PROGRAMADO» sin programado. Ninguno de los dos
+  // papeles nuevos tiene teja de programado ni columna de barras: el programado
+  // sólo aparece como SERIE de la gráfica en pesos. Medido el 2026-11-12, en
+  // los cuatro casos (los dos papeles, con anexo y sin él) no hay ni un `n/d`
+  // ni un rótulo de programado fuera de la leyenda. Esas cinco aserciones se
+  // retiran con su razón escrita y no se repuntan: buscarle un anclaje parecido
+  // volvería una afirmación sobre una teja en una afirmación sobre otra cosa,
+  // con el nombre de la vieja.
   const PARTIDAS_PDF = [
     { sec: '1000 03', sub: 'TERRACERÍAS', imp: 600, a: 20 },
     { sec: '1001 01', sub: 'PAVIMENTOS',  imp: 400, a: 20 },
   ];
-  const textos = async (programa) =>
-    (await dibujarPDF(fn.generarPDFObra, {}, { ...OBRA, presupuesto: 1000 },
-      { subs: PARTIDAS_PDF, programa })).map(d => d.texto);
-  const conPdf = await textos(PROGRAMA);
-  const sinPdf = await textos(null);
+  const hoja = async (generar, programa) =>
+    (await dibujarPDFInterno(generar, {
+      obra: { ...OBRA, presupuesto: 1000 }, subs: PARTIDAS_PDF, programa,
+      estCargadas: true, evidenciaCargada: true,
+    })).map(d => String(d.texto));
+  const art73Con = await hoja(fn.generarPDFArt73, PROGRAMA);
+  const art73Sin = await hoja(fn.generarPDFArt73, null);
+  const intCon   = await hoja(fn.generarPDFInterno, PROGRAMA);
+  const intSin   = await hoja(fn.generarPDFInterno, null);
   const dice = (lista, re) => lista.some(t => re.test(t));
 
-  check(dice(conPdf, /^Programa contractual$/),
-    'con anexo, el PDF explica la marca del programa en su leyenda');
-  check(!dice(sinPdf, /^Programa contractual$/),
-    'y sin anexo NO la explica: una leyenda que nombra lo que no se dibujó es una afirmación sin respaldo');
-  check(dice(sinPdf, /Sin programa de obra cargado/),
-    'sin anexo el PDF levanta la ausencia como observación, en vez de callarla');
-  check(!dice(conPdf, /Sin programa de obra cargado/),
+  // (a) LA LEYENDA NOMBRA LO QUE DIBUJÓ, Y DECLARA LO QUE NO.
+  check(dice(art73Con, /^Avance programado$/) && dice(intCon, /^Avance programado$/),
+    'con anexo, los dos papeles nombran la serie del programa en su leyenda');
+  check(!dice(art73Con, /no hay programa de obra capturado/)
+     && !dice(intCon, /no hay programa de obra capturado/),
+    'y ninguno de los dos declara que falte: la dibujaron');
+  check(dice(art73Sin, /^Avance programado$/)
+     && dice(art73Sin, /no hay programa de obra capturado: carga el anexo en Contrato/),
+    'sin anexo el informe del Art. 73 nombra la serie Y dice ahí mismo que no la dibujó, con la tarea');
+  check(dice(intSin, /no hay programa de obra capturado: carga el AE11 o el DE-5 en Planeación/),
+    'y el documento interno manda a cargarlo donde lo carga la constructora');
+  // LOS DOS MOTIVOS NO PUEDEN SER EL MISMO TEXTO. La dependencia no tiene
+  // pestaña «Planeación» —su Contrato es de primer nivel—, así que mandarla ahí
+  // es mandarla a un sitio que no existe. Un motivo que dice cómo arreglarlo
+  // tiene que decirlo bien, y éste va impreso en un expediente.
+  check(!dice(art73Sin, /Planeaci/) && !dice(art73Con, /Planeaci/),
+    'el papel de la dependencia NO la manda a «Planeación»: esa pestaña no existe en su app');
+  check(dice(art73Sin, /sin programa capturado no hay atraso que sombrear/)
+     && !dice(art73Con, /sin programa capturado no hay atraso que sombrear/),
+    'y el sombreado del atraso dice por qué no está, en vez de salir en blanco');
+
+  // (b) LA AUSENCIA VIAJA A LAS OBSERVACIONES, QUE ES LO QUE SE LEE.
+  // Una leyenda la mira quien mira la gráfica. La sección de observaciones la
+  // lee quien hojea el informe, y es la que queda en el expediente diciendo qué
+  // NO pudo afirmar este papel.
+  check(dice(art73Sin, /La serie «Avance programado» no está en la gráfica de la sección 4: no hay programa de obra capturado/),
+    'el informe del Art. 73 levanta la ausencia del anexo en sus observaciones, con el motivo que ya declaró la curva');
+  check(!dice(art73Con, /La serie «Avance programado» no está/),
     'y no la levanta cuando el anexo sí está');
-  // El PDF pone sus rótulos en mayúsculas; se compara sin distinguir caja para
-  // no estar afirmando el estilo de la hoja en vez del rótulo.
-  check(dice(sinPdf, new RegExp('^' + ROT.sin_programa.kpi + '$', 'i')),
-    'el renglón del programado lleva el rótulo de la ausencia',
-    ROT.sin_programa.kpi);
-  check(dice(sinPdf, /^n\/d$/) && !dice(sinPdf, /^0(\.0)?%$/),
-    'y en su cifra dice «n/d», nunca un cero por ciento');
-  check(dice(sinPdf, /no hay programa contra el que medir/),
-    'y la desviación dice por qué no se midió, en vez de dar un número');
-  // El encabezado de la columna de barras. Sin la marca del programado, decir
-  // «REAL VS PROGRAMADO» es prometer en el encabezado la comparación que la
-  // columna no trae, y esta hoja se imprime y se firma.
-  check(dice(conPdf, /VS PROGRAMADO/) && !dice(sinPdf, /VS PROGRAMADO/),
-    'la columna de barras se titula «vs programado» sólo cuando hay programado que dibujar');
-  // El corazón del corte, dicho sobre el papel: ninguna cifra de programado ni
-  // de desviación. `n/d` y nada más. Sin esto, reponer la recta sólo en el PDF
-  // —el sitio donde menos se mira— pasaría sin que nadie lo viera.
-  check(!dice(sinPdf, /recta|lineal/i),
-    'en todo el PDF sin anexo no aparece ninguna recta ni nada lineal');
-  check(!dice(conPdf, /recta|lineal/i),
-    'ni en el que sí lo tiene');
+
+  // (c) NINGUNA CIFRA DE PROGRAMADO SIN ANEXO.
+  // `avc_004` publica «70% programa vs 20% avance» en los dos papeles. Con el
+  // anexo es una medición; sin él sería la recta otra vez, impresa.
+  check(dice(art73Con, /\d+% programa vs \d+% avance/)
+     && dice(intCon, /\d+% programa vs \d+% avance/),
+    'con anexo, el atraso se publica con sus dos cifras: contra qué midió y qué midió');
+  check(!dice(art73Sin, /% programa vs/) && !dice(intSin, /% programa vs/),
+    'y sin anexo esa cifra NO sale en ninguno de los dos papeles');
+  // Y no sale callándose: la revisión baja a «no evaluable» nombrando el dato
+  // que falta. La conducta del motor de riesgos es de
+  // `prueba-tres-estados-del-riesgo` y `prueba-el-semaforo-mide-contra-el-anexo`
+  // —ellos mutan `requiere` y el guardia del detector—; aquí se afirma sólo que
+  // eso LLEGA AL PAPEL, sin duplicarles la mutación.
+  check(dice(art73Sin, /el programa de obra contractual/)
+     && dice(intSin, /el programa de obra contractual/),
+    'en su lugar la revisión sale como hueco declarado, nombrando el anexo que falta');
+
+  // (d) LA RECTA, SOBRE EL PAPEL.
+  // El documento interno no la nombra nunca. El informe del Art. 73 sí, UNA
+  // vez y para negarla: su sección 2 publica «plazo transcurrido» junto al
+  // avance, y restar esas dos cifras es exactamente el defecto de este corte
+  // hecho a mano por quien lee la hoja. Decírselo es la única defensa que tiene
+  // un papel impreso, que no puede preguntarle nada a nadie.
+  check(!dice(intSin, /recta|lineal/i) && !dice(intCon, /recta|lineal/i),
+    'el documento interno no dice «recta» ni «lineal» en ninguna parte');
+  check(dice(art73Sin, /recta que nadie firmó/) && dice(art73Con, /recta que nadie firmó/),
+    'el informe del Art. 73 le dice a quien lo lee que restar plazo menos avance sería un atraso contra una recta que nadie firmó');
+  const rectas = [...art73Con, ...art73Sin].filter(t => /recta|lineal/i.test(t));
+  check(rectas.every(t => /nadie firmó/.test(t)),
+    'y ésa es la única vez que la nombra: ninguna serie ni ninguna cifra del papel va rotulada con una recta',
+    `${rectas.length} mención(es)`);
 
   return fallos;
 }
@@ -329,18 +386,40 @@ const MUTACIONES = [
   ['el programa sin arranque propio se descarta',
     'const inicio = prog.inicio || obra?.inicio || null;',
     'const inicio = prog.inicio || null;'],
-  // EL PDF. Las tres formas de volver al defecto sobre el papel que se firma:
-  // explicar en la leyenda una marca que no se dibujó, callar la ausencia, y
-  // prometer en el encabezado la comparación que la columna no trae.
-  ['el PDF explica la marca del programa aunque no la haya dibujado',
-    'if (progPdf.pct !== null) {\n        sf(K.na); doc.triangle(',
-    'if (true) {\n        sf(K.na); doc.triangle('],
-  ['el PDF se calla que falta el anexo',
-    "  } else obs.push([NIVELES.atencion,\n    'Sin programa de obra cargado",
-    "  } else if (false) obs.push([NIVELES.atencion,\n    'Sin programa de obra cargado"],
-  ['el encabezado del PDF promete el programado que no trae',
-    "T(progPdf.pct === null ? 'AVANCE REAL' : 'AVANCE REAL VS PROGRAMADO', barX, yy+4);",
-    "T('AVANCE REAL VS PROGRAMADO', barX, yy+4);"],
+  // EL PAPEL. Eran tres mutaciones sobre `generarPDFObra`: la leyenda que
+  // explicaba una marca no dibujada, la observación que se callaba, y el
+  // encabezado «AVANCE REAL VS PROGRAMADO» sobre una columna sin programado.
+  // Las tres perdieron su anclaje con el papel. Quedan dos, y son las dos que
+  // este banco PUEDE tener:
+  //
+  // LAS COMPUERTAS DE LA LEYENDA NO SE MUTAN AQUÍ, A PROPÓSITO. El
+  // `if (fuentePrograma === 'programa' && hayDato(programado))` de
+  // `curvaUnicaDeObra` ya es anclaje de `prueba-la-grafica-que-no-miente-por-
+  // omision`, el de `curvaDeGobierno` lo es de `prueba-la-grafica-de-gobierno`
+  // y de `prueba-las-dos-curvas-y-un-eje`, y los dos motivos también. Dos
+  // bancos mutando el mismo anclaje se estorban el día que el anclaje cambia:
+  // los dos salen en 2 por la misma razón y hay que arreglar dos archivos para
+  // un solo movimiento. Las aserciones (a) de la sección 6 se quedan como
+  // guardas sobre una conducta que esas mutaciones ya muerden.
+  //
+  // Lo mismo con la cifra del atraso: `avc_004` es de
+  // `prueba-el-semaforo-mide-contra-el-anexo`, que muta su `requiere` y el
+  // guardia del detector. Aquí sólo se afirma que lo que decidan esas reglas
+  // llega al papel.
+  //
+  // Éstas dos sí son de este banco y de nadie más: el acarreo de las ausencias
+  // a las observaciones del informe que se entrega, y la frase que le enseña a
+  // quien lo lee que el plazo no es la vara del avance.
+  ['el informe del Art. 73 se calla en sus observaciones que falta el anexo',
+    '  for (const a of (curva.ausentes || []))\n    obs.push(`La serie «${a.nombre || a.clave}» no está en la gráfica de la sección 4: `',
+    '  for (const a of [])\n    obs.push(`La serie «${a.nombre || a.clave}» no está en la gráfica de la sección 4: `'],
+  // Sin esta frase la sección 2 deja «plazo transcurrido» y «avance físico» uno
+  // al lado del otro sin decir que restarlos no es un atraso. El defecto no lo
+  // comete entonces la app: lo comete quien lee la hoja, con la hoja de
+  // respaldo, y es el único sitio donde todavía se puede cometer.
+  ['el papel del cliente deja de decir que el plazo no es la vara del avance',
+    "    + 'sería reclamarlo contra una recta que nadie firmó. «Proyección al término» sí '",
+    "    + 'sería el atraso de la obra. «Proyección al término» sí '"],
   // La alerta de severidad alta: no mirar el programa que sí está.
   ['la alerta no mira el programa cargado',
     'const p = avanceProgramadoA(obra, datos.programa, fechaEnZonaObra(new Date(hoy)));',

@@ -23,11 +23,38 @@
 // el nombre del contratista en la portada del cliente, y en el sitio donde el
 // lector espera un lugar. Un dato inventado, no sólo una firma vieja.
 //
+// ── CÓMO CAMBIÓ EL LADO DEL PDF EL 2026-11-12 ─────────────────────────────
+//
+// `generarPDFObra` se retiró y el papel se partió en dos: `generarPDFArt73`,
+// el informe que se entrega a la dependencia, y `generarPDFInterno`, el
+// documento de la constructora. Con la partición se fue el parámetro
+// `branding` de los dos: ningún papel recibe ya la marca de la organización.
+//
+// Eso cambia lo que hay que vigilar, y tres afirmaciones de este banco se
+// quedaron SIN SITIO. Se retiran con su motivo en vez de buscarles un anclaje
+// parecido, que convertiría una afirmación sobre la portada en otra sobre algo
+// distinto con el nombre de la vieja:
+//
+//   · «la portada imprime la marca recibida» — no hay marca que recibir. Lo
+//     que el papel firma ahora es el PRODUCTO, igual para toda organización.
+//   · «la portada imprime el dominio recibido» — el pie imprime la cara
+//     pública siempre, y eso lo mide y lo muta
+//     `prueba-las-dos-direcciones-del-producto`, que es su dueño.
+//   · «la ubicación vacía se rellena con el nombre de la empresa» — el renglón
+//     de la ubicación ya no existe en ningún papel. Medido: `obra.ubicacion`
+//     no aparece en `src/App.jsx`.
+//
+// Lo que las sustituye es la forma que el defecto tiene HOY: el nombre de la
+// organización llega al papel como un CAMPO DE IDENTIFICACIÓN, y el papel no
+// se firma con él. Con una organización ajena puesta, el pie de todas las
+// páginas tiene que seguir diciendo el producto y no el nombre de nadie — y
+// cuando no hay organización, el hueco se declara en vez de rellenarse.
+//
 // CÓMO MIDE. No busca cadenas en el archivo: **ejecuta**. El correo sale de
-// `buildEmailHTML` extraído de `functions/index.js`, y el PDF de
-// `generarPDFObra` extraído de `src/App.jsx`, movido con un jsPDF falso que
-// anota cada texto que se manda dibujar. Lo que se afirma es lo que quedaría
-// impreso, que es lo único que el cliente ve.
+// `buildEmailHTML` extraído de `functions/index.js`, y los dos papeles de
+// `src/App.jsx`, movidos con un jsPDF falso que anota cada texto que se manda
+// dibujar. Lo que se afirma es lo que quedaría impreso, que es lo único que el
+// cliente ve.
 //
 // Contraprueba:  node scripts/prueba-la-marca-se-lee-no-se-teclea.cjs --contraprueba
 
@@ -37,10 +64,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion, noArranco } = require('./no-arranco.cjs');
+// `no-arranco.cjs` EXPORTA LA FUNCIÓN, y las otras tres puertas son propiedades
+// suyas. Destructurar `noArranco` de ahí da `undefined`, y el banco no revienta
+// al requerir: revienta con un `TypeError` el día que un símbolo se renombre,
+// o sea exactamente el día que esta puerta tenía que decir «no pude mirar».
+const noArranco = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion } = noArranco;
 const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
 // El jsPDF falso vive aparte: lo comparte con el banco de la dirección.
-const { dibujarPDF } = require('./lienzo-pdf.cjs');
+const { dibujarPDFInterno } = require('./lienzo-pdf.cjs');
 
 vigilarExcepciones('functions/index.js y src/App.jsx');
 
@@ -51,7 +83,7 @@ const ARCH_APP = process.env.ARCH_APP || path.join(RAIZ, 'src/App.jsx');
 
 // ── Sacar las dos piezas de sus archivos ────────────────────────────────────
 const PIDE_FN = ['correoResumenSemanal', 'correoBienvenida'];
-const PIDE_APP = ['generarPDFObra'];
+const PIDE_APP = ['generarPDFArt73', 'generarPDFInterno'];
 
 let FN, APP;
 try {
@@ -75,11 +107,12 @@ const armarAPP = (expresion) => new Function(
   `"use strict";\n${APP.cuerpo}\nreturn (${expresion});`
 )(...Array(6).fill(() => {}));
 
-let correoResumenSemanal, correoBienvenida, generarPDFObra, APP_URL;
+let correoResumenSemanal, correoBienvenida, generarPDFArt73, generarPDFInterno, APP_URL;
 try {
   correoResumenSemanal = armarFN('correoResumenSemanal');
   correoBienvenida = armarFN('correoBienvenida');
-  generarPDFObra = armarAPP('generarPDFObra');
+  generarPDFArt73 = armarAPP('generarPDFArt73');
+  generarPDFInterno = armarAPP('generarPDFInterno');
   APP_URL = armarFN('APP_URL');
 } catch (e) {
   sinPrecondicion('no se pudo montar el código extraído',
@@ -152,15 +185,18 @@ if (process.argv.includes('--contraprueba')) {
         'const subject = `CAMPO · Resumen semanal')],
     ['FN', 'el botón del lunes vuelve a decir «Abrir CAMPO»',
       (t) => t.replace('>Abrir cotea</a>', '>Abrir CAMPO</a>')],
-    ['APP', 'la portada del PDF vuelve a teclear la empresa',
-      (t) => t.replace('T(`cotea · ${B.empresa}`, ML, PH-3.5);',
-        'T("cotea · FOSMON Construcciones", ML, PH-3.5);')],
-    ['APP', 'la portada del PDF vuelve a teclear el dominio',
-      (t) => t.replace('T(B.dominio, PW-MR, PH-3.5,',
-        "T('campo-fosmon.netlify.app', PW-MR, PH-3.5,")],
-    ['APP', 'la ubicación vacía se rellena con el nombre de la empresa',
-      (t) => t.replace('if (textoCapturado(obra.ubicacion)) T(textoCapturado(obra.ubicacion), ML, 82);',
-        "T(textoCapturado(obra.ubicacion)||'FOSMON Construcciones', ML, 82);")],
+    // LAS TRES MUTACIONES DEL PDF SE REEMPLAZAN POR DOS, el 2026-11-12. Las
+    // viejas apuntaban a `B.empresa`, `B.dominio` y `obra.ubicacion`, que ya no
+    // existen en ningún papel (ver el encabezado). Lo que queda para mutar es la
+    // firma del pie de cada papel: es el único sitio donde el documento dice de
+    // quién es, y es el sitio donde la empresa estaba tecleada antes. Un anclaje
+    // por papel, una copia cada uno —medido—, así que sin `/g` a propósito.
+    ['APP', 'el pie del documento interno vuelve a firmar con la empresa',
+      (t) => t.replace("pieIzq: 'cotea · documento interno' });",
+        "pieIzq: 'cotea · FOSMON Construcciones' });")],
+    ['APP', 'el pie del informe del Art. 73 vuelve a firmar con la empresa',
+      (t) => t.replace("pieIzq: 'cotea · informe de avance' });",
+        "pieIzq: 'cotea · FOSMON Construcciones' });")],
   ];
 
   let vistas = 0;
@@ -267,64 +303,119 @@ if (!conCAMPO.length) ok('ningún correo se presenta como «CAMPO»');
 else falla('ningún correo se presenta como «CAMPO»', 'cero',
   `sigue en: ${conCAMPO.join(', ')}`);
 
-// §4. El PDF: la portada imprime la empresa y el dominio que se le PASARON.
-// Ejecutado, no leído: esto es lo que quedaría en el papel.
-let dibujos;
-try {
-  dibujos = await dibujarPDF(generarPDFObra, MARCA_AJENA,
-    { id: 'OB-2026-000001', nombre: 'SIOP COATZA MALECON', contrato: 'SIOP-2026-001' });
-} catch (e) {
-  sinPrecondicion('el PDF no se pudo dibujar',
-    [e.message.split('\n')[0],
-     'El jsPDF falso contesta a cualquier método, así que esto es el generador',
-     'pidiendo algo que el doble no sabe devolver. Sin dibujo no hay qué afirmar.']);
+// ── El PDF, los dos papeles ─────────────────────────────────────────────────
+// La obra se pasa entera y por nombre: los dos generadores reciben todo así.
+const OBRA = {
+  id: 'OB-2026-000001', nombre: 'SIOP COATZA MALECON', contrato: 'SIOP-2026-001',
+  cliente: 'H. Ayuntamiento de Coatzacoalcos', ubicacion: 'Coatzacoalcos, Ver.',
+  inicio: '2026-01-10', fin: '2026-12-20', presupuesto: 38500000,
+};
+const PAPELES = [['el informe del Art. 73', generarPDFArt73],
+                 ['el documento interno', generarPDFInterno]];
+
+const dibujarPapel = async (cual, generar, extra) => {
+  try {
+    return await dibujarPDFInterno(generar, { obra: OBRA, subs: [], ...extra });
+  } catch (e) {
+    sinPrecondicion(`${cual} no se pudo dibujar`,
+      [e.message.split('\n')[0],
+       'El jsPDF falso contesta a cualquier método, así que esto es el generador',
+       'pidiendo algo que el doble no sabe devolver. Sin dibujo no hay qué afirmar.']);
+  }
+  return [];
+};
+
+// El pie es la FRANJA de abajo: los textos con la `y` más grande de la hoja.
+// Se calcula en vez de teclear 212.5 para que mover el pie no haga pasar esto
+// por vacío. Las celdas de `autoTable` llegan sin `y`, de ahí el filtro.
+const franjaDelPie = (dibujos) => {
+  const ys = dibujos.map(d => d.y).filter(Number.isFinite);
+  if (!ys.length) return [];
+  const maxY = Math.max(...ys);
+  return dibujos.filter(d => d.y === maxY);
+};
+
+// §4. Con una organización AJENA puesta, el pie de cada página sigue firmando
+// con el PRODUCTO. El nombre de la organización llega al papel —y tiene que
+// llegar, es el campo de identificación—, pero no es la firma del documento.
+// Las dos mitades importan: si sólo se exigiera «el pie no dice Veracruz», un
+// generador que no imprimiera la organización en ningún sitio pasaría.
+for (const [cual, generar] of PAPELES) {
+  const dibujos = await dibujarPapel(cual, generar, { organizacion: MARCA_AJENA.empresa });
+  const textos = dibujos.map(d => String(d.texto));
+  if (textos.length < 20)
+    sinPrecondicion(`${cual} sólo dibujó ${textos.length} textos`,
+      ['Esperaba muchos más. Con el dibujo casi vacío, «el pie no dice el nombre',
+       'de la organización» se cumple por no haber impreso nada.']);
+  if (!dibujos.some(d => d.pagina > 1))
+    sinPrecondicion(`${cual} se quedó en una sola página`,
+      ['El pie se repite en todas las páginas, y lo que se afirma es que en',
+       'TODAS dice el producto. Con una hoja sola eso no acota nada.']);
+
+  // En la franja hay tres cosas, y se distinguen por el `align` con que se
+  // mandan dibujar: la DIRECCIÓN va a la derecha, el NÚMERO DE PÁGINA al
+  // centro, y la FIRMA sin alineación, anclada al margen izquierdo. Medido, no
+  // supuesto. Y se exige UNA firma POR PÁGINA: que la portada esté bien no dice
+  // nada de la hoja 6, que es la que el lector tiene en la mano al final.
+  const pie = franjaDelPie(dibujos);
+  const firmas = pie.filter(d => d.align === undefined).map(d => String(d.texto));
+  const hojas = Math.max(...dibujos.map(d => d.pagina));
+  const firmasAjenas = firmas.filter(t => !t.startsWith('cotea'));
+  const enElPie = pie.filter(d => String(d.texto).includes(MARCA_AJENA.empresa)).length;
+  const enLaHoja = textos.filter(t => t.includes(MARCA_AJENA.empresa)).length;
+
+  if (firmas.length === hojas && !firmasAjenas.length && enElPie === 0 && enLaHoja > 0)
+    ok(`${cual} firma con el producto sus ${hojas} hojas, `
+      + `y nombra a la organización ${enLaHoja} vez(ces) fuera del pie`);
+  else falla(`${cual} se firma con el producto, no con la organización`,
+    `una firma que empiece con «cotea» en cada una de las ${hojas} hojas, cero `
+    + 'veces la organización en el pie, y al menos una vez en la hoja',
+    firmas.length !== hojas ? `${firmas.length} firma(s) para ${hojas} hojas`
+      : firmasAjenas.length ? `firma(n) con otro nombre: ${firmasAjenas.map(t => `«${t}»`).join(', ')}`
+      : enElPie > 0 ? `el pie nombra a la organización ${enElPie} vez(ces)`
+      : 'la organización no aparece en ningún sitio de la hoja: el campo de '
+        + 'identificación se perdió y la afirmación valdría de vacío');
 }
-const textos = dibujos.map(d => d.texto);
-if (textos.length < 20)
-  sinPrecondicion(`el PDF sólo dibujó ${textos.length} textos`,
-    ['Esperaba muchos más. Con el dibujo casi vacío, «no dice FOSMON» se',
-     'cumple por no haber impreso nada.']);
 
-// Sólo la portada: la página 1, el renglón del pie. Si el PDF nunca pasó de
-// la primera página el banco no arranca, porque entonces «página 1» no
-// distingue la portada del marco y la afirmación volvería a valer de más.
-const portada = dibujos.filter(d => d.pagina === 1);
-if (!dibujos.some(d => d.pagina > 1))
-  sinPrecondicion('el PDF se quedó en una sola página',
-    ['La portada se distingue del marco por ser la única página sin `pageFrame`.',
-     'Con una página sola, mirar «la página 1» no acota nada.']);
-const pieEmpresa = portada.some(d => d.texto === `cotea · ${MARCA_AJENA.empresa}`);
-const pieDominio = portada.some(d => d.texto === MARCA_AJENA.dominio && d.align === 'right');
-if (pieEmpresa && pieDominio)
-  ok(`la portada del PDF imprime la marca recibida (${textos.length} textos dibujados)`);
-else falla('la portada del PDF imprime la marca recibida',
-  `«cotea · ${MARCA_AJENA.empresa}» y «${MARCA_AJENA.dominio}» en la página 1`,
-  `${pieEmpresa ? 'la empresa sí' : 'la empresa NO'} · ${pieDominio ? 'el dominio sí' : 'el dominio NO'}`);
+// §5. Y a ninguno de los dos papeles se le escapa el nombre del contratista por
+// ningún lado. Ya no hay un `branding` que lo traiga, así que cualquier «fosmon»
+// en el papel está TECLEADO, que es justo lo que este banco persigue. Se barre
+// la hoja entera, no sólo el pie: el nombre viejo podía estar en el encabezado,
+// en una tabla o en la prosa de cierre.
+for (const [cual, generar] of PAPELES) {
+  const textos = (await dibujarPapel(cual, generar, { organizacion: MARCA_AJENA.empresa }))
+    .map(d => String(d.texto));
+  const conFOSMON = textos.filter(t => /FOSMON/i.test(t));
+  if (!conFOSMON.length) ok(`${cual} no menciona al contratista en ninguna de sus hojas`);
+  else falla(`${cual} no menciona al contratista`,
+    'ningún FOSMON en el papel',
+    `${conFOSMON.length} texto(s): ${conFOSMON.slice(0, 3).map(t => `«${t}»`).join(', ')}`);
+}
 
-// §5. Y a ese PDF no se le escapa el nombre del contratista por ningún lado:
-// el marco de cada página y la portada tienen que decir lo mismo.
-// Aquí NO se descuenta el enlace de la app: el PDF no imprime `APP_URL`, sólo
-// `B.dominio`. Así que cualquier «fosmon» en el papel —incluido el dominio por
-// omisión— es algo tecleado, y es justo lo que se busca.
-const conFOSMON = textos.filter(t => /FOSMON/i.test(t));
-if (!conFOSMON.length) ok('el PDF entero firma con una sola marca, la recibida');
-else falla('el PDF entero firma con una sola marca',
-  'ningún FOSMON en el papel, fuera del enlace',
-  `${conFOSMON.length} texto(s): ${conFOSMON.slice(0, 3).map(t => `«${t}»`).join(', ')}`);
-
-// §6. La ubicación que no se capturó NO se rellena con el nombre de nadie.
-// Es el renglón donde el lector espera un lugar.
-const conUbic = (await dibujarPDF(generarPDFObra, MARCA_AJENA,
-  { id: 'OB-2026-000001', nombre: 'SIOP COATZA MALECON', contrato: 'SIOP-2026-001',
-    ubicacion: 'Coatzacoalcos, Ver.' })).map(d => d.texto);
-const dibujaUbic = conUbic.includes('Coatzacoalcos, Ver.');
-const inventaUbic = textos.some(t => t === MARCA_AJENA.empresa || /FOSMON Construcciones/.test(t));
-if (dibujaUbic && !inventaUbic)
-  ok('la ubicación se imprime si está, y si no está no se rellena con nadie');
-else falla('la ubicación se imprime si está, y si no está no se rellena',
-  'con ubicación se dibuja; sin ella no se dibuja ningún nombre de empresa',
-  `${dibujaUbic ? 'con ubicación sí se dibuja' : 'con ubicación NO se dibujó'} · ` +
-  `${inventaUbic ? 'sin ubicación se inventó un nombre de empresa' : 'sin ella no se inventa'}`);
+// §6. Sin organización, el hueco se DECLARA: ni se rellena con un nombre ni se
+// deja en blanco. Comparado contra el mismo papel con organización, quitarla
+// tiene que añadir exactamente una declaración y ningún nombre.
+//   Lo que NO se mide aquí: que `nombreOrg` devuelva nulo para una dependencia
+// —eso es de `prueba-ui-dependencia`— ni cuántos huecos declara la carátula en
+// total —eso es de `prueba-la-caratula-declara-lo-que-no-tiene`. Aquí sólo se
+// afirma el DELTA, que es lo único que la marca ausente provoca.
+for (const [cual, generar] of PAPELES) {
+  const con = (await dibujarPapel(cual, generar, { organizacion: MARCA_AJENA.empresa }))
+    .map(d => String(d.texto));
+  const sin = (await dibujarPapel(cual, generar, { organizacion: null }))
+    .map(d => String(d.texto));
+  const declara = (ts) => ts.filter(t => t.includes('(no capturado)')).length;
+  const delta = declara(sin) - declara(con);
+  const nombres = sin.filter(t => /FOSMON|Veracruz/i.test(t));
+  if (delta === 1 && !nombres.length)
+    ok(`${cual} sin organización declara el hueco (${declara(con)} → ${declara(sin)}) `
+      + 'y no lo rellena con nadie');
+  else falla(`${cual} sin organización declara el hueco en vez de rellenarlo`,
+    'una declaración más que con organización, y ningún nombre de empresa',
+    `el delta fue ${delta} (${declara(con)} → ${declara(sin)})`
+    + (nombres.length ? ` · y se colaron nombres: ${nombres.slice(0, 2).map(t => `«${t}»`).join(', ')}`
+      : ''));
+}
 
 console.log('');
 if (fallas) {
