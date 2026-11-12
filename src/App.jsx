@@ -210,6 +210,50 @@ const blindarTextoDelPDF = (doc) => {
   return doc;
 };
 
+// ── LAS FOTOS, PRECARGADAS A BASE64 ────────────────────────────────────────
+//
+// `jsPDF.addImage` NO hace fetch: si se le pasa una URL http falla en silencio
+// cuando la imagen no está ya en la caché del navegador, y la hoja sale con un
+// recuadro gris donde iba la evidencia. La vuelta es traerla antes —fetch →
+// blob → data URL— y pasarle al PDF la cadena `data:`.
+//
+// Está aquí arriba, a ámbito de módulo, porque la necesitan los papeles que
+// llevan fotos y es la MISMA red con el MISMO plazo: una segunda copia con
+// otro plazo haría que un papel enseñara la evidencia de una obra y el otro
+// recuadros grises, de la misma obra y el mismo día.
+//
+// El plazo de 8 s es suave A PROPÓSITO: una foto que no llega no detiene el
+// documento. Lo que llega como `null` es un hueco declarado, no un error.
+//
+// Muta la lista en su sitio —`lista[i] = {...}`— porque quien la pasa ya tiene
+// el orden del reparto y no debe tener que volver a armarlo.
+const precargarFotosDelPDF = async (lista, plazoMs = 8000) => {
+  const aBase64 = async (url) => {
+    if (!url) return null;
+    if (url.startsWith('data:')) return url;
+    try {
+      const resp = await fetch(url, { mode: 'cors' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      return await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onloadend = () => res(reader.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+    } catch (e) {
+      console.warn('PDF: no pude cargar foto', url, e?.message || e);
+      return null;
+    }
+  };
+  await Promise.all((lista || []).map(async (f, i) => {
+    if (!f?.url) return;
+    const vencido = new Promise(res => setTimeout(() => res(null), plazoMs));
+    lista[i] = { ...f, url: await Promise.race([aBase64(f.url), vencido]) };
+  }));
+  return lista;
+};
+
 // ── GENERADOR DE PDF DESDE EL APP ────────────────────────────────────────
 // branding (opcional): permite cambiar logo / nombre empresa / paleta para multi-tenancy futuro.
 // Para FOSMON: queda con defaults. Para SaaS: pasar { logoBlanco, logoNegro, empresa, dominio }.
@@ -2168,35 +2212,7 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
     sec:'—', sub:'', conc:'Sin fotos capturadas', pct:null, fecha:'', sello:'', url:null,
   }));
 
-  // ── PRE-CARGAR fotos de Storage a base64 ──
-  // jsPDF.addImage no hace fetch async: si le pasamos una URL HTTP, falla
-  // silenciosamente si la imagen no está ya en cache del navegador.
-  // Solución: fetch → blob → data URL antes de dibujar.
-  const urlABase64 = async (url) => {
-    if (!url) return null;
-    if (url.startsWith('data:')) return url;  // ya es base64
-    try {
-      const resp = await fetch(url, { mode: 'cors' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      return await new Promise((res, rej) => {
-        const reader = new FileReader();
-        reader.onloadend = () => res(reader.result);
-        reader.onerror = rej;
-        reader.readAsDataURL(blob);
-      });
-    } catch (e) {
-      console.warn('PDF: no pude cargar foto', url, e?.message || e);
-      return null;
-    }
-  };
-  // Pre-cargar en paralelo — timeout suave para no bloquear el PDF si Storage tarda
-  await Promise.all(fotos12.map(async (f, i) => {
-    if (!f.url) return;
-    const timeout = new Promise(res => setTimeout(() => res(null), 8000));
-    const cargada = await Promise.race([urlABase64(f.url), timeout]);
-    fotos12[i] = { ...f, url: cargada };  // reemplaza URL http por data:image/...;base64,
-  }));
+  await precargarFotosDelPDF(fotos12);
 
   const FW=(CW-8)/3, FH=FW*0.64;
 
@@ -2371,77 +2387,34 @@ async function generarPDFObra(obra, subs, estimaciones, maquinaria, materiales, 
   }
 }
 
-// ── EL DOCUMENTO INTERNO DE COTEA ──────────────────────────────────────────
+// ── EL ANDAMIO DE UN PAPEL DE COTEA ────────────────────────────────────────
 //
-// DOS COMPONENTES, NO UNA BANDERA. Esto no es `generarPDFObra` con un
-// `if (interno)`: son dos documentos con dos criterios opuestos sobre lo mismo.
+// El marco de la página, los encabezados de sección, las cajas de KPI, las
+// tablas, las notas y el bloque de gráfica vivían DENTRO de
+// `generarPDFInterno`, como cierres. Con el informe del Art. 73 son tres los
+// papeles de cotea, y escribir el andamio por tercera vez es exactamente el
+// defecto que acabamos de cerrar en el corredor de contrapruebas: la misma
+// cuenta copiada, y la copia que un día se queda atrás es la que sigue
+// viéndose completa. Aquí duele más que allá, porque lo que se queda atrás no
+// es un anclaje: es el sello que dice de quién es la hoja.
 //
-//   · `generarPDFObra` es el reporte ejecutivo DEL CONTRATISTA. Lleva su marca,
-//     se entrega al cliente, lo firman tres personas. Por eso se CALLA todo lo
-//     que no puede afirmar: un hueco de captura publicado ahí es un reclamo
-//     contra uno mismo en el papel que cobra.
-//   · éste es el documento DE COTEA, y se lee hacia adentro. Publica los huecos
-//     a propósito, porque un hueco es justamente lo que un documento interno
-//     sirve para ir a cerrar, y porque el error que un reporte no puede
-//     permitirse es callarse porque no sabe.
+// LO QUE CAMBIA DE PAPEL A PAPEL ENTRA POR PARÁMETRO, NO POR BANDERA. El
+// rótulo del encabezado, la banda bajo él y el pie son tres cadenas, y una
+// bandera `esInterno` las habría amarrado: el día que hiciera falta un cuarto
+// papel, la bandera tendría tres valores y cada uso de ella un `if` distinto.
+// La banda es opcional —`null`— porque el informe de la dependencia NO lleva
+// sello de interno: ese papel se entrega, y una banda que diga lo contrario
+// convierte el documento correcto en uno que nadie se atreve a mandar.
 //
-// Con una bandera habría un cuerpo con treinta condicionales y los dos
-// criterios enredados: el día que el reporte del cliente gane un renglón, el
-// interno lo gana sin que nadie lo decida — y al revés, que es peor, porque
-// aquí se imprime la lista de lo que no se pudo medir.
+// Lo que NO cambia es la geometría y la paleta. Son la marca, no la decisión
+// de cada papel: dos papeles de cotea con márgenes distintos se ven como dos
+// productos.
 //
-// NINGUNA CIFRA NUEVA. Cada número de este papel sale de la función que ya
-// alimenta la pantalla: `calcularKPIsObra` y `presentacionEconomiaObra` para la
-// economía y cómo se dice, `curvaUnicaDeObra` + `comportamientoDelMargen` para
-// la serie semanal, `evaluarRiesgos` para los tres estados, `selloDeTiempo`
-// para la hora, `seleccionFotografica` para qué fotos respaldan el expediente.
-// Una cuenta hecha aquí adentro sería una segunda cuenta del
-// mismo dato, y entonces este documento y el tablero podrían discrepar sobre la
-// misma obra el mismo día — que es exactamente el defecto que ya se pagó en el
-// margen de la 0121, entregado en positivo donde la pantalla lo daba negativo.
-//
-// Los parámetros van POR NOMBRE. `generarPDFObra` lleva quince posicionales y
-// contar comas hasta el decimoquinto es el error que no se ve en la revisión.
-//
-// `organizacion` y `generadoPor` son datos de identificación, no marca: la
-// cabecera de cada página firma cotea, y de qué organización es la obra se
-// imprime como un campo más — que es lo que permite que el mismo documento
-// sirva para cualquier organización sin cambiarle el logotipo.
-async function generarPDFInterno({
-  obra, subs = [], estimaciones = [], maquinaria = [], materiales = [],
-  subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
-  otrosGastos = [], nominaHistorial = [], programa = null,
-  instante = null, organizacion = null, generadoPor = null,
-  // La evidencia, para la sección 5. `evidenciaCargada` entra como dato por la
-  // misma razón que `estCargadas`: `fsColl` devuelve `[]` cuando la regla niega
-  // o la red falla, así que una lectura fallida y una obra sin fotos llegan
-  // aquí idénticas. Con el valor por omisión la sección declara que no pudo
-  // medir la cobertura, que es la verdad mientras nadie diga lo contrario;
-  // deducirlo de `evidencia.length` publicaría «0% · la evidencia no alcanza»
-  // sobre una lectura denegada, y eso es una acusación con cifra inventada.
-  evidencia = [], evidenciaCargada = false,
-  // `estCargadas` entra como dato y NO se deduce de `estimaciones.length`, por
-  // la misma razón que en la pantalla de la dependencia: una lista vacía que
-  // todavía viaja y una obra sin estimaciones se ven igual desde aquí. Con el
-  // valor por omisión —`false`— la sección 7 declara que no pudo fechar lo
-  // pagado, que es la verdad mientras nadie diga lo contrario; deducirlo
-  // publicaría «$0 pagado» sobre una lista que no había llegado.
-  estCargadas = false,
-} = {}) {
-  if (!window.jspdf) {
-    await new Promise((res,rej)=>{ const s=document.createElement('script');
-      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
-  }
-  await new Promise((res,rej)=>{
-    if(window._atLoaded) return res();
-    const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
-    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
-  });
-  const { jsPDF } = window.jspdf;
-
-  try {
+// Es `const` y no `function` por la razón que está escrita arriba, donde los
+// ayudantes del PDF: así el preludio del taller lo arrastra solo a cada banco,
+// y ningún banco tiene que doblarlo a mano.
+const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
+                          pieIzq }) => {
   // ── LA MARCA DE COTEA ─────────────────────────────────────────────────────
   // Los dos colores de la marca, y no los de `tokens.css`: aquélla es la paleta
   // de la APLICACIÓN —la que viste el tablero de la constructora— y ésta la del
@@ -2500,53 +2473,11 @@ async function generarPDFInterno({
   const PP = (n) => n === null || n === undefined || !Number.isFinite(n)
     ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(1)} pp`;
 
-  const sello = selloDeTiempo(instante);
-  const hoy = sello.fecha;
-  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
-
-  // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──────────────
-  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,
-                                gpData, otrosGastos);
-  // Y DICHA donde se dice para la pantalla. `pres` ya resolvió los tres estados
-  // del gasto y del margen —sin medir, indefinido, normal— y sus cadenas. Lo
-  // único que no se puede reusar son sus colores: son colores de CSS y aquí
-  // hacen falta ternas RGB, así que el color se deriva del estado que `pres` ya
-  // decidió, nunca de un umbral teclado otra vez.
-  const pres = presentacionEconomiaObra(kpis);
-  const PPTO = kpis.presupuesto;
-  const colorMargen = pres.gastoSinMedir ? Q.mu
-    : pres.margenIndefinido ? colorSev('critico')
-    : kpis.mpct < 10 ? colorSev('alto')
-    : kpis.mpct < 15 ? colorSev('medio') : colorSev('bajo');
-
-  // ── LA SERIE SEMANAL, CON LA MISMA VENTANA QUE EL TABLERO ────────────────
-  // DOCE semanas, fijas, igual que el `useMemo` del Dashboard que alimenta a
-  // `fin_007`. Si este papel usara otra ventana, la tabla del margen de la
-  // sección de dinero y el riesgo de la sección de riesgos saldrían de dos
-  // series distintas en el mismo documento, y el riesgo acusaría con una cifra
-  // que no se puede encontrar tres páginas antes.
-  const VENTANA = 12;
-  const semanas = semanasDeVentana(obra, VENTANA);
-  const curva = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
-                                   otrosGastos, maquinaria, programa });
-  const comportamientoMargen = comportamientoDelMargen(curva);
-
-  // ── LOS RIESGOS, CON EL CONTEXTO DEL TABLERO ─────────────────────────────
-  // `evaluarRiesgos` y no sólo su `detectados`: la lista de los que disparan es
-  // una VISTA de las cuatro, y este documento publica las cuatro. El contexto
-  // es el mismo que arma el Dashboard, campo por campo, porque un contexto más
-  // pobre convierte riesgos medidos en huecos y el papel acusaría de falta de
-  // dato a quien sí lo capturó.
-  const kpisCtx = { gt: kpis.gt, am: kpis.am, alm: kpis.alm, me: kpis.me,
-                    af: kpis.af, diff: kpis.diff, mpct: kpis.mpct,
-                    pctGasto: kpis.pctGasto, brecha: kpis.brecha };
-  const veredicto = evaluarRiesgos({
-    obra, subs, maquinaria, materiales, estimaciones, subcontratos,
-    historialAvance, gpData, kpis: kpisCtx, nominaHistorial, programa,
-    comportamientoMargen,
-  });
-
   let pagNum = 0;
+  // Los papeles dibujan su portada a mano y DESPUÉS empiezan a enmarcar, así
+  // que el contador se fija de fuera. Sin esto la portada saldría como página
+  // cero y la segunda hoja como la primera.
+  const fijarPagina = (n) => { pagNum = n; };
   const sf = c => doc.setFillColor(...c);
   const sd = c => doc.setDrawColor(...c);
   const st = c => doc.setTextColor(...c);
@@ -2561,27 +2492,26 @@ async function generarPDFInterno({
   const T  = (s,x,y,o={}) => doc.text(
     Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);
 
-  // El sello de INTERNO va en el marco de CADA página, no sólo en la portada.
-  // Un documento interno se reenvía por hoja: la página que alguien imprime y
-  // deja sobre un escritorio tiene que decir lo que es sin la portada al lado.
-  const SELLO_INTERNO = 'DOCUMENTO INTERNO · USO DE COTEA · NO ES EL REPORTE QUE SE ENTREGA AL CLIENTE';
-
+  // La banda va en el marco de CADA página, no sólo en la portada. Un papel se
+  // reenvía por hoja: la página que alguien imprime y deja sobre un escritorio
+  // tiene que decir lo que es sin la portada al lado.
   function pageFrame() {
     pagNum++;
     sf(Q.piz); R(0,0,PW,HDR);
     sf(Q.nar); R(0,0,3,HDR);
     st(Q.wh); fs(9); fw('bold'); T('cotea', ML, 5.5);
-    fs(6.5); fw('normal'); T('Documento interno', ML, 9.8);
+    fs(6.5); fw('normal'); T(rotulo, ML, 9.8);
     fs(8); fw('bold'); T(nombreCorto, PW-MR, 5.5, {align:'right'});
-    fs(6.5); fw('normal'); T(hoy, PW-MR, 9.8, {align:'right'});
-    // Banda naranja con el sello, bajo el encabezado y a todo lo ancho.
-    sf(Q.nar); R(0,HDR,PW,4);
-    st(Q.wh); fs(6); fw('bold');
-    T(SELLO_INTERNO, PW/2, HDR+2.8, {align:'center'});
+    fs(6.5); fw('normal'); T(fecha, PW-MR, 9.8, {align:'right'});
+    if (banda) {
+      sf(Q.nar); R(0,HDR,PW,4);
+      st(Q.wh); fs(6); fw('bold');
+      T(banda, PW/2, HDR+2.8, {align:'center'});
+    }
     sf(Q.bg); R(0,PH-FTR,PW,FTR);
     sf(Q.piz); R(0,PH-FTR,PW,0.6);
     st(Q.mu); fs(6); fw('normal');
-    T('cotea · documento interno', ML, PH-3.5);
+    T(pieIzq, ML, PH-3.5);
     T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
     T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
   }
@@ -2620,10 +2550,10 @@ async function generarPDFInterno({
       head:[head], body, startY:y,
       // EL MARCO DE LAS PÁGINAS QUE PONE AUTOTABLE. La tabla de no evaluables
       // puede traer veinte renglones y partirse sola; sin este enganche, las
-      // páginas que ella agrega salen SIN encabezado y sin la banda de
-      // «documento interno». Una hoja de este papel que no diga lo que es, es
-      // justo la hoja que acaba fuera. `pageNumber` es el índice de la página
-      // DENTRO de la tabla: la primera ya venía enmarcada por quien la llamó.
+      // páginas que ella agrega salen SIN encabezado y sin la banda que dice de
+      // qué papel son. Una hoja que no diga lo que es, es justo la hoja que
+      // acaba fuera. `pageNumber` es el índice de la página DENTRO de la tabla:
+      // la primera ya venía enmarcada por quien la llamó.
       didDrawPage: (d) => { if (d?.pageNumber > 1) pageFrame(); },
       margin:{left:x, right:PW-x-tableW, top:CY0-5}, tableWidth:tableW, rowPageBreak:'avoid',
       styles:{ fontSize:FS_TD, cellPadding:2.2, textColor:Q.tx, lineColor:Q.bd,
@@ -2652,7 +2582,7 @@ async function generarPDFInterno({
 
   // ── EL BLOQUE DE UNA GRÁFICA ──────────────────────────────────────────────
   //
-  // Las dos secciones de curva —la 3 y la 7— salen de aquí y no de dos copias.
+  // Las secciones de curva de los tres papeles salen de aquí y no de copias.
   // Lo que hace honesta a una gráfica no es el trazo: es lo que lleva debajo
   // —la leyenda de lo que SÍ se dibujó, las series ausentes con su motivo y
   // las notas de lectura—. Con dos copias, la que un día se queda sin el pie
@@ -2729,8 +2659,8 @@ async function generarPDFInterno({
         + 'afirmaría una medición que no existe.', yy);
 
     // LO AUSENTE, CON SU MOTIVO. El mismo principio que lleva escrito la
-    // sección 6: una gráfica con dos de sus series se lee como una gráfica
-    // completa, y el que la lee no tiene cómo saber qué le falta.
+    // sección de riesgos: una gráfica con dos de sus series se lee como una
+    // gráfica completa, y el que la lee no tiene cómo saber qué le falta.
     const aus = curva.ausentes || [];
     if (aus.length) {
       if (yy > 168) { doc.addPage(); pageFrame(); yy = CY0 + 4; }
@@ -2748,8 +2678,151 @@ async function generarPDFInterno({
     return yy;
   }
 
+  return { doc, Q, colorSev, labelSev, disparoCon,
+           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
+           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
+           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva };
+};
+
+// ── EL DOCUMENTO INTERNO DE COTEA ──────────────────────────────────────────
+//
+// DOS COMPONENTES, NO UNA BANDERA. Esto no es `generarPDFObra` con un
+// `if (interno)`: son dos documentos con dos criterios opuestos sobre lo mismo.
+//
+//   · `generarPDFObra` es el reporte ejecutivo DEL CONTRATISTA. Lleva su marca,
+//     se entrega al cliente, lo firman tres personas. Por eso se CALLA todo lo
+//     que no puede afirmar: un hueco de captura publicado ahí es un reclamo
+//     contra uno mismo en el papel que cobra.
+//   · éste es el documento DE COTEA, y se lee hacia adentro. Publica los huecos
+//     a propósito, porque un hueco es justamente lo que un documento interno
+//     sirve para ir a cerrar, y porque el error que un reporte no puede
+//     permitirse es callarse porque no sabe.
+//
+// Con una bandera habría un cuerpo con treinta condicionales y los dos
+// criterios enredados: el día que el reporte del cliente gane un renglón, el
+// interno lo gana sin que nadie lo decida — y al revés, que es peor, porque
+// aquí se imprime la lista de lo que no se pudo medir.
+//
+// NINGUNA CIFRA NUEVA. Cada número de este papel sale de la función que ya
+// alimenta la pantalla: `calcularKPIsObra` y `presentacionEconomiaObra` para la
+// economía y cómo se dice, `curvaUnicaDeObra` + `comportamientoDelMargen` para
+// la serie semanal, `evaluarRiesgos` para los tres estados, `selloDeTiempo`
+// para la hora, `seleccionFotografica` para qué fotos respaldan el expediente.
+// Una cuenta hecha aquí adentro sería una segunda cuenta del
+// mismo dato, y entonces este documento y el tablero podrían discrepar sobre la
+// misma obra el mismo día — que es exactamente el defecto que ya se pagó en el
+// margen de la 0121, entregado en positivo donde la pantalla lo daba negativo.
+//
+// Los parámetros van POR NOMBRE. `generarPDFObra` lleva quince posicionales y
+// contar comas hasta el decimoquinto es el error que no se ve en la revisión.
+//
+// `organizacion` y `generadoPor` son datos de identificación, no marca: la
+// cabecera de cada página firma cotea, y de qué organización es la obra se
+// imprime como un campo más — que es lo que permite que el mismo documento
+// sirva para cualquier organización sin cambiarle el logotipo.
+async function generarPDFInterno({
+  obra, subs = [], estimaciones = [], maquinaria = [], materiales = [],
+  subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
+  otrosGastos = [], nominaHistorial = [], programa = null,
+  instante = null, organizacion = null, generadoPor = null,
+  // La evidencia, para la sección 5. `evidenciaCargada` entra como dato por la
+  // misma razón que `estCargadas`: `fsColl` devuelve `[]` cuando la regla niega
+  // o la red falla, así que una lectura fallida y una obra sin fotos llegan
+  // aquí idénticas. Con el valor por omisión la sección declara que no pudo
+  // medir la cobertura, que es la verdad mientras nadie diga lo contrario;
+  // deducirlo de `evidencia.length` publicaría «0% · la evidencia no alcanza»
+  // sobre una lectura denegada, y eso es una acusación con cifra inventada.
+  evidencia = [], evidenciaCargada = false,
+  // `estCargadas` entra como dato y NO se deduce de `estimaciones.length`, por
+  // la misma razón que en la pantalla de la dependencia: una lista vacía que
+  // todavía viaja y una obra sin estimaciones se ven igual desde aquí. Con el
+  // valor por omisión —`false`— la sección 7 declara que no pudo fechar lo
+  // pagado, que es la verdad mientras nadie diga lo contrario; deducirlo
+  // publicaría «$0 pagado» sobre una lista que no había llegado.
+  estCargadas = false,
+} = {}) {
+  if (!window.jspdf) {
+    await new Promise((res,rej)=>{ const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+  }
+  await new Promise((res,rej)=>{
+    if(window._atLoaded) return res();
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
+  });
+  const { jsPDF } = window.jspdf;
+
+  try {
+  const sello = selloDeTiempo(instante);
+  const hoy = sello.fecha;
+  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');
+
+  // ── EL ANDAMIO, CON EL SELLO DE INTERNO EN LA BANDA ───────────────────────
+  // El sello va en la banda del andamio, que `pageFrame` pinta en CADA página y
+  // no sólo en la portada: un documento interno se reenvía por hoja, y la
+  // página que alguien imprime y deja sobre un escritorio tiene que decir lo
+  // que es sin la portada al lado. Pedir la banda es DECISIÓN DE ESTE PAPEL,
+  // no del andamio: el informe del Art. 73 usa el mismo andamio y no la lleva.
+  const SELLO_INTERNO ='DOCUMENTO INTERNO · USO DE COTEA · NO ES EL REPORTE QUE SE ENTREGA AL CLIENTE';
+  const A = andamioDeCotea({ jsPDF, nombreCorto, fecha: hoy,
+    rotulo: 'Documento interno', banda: SELLO_INTERNO,
+    pieIzq: 'cotea · documento interno' });
+  const { doc, Q, colorSev, labelSev, disparoCon,
+          PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
+          FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+          sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
+          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
+
+  // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──────────────
+  const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,
+                                gpData, otrosGastos);
+  // Y DICHA donde se dice para la pantalla. `pres` ya resolvió los tres estados
+  // del gasto y del margen —sin medir, indefinido, normal— y sus cadenas. Lo
+  // único que no se puede reusar son sus colores: son colores de CSS y aquí
+  // hacen falta ternas RGB, así que el color se deriva del estado que `pres` ya
+  // decidió, nunca de un umbral teclado otra vez.
+  const pres = presentacionEconomiaObra(kpis);
+  const PPTO = kpis.presupuesto;
+  const colorMargen = pres.gastoSinMedir ? Q.mu
+    : pres.margenIndefinido ? colorSev('critico')
+    : kpis.mpct < 10 ? colorSev('alto')
+    : kpis.mpct < 15 ? colorSev('medio') : colorSev('bajo');
+
+  // ── LA SERIE SEMANAL, CON LA MISMA VENTANA QUE EL TABLERO ────────────────
+  // DOCE semanas, fijas, igual que el `useMemo` del Dashboard que alimenta a
+  // `fin_007`. Si este papel usara otra ventana, la tabla del margen de la
+  // sección de dinero y el riesgo de la sección de riesgos saldrían de dos
+  // series distintas en el mismo documento, y el riesgo acusaría con una cifra
+  // que no se puede encontrar tres páginas antes.
+  const VENTANA = 12;
+  const semanas = semanasDeVentana(obra, VENTANA);
+  const curva = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
+                                   otrosGastos, maquinaria, programa });
+  const comportamientoMargen = comportamientoDelMargen(curva);
+
+  // ── LOS RIESGOS, CON EL CONTEXTO DEL TABLERO ─────────────────────────────
+  // `evaluarRiesgos` y no sólo su `detectados`: la lista de los que disparan es
+  // una VISTA de las cuatro, y este documento publica las cuatro. El contexto
+  // es el mismo que arma el Dashboard, campo por campo, porque un contexto más
+  // pobre convierte riesgos medidos en huecos y el papel acusaría de falta de
+  // dato a quien sí lo capturó.
+  const kpisCtx = { gt: kpis.gt, am: kpis.am, alm: kpis.alm, me: kpis.me,
+                    af: kpis.af, diff: kpis.diff, mpct: kpis.mpct,
+                    pctGasto: kpis.pctGasto, brecha: kpis.brecha };
+  const veredicto = evaluarRiesgos({
+    obra, subs, maquinaria, materiales, estimaciones, subcontratos,
+    historialAvance, gpData, kpis: kpisCtx, nominaHistorial, programa,
+    comportamientoMargen,
+  });
+
   // ═══ 1 · IDENTIFICACIÓN ═══════════════════════════════════════════════════
-  pagNum = 1;
+  // La portada se dibuja a mano, sin `pageFrame`, así que el contador del
+  // andamio se fija de fuera: con el contador en cero la primera hoja
+  // enmarcada saldría también como «Página 1» y habría dos.
+  fijarPagina(1);
   sf(Q.piz); R(0,0,PW*0.42,PH);
   sf(Q.bg);  R(PW*0.42,0,PW*0.58,PH);
   sf(Q.nar); R(0,0,PW*0.42,5);
@@ -3244,6 +3317,719 @@ async function generarPDFInterno({
   } catch(e) {
     console.error('Error generando el documento interno:',e);
     alert(`Error al generar el documento interno:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
+  }
+}
+
+// ── EL INFORME DE AVANCE DEL ART. 73 · EL PAPEL DE LA DEPENDENCIA ──────────
+//
+// UN PAPEL POR LECTOR. Esto no es el reporte de la constructora recortado: es
+// el documento del OTRO lado, el que una dependencia tiene que producir y
+// archivar. Las cuatro secciones que la ley le exige —avance físico, avance
+// financiero, incidencias y observaciones— son las que estructuran el papel, y
+// por eso van con ese nombre y en ese orden, no en el que convenga al dibujo.
+//
+// LA FRONTERA ESTÁ EN LA FIRMA, NO EN UN FILTRO. Esta función NO RECIBE
+// `maquinaria`, `materiales`, `subcontratos`, `gpData`, `gpDetalle`,
+// `otrosGastos` ni `nominaHistorial`. No es que los esconda: no los tiene. Un
+// papel que recibiera la economía del contratista y decidiera no imprimirla
+// deja esa economía a una línea de distancia de reaparecer, y quien la
+// escondiera tendría que acertar cada vez que se agregue una sección. Es el
+// mismo principio por el que la curva de este papel es `curvaDeGobierno` y no
+// un recorte de la del contratista.
+//
+// Y NO LLEVA BANDA. El informe interno se sella en cada hoja porque no se
+// entrega; éste SE ENTREGA —se archiva en el expediente y lo lee el superior
+// jerárquico—, así que la banda sería una advertencia dirigida a nadie.
+//
+// NINGUNA CIFRA NUEVA. Las cinco de dinero salen de `economiaDeDependencia` y
+// se dicen con `presentacionDependencia`, las mismas que pinta el tablero del
+// municipio; la serie semanal de `curvaDeGobierno`; las incidencias de
+// `riesgosDeDependencia`; el plazo de `plazoDeObra` y `kpiDesviacionPlazo`; las
+// fotos de `seleccionFotografica`. La única cuenta que se hace aquí es la
+// RESTA de los dos avances, y se hace aquí porque es la pregunta de este papel
+// y de ningún otro.
+//
+// LA TRAMPA DE LA FECHA DE LAS FOTOS, que en un expediente que se archiva dura
+// años: `fechaServidor` es cuándo LLEGÓ el archivo y `fechaDeclarada` lo que
+// dijo el teléfono. Ninguna de las dos es cuándo se ejecutó el trabajo, y el
+// EXIF no se lee. Así que el rótulo dice «SUBIDA EN» y la sección lo declara
+// en su primer párrafo. Un «avance de la semana N» sobre estas fotos sería
+// afirmar un dato que nadie capturó.
+async function generarPDFArt73({
+  obra, subs = [], estimaciones = [], historialAvance = [], programa = null,
+  instante = null, organizacion = null, generadoPor = null,
+  // Las dos banderas de «ya llegó la lista» entran como dato por la misma
+  // razón que en el tablero y en el informe interno: `fsColl` devuelve `[]`
+  // mientras la lectura viaja o cuando la regla niega, así que una obra sin
+  // estimaciones y una lectura que no ha vuelto llegan aquí idénticas. Con el
+  // valor por omisión el papel declara que no pudo medir, que es la verdad
+  // mientras nadie diga lo contrario. Deducirlo de `length` imprimiría «$0
+  // pagado» en un documento oficial sobre una lista que todavía viajaba.
+  evidencia = [], evidenciaCargada = false, estCargadas = false,
+} = {}) {
+  if (!window.jspdf) {
+    await new Promise((res,rej)=>{ const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+  }
+  await new Promise((res,rej)=>{
+    if(window._atLoaded) return res();
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+    s.onload=()=>{window._atLoaded=true;res();}; s.onerror=rej; document.head.appendChild(s);
+  });
+  const { jsPDF } = window.jspdf;
+
+  try {
+  const sello = selloDeTiempo(instante);
+  const hoy = sello.fecha;
+  const nombreCorto = resolverNombreCortoObra(obra, null) || (obra?.nombre || 'Obra');
+
+  // `resolverNombreCortoObra` sin `gpData`: el cruce con el ERP del contratista
+  // no existe de este lado, y pasarle el volcado para sacar un nombre más
+  // bonito sería meter la economía del contratista por la puerta de atrás.
+  const A = andamioDeCotea({ jsPDF, nombreCorto, fecha: hoy,
+    rotulo: 'Informe de avance · Art. 73', banda: null,
+    pieIzq: 'cotea · informe de avance' });
+  const { doc, Q, colorSev, labelSev, disparoCon,
+          PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
+          FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+          sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
+          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
+
+  // ── LA ECONOMÍA, DE DONDE LA SACA EL TABLERO DEL MUNICIPIO ────────────────
+  const eco = economiaDeDependencia({ obra, subs, estimaciones, estCargadas });
+  const pres = presentacionDependencia(eco);
+
+  // ── LA VENTANA, LA MISMA DEL TABLERO ─────────────────────────────────────
+  const VENTANA = 12;
+  const semanas = semanasDeVentana(obra, VENTANA);
+
+  // ── EL PLAZO Y LAS INCIDENCIAS ───────────────────────────────────────────
+  //
+  // LAS TRES CUENTAS DE TIEMPO SE FECHAN CON EL CORTE DEL INFORME, no con el
+  // reloj del aparato que apretó el botón. `plazoDeObra` y `atrasoProyectado`
+  // toman «hoy» por omisión, y la portada ya declaró un corte que puede venir
+  // del servidor: si el papel dijera un corte y midiera los días contra otro
+  // instante, los días por correr de la sección 2 no cuadrarían con la fecha
+  // impresa arriba — y es un documento que se archiva.
+  const msCorte = sello.momento.getTime();
+  const plazo = plazoDeObra(obra, fechaEnZonaObra(sello.momento) || hoyLocalISO());
+  const proy = atrasoProyectado(obra, null, historialAvance, eco.avance, msCorte);
+  const desv = kpiDesviacionPlazo(proy);
+  const veredicto = riesgosDeDependencia({ obra, subs, estimaciones,
+                                           historialAvance, programa, eco });
+
+  // ═══ 1 · IDENTIFICACIÓN ═══════════════════════════════════════════════════
+  fijarPagina(1);
+  sf(Q.piz); R(0,0,PW*0.42,PH);
+  sf(Q.bg);  R(PW*0.42,0,PW*0.58,PH);
+  sf(Q.nar); R(0,0,PW*0.42,5);
+
+  st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  // Lo primero que se lee es qué papel es éste y para qué sirve. Sin caja
+  // naranja de advertencia: no hay nada de qué advertir, este documento se
+  // entrega.
+  st(Q.wh); fs(13); fw('bold');
+  T(doc.splitTextToSize('INFORME DE AVANCE DE OBRA', PW*0.38), ML, 52);
+  st(Q.nar); fs(8); fw('bold');
+  T('Artículo 73 · avance físico y financiero', ML, 62);
+
+  st(Q.wh); fs(7.5); fw('normal'); T('OBRA', ML, 78);
+  fs(14); fw('bold');
+  T(doc.splitTextToSize(nombreCorto, PW*0.38), ML, 85);
+
+  st(Q.mu); fs(7); fw('normal');
+  T('CORTE', ML, PH-34);
+  st(Q.wh); fs(7.5);
+  T(doc.splitTextToSize(sello.corte, PW*0.38), ML, PH-29);
+
+  const xR=PW*0.44, yR0=24;
+  st(Q.ng); fs(9); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
+  sd(Q.bd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
+  let yR=yR0+8;
+  const contr = contratoCapturado(obra?.contrato);
+  // El PERIODO del informe es la ventana medida, y cuando no hay se dice. Un
+  // informe de avance con un periodo inventado es un documento oficial que
+  // afirma haber medido semanas que nadie cerró.
+  const periodoTxt = semanas.length
+    ? `${semanas[0].label} – ${semanas[semanas.length-1].label} (${semanas.length} semanas)`
+    : 'no se pudo acotar: la obra no trae fecha de inicio capturada';
+  const filasID = [
+    ['Obra:', comoSeImprime(obra?.nombre)],
+    ['Clave:', comoSeImprime(obra?.id)],
+    ['Contrato:', contr.numero ?? NO_CAPTURADO],
+    ...(contr.objeto ? [['Objeto:', contr.objeto]] : []),
+    ['Dependencia:', comoSeImprime(obra?.cliente)],
+    ['Organización:', comoSeImprime(organizacion)],
+    ['Inicio de obra:', comoSeImprime(obra?.inicio)],
+    // El fin que manda es el VIGENTE, y si hay ampliación se dice: un plazo
+    // ampliado que no se declara se lee como el del contrato firmado, y eso
+    // cambia quién va tarde en el expediente.
+    ['Fin programado:', plazo.ampliado
+      ? `${comoSeImprime(plazo.finVigente)} (ampliado; el contrato decía ${comoSeImprime(obra?.fin)})`
+      : comoSeImprime(obra?.fin)],
+    ['Monto contratado:', pres.contratadoTxt],
+    ['Periodo del informe:', periodoTxt],
+    ['Corte del informe:', sello.corte],
+    ['Generado por:', comoSeImprime(generadoPor)],
+  ];
+  filasID.forEach(([lbl,val])=>{
+    st(Q.ng); fs(7); fw('bold'); T(lbl, xR, yR);
+    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fw('normal');
+    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-38);
+    T(lineas, xR+38, yR);
+    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
+  });
+
+  sf(Q.bg); R(0,PH-FTR,PW,FTR);
+  sf(Q.piz); R(0,PH-FTR,PW,0.6);
+  st(Q.mu); fs(6); fw('normal');
+  T('cotea · informe de avance', PW*0.44, PH-3.5);
+  T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
+
+  // ═══ 2 · AVANCE FÍSICO Y AVANCE FINANCIERO ════════════════════════════════
+  //
+  // EL CORAZÓN DEL PAPEL, y la única cuenta que este documento hace por su
+  // cuenta: la DIFERENCIA entre los dos avances. Se hace aquí porque es la
+  // pregunta de este informe y de ningún otro —ninguna pantalla la publica—, y
+  // es una resta de dos cifras que ya están publicadas arriba, no una tercera
+  // medición.
+  //
+  // Los dos avances son dos cosas y no se promedian:
+  //   · FÍSICO = lo construido contra lo contratado, ponderado por importe, y
+  //     TOPADO al 100% (una obra no avanza más del 100% de su alcance).
+  //   · FINANCIERO = lo PAGADO contra lo contratado. Es lo ejercido del
+  //     presupuesto de la dependencia, que es de lo que ella responde.
+  //
+  // Y cuando lo pagado no se pudo medir la diferencia NO SE CALCULA. Restarle
+  // un cero al avance físico daría la brecha máxima posible y la pondría en un
+  // documento que se archiva: diría que al contratista no se le ha pagado
+  // nada, sobre una lista de estimaciones que todavía venía en camino.
+  doc.addPage(); pageFrame();
+  let y = CY0 + 4;
+  y = secHead('2  AVANCE FÍSICO Y AVANCE FINANCIERO', y);
+
+  // LA RESTA PIDE LOS DOS LADOS. Cualquiera de los dos puede faltar y por
+  // razones distintas —lo pagado porque las estimaciones no llegaron, el físico
+  // porque no hay catálogo— así que la negativa tiene que decir cuál falta.
+  const brechaPP = (eco.avance === null || eco.pctPag === null)
+    ? null : eco.avance - eco.pctPag;
+  const colorBrecha = brechaPP === null ? Q.mu
+    : Math.abs(brechaPP) <= 5 ? colorSev('bajo')
+    : Math.abs(brechaPP) <= 15 ? colorSev('medio') : colorSev('alto');
+
+  y = kpiRow([
+    ['Avance físico', pres.avanceTxt, pres.avanceSub,
+      eco.avance === null ? Q.mu
+        : eco.avance>=75 ? colorSev('bajo')
+        : eco.avance>=40 ? colorSev('medio') : colorSev('alto')],
+    ['Avance financiero', eco.pctPag === null ? '—' : PCT(eco.pctPag),
+      eco.pctPag === null ? 'no se pudo medir lo pagado' : 'pagado al contratista, del contrato',
+      eco.pctPag === null ? Q.mu : colorSev('bajo')],
+    ['Diferencia', PP(brechaPP),
+      brechaPP === null ? 'sin lo pagado no hay resta' : 'físico menos financiero',
+      colorBrecha],
+    ['Plazo transcurrido', plazo.pctPlazo === null ? '—' : PCT(plazo.pctPlazo),
+      plazo.pctPlazo === null ? 'sin inicio o fin capturados'
+        : `${plazo.transcurridos} de ${plazo.totalDias} días`,
+      plazo.pctPlazo === null ? Q.mu : Q.piz],
+  ], y);
+
+  // LA LECTURA DE LA DIFERENCIA, EN PALABRAS. El signo no se interpreta solo:
+  // los dos sentidos significan cosas opuestas y las dos le importan al
+  // municipio, una porque le debe y la otra porque pagó por delante.
+  if (eco.avance === null) {
+    y = nota('NINGUNO DE LOS DOS AVANCES SE PUDO MEDIR DEL LADO FÍSICO, y por eso esta '
+      + 'sección no publica ni el avance físico ni la diferencia: ' + pres.avanceSub
+      + '. Un 0% ahí no diría «la obra no ha arrancado», diría «no sabemos nada de la '
+      + 'obra», y las dos lecturas llevan a cosas opuestas: la primera se le reclama al '
+      + 'contratista, la segunda se arregla capturando el dato. Las cifras de dinero de '
+      + 'la sección 3 que dependen del catálogo quedan igual de vacías, y las que salen '
+      + 'de las estimaciones siguen siendo válidas: ésas no se tocan.', y);
+  } else if (brechaPP === null) {
+    y = nota('LA DIFERENCIA ENTRE LOS DOS AVANCES NO SE PUDO CALCULAR, y por eso no se '
+      + 'imprime ningún número: lo pagado no se pudo medir. '
+      + pres.pagadoSub.charAt(0).toUpperCase() + pres.pagadoSub.slice(1)
+      + '. Restarle un cero al avance físico daría la brecha más grande posible y la '
+      + 'dejaría escrita en un expediente, afirmando que al contratista no se le ha pagado '
+      + 'nada — cuando lo que pasa es que no se sabe cuánto.', y);
+  } else if (brechaPP > 0) {
+    y = nota(`LA OBRA ESTÁ CONSTRUIDA POR DELANTE DE LO PAGADO: ${PP(brechaPP)} de `
+      + `diferencia. Se ha ejecutado ${PCT(eco.avance)} del alcance contratado y se ha `
+      + `pagado ${PCT(eco.pctPag)} del monto. Lo construido y todavía no pagado es lo que `
+      + 'la gráfica de la sección 4 sombrea, y es el saldo que el contratista va a '
+      + 'estimar. Esto no dice que haya un adeudo exigible: una estimación se paga '
+      + 'cuando se aprueba y se factura, y los plazos de pago del contrato corren '
+      + 'desde ahí.', y);
+  } else if (brechaPP < 0) {
+    y = nota(`SE HA PAGADO POR DELANTE DE LO CONSTRUIDO: ${PP(brechaPP)} de diferencia. `
+      + `Se ha pagado ${PCT(eco.pctPag)} del monto contratado contra ${PCT(eco.avance)} `
+      + 'del alcance ejecutado. Esto puede ser normal —un anticipo es exactamente eso— o '
+      + 'puede ser un pago adelantado sin respaldo de obra; el informe no distingue entre '
+      + 'los dos casos porque el anticipo no se captura por separado todavía. Quien '
+      + 'archive este papel tiene que saber cuál de los dos es.', y);
+  } else {
+    y = nota('LOS DOS AVANCES COINCIDEN: lo construido y lo pagado van parejos en la '
+      + 'misma proporción del contrato.', y);
+  }
+
+  // EL TIEMPO, QUE ES LA OTRA PREGUNTA. Tres cifras y NINGUNA repite el plazo
+  // transcurrido de la fila de arriba.
+  //
+  // Esto tenía un cuarto recuadro —«Avance esperado al corte»— con el MISMO
+  // `plazo.pctPlazo` que ya sale como «Plazo transcurrido». El mismo número en
+  // dos cajas con dos rótulos distintos se lee como dos mediciones que resultan
+  // coincidir, y la segunda sugería además que el calendario es la vara del
+  // avance. No es: la vara es el programa contractual, y la gráfica de la
+  // sección 4 lo compara cuando lo hay. Publicar el plazo consumido bajo un
+  // rótulo que dice «avance esperado» es el defecto que ya se pagó una vez, y
+  // del lado del municipio es peor, porque el atraso es la cifra que una
+  // dependencia reclama.
+  //
+  // El color de la proyección se deriva de sus días y no de un umbral teclado
+  // aquí: `kpiDesviacionPlazo` los da en colores de CSS y aquí hacen falta
+  // ternas RGB.
+  const colorDesv = desv.dias === null ? Q.mu
+    : desv.dias > 15 ? colorSev('alto')
+    : desv.dias > 0 ? colorSev('medio') : colorSev('bajo');
+  y = kpiRow([
+    ['Proyección al término', desv.valor, desv.sub, colorDesv],
+    ['Días por correr', plazo.restantes === null ? '—' : String(plazo.restantes),
+      plazo.vencidoDias > 0
+        ? `el plazo venció hace ${plazo.vencidoDias} días`
+        : (plazo.ampliado ? 'contra el plazo ampliado' : 'contra el plazo del contrato'),
+      plazo.vencidoDias > 0 ? colorSev('critico') : Q.piz],
+    ['Semanas cerradas', String((historialAvance || []).filter(h => h.tipo === 'oficial').length),
+      'cortes de avance en el expediente', Q.piz],
+  ], y);
+
+  y = nota('EL «PLAZO TRANSCURRIDO» NO ES EL AVANCE QUE SE ESPERABA. Es calendario: '
+    + 'cuánto del plazo se consumió, y una obra puede llevar la mitad del plazo con el '
+    + '2% construido o con el 90%. La vara del avance es el PROGRAMA DE OBRA que las '
+    + 'partes firmaron, y la gráfica de la sección 4 lo compara cuando está cargado —y '
+    + 'dice en su pie cuando no lo está—. Reclamar un atraso restando estas dos cifras '
+    + 'sería reclamarlo contra una recta que nadie firmó. «Proyección al término» sí '
+    + 'contesta si la obra llega, y lo hace con el ritmo medido en los cierres '
+    + 'semanales, no con el calendario.', y);
+
+  // ═══ 3 · EL CONTRATO EN PESOS ═════════════════════════════════════════════
+  //
+  // Las cinco cifras del encabezado del tablero del municipio, las mismas y
+  // dichas igual. `pres` ya resolvió los estados y sus cadenas: donde la
+  // pantalla imprime una raya este papel imprime una raya, y donde dice «no se
+  // pudo medir» lo dice también.
+  y = secHead('3  EL CONTRATO EN PESOS', y);
+  y = kpiRow([
+    ['Contratado', pres.contratadoTxt, 'monto del contrato', Q.piz],
+    ['Ejecutado', pres.ejecutadoTxt, pres.ejecutadoSub, Q.piz],
+    ['Estimado', pres.estimadoTxt, pres.estimadoSub,
+      eco.estimado === null ? Q.mu : Q.piz],
+    ['Pagado', pres.pagadoTxt, pres.pagadoSub,
+      eco.pagado === null ? Q.mu : colorSev('bajo')],
+    ['Por ejercer', pres.porEjercerTxt, pres.porEjercerSub,
+      eco.porEjercer === null ? Q.mu : Q.nar],
+  ], y);
+
+  // EL EJECUTADO POR ENCIMA DEL CONTRATO SE DICE, no se tapa con el tope. El
+  // avance físico está topado al 100% a propósito; el dinero no se topa, y la
+  // diferencia entre las dos cifras es exactamente esto. Sin decirlo, el papel
+  // tiene un 100% de avance al lado de un ejecutado del 112% y parece un error
+  // de cuentas.
+  if (eco.pctEjec !== null && eco.pctEjec > 100)
+    y = nota(`LO EJECUTADO SUPERA EL MONTO CONTRATADO: ${pres.ejecutadoSub}. El avance `
+      + 'físico de la sección 2 sale topado al 100% porque una obra no puede avanzar más '
+      + 'del alcance que se contrató; el importe NO se topa, y por eso las dos cifras no '
+      + 'coinciden. El excedente es volumen ejecutado fuera del catálogo contratado y no '
+      + 'se puede pagar sin un convenio modificatorio.', y);
+
+  // ═══ 4 · LA OBRA SEMANA A SEMANA ══════════════════════════════════════════
+  //
+  // `curvaDeGobierno`, la misma que dibuja el tablero del municipio y la misma
+  // que el informe interno reproduce para que el contratista sepa qué ve su
+  // cliente. No calcula gasto ni margen — no es que no los dibuje: no los
+  // tiene.
+  const curva = curvaDeGobierno({ semanas, obra, historialAvance, subs,
+                                  programa, estimaciones, estCargadas });
+  y = bloqueDeCurva('4  LA OBRA SEMANA A SEMANA', curva,
+    'Las semanas del periodo de este informe, con lo construido, lo programado y lo '
+    + 'pagado al contratista sobre el mismo eje. El sombreado es lo construido y '
+    + 'todavía no pagado, que es el saldo de la sección 2 visto semana a semana. Lo '
+    + 'que esta gráfica no dibuje sale nombrado debajo, con el motivo: una gráfica con '
+    + 'dos de sus tres series se lee como una gráfica completa.');
+
+  // ═══ 5 · INCIDENCIAS ══════════════════════════════════════════════════════
+  //
+  // LAS TRES LISTAS, no sólo la de los hallazgos. Una dependencia no captura
+  // los datos que faltan: se los pide al contratista. O sea que un «no se pudo
+  // medir» es lo ÚNICO que le dice qué pedir, y es el renglón más útil del
+  // informe para ella. Medido en producción el 2026-11-10: las siete obras
+  // tenían de cuatro a seis reglas sin dato contra tres o cuatro detectadas.
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('5  INCIDENCIAS', y);
+
+  const { detectados, sinHallazgo, noEvaluables, reventaron } = veredicto;
+
+  y = nota('UNA LISTA DE INCIDENCIAS VACÍA NO SIGNIFICA QUE NO HAYA INCIDENCIAS. Cada '
+    + 'revisión puede callarse por dos motivos opuestos: midió y no encontró nada, o le '
+    + 'faltó el dato para medir. Los dos salen abajo por separado, porque el segundo es '
+    + 'una tarea —hay un dato que pedir— y el primero no.', y);
+
+  y = kpiRow([
+    ['Detectadas', String(detectados.length), 'midieron y encontraron', colorSev('alto')],
+    ['Sin poder medir', String(noEvaluables.length), 'falta un dato que pedir', Q.mu],
+    ['Revisadas sin hallazgo', String(sinHallazgo.length), 'midieron y no encontraron',
+      colorSev('bajo')],
+    ['Fallaron', String(reventaron.length), 'defecto del sistema, no del expediente',
+      reventaron.length ? colorSev('critico') : Q.mu],
+  ], y);
+
+  st(Q.ng); fs(FS_SEC); fw('bold');
+  T('Detectadas · con qué cifra se detectó cada una', ML, y+4);
+  y += 7;
+  if (detectados.length) {
+    y = autoT(
+      ['Nivel', 'Incidencia', 'Cifra', 'Qué dice'],
+      detectados.map(r => [
+        labelSev(r.severidad),
+        r.titulo || r.id,
+        disparoCon(r.valor),
+        [r.detalle, r.extra].filter(Boolean).join(' · ') || '—',
+      ]),
+      [24, 56, 40, CW-120], ML, y,
+      { didParseCell: (d) => {
+          if (d.section === 'body' && d.column.index === 0)
+            d.cell.styles.textColor = colorSev(detectados[d.row.index]?.severidad);
+        } }
+    );
+  } else {
+    y = nota('Ninguna de las revisiones que SÍ pudieron medir encontró algo. Antes de leer '
+      + 'eso como una obra sin incidencias, mira la lista de abajo: ahí están las que no '
+      + 'pudieron medir.', y);
+  }
+
+  if (y > 145) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+  st(Q.ng); fs(FS_SEC); fw('bold');
+  T('Sin poder medir · qué dato hay que pedir', ML, y+4);
+  y += 7;
+  if (noEvaluables.length) {
+    y = autoT(
+      ['Incidencia', 'Dato que falta', 'Por qué no se pudo medir'],
+      noEvaluables.map(r => [
+        r.titulo || r.id,
+        r.faltan.map(f => f.nombre || f.dato).join(' · '),
+        r.faltan.map(f => f.porQue).filter(Boolean).join(' · ')
+          || 'el dato no está en el expediente al corte de este informe',
+      ]),
+      [56, 60, CW-116], ML, y
+    );
+  } else {
+    y = nota('Ninguna: todas las revisiones que aplican a esta obra tuvieron con qué medir.', y);
+  }
+
+  if (reventaron.length) {
+    if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+    st(colorSev('critico')); fs(FS_SEC); fw('bold');
+    T('Fallaron · esto es un defecto del sistema, no un hueco del expediente', ML, y+4);
+    y += 7;
+    y = autoT(['Incidencia', 'Qué falló'],
+      reventaron.map(r => [r.titulo || r.id, r.error || 'sin mensaje']),
+      [70, CW-70], ML, y);
+  }
+
+  if (y > 155) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+  st(Q.ng); fs(FS_SEC); fw('bold');
+  T('Revisadas sin hallazgo', ML, y+4);
+  y += 6;
+  st(Q.tx); fs(FS_SM); fw('normal');
+  // SE NOMBRAN, no se cuentan. «22 revisiones sin hallazgo» no dice cuáles, y
+  // la que falte de la lista es la que nadie va a notar que falta.
+  T(doc.splitTextToSize(
+      sinHallazgo.length
+        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
+        : 'Ninguna: todas las revisiones que aplican a esta obra o detectaron algo o se '
+          + 'quedaron sin dato.',
+      CW), ML, y+3);
+  y += 3 + Math.max(1, doc.splitTextToSize(
+      sinHallazgo.length ? sinHallazgo.map(r => r.titulo || r.id).join(' · ') : 'x',
+      CW).length) * 3.6 + 4;
+
+  // ═══ 6 · OBSERVACIONES ════════════════════════════════════════════════════
+  //
+  // LO QUE ESTE INFORME NO PUDO AFIRMAR, con su motivo y en voz alta. Es la
+  // sección que la ley pide y es también la única honesta posible: un informe
+  // de avance que presenta sus huecos como ceros deja un expediente que afirma
+  // lo que nadie midió, y eso dura en el archivo mucho más que la obra.
+  //
+  // NO ENTRAN LAS NOTAS SEMANALES DEL CONTRATISTA. `notasSemana` es prosa
+  // interna que un residente escribe para los suyos; meterla en un documento
+  // que la dependencia archiva la convierte en una declaración oficial que
+  // quien la escribió no sabía que estaba firmando. Aquí sólo va lo que el
+  // sistema puede afirmar de sí mismo.
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('6  OBSERVACIONES', y);
+
+  const obs = [];
+  // EL CATÁLOGO VA PRIMERO porque sin él no hay avance físico, que es la mitad
+  // de lo que la ley pide en este papel. Se dice aquí ADEMÁS de en la sección 5
+  // —el motor de riesgo lo mide como ausencia de dato— y no es repetir: allá
+  // explica por qué una regla no pudo evaluarse, aquí explica por qué una cifra
+  // del informe sale con raya.
+  if (!eco.conCatalogo)
+    obs.push('LA OBRA NO TIENE CATÁLOGO DE CONCEPTOS CARGADO, así que este informe no '
+      + 'publica avance físico ni importe ejecutado: salen con una raya. Un 0% y un $0 '
+      + 'ahí se leerían como «la obra no ha arrancado», que es una afirmación sobre la '
+      + 'obra; lo que pasa es que no hay con qué medirla. Lo estimado y lo pagado NO '
+      + 'dependen del catálogo y siguen siendo válidos en la sección 3.');
+  if (!(eco.contrato > 0))
+    obs.push('La obra no tiene monto contratado capturado, así que este informe no publica '
+      + 'ningún porcentaje contra el contrato: ni el avance físico ni el financiero. Se '
+      + 'arregla capturando el contrato, no midiendo otra vez.');
+  if (!eco.medido)
+    obs.push('LAS ESTIMACIONES NO SE PUDIERON LEER al generar este informe, así que lo '
+      + 'estimado, lo pagado, el avance financiero y el saldo por ejercer salen con una '
+      + 'raya y no con un cero. No quiere decir que no haya estimaciones: quiere decir que '
+      + 'no se sabe. Se arregla volviendo a abrir la obra y generando el informe otra vez.');
+  if (!semanas.length)
+    obs.push('No se pudo acotar el periodo de este informe porque la obra no trae fecha de '
+      + 'inicio capturada. Sin periodo no hay semanas que medir, y la gráfica de la sección '
+      + '4 queda sin eje.');
+  const oficiales = estadoPorSemana(historialAvance || []);
+  const hueco = huecoDeArranque(oficiales, obra);
+  if (hueco)
+    obs.push(`El expediente no conserva cierres de avance de las primeras ${hueco.faltan} `
+      + `${hueco.faltan === 1 ? 'semana' : 'semanas'} de la obra: el primero que hay es `
+      + 'posterior al arranque. Lo construido en ese tramo está dentro del avance acumulado, '
+      + 'pero no hay corte semanal que lo documente.');
+  const sinCaptura = diasSinCapturaDe(historialAvance, msCorte);
+  if (sinCaptura === null)
+    obs.push('El expediente no tiene ningún corte de avance fechado, así que no se puede '
+      + 'decir de cuándo es el último dato de obra de este informe. Las cifras de avance '
+      + 'salen de lo que haya capturado el catálogo, sin fecha que las respalde.');
+  else if (sinCaptura > 7)
+    obs.push(`Han pasado ${sinCaptura} días desde la última captura de avance. Las cifras `
+      + 'de avance físico de este informe son de esa fecha, no del corte: lo que se haya '
+      + 'construido después no está contado.');
+  if (desv.dias === null)
+    obs.push(`No se pudo proyectar si la obra llega a tiempo: ${desv.sub}. El «plazo `
+      + 'transcurrido» de la sección 2 sí se pudo medir, pero ése es calendario y no dice '
+      + 'nada sobre si la obra llega.');
+  // LAS SERIES AUSENTES CON EL MOTIVO QUE LA CURVA YA DECLARÓ, no con uno
+  // redactado aquí. `curvaDeGobierno` distingue «no hay programa capturado» de
+  // «leyendo el programa de obra…», y son cosas distintas: la primera es una
+  // tarea y la segunda es que la lectura todavía venía en camino. Un renglón
+  // escrito aquí con `fuentePrograma !== 'programa'` juntaría las dos y
+  // declararía en un expediente que falta un anexo que sí existe.
+  for (const a of (curva.ausentes || []))
+    obs.push(`La serie «${a.nombre || a.clave}» no está en la gráfica de la sección 4: `
+      + `${a.motivo || 'sin motivo declarado'}.`);
+  if (reventaron.length)
+    obs.push(`${reventaron.length} ${reventaron.length === 1 ? 'revisión' : 'revisiones'} de `
+      + 'la sección 5 no pudieron correr por un defecto del sistema, no por un hueco del '
+      + 'expediente. Están nombradas ahí con el error. Eso es nuestro y no se pide al '
+      + 'contratista.');
+
+  if (obs.length) {
+    y = nota('Cada renglón de abajo es algo que este informe NO pudo afirmar, con el motivo '
+      + 'y con lo que haría falta para afirmarlo. Van impresos y no implícitos en una raya: '
+      + 'un informe que presenta sus huecos como ceros deja un expediente que afirma lo que '
+      + 'nadie midió.', y);
+    y = autoT(['#', 'Observación'],
+      obs.map((o, i) => [String(i+1), o]),
+      [12, CW-12], ML, y,
+      { bodyStyles: { fontSize: FS_SM },
+        columnStyles: { 0: {halign:'center'} } });
+  } else {
+    y = nota('Sin observaciones: todas las cifras de este informe se pudieron medir, el '
+      + 'periodo está acotado, el programa contractual está cargado y la gráfica dibuja '
+      + 'todas sus series.', y);
+  }
+
+  // ═══ 7 · RESPALDO FOTOGRÁFICO ═════════════════════════════════════════════
+  //
+  // EL MISMO REPARTO QUE EL EXPEDIENTE, no uno propio: `seleccionFotografica`
+  // decide quiénes entran —las partidas que acumulan el 80% del importe, de
+  // mayor a menor— y cuántas le tocan a cada una. Si este papel repartiera por
+  // su cuenta, enseñaría fotos distintas de las que el tablero dice que
+  // respaldan la misma obra.
+  const sel = seleccionFotografica({ subs, evidencia, evidenciaCargada,
+                                     tope: TOPE_FOTOS });
+  const cob = sel.cobertura;
+  const fotos = [];
+  for (const p of [...sel.partidas, ...sel.fuera]) {
+    for (const f of p.fotos) fotos.push({
+      sec: p.s?.sec || '—',
+      conc: f.sub || p.s?.sub || '',
+      pct: Number.isFinite(parseFloat(p.s?.a)) ? parseFloat(p.s.a) : null,
+      // LA FECHA DE SUBIDA, Y DE CUÁL DE LAS DOS SE TRATA. `fechaServidor` la
+      // puso el servidor al llegar el archivo; `fechaDeclarada` la dijo el
+      // teléfono y no está verificada —medidas las 656 del legado, 48 están
+      // corridas un día—. En un papel que se archiva la diferencia importa, y
+      // ninguna de las dos es la fecha de ejecución.
+      fecha: f.fechaServidor || f.fechaDeclarada || null,
+      fechaEs: f.fechaServidor ? 'servidor' : (f.fechaDeclarada ? 'declarada' : null),
+      sello: selloDeEvidencia(f).texto,
+      url: f.url || null,
+    });
+  }
+  await precargarFotosDelPDF(fotos);
+
+  const FOTOS_POR_HOJA = 6;
+  const hojas = fotos.length ? Math.ceil(fotos.length / FOTOS_POR_HOJA) : 1;
+  const FW = (CW-8)/3, FH = FW*0.64;
+
+  for (let h = 0; h < hojas; h++) {
+    doc.addPage(); pageFrame();
+    let yf = CY0 + 4;
+    yf = secHead(`7  RESPALDO FOTOGRÁFICO${hojas > 1 ? ` (${h+1} de ${hojas})` : ''}`, yf);
+
+    if (h === 0) {
+      // LA ADVERTENCIA DE LA FECHA VA EN LA PRIMERA HOJA Y COMPLETA. Es la
+      // trampa de este papel: un expediente que archiva una foto bajo «avance
+      // de la semana N» afirma por años algo que nadie capturó.
+      yf = nota('LA FECHA DE CADA FOTO ES LA FECHA EN QUE SE SUBIÓ AL SISTEMA, no la fecha '
+        + 'en que se ejecutó el trabajo ni la fecha en que se tomó la foto. El sistema no lee '
+        + 'la fecha de la cámara. Una foto de un trabajo de agosto subida en septiembre '
+        + 'aparece con fecha de septiembre, y por eso el pie de cada una dice «subida». Este '
+        + 'respaldo acredita QUÉ partida tiene evidencia, no CUÁNDO se ejecutó.', yf);
+
+      // LA COBERTURA, con el mismo criterio y las mismas palabras que el
+      // expediente del contratista: `frasesDeCobertura`. Si no se pudo medir
+      // no se publica ningún porcentaje — un 0% impreso aquí es indistinguible
+      // de una obra sin fotos, y los dos casos se arreglan en sitios opuestos.
+      const fc = frasesDeCobertura(cob);
+      const [bordeC, fondoC] = !cob.medible ? [colorSev('medio'), Q.lt]
+        : cob.pct >= COBERTURA_TECHO ? [colorSev('bajo'), Q.lt]
+        : cob.pct >= COBERTURA_PISO ? [Q.piz, Q.lt]
+        : [colorSev('alto'), Q.lt];
+      const lsC = doc.splitTextToSize(fc.detalle, CW - 8);
+      const hC = 9 + lsC.length * 3.6;
+      sf(fondoC); sd(bordeC); lw(0.4); R(ML, yf, CW, hC, 'FD');
+      sf(bordeC); R(ML, yf, 1.5, hC);
+      st(Q.ng); fs(8.5); fw('bold'); T(fc.titulo, ML + 5, yf + 5.5);
+      st(Q.tx); fs(7); fw('normal');
+      T(lsC, ML + 5, yf + 9.5);
+      yf += hC + 3;
+
+      // LAS PARTIDAS GRANDES SIN UNA SOLA FOTO. En tabla y con importe: tres
+      // obras de producción tienen el corte entero en huecos, y media docena de
+      // páginas de recuadros vacíos se hojean sin leerse. Y es lo que la
+      // dependencia puede pedir, que es para lo que sirve este papel.
+      if (sel.sinEvidencia.length) {
+        st(colorSev('alto')); fs(FS_SEC); fw('bold');
+        T(`Partidas del ${COBERTURA_TECHO}% del contrato SIN evidencia fotográfica: `
+          + `${sel.sinEvidencia.length} de ${sel.partidas.length}`, ML, yf + 4);
+        yf += 7;
+        yf = autoT(['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
+          sel.sinEvidencia.map(p => [
+            p.s?.sec || '—',
+            String(p.s?.sub || '').slice(0, 64),
+            MXN(p.imp),
+            PCT(p.pesoPct),
+            Number.isFinite(parseFloat(p.s?.a)) ? PCT(parseFloat(p.s.a), 0) : 'sin avance',
+          ]),
+          [24, 125, 44, 28, 30], ML, yf,
+          { bodyStyles: { fontSize: FS_SM },
+            columnStyles: { 2:{halign:'right'}, 3:{halign:'right'}, 4:{halign:'right'} } });
+      }
+    }
+
+    const lote = fotos.slice(h * FOTOS_POR_HOJA, (h+1) * FOTOS_POR_HOJA);
+    if (!lote.length) {
+      // SIN FOTOS NO SE DIBUJA LA REJILLA. Seis recuadros grises en un
+      // documento oficial se leen como un defecto de impresión; que no haya
+      // respaldo fotográfico es un hecho y se escribe con palabras.
+      yf = nota('ESTE INFORME NO LLEVA RESPALDO FOTOGRÁFICO porque '
+        + (evidenciaCargada
+            ? 'la obra no tiene fotografías vigentes al corte. No se dibuja una rejilla de '
+              + 'recuadros vacíos: en un documento que se archiva eso se lee como un fallo de '
+              + 'impresión y no como lo que es.'
+            : 'la evidencia de la obra no se pudo leer al generarlo. NO quiere decir que no '
+              + 'haya fotografías: quiere decir que no se sabe. Se arregla volviendo a abrir '
+              + 'la obra y generando el informe otra vez.'), yf);
+      break;
+    }
+
+    for (let fila = 0; fila < 2; fila++) {
+      const rf = lote.slice(fila*3, (fila+1)*3);
+      rf.forEach((foto, col) => {
+        const fx = ML + col*(FW+4), fy = yf;
+        sf(Q.bg); sd(Q.bd); lw(0.2); R(fx, fy, FW, FH, 'FD');
+        if (foto.url) {
+          try {
+            const fmt = /^data:image\/(png|jpeg|jpg)/i.exec(foto.url);
+            doc.addImage(foto.url, fmt && /png/i.test(fmt[1]) ? 'PNG' : 'JPEG',
+                         fx, fy, FW, FH, '', 'FAST');
+          } catch(e) {
+            console.warn('Art. 73: addImage falló para', foto.sec, e?.message || e);
+            st(Q.mu); fs(6); fw('normal');
+            T('La fotografía no se pudo incorporar', fx+FW/2, fy+FH/2, {align:'center'});
+          }
+        } else {
+          // LA FOTO QUE NO BAJÓ NO ES UNA FOTO QUE NO EXISTE. `precargarFotos`
+          // deja la url en null cuando la descarga falla o vence el plazo, y un
+          // «sin foto» ahí acusaría de falta de captura a quien sí capturó.
+          st(Q.mu); fs(7); fw('bold'); T(foto.sec, fx+FW/2, fy+FH/2-3, {align:'center'});
+          fs(6); fw('normal');
+          T('La fotografía existe y no se pudo descargar', fx+FW/2, fy+FH/2+4, {align:'center'});
+        }
+        sf(Q.ng); R(fx, fy+FH, FW, 7, 'F');
+        st(Q.wh); fs(7); fw('bold');
+        T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`, fx+2, fy+FH+4.5);
+        st(Q.mu); fs(5.5); fw('normal');
+        T(foto.sello || '', fx+FW-1, fy+FH+4.5, {align:'right'});
+        fs(6);
+        T(String(foto.conc || '').slice(0,30), fx+2, fy+FH+6.5);
+        // «SUBIDA EN», el rótulo explícito, y de cuál de las dos fechas se
+        // trata. Sin fecha se dice que no la tiene: rellenarla con la de hoy es
+        // inventar un dato de campo en un documento que se archiva.
+        T(foto.fecha
+            ? `subida ${foto.fecha}${foto.fechaEs === 'declarada' ? ' (declarada)' : ''}`
+            : 'sin fecha de subida',
+          fx+FW-1, fy+FH+6.5, {align:'right'});
+      });
+      yf += FH + 7 + 4;
+    }
+  }
+
+  // ── EL CIERRE: DE DÓNDE SALIÓ ESTE PAPEL ─────────────────────────────────
+  //
+  // SIN RENGLONES DE FIRMA. Quién firma un informe del Art. 73 lo define el
+  // expediente de cada dependencia, y el sistema no sabe los cargos: imprimir
+  // «Supervisor» y «Residente» sobre dos rayas sería inventar los puestos de
+  // una organización que no los capturó. Lo que sí se puede afirmar es de
+  // dónde salió el documento, y eso es lo que se imprime.
+  doc.addPage(); pageFrame();
+  y = CY0 + 4;
+  y = secHead('ORIGEN DE ESTE INFORME', y);
+  y = nota(`Generado por cotea el ${sello.corte}, a solicitud de `
+    + `${comoSeImprime(generadoPor)}${organizacion ? ` (${organizacion})` : ''}. `
+    + 'Las cifras de avance físico salen del catálogo de conceptos de la obra y de los '
+    + 'cortes semanales de avance que conserva el expediente; las de avance financiero, '
+    + 'de las estimaciones registradas y su estado de pago. Son las mismas cifras que '
+    + 'muestra el tablero de la obra en el sistema al mismo corte: si este papel y esa '
+    + 'pantalla dijeran cosas distintas, es un defecto de cotea y hay que reportarlo.', y);
+  y = nota('Este informe no lleva renglones de firma porque el sistema no conoce los cargos '
+    + 'de quien lo suscribe. Quién lo firma y ante quién se presenta lo define el '
+    + 'expediente de la dependencia.', y);
+
+  // ── PIE CON TOTAL DE PÁGINAS ──────────────────────────────────────────────
+  const totalPaginas = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPaginas; i++) {
+    doc.setPage(i);
+    sf(Q.bg); R(PW/2-25, PH-6, 50, 4, 'F');
+    st(Q.mu); fs(6); fw('normal');
+    T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
+  }
+
+  doc.save(`Informe_Art73_${String(nombreCorto).replace(/\s+/g,'_')}`
+    + `_${hoy.replace(/\s+/g,'_')}.pdf`);
+
+  } catch(e) {
+    console.error('Error generando el informe del Art. 73:',e);
+    alert(`Error al generar el informe de avance:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
   }
 }
 // ── ERROR BOUNDARY — muestra el error en pantalla en lugar de pantalla blanca ──
@@ -3906,6 +4692,131 @@ const avanceFisicoPonderado = (subs = [], contrato = 0, modoVol = false) => {
   const ejecutado = desgloseEjecutado(subs, modoVol).total;
   return Math.min(100, (ejecutado / contrato) * 100);
 };
+
+// ── LA ECONOMÍA QUE VE LA DEPENDENCIA, UNA SOLA VEZ ────────────────────────
+//
+// Las cinco cifras del encabezado del tablero de la dependencia —contratado,
+// ejecutado, estimado, pagado y por ejercer— estaban tecleadas DENTRO del
+// componente. Mientras el único lector era la pantalla eso costaba poco; con
+// el informe del Art. 73 ya son dos, y dos cuentas del mismo número son un
+// defecto esperando: el día que alguien corrija el filtro de «pagada» en una,
+// el papel que la dependencia archiva y la pantalla desde la que lo pidió
+// dirían dos cifras distintas del mismo peso.
+//
+// `estimado` y `pagado` pueden valer `null`, y eso NO es un cero disfrazado:
+// `corteDeEstimaciones` devuelve `null` cuando la lista todavía no ha llegado
+// —`fsColl` arranca en `[]`—, y un `$0 pagado` sobre una lista que viaja es
+// una afirmación falsa. Quien lo imprima tiene que decir «no se pudo medir».
+//
+// `porEjercer` cuelga de lo PAGADO, así que sin pagado medido tampoco existe:
+// «contratado menos pagado» con pagado desconocido daría el contrato entero
+// como saldo por ejercer, que es exactamente la cifra que un municipio no
+// debería leer por error.
+//
+// Y `ejecutado` Y `avance` TAMBIÉN PUEDEN VALER `null`, por lo mismo. Sin
+// catálogo de conceptos no hay nada que sumar, y `desgloseEjecutado([])` suma
+// cero: la pantalla imprimía «EJECUTADO $0 · 0% del contrato» y «0.0% de
+// avance físico» sobre una obra de la que no se sabe absolutamente nada. Eso no
+// es un cero medido, es un cero disfrazado de medición, y la diferencia importa
+// porque las dos lecturas llevan a decisiones opuestas: «no han arrancado» se
+// discute con el contratista, «no está cargado el catálogo» se arregla
+// cargándolo. En un informe que se archiva por años el disfraz es peor todavía.
+// `avance` pide ADEMÁS contrato, porque es un porcentaje y el contrato es su
+// denominador: sin él `avanceFisicoPonderado` devuelve 0 por no dividir entre
+// cero, y ese 0 tampoco es una medición.
+//
+// El motor de riesgo NO cambia de entrada: `riesgosDeDependencia` sigue
+// pasándole `?? 0`, y la ausencia de catálogo ya la mide allá su propia regla
+// de presencia. Lo que cambia es lo que se IMPRIME.
+const economiaDeDependencia = ({ obra, subs = [], estimaciones = [],
+                                 estCargadas = false } = {}) => {
+  const contrato = parseFloat(obra?.presupuesto) || 0;
+  const modoVol  = obra?.modoAvance === 'volumen';
+  const conCatalogo = (subs?.length || 0) > 0;
+  // Las MISMAS dos funciones que el resto de la app: el dinero ejecutado no se
+  // topa y el avance físico sí.
+  const ejecutado = conCatalogo ? desgloseEjecutado(subs, modoVol).total : null;
+  const avance    = (conCatalogo && contrato > 0)
+    ? avanceFisicoPonderado(subs, contrato, modoVol) : null;
+  // Y el corte de estimaciones es el MISMO que congela el cierre semanal, con
+  // su lectura de «pagada» y su `null`.
+  const corte = corteDeEstimaciones(estimaciones, estCargadas);
+  const estimado = corte ? corte.estimado : null;
+  const pagado   = corte ? corte.pagado   : null;
+  // «Por ejercer» es contra el CONTRATO y contra lo PAGADO, no contra lo
+  // ejecutado: es dinero del municipio que todavía no salió de su cuenta. Se
+  // topa en cero porque un contrato sobreejercido no deja un saldo negativo
+  // por ejercer — deja un convenio modificatorio, que es otra conversación.
+  const porEjercer = pagado === null ? null : Math.max(contrato - pagado, 0);
+  const pct = (v) => (contrato > 0 && v !== null) ? (v / contrato) * 100 : null;
+  return { contrato, modoVol, conCatalogo, ejecutado, avance, estimado, pagado,
+           porEjercer, medido: corte !== null,
+           pctEjec: pct(ejecutado), pctEstim: pct(estimado), pctPag: pct(pagado) };
+};
+
+// Y DICHA una sola vez, como `presentacionEconomiaObra` del otro lado. Las
+// cadenas van aquí y no en cada lector por la misma razón que las cifras: la
+// pantalla y el informe del Art. 73 tienen que contestar lo mismo, y «no se
+// pudo medir» es una respuesta tanto como un número. Un lector que armara su
+// propia cadena podría imprimir «$0» donde el otro imprime una raya.
+const presentacionDependencia = (eco) => {
+  const SIN = 'no se pudo medir';
+  const delContrato = (p) => p === null ? SIN : `${NUM(p, 1)}% del contrato`;
+  // La frase del catálogo ausente se dice UNA vez y la dicen los dos lectores.
+  // Es la que sustituye al cero disfrazado, así que tiene que nombrar el dato
+  // que falta —el catálogo— y no sólo negarse a medir: quien lee el informe no
+  // captura la obra, y «no se pudo medir» sin más no le dice qué pedir.
+  const SIN_CAT = 'el catálogo de conceptos no está cargado';
+  return {
+    contratadoTxt: MXN(eco.contrato),
+    ejecutadoTxt:  eco.ejecutado === null ? '—' : MXN(eco.ejecutado),
+    ejecutadoSub:  eco.ejecutado === null ? SIN_CAT
+      : eco.contrato > 0 ? delContrato(eco.pctEjec) : 'sin contrato capturado',
+    // El avance físico lo imprimen la pantalla y el informe, y cada uno lo
+    // formatea a su manera (`NUM` grande ahí, `PCT` en la tabla aquí). Lo que
+    // NO puede escribirse dos veces es el hueco: si cada lector arma su propia
+    // negativa, una dirá «0.0%» el día que a alguien se le olvide el `null`.
+    avanceTxt:     eco.avance === null ? '—' : `${NUM(eco.avance, 1)}%`,
+    avanceSub:     eco.avance === null
+      ? (eco.conCatalogo ? 'sin contrato capturado no hay porcentaje que sacar' : SIN_CAT)
+      : 'de lo contratado, ponderado por importe',
+    estimadoTxt:   eco.estimado === null ? '—' : MXN(eco.estimado),
+    estimadoSub:   eco.estimado === null
+      ? 'las estimaciones todavía no llegan' : delContrato(eco.pctEstim),
+    pagadoTxt:     eco.pagado === null ? '—' : MXN(eco.pagado),
+    pagadoSub:     eco.pagado === null
+      ? 'las estimaciones todavía no llegan' : delContrato(eco.pctPag),
+    porEjercerTxt: eco.porEjercer === null ? '—' : MXN(eco.porEjercer),
+    porEjercerSub: eco.porEjercer === null
+      ? 'sin lo pagado no hay saldo que restar' : 'contratado menos pagado',
+  };
+};
+
+// ── EL VEREDICTO DE RIESGO QUE VE LA DEPENDENCIA, UNA SOLA VEZ ─────────────
+//
+// NO ES `evaluarRiesgos` CON OTROS ARGUMENTOS: es QUÉ CONTEXTO se le pasa, y
+// el contexto decide qué regla puede medir. Una regla a la que le falta un
+// dato no se calla: cae en `noEvaluables`. O sea que un contexto más pobre
+// convierte mediciones en huecos, y un contexto más rico hace disparar reglas
+// que del otro lado callan. Dos armados del mismo contexto en dos sitios dan
+// dos veredictos distintos de la misma obra el mismo día, y aquí los dos
+// lectores son la MISMA persona: el supervisor que ve el semáforo en pantalla
+// y después imprime el informe que archiva.
+//
+// `kpis` lleva SÓLO `af` y `me`. Sin gasto a propósito, no por olvido: las
+// reglas que lo necesitan están fuera por `tipo`, y pasarles un gasto en cero
+// haría que las de brecha dispararan solas contra el municipio. El programa SÍ
+// va —el calendario lo firmaron las dos partes y no es economía del
+// contratista—, y sin él `avc_004` mide el atraso contra una recta.
+const riesgosDeDependencia = ({ obra, subs = [], estimaciones = [],
+                                historialAvance = [], programa = null,
+                                eco } = {}) =>
+  evaluarRiesgos({
+    tipo: 'dependencia',
+    obra, subs, estimaciones, historialAvance,
+    kpis: { af: eco?.avance ?? 0, me: eco?.ejecutado ?? 0 },
+    programa,
+  });
 
 // Contrato de un SUBCONTRATO = lo contratado con el proveedor. El catálogo de
 // conceptos es la referencia para cobrar y puede no cuadrar con él (hay un
@@ -17052,30 +17963,17 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 // no existen del lado de quien contrata.
 // ════════════════════════════════════════════════════════════════════════════
 function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas = false, historialAvance = [], recorteHistorial = null, notasSemana = {}, onNavTab}){
-  const contrato = parseFloat(obra?.presupuesto) || 0;
-  const modoVol  = obra?.modoAvance === "volumen";
-
-  // Mismas dos funciones que usa el resto de la app: el dinero ejecutado no se
-  // topa y el avance físico sí (P1). Tener aquí una tercera fórmula de
-  // "ejecutado" es exactamente el pendiente #8.
-  const ejecutado = desgloseEjecutado(subs, modoVol).total;
-  const avance    = avanceFisicoPonderado(subs, contrato, modoVol);
+  // LAS CINCO CIFRAS DEL CONTRATO, PEDIDAS Y NO TECLEADAS. Estaban escritas
+  // aquí dentro; ahora salen de `economiaDeDependencia`, que es la misma
+  // función que alimenta el informe del Art. 73. Con la cuenta escrita en dos
+  // sitios, el papel que la dependencia archiva y la pantalla desde la que lo
+  // pidió podrían decir dos cifras del mismo peso.
+  const eco = economiaDeDependencia({ obra, subs, estimaciones, estCargadas });
+  const pres = presentacionDependencia(eco);
+  const { contrato, modoVol, ejecutado, avance, pctEjec, pctPag } = eco;
   // El anexo, con el mismo hook que los otros dos tableros. Ver la nota de
   // `useProgramaDeObra` sobre por qué `undefined` no es `null`.
   const programaObra = useProgramaDeObra(obra?.id);
-
-  // Normalizador de estatus igual al de `Dashboard`: los estatus se capturaron
-  // a mano durante meses y conviven "Pagada", "pagada" y "PAGADA".
-  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const estimado = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
-  const pagado   = estimaciones.filter(e => _ne(e.estatus) === 'pagada')
-                               .reduce((t,e) => t + (e.monto||0), 0);
-
-  // "Por ejercer" es contra el CONTRATO y contra lo PAGADO, no contra lo
-  // ejecutado: es dinero del municipio que todavía no salió de su cuenta. Se
-  // topa en cero porque un contrato sobreejercido no deja un saldo negativo
-  // por ejercer — deja un convenio modificatorio, que es otra conversación.
-  const porEjercer = Math.max(contrato - pagado, 0);
 
   // Última captura: la más reciente del historial semanal. Si no hay historial
   // la cifra no se puede calcular, y entonces se dice (P2) — no se pone "hace
@@ -17134,18 +18032,16 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
   // seis reglas sin dato contra tres o cuatro detectadas. El municipio tiene
   // MÁS derecho a ver el hueco, no menos: no captura él los datos que faltan,
   // así que un «no se pudo medir» es lo único que le dice qué pedir.
-  const veredictoRiesgos = evaluarRiesgos({
-    tipo: 'dependencia',
+  // El ARMADO del contexto vive en `riesgosDeDependencia`, no aquí: el informe
+  // del Art. 73 pregunta lo mismo, y el contexto es lo que decide si una regla
+  // mide o se queda sin dato. Dos armados daban dos veredictos de la misma obra.
+  const veredictoRiesgos = riesgosDeDependencia({
     obra, subs, estimaciones, historialAvance,
-    kpis: { af: avance, me: ejecutado },
-    programa: programaObra,
+    programa: programaObra, eco,
   });
   const riesgos = veredictoRiesgos.detectados;
   const riesgosTop = riesgos.filter(r => r.severidad === 'critico' || r.severidad === 'alto');
 
-  const pctEjec  = contrato > 0 ? (ejecutado / contrato) * 100 : null;
-  const pctEstim = contrato > 0 ? (estimado  / contrato) * 100 : null;
-  const pctPag   = contrato > 0 ? (pagado    / contrato) * 100 : null;
   // Las plantillas de riesgo traen destinos de constructora. `destinoNav` dice
   // cuál tiene equivalente aquí; los que no, no se pueden picar — en vez de
   // picarse y no pasar nada, o peor, llevar a una pestaña que el menú no
@@ -17160,35 +18056,49 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
     <Card accent={C.caliza}>
       <Tit>El contrato</Tit>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
-        <Kpi label="Contratado" value={MXN(contrato)}
+        <Kpi label="Contratado" value={pres.contratadoTxt}
           sub="monto del contrato" color={C.caliza} size={12}/>
-        <Kpi label="Ejecutado" value={MXN(ejecutado)}
-          sub={pctEjec != null ? `${NUM(pctEjec,1)}% del contrato` : "sin contrato capturado"}
-          color={C.blueDk} size={12}/>
-        <Kpi label="Estimado" value={MXN(estimado)}
-          sub={pctEstim != null ? `${NUM(pctEstim,1)}% del contrato` : "—"}
-          color={C.purpleDk} size={12}/>
-        <Kpi label="Pagado" value={MXN(pagado)}
-          sub={pctPag != null ? `${NUM(pctPag,1)}% del contrato` : "—"}
-          color={C.greenDk} size={12}/>
-        <Kpi label="Por ejercer" value={MXN(porEjercer)}
-          sub="contratado menos pagado" color={C.textPri} size={12}/>
+        <Kpi label="Ejecutado" value={pres.ejecutadoTxt}
+          sub={pres.ejecutadoSub} color={C.blueDk} size={12}/>
+        <Kpi label="Estimado" value={pres.estimadoTxt}
+          sub={pres.estimadoSub} color={C.purpleDk} size={12}/>
+        <Kpi label="Pagado" value={pres.pagadoTxt}
+          sub={pres.pagadoSub} color={C.greenDk} size={12}/>
+        <Kpi label="Por ejercer" value={pres.porEjercerTxt}
+          sub={pres.porEjercerSub} color={C.textPri} size={12}/>
       </div>
       {/* Ejecutado y pagado sobre la misma escala: la distancia entre las dos
           barras es lo que la obra ya hizo y todavía no le pagan. */}
       {contrato > 0 && <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:7}}>
-        <div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
-            <span>Ejecutado</span><span>{NUM(pctEjec,1)}%</span>
-          </div>
-          <Bar pct={pctEjec} color={C.blueDk}/>
-        </div>
-        <div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
-            <span>Pagado</span><span>{NUM(pctPag,1)}%</span>
-          </div>
-          <Bar pct={pctPag} color={C.greenDk}/>
-        </div>
+        {/* Misma razón que la barra de abajo: sin catálogo cargado `pctEjec` es
+            `null`, y una barra en cero diría «no han ejecutado nada» sobre una
+            obra de la que no se sabe nada. */}
+        {pctEjec === null
+          ? <div style={{fontSize:9,color:C.textMut}}>
+              Ejecutado: {pres.ejecutadoSub}, así que no se dibuja la barra — una
+              barra en cero se leería como «no han ejecutado nada».
+            </div>
+          : <div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+                <span>Ejecutado</span><span>{NUM(pctEjec,1)}%</span>
+              </div>
+              <Bar pct={pctEjec} color={C.blueDk}/>
+            </div>}
+        {/* La barra de lo pagado sólo se dibuja si se pudo medir. Una barra en
+            cero sobre una lista de estimaciones que todavía viaja dice «no le
+            han pagado nada», y la distancia contra la barra de arriba se
+            leería como el adeudo entero del contrato. */}
+        {pctPag === null
+          ? <div style={{fontSize:9,color:C.textMut}}>
+              Pagado: {pres.pagadoSub}, así que no se dibuja la barra — una barra
+              en cero se leería como «no le han pagado nada».
+            </div>
+          : <div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:C.textMut,marginBottom:3}}>
+                <span>Pagado</span><span>{NUM(pctPag,1)}%</span>
+              </div>
+              <Bar pct={pctPag} color={C.greenDk}/>
+            </div>}
       </div>}
     </Card>
 
@@ -17199,15 +18109,18 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
           <div>
             <Tit>La obra</Tit>
             <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-              Avance ponderado por el importe contratado de cada partida
+              {pres.avanceSub}
             </div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:24,fontWeight:700,color:C.blueDk,lineHeight:1}}>{NUM(avance,1)}%</div>
+            <div style={{fontSize:24,fontWeight:700,lineHeight:1,
+              color:avance === null ? C.textMut : C.blueDk}}>{pres.avanceTxt}</div>
             <div style={{fontSize:9,color:C.textMut,marginTop:2}}>de avance físico</div>
           </div>
         </div>
-        <Bar pct={avance} color={C.blueDk}/>
+        {/* La barra tampoco: la cifra grande ya dice «—», y una barra vacía
+            debajo volvería a afirmar el cero que la raya acaba de negar. */}
+        {avance !== null && <Bar pct={avance} color={C.blueDk}/>}
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginTop:14}}>
           <Kpi label="Partidas" value={String(subs.length)}
             sub={`${subs.filter(s=>(s.a||0)>=100).length} al 100%`} color={C.textPri} size={12}/>

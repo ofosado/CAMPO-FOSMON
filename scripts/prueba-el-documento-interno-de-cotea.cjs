@@ -529,11 +529,20 @@ if (process.argv.includes('--contraprueba')) {
   const src = fs.readFileSync(archivo, 'utf8');
   const MUTANTES = [
     // ── A · es de cotea, y dice que es interno en cada hoja ────────────────
+    // Las dos formas de perder el sello, y son distintas desde que el marco
+    // vive en `andamioDeCotea`: que el ANDAMIO deje de pintar la banda, o que
+    // ESTE PAPEL deje de pedirla. La segunda es la que la extracción hizo
+    // posible —el andamio queda intacto y correcto, y la hoja sale limpia—, y
+    // es justo la que no existía cuando el marco era un cierre de aquí.
     { nombre: 'la banda del sello sale del marco y sobrevive sólo en la portada',
       hacer: () => src.replace(
-        "    sf(Q.nar); R(0,HDR,PW,4);\n    st(Q.wh); fs(6); fw('bold');\n"
-        + "    T(SELLO_INTERNO, PW/2, HDR+2.8, {align:'center'});",
-        '    sf(Q.nar); R(0,HDR,PW,4);') },
+        "      sf(Q.nar); R(0,HDR,PW,4);\n      st(Q.wh); fs(6); fw('bold');\n"
+        + "      T(banda, PW/2, HDR+2.8, {align:'center'});",
+        '      sf(Q.nar); R(0,HDR,PW,4);') },
+    { nombre: 'el papel interno deja de pedirle la banda al andamio',
+      hacer: () => src.replace(
+        "    rotulo: 'Documento interno', banda: SELLO_INTERNO,",
+        "    rotulo: 'Documento interno', banda: null,") },
     { nombre: 'la organización se rellena con una constructora teclada cuando no viene',
       hacer: () => src.replace(
         "    ['Organización:', comoSeImprime(organizacion)],",
@@ -548,10 +557,10 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         '  const sello = selloDeTiempo(instante);\n  const hoy = sello.fecha;\n'
         + "  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');\n\n"
-        + '  // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──',
+        + '  // ── EL ANDAMIO, CON EL SELLO DE INTERNO EN LA BANDA ──',
         '  const sello = selloDeTiempo(null);\n  const hoy = sello.fecha;\n'
         + "  const nombreCorto = resolverNombreCortoObra(obra, gpData) || (obra?.nombre || 'Obra');\n\n"
-        + '  // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──') },
+        + '  // ── EL ANDAMIO, CON EL SELLO DE INTERNO EN LA BANDA ──') },
 
     // ── C · el margen semana a semana ──────────────────────────────────────
     { nombre: 'la ventana del papel se despega de la del tablero',
