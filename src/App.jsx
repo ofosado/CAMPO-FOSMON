@@ -20240,7 +20240,15 @@ function parsearPresupuesto(data, importeContrato) {
       if (pu > 0 && importe > 0) {
         const cantCalc = importe / pu;
         if (cant === 0 || Math.abs(cant * pu - importe) / importe > 0.05) {
-          cant = Math.round(cantCalc * 100) / 100;
+          // La precisión la manda el PRECIO, no un 2 fijo. `decimalesPorPU` es
+          // la misma regla que ya gobierna la pantalla, y lo que garantiza es
+          // que el último dígito no valga más de un peso. Con dos decimales
+          // fijos, en un PU de $1,265,249 el medio centésimo redondeado valía
+          // $6,326 — y encima deshacía la igualdad que esta deducción acababa
+          // de restaurar: se deduce `importe / pu` PRECISAMENTE porque
+          // `cant × pu` no cuadraba con el importe del catálogo.
+          const dec = decimalesPorPU(pu);
+          cant = Math.round(cantCalc * 10 ** dec) / 10 ** dec;
           cantDeducida = true;
           cantidadesDeducidas++;
         }
@@ -21101,7 +21109,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                         fontSize:10,whiteSpace:'nowrap'}}>{c.unidad||'—'}</td>
                       <td style={{padding:'5px 8px',textAlign:'right',color:c.cantDeducida?C.yellowDk:C.textSec}}
                         title={c.cantDeducida?'Cantidad calculada como importe/PU porque el Excel no la traía':''}>
-                        {c.cant>0?c.cant.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'}
+                        {c.cant>0?fmtCant(c.cant, c.pu):'—'}
                         {c.cantDeducida && <span style={{fontSize:8,marginLeft:3,opacity:0.7}}>(calc)</span>}
                       </td>
                       <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>
@@ -21205,7 +21213,7 @@ function Presupuesto({obra, setObra, rol, setSubsGlobal}) {
                         <td style={{padding:'5px 8px',color:C.textSec,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.desc}</td>
                         <td style={{padding:'5px 8px',textAlign:'right',color:C.textMut,fontSize:10}}>{c.unidad||'—'}</td>
                         <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>
-                          {c.cant>0?c.cant.toLocaleString('es-MX',{maximumFractionDigits:2}):'—'}
+                          {c.cant>0?fmtCant(c.cant, c.pu):'—'}
                         </td>
                         <td style={{padding:'5px 8px',textAlign:'right',color:C.textSec}}>{c.pu>0?MXN(c.pu):'—'}</td>
                         <td style={{padding:'5px 8px',textAlign:'right',color:C.caliza,fontWeight:600}}>{MXN(c.importe)}</td>
@@ -24146,7 +24154,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                   ? <>Cat: {cant>0?fmtCant(cant, c.pu):'—'} {c.unidad||''} · PU {MXN(c.pu||0)} · Imp {MXN(c.importe||0)} · Ejec {MXN(impEjec)}
                       {impExcedente > 0 && <span style={{color:C.yellowDk,fontWeight:700}}>
                         {` · sobre catálogo ${MXN(impExcedente)}`}</span>}</>
-                  : <>{MXN(c.importe||0)} · {c.unidad||"—"} · {NUM(cant,2)} × {MXN(c.pu||0)}</>
+                  : <>{MXN(c.importe||0)} · {c.unidad||"—"} · {fmtCant(cant, c.pu)} × {MXN(c.pu||0)}</>
                 }
               </div>
             </div>

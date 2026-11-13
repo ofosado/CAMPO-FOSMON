@@ -39,6 +39,8 @@ const noArranco = require('./no-arranco.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
 
+const { fuenteDe } = require('./extraer-de-app.cjs');
+
 const ARCH_APP = process.argv[2]
   ? path.resolve(process.argv[2]) : path.join(raiz, 'src/App.jsx');
 
@@ -54,35 +56,21 @@ const check = (cond, m) => {
 };
 
 // ── Extracción del código real ─────────────────────────────────────────
-const NOMBRES = ['decimalesPorPU', 'decimalesDe', 'fmtCant'];
-const src = fs.readFileSync(ARCH_APP, 'utf8');
-const ast = parse(src, OPTS);
-const trozos = [];
-const vistos = new Set();
-traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    const d = p.node.declarations[0];
-    if (d?.id?.type === 'Identifier' && NOMBRES.includes(d.id.name)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(d.id.name);
-    }
-  },
-  FunctionDeclaration(p) {
-    const n = p.node.id?.name;
-    if (p.parent.type === 'Program' && NOMBRES.includes(n)) {
-      trozos.push(src.slice(p.node.start, p.node.end));
-      vistos.add(n);
-    }
-  },
-});
+// Por `fuenteDe` y no con un `traverse` propio: aquí había una lista de tres
+// nombres tecleada a mano, y al entrar `parsearPresupuesto` —21 KB de cierre—
+// enumerar sus dependencias habría sido la segunda copia del grafo contra la
+// que existe ese módulo (#139).
+const NOMBRES = ['decimalesPorPU', 'decimalesDe', 'fmtCant', 'parsearPresupuesto'];
+const { cuerpo, faltan, presentes } =
+  fuenteDe(ARCH_APP, NOMBRES, { tolerante: true });
 // Un nombre ausente no revienta: se expone como `undefined` y la aserción que
 // lo use falla, que es lo correcto contra la versión vieja.
-const app = new Function(`${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`)();
-const { fmtCant, decimalesPorPU } = app;
+const app = new Function(
+  `${cuerpo}\n;return {${presentes.join(',')}};`)();
+const { fmtCant, decimalesPorPU, parsearPresupuesto } = app;
 
 console.log(`\nArchivo:   ${path.relative(raiz, ARCH_APP)}`);
-console.log(`Extraídos: ${[...vistos].join(', ') || '(ninguno)'}\n`);
+console.log(`Extraídos: ${NOMBRES.filter(n => !faltan.includes(n)).join(', ') || '(ninguno)'}\n`);
 
 // ── 1. El caso real de producción ──────────────────────────────────────
 // PU bajo ⇒ piso 2. Antes salía 994.5 y se perdían $0.03 a la vista.
@@ -134,10 +122,68 @@ check(fmtCant(1e-7, 85.50) === '0',
 check(fmtCant('994.4961', 85.50) === '994.4961',
   `una cantidad guardada como texto también (dio "${fmtCant('994.4961', 85.50)}")`);
 
+// ── 6. LA ESCRITURA: la cantidad deducida al importar el Excel ─────────
+//
+// Esto NO es pantalla, y es la mitad grave del #9. Cuando el Excel no trae la
+// cantidad —o la que trae no cuadra con su importe por más del 5%—,
+// `parsearPresupuesto` la DEDUCE como `importe / pu` y la GUARDA. Se deducía a
+// dos decimales fijos, y con eso deshacía la igualdad que acababa de restaurar:
+// se deduce precisamente porque `cant × pu` no daba el importe.
+//
+// La propiedad que se exige es la que `decimalesPorPU` promete: el último
+// dígito no vale más de un peso, así que la cantidad guardada tiene que
+// RECUPERAR su importe con error menor a $1. Con dos decimales fijos, en un PU
+// de siete cifras el error eran $5,778 en una sola partida.
+//
+// Se barre un abanico de precios en vez de afirmar un caso: el defecto no está
+// en un número, está en que la precisión no depende del precio.
+console.log('\n6. Al importar el catálogo, la cantidad deducida recupera su importe');
+if (typeof parsearPresupuesto !== 'function') {
+  check(false, 'se pudo extraer `parsearPresupuesto` para ejercitar la deducción');
+} else {
+  // PU de 2, 4, 5 y 7 cifras. La cantidad real lleva seis decimales, así que
+  // ningún precio la captura con dos.
+  const CANT_REAL = 1.234567;
+  const PRECIOS = [85.50, 1000, 12500, 1265249];
+  const filas = [['Clave', 'Descripción', 'Unidad', 'Cantidad', 'P.U.', 'Importe']];
+  PRECIOS.forEach((pu, i) => {
+    // El importe es el que trae el Excel: redondeado a centavos, como todo
+    // importe de un presupuesto real.
+    const importe = Math.round(CANT_REAL * pu * 100) / 100;
+    // Cantidad en blanco: es el caso que dispara la deducción.
+    filas.push([`A-0${i + 1}`, `Partida de prueba ${i + 1}`, 'M3', '', pu, importe]);
+  });
+  const contrato = filas.slice(1).reduce((t, f) => t + f[5], 0);
+  const r = parsearPresupuesto(filas, contrato);
+  const conceptos = r?.conceptos || [];
+  check(conceptos.length === PRECIOS.length,
+    `el Excel de prueba entra entero: ${conceptos.length} de ${PRECIOS.length} partidas`);
+  check(conceptos.every(c => c.cantDeducida),
+    'las cuatro cantidades se deducen (es el camino que se está midiendo)');
+  for (const c of conceptos) {
+    const recuperado = c.cant * c.pu;
+    const error = Math.abs(recuperado - c.importe);
+    check(error < 1,
+      `PU ${c.pu}: cant ${c.cant} × PU recupera el importe con $${error.toFixed(2)} ` +
+      `de error (importe $${c.importe})`);
+  }
+  // Y la mitad que un `toFixed(6)` para todos también pasaría: la cantidad no
+  // se guarda con más resolución de la que su precio justifica, porque eso
+  // escribe el ruido del double en Firestore.
+  const conPrecioAlto = conceptos.find(c => c.pu === 1265249);
+  check(conPrecioAlto && conPrecioAlto.cant === CANT_REAL,
+    `con PU de siete cifras se guardan los seis decimales reales ` +
+    `(guardó ${conPrecioAlto ? conPrecioAlto.cant : '—'}, se capturó ${CANT_REAL})`);
+  const conPrecioBajo = conceptos.find(c => c.pu === 85.50);
+  check(conPrecioBajo && String(conPrecioBajo.cant).replace(/^[^.]*\.?/, '').length <= 2,
+    `con PU de dos cifras no se guarda más precisión de la que vale ` +
+    `(guardó ${conPrecioBajo ? conPrecioBajo.cant : '—'})`);
+}
+
 // ── Resultado ──────────────────────────────────────────────────────────
 console.log('');
 if (fallos.length === 0) {
-  console.log('VERDE — la pantalla no esconde precisión guardada.\n');
+  console.log('VERDE — la pantalla no esconde precisión guardada, y la cantidad deducida recupera su importe.\n');
   process.exit(0);
 } else {
   console.log(`ROJO — ${fallos.length} comprobación(es) fallaron:`);
