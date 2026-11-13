@@ -7941,13 +7941,17 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   // los años cerrados vienen en `años`. El acumulado se arma sumando los
   // deltas sobre esa base.
   const gpAcumPorSem = {};
+  // Lo gastado en los años ya CERRADOS. Es un total, y no trae reparto por
+  // semana: hace falta fuera del bloque porque es la única cifra afirmable
+  // sobre cualquier semana anterior a la primera que el Sheet detalla.
+  let gpBase = 0;
+  const añoDelSheet = new Date().getFullYear();
   if (obraGP?.semanas) {
-    const añoActual = new Date().getFullYear();
-    let base = 0;
+    const añoActual = añoDelSheet;
     if (obraGP.años) {
       Object.entries(obraGP.años).forEach(([kAño, v]) => {
         const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
-        if (!isNaN(y) && y < añoActual) base += (parseFloat(v) || 0);
+        if (!isNaN(y) && y < añoActual) gpBase += (parseFloat(v) || 0);
       });
     }
     const deltas = Object.entries(obraGP.semanas)
@@ -7957,7 +7961,7 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
       })
       .filter(Boolean)
       .sort((a, b) => a.sem - b.sem);
-    let acum = base;
+    let acum = gpBase;
     deltas.forEach(({ sem, delta }) => {
       acum += delta;
       gpAcumPorSem[claveSemanaISO(sem, añoActual)] = acum;
@@ -7979,10 +7983,34 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
     parseFloat(m.imp) || 0));
 
   const gpKeys = Object.keys(gpAcumPorSem).sort();
+  // ── LO QUE SE PUEDE AFIRMAR ANTES DE LA PRIMERA SEMANA DETALLADA ──────────
+  //
+  // El Sheet detalla por semana SÓLO el año en curso; de los años cerrados
+  // publica un total. Hasta el 2026-11-12 esta cuenta devolvía 0 cuando no
+  // había ninguna semana de GP hasta la pedida, y eso se dibujaba como gasto.
+  //
+  // Nueve meses al año no se nota, porque la ventana de doce semanas cae
+  // entera dentro del año en curso. De enero a marzo sí: medido con el reloj
+  // puesto en el 2027-02-15 sobre una obra con $30 M en el año cerrado, la
+  // curva dibujaba $0 en las cinco semanas de diciembre y SALTABA a $30.4 M en
+  // la primera de enero. Las dos mitades mienten: el $0 dice «no se gastó
+  // nada» de un trimestre que sí se gastó, y el salto dice que $30 M se
+  // gastaron en una semana. Y el margen —ejecutado menos gasto— publicaba el
+  // ejecutado entero como ganancia justo en esas semanas.
+  //
+  // Lo afirmable:
+  //   · semana del año en curso sin delta todavía → lo de los años cerrados
+  //   · semana de un año ya cerrado → NO SE SABE, porque de ese año sólo hay
+  //     un total y repartirlo sería inventar la cifra. Salvo que no haya nada
+  //     que repartir: sin años cerrados, antes del primer gasto hay cero, y
+  //     ése sí está medido.
+  const PRIMERA_DEL_AÑO_EN_CURSO = claveSemanaISO(1, añoDelSheet);
   const ultimoGPHasta = (semKey) => {
-    let ult = 0;
+    let ult = null;
     for (const k of gpKeys) { if (k <= semKey) ult = gpAcumPorSem[k]; else break; }
-    return ult;
+    if (ult !== null) return ult;
+    if (semKey >= PRIMERA_DEL_AÑO_EN_CURSO) return gpBase;
+    return gpBase > 0 ? null : 0;
   };
 
   const porSem = {};
@@ -7995,7 +8023,11 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   }
   semanas.forEach(s => {
     acumManual += manualIncrem[s.key] || 0;
-    porSem[s.key] = ultimoGPHasta(s.key) + acumManual;
+    const gp = ultimoGPHasta(s.key);
+    // Con el GP de esa semana sin saber, el acumulado de la semana tampoco se
+    // sabe: publicar sólo los gastos manuales es la cifra incompleta con cara
+    // de medida, que es el mismo error que el `null` de más abajo vino a quitar.
+    porSem[s.key] = gp === null ? null : gp + acumManual;
   });
 
   // El total vivo: el mismo que publica el KPI del Dashboard.
@@ -14662,6 +14694,12 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
     if (i === 0) return null;
     if (!g.gastoMedido) return null;
     if (i === semanas.length - 1 && g.gastoSinFechar) return null;
+    // Y «—» también donde el acumulado no se conoce: las semanas de un año ya
+    // cerrado, de las que GP publica el total y no el reparto. Sin los dos
+    // extremos no hay resta que publicar, y un «$0» ahí se lee como que no se
+    // gastó nada esa semana.
+    if (g.gastoPorSem[s.key] === null ||
+        g.gastoPorSem[semanas[i - 1].key] === null) return null;
     const act = g.gastoPorSem[s.key] || gastoRef;
     const prev = g.gastoPorSem[semanas[i - 1].key] || gastoRef;
     if (act >= prev) gastoRef = act;
