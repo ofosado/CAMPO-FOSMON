@@ -2795,12 +2795,21 @@ const pctPartidaSinTopar = (s, modoVol = false) => {
 // El ejecutado de antes y el de después salen de `desgloseEjecutado`, la misma
 // función del tablero y del correo. La confirmación no puede decir una cifra
 // distinta de la que el usuario va a ver mañana.
+//
+// Sirve a los dos catálogos que hay, porque el modo existe en los dos. La
+// cantidad de catálogo se escribe `cant` en las partidas de obra y `cantidad`
+// en los conceptos de subcontrato —el importador traduce una en otra—, y sus
+// vecinas `importeEjecutadoPartida` e `importeCatalogoPartida` ya aceptan las
+// dos formas. Leer sólo `cant` haría que todo concepto saliera sin volumen y
+// que un subcontrato con sus volúmenes completos quedara bloqueado para
+// siempre: un bloqueo falso es tan dañino como no tener bloqueo, porque
+// enseña a desconfiar del que sí es verdadero.
 const diagnosticoCambioModo = (subs, modoActual = "porcentaje", modoDestino = "porcentaje") => {
   const lista = Array.isArray(subs) ? subs : [];
   const volAntes = modoActual === "volumen";
   const volDespues = modoDestino === "volumen";
   const sinVolumen = lista.filter(s =>
-    !(parseFloat(s?.cant) > 0) || !(parseFloat(s?.pu) > 0)).length;
+    !(parseFloat(s?.cant ?? s?.cantidad) > 0) || !(parseFloat(s?.pu) > 0)).length;
   // Partidas cuyo importe ejecutado se mueve con el cambio. Medio centavo de
   // tolerancia: por debajo de eso es ruido del double, no un cambio real.
   const cambian = lista.filter(s =>
@@ -23475,6 +23484,136 @@ function PlazosCliente({obra}){
   </div>;
 }
 
+// ── Las dos pantallas del cambio de modo (#21) ──────────────────────────────
+//
+// Viven aquí, en UNA sola, porque el modo de captura existe en dos sitios —la
+// obra y cada subcontrato— y las dos tienen que decir lo mismo: en cuánto
+// queda el ejecutado, cuántos renglones se mueven, y que queda en la bitácora.
+// Copiadas, la segunda nace vieja: la frase que explica por qué el ejecutado
+// baja al volver a porcentaje se corrige en una y la otra sigue mintiendo.
+//
+// Los sustantivos viajan como dato porque es lo único que de verdad cambia:
+// la obra tiene partidas y el subcontrato conceptos. El resto —las cifras, el
+// umbral de medio centavo, el orden de los botones— es el mismo cálculo.
+// «esas partidas» / «esos conceptos». El género del demostrativo es la única
+// concordancia que los sustantivos sueltos no resuelven solos.
+const esos = sujeto => sujeto.renglon === "partida" ? "esas partidas" : "esos conceptos";
+const SUJETO_OBRA = {
+  titulo: "Esta obra no puede pasar a modo volumen",
+  renglones: "partidas", renglon: "partida",
+  sinCatalogo: "No se leyó ninguna partida del catálogo de esta obra. Sin " +
+    "catálogo no hay contra qué medir volumen. Carga el catálogo y vuelve a intentarlo.",
+  recarga: "el catálogo de la obra",
+};
+const SUJETO_SUBCONTRATO = {
+  titulo: "Este subcontrato no puede pasar a modo volumen",
+  renglones: "conceptos", renglon: "concepto",
+  sinCatalogo: "No se leyó ningún concepto del catálogo de este subcontrato. " +
+    "Sin catálogo no hay contra qué medir volumen. Carga el catálogo y vuelve a intentarlo.",
+  recarga: "el catálogo del subcontrato",
+};
+
+function DialogoCambioModo({ sujeto, bloqueo, cambio, guardando,
+                             onCerrarBloqueo, onCancelar, onConfirmar }) {
+  return <>
+    {/* #21 guarda 1 — bloqueo duro: a volumen no se pasa sin volúmenes */}
+    {bloqueo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+        border:`0.5px solid ${alfa(C.red, 26.67)}`}}>
+        <div style={{fontSize:14,fontWeight:700,color:C.redDk,marginBottom:10}}>
+          {sujeto.titulo}
+        </div>
+        <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:12}}>
+          {bloqueo.partidas === 0 ? sujeto.sinCatalogo : (
+            <><b>{bloqueo.sinVolumen} de {bloqueo.partidas} {sujeto.renglones}</b> no
+            tienen cantidad ni precio unitario. En modo volumen el avance sale
+            de <i>cantidad ejecutada ÷ cantidad de catálogo</i>: con la cantidad
+            en cero {esos(sujeto)} aparecerían en 0% y el avance que ya está
+            capturado se perdería en cuanto alguien teclee encima.</>
+          )}
+        </div>
+        {bloqueo.partidas > 0 && (
+          <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:14}}>
+            <div style={{fontSize:10,color:C.textMut,fontWeight:600,marginBottom:6,
+              textTransform:"uppercase",letterSpacing:"0.04em"}}>Qué hace falta</div>
+            <div style={{fontSize:11,color:C.textSec,lineHeight:1.6}}>
+              Recargar {sujeto.recarga} incluyendo <b>cantidad</b>,{" "}
+              <b>precio unitario</b> y <b>unidad</b> en cada {sujeto.renglon}. El
+              importador los soporta y conserva el avance capturado
+              emparejando por clave, así que la recarga no borra nada. Con los
+              volúmenes cargados, este bloqueo desaparece solo.
+            </div>
+          </div>
+        )}
+        <SecBtn onClick={onCerrarBloqueo} style={{width:"100%"}}>Entendido</SecBtn>
+      </div>
+    </div>}
+
+    {/* #21 guarda 2 — confirmación explícita, con el ejecutado antes y después */}
+    {cambio && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
+        border:`0.5px solid ${alfa(C.yellow, 26.67)}`}}>
+        <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:4}}>
+          ¿Cambiar el modo de captura?
+        </div>
+        <div style={{fontSize:12,color:C.textSec,marginBottom:12}}>
+          De <b>{cambio.actual === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>{" "}
+          a <b>{cambio.destino === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>
+        </div>
+
+        <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+            color:C.textSec,marginBottom:5}}>
+            <span>Ejecutado hoy</span><b>{MXN(cambio.ejecutadoAntes)}</b>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+            color:C.textSec,marginBottom:5}}>
+            <span>Ejecutado después del cambio</span>
+            <b style={{color: Math.abs(cambio.delta) < 0.005 ? C.textPri
+                        : cambio.delta < 0 ? C.redDk : C.textPri}}>
+              {MXN(cambio.ejecutadoDespues)}
+            </b>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
+            color:C.textMut,paddingTop:5,borderTop:`0.5px solid ${C.border}`}}>
+            <span>Diferencia</span>
+            <b style={{color: Math.abs(cambio.delta) < 0.005 ? C.textMut : C.redDk}}>
+              {MXND(cambio.delta)}
+            </b>
+          </div>
+        </div>
+
+        <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
+          {cambio.cambian === 0
+            ? <>Ninguno de los {cambio.partidas} {sujeto.renglones} cambia de importe
+                con este cambio.</>
+            : <><b>{cambio.cambian} de {cambio.partidas} {sujeto.renglones}</b> cambian
+                de importe ejecutado.</>}
+          {cambio.destino === "porcentaje" && cambio.delta < -0.005 && (
+            <> El ejecutado baja porque en porcentaje el dinero sale
+              de <i>% capturado × importe de catálogo</i> y deja de contar el
+              volumen capturado por encima del catálogo.</>
+          )}
+          {" "}El cambio se guarda de inmediato y queda en la bitácora con tu
+          nombre y la hora.
+        </div>
+
+        <div style={{display:"flex",gap:8}}>
+          <SecBtn onClick={onCancelar} style={{flex:1}}>Cancelar</SecBtn>
+          <button onClick={onConfirmar} disabled={guardando}
+            style={{flex:2,background:C.caliza,border:"none",borderRadius:6,padding:"9px 0",
+              fontSize:12,fontWeight:700,color:C.bg,
+              cursor:guardando?"wait":"pointer",opacity:guardando?0.6:1}}>
+            {guardando ? "Guardando…" : "Sí, cambiar el modo"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </>;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SUBCONTRATOS
 // Cada obra puede tener N subcontratos. Cada subcontrato tiene su propio
@@ -23531,7 +23670,7 @@ function Subcontratos({obra, rol, items, setItems, usuario}){
   const detalle = items.find(s => s.id === seleccionado);
 
   if(detalle){
-    return <DetalleSubcontrato sub={detalle} editar={editar} obra={obra} usuario={usuario}
+    return <DetalleSubcontrato sub={detalle} editar={editar} obra={obra} usuario={usuario} rol={rol}
       onUpdate={cambios => actualizar(detalle.id, cambios)}
       onVolver={()=>setSeleccionado(null)}
       onEliminar={()=>eliminar(detalle.id)}/>;
@@ -23644,7 +23783,7 @@ function ModalNuevoSubcontrato({onSave, onClose}){
 }
 
 // ── DETALLE DE UN SUBCONTRATO ──
-function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, usuario}){
+function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, usuario, rol}){
   const[subtab,setSubtab]=useState("datos"); // datos | catalogo | fotos
   const[conceptoFotos,setConceptoFotos]=useState(null); // concepto al que se cargan fotos
   const[lightbox,setLightbox]=useState(null);
@@ -23661,6 +23800,52 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   // Igual que en la obra madre: "porcentaje" (default) o "volumen".
   const modoAvance = sub.modoAvance || "porcentaje";
   const modoVolSub = modoAvance === "volumen";
+
+  // ── Cambio de modo del SUBCONTRATO (#21, la mitad que faltaba) ───────
+  // Hasta aquí era `onClick={()=>onUpdate({modoAvance: v})}`: un clic que
+  // reinterpretaba dinero ya capturado, sin diagnóstico, sin confirmación y
+  // sin bitácora propia. Es el mismo defecto que se cerró en la obra madre, en
+  // la pantalla de al lado, con el mismo dato debajo: el avance del
+  // subcontrato se estima y se paga.
+  //
+  // Mismas tres guardas y, a propósito, la MISMA función de diagnóstico y el
+  // MISMO diálogo. Dos cuentas del mismo número es el defecto que se está
+  // arreglando, no una forma de arreglarlo.
+  const[bloqueoModoSub,setBloqueoModoSub]=useState(null);
+  const[cambioModoSub,setCambioModoSub]=useState(null);
+  const[guardandoModoSub,setGuardandoModoSub]=useState(false);
+
+  function pedirCambioModoSub(destino) {
+    const actual = sub.modoAvance || "porcentaje";
+    if (destino === actual) return;
+    if (destino === "porcentaje" && !puedeElegirPorcentaje(rol)) return;
+    const d = diagnosticoCambioModo(sub.conceptos, actual, destino);
+    if (destino === "volumen" && !d.puedeVolumen) { setBloqueoModoSub(d); return; }
+    setCambioModoSub({ actual, destino, ...d });
+  }
+
+  async function confirmarCambioModoSub() {
+    const c = cambioModoSub;
+    setGuardandoModoSub(true);
+    // `onUpdate` reescribe la lista entera de subcontratos y ya audita «N
+    // subcontratos», que no dice nada de un cambio de definición. El asiento
+    // propio va además, con el ejecutado de antes y el de después: es la única
+    // forma de saber mañana por qué la cifra del subcontrato se movió sin que
+    // nadie capturara nada.
+    onUpdate({ modoAvance: c.destino });
+    setGuardandoModoSub(false);
+    setCambioModoSub(null);
+    await fsAudit("cambio-modo-avance", {
+      modulo: "subcontratos",
+      entidad: `modo de avance ${c.actual} → ${c.destino} · ${sub.nombre || sub.id}`,
+      path: `obras/${obra.id}/subcontratos/lista`,
+      obraId: obra.id, obraNombre: obra.contrato || obra.nombre,
+      antes:   { modoAvance: c.actual,  ejecutado: c.ejecutadoAntes },
+      despues: { modoAvance: c.destino, ejecutado: c.ejecutadoDespues },
+      meta: { subcontratoId: sub.id, partidas: c.partidas, sinVolumen: c.sinVolumen,
+              partidasQueCambian: c.cambian, delta: c.delta },
+    });
+  }
 
   const totalCat = sub.conceptos.reduce((t,c)=>t+(c.importe||0), 0);
   const ejecutado = desgloseEjecutado(sub.conceptos, modoVolSub).total;
@@ -24131,7 +24316,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
             <span style={{fontSize:9,color:C.textMut,textTransform:"uppercase",letterSpacing:"0.04em"}}>Modo captura</span>
             <div style={{display:"flex",gap:0,border:`0.5px solid ${C.border}`,borderRadius:6,overflow:"hidden"}}>
               {[["porcentaje","% avance"],["volumen","Volumen ejecutado"]].map(([v,l]) => (
-                <button key={v} onClick={()=>onUpdate({modoAvance: v})}
+                <button key={v} onClick={()=>pedirCambioModoSub(v)}
                   style={{background: modoAvance===v ? C.caliza : C.card, color: modoAvance===v ? C.bg : C.textSec,
                     border:"none", padding:"5px 10px", fontSize:10, fontWeight:600, cursor:"pointer"}}>
                   {l}
@@ -24461,6 +24646,13 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
       display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"pointer"}}>
       <img src={lightbox} style={{maxWidth:"95%",maxHeight:"95%",objectFit:"contain"}}/>
     </div>}
+
+    {/* #21 guardas 1 y 2 del subcontrato — el mismo diálogo que la obra */}
+    <DialogoCambioModo sujeto={SUJETO_SUBCONTRATO}
+      bloqueo={bloqueoModoSub} cambio={cambioModoSub} guardando={guardandoModoSub}
+      onCerrarBloqueo={()=>setBloqueoModoSub(null)}
+      onCancelar={()=>setCambioModoSub(null)}
+      onConfirmar={confirmarCambioModoSub}/>
   </div>;
 }
 
@@ -25213,105 +25405,14 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
         </div>
       )}
 
-      {/* #21 guarda 1 — bloqueo duro: a volumen no se pasa sin volúmenes */}
-      {bloqueoModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
-        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
-          border:`0.5px solid ${alfa(C.red, 26.67)}`}}>
-          <div style={{fontSize:14,fontWeight:700,color:C.redDk,marginBottom:10}}>
-            Esta obra no puede pasar a modo volumen
-          </div>
-          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:12}}>
-            {bloqueoModo.partidas === 0 ? (
-              <>No se leyó ninguna partida del catálogo de esta obra. Sin
-              catálogo no hay contra qué medir volumen. Carga el catálogo y
-              vuelve a intentarlo.</>
-            ) : (
-              <><b>{bloqueoModo.sinVolumen} de {bloqueoModo.partidas} partidas</b> no
-              tienen cantidad ni precio unitario. En modo volumen el avance sale
-              de <i>cantidad ejecutada ÷ cantidad de catálogo</i>: con la cantidad
-              en cero esas partidas aparecerían en 0% y el avance que ya está
-              capturado se perdería en cuanto alguien teclee encima.</>
-            )}
-          </div>
-          {bloqueoModo.partidas > 0 && (
-            <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:14}}>
-              <div style={{fontSize:10,color:C.textMut,fontWeight:600,marginBottom:6,
-                textTransform:"uppercase",letterSpacing:"0.04em"}}>Qué hace falta</div>
-              <div style={{fontSize:11,color:C.textSec,lineHeight:1.6}}>
-                Recargar el catálogo de la obra incluyendo <b>cantidad</b>,{" "}
-                <b>precio unitario</b> y <b>unidad</b> en cada partida. El
-                importador los soporta y conserva el avance capturado
-                emparejando por clave, así que la recarga no borra nada. Con los
-                volúmenes cargados, este bloqueo desaparece solo.
-              </div>
-            </div>
-          )}
-          <SecBtn onClick={()=>setBloqueoModo(null)} style={{width:"100%"}}>Entendido</SecBtn>
-        </div>
-      </div>}
-
-      {/* #21 guarda 2 — confirmación explícita, con el ejecutado antes y después */}
-      {cambioModo && <div style={{position:"fixed",inset:0,background:"rgba(13,22,25,0.92)",zIndex:210,
-        display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-        <div style={{background:C.card,borderRadius:12,padding:20,width:"100%",maxWidth:420,
-          border:`0.5px solid ${alfa(C.yellow, 26.67)}`}}>
-          <div style={{fontSize:14,fontWeight:700,color:C.textPri,marginBottom:4}}>
-            ¿Cambiar el modo de captura?
-          </div>
-          <div style={{fontSize:12,color:C.textSec,marginBottom:12}}>
-            De <b>{cambioModo.actual === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>{" "}
-            a <b>{cambioModo.destino === "volumen" ? "volumen ejecutado" : "porcentaje"}</b>
-          </div>
-
-          <div style={{background:C.bg,borderRadius:8,padding:12,marginBottom:12}}>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
-              color:C.textSec,marginBottom:5}}>
-              <span>Ejecutado hoy</span><b>{MXN(cambioModo.ejecutadoAntes)}</b>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
-              color:C.textSec,marginBottom:5}}>
-              <span>Ejecutado después del cambio</span>
-              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textPri
-                          : cambioModo.delta < 0 ? C.redDk : C.textPri}}>
-                {MXN(cambioModo.ejecutadoDespues)}
-              </b>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:11,
-              color:C.textMut,paddingTop:5,borderTop:`0.5px solid ${C.border}`}}>
-              <span>Diferencia</span>
-              <b style={{color: Math.abs(cambioModo.delta) < 0.005 ? C.textMut : C.redDk}}>
-                {MXND(cambioModo.delta)}
-              </b>
-            </div>
-          </div>
-
-          <div style={{fontSize:11,color:C.textSec,lineHeight:1.6,marginBottom:14}}>
-            {cambioModo.cambian === 0
-              ? <>Ninguna de las {cambioModo.partidas} partidas cambia de importe
-                  con este cambio.</>
-              : <><b>{cambioModo.cambian} de {cambioModo.partidas} partidas</b> cambian
-                  de importe ejecutado.</>}
-            {cambioModo.destino === "porcentaje" && cambioModo.delta < -0.005 && (
-              <> El ejecutado baja porque en porcentaje el dinero sale
-                de <i>% capturado × importe de catálogo</i> y deja de contar el
-                volumen capturado por encima del catálogo.</>
-            )}
-            {" "}El cambio se guarda de inmediato y queda en la bitácora con tu
-            nombre y la hora.
-          </div>
-
-          <div style={{display:"flex",gap:8}}>
-            <SecBtn onClick={()=>setCambioModo(null)} style={{flex:1}}>Cancelar</SecBtn>
-            <button onClick={confirmarCambioModo} disabled={guardandoModo}
-              style={{flex:2,background:C.caliza,border:"none",borderRadius:6,padding:"9px 0",
-                fontSize:12,fontWeight:700,color:C.bg,
-                cursor:guardandoModo?"wait":"pointer",opacity:guardandoModo?0.6:1}}>
-              {guardandoModo ? "Guardando…" : "Sí, cambiar el modo"}
-            </button>
-          </div>
-        </div>
-      </div>}
+      {/* #21 guardas 1 y 2. Las dos pantallas son `DialogoCambioModo`, la
+          misma que usa el subcontrato: el modo de captura existe en los dos
+          sitios y los dos tienen que decir la misma cifra. */}
+      <DialogoCambioModo sujeto={SUJETO_OBRA}
+        bloqueo={bloqueoModo} cambio={cambioModo} guardando={guardandoModo}
+        onCerrarBloqueo={()=>setBloqueoModo(null)}
+        onCancelar={()=>setCambioModo(null)}
+        onConfirmar={confirmarCambioModo}/>
     </div>
   );
 }
@@ -26662,6 +26763,13 @@ const ACCIONES_OPCIONES = [
   {v:"ver",    l:"Solo ver"},
   {v:null,     l:"Sin acceso"},
 ];
+// `null` es un permiso de verdad —«sin acceso»— y el `value` de un `<option>` no
+// puede ser nulo, así que viaja como la cadena "null". La traducción vive en UN
+// sitio porque estaba tecleada en cuatro: el `value` del desplegable, la llave y
+// el valor de cada opción, y el `onChange` que la deshace. La quinta copia es
+// cómo se llega a que el desplegable y lo que se guarda dejen de coincidir.
+const claveAccion = v => v === null ? "null" : String(v);
+const CLAVES_ACCION = ACCIONES_OPCIONES.map(op => claveAccion(op.v));
 function PermisosObra({obra, rol}){
   const puedeEditar = ["director_general","director_operaciones","admin_sistema"].includes(rol);
   const [override, setOverride] = useState(null);
@@ -26754,7 +26862,7 @@ function PermisosObra({obra, rol}){
                   const v = valorActual(rolKey, m.id);
                   const def = esDefault(rolKey, m.id);
                   return <td key={m.id} style={{padding:"6px"}}>
-                    <select value={v===null?"null":v}
+                    <select value={claveAccion(v)}
                       disabled={!puedeEditar || guardando}
                       onChange={e=>{
                         const raw = e.target.value;
@@ -26765,8 +26873,14 @@ function PermisosObra({obra, rol}){
                         borderRadius:5,
                         background: def ? C.surface : C.blueBg,
                         color: v===null ? C.redDk : v==="editar" ? C.greenDk : C.textPri}}>
+                      {/* Lo guardado manda, aunque esta versión ya no lo ofrezca.
+                          Sin esto, un permiso que no esté entre los tres pinta
+                          «Editar» —la primera opción— y el botón de guardar lo
+                          OTORGA de verdad: esta pantalla escribe permisos. */}
+                      {opcionAjena(claveAccion(v), CLAVES_ACCION,
+                        "no es un permiso de esta versión", "sin permiso definido")}
                       {ACCIONES_OPCIONES.map(op=>(
-                        <option key={op.v===null?"null":op.v} value={op.v===null?"null":op.v}>{op.l}</option>
+                        <option key={claveAccion(op.v)} value={claveAccion(op.v)}>{op.l}</option>
                       ))}
                     </select>
                     {!def && <div style={{fontSize:9,color:C.blueDk,marginTop:2}}>personalizado</div>}

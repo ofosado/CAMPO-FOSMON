@@ -158,23 +158,131 @@ check(casi(dExc.ejecutadoDespues, 100000, 1),
 check(casi(dExc.delta, -50000, 1), `el aviso dice −$50,000 (dio ${MXN(dExc.delta)})`);
 check(dExc.cambian === 1, `y señala la partida que se mueve (dio ${dExc.cambian})`);
 
-// ── 3. Cableado (mecanismo, no comportamiento) ─────────────────────────
-// Se busca sobre el código con los comentarios en blanco. El comentario que
-// documenta el defecto cita el código viejo literalmente, y sin esto la
-// prueba se encontraba a sí misma y daba rojo. Blanquear en vez de borrar
-// conserva las posiciones.
-let codigo = src;
-for (const c of (ast.comments || [])) {
-  codigo = codigo.slice(0, c.start) + ' '.repeat(c.end - c.start) + codigo.slice(c.end);
+// ── 3. El catálogo del SUBCONTRATO ─────────────────────────────────────
+//
+// El modo de captura existe en dos sitios: la obra y cada subcontrato. El
+// mismo diagnóstico tiene que servir a los dos, y los dos catálogos no se
+// escriben igual: la partida de obra trae `cant` e `imp`, el concepto de
+// subcontrato trae `cantidad` e `importe` —el importador traduce uno en otro
+// al guardar—.
+//
+// Lo que se mide aquí es el BLOQUEO FALSO, que es el daño de leer una sola
+// forma. Un subcontrato con sus volúmenes completos quedaría bloqueado para
+// pasar a volumen, para siempre, y el aviso diría «N de N conceptos no tienen
+// cantidad ni precio unitario» sobre conceptos que la tienen. Un bloqueo que
+// miente enseña a no creerle al que sí es verdadero.
+console.log('\n3. El mismo diagnóstico, sobre conceptos de subcontrato');
+// Un subcontrato sano, con la forma que escribe `agregarConcepto`.
+const conceptosSanos = Array.from({ length: 9 }, (_, i) => ({
+  id: i, clave: `C${i}`, unidad: 'm2', cantidad: 400, pu: 250,
+  importe: 100000, avance: i < 6 ? 50 : 0, cantEjec: i < 6 ? 200 : 0,
+}));
+const dSub = llamar(conceptosSanos, 'porcentaje', 'volumen');
+check(dSub.puedeVolumen === true,
+  `un subcontrato con sus volúmenes completos SÍ puede pasar a volumen (dio ${dSub.puedeVolumen})`);
+check(dSub.sinVolumen === 0,
+  `y no se le inventan conceptos sin volumen (dio ${dSub.sinVolumen} de ${dSub.partidas})`);
+
+// Y el bloqueo verdadero sigue bloqueando: un subcontrato importado sin
+// cantidades es exactamente el caso que la guarda existe para atajar.
+const conceptosSinVol = conceptosSanos.map(c => ({ ...c, cantidad: 0, pu: 0, cantEjec: 0 }));
+const dSubCojo = llamar(conceptosSinVol, 'porcentaje', 'volumen');
+check(dSubCojo.puedeVolumen === false,
+  `un subcontrato sin cantidades sigue bloqueado (dio ${dSubCojo.puedeVolumen})`);
+check(dSubCojo.sinVolumen === 9, `y los cuenta los 9 (dio ${dSubCojo.sinVolumen})`);
+
+// Las cifras que verá el proveedor en la confirmación. 6 conceptos al 50% de
+// $100,000 son $300,000; en volumen, 6 × 200 × $250 son los mismos $300,000.
+check(casi(dSub.ejecutadoAntes, 300000, 1),
+  `el subcontrato hoy ejecuta ${MXN(dSub.ejecutadoAntes)} (esperado $300,000)`);
+check(casi(dSub.ejecutadoDespues, 300000, 1),
+  `y después del cambio ${MXN(dSub.ejecutadoDespues)}`);
+
+// Un concepto con volumen capturado por encima del catálogo: al volver a
+// porcentaje el dinero se cae, y eso es justo lo que hay que enseñar antes.
+const conceptoExcedido = [{ id: 'X', cantidad: 100, pu: 1000, importe: 100000,
+                            avance: 100, cantEjec: 160 }];
+const dSubExc = llamar(conceptoExcedido, 'volumen', 'porcentaje');
+check(casi(dSubExc.ejecutadoAntes, 160000, 1),
+  `con volumen excedido ejecuta ${MXN(dSubExc.ejecutadoAntes)} (esperado $160,000)`);
+check(casi(dSubExc.delta, -60000, 1),
+  `y el aviso del subcontrato dice −$60,000 (dio ${MXN(dSubExc.delta)})`);
+
+// ── 4. Que ningún interruptor de modo se salte el diagnóstico ──────────
+//
+// Esto es mecanismo, no comportamiento, y se dice: comprueba el cableado, no
+// la guarda. Pero es un barrido y no una lista, y ésa es la diferencia que
+// importa. La versión anterior tecleaba la forma exacta del clic de la obra
+// —`onClick={()=>pedirCambioModo(opt.v)}`— y por eso salía verde con el
+// interruptor del subcontrato, en la pantalla de al lado, escribiendo el modo
+// de un clic. Una regla que sólo mira donde ya se miró no es una guarda.
+//
+// Los interruptores se BUSCAN: un arreglo literal que ofrezca a la vez
+// "volumen" y "porcentaje" y que se recorra con `.map` para pintar algo. Ésa
+// es la forma de un selector de modo, la tengan los dos o la tengan diez.
+const interruptores = [];
+traverse(ast, {
+  CallExpression(p) {
+    const cal = p.node.callee;
+    if (cal.type !== 'MemberExpression') return;
+    if (cal.property?.name !== 'map' || cal.object?.type !== 'ArrayExpression') return;
+    const lista = src.slice(cal.object.start, cal.object.end);
+    if (!/["']volumen["']/.test(lista) || !/["']porcentaje["']/.test(lista)) return;
+    interruptores.push({
+      linea: src.slice(0, p.node.start).split('\n').length,
+      fuente: src.slice(p.node.start, p.node.end),
+    });
+  },
+});
+
+console.log(`\n4. Ningún interruptor de modo escribe sin diagnóstico`);
+console.log(`   (interruptores de modo encontrados: ${interruptores.length})`);
+// Cero interruptores sale verde sin haber mirado nada: es el P4 por el lado
+// que no avisa. Si el JSX cambió de forma, lo que hay que decir es que no se
+// midió — no dar por buena una pantalla que no se encontró.
+if (interruptores.length === 0) {
+  noArranco(['ningún selector de modo con "volumen" y "porcentaje" en src/App.jsx'], ARCH);
 }
 
-console.log('\n3. Cableado del selector de modo');
-check(!/onClick=\{\(\)=>f\("modoAvance"/.test(codigo),
-  'el clic ya no escribe `modoAvance` directo, sin validar');
-check(/onClick=\{\(\)=>pedirCambioModo\(opt\.v\)\}/.test(codigo),
-  'el clic pasa por `pedirCambioModo`');
-check(/fsAudit\(\s*"cambio-modo-avance"/.test(codigo),
-  'el cambio se escribe a la bitácora con tipo propio');
+// Quién tiene el diagnóstico adentro: se resuelve por el cuerpo de la función,
+// no por su nombre. `pedirCambioModo` y `pedirCambioModoSub` son dos nombres
+// del mismo deber.
+const conDiagnostico = new Set();
+traverse(ast, {
+  Function(p) {
+    const nombre = p.node.id?.name
+      || (p.parent.type === 'VariableDeclarator' ? p.parent.id?.name : null);
+    if (!nombre) return;
+    if (/diagnosticoCambioModo\s*\(/.test(src.slice(p.node.start, p.node.end))) {
+      conDiagnostico.add(nombre);
+    }
+  },
+});
+
+for (const sw of interruptores) {
+  // Sin comentarios: el que documenta el defecto cita el código viejo, y sin
+  // esto la prueba se encuentra a sí misma y da rojo.
+  const limpio = sw.fuente.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ' ');
+
+  const manejador = /onClick=\{([^]*?)\}\s*\n?\s*style=/.exec(limpio)
+                 || /onClick=\{(\(\)\s*=>\s*[A-Za-z_$][\w$]*\([^)]*\))\}/.exec(limpio);
+  const cuerpo = manejador ? manejador[1] : '';
+  check(!/\{\s*modoAvance\s*:/.test(cuerpo) && !/["']modoAvance["']\s*,/.test(cuerpo),
+    `App.jsx:${sw.linea} no escribe el modo desde el clic` +
+    (cuerpo ? '' : '  ·  no se halló su `onClick`'));
+  const llamada = /([A-Za-z_$][\w$]*)\s*\(/.exec(cuerpo);
+  const destino = llamada ? llamada[1] : null;
+  check(destino && conDiagnostico.has(destino),
+    `App.jsx:${sw.linea} el clic llega al diagnóstico` +
+    (destino ? `  ·  via \`${destino}\`` : '  ·  el clic no llama a nada'));
+}
+
+// Y el asiento propio en la bitácora, uno por cada interruptor: sin él, la
+// cifra se mueve mañana sin que nadie pueda decir por qué.
+const asientos = (src.match(/fsAudit\(\s*"cambio-modo-avance"/g) || []).length;
+check(asientos >= interruptores.length,
+  `cada cambio de modo deja su asiento propio en la bitácora ` +
+  `(${asientos} asiento(s) para ${interruptores.length} interruptor(es))`);
 
 // ── Resultado ──────────────────────────────────────────────────────────
 console.log('');
