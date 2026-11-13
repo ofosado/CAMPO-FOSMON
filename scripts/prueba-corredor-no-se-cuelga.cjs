@@ -39,6 +39,19 @@ vigilarExcepciones('el corredor de la suite');
 
 const DIR = __dirname;
 
+// Los talleres corren COPIAS del corredor en directorios temporales, y el
+// corredor PARSEA los bancos para revisar la tabla de emuladores. Un temporal
+// no tiene `node_modules`, así que sin esto el corredor copiado sale 2 —«no
+// puedo revisar la tabla sin @babel/parser»— y los talleres medirían eso en vez
+// de lo que vinieron a medir. Es darle al corredor copiado la misma resolución
+// de módulos que tiene en el repositorio, nada más. Va en UN sitio: pegado a
+// mano en los seis spawns se desincroniza en cuanto el corredor estrene otra
+// dependencia, y se desincroniza hacia el no-veredicto.
+const ENTORNO_BASE = {
+  PATH: process.env.PATH, HOME: process.env.HOME,
+  NODE_PATH: path.join(DIR, '..', 'node_modules'),
+};
+
 // ── CONTRAPRUEBA ────────────────────────────────────────────────────────────
 //
 // Va PRIMERO porque una prueba que nunca ha estado roja no ha demostrado nada.
@@ -110,7 +123,20 @@ if (process.argv.includes('--contraprueba')) {
     // el agujero por los cinco lados a la vez, y arreglar uno no dice nada de
     // los otros cuatro.
     ['no revisar la tabla de emuladores en absoluto',
-      /if \(!TOCA_EL_EMULADOR\.test\(src\)\) continue;/, 'continue;'],
+      /if \(!hablaConElEmulador\(llamadas\)\) continue;/, 'continue;'],
+    // Ésta es la que se escapó: medir el TEXTO en vez del código. La rotura es
+    // literalmente la primera versión de la puerta, y sólo se ve con la
+    // comprobación que mira el repositorio de verdad — en los bancos de mentira
+    // del taller las dos formas dan lo mismo.
+    ['buscar los nombres en el texto en vez de las llamadas en el código',
+      /if \(!hablaConElEmulador\(llamadas\)\) continue;/,
+      'if (!/connect(?:Firestore|Auth|Storage)Emulator\\(|emulador-limpio\\.cjs' +
+      '|reglas-del-repo\\.cjs/.test(src)) continue;'],
+    ['dar por bueno el banco cuyo código no se puede leer',
+      /sinDeclarar\.push\(\[f, `no se puede leer su código para saber si habla con ` \+\n\s*`el emulador: \$\{e\.message\}`\]\);/,
+      ''],
+    ['seguir sin el parser como si se hubiera revisado algo',
+      /process\.exit\(2\);\n\}\n\n\/\/ Llamadas REALES/, '\n}\n\n// Llamadas REALES'],
     ['revisar sólo los bancos de la corrida filtrada',
       /for \(const f of todosLosBancos\) \{/, 'for (const f of archivos) {'],
     ['darle por buena la tabla al banco que no está en ella',
@@ -124,7 +150,7 @@ if (process.argv.includes('--contraprueba')) {
     ['tolerar un emulador con un nombre que el corredor no conoce',
       /\.filter\(n => !\(n in EMULADORES\)\)/, '.filter(() => false)'],
     ['olvidar uno de los dos disparadores: el ayudante que limpia',
-      /\|emulador-limpio\\\.cjs/, ''],
+      /'require:\.\/emulador-limpio\.cjs', /, ''],
     ['denunciar callando: no publicar cuál banco es',
       /for \(const \[f, razón\] of sinDeclarar\) console\.log\(`  \$\{corto\(f\)\}: \$\{razón\}`\);/,
       ''],
@@ -267,7 +293,7 @@ const PLAZO_DEL_CORREDOR = 40000;
 // cuyas cifras exactas son la afirmación. El barrido tiene su propio taller y
 // sus propias secciones más abajo; apagarlo aquí no lo deja sin medir, y el
 // corredor lo dice en voz alta en cada una de estas corridas.
-const SIN_BARRIDO = { PATH: process.env.PATH, HOME: process.env.HOME,
+const SIN_BARRIDO = { ...ENTORNO_BASE,
                       PLAZO_BANCO: String(PLAZO_DEL_BANCO), BARRIDO: 'no' };
 
 console.log('\n── El corredor, con un banco que no vuelve delante ──');
@@ -299,7 +325,7 @@ const rSolo = spawnSync(process.execPath,
   [path.join(dentro, 'pruebas.cjs'), 'puerto-muerto'], {
     encoding: 'utf8', cwd: taller, killSignal: 'SIGKILL',
     timeout: PLAZO_DEL_CORREDOR,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME,
+    env: { ...ENTORNO_BASE,
            PLAZO_BANCO: String(PLAZO_DEL_BANCO) },
   });
 if (rSolo.error && rSolo.error.code === 'ETIMEDOUT')
@@ -536,7 +562,7 @@ for (const f of EXCLUIDOS.slice(1))
 const correrTaller2 = (extra = {}, filtro = null) => spawnSync(process.execPath,
   [path.join(dentro2, 'pruebas.cjs'), ...(filtro ? [filtro] : [])], {
     encoding: 'utf8', cwd: taller2, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME,
+    env: { ...ENTORNO_BASE,
            PLAZO_BANCO: String(PLAZO_DEL_BANCO), ...extra },
   });
 
@@ -609,7 +635,7 @@ if (!cmd) {
 } else {
   const rC = spawnSync('/bin/sh', ['-c', cmd],
     { encoding: 'utf8', cwd: taller2, timeout: PLAZO_DEL_BANCO,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+      env: { ...ENTORNO_BASE } });
   const salidaC = (rC.stdout || '') + (rC.stderr || '');
   // Lo que se afirma es que CORRIÓ con el reloj adelantado: el banco del taller
   // está escrito para caer justo por eso y decirlo con su FALLA. Un rojo sin
@@ -762,7 +788,7 @@ const correrTaller3 = (filtro3) => {
   const r = spawnSync(process.execPath,
     [path.join(dentro3, 'pruebas.cjs'), ...(filtro3 ? [filtro3] : [])], {
       encoding: 'utf8', cwd: taller3, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME,
+      env: { ...ENTORNO_BASE,
              PLAZO_BANCO: String(PLAZO_DEL_BANCO), BARRIDO: 'no',
              EMU_PORT: '1', EMU_AUTH_PORT: '1', EMU_STOR_PORT: '1' },
     });
@@ -867,7 +893,103 @@ else
     'un renglón propio que nombre `firestoer` y liste los emuladores que conoce',
     `salida ${rDesconocido.status} · ${renglónDesconocido || '(no hubo tal renglón)'}`);
 
+// 6. Un banco que no se puede leer. El disparador es una llamada en el código,
+//    así que un archivo que no parsea no se puede clasificar — y dejarlo pasar
+//    sería el hueco otra vez, ahora con la excusa de la sintaxis. Se corre con
+//    filtro para que no se EJECUTE: lo que se mide es la revisión, no el rojo
+//    que ese banco daría al correrse.
+console.log('\n── Un banco cuyo código no se puede leer ──');
+const ROTO = 'prueba-zz-roto.cjs';
+fs.writeFileSync(path.join(dentro3, ROTO),
+  `connectFirestoreEmulator(null, '127.0.0.1', 8080\n`);
+const rRoto = correrTaller3('de-mentira-verde');
+const renglónRoto = (rRoto.salida.match(/.*zz-roto.*/) || [''])[0].trim();
+if (/no se puede leer su código/.test(renglónRoto) && rRoto.status === 1)
+  ok('se denuncia: no clasificado no es lo mismo que no declarado', renglónRoto);
+else
+  falla('se denuncia: no clasificado no es lo mismo que no declarado',
+    'un renglón que lo nombre y diga que no se puede leer su código, y salida 1',
+    `salida ${rRoto.status} · ${renglónRoto || '(no dijo nada)'}`);
+fs.unlinkSync(path.join(dentro3, ROTO));
+
+// 7. Y sin el parser no se revisa nada, así que la respuesta es NO ARRANCÓ.
+//    Ésta es la conducta que distingue esta puerta de las anteriores: un
+//    corredor que no puede mirar la tabla no tiene permitido contestar ni 0 ni
+//    1. Con 0 la tabla deja de vigilarse el día que `node_modules` esté a
+//    medias; con 1 vuelve el defecto de esta rama —un veredicto sobre algo que
+//    no se midió—. Se mide quitándole el NODE_PATH al directorio temporal, que
+//    es la única razón por la que el parser se encuentra ahí.
+console.log('\n── El corredor sin el parser con el que revisa la tabla ──');
+const rSinParser = spawnSync(process.execPath, [path.join(dentro3, 'pruebas.cjs')], {
+  encoding: 'utf8', cwd: taller3, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
+  // A propósito SIN `ENTORNO_BASE`: lo que se le quita es justo el `NODE_PATH`
+  // que le hace encontrar el parser desde un temporal.
+  env: { PATH: process.env.PATH, HOME: process.env.HOME,
+         PLAZO_BANCO: String(PLAZO_DEL_BANCO), BARRIDO: 'no',
+         EMU_PORT: '1', EMU_AUTH_PORT: '1', EMU_STOR_PORT: '1' },
+});
+const salidaSinParser = (rSinParser.stdout || '') + (rSinParser.stderr || '');
+if (rSinParser.status === 2 && /@babel\/parser/.test(salidaSinParser))
+  ok('sale 2 y nombra lo que le falta: no pude mirar, no es rojo ni verde',
+    (salidaSinParser.match(/.*@babel\/parser.*/) || [''])[0].trim().slice(0, 110));
+else
+  falla('sale 2 y nombra lo que le falta: no pude mirar, no es rojo ni verde',
+    'salida 2 nombrando `@babel/parser`',
+    `salida ${rSinParser.status} · ${salidaSinParser.trim().split('\n').slice(-1)[0]}`);
+
 try { fs.rmSync(taller3, { recursive: true, force: true }); } catch {}
+
+// 8. Y LA TABLA DEL REPOSITORIO DE HOY CUADRA.
+//
+// Esta comprobación existe porque sin ella el defecto se escapó. Los siete
+// casos de arriba corren en un directorio temporal con bancos de mentira: miden
+// la puerta, pero no pueden medir el repositorio, y `prueba-corredor-no-se-
+// cuelga.cjs` NO EXISTE ahí. Así que cuando el disparador buscaba los nombres
+// en el TEXTO, este archivo —que lleva `'emulador-limpio.cjs'` en su tabla de
+// módulos y escribe `connectFirestoreEmulator(` dentro de una plantilla— se
+// denunciaba a sí mismo, y los siete casos seguían verdes. El rojo apareció por
+// primera vez en la corrida completa sobre `main`, con todo ya mezclado.
+//
+// Se corre el corredor SOBRE LOS BANCOS DE VERDAD, con los tres puertos al 1 y
+// un filtro que empata un solo banco de emulador: ese banco se salta por «sin
+// emulador» y no se ejecuta nada, pero la revisión de la tabla recorre el
+// repositorio entero, que es lo que hay que mirar.
+//
+// El directorio se arma con ENLACES a todo lo que hay en `scripts/`, y el
+// corredor que se pone ahí es EL QUE SE ESTÁ MIDIENDO (`ARCH_CORREDOR` cuando
+// lo hay, el del repo cuando no). Apuntar directo a `scripts/pruebas.cjs`
+// parecía más simple y era una trampa: la contraprueba lanza el mutante desde
+// /tmp, así que esta comprobación corría el corredor SANO y la mutación que
+// vuelve a buscar los nombres en el texto salía NO LA VE —medido, no deducido—.
+// Enlaces y no copias para que `readFileSync` lea el contenido de hoy; `dir`
+// sale de `__dirname`, así que el corredor enumera estos nombres y lee esos
+// archivos.
+console.log('\n── La tabla y los bancos del repositorio de hoy ──');
+const tallerRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-repo-real-'));
+const dentroRepo = path.join(tallerRepo, 'scripts');
+fs.mkdirSync(dentroRepo);
+for (const e of fs.readdirSync(DIR))
+  if (e !== 'pruebas.cjs')
+    fs.symlinkSync(path.join(DIR, e), path.join(dentroRepo, e));
+fs.copyFileSync(process.env.ARCH_CORREDOR || path.join(DIR, 'pruebas.cjs'),
+  path.join(dentroRepo, 'pruebas.cjs'));
+const rRepo = spawnSync(process.execPath,
+  [path.join(dentroRepo, 'pruebas.cjs'), 'reglas-evidencia'], {
+    encoding: 'utf8', cwd: tallerRepo, killSignal: 'SIGKILL',
+    timeout: PLAZO_DEL_CORREDOR,
+    env: { ...ENTORNO_BASE, BARRIDO: 'no', PLAZO_BANCO: String(PLAZO_DEL_BANCO),
+           EMU_PORT: '1', EMU_AUTH_PORT: '1', EMU_STOR_PORT: '1' },
+  });
+const salidaRepo = (rRepo.stdout || '') + (rRepo.stderr || '');
+if (!/no dicen lo mismo/.test(salidaRepo) && rRepo.status === 0)
+  ok('ningún banco del repositorio discrepa de la tabla',
+    (salidaRepo.match(/^\d+ en verde .*/m) || ['(sin resumen)'])[0].trim());
+else
+  falla('ningún banco del repositorio discrepa de la tabla',
+    'salida 0 y ni una denuncia sobre el repositorio real',
+    `salida ${rRepo.status} · ` +
+    (salidaRepo.match(/^ {2}\S+:.*/m) || ['(sin renglón)'])[0].trim());
+try { fs.rmSync(tallerRepo, { recursive: true, force: true }); } catch {}
 
 // ── UN EMULADOR CAÍDO SE NOMBRA, NO SE ESPERA ───────────────────────────────
 //
@@ -910,7 +1032,7 @@ const esperarEscucha = (s) => new Promise(r => s.listening ? r() : s.once('liste
   const rEmu = spawnSync(process.execPath,
     [path.join(dentro, 'pruebas.cjs'), 'dependencia-captura'], {
       encoding: 'utf8', cwd: taller, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME,
+      env: { ...ENTORNO_BASE,
              PLAZO_BANCO: String(PLAZO_DEL_BANCO),
              EMU_PORT: String(sFs.address().port),
              EMU_AUTH_PORT: String(sAuth.address().port),
