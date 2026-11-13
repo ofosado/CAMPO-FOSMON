@@ -3692,17 +3692,26 @@ const serieAvanceDeSemanas = ({ semanas = [], historialAvance = [], subs = [], o
   // base mientras el historial todavía viaja desde Firestore, y de ancla del
   // último punto —si no se ancla, la gráfica y el KPI de la misma pantalla
   // publican dos avances distintos el día que haya captura sin cierre.
-  const avanceActual = (!subs || subs.length === 0) ? 0
+  // Una obra SIN catálogo no tiene avance vivo: no es que vaya en 0%, es que no
+  // hay con qué medirlo. El `0` que estaba aquí entraba de base en `acarreo` y
+  // llenaba la serie entera de ceros medidos por nadie.
+  const avanceActual = (!subs || subs.length === 0) ? null
     : avanceFisicoPonderado(subs, parseFloat(obra?.presupuesto) || 0,
         obra?.modoAvance === 'volumen');
   const hayAlgunAvanceSnap = Object.keys(avancePorSem).length > 0;
 
+  // ── EL CERO NO ES EL HUECO ───────────────────────────────────────────────
+  // Antes de la PRIMERA captura no hay valor que arrastrar, y el `?? 0` de este
+  // renglón publicaba «0.0%» en la columna Avance de esas semanas. Se lee como
+  // una obra parada —que es un hecho sobre la obra— cuando el único hecho es
+  // que nadie la midió todavía. `null` es lo único afirmable: la tabla lo dice
+  // con su `vacio`, igual que la serie de gasto hermana.
   const serie = [];
   let acarreo = ultimoConocido ?? (hayAlgunAvanceSnap ? null : avanceActual);
   semanas.forEach(s => {
     const snap = avancePorSem[s.key];
     if (snap && typeof snap.avancePonderado === 'number') acarreo = snap.avancePonderado;
-    serie.push(acarreo ?? 0);
+    serie.push(acarreo);
   });
   if (semanas.length > 0 && subs && subs.length > 0 && avanceActual > 0) {
     serie[semanas.length - 1] = avanceActual;
@@ -5940,7 +5949,18 @@ const semanasDeNomina = (registros) => {
   });
   const unir = ({ clave, orden, partes }) => {
     const base = partes[0];
-    const suma = (campo) => partes.reduce((t, p) => t + (p?.[campo] || 0), 0);
+    // Un campo que NINGUNA parte trae no vale cero: no se midió. La suma lo
+    // aplanaba a 0 y a partir de aquí ya no había cómo distinguir «esta semana
+    // no tuvo gente» de «este archivo no trae el conteo» (#116) — y los
+    // lectores de abajo (`totalNomina ?? del listado`) estaban escritos
+    // esperando el `null` que esta función nunca les dejaba llegar.
+    //
+    // Si ALGUNA parte lo trae, se suman las que lo traen: el dato de esa parte
+    // sí se midió y tirarlo sería el defecto simétrico. Que la semana llegó en
+    // varios archivos ya se dice en pantalla con `partes`.
+    const suma = (campo) => partes.some(p => typeof p?.[campo] === 'number')
+      ? partes.reduce((t, p) => t + (p?.[campo] || 0), 0)
+      : null;
     const impHE = partes.reduce((t, p) => t + heImporte(p), 0);
     return {
       ...base,
@@ -5964,6 +5984,54 @@ const semanasDeNomina = (registros) => {
     ...[...grupos.values()].map(unir)
       .sort((a, b) => (a.año - b.año) || (a.numSemana - b.numSemana)),
   ];
+};
+
+// ── CUÁNTA GENTE HUBO EN UNA SEMANA, Y DE DÓNDE SALE EL NÚMERO ───────────────
+//
+// Una sola cuenta para las cuatro pantallas que publican plantilla: el KPI de
+// la obra, el consolidado del portafolio, su columna Personal y la pestaña de
+// Nómina. Antes cada una escribía `(totalDir || 0) + (totalInd || 0)` por su
+// cuenta, y con el `|| 0` las cuatro afirmaban «0 personas» en una semana que
+// sólo no traía el conteo.
+//
+// El desglose se lee COMO PAREJA: media pareja no es un desglose —`totalDir`
+// solo no es la plantilla— y el importador los escribe siempre juntos (ver
+// dónde se arma el snapshot al subir el Excel). Sin desglose se cuenta el
+// LISTADO de trabajadores, que es la misma cuenta con la que el importador los
+// escribe, así que no es una estimación: es el mismo dato por el otro lado. Y
+// sin listado no hay cifra, y eso se dice —`total: null`, `fuente: null`—.
+const personalDeSemana = (sem) => {
+  const nada = { dir: null, ind: null, total: null, fuente: null };
+  if (!sem) return nada;
+  if (typeof sem.totalDir === 'number' && typeof sem.totalInd === 'number')
+    return { dir: sem.totalDir, ind: sem.totalInd,
+             total: sem.totalDir + sem.totalInd, fuente: 'desglose' };
+  const trabs = Array.isArray(sem.trabajadores) ? sem.trabajadores : [];
+  if (trabs.length === 0) return nada;
+  const dir = trabs.filter(p => p?.tipo === 'D').length;
+  const ind = trabs.filter(p => p?.tipo === 'I').length;
+  return { dir, ind, total: dir + ind, fuente: 'listado' };
+};
+
+// ── CUÁNTA GENTE DECIR QUE TRAJO UNA CARGA ───────────────────────────────────
+//
+// `trabajadores.length` vale cero en DOS casos que no se parecen: el archivo
+// trae el desglose pero no el listado nominal, y el archivo no trae nada del
+// personal. Tres renglones de la pestaña de Nómina publicaban «0 trabajadores»
+// en los dos. En el primero contradice al KPI de arriba de la misma pantalla,
+// que con el desglose publica 34 —una cuenta por número—; en el segundo afirma
+// que la semana no tuvo gente cuando sólo nadie la contó (#116).
+//
+// Sirve igual para una semana unida que para una de sus partes: las dos se leen
+// con `personalDeSemana`. `corto` es para el renglón angosto del desglose por
+// archivo, donde no cabe la frase entera.
+const trabsDeCarga = (carga, { corto = false } = {}) => {
+  const n = (carga?.trabajadores || []).length;
+  if (n > 0) return `${n} ${corto ? 'trab' : 'trabajadores'}`;
+  const p = personalDeSemana(carga);
+  if (p.total === null) return 'sin conteo de personal';
+  return corto ? `${p.total} trab (del desglose)`
+               : `${p.total} trabajadores · sin listado nominal`;
 };
 
 // ── LA PLANTILLA, CON LA SEMANA DE LA QUE ES ──────────────────────────────
@@ -6000,19 +6068,28 @@ const plantillaDeObra = (nominaHistorial = []) => {
   // rótulo tal como vino, que es lo único que se sabe de ella.
   const semana = ult.numSemana != null ? `Semana ${ult.numSemana}`
     : (ult.semana ? String(ult.semana) : null);
-  // Aquí NO se distingue una semana sin desglose de una con cero personas, y no
-  // es por omisión: no se puede. `semanasDeNomina` une las partes con una suma
-  // que convierte el campo ausente en 0 antes de que esto lo vea, así que
-  // llegando hasta aquí los dos casos son el mismo 0. La distinción tendría que
-  // hacerse en la unión, que la usan también el PDF, los tres avisos y el
-  // portafolio. Queda anotado y no se finge con un `if` que no puede entrar.
-  const dir = ult.totalDir || 0;
-  const ind = ult.totalInd || 0;
+  // Una semana sin desglose ya SÍ se distingue de una con cero personas: la
+  // unión de `semanasDeNomina` dejó de aplanar el campo ausente a 0 y
+  // `personalDeSemana` contesta de dónde salió el número. Cero personas
+  // medidas y ninguna medición no son el mismo hecho, y el KPI los publicaba
+  // con el mismo aspecto (#116).
+  //
+  // La semana EXISTE —`hayNomina` sigue en verdadero: se cargó nómina—, lo que
+  // falta es el conteo. Decir «sin nómina» aquí sería cambiar un número
+  // inventado por una frase falsa.
+  const { dir, ind, total, fuente } = personalDeSemana(ult);
+  const deSemana = `${semana || 'semana sin número'}`
+    + (partes > 1 ? ` · ${partes} partes` : '');
+  if (total === null) {
+    return { hayNomina: true, total: null, dir: null, ind: null, semana, partes,
+      fuente: null, valor: 'sin desglose',
+      sub: `la nómina de ${deSemana} no trae el conteo de personal` };
+  }
   return {
-    hayNomina: true, total: dir + ind, dir, ind, semana, partes,
-    valor: String(dir + ind),
-    sub: `${dir}D · ${ind}I · ${semana || 'semana sin número'}`
-      + (partes > 1 ? ` · ${partes} partes` : ''),
+    hayNomina: true, total, dir, ind, semana, partes, fuente,
+    valor: String(total),
+    sub: `${dir}D · ${ind}I · ${deSemana}`
+      + (fuente === 'listado' ? ' · contado del listado' : ''),
   };
 };
 
@@ -11934,13 +12011,24 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
 
   // Personal consolidado — suma del ÚLTIMO snapshot de nómina de cada obra.
   // Misma fuente que la columna Personal de la tabla (bloque 3).
+  // El conteo de cada obra lo da `personalDeSemana`, la misma cuenta que el KPI
+  // de la obra y que la columna Personal de la tabla de abajo: con tres sumas
+  // escritas por separado, el consolidado y el renglón de la misma obra podían
+  // discrepar. Una obra cuya última semana no trae el conteo NO suma cero —eso
+  // la metía al total como si no tuviera gente—: se cuenta aparte y se declara.
+  const obrasSinDesglose = kpisPorObra.filter(({ d }) => {
+    const sem = d.nominaSemanas || [];
+    return sem.length > 0 && personalDeSemana(sem[sem.length - 1]).total === null;
+  });
   const personalAgg = kpisPorObra.reduce((t, { d }) => {
     const ult = (d.nominaSemanas || []).slice(-1)[0];
     if (!ult) return t;
+    const p = personalDeSemana(ult);
+    if (p.total === null) return t;
     return {
-      total: t.total + (ult.totalDir || 0) + (ult.totalInd || 0),
-      dir:   t.dir   + (ult.totalDir || 0),
-      ind:   t.ind   + (ult.totalInd || 0),
+      total: t.total + p.total,
+      dir:   t.dir   + p.dir,
+      ind:   t.ind   + p.ind,
       obrasConNom: t.obrasConNom + 1,
       // Obras que rayaron su semana en más de un archivo: lo que entra al
       // total es la SUMA de todos, no el último que subieron. Se declara en
@@ -11978,13 +12066,17 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const nom = d.nominaSemanas || [];
     if (nom.length === 0) continue;   // no tiene nómina: no aporta a personalAgg tampoco
     if (nom.length >= 2) {
-      const pre = nom[nom.length - 2];
-      personalPrev += (pre.totalDir || 0) + (pre.totalInd || 0);
+      const pre = personalDeSemana(nom[nom.length - 2]);
+      // Una semana previa sin conteo tampoco es comparable: restarle un cero
+      // que nadie midió inventa una baja de toda la plantilla de esa obra.
+      if (pre.total === null) obrasSinPrevNom++;
+      else personalPrev += pre.total;
     } else {
       obrasSinPrevNom++;   // tiene nómina pero solo 1 snapshot → no comparable
     }
   }
-  const deltaPersonal = (personalAgg.obrasConNom > 0 && obrasSinPrevNom === 0)
+  const deltaPersonal = (personalAgg.obrasConNom > 0 && obrasSinPrevNom === 0
+                         && obrasSinDesglose.length === 0)
     ? personalAgg.total - personalPrev : null;
 
   // Gastado y Margen: NO tenemos snapshot histórico de `gt` por obra
@@ -12143,8 +12235,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const nomSemanas = d.nominaSemanas || [];
     const ultNom = nomSemanas[nomSemanas.length - 1];
     const preNom = nomSemanas.length >= 2 ? nomSemanas[nomSemanas.length - 2] : null;
-    const personal = ultNom ? ((ultNom.totalDir || 0) + (ultNom.totalInd || 0)) : null;
-    const personalPrev = preNom ? ((preNom.totalDir || 0) + (preNom.totalInd || 0)) : null;
+    // La misma cuenta que el consolidado de arriba y que el KPI de la obra: una
+    // semana cargada sin conteo de personal sale `null` —la columna lo dice— y
+    // no un 0 que se lee como «esta obra se quedó sin gente».
+    const personal = personalDeSemana(ultNom).total;
+    const personalPrev = personalDeSemana(preNom).total;
     const deltaPersonal = (personal !== null && personalPrev !== null) ? personal - personalPrev : null;
     // Delta de margen (pp) contra semana anterior
     let deltaMargen = null;
@@ -12196,6 +12291,10 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       deltaMargen,
       porCobrar: kpis.estPorCob,
       personal,
+      // Sin cifra hay DOS motivos distintos y la tarjeta los decía igual: la
+      // obra no tiene nómina cargada, o la tiene y esa semana no trae el
+      // conteo. «Sin nómina» sobre una obra que sí subió su Excel es falso.
+      personalSinConteo: !!ultNom && personal === null,
       deltaPersonal,
       ultimaCapturaTxt,
       diasSinCaptura: diasCap,
@@ -12365,17 +12464,28 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             y le quitaba a la 0126 tres cuartas partes de su nómina. Como no
             pone el número en duda, no se gana el renglón: estiraba las cinco
             tarjetas del consolidado para explicar una procedencia. */}
+        {/* Y si la última nómina de alguna obra no trae el conteo de personal,
+            al total le FALTA gente, igual que a «Gastado» le falta dinero. La
+            cifra no se ajusta —no se sabe cuánta— y la obra no entra sumando
+            cero, que es lo que hacía: se declara con nombre. */}
         <_KpiConDelta
           label="Personal"
           valor={`${personalAgg.total}`}
           valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
-          nota={personalAgg.enPartes > 0
-            ? `${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos; el total los suma, no se queda con el último.`
-            : null}
+          nota={[
+            personalAgg.enPartes > 0
+              ? `${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos; el total los suma, no se queda con el último.`
+              : null,
+            obrasSinDesglose.length > 0
+              ? `${obrasSinDesglose.map(x => resolverNombreCortoObra(x.obra, gpData)).join(', ')}: su última nómina no trae el conteo de personal, así que no entra a este total.`
+              : null,
+          ].filter(Boolean).join(' ') || null}
           deltaValor={deltaPersonal}
           deltaSub={deltaPersonal !== null
             ? `${deltaPersonal >= 0 ? '+' : '−'}${Math.abs(deltaPersonal)} trab. vs semana previa`
-            : (obrasSinPrevNom > 0
+            : (obrasSinDesglose.length > 0
+                ? `incompleto: ${obrasSinDesglose.length} obra${obrasSinDesglose.length > 1 ? 's' : ''} sin conteo de personal`
+                : obrasSinPrevNom > 0
                 ? `${obrasSinPrevNom} obra${obrasSinPrevNom > 1 ? 's' : ''} sin snapshot previo`
                 : 'primera semana con nómina')}
           color={C.purpleDk}
@@ -12526,7 +12636,8 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                       {' · '}Por cobrar {MXN(f.porCobrar)}
                     </div>
                     <div style={{fontSize:10,color:C.textSec,lineHeight:1.5}}>
-                      {f.personal !== null ? `${f.personal} personas` : 'Sin nómina'}
+                      {f.personal !== null ? `${f.personal} personas`
+                        : f.personalSinConteo ? 'Nómina sin conteo de personal' : 'Sin nómina'}
                       {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && _flecha(f.deltaPersonal, true, '')}
                       {' · '}
                       <span style={{color: capAlerta ? C.red : C.textSec,fontWeight: capAlerta ? 600 : 400}}>
@@ -12632,7 +12743,17 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                       <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
                         {MXN(f.porCobrar)}
                       </td>
-                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}>
+                      {/* El guion cubre DOS cosas distintas —la obra que no ha
+                          subido nómina y la que la subió sin el conteo de
+                          personal— y en la tarjeta del ranking se distinguen
+                          con palabras. Aquí no cabe un renglón más, así que la
+                          distinción va al tooltip: con el mismo glifo para las
+                          dos, quien ve el hueco no sabe a quién pedirle qué. */}
+                      <td style={{padding:"7px 4px",textAlign:"right",whiteSpace:"nowrap"}}
+                        title={f.personal !== null ? undefined
+                          : f.personalSinConteo
+                          ? 'Su última nómina no trae el conteo de personal'
+                          : 'Todavía no ha subido nómina'}>
                         {f.personal !== null ? f.personal : '—'}
                         {f.deltaPersonal !== null && Math.abs(f.deltaPersonal) > 0 && _flecha(f.deltaPersonal, true, '')}
                       </td>
@@ -14797,7 +14918,8 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
             pie={g.notas.join(' · ')}/>
 
           <TablaSemanas semanas={semanas} columnas={[
-            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`},
+            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`,
+             vacio:'sin medir'},
             {titulo:'Δ semana', valores:avanceDelta, fmt:pp, color:colorDelta,
              vacio:'—'},
             {titulo:'Programa',
@@ -15066,7 +15188,8 @@ function GraficaDelContrato({obra, historialAvance = [], subs = [], programa,
             pie={g.notas.join(' · ')}/>
 
           <TablaSemanas semanas={semanas} columnas={[
-            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`},
+            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`,
+             vacio:'sin medir'},
             {titulo:'Δ semana', valores:avanceDelta, fmt:pp, color:colorDelta,
              vacio:'—'},
             {titulo:'Programa',
@@ -15232,9 +15355,13 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
           {/* El valor es `plantilla.valor` y no `dir+ind`: sin nómina cargada
               esta tarjeta decía `0`, que es lo mismo que publica una obra con
               cero personas medidas. La 0131 no tiene ninguna semana y se veía
-              como una obra vacía de gente en vez de como una obra sin medir. */}
+              como una obra vacía de gente en vez de como una obra sin medir.
+              El color va por el NÚMERO, no por que haya nómina: una semana
+              cargada sin conteo de personal es un dato que falta, y en verde se
+              lee como una plantilla sana. */}
           <Kpi label="Personal campo" value={plantilla.valor}
-            sub={plantilla.sub} color={plantilla.hayNomina ? C.green : C.textMut}/>
+            sub={plantilla.sub}
+            color={plantilla.total === null ? C.textMut : C.green}/>
         </div>
       </div>;
     })()}
@@ -21711,10 +21838,17 @@ function Nomina({obra, rol, onHistorialCambio}) {
     setSemanaVer(v => Math.max(0, Math.min(v, semanasDeNomina(nuevo).length - 1)));
   }
 
-  // KPIs comparativos
-  const deltaPersonal = semanaActual && semanaAnterior
-    ? (semanaActual.totalDir + semanaActual.totalInd) - (semanaAnterior.totalDir + semanaAnterior.totalInd) : 0;
+  // KPIs comparativos. El personal lo cuenta `personalDeSemana`, la misma
+  // cuenta del KPI del tablero y del portafolio: con la suma escrita aquí, una
+  // semana sin desglose entraba como 0 y el delta inventaba la baja de toda la
+  // plantilla. Sin cifra en cualquiera de las dos semanas no hay delta.
+  const persActual = personalDeSemana(semanaActual);
+  const persAnterior = personalDeSemana(semanaAnterior);
+  const deltaPersonal = (persActual.total !== null && persAnterior.total !== null)
+    ? persActual.total - persAnterior.total : 0;
   const deltaNomina = semanaActual && semanaAnterior
+    && typeof semanaActual.totalNomina === 'number'
+    && typeof semanaAnterior.totalNomina === 'number'
     ? semanaActual.totalNomina - semanaAnterior.totalNomina : 0;
   const deltaHE = semanaActual && semanaAnterior
     ? heImporte(semanaActual) - heImporte(semanaAnterior) : 0;
@@ -21727,15 +21861,30 @@ function Nomina({obra, rol, onHistorialCambio}) {
   // dadas de alta el día del cierre sin días trabajados. No es un descuadre —
   // son dos preguntas— pero los dos bloques las rotulaban igual y el usuario
   // no tenía cómo distinguirlas.
-  const enListado = semanaActual ? semanaActual.totalDir + semanaActual.totalInd : 0;
-  const conPago   = semanaActual && Array.isArray(semanaActual.trabajadores)
+  //
+  // «Quién cobró» sólo se puede responder con el listado nominal delante, y la
+  // unión de semanas entrega siempre un arreglo —vacío si ningún archivo lo
+  // trajo—, así que el filtro devolvía 0 y la pantalla publicaba «0 con pago» en
+  // una semana de $486,000. Es el mismo cero aplanado de #116 por otra puerta:
+  // sin listado la pregunta no se contesta, y el KPI se queda con un número.
+  const enListado = persActual.total;
+  const conPago   = Array.isArray(semanaActual?.trabajadores) && semanaActual.trabajadores.length > 0
     ? semanaActual.trabajadores.filter(p => (p.total||0) > 0).length : null;
   // El otro rescate: el color por proporción, que avisa cuando las horas extra
   // se comen la nómina. El delta semana contra semana no lo dice — una semana
   // puede bajar respecto a la anterior y seguir en el 33% (la 0114, hoy).
   const heActual = semanaActual ? heImporte(semanaActual) : 0;
-  const pctHE    = semanaActual && semanaActual.totalNomina > 0
-    ? heActual / semanaActual.totalNomina * 100 : 0;
+  // El total de la semana sale del snapshot o, si no lo trae, sumado del
+  // listado —la misma salida que ya usan el tablero de la obra y el aviso
+  // semanal, que estaban escritos con `?? del listado` y nunca llegaban a
+  // usarlo porque la unión les entregaba un 0—. Sin ninguno de los dos no hay
+  // cifra: `MXN(null)` imprime «$0», que se lee como una semana sin costo.
+  const trabsActual = Array.isArray(semanaActual?.trabajadores) ? semanaActual.trabajadores : [];
+  const nominaActual = !semanaActual ? null
+    : (typeof semanaActual.totalNomina === 'number' ? semanaActual.totalNomina
+      : trabsActual.length > 0 ? trabsActual.reduce((t, p) => t + (p.total || 0), 0)
+      : null);
+  const pctHE = nominaActual > 0 ? heActual / nominaActual * 100 : null;
 
   // Trabajadores con más horas extra en semana actual
   const topHE = semanaActual
@@ -21961,17 +22110,31 @@ function Nomina({obra, rol, onHistorialCambio}) {
           {/* El delta de personal vs semana anterior ya no va en el subtítulo:
               lo dicen mejor los KPIs de Altas y Bajas de esta misma fila, con
               nombre y propio. Aquí sobrevive solo como color. */}
+          {/* Los tres conteos dicen de dónde salen. Una semana sin desglose se
+              cuenta del listado —y se rotula así—, y si tampoco hay listado no
+              hay cifra: un «0» con el mismo aspecto que un 143 es el defecto
+              que esto cierra (#116). El rótulo tiene que seguir a la FUENTE: con
+              el desglose decía «en listado» junto a un listado que no vino, y es
+              por el rótulo por donde se pide el archivo que falta. */}
           <Kpi label="Personal"
-            value={conPago === null ? String(enListado) : `${enListado} · ${conPago}`}
-            sub={conPago === null ? 'en listado' : 'en listado · con pago'}
-            color={deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={12}/>
-          <Kpi label="Directo" value={semanaActual.totalDir} sub="mano de obra" color={C.blue}/>
-          <Kpi label="Indirecto" value={semanaActual.totalInd} sub="administración" color={C.purple}/>
-          <Kpi label="Total nómina" value={MXN(semanaActual.totalNomina)}
-            sub={deltaNomina!==0?`${MXND(deltaNomina)} vs sem. ant.`:'sin cambio'}
-            color={deltaNomina>0?C.yellow:C.caliza} size={12}/>
+            value={enListado === null ? 'sin conteo'
+              : conPago === null ? String(enListado) : `${enListado} · ${conPago}`}
+            sub={enListado === null ? 'la nómina de la semana no trae el conteo'
+              : `${persActual.fuente === 'desglose' ? 'del desglose' : 'contado del listado'}` +
+                `${conPago === null ? '' : ' · con pago'}`}
+            color={enListado === null ? C.textMut
+              : deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={12}/>
+          <Kpi label="Directo" value={persActual.dir === null ? '—' : persActual.dir}
+            sub="mano de obra" color={persActual.dir === null ? C.textMut : C.blue}/>
+          <Kpi label="Indirecto" value={persActual.ind === null ? '—' : persActual.ind}
+            sub="administración" color={persActual.ind === null ? C.textMut : C.purple}/>
+          <Kpi label="Total nómina"
+            value={nominaActual === null ? 'sin dato' : MXN(nominaActual)}
+            sub={nominaActual === null ? 'el archivo no trae el total'
+              : deltaNomina!==0?`${MXND(deltaNomina)} vs sem. ant.`:'sin cambio'}
+            color={nominaActual === null ? C.textMut : deltaNomina>0?C.yellow:C.caliza} size={12}/>
           <Kpi label="Horas extra" value={MXN(heActual)}
-            sub={`${NUM(pctHE,1)}% del total` +
+            sub={(pctHE === null ? 'sin total con el que comparar' : `${NUM(pctHE,1)}% del total`) +
               (deltaHE!==0?` · ${MXND(deltaHE)} vs sem. ant.`:'')}
             color={pctHE > 15 ? C.yellowDk : deltaHE > 0 ? C.orange : C.caliza} size={12}/>
           {altas.length>0&&<Kpi label="Altas" value={altas.length} sub="nuevos esta semana" color={C.green}/>}
@@ -22004,14 +22167,14 @@ function Nomina({obra, rol, onHistorialCambio}) {
                   )}
                 </Tit>
                 <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-                  {semVer.trabajadores.length} trabajadores · Cargado {semVer.fecha} · {semVer.archivo}
+                  {trabsDeCarga(semVer)} · Cargado {semVer.fecha} · {semVer.archivo}
                 </div>
                 {/* Una semana que llegó en varios archivos: se dice cuáles, para
                     que el total no parezca salido de la nada. */}
                 {semVer.partes.length > 1 && (
                   <div style={{fontSize:9,color:C.textMut,marginTop:4}}>
                     {semVer.partes.map((p,i)=>(
-                      <div key={i}>· {p.archivo || 'sin archivo'} — {(p.trabajadores||[]).length} trab · {MXN(p.totalNomina||0)}</div>
+                      <div key={i}>· {p.archivo || 'sin archivo'} — {trabsDeCarga(p,{corto:true})} · {typeof p.totalNomina === 'number' ? MXN(p.totalNomina) : 'sin total'}</div>
                     ))}
                   </div>
                 )}
@@ -22256,8 +22419,16 @@ function Nomina({obra, rol, onHistorialCambio}) {
             {semanas.slice().reverse().map((sem, ri) => {
               const i = semanas.length - 1 - ri;
               const prev = i > 0 ? semanas[i-1] : null;
-              const deltaTot = prev ? sem.totalNomina - prev.totalNomina : 0;
-              const deltaP   = prev ? (sem.totalDir+sem.totalInd) - (prev.totalDir+prev.totalInd) : 0;
+              // Misma cuenta que los KPIs de arriba, y los deltas sólo entre dos
+              // semanas que los dos traigan cifra: restar una semana sin conteo
+              // pinta una baja de plantilla que nadie midió.
+              const pSem = personalDeSemana(sem);
+              const pPrev = personalDeSemana(prev);
+              const deltaTot = typeof sem.totalNomina === 'number'
+                && typeof prev?.totalNomina === 'number'
+                ? sem.totalNomina - prev.totalNomina : 0;
+              const deltaP = (pSem.total !== null && pPrev.total !== null)
+                ? pSem.total - pPrev.total : 0;
               return (
                 <div key={sem.clave ?? `x${i}`} style={{background:C.bg,borderRadius:8,padding:'10px 12px',
                   marginBottom:8,borderLeft:`3px solid ${i===semanas.length-1?C.caliza:C.border}`}}>
@@ -22283,7 +22454,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
                       {sem.partes.map((p,pi)=>(
                         <div key={pi} style={{display:'flex',justifyContent:'space-between',
                           alignItems:'center',gap:8,padding:'2px 0'}}>
-                          <span>{p.archivo || 'sin archivo'} · {(p.trabajadores||[]).length} trab · {MXN(p.totalNomina||0)} · {p.fecha}</span>
+                          <span>{p.archivo || 'sin archivo'} · {trabsDeCarga(p,{corto:true})} · {typeof p.totalNomina === 'number' ? MXN(p.totalNomina) : 'sin total'} · {p.fecha}</span>
                           {editar&&<button onClick={()=>eliminarCarga(p)}
                             style={{background:'none',border:`0.5px solid rgba(220,38,38,0.3)`,
                               borderRadius:4,padding:'1px 6px',fontSize:9,color:C.red,cursor:'pointer',flexShrink:0}}>
@@ -22295,10 +22466,19 @@ function Nomina({obra, rol, onHistorialCambio}) {
                   )}
                   <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(90px,1fr))',gap:6}}>
                     {[
-                      ['Personal',sem.totalDir+sem.totalInd,deltaP!==0?`${deltaP>0?'+':''}${deltaP}`:'',C.caliza],
-                      ['Directo',sem.totalDir,'',C.blue],
-                      ['Indirecto',sem.totalInd,'',C.purple],
-                      ['Total nómina',MXN(sem.totalNomina),deltaTot!==0?MXND(deltaTot):'',deltaTot>0?C.yellow:C.caliza],
+                      ['Personal',pSem.total === null ? 'sin conteo' : pSem.total,
+                        deltaP!==0?`${deltaP>0?'+':''}${deltaP}`
+                          : pSem.fuente === 'listado' ? 'del listado' : '',
+                        pSem.total === null ? C.textMut : C.caliza],
+                      ['Directo',pSem.dir === null ? '—' : pSem.dir,'',
+                        pSem.dir === null ? C.textMut : C.blue],
+                      ['Indirecto',pSem.ind === null ? '—' : pSem.ind,'',
+                        pSem.ind === null ? C.textMut : C.purple],
+                      ['Total nómina',
+                        typeof sem.totalNomina === 'number' ? MXN(sem.totalNomina) : 'sin dato',
+                        deltaTot!==0?MXND(deltaTot):'',
+                        typeof sem.totalNomina !== 'number' ? C.textMut
+                          : deltaTot>0?C.yellow:C.caliza],
                       ['Horas extra',MXN(heImporte(sem)),'',C.orange],
                     ].map(([l,v,sub,col])=>(
                       <div key={l} style={{background:C.card,borderRadius:6,padding:'6px 8px'}}>

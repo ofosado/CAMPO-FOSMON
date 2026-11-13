@@ -591,8 +591,18 @@ function correr(codigo) {
   check(con.avanceDelta?.[idxF] === null,
     'y la constructora tampoco',
     `idx ${idxF}: ${con.avanceDelta?.[idxF]}`);
-  check(gd.avance.filter(v => typeof v === 'number').length === 10,
-    'y la serie no se corta: el tramo viejo sigue dibujado, punteado');
+  // La frontera no CORTA la serie: del primer cierre en adelante todas las
+  // semanas traen número, incluidas las del esquema viejo. Esto se afirmaba
+  // sobre las 10 semanas de la ventana, y las dos que están ANTES del primer
+  // cierre pasaban por la razón equivocada: la cuenta las aplanaba a 0% y un
+  // «0.0%» que nadie midió contaba como «dibujada» (#113). Ahora llegan en
+  // null y lo que se mide es lo que la sección dice medir.
+  const i0 = gd.idxPrimerAvance;
+  check(i0 > 0
+        && gd.avance.slice(i0).every(v => typeof v === 'number')
+        && gd.avance.slice(0, i0).every(v => v === null),
+    'y la serie no se corta: del primer cierre en adelante el tramo viejo sigue dibujado, punteado',
+    `idx ${i0} … 9 con número; antes, ${i0} semana(s) sin medir`);
 
   // ── 6 · EL ÚLTIMO RENGLÓN DE LA TABLA CUADRA ─────────────────────────────
   // Una cuenta por número: si el margen de la última fila no es su ejecutado

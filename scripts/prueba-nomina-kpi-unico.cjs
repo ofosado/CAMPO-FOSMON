@@ -103,18 +103,28 @@ check(sinAlias.totalHE === undefined,
 
 // ── 4. Los dos conteos de personal, con nombre ────────────────────────────
 console.log('\n4. Los dos conteos de personal siguen ahí, ya no confundibles');
-for (const n of ['enListado', 'conPago', 'heActual', 'pctHE'])
+// En orden de dependencia, que es el que tienen en el archivo. `enListado` ya
+// no cuenta por su cuenta: lee `persActual`, que sale de `personalDeSemana` —la
+// misma cuenta del KPI del tablero y del portafolio—. Se traen las dos, y el
+// helper se trae del módulo EJECUTABLE: copiar aquí la cuenta del personal
+// sería comprobar esta prueba contra sí misma, y es justo la cuenta que puede
+// volver a aplanar a cero una semana que nadie midió (#116).
+const PEDIDOS = ['persActual', 'enListado', 'conPago', 'heActual',
+  'trabsActual', 'nominaActual', 'pctHE'];
+for (const n of PEDIDOS)
   if (!enNomina[n]) check(false, `se pudo extraer \`${n}\` de Nomina()`);
 if (fallas) { console.log(`\n${fallas} comprobación(es) en rojo.`); process.exit(1); }
+if (!global['personalDeSemana']) noArranco(['personalDeSemana']);
 
-const calcular = semanaActual => new Function('semanaActual', 'heImporte', `
+const personalDeSemana = new Function(
+  `"use strict"; return ${global['personalDeSemana']};`)();
+
+const calcular = semanaActual => new Function(
+  'semanaActual', 'heImporte', 'personalDeSemana', `
   "use strict";
-  const enListado = ${enNomina['enListado']};
-  const conPago   = ${enNomina['conPago']};
-  const heActual  = ${enNomina['heActual']};
-  const pctHE     = ${enNomina['pctHE']};
-  return { enListado, conPago, heActual, pctHE };
-`)(semanaActual, heImporte);
+  ${PEDIDOS.map(n => `const ${n} = ${enNomina[n]};`).join('\n  ')}
+  return { enListado, conPago, heActual, pctHE, nominaActual };
+`)(semanaActual, heImporte, personalDeSemana);
 
 // Los números reales del último cierre de la 0125 (Semana 37): 106 directos,
 // 37 indirectos = 143 en el listado; 141 con algo cobrado. Los 2 de
@@ -136,6 +146,33 @@ check(viejo.enListado === 43, 'un snapshot sin trabajadores conserva el conteo d
 check(viejo.conPago === null,
   'y NO inventa un "con pago" de 0, que se leería como que nadie cobró',
   String(viejo.conPago));
+
+// Y la simétrica, que es la que se acaba de arreglar: un snapshot que no trae
+// NINGUNO de los dos —ni el desglose ni el listado— no tiene conteo. La unión
+// de partes lo aplanaba a 0 y «0 en listado» se lee como una semana sin gente,
+// que es un hecho sobre la obra; el único hecho es que nadie lo midió (#116).
+const sinConteo = calcular({ totalNomina: 153833 });
+check(sinConteo.enListado === null,
+  'sin desglose y sin listado no hay conteo, y no se publica un 0 en su lugar',
+  String(sinConteo.enListado));
+check(sinConteo.nominaActual === 153833,
+  'lo que SÍ trae el snapshot sigue publicándose — el hueco es del conteo, no de la semana');
+
+// Y el caso que la siembra del preview produce sola, que es el que se vio en
+// pantalla: desglose SÍ, listado nominal NO. `semanasDeNomina` entrega siempre
+// un arreglo de trabajadores —vacío si ningún archivo lo trajo—, así que el
+// filtro de «quién cobró» corría sobre el vacío y daba 0: «34 · 0», cero
+// personas cobrando en una semana de medio millón de pesos. Un arreglo vacío no
+// es un listado de nadie, es la falta del listado.
+const sinListado = calcular({ totalDir: 26, totalInd: 8, totalNomina: 486000,
+  trabajadores: [] });
+check(sinListado.enListado === 34,
+  'con desglose y sin listado el conteo es el del desglose', String(sinListado.enListado));
+check(sinListado.conPago === null,
+  'y «con pago» no se contesta contando un listado vacío — se queda sin cifra',
+  String(sinListado.conPago));
+check(sinListado.nominaActual === 486000,
+  'la semana sigue costando lo que costó');
 
 console.log('\n5. El color de horas extra avisa por proporción, no solo por delta');
 check(Math.abs(r.pctHE - 1.136) < 0.01, `0125 al ${r.pctHE.toFixed(2)}% de la nómina`);
