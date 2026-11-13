@@ -43,6 +43,7 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 const noArranco = require('./no-arranco.cjs');
 const { sinPrecondicion } = noArranco;
+const { fuenteDe } = require('./extraer-de-app.cjs');
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
 noArranco.vigilarExcepciones(archivo);
@@ -115,8 +116,16 @@ if (sinAtributo.length)
 // justo lo que la pantalla recibe por props. Si la cadena pide cualquier otra
 // cosa —un `useState`, una lectura a Firestore—, esto NO es rojo: es que la
 // cuenta ya no se puede aislar y hay que medirla de otra forma.
+//
+// Lo que SÍ se resuelve es un helper del módulo: `PERMISOS` ya lo era, y el
+// 2026-11-12 la cuenta de la pantalla pasó a apoyarse en `obrasDeLaSesion`
+// —el mismo cálculo que ahora usa también la carga a granel (#62)—. Con la
+// lista de helpers tecleada a mano (`DEL_MODULO = ['PERMISOS']`), ese cambio
+// dejó al banco diciendo «la cuenta ya no se puede aislar» cuando lo único que
+// pasó es que se dejó de repetir en tres sitios. Se pide por `fuenteDe`, que
+// cierra transitivamente: una lista a mano es una copia del grafo de
+// dependencias, y las copias se desincronizan.
 const ENTRADAS = ['usuario', 'obras'];
-const DEL_MODULO = ['PERMISOS'];
 const GLOBALES = new Set(['Array', 'Object', 'Math', 'JSON', 'Boolean', 'Number',
   'String', 'Set', 'Map', 'undefined', 'NaN']);
 
@@ -168,21 +177,30 @@ const referenciados = (nodo) => {
   return fuera;
 };
 
+// ¿Es un símbolo de nivel superior del archivo? Se le pregunta al portón, que
+// es quien sabe; preguntárselo a una lista es volver a la copia.
+const delModulo = (nombre) =>
+  fuenteDe(archivo, [nombre], { tolerante: true }).faltan.length === 0;
+
 const ejecutable = (nodo, etiqueta) => {
   const orden = [];           // nombres locales en orden de dependencia
+  const delArchivo = new Set();
   const pendientes = [nodo];
   const vistos = new Set();
   while (pendientes.length) {
     const n = pendientes.pop();
     for (const nombre of referenciados(n)) {
-      if (GLOBALES.has(nombre) || ENTRADAS.includes(nombre) || DEL_MODULO.includes(nombre)) continue;
-      if (vistos.has(nombre)) continue;
-      if (!locales.has(nombre))
+      if (GLOBALES.has(nombre) || ENTRADAS.includes(nombre)) continue;
+      if (vistos.has(nombre) || delArchivo.has(nombre)) continue;
+      if (!locales.has(nombre)) {
+        if (delModulo(nombre)) { delArchivo.add(nombre); continue; }
         sinPrecondicion(
-          `para saber qué obras recibe ${etiqueta} hace falta \`${nombre}\`, que no es un const de PantallaObras`,
+          `para saber qué obras recibe ${etiqueta} hace falta \`${nombre}\`, que no es`
+          + ' ni un `const` de PantallaObras ni un símbolo del módulo',
           ['La cuenta dejó de depender sólo de `usuario` y `obras`. Medirla aquí',
            'daría un número sacado de un sandbox incompleto, que es peor que no',
            'medirla. Hay que llevar esta comprobación al preview.']);
+      }
       vistos.add(nombre);
       orden.unshift(nombre);
       pendientes.push(locales.get(nombre));
@@ -192,8 +210,13 @@ const ejecutable = (nodo, etiqueta) => {
   // declara después.
   const unicos = [...new Set(orden)].sort((a, b) => locales.get(a).start - locales.get(b).start);
   const cuerpo = unicos.map(n => `  const ${n} = ${texto(locales.get(n))};`).join('\n');
-  return new Function('PERMISOS', 'usuario', 'obras',
-    `"use strict";\n${cuerpo}\n  return (${texto(nodo)});`);
+  // Los helpers del módulo van ARRIBA, con sus dependencias resueltas por el
+  // portón. `PERMISOS` entra por aquí y por eso ya no es un parámetro: una
+  // declaración y un parámetro con el mismo nombre no caben en la misma
+  // función, y el que tiene que ganar es el del archivo.
+  const delMod = delArchivo.size ? fuenteDe(archivo, [...delArchivo]).cuerpo : '';
+  return new Function('usuario', 'obras',
+    `"use strict";\n${delMod}\n${cuerpo}\n  return (${texto(nodo)});`);
 };
 
 const fn = {};
@@ -217,7 +240,7 @@ const paraRol = (rol, asignadas) => {
   const u = { rol, tipo, uid: 'u1' };
   if (asignadas !== undefined) u.obras_asignadas = asignadas;
   const comp = tipo === 'dependencia' ? 'PortafolioDependencia' : 'DashboardPrincipal';
-  return { lista: fn[comp](PERMISOS, u, OBRAS), comp };
+  return { lista: fn[comp](u, OBRAS), comp };
 };
 
 console.log('El concentrado recibe:');
@@ -306,7 +329,7 @@ seccion('Todo rol con consolidado');
 
   // Un rol que la tabla no conoce: `PERMISOS[rol]?.todas_obras` sale undefined
   // y debe caer del lado restrictivo, no del permisivo.
-  const desconocido = fn['DashboardPrincipal'](PERMISOS,
+  const desconocido = fn['DashboardPrincipal'](
     { rol: 'auditor_externo_nuevo', tipo: 'constructora', obras_asignadas: ['0112'] }, OBRAS);
   check(ids(desconocido) === '0112',
     'un rol que PERMISOS no conoce cae del lado restrictivo', ids(desconocido));
@@ -322,12 +345,18 @@ seccion('Todo rol con consolidado');
 // el otro qué se pinta.
 seccion('Qué se le pide a Firestore');
 {
-  let efecto = null;
+  let efecto = null, corteDirectivo = null;
   traverse(ast, {
     CallExpression(p) {
       if (p.node.callee.name !== 'useEffect') return;
       const t = texto(p.node.arguments[0] || {});
-      if (/esDirectivo/.test(t) && /obras_asignadas/.test(t)) efecto ||= t;
+      if (!/esDirectivo/.test(t) || !/obras_asignadas/.test(t)) return;
+      if (efecto) return;
+      efecto = t;
+      p.get('arguments.0').traverse({ VariableDeclarator(q) {
+        if (q.node.id.name === 'esDirectivo' && q.node.init)
+          corteDirectivo ||= texto(q.node.init);
+      }});
     },
   });
   if (!efecto)
@@ -335,9 +364,29 @@ seccion('Qué se le pide a Firestore');
       'no encontré el efecto que decide qué obras se le piden a Firestore',
       ['Se reescribió la carga de obras. Mientras no se vuelva a apuntar, este',
        'banco sólo mide el segundo cerrojo.']);
+  if (!corteDirectivo)
+    sinPrecondicion(
+      'el efecto de carga ya no decide con un `esDirectivo` que se pueda aislar',
+      ['Sin poder EJECUTAR ese corte, lo único que quedaría es comparar su texto,',
+       'y un texto que cambia de forma sin cambiar de conducta deja el banco',
+       'rojo por nada — o verde por nada, que es peor.']);
 
-  check(/PERMISOS\[usuario\.rol\]\?\.todas_obras === true/.test(efecto),
-    'quién lista la colección completa lo decide `todas_obras`, no una lista de roles aparte');
+  // Se EJECUTA contra la tabla de permisos entera, en vez de comparar el texto
+  // del corte. El texto era `PERMISOS[usuario.rol]?.todas_obras === true`, y el
+  // 2026-11-12 pasó a `veTodasLasObras(usuario)` —la misma cuenta, con nombre,
+  // compartida con la pantalla y con el granel (#62)—: una comprobación por
+  // cadena habría puesto esto en rojo sin que nadie viera una obra de más.
+  const esDirectivoDe = new Function('usuario',
+    `"use strict";\n${fuenteDe(archivo, ['PERMISOS', 'veTodasLasObras']).cuerpo}\n`
+    + `return !!(${corteDirectivo});`);
+  const discrepan = Object.keys(PERMISOS).filter(rol =>
+    esDirectivoDe({ rol, tipo: 'constructora' }) !== (PERMISOS[rol].todas_obras === true));
+  check(discrepan.length === 0,
+    'quién lista la colección completa lo decide `todas_obras`, no una lista de roles aparte',
+    discrepan.length ? discrepan.join(' · ') : `${Object.keys(PERMISOS).length} roles de acuerdo`);
+  check(esDirectivoDe({ rol: 'rol_que_nadie_dio_de_alta' }) === false
+        && esDirectivoDe(null) === false,
+    'y un rol que la tabla no conoce —o ninguna sesión— no lista la colección entera');
   check(/collObra\(\)/.test(efecto) && /docObra\(/.test(efecto),
     'hay dos caminos: colección completa para directivos, documento por documento para los demás');
   // Lo que importa: el `getDocs` de la colección entera vive DENTRO de la rama

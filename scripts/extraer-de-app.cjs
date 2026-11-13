@@ -197,6 +197,43 @@ function fuenteDe(archivo, nombres, { tolerante = false, excluir = [] } = {}) {
   };
 }
 
+// El cuerpo que un trozo EXTRAÍDO POR SITIO necesita para ejecutarse, sin que
+// el banco enumere nada.
+//
+// `fuenteDe` sirve cuando el banco sabe qué pedir. Esto es para el otro caso, y
+// es el que se desincroniza: un trozo que vive DENTRO de un componente —el
+// argumento de un `useEffect`, un `logout`— no se puede pedir por nombre, así
+// que se saca por dónde vive, y entonces hay que darle de comer. Hasta hoy esos
+// bancos tecleaban a mano los símbolos de módulo que el trozo usa, que es la
+// misma segunda copia del grafo contra la que existe este módulo. Y falló igual:
+// el 2026-11-12 el efecto de cargar obras adoptó `veTodasLasObras` —para dejar
+// de contar las obras de tres maneras— y `prueba-alta-de-organizacion` salió NO
+// ARRANCÓ con un `is not defined`, sin medir nada y por una causa ajena a todo
+// lo que mide.
+//
+// Es tolerante a propósito: lo que el trozo nombra y no está declarado arriba
+// son sus propias variables locales. Lo que de verdad falte sale como `is not
+// defined` al ejecutar, ruidoso y con renglón.
+//
+// `excluir` son los nombres que el banco INYECTA con un doble: tienen que
+// quedar fuera del cuerpo —si se declaran dentro, la declaración de verdad pisa
+// al doble y el banco mide la app en lugar de medir con su doble— y tampoco
+// arrastran sus dependencias.
+//
+// Un trozo extraído por sitio viene en una de dos formas: una EXPRESIÓN —la
+// flecha de un `useEffect`, un `logout`— o una LISTA DE SENTENCIAS —el `try`
+// que resuelve la organización dentro de `handleLogin`—. Las dos se envuelven
+// en una flecha asíncrona, por dos razones: para que el parser las acepte tal
+// como salieron del archivo, y para que lo que el trozo DECLARA quede atado. Lo
+// que declara es suyo; pedirlo al archivo sería inventarle una carencia.
+function cierreDe(fuente, { archivo = ARCHIVO, excluir = [] } = {}) {
+  const { libresDe } = indexar(archivo);
+  let libres;
+  try { libres = libresDe(`(async () => (${fuente}))`); }
+  catch { libres = libresDe(`(async () => { ${fuente} })`); }
+  return fuenteDe(archivo, [...libres], { tolerante: true, excluir }).cuerpo;
+}
+
 // Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya
 // ejecutables, con sus dependencias de nivel superior resueltas.
 function deArchivo(archivo, ...nombres) {
@@ -220,6 +257,6 @@ const deFunciones = (...nombres) => deArchivo(ARCHIVO_FUNCIONES, ...nombres);
 const fuenteDeApp = (nombres, opciones) => fuenteDe(ARCHIVO, nombres, opciones);
 
 module.exports = {
-  deApp, deFunciones, deArchivo, fuenteDe, fuenteDeApp,
+  deApp, deFunciones, deArchivo, fuenteDe, fuenteDeApp, cierreDe,
   SimboloPerdido, ARCHIVO, ARCHIVO_FUNCIONES,
 };
