@@ -858,14 +858,31 @@ async function generarPDFInterno({
 
   const cm = comportamientoMargen;
   if (cm.renglones.length) {
-    // El tramo, en una línea, antes de la tabla: de cuánto a cuánto y en
-    // cuántas semanas. Las tres cifras salen de `comportamientoDelMargen`.
-    st(Q.ng); fs(FS_SEC); fw('bold');
-    T(`${cm.cola} semanas seguidas con las dos líneas en el mismo corte`, ML, y+4);
-    st(Q.tx); fs(FS_SM); fw('normal');
-    T(`${PCT(cm.desde)} → ${PCT(cm.hasta)} · ${PP(cm.delTramo)} en el tramo`,
-      PW-MR, y+4, {align:'right'});
-    y += 8;
+    // EL TRAMO SE AFIRMA SÓLO SI ALCANZA. El titular salía siempre, en
+    // negritas —«3 semanas seguidas con las dos líneas en el mismo corte», y al
+    // lado «4.6% → 2.2% · −2.4 pp en el tramo»—, y tres notas más abajo el
+    // mismo papel admitía que ese tramo no alcanzaba para hablar de tendencia.
+    // Lo que se le queda al lector es el titular, no la nota: el documento
+    // afirmaba y se desdecía en la misma hoja (#135). Cuando no alcanza, lo
+    // primero que se lee es el motivo y el recorrido no se publica en ninguna
+    // parte — ni el de cuánto a cuánto, ni en cuántas semanas.
+    if (cm.suficiente) {
+      // El tramo, en una línea, antes de la tabla: de cuánto a cuánto y en
+      // cuántas semanas. Las tres cifras salen de `comportamientoDelMargen`.
+      st(Q.ng); fs(FS_SEC); fw('bold');
+      T(`${cm.cola} semanas seguidas con las dos líneas en el mismo corte`, ML, y+4);
+      st(Q.tx); fs(FS_SM); fw('normal');
+      T(`${PCT(cm.desde)} → ${PCT(cm.hasta)} · ${PP(cm.delTramo)} en el tramo`,
+        PW-MR, y+4, {align:'right'});
+      y += 8;
+    } else {
+      // LA TABLA SÍ SE DIBUJA: cada renglón es una semana MEDIDA y se lee sola.
+      // Lo que no existe es el recorrido entre la primera y la última, y eso es
+      // lo que se dice antes de que el lector vea las cifras.
+      y = nota(`Esta tabla no dice hacia dónde va el margen: ${cm.motivo}. Cada renglón `
+        + 'es una semana medida y se lee sola; el recorrido entre la primera y la última no se '
+        + 'publica, porque tan pocas semanas no alcanzan para señalar una dirección.', y);
+    }
 
     const cuerpo = cm.renglones.map(r => [
       r.label || '—',
@@ -889,8 +906,6 @@ async function generarPDFInterno({
         + 'no de obra.', y);
     if (cm.peorSemana && cm.peorSemana.delta < 0)
       y = nota(`La peor semana del tramo es ${cm.peorSemana.label}, con ${PP(cm.peorSemana.delta)}.`, y);
-    if (!cm.suficiente)
-      y = nota(`El tramo no alcanza para hablar de tendencia: ${cm.motivo}.`, y);
   } else {
     // SIN TRAMO NO SE DIBUJA UNA TABLA VACÍA NI SE IMPRIME UN CERO: se imprime
     // el motivo, que es el dato que hay.

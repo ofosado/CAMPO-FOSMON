@@ -275,6 +275,25 @@ const SIN_FECHA = armar({
   grandTotal: 21400000,
 });
 
+// 4 · TRAMO CORTO: el gasto está medido y fechado como en el caso limpio, pero
+//     el PRIMER corte de avance cae en la penúltima semana de la ventana. Es la
+//     forma de una obra recién capturada, y es lo que deja `cola: 2` con
+//     `suficiente: false`.
+//
+// POR QUÉ ESTE CASO Y NO EL CALENDARIO. La §C ya tenía una rama para el tramo
+// corto, pero sólo muerde en las primeras semanas de enero —cuando GP no puede
+// detallar cuatro semanas del año en curso—, y una aserción que sólo corre tres
+// semanas al año es una aserción que no corre. Aquí el tramo se acorta por el
+// lado del AVANCE, que el caso sí controla: `margen` arranca en
+// `idxPrimerAvance`, así que sin cortes anteriores el porcentaje semanal es
+// `null` antes de la penúltima y la cola contigua mide dos, cualquier día del
+// año y con el reloj puesto donde sea.
+const TRAMO_CORTO = armar({
+  ejec:      Array.from({ length: N }, (_, i) =>
+               i >= N - 2 ? 12000000 + 1800000 * i : null),
+  gastoAcum: sube(8000000, 2100000),
+});
+
 (async () => {
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -386,12 +405,8 @@ if (!hayTramoPosible) {
   // cuenta de semanas que le faltan.
   ok(todos.some(t => t.includes(enLaHoja(cm.motivo))),
     `y el papel publica el motivo que la curva declaró: «${cm.motivo}»`);
-  // FALTA AQUÍ la otra mitad: que el papel NO afirme el tramo. Hoy sí lo
-  // afirma —medido con el reloj en 2027-01-19, la sección 4 imprime «3
-  // semanas seguidas con las dos líneas en el mismo corte» y debajo «4.6% ->
-  // 2.2% · -2.4 pp en el tramo», que es exactamente la tendencia que acaba de
-  // decir que no puede medir—. Es un defecto del producto, no del caso, así
-  // que va en su propia rama y la aserción entra con el arreglo: #135.
+  // La otra mitad —que el papel NO afirme el tramo— se mide abajo, sobre un
+  // caso que la controla todos los días del año y no sólo en enero.
 }
 
 ok(!hayTramoPosible || (cm.renglones.length >= 4 && cm.suficiente === true),
@@ -450,6 +465,94 @@ if (hayTramoPosible) {
   ok(todos.some(t => new RegExp(`${cm.cola} semanas seguidas`).test(t)),
     `y en cuántas semanas: ${cm.cola}`);
 }
+
+// ── C-bis · EL TRAMO QUE NO ALCANZA NO SE AFIRMA  (#135) ───────────────────
+// El papel imprimía el titular del tramo SIEMPRE que hubiera un renglón, y
+// tres notas más abajo admitía que ese tramo no alcanzaba para hablar de
+// tendencia. Las dos cosas en la misma hoja: la de arriba en negritas y la de
+// abajo en letra chica. Lo que se afirma aquí es que cuando
+// `comportamientoDelMargen` dice `suficiente: false`, el recorrido no sale —ni
+// de cuánto a cuánto, ni en cuántas semanas— y el motivo va delante de las
+// cifras, no detrás.
+console.log('');
+const dCorto = datosDe(TRAMO_CORTO);
+const eCorto = esperadoDe(dCorto);
+const cmCorto = eCorto.cm;
+
+// PRECONDICIÓN, NO ASERCIÓN. Las dos negativas de abajo se cumplen por vacío
+// sobre cualquier caso que no tenga tramo corto —sin renglones no hay titular
+// que buscar—, así que si el caso deja de producirlo esto es NO ARRANCÓ (2) y
+// no un verde. Es la misma razón por la que la ventana se revisa arriba.
+if (!(cmCorto.renglones.length > 0 && cmCorto.suficiente === false
+      && eCorto.curva.gastoSinFechar === false
+      && eCorto.curva.gastoMedido === true)) {
+  console.error(`\nNO ARRANCÓ: el caso del tramo corto salió con `
+    + `${cmCorto.renglones.length} renglón(es), suficiente=${cmCorto.suficiente}, `
+    + `gasto medido=${eCorto.curva.gastoMedido}, sin fechar=${eCorto.curva.gastoSinFechar}. `
+    + 'Hace falta un tramo CORTO Y REAL —gasto medido y fechado, cola por debajo del '
+    + 'mínimo— o las dos negativas de esta sección se cumplen por vacío.');
+  process.exit(2);
+}
+
+const hojaCorto = await dibujar(dCorto);
+const textosCorto = hojaCorto.map(x => x.texto);
+ok(cmCorto.cola > 0 && cmCorto.cola < cmCorto.minimo,
+  `el caso del tramo corto trae ${cmCorto.cola} semana(s) de cola contra las `
+  + `${cmCorto.minimo} que pide el reporte`);
+
+// La tabla del margen, que es lo que ancla la sección: se la pide por su
+// columna «Margen %», la única del documento.
+const tablaCorto = hojaCorto.find(x => x.tabla && x.texto === 'Margen %');
+const iTablaCorto = hojaCorto.indexOf(tablaCorto);
+
+// (a) El motivo SÍ se publica, Y DELANTE DE LAS CIFRAS. Hacia adentro un hueco
+// es lo que sirve para ir a cerrarlo, y éste dice cuántas semanas faltan.
+//
+// SE BUSCA EN SU SECCIÓN, no en el documento entero: el motivo del margen sale
+// TAMBIÉN en la §6, como el «por qué no se pudo medir» de la regla de riesgo
+// que lee esta misma cuenta. Buscarlo en toda la hoja dejaba la comprobación
+// satisfecha por esa otra tabla —medido: la mutación que borra el motivo de la
+// §4 salía en verde—, y entonces la §4 podía callarse sin que nada lo viera.
+const antesDeLaTabla = iTablaCorto > 0
+  ? textoCorrido(hojaCorto.slice(0, iTablaCorto)
+      .filter(x => x.pagina === tablaCorto.pagina)).map(d => d.texto)
+  : [];
+ok(antesDeLaTabla.some(t => t.includes(enLaHoja(cmCorto.motivo))),
+  `la sección publica el motivo ANTES de la tabla: «${cmCorto.motivo}»`);
+
+// (b) El titular en negritas NO sale. Se busca la frase que imprimía, armada
+// con la cola de ESTE caso: tecleada, dejaría de verse el día que cambie.
+const TITULAR = enLaHoja(
+  `${cmCorto.cola} semanas seguidas con las dos líneas en el mismo corte`);
+ok(!textosCorto.includes(TITULAR),
+  `y NO titula «${TITULAR}» sobre una serie que acaba de declarar insuficiente`);
+// Ni con otra cuenta de semanas. La frase se busca ANCLADA, como renglón
+// entero: el MOTIVO que el papel sí publica la contiene —«sólo hay 2 semanas
+// seguidas con las dos líneas en el mismo corte, y se necesitan 4»— y un
+// `includes` suelto acusaría al papel de titular justo donde se está
+// desdiciendo. Lo que no puede existir es el titular SOLO.
+ok(!textosCorto.some(t =>
+    new RegExp(`^\\d+ semanas? seguidas? con las dos l${enLaHoja('í')}neas en el mismo corte$`)
+      .test(t.trim())),
+  'ni con otra cuenta de semanas: el titular suelto no está en la hoja');
+
+// (c) Ni el recorrido de cuánto a cuánto. Es la cifra que el preview encontró
+// publicada al lado de su propio desmentido.
+const FLECHA_CORTO = enLaHoja('→');
+const recorrido = textosCorto.find(t => t.includes(FLECHA_CORTO) && /pp/.test(t));
+ok(!recorrido,
+  'no publica el recorrido del tramo en ninguna parte'
+  + (recorrido ? ` — salió «${recorrido}»` : ''));
+
+// (d) Y LA TABLA SIGUE AHÍ. Cada renglón es una semana MEDIDA y se lee sola;
+// callarla también sería perder el dato que sí hay, que es lo contrario de lo
+// que este papel existe para hacer.
+const celdasCorto = tablaCorto ? hojaCorto.filter(x => x.tabla === tablaCorto.tabla) : [];
+const faltanSem = cmCorto.renglones.map(r => r.label)
+  .filter(l => !celdasCorto.some(c => c.celda === 0 && c.texto === l));
+ok(!!tablaCorto && faltanSem.length === 0,
+  `la tabla sigue dibujando las ${cmCorto.renglones.length} semanas medidas`
+  + (faltanSem.length ? ` — faltan ${faltanSem.join(', ')}` : ''));
 
 // ══════════════════════════════════════════════════════════════════════════
 // D · LOS TRES ESTADOS DEL RIESGO, LOS TRES IMPRESOS
@@ -637,6 +740,16 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         "    ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(1)} pp`;",
         "    ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(1)}%`;") },
+    // Las dos mitades del #135, una mutación cada una: el titular que vuelve a
+    // salir sobre una serie insuficiente, y el motivo que se calla.
+    { nombre: 'el titular del tramo vuelve a salir aunque la cola no alcance',
+      hacer: () => src.replace(
+        '    if (cm.suficiente) {',
+        '    if (true) {') },
+    { nombre: 'la tabla corta se queda sola y el papel se calla por qué no hay tendencia',
+      hacer: () => src.replace(
+        '      y = nota(`Esta tabla no dice hacia dónde va el margen: ${cm.motivo}. Cada renglón `',
+        '      y = nota(`Margen semana a semana. Cada renglón `') },
     { nombre: 'el renglón sin con qué compararse imprime «+0.0 pp» en vez de raya',
       hacer: () => src.replace(
         '  const PP = (n) => n === null || n === undefined || !Number.isFinite(n)',
