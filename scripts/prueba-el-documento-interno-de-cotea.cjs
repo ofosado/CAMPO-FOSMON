@@ -149,16 +149,33 @@ const armar = ({ ejec, gastoAcum, grandTotal = null, conGP = true }) => {
     historialAvance.push({ tipo: 'oficial', año: SEMS[i].año, semana: SEMS[i].sem,
                            avance: 10, avancePonderado: 10, montoEjecutado: m });
   });
+  // EL GASTO, COMO GP LO MANDA. La hoja no desglosa los años cerrados: los
+  // manda sumados en `años` y sólo detalla las semanas del año en curso. No es
+  // una simplificación del caso, es una imposibilidad del origen — las claves
+  // de `semanas` van sin año (`S42` a secas, el #47), así que una semana de
+  // diciembre metida ahí el producto la fecha en el año en curso y la manda al
+  // futuro. Poner las doce semanas de la ventana en `semanas` fabricaba una
+  // hoja que GP no puede producir, y de enero a marzo eso sacaba la mitad de
+  // la serie de su sitio.
   const semanasGP = {};
+  let gastadoEnAñosCerrados = 0;
   let prev = 0;
-  gastoAcum.forEach((g, i) => { semanasGP[`S${SEMS[i].sem}`] = g - prev; prev = g; });
+  gastoAcum.forEach((g, i) => {
+    if (SEMS[i].año === AÑO) semanasGP[`S${SEMS[i].sem}`] = g - prev;
+    else gastadoEnAñosCerrados = g;   // el acumulado hasta el último año cerrado
+    prev = g;
+  });
+  const añosGP = {};
+  if (gastadoEnAñosCerrados > 0) añosGP[`Y${AÑO - 1}`] = gastadoEnAñosCerrados;
   const gpData = conGP ? {
     ultimaSemana: `S${SEMS[N - 1].sem}`,
-    semanasDisponibles: SEMS.map(s => ({ año: s.año, semana: s.sem })),
+    // GP sólo publica las semanas que trae detalladas.
+    semanasDisponibles: SEMS.filter(s => s.año === AÑO).map(s => ({ año: s.año, semana: s.sem })),
     obrasPedidas: [OBRA_BASE.gpId],
     obras: { [OBRA_BASE.gpId]: {
       id: OBRA_BASE.gpId, nombre: OBRA_BASE.nombre,
       grandTotal: grandTotal === null ? prev : grandTotal,
+      años: añosGP,
       semanas: semanasGP,
     } },
   } : null;
@@ -224,11 +241,21 @@ const dibujar = async (d) => {
 // ── LOS TRES CASOS ─────────────────────────────────────────────────────────
 // 1 · MEDIDA Y LIMPIA: gasto fechado semana por semana, `grandTotal` igual a la
 //     suma de las semanas, y un corte de avance en cada una. Es el caso con
-//     tramo: doce renglones de margen.
+//     tramo: un renglón de margen por cada semana dibujada.
+//
+// EL MARGEN TIENE QUE CAER FUERTE, no sólo caer. `fin_007` dispara con una
+// caída de 3 pp o más EN EL TRAMO, y el tramo no mide doce semanas todo el
+// año: de enero a marzo la parte dibujada es sólo la del año en curso, porque
+// los años cerrados llegan sumados y sin semana. Con la pendiente de antes
+// —$1.5M por semana contra $1.8M de ejecutado— el margen caía 5.2 pp en doce
+// semanas pero sólo 1.6 pp en siete, así que en febrero no disparaba ningún
+// riesgo y la §D se quedaba sin un solo detectado que mirar. Con $2.1M cae
+// 3.9 pp aun en el tramo más corto que la §C acepta (cuatro semanas), y sigue
+// siendo un margen positivo: el caso «limpio» no se vuelve una catástrofe.
 const sube = (base, paso) => Array.from({ length: N }, (_, i) => base + paso * i);
 const LIMPIA = armar({
   ejec:      sube(12000000, 1800000),
-  gastoAcum: sube(9000000, 1500000),
+  gastoAcum: sube(8000000, 2100000),
 });
 
 // 2 · SIN MEDIR: no hay documento de gasto. El margen no se puede afirmar.
@@ -339,7 +366,35 @@ if (hoyLarga === selloDeTiempo(SELLO).fecha) {
 console.log('\n── C · el margen semana a semana ─────────────────────────────');
 
 const cm = eLimpia.cm;
-ok(cm.renglones.length >= 4 && cm.suficiente === true,
+
+// CUÁNTAS SEMANAS DE LA VENTANA PUEDE GP DETALLAR: las del año en curso, y
+// nada más. En las primeras semanas de enero son una o dos, y entonces no hay
+// tramo que medir — no porque el caso sea pobre, sino porque el origen no
+// manda el desglose de los años cerrados. Lo que se exige ahí es lo contrario
+// y es igual de duro: que el papel NO afirme una tendencia que no puede
+// sostener. Medido con el reloj en 2027-01-05: una sola semana detallable.
+//
+// No es un «esta comprobación no acota»: las dos ramas afirman conducta, y la
+// que corre cada día la decide el calendario, no el caso.
+const detallables = SEMS.filter(s => s.año === AÑO).length;
+const hayTramoPosible = detallables >= cm.minimo;
+
+if (!hayTramoPosible) {
+  ok(cm.suficiente === false,
+    `GP sólo puede detallar ${detallables} semana(s) de la ventana: no hay tramo que medir`);
+  // Lo que SÍ tiene que salir es el motivo que la curva declaró, con todo y la
+  // cuenta de semanas que le faltan.
+  ok(todos.some(t => t.includes(enLaHoja(cm.motivo))),
+    `y el papel publica el motivo que la curva declaró: «${cm.motivo}»`);
+  // FALTA AQUÍ la otra mitad: que el papel NO afirme el tramo. Hoy sí lo
+  // afirma —medido con el reloj en 2027-01-19, la sección 4 imprime «3
+  // semanas seguidas con las dos líneas en el mismo corte» y debajo «4.6% ->
+  // 2.2% · -2.4 pp en el tramo», que es exactamente la tendencia que acaba de
+  // decir que no puede medir—. Es un defecto del producto, no del caso, así
+  // que va en su propia rama y la aserción entra con el arreglo: #135.
+}
+
+ok(!hayTramoPosible || (cm.renglones.length >= 4 && cm.suficiente === true),
   `la serie del caso limpio trae ${cm.renglones.length} semanas de tramo, con las `
   + `${cm.minimo} que pide el reporte`);
 
@@ -349,7 +404,9 @@ const tablaMargen = (() => {
   const conCabecera = hojaLimpia.filter(x => x.tabla && x.texto === 'Margen %');
   return conCabecera.length ? conCabecera[0].tabla : null;
 })();
-if (tablaMargen === null) {
+if (!hayTramoPosible) {
+  // ya medido arriba: sin tramo posible no hay tabla que revisar
+} else if (tablaMargen === null) {
   console.log('FALLA  no hay ninguna tabla con la columna «Margen %» en el documento');
   fallas++;
 } else {
@@ -383,14 +440,16 @@ if (tablaMargen === null) {
 }
 
 // El tramo, en una línea, con las tres cifras de `comportamientoDelMargen`.
-const FLECHA = enLaHoja('→');
-const tramoTxt = todos.find(t => t.includes(FLECHA) && /pp/.test(t));
-ok(!!tramoTxt
-   && tramoTxt.includes(`${cm.desde.toFixed(1)}%`)
-   && tramoTxt.includes(`${cm.hasta.toFixed(1)}%`),
-  `el renglón del tramo dice de cuánto a cuánto: «${tramoTxt || 'no está'}»`);
-ok(todos.some(t => new RegExp(`${cm.cola} semanas seguidas`).test(t)),
-  `y en cuántas semanas: ${cm.cola}`);
+if (hayTramoPosible) {
+  const FLECHA = enLaHoja('→');
+  const tramoTxt = todos.find(t => t.includes(FLECHA) && /pp/.test(t));
+  ok(!!tramoTxt
+     && tramoTxt.includes(`${cm.desde.toFixed(1)}%`)
+     && tramoTxt.includes(`${cm.hasta.toFixed(1)}%`),
+    `el renglón del tramo dice de cuánto a cuánto: «${tramoTxt || 'no está'}»`);
+  ok(todos.some(t => new RegExp(`${cm.cola} semanas seguidas`).test(t)),
+    `y en cuántas semanas: ${cm.cola}`);
+}
 
 // ══════════════════════════════════════════════════════════════════════════
 // D · LOS TRES ESTADOS DEL RIESGO, LOS TRES IMPRESOS

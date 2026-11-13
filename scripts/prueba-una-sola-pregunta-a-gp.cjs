@@ -194,12 +194,19 @@ function taller(codigo) {
 const semanasAtras = (n) => { const d = new Date(); d.setDate(d.getDate() - n * 7); return d; };
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-` +
                    `${String(d.getDate()).padStart(2, '0')}`;
-const semDe = (n) => {
+// El jueves de la semana de hace `n` semanas: es el día que decide a qué año
+// pertenece la semana, y por eso se calcula aparte.
+const juevesDe = (n) => {
   const t = semanasAtras(n); t.setHours(0, 0, 0, 0);
   t.setDate(t.getDate() + 4 - (t.getDay() || 7));
+  return t;
+};
+const semDe = (n) => {
+  const t = juevesDe(n);
   const ini = new Date(t.getFullYear(), 0, 1);
   return Math.ceil(((t - ini) / 86400000 + 1) / 7);
 };
+const añoDe = (n) => juevesDe(n).getFullYear();
 
 const PRESUPUESTO = 9_750_000;
 // La obra recién dada de alta: su clave de GP está capturada en Contrato, pero
@@ -233,16 +240,50 @@ const DINERO_DE_LA_VECINA = 19_900_000;
 // 0129. Ese detalle es el que hace que el cero de la 0129 sea un cero MEDIDO
 // —`sin-cheques`— y no un hueco; si no se hubiera pedido, la respuesta correcta
 // sería «sin medir», que es otra cosa.
+//
+// Los dos gastos de la vecina NO se escriben los dos como semanas sueltas, y
+// eso no es un adorno: GP no detalla nunca las semanas de un año cerrado. Las
+// manda sumadas en `años`, y en `semanas` sólo pone las del año en curso, con
+// la llave SIN año (`S4`, pendiente #47) — así que una llave `S48` escrita en
+// enero el producto la fecha en el año en curso y cae en el futuro. Un fixture
+// que escriba doce semanas sueltas arma una hoja que la fuente no puede mandar,
+// y entonces el banco mide el producto contra un mundo que no existe.
+//
+// Por eso los dos gastos se colocan en las dos ÚLTIMAS semanas de la ventana
+// que son del año en curso —las únicas que GP puede detallar— y lo que no
+// alcanza sitio se va sumado a `años`, que es exactamente lo que haría la
+// fuente. El año de una semana lo decide su JUEVES, no el lunes.
+const AÑO_EN_CURSO = new Date().getFullYear();
+// La ventana de esta obra empieza en su inicio, 8 semanas atrás.
+const VENTANA = [];
+for (let n = 8; n >= 0; n--) VENTANA.push({ sem: semDe(n), año: añoDe(n) });
+const DETALLABLES = VENTANA.filter(s => s.año === AÑO_EN_CURSO);
+
+const semanasDeLaVecina = {};
+const añosDeLaVecina = {};
+const sitios = DETALLABLES.slice(-2);
+[0, 1].forEach((i) => {
+  const imp = DINERO_DE_LA_VECINA / 2;
+  const sitio = sitios[sitios.length - 1 - i];
+  if (sitio) {
+    const k = `S${sitio.sem}`;
+    semanasDeLaVecina[k] = (semanasDeLaVecina[k] || 0) + imp;
+  } else {
+    // En las primeras semanas de enero la ventana tiene menos de dos semanas
+    // del año en curso: el resto del dinero sólo puede venir sumado del año
+    // cerrado. Medido el 2026-11-12 con el reloj en 2027-01-05.
+    const k = `Y${AÑO_EN_CURSO - 1}`;
+    añosDeLaVecina[k] = (añosDeLaVecina[k] || 0) + imp;
+  }
+});
+
 const GP = {
   obras: {
     '0121': {
       id: '0121', nombre: '0121 SIOP Coatza Rehab. Av. Universidad',
       grandTotal: DINERO_DE_LA_VECINA,
-      años: {},
-      semanas: {
-        [`S${semDe(6)}`]: DINERO_DE_LA_VECINA / 2,
-        [`S${semDe(3)}`]: DINERO_DE_LA_VECINA / 2,
-      },
+      años: añosDeLaVecina,
+      semanas: semanasDeLaVecina,
     },
   },
   obrasPedidas: ['0121', '0129'],
@@ -435,10 +476,17 @@ function correr(codigo) {
   // El umbral es 2, no 4, y es el del fixture: el documento de gasto de la
   // 0121 tiene dos semanas. Pedir cuatro sería pedirle al fixture algo que no
   // tiene y el banco saldría rojo por el escenario, no por el código.
+  //
+  // Y en las primeras semanas de enero ni dos: la ventana tiene una sola
+  // semana del año en curso y GP no detalla las del año cerrado, así que sólo
+  // una puede traer dinero fechado. Se pide el mínimo entre dos y lo que la
+  // fuente puede detallar — nunca cero, que es lo que haría vacía la
+  // comparación de abajo.
   const conDinero = compartidas.filter(k => porSemDelta[k] > 0);
-  check(compartidas.length >= 2 && conDinero.length >= 1,
+  const esperadas = Math.min(2, DETALLABLES.length);
+  check(esperadas >= 1 && compartidas.length >= esperadas && conDinero.length >= 1,
     'los dos ejes se solapan de verdad y el solape trae dinero',
-    `${compartidas.length} semanas en común, ${conDinero.length} con gasto`);
+    `${compartidas.length} de ${esperadas} semanas en común, ${conDinero.length} con gasto`);
   const discrepan = compartidas.filter(k => {
     const i = tendV.g.semanas.findIndex(s => s.key === k);
     return !casi(tendV.g.gasto[i], porSemDelta[k]);

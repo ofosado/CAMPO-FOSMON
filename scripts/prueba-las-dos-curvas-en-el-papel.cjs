@@ -122,15 +122,30 @@ SEMS.forEach((s, i) => {
   historialAvance.push({ tipo: 'oficial', año: s.año, semana: s.sem,
     avance: 10, avancePonderado: 10, montoEjecutado: 12000000 + 1800000 * i });
 });
-let prev = 0;
+// EL GASTO, COMO GP LO MANDA DE VERDAD. La hoja trae los años cerrados como un
+// TOTAL en `años` —sin detalle por semana, porque el origen ya no los desglosa—
+// y sólo las semanas del año en curso vienen una por una.
+//
+// Antes este caso ponía las doce semanas de la ventana en `semanas`, con la
+// clave `S49` a secas. Esa hoja no existe: de enero a marzo la ventana cruza el
+// año, y el producto fecha `S49` en el AÑO EN CURSO, así que esas semanas
+// caían en diciembre del futuro y la serie arrancaba en $0. Con eso la §A se
+// cumplía por vacío —«no hay de dónde cortar el eje»— nueve meses al año sin
+// que nadie lo notara. Medido con el reloj en 2027-02-15 y en 2028-01-11.
+const PASO = 1500000;
+const GASTADO_EN_AÑOS_CERRADOS = 9000000;   // antes de la primera semana de la ventana
 const semanasGP = {};
-SEMS.forEach((s, i) => { const g = 9000000 + 1500000 * i; semanasGP[`S${s.sem}`] = g - prev; prev = g; });
+SEMS.filter(s => s.año === AÑO).forEach(s => { semanasGP[`S${s.sem}`] = PASO; });
 const gpData = {
   ultimaSemana: `S${SEMS[N - 1].sem}`,
-  semanasDisponibles: SEMS.map(s => ({ año: s.año, semana: s.sem })),
+  // GP sólo publica las semanas que trae detalladas: las del año en curso.
+  semanasDisponibles: SEMS.filter(s => s.año === AÑO).map(s => ({ año: s.año, semana: s.sem })),
   obrasPedidas: [OBRA.gpId],
   obras: { [OBRA.gpId]: { id: OBRA.gpId, nombre: OBRA.nombre,
-                          grandTotal: prev, semanas: semanasGP } },
+                          grandTotal: GASTADO_EN_AÑOS_CERRADOS
+                            + Object.values(semanasGP).reduce((a, b) => a + b, 0),
+                          años: { [`Y${AÑO - 1}`]: GASTADO_EN_AÑOS_CERRADOS },
+                          semanas: semanasGP } },
 };
 
 const DATOS = {
@@ -268,6 +283,15 @@ if (hoja.reventones.length) {
   process.exit(2);
 }
 const textos = hoja.map(x => x.texto);
+// CÓMO SE RECONOCE UN ENCABEZADO DE SECCIÓN. No basta con «empieza por el
+// número»: un párrafo cualquiera puede empezar por un número y hacerse pasar
+// por el rótulo. Pasó: con la ventana de febrero, la explicación de la gráfica
+// arranca con «7 semanas seguidas con las dos líneas en el mismo corte», así
+// que la §E tomó la página 4 por el principio de la sección 7 y declaró colado
+// el margen del contratista que vive ahí —una frontera rota donde no la hay—.
+// El rótulo de verdad lleva el número, un hueco de dos o más espacios y el
+// título en mayúsculas: «7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA».
+const encabezadoDeSeccion = (n) => new RegExp(`^${n}\\s{2,}[A-ZÁÉÍÓÚÑ]`);
 const enTabla = hoja.filter(x => x.tabla !== undefined).map(x => x.texto);
 const enTexto = hoja.filter(x => x.tabla === undefined).map(x => x.texto);
 
@@ -305,9 +329,9 @@ ok(textos.some(t => /Lo que esta gr.fica NO dibuja/.test(t)),
 // faltaba, esta prueba exigía que el hueco se viera; ahora que está escrita, lo
 // que se exige es que NADIE más lleve el 5 —un 5 repetido es la misma mentira
 // que el hueco tapado, nomás al revés.
-ok(textos.some(t => /^3\s/.test(t)), 'la gráfica única sale como sección 3');
-ok(textos.some(t => /^7\s/.test(t)), 'la de la dependencia sale como sección 7');
-const cincos = textos.filter(t => /^5\s/.test(t));
+ok(textos.some(t => encabezadoDeSeccion(3).test(t)), 'la gráfica única sale como sección 3');
+ok(textos.some(t => encabezadoDeSeccion(7).test(t)), 'la de la dependencia sale como sección 7');
+const cincos = textos.filter(t => encabezadoDeSeccion(5).test(t));
 ok(cincos.length === 1 && /^5\s+RESUMEN FOTOGR/.test(cincos[0]),
   'y el número 5 lo lleva UNA sola sección, la del resumen fotográfico'
   + (cincos.length === 1 ? '' : ` — lo llevan ${cincos.length}`));
@@ -354,7 +378,7 @@ ok(control.length > 0,
 // páginas de la sección 7. Las PALABRAS sí pueden salir —el preludio dice «NO
 // LLEVA GASTO NI MARGEN», y decirlo es parte de la frontera—; lo que no puede
 // salir es un NÚMERO de la economía del contratista.
-const pagS7 = hoja.filter(x => /^7\s/.test(x.texto)).map(x => x.pagina);
+const pagS7 = hoja.filter(x => encabezadoDeSeccion(7).test(x.texto)).map(x => x.pagina);
 ok(pagS7.length === 1, 'la sección 7 arranca en una página identificable');
 const ultima = Math.max(...hoja.map(x => x.pagina));
 const paginasS7 = [];
@@ -600,7 +624,8 @@ ok(partidos.length > 0,
 
 // Y QUE EL PARTIDO MÁS LARGO SEA UNO DE LOS PRELUDIOS. Si lo único que se parte
 // fuera un pie de página, esta sección estaría midiendo otra cosa.
-const pags = hoja.filter(x => /^3\s/.test(x.texto) || /^7\s/.test(x.texto))
+const pags = hoja.filter(x => encabezadoDeSeccion(3).test(x.texto)
+                           || encabezadoDeSeccion(7).test(x.texto))
   .map(x => x.pagina);
 const partidosEnLasCurvas = partidos.filter(p => pags.includes(p.pagina));
 ok(partidosEnLasCurvas.length > 0,
@@ -762,13 +787,18 @@ if (process.argv.includes('--contraprueba')) {
     // ── I · lo escrito cabe en la hoja ─────────────────────────────────────
     // El defecto tal como estaba: `String(arreglo)` pega los renglones con
     // comas y los dibuja de corrido, fuera del papel.
+    //
+    // El ancla es SÓLO el `const T`, no lo que viene debajo. Antes arrastraba
+    // el comentario vecino, y el día que entró otro comentario entre los dos
+    // la mutación dejó de encontrar su texto: la contraprueba salió NO ARRANCÓ
+    // (2) y, como el corredor no la corre, el banco siguió en verde mientras
+    // su propia contraprueba estaba muerta. Un ancla se pega al código que la
+    // mutación tiene que cambiar y a nada más. (2026-11-12)
     { nombre: 'los renglones de un párrafo se dibujan pegados en una sola línea',
       hacer: () => src.replace(
         "  const T  = (s,x,y,o={}) => doc.text(\n"
-        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);\n"
-        + '\n  // El sello de INTERNO',
-        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);"
-        + '\n\n  // El sello de INTERNO') },
+        + "    Array.isArray(s) ? s.map(v => String(v ?? '')) : String(s||''), x, y, o);",
+        "  const T  = (s,x,y,o={}) => doc.text(String(s||''),x,y,o);") },
     { nombre: 'el preludio se parte al ancho de la hoja y no al de la caja',
       hacer: () => src.replace(
         '      const ls = doc.splitTextToSize(String(preludio), CW);',
