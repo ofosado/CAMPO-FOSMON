@@ -561,7 +561,11 @@ const montarGP = () => {
 
   // Una obra con margen negativo, nómina cara y sin captura reciente: da
   // material a los detectores de las dos familias a la vez.
-  const hace30dias = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  // El día LOCAL, no el de UTC: `toISOString` adelanta un día a partir de las
+  // 18:00 en México. Mismo patrón medido en `prueba-series-sincronizadas.cjs`.
+  const _h30 = new Date(Date.now() - 30 * 86400000);
+  const hace30dias = `${_h30.getFullYear()}-${String(_h30.getMonth() + 1).padStart(2, '0')}-` +
+                     `${String(_h30.getDate()).padStart(2, '0')}`;
   const obra = { id: '0125', nombre: 'OBRA DEMO 1', presupuesto: 10000000,
                  inicio: '2026-01-15', fin: '2026-06-30', diasPago: 30 };
   const subs = [

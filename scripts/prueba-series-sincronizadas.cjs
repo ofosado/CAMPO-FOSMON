@@ -247,7 +247,16 @@ const isoDe = (fecha) => {
   return { sem: Math.ceil(((d - ini)/86400000 + 1) / 7), año: d.getFullYear() };
 };
 const haceSemanas = (n) => { const d = new Date(); d.setDate(d.getDate() - n * 7); return d; };
-const fechaISO = (d) => d.toISOString().slice(0, 10);
+// El día LOCAL del instante, armado con sus partes. Era
+// `d.toISOString().slice(0,10)`, que es el día en UTC: en México, de las 18:00
+// en adelante, el mismo instante se escribe con la fecha de MAÑANA. Eso ponía
+// el `inicio` de la obra una semana después que los snapshots —que sí viajan
+// como instante— y la ventana se quedaba en 9 semanas de las 10 del contrato.
+// Nueve meses al año el reloj de la suite no cae en esa franja y no se nota;
+// medido el 2026-11-12 con el reloj en 2027-02-15, que en UTC es medianoche.
+// Es el mismo defecto del #61, aquí dentro del instrumento que lo vigila.
+const fechaISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-` +
+                        `${String(d.getDate()).padStart(2, '0')}`;
 
 // Un snapshot en la semana de hace `n` semanas.
 const snap = (n, { av, me, esquema }) => {
