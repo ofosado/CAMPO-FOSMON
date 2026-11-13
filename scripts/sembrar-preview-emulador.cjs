@@ -444,14 +444,23 @@ const estimacionComoLaApp = (e, i) => {
   // mide —«Días en presentarla»— y con las fechas vacías la columna sale
   // diciendo «sin fecha de cierre» en todos los renglones. Un hueco sembrado
   // en una demo no se lee como un hueco: se reporta como defecto del producto.
-  const fin = e.fecha || '';
+  //
+  // El periodo y la factura son DOS fechas, y antes eran una sola. Una
+  // estimación **en proceso** tiene su periodo cerrado y todavía no tiene
+  // factura, y con una sola fecha la siembra no podía expresarla: o la daba por
+  // facturada —y entonces entra a FACTURADO 2026, que es otra cifra— o dejaba
+  // el periodo vacío, que es el hueco que este mismo comentario prohíbe. Sin
+  // una estimación en proceso sembrada, el «Por cobrar» de la pantalla y la
+  // tarjeta de cobranza no se pueden mirar en el preview (#131).
+  const fact = e.fecha || '';
+  const fin = e.cierre || fact;
   const ini = fin ? desplazar(fin, -27) : '';
   return {
     no: e.num ?? e.no ?? i + 1,
     monto: e.monto,
     // «pagada» → «Pagada», la cadena contra la que comparan las pantallas.
     estatus: MAYUS1(String(e.estatus || 'En proceso')),
-    fechaFact: fin,
+    fechaFact: fact,
     // Las dos pantallas leen el periodo distinto y las dos tienen que verlo:
     // la constructora la cadena `periodo`, la dependencia las dos fechas, que
     // son el dato duro del que ella saca los días. Se escriben las tres de la
@@ -459,8 +468,8 @@ const estimacionComoLaApp = (e, i) => {
     periodo: fin ? periodoDeCierre(fin) : '',
     periodoIni: ini,
     periodoFin: fin,
-    fechaRecepcion: fin ? desplazar(fin, 3) : '',
-    recibidaPor: fin ? 'ventanilla@coatzacoalcos.gob.mx' : '',
+    fechaRecepcion: fact ? desplazar(fact, 3) : '',
+    recibidaPor: fact ? 'ventanilla@coatzacoalcos.gob.mx' : '',
     adjuntos: [],
   };
 };
@@ -791,7 +800,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     contratado: 27489778.08,
     cliente: 'SIOP Veracruz', ubicacion: 'Coatzacoalcos, Ver.',
     inicio: '2026-08-29', fin: '2027-02-24', semilla: 53, nPartidas: 9,
-    estimaciones: EST_C.slice(0, 1), semanas: 3, diasSinCaptura: 4, fotosSemanas: 2,
+    // Una pagada y una EN PROCESO que es la mayor parte del dinero: es la forma
+    // de la 0128 de producción, la obra donde la tarjeta de cobranza NO SE
+    // PINTABA con $3.9M por cobrar porque el detector se había quedado con la
+    // definición vieja (#131). Con las tres de `EST_C` —dos pagadas y una
+    // facturada— el «por cobrar» se queda en el 30% y la tarjeta se calla con
+    // razón, así que el defecto no se podía mirar en ninguna pantalla.
+    estimaciones: [...EST_C.slice(0, 1),
+      { num: 2, monto: 12000000, estatus: 'En proceso', cierre: '2026-10-25' }],
+    semanas: 3, diasSinCaptura: 4, fotosSemanas: 2,
     programa: {
       inicio: '2026-08-27', fin: '2026-12-24',
       obraDelArchivo: 'AE11 PROGRAMA GENERAL MONTOS COLECTOR',

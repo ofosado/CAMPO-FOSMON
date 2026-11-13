@@ -138,120 +138,19 @@ const QUIERO = [
   ['atraso',           'tablero de la obra',    'DashboardDependencia',  'desvPlazo'],
   ['atraso',           'mini-tablero',          'MiniDashAvance',        'proy'],
 ];
-const DUEÑOS = [...new Set(QUIERO.map(q => q[2]))];
-const expr = {};
-// Los `const` de cada pantalla, para poder resolver lo que su expresión
-// mencione. Hace falta para que una COPIA se pueda ejecutar: una expresión
-// metida a mano habla de sus propias variables locales (`ultAv`), y si el banco
-// no supiera resolverlas saldría NO ARRANCÓ culpando al andamiaje justo cuando
-// acaba de aparecer el defecto que busca. Una copia tiene que correr para poder
-// demostrar que es una copia.
-const locales = {};
-traverse(ast, {
-  VariableDeclarator(p) {
-    const n = p.node.id?.name;
-    if (!n || !p.node.init) return;
-    const dueño = p.findParent(q => q.isFunctionDeclaration())?.node?.id?.name;
-    if (!dueño || !DUEÑOS.includes(dueño)) return;
-    (locales[dueño] ||= new Map());
-    if (!locales[dueño].has(n)) locales[dueño].set(n, p.node.init);
-    for (const [, , d, nom] of QUIERO) {
-      if (d !== dueño || nom !== n) continue;
-      expr[`${d}.${n}`] ||= texto(p.node.init);
-    }
-  },
-});
-const sinExpr = QUIERO.filter(([, , d, n]) => !expr[`${d}.${n}`]);
-if (sinExpr.length)
-  sinPrecondicion(
-    `no encontré la cuenta de ${sinExpr.map(([q, s]) => `${q} en la ${s}`).join(', ')}`,
-    ['La pantalla cambió de forma: o el `const` se llama de otro modo, o el',
-     'número ya no se calcula en un `const` de primer nivel. Lo que esta',
-     'prueba mediría es una pantalla que ya no existe, así que no mide nada.',
-     'Hay que apuntar la extracción al lugar nuevo antes de creerle al verde.']);
-
-// ── Ejecutar una expresión con lo que pida, y nada más ─────────────────────
-//
-// Las entradas se dan explícitas. Si una expresión pide algo que no está en la
-// lista, NO es rojo: es que la cuenta dejó de poder aislarse y medirla aquí
-// daría un número salido de un sandbox incompleto, que es peor que no medirla.
-const GLOBALES = new Set(['Array', 'Object', 'Math', 'JSON', 'Date', 'Number',
-  'String', 'Boolean', 'Set', 'Map', 'isNaN', 'parseFloat', 'parseInt',
-  'undefined', 'NaN', 'Infinity']);
-
-const atados = (n, dentro) => {
-  const anotar = pat => {
-    if (!pat) return;
-    if (pat.type === 'Identifier') dentro.add(pat.name);
-    else if (pat.type === 'ObjectPattern') pat.properties.forEach(q => anotar(q.value || q.argument));
-    else if (pat.type === 'ArrayPattern') pat.elements.forEach(anotar);
-    else if (pat.type === 'AssignmentPattern') anotar(pat.left);
-    else if (pat.type === 'RestElement') anotar(pat.argument);
-  };
-  if (Array.isArray(n.params)) n.params.forEach(anotar);
-  if (n.type === 'VariableDeclarator') anotar(n.id);
-  if (n.type === 'CatchClause') anotar(n.param);
-};
-
-// Los nombres que una expresión toma de FUERA. Los que ella misma ata —la `o`
-// de un `filter(o => …)`— no cuentan: pedirlos sería inventar una carencia.
-const deFuera = raizNodo => {
-  const fuera = new Set();
-  const visitar = (n, padre, ligados) => {
-    if (!n || typeof n.type !== 'string') return;
-    const propios = new Set(ligados);
-    atados(n, propios);
-    if (n.type === 'Identifier') {
-      const esMiembro = padre && (padre.type === 'MemberExpression' ||
-                                  padre.type === 'OptionalMemberExpression');
-      if (esMiembro && padre.property === n && !padre.computed) return;
-      if (padre && padre.type === 'ObjectProperty' && padre.key === n && !padre.computed) return;
-      if (!ligados.has(n.name)) fuera.add(n.name);
-      return;
-    }
-    for (const k of Object.keys(n)) {
-      if (k === 'loc' || k === 'start' || k === 'end') continue;
-      const v = n[k];
-      if (Array.isArray(v)) v.forEach(c => c && typeof c.type === 'string' && visitar(c, n, propios));
-      else if (v && typeof v.type === 'string') visitar(v, n, propios);
-    }
-  };
-  visitar(raizNodo, null, new Set());
-  return fuera;
-};
-
-const corre = (dueño, nombre, entorno, etiqueta) => {
-  const t = expr[`${dueño}.${nombre}`];
-  const mios = locales[dueño] || new Map();
-  // Cadena de dependencias: lo que la expresión menciona y no está en el
-  // entorno se busca entre los `const` de SU pantalla, y así sucesivamente.
-  const prelud = [];
-  const vistos = new Set([nombre]);
-  const pendientes = [parse(`(${t})`).program.body[0].expression];
-  const faltantes = new Set();
-  while (pendientes.length) {
-    for (const n of deFuera(pendientes.pop())) {
-      if (GLOBALES.has(n) || n in entorno || vistos.has(n)) continue;
-      vistos.add(n);
-      if (!mios.has(n)) { faltantes.add(n); continue; }
-      prelud.push(n);
-      pendientes.push(mios.get(n));
-    }
-  }
-  if (faltantes.size)
-    sinPrecondicion(
-      `la cuenta de ${etiqueta} ya necesita \`${[...faltantes].join('`, `')}\`, que esta prueba no sabe fabricar`,
-      ['La expresión dejó de depender sólo del historial y de la obra, y lo que',
-       'pide no es un `const` de su propia pantalla. Lo que saldría de este',
-       'sandbox no es el número de la pantalla. Hay que llevar la comprobación',
-       'al preview, o darle el insumo que pide.']);
-  // Por posición en el archivo: un `const` no puede usar a otro posterior.
-  const orden = [...new Set(prelud)].sort((a, b) => mios.get(a).start - mios.get(b).start);
-  const cuerpo = orden.map(n => `  const ${n} = ${texto(mios.get(n))};`).join('\n');
-  const nombres = Object.keys(entorno);
-  return new Function(...nombres,
-    `"use strict";\n${cuerpo}\n  return (${t});`)(...nombres.map(n => entorno[n]));
-};
+// La extracción y la ejecución las hace `expresion-de-pantalla.cjs`. Vivían
+// aquí; se sacaron el 2026-11-13 cuando un segundo banco —el del dinero de una
+// estimación— necesitó el mismo andamiaje y la alternativa era copiar cien
+// renglones de resolución de locales. Lo que este banco conserva es QUÉ mide y
+// con qué fixture; el cómo ejecutar una expresión de pantalla es del módulo.
+const { pantallasDe, GLOBALES } = require('./expresion-de-pantalla.cjs');
+const { expr, corre } = pantallasDe(
+  archivo,
+  QUIERO.map(([num, sitio, dueño, nombre]) => ({ dueño, nombre, num, sitio })),
+  {
+    queFalta: (sin) => `no encontré la cuenta de ` +
+      sin.map(q => `${q.num} en la ${q.sitio}`).join(', '),
+  });
 
 // ── Datos ──────────────────────────────────────────────────────────────────
 const AHORA = new Date(2026, 8, 21, 12, 0).getTime();   // lunes 21-sep-2026

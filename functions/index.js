@@ -2304,6 +2304,35 @@ const avanceFisicoPonderado = (subs = [], contrato = 0, modoVol = false) => {
   return Math.min(100, (desgloseEjecutado(subs, modoVol).total / contrato) * 100);
 };
 
+// ── El dinero de una estimación ───────────────────────────────────────────
+// Copia literal de `montoDeEstimacion` / `esEstimacionPagada` /
+// `esEstimacionPorCobrar` / `sumaDeEstimaciones` de src/App.jsx, con la misma
+// advertencia que los dos bloques de arriba: si se toca una copia hay que tocar
+// la otra, y `prueba-el-dinero-de-una-estimacion.cjs` EJECUTA LAS DOS y exige
+// que coincidan. No hay build compartido entre functions/ y src/.
+//
+// Lo que había aquí era una quinta forma de decidir «pagada»:
+// `/pagada|cobrada/i.test(estatus)`, una subcadena. Decía «cobrada», que la app
+// no escribe por ningún lado, y por ser subcadena un día que alguien capturara
+// «No pagada» la habría contado como cobrada. El correo de dirección publica
+// esa cifra como «cobrado del cliente».
+const _neEstim = (s) => String(s || "").toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const montoDeEstimacion = (e) => {
+  const n = Number(e?.monto);
+  return Number.isFinite(n) ? n : 0;
+};
+const esEstimacionPagada = (e) => _neEstim(e?.estatus) === "pagada";
+const esEstimacionFacturada = (e) => _neEstim(e?.estatus) === "facturada";
+const esEstimacionEnProceso = (e) => _neEstim(e?.estatus).includes("proceso");
+const esEstimacionPorCobrar = (e) =>
+  _neEstim(e?.estatus) === "aprobada" ||
+  esEstimacionFacturada(e) || esEstimacionEnProceso(e);
+const sumaDeEstimaciones = (ests, filtro) =>
+  (Array.isArray(ests) ? ests : [])
+    .filter((e) => (filtro ? filtro(e) : true))
+    .reduce((t, e) => t + montoDeEstimacion(e), 0);
+
 // ── ¿El gasto de GP de ESTA obra es una medición, o es un hueco? ───────────
 // Copia literal de `extraerGastoTotalGP` / `estadoGastoGP` de src/App.jsx, con
 // la misma advertencia que el bloque de arriba: si se toca una copia hay que
@@ -2535,10 +2564,8 @@ async function calcularKpisObra(obraId, gpData) {
   const totGasto = totGP + totMaq + totOtros;
   const pctGasto = presupuesto > 0 ? (totGasto / presupuesto) * 100 : 0;
 
-  // Estimaciones cobradas
-  const cobrado = estimaciones
-    .filter(e => /pagada|cobrada/i.test(String(e.estatus || "")))
-    .reduce((t, e) => t + (Number(e.monto) || 0), 0);
+  // Estimaciones cobradas — por las MISMAS lecturas que la pantalla.
+  const cobrado = sumaDeEstimaciones(estimaciones, esEstimacionPagada);
 
   // ── Última captura de avance ──────────────────────────────────────────────
   // Esto era la SEXTA copia de la cuenta, y la única que seguía rellenando.

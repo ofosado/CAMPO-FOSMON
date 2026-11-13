@@ -43,7 +43,7 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
 const noArranco = require('./no-arranco.cjs');
-const { fuenteDe } = require('./extraer-de-app.cjs');
+const { fuenteDe, cierreDe } = require('./extraer-de-app.cjs');
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
 
@@ -84,7 +84,6 @@ const ANIDADOS = [
   'PortafolioDependencia.texto',
   'PortafolioDependencia.ordenadas',
   'PortafolioDependencia.clicEnCabecera',
-  'PortafolioDependencia._ne',
   'PortafolioDependencia.clave',
   'PortafolioDependencia.celdaDe',
 ];
@@ -143,10 +142,17 @@ if (anidados['PortafolioDependencia.COLUMNAS']) {
 // Escribirla aquí a mano sería probar mi normalización, no la suya — y es
 // justo donde estaba el agujero: con la clave vieja, la prueba pasaba por
 // casualidad del abecedario.
+//
+// `_ne` ya no se pide por sitio. Era una copia local dentro del componente y el
+// 2026-11-13 se borró —la del módulo hacía lo mismo—, con lo que esta prueba se
+// quedó sin la pieza que exigía y publicó un ROJO que decía «no hay clave de
+// contratista que extraer de este archivo»: acusaba de regresión a un archivo
+// que había perdido una duplicidad. Lo que la clave necesita se resuelve del
+// módulo, como el resto.
 let claveDe = null;
-if (anidados['PortafolioDependencia.clave'] && anidados['PortafolioDependencia._ne']) {
+if (anidados['PortafolioDependencia.clave']) {
   claveDe = new Function('contratista', `
-    const _ne = ${anidados['PortafolioDependencia._ne']};
+    ${cierreDe(anidados['PortafolioDependencia.clave'], { archivo: ARCH_APP })}
     return ${anidados['PortafolioDependencia.clave']};`);
 }
 // Qué dice cada celda. Se le inyectan los formateadores y la paleta porque lo

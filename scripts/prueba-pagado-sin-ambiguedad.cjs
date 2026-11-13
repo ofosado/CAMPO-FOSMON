@@ -54,7 +54,15 @@ traverse(ast, {
 // sacado del componente. Copiar la cuenta aquí sería comprobar esta prueba
 // contra sí misma: el KPI «Atrasado» podría volver a discrepar de la columna
 // de su propio renglón y esto seguiría en verde.
-const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion'];
+//
+// Y desde el #131 también las seis lecturas únicas del dinero de una
+// estimación: los KPIs de esta pantalla dejaron de llevar cada uno su suma y su
+// criterio de «pagada». Van todas, aunque un KPI sólo use dos, porque la lista
+// que se poda al mínimo es la que vuelve a romperse a la siguiente.
+const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion',
+  '_ne', 'ESTATUS_PAGADA', 'montoDeEstimacion', 'esEstimacionPagada',
+  'esEstimacionFacturada', 'esEstimacionEnProceso', 'esEstimacionPorCobrar',
+  'sumaDeEstimaciones'];
 const raizDecl = {};
 for (const n of ast.program.body) {
   const d = n.type === 'VariableDeclaration' ? n
@@ -134,10 +142,18 @@ check(!/\bpagado\b\s*=/.test(Object.keys(decl).join(' ')) && decl['pagado'] === 
   'ya no queda una variable `pagado` a secas que pueda volver a rotularse mal');
 
 console.log('\n3. Lo rescatado del bloque que se fue usa el MISMO helper');
-// Neto de Facturada ($20M + $10M) + Aprobada ($8M), al 50%.
-check(casi(r.porCobrar, 19_000_000), `por cobrar neto ${MXN(r.porCobrar)}`, 'esperado $19,000,000');
-check(!casi(r.porCobrar, 38_000_000),
-  'y NO los $38,000,000 en bruto que mostraba el bloque de arriba');
+// Neto de Facturada ($20M + $10M) + Aprobada ($8M) + En proceso ($5M), al 50%.
+//
+// Eran $19,000,000 y esta aserción llevaba escrita la definición VIEJA: por
+// cobrar como «facturada + aprobada», sin «En proceso». Era el mismo criterio
+// que la tarjeta de riesgo `fin_004` conservaba y que el KPI de la obra ya
+// había dejado atrás, y el #131 midió lo que costaba en producción —en la 0128
+// la tarjeta no se pintaba con $3.9M por cobrar—. La aserción no se bajó: se
+// corrigió a lo que la única definición dice, y la de abajo sigue protegiendo
+// que la cifra vaya NETA y no bruta, que es lo que este banco vino a defender.
+check(casi(r.porCobrar, 21_500_000), `por cobrar neto ${MXN(r.porCobrar)}`, 'esperado $21,500,000');
+check(!casi(r.porCobrar, 43_000_000),
+  'y NO los $43,000,000 en bruto que mostraba el bloque de arriba');
 check(r.atrasadas.length === 1, 'una sola estimación fuera de plazo', `${r.atrasadas.length}`);
 check(casi(r.montoAtrasado, 10_000_000), `atrasado neto ${MXN(r.montoAtrasado)}`, 'esperado $10,000,000');
 check(!casi(r.montoAtrasado, 20_000_000),
