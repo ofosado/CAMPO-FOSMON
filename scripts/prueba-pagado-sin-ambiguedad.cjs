@@ -99,7 +99,15 @@ const casi = (a, b) => Math.abs(a - b) < 1;
 // cada peso pagado entran 50 centavos. Es justo la mitad que se perdía al
 // rotular las dos cifras igual.
 const obra = { presupuesto: 200_000_000, pctAnticipo: 30, pctFondoGar: 0, pctRetencion: 20, diasPago: 30 };
-const hace = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+// El día LOCAL, no el de UTC: `toISOString` adelanta un día a partir de las
+// 18:00 en México, y el plazo de pago se cuenta en días. Aquí el margen de
+// este fixture lo absorbe —45 contra 30—, pero el patrón es el mismo que se
+// midió en `prueba-series-sincronizadas.cjs` el 2026-11-12.
+const hace = (d) => {
+  const t = new Date(Date.now() - d * 86400000);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-` +
+         `${String(t.getDate()).padStart(2, '0')}`;
+};
 const est = [
   { no: 1, estatus: 'Pagada',     monto: 60_000_000 },
   { no: 2, estatus: 'Pagada',     monto: 49_200_000 },

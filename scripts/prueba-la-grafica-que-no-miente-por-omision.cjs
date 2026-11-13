@@ -62,7 +62,12 @@ const MXN = (n) => typeof n === 'number'
 const PRESUPUESTO = 10_000_000;
 const DIA = 86_400_000;
 const haceSemanas = (n) => new Date(Date.now() - n * 7 * DIA);
-const fechaISO = (d) => d.toISOString().slice(0, 10);
+// El día LOCAL del instante, no el de UTC: `toISOString` escribe la fecha de
+// mañana a partir de las 18:00 en México, y entonces el arranque de la obra
+// cae una semana después que los snapshots, que sí viajan como instante. La
+// explicación larga y la medición están en `prueba-series-sincronizadas.cjs`.
+const fechaISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-` +
+                        `${String(d.getDate()).padStart(2, '0')}`;
 
 const OBRA = () => ({
   id: '0114', nombre: 'Obra de prueba', gpId: '0114',

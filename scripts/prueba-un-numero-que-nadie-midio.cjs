@@ -307,6 +307,16 @@ try {
 
 // ── la fixture ─────────────────────────────────────────────────────────────
 const DIA = 86400000;
+// Este día se escribe en UTC A PROPÓSITO, y el propósito es feo: `diasSinCapturaDe`
+// hace `new Date('2026-10-31')`, que el estándar parsea como MEDIANOCHE UTC, y
+// lo resta de un instante real. Si el fixture escribiera el día LOCAL —que es
+// lo correcto, y lo que hacen los otros bancos desde el 2026-11-12— la cuenta
+// de producción contestaría 13 donde el fixture puso 12, porque a las 18:00 en
+// México ya es el día siguiente en UTC. Se midió así: con el día local, el
+// banco sale ROJO a cualquier hora después de las 18:00 y en las cuatro fechas
+// del barrido. O sea que hoy el fixture y el producto se equivocan en la misma
+// dirección y el error se cancela. Es el **#137**, y el día que se arregle, esto
+// pasa a día local y la aserción de «hace 12 días → 12» sigue diciendo 12.
 const haceDias = (n) => new Date(Date.now() - n * DIA).toISOString().slice(0, 10);
 
 // Cuatro maneras de que a una estimación le falte el `no`, todas vistas en
