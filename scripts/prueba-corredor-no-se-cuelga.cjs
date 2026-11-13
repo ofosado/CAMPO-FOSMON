@@ -89,9 +89,12 @@ if (process.argv.includes('--contraprueba')) {
     ['preguntar sólo por Firestore y correr el banco igual',
       /const faltan = faltanA\(f\);/, 'const faltan = [];'],
     // El mismo defecto por la tabla: olvidar que ese banco habla con Storage.
+    // El ancla tolera el espaciado: la tabla se realineó el 2026-11-12 al pasar
+    // de 8 entradas a 16, y un ancla con los espacios contados dejó de empatar
+    // — o sea, dejó de medir, en silencio y hacia el verde.
     ['olvidar que un banco necesita Storage',
-      /\['prueba-reglas-dependencia-captura\.cjs',  \['firestore', 'auth', 'storage'\]\],/,
-      `['prueba-reglas-dependencia-captura.cjs',  ['firestore', 'auth']],`],
+      /\['prueba-reglas-dependencia-captura\.cjs',\s*\['firestore', 'auth', 'storage'\]\],/,
+      `['prueba-reglas-dependencia-captura.cjs', ['firestore', 'auth']],`],
     // Clasificarlo bien y correrlo de todos modos: el informe diría la verdad y
     // la terminal se quedaría quieta igual.
     ['clasificarlo sin emulador y correrlo de todos modos',
@@ -100,6 +103,34 @@ if (process.argv.includes('--contraprueba')) {
     // Y el consejo fijo, que es lo que mandó a levantar lo que ya estaba vivo.
     ['el consejo vuelve a nombrar sólo firestore,auth',
       /--only \$\{todos\.join\(','\)\}/, '--only firestore,auth'],
+
+    // ── La revisión de la tabla de emuladores ─────────────────────────────
+    // Ocho de las roturas que siguen dejan la tabla sin revisar por un lado
+    // distinto. Van separadas porque el estado anterior —ninguna revisión— era
+    // el agujero por los cinco lados a la vez, y arreglar uno no dice nada de
+    // los otros cuatro.
+    ['no revisar la tabla de emuladores en absoluto',
+      /if \(!TOCA_EL_EMULADOR\.test\(src\)\) continue;/, 'continue;'],
+    ['revisar sólo los bancos de la corrida filtrada',
+      /for \(const f of todosLosBancos\) \{/, 'for (const f of archivos) {'],
+    ['darle por buena la tabla al banco que no está en ella',
+      /const enTabla = NECESITAN_EMULADOR\.get\(f\);/,
+      `const enTabla = NECESITAN_EMULADOR.get(f) || ['firestore', 'auth'];`],
+    ['dar por pedidos los puertos que el banco no pide',
+      /const declara = puertosQueDeclara\(src\);/,
+      'const declara = puertosQueDeclara(src) || enTabla;'],
+    ['tolerar que la tabla y el banco digan cosas distintas',
+      /juego\(declara\) !== juego\(enTabla\)/, 'false'],
+    ['tolerar un emulador con un nombre que el corredor no conoce',
+      /\.filter\(n => !\(n in EMULADORES\)\)/, '.filter(() => false)'],
+    ['olvidar uno de los dos disparadores: el ayudante que limpia',
+      /\|emulador-limpio\\\.cjs/, ''],
+    ['denunciar callando: no publicar cuál banco es',
+      /for \(const \[f, razón\] of sinDeclarar\) console\.log\(`  \$\{corto\(f\)\}: \$\{razón\}`\);/,
+      ''],
+    ['ver la discrepancia y no contarla al salir',
+      /\+ exclusionesFantasma\.length \+ sinDeclarar\.length/,
+      '+ exclusionesFantasma.length'],
 
     // ── El barrido de fechas ──────────────────────────────────────────────
     // La más importante de todas: `fecha-falsa.cjs` revienta si no hay
@@ -164,7 +195,13 @@ if (process.argv.includes('--contraprueba')) {
 // los repite con el reloj adelantado, y ése es el módulo con el que lo
 // adelanta. Sin él en el taller, el corredor de mentira no podría barrer y
 // esta prueba mediría un corredor distinto del que corre la suite.
-const MODULOS = ['pruebas.cjs', 'no-arranco.cjs', 'reloj.cjs', 'fecha-falsa.cjs'];
+// `emulador-limpio.cjs` entra porque la sección de la tabla de emuladores
+// construye bancos de mentira que lo requieren: es uno de los dos ayudantes que
+// no sirven para otra cosa que hablar con el emulador, y por eso es uno de los
+// disparadores que el corredor busca. Un banco de mentira que lo nombrara en un
+// comentario sin requerirlo mediría la expresión regular, no la conducta.
+const MODULOS = ['pruebas.cjs', 'no-arranco.cjs', 'reloj.cjs', 'fecha-falsa.cjs',
+                 'emulador-limpio.cjs'];
 for (const m of MODULOS) {
   try { fs.accessSync(path.join(DIR, m)); }
   catch { sinPrecondicion(`no está scripts/${m}`,
@@ -692,6 +729,145 @@ else
   falla('y para la suite: una exclusión sin mantener no se tolera',
     'salida 1', `salida ${rFantasma.status}`);
 try { fs.rmSync(taller2, { recursive: true, force: true }); } catch {}
+
+// ── LA TABLA DE EMULADORES NO PUEDE QUEDARSE ATRÁS ─────────────────────────
+//
+// La sección de abajo mide que un banco al que le falta un emulador se nombre y
+// no se corra. Eso vale si el banco ESTÁ en la tabla del corredor. El
+// 2026-11-12 se midió cuántos estaban: ocho entradas para dieciséis bancos que
+// hablan con el emulador. Los otros ocho se corrían, y con el 9099 apagado dos
+// de ellos —`reglas-programa` y `reglas-obra-cerrada`— salían con **1 y cero
+// renglones `FALLA`**: el corredor publicaba `ROJO` sin número y mandaba a
+// buscar una regresión en `firestore.rules` que no existía.
+//
+// Corregir las ocho entradas no cierra nada: la tabla ya había crecido de dos a
+// ocho de una en una, y nada impedía la novena. Lo que se mide aquí es la
+// puerta: que el corredor REVISE la tabla contra los bancos y pare la suite
+// cuando discrepen. Y se mide por los cuatro modos de discrepar, separados,
+// porque uno solo bastaría para que los otros tres se fueran en verde.
+console.log('\n── Un banco que habla con el emulador y no está declarado ──');
+const taller3 = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-tabla-emu-'));
+const dentro3 = path.join(taller3, 'scripts');
+fs.mkdirSync(dentro3);
+for (const m of MODULOS) fs.copyFileSync(path.join(DIR, m), path.join(dentro3, m));
+if (process.env.ARCH_CORREDOR)
+  fs.copyFileSync(process.env.ARCH_CORREDOR, path.join(dentro3, 'pruebas.cjs'));
+fs.writeFileSync(path.join(dentro3, 'prueba-de-mentira-verde.cjs'),
+  `console.log(' ok   nada que ver'); process.exit(0);\n`);
+
+// Los tres puertos apuntados al 1: tomado y cerrado, rechaza al instante. Así
+// un banco que SÍ esté bien declarado se salta —«sin emulador»— en vez de
+// tardar, y lo que queda medido es la revisión de la tabla y nada más.
+const correrTaller3 = (filtro3) => {
+  const r = spawnSync(process.execPath,
+    [path.join(dentro3, 'pruebas.cjs'), ...(filtro3 ? [filtro3] : [])], {
+      encoding: 'utf8', cwd: taller3, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME,
+             PLAZO_BANCO: String(PLAZO_DEL_BANCO), BARRIDO: 'no',
+             EMU_PORT: '1', EMU_AUTH_PORT: '1', EMU_STOR_PORT: '1' },
+    });
+  return { status: r.status, salida: (r.stdout || '') + (r.stderr || '') };
+};
+
+// 1. El que no está en la tabla. Abre la conexión al emulador de verdad —el
+//    disparador es la llamada, no el nombre del archivo— y sale verde, así que
+//    si la puerta no existe la corrida entera sale 0 y nadie se enteró.
+//
+//    Y se corre CON FILTRO, excluyéndolo del recorrido: la tabla es una
+//    propiedad del repositorio, no de la corrida. Una revisión que sólo mirara
+//    los bancos filtrados dejaría pasar al no declarado cada vez que alguien
+//    trabaja con `npm test algo`, que es la mayor parte del tiempo.
+const SIN_DECLARAR = 'prueba-zz-habla-con-el-emulador.cjs';
+fs.writeFileSync(path.join(dentro3, SIN_DECLARAR),
+  `const connectFirestoreEmulator = () => {};
+connectFirestoreEmulator(null, '127.0.0.1', 8080);
+console.log(' ok   salí verde sin declarar nada'); process.exit(0);\n`);
+//    Se exige el nombre Y el motivo exacto. Con el nombre solo bastaría que el
+//    corredor lo denunciara por cualquier otra razón —por ejemplo, creyendo que
+//    sí está en la tabla y reclamándole el `exigirPuertos`— para que esto
+//    saliera verde con la puerta quitada.
+const rTabla = correrTaller3('de-mentira-verde');
+const renglónTabla =
+  (rTabla.salida.match(/.*zz-habla-con-el-emulador.*/) || [''])[0].trim();
+if (/no está en la tabla/.test(renglónTabla))
+  ok('se denuncia por su nombre, aunque la corrida esté filtrada', renglónTabla);
+else
+  falla('se denuncia por su nombre, aunque la corrida esté filtrada',
+    'un renglón que lo nombre y diga que no está en la tabla',
+    renglónTabla || rTabla.salida.trim().split('\n').slice(-2).join(' / ')
+      || '(no dijo nada)');
+if (rTabla.status === 1)
+  ok('y para la suite: una tabla que no cuadra no se tolera');
+else
+  falla('y para la suite: una tabla que no cuadra no se tolera',
+    'salida 1', `salida ${rTabla.status}`);
+fs.unlinkSync(path.join(dentro3, SIN_DECLARAR));
+
+// 2, 3, 4 y 5 van sobre un banco que SÍ está en la tabla del corredor, con
+// cuatro contenidos. El nombre se reusa a propósito: lo que cambia entre los
+// cuatro es sólo lo que el banco declara, que es la variable del experimento.
+const EN_LA_TABLA = 'prueba-nota-no-calla.cjs';
+const bancoQueDeclara = (linea) => {
+  fs.writeFileSync(path.join(dentro3, EN_LA_TABLA),
+    `const { limpiarDatos } = require('./emulador-limpio.cjs');\n${linea}` +
+    `console.log(' ok   nada'); process.exit(0);\n`);
+  return correrTaller3();
+};
+
+console.log('\n── Un banco declarado en la tabla que no pide sus puertos ──');
+const rSinPedir = bancoQueDeclara('');
+if (/exigirPuertos/.test(rSinPedir.salida) && rSinPedir.status === 1)
+  ok('se denuncia: corrido a mano, la tabla del corredor no lo protege',
+    (rSinPedir.salida.match(/.*exigirPuertos.*/) || [''])[0].trim());
+else
+  falla('se denuncia: corrido a mano, la tabla del corredor no lo protege',
+    'el informe pide `exigirPuertos` y la suite sale con 1',
+    `salida ${rSinPedir.status} · ${rSinPedir.salida.trim().split('\n').slice(-1)[0]}`);
+
+console.log('\n── Un banco que declara lo mismo que la tabla ──');
+const rCuadra = bancoQueDeclara(
+  `require('./no-arranco.cjs').exigirPuertos({ firestore: 1, auth: 1 }, '127.0.0.1');\n`);
+if (rCuadra.status === 0 && !/no dicen lo mismo/.test(rCuadra.salida))
+  ok('no se denuncia nada: es el caso bueno y no puede salir en rojo',
+    (rCuadra.salida.match(/^\d+ en verde .*/m) || [''])[0].trim());
+else
+  falla('no se denuncia nada: es el caso bueno y no puede salir en rojo',
+    'salida 0 y ni una denuncia',
+    `salida ${rCuadra.status} · ${(rCuadra.salida.match(/.*no dicen lo mismo.*/) || ['(sin denuncia)'])[0].trim()}`);
+
+console.log('\n── Un banco que declara MENOS emuladores que la tabla ──');
+const rDiscrepa = bancoQueDeclara(
+  `require('./no-arranco.cjs').exigirPuertos({ firestore: 1 }, '127.0.0.1');\n`);
+if (/uno de los dos miente/.test(rDiscrepa.salida) && rDiscrepa.status === 1)
+  ok('se denuncia la discrepancia, con las dos listas',
+    (rDiscrepa.salida.match(/.*uno de los dos miente.*/) || [''])[0].trim());
+else
+  falla('se denuncia la discrepancia, con las dos listas',
+    'el informe publica lo que dice la tabla y lo que pide el banco',
+    `salida ${rDiscrepa.status} · ${rDiscrepa.salida.trim().split('\n').slice(-1)[0]}`);
+
+// El quinto modo no es una discrepancia: es un nombre que el corredor no
+// conoce. No da error — da `EMULADORES['firestoer'] === undefined`, una sonda a
+// un puerto `NaN` que no contesta nunca, y el banco se queda «sin emulador»
+// para siempre con los tres emuladores arriba. Verde que nunca se midió.
+console.log('\n── Un banco que pide un emulador que el corredor no conoce ──');
+// Se exige el renglón PROPIO —el que dice «no conoce»— y no sólo que el nombre
+// aparezca: un `firestoer` también dispara la discrepancia de arriba, así que
+// buscar la cadena a secas daría verde con esta puerta quitada. Medido.
+const rDesconocido = bancoQueDeclara(
+  `require('./no-arranco.cjs').exigirPuertos({ firestoer: 1, auth: 1 }, '127.0.0.1');\n`);
+const renglónDesconocido =
+  (rDesconocido.salida.match(/.*no conoce: firestoer.*/) || [''])[0].trim();
+if (renglónDesconocido && /los que hay son/.test(renglónDesconocido)
+    && rDesconocido.status === 1)
+  ok('se denuncia el nombre que no existe, y se dicen los que sí',
+    renglónDesconocido);
+else
+  falla('se denuncia el nombre que no existe, y se dicen los que sí',
+    'un renglón propio que nombre `firestoer` y liste los emuladores que conoce',
+    `salida ${rDesconocido.status} · ${renglónDesconocido || '(no hubo tal renglón)'}`);
+
+try { fs.rmSync(taller3, { recursive: true, force: true }); } catch {}
 
 // ── UN EMULADOR CAÍDO SE NOMBRA, NO SE ESPERA ───────────────────────────────
 //

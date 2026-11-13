@@ -75,6 +75,15 @@ require('./no-arranco.cjs').vigilarExcepciones();
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
+
+// Los dos puertos, antes de la primera aserción. Sin esto el banco salía con 2
+// de todos modos —`limpiarDatos` tapaba el 8080 y el `noArranco` local el
+// 9099—, pero el corredor lo contaba en «sin arrancar», que es la casilla del
+// símbolo renombrado, en vez de «sin emulador»; y lo publicado era el mensaje
+// del SDK, no el puerto. Un número en dos cuentas distintas.
+require('./no-arranco.cjs').exigirPuertos(
+  { firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const PROYECTO = 'campo-fosmon-prueba';
 
 // Las reglas que este banco juzga salen DEL ARCHIVO, no de lo que el emulador

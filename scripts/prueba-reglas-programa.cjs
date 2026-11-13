@@ -55,6 +55,23 @@ const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
+
+// Los puertos se piden ANTES de la primera aserción. Hasta el 2026-11-12 este
+// banco no los pedía: con el 9099 caído, `signInWithCustomToken` reventaba con
+// `auth/network-request-failed`, un `catch` más abajo imprimía «No hay
+// emuladores escuchando» y salía con **1**. Medido ese día: salida 1, cero
+// renglones `FALLA`. O sea que el corredor publicaba `ROJO · reglas-programa`
+// —sin número, porque no había nada medido— y quien lo leyera se ponía a buscar
+// una regresión en `firestore.rules` que no existía. Es el P4 al revés del
+// #132: ahí el tercer estado se degradaba a verde, aquí a rojo, y las dos
+// mentiras cuestan lo mismo.
+//
+// Se pregunta aquí y no en el `catch` porque el `catch` no puede distinguir: un
+// puerto muerto y un defecto de verdad en `abrir` llegan por el mismo camino, y
+// el 2026-09-24 eso escondió un ReferenceError real detrás de «no hay
+// emuladores». Con los puertos ya contestando, lo que reviente es un defecto.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const OBRA = '0131';          // el emisor: es el programa que se midió
 const OTRA = '0127';
 
@@ -134,14 +151,9 @@ const CATALOGO = { obraId: OBRA, importeContrato: 2000, totalLeido: 2000,
   const cons = (rol, obras, todas = false) => ({
     tipo: 'constructora', rol, orgId: 'fosmon', todas, obras });
 
-  let residente;
-  try {
-    residente = await abrir(`res-${sello}`, `residente-${OBRA}`, cons('residente', [OBRA]));
-  } catch (e) {
-    console.error(`\nNo hay emuladores escuchando en ${HOST}:${PUERTO}/${PUERTO_AUTH}.\n` +
-      `Arráncalos con:\n  firebase emulators:start --only firestore,auth --project ${PROYECTO}\n\n(${e.message})`);
-    process.exit(1);
-  }
+  // Sin `catch`: los puertos ya se preguntaron arriba. El que había atribuía al
+  // emulador cualquier fallo de `abrir` y salía con 1 — las dos cosas mal.
+  const residente = await abrir(`res-${sello}`, `residente-${OBRA}`, cons('residente', [OBRA]));
 
   const ruta = (db, docu) => doc(db, 'obras', OBRA, 'config', docu);
 

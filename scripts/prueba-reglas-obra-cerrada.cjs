@@ -85,6 +85,14 @@ const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
+
+// Antes de la primera aserción, y no en el `catch` de más abajo. Medido el
+// 2026-11-12 con el 9099 caído: este banco salía con **1** y cero renglones
+// `FALLA`, así que el corredor publicaba `ROJO · reglas-obra-cerrada` y mandaba
+// a buscar en `firestore.rules` una regresión del candado de cierre que no
+// existía. Un insumo que falta no es un veredicto. Ver `no-arranco.cjs`.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const OBRA = '0112';          // el malecón: la obra que se pidió cerrar
 const OTRA = '0126';
 const NUEVA = '0199';         // la que nace sin `config/info`
@@ -217,15 +225,10 @@ const concretar = (ruta, fase) => ruta.replace(/\{[^}]*\}/g, `sonda-${fase}`);
   const cons = (rol, obras, todas = false) => ({
     tipo: 'constructora', rol, orgId: 'fosmon', todas, obras });
 
-  let residente, gerente;
-  try {
-    residente = await abrir(`res-${sello}`, `residente-${OBRA}`, cons('residente', [OBRA]));
-    gerente = await abrir(`ger-${sello}`, 'gerente', cons('gerente_construccion', [], true));
-  } catch (e) {
-    console.error(`\nNo hay emuladores escuchando en ${HOST}:${PUERTO}/${PUERTO_AUTH}.\n` +
-      `Arráncalos con:\n  firebase emulators:start --only firestore,auth --project ${PROYECTO}\n\n(${e.message})`);
-    process.exit(1);
-  }
+  // Sin `catch`: los puertos ya se preguntaron arriba, y lo que reviente aquí
+  // es un defecto de verdad que `vigilarExcepciones` reporta como lo que es.
+  const residente = await abrir(`res-${sello}`, `residente-${OBRA}`, cons('residente', [OBRA]));
+  const gerente = await abrir(`ger-${sello}`, 'gerente', cons('gerente_construccion', [], true));
 
   // Escribe en una ruta de `/obras/{OBRA}/…` con una sonda inocua. Devuelve el
   // error o `null`. La sonda es un campo propio para que el `merge` no pise

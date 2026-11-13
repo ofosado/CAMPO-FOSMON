@@ -75,6 +75,13 @@ noArranco.vigilarExcepciones();
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
+
+// Los dos puertos, antes de la primera aserción: un insumo que falta se nombra.
+// Sin esto el banco salía con 2 por la puerta de la excepción, y el corredor lo
+// contaba en «sin arrancar» en vez de «sin emulador» — la misma casilla que un
+// símbolo renombrado, que es el diagnóstico contrario.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const PROYECTO = 'campo-fosmon-prueba';
 
 const ARCH_APP = process.env.ARCH_APP || path.join(raiz, 'src/App.jsx');
