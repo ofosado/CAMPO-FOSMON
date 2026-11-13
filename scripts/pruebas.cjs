@@ -126,15 +126,67 @@ const NECESITAN_EMULADOR = new Map([
 // El disparador no puede ser la tabla ni la llamada: tiene que ser algo que
 // esté en el banco porque habla con el emulador y no se pueda omitir sin dejar
 // de hablar con él. Eso son las llamadas que abren la conexión y los dos
-// ayudantes que no hacen otra cosa. Medido el 2026-11-12: esta expresión empata
-// con 15 bancos y los 15 usan el emulador de verdad; `migracion-ata-la-partida`
-// se le escapa —habla por REST— y no importa, porque sí declara, y lo que esto
-// atrapa es al que NO declara.
+// ayudantes que no hacen otra cosa.
 //
-// Los talleres de `prueba-corredor-no-se-cuelga` quedan fuera solos: sus bancos
-// de mentira no abren ninguna conexión al emulador, así que no disparan nada.
-const TOCA_EL_EMULADOR =
-  /connect(?:Firestore|Auth|Storage)Emulator\(|emulador-limpio\.cjs|reglas-del-repo\.cjs/;
+// Y HABLAR NO ES NOMBRAR. El primer intento buscaba esos nombres con una
+// expresión regular sobre el texto, y el único archivo del repo cuyo ASUNTO es
+// el corredor se denunció a sí mismo: `prueba-corredor-no-se-cuelga` lleva
+// `'emulador-limpio.cjs'` en su tabla de módulos y escribe cuerpos de bancos
+// de mentira con `connectFirestoreEmulator(` dentro de una plantilla. No abre
+// ninguna conexión —levanta sus propios servidores de mentira—, pero el texto
+// decía que sí, y la suite entera salía con 1 sin nada roto. Lo peor es por
+// dónde se escapó: sus talleres corren en un directorio temporal donde ese
+// archivo NO existe, así que el banco no podía verse a sí mismo y el rojo
+// apareció por primera vez en la corrida completa sobre `main`.
+//
+// Así que la pregunta se le hace al CÓDIGO, no al texto: se parsea el banco y
+// se buscan llamadas de verdad. Lo que vive dentro de una plantilla o de una
+// cadena es dato por construcción —que es exactamente lo que son los bancos de
+// mentira— y queda fuera sin lista de excepciones que mantener. Una lista
+// habría sido el hueco de siempre: excluir por nombre al que sí habla es
+// precisamente el defecto que esto vigila. Precedente: el #139, `cierreDe`,
+// por la misma razón escrita en su preámbulo.
+//
+// Medido el 2026-11-13 sobre los 121 bancos: parsean los 121 y salen los
+// MISMOS 15 que empataba la expresión, sin `corredor-no-se-cuelga`.
+// `migracion-ata-la-partida` se le escapa —habla por REST— y no importa,
+// porque sí declara, y lo que esto atrapa es al que NO declara.
+let parsear;
+try { ({ parse: parsear } = require('@babel/parser')); }
+catch (e) {
+  // Sin parser no se puede revisar la tabla, y no revisarla en silencio es el
+  // defecto que este bloque existe para cerrar. NO ARRANCÓ (2), no verde.
+  console.error('\nNO ARRANCÓ — no puedo revisar la tabla de emuladores sin ' +
+    `\`@babel/parser\`: ${e.message}\n  npm install\n`);
+  process.exit(2);
+}
+
+// Llamadas REALES del banco, con el nombre del callee. Se recorre el árbol a
+// mano para no arrastrar `@babel/traverse`; `loc` se salta porque es peso
+// muerto y arrastra referencias al archivo entero.
+const llamadasDe = (src) => {
+  const nombres = new Set();
+  const visto = new Set();
+  (function anda(n) {
+    if (!n || typeof n !== 'object' || visto.has(n)) return;
+    if (Array.isArray(n)) { n.forEach(anda); return; }
+    visto.add(n);
+    if (n.type === 'CallExpression' && n.callee && n.callee.type === 'Identifier') {
+      if (/^connect(?:Firestore|Auth|Storage)Emulator$/.test(n.callee.name))
+        nombres.add(n.callee.name);
+      if (n.callee.name === 'require' && n.arguments[0]
+          && n.arguments[0].type === 'StringLiteral')
+        nombres.add(`require:${n.arguments[0].value}`);
+    }
+    for (const k of Object.keys(n)) if (k !== 'loc') anda(n[k]);
+  })(parsear(src, { sourceType: 'script' }));
+  return nombres;
+};
+
+const AYUDANTES_DEL_EMULADOR =
+  ['require:./emulador-limpio.cjs', 'require:./reglas-del-repo.cjs'];
+const hablaConElEmulador = (llamadas) =>
+  [...llamadas].some(n => /^connect/.test(n) || AYUDANTES_DEL_EMULADOR.includes(n));
 
 const puertosQueDeclara = (src) => {
   const m = src.match(/exigirPuertos\(\s*\{([^}]*)\}/);
@@ -146,7 +198,16 @@ const sinDeclarar = [];
 for (const f of todosLosBancos) {
   let src = '';
   try { src = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; }
-  if (!TOCA_EL_EMULADOR.test(src)) continue;
+  // Un banco que no parsea no se puede revisar, y dejarlo pasar sería el hueco
+  // otra vez: se denuncia. Si de verdad no compila, el banco saldrá rojo solo.
+  let llamadas;
+  try { llamadas = llamadasDe(src); }
+  catch (e) {
+    sinDeclarar.push([f, `no se puede leer su código para saber si habla con ` +
+      `el emulador: ${e.message}`]);
+    continue;
+  }
+  if (!hablaConElEmulador(llamadas)) continue;
   const enTabla = NECESITAN_EMULADOR.get(f);
   const declara = puertosQueDeclara(src);
   if (!enTabla)
