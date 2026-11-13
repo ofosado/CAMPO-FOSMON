@@ -26662,6 +26662,13 @@ const ACCIONES_OPCIONES = [
   {v:"ver",    l:"Solo ver"},
   {v:null,     l:"Sin acceso"},
 ];
+// `null` es un permiso de verdad —«sin acceso»— y el `value` de un `<option>` no
+// puede ser nulo, así que viaja como la cadena "null". La traducción vive en UN
+// sitio porque estaba tecleada en cuatro: el `value` del desplegable, la llave y
+// el valor de cada opción, y el `onChange` que la deshace. La quinta copia es
+// cómo se llega a que el desplegable y lo que se guarda dejen de coincidir.
+const claveAccion = v => v === null ? "null" : String(v);
+const CLAVES_ACCION = ACCIONES_OPCIONES.map(op => claveAccion(op.v));
 function PermisosObra({obra, rol}){
   const puedeEditar = ["director_general","director_operaciones","admin_sistema"].includes(rol);
   const [override, setOverride] = useState(null);
@@ -26754,7 +26761,7 @@ function PermisosObra({obra, rol}){
                   const v = valorActual(rolKey, m.id);
                   const def = esDefault(rolKey, m.id);
                   return <td key={m.id} style={{padding:"6px"}}>
-                    <select value={v===null?"null":v}
+                    <select value={claveAccion(v)}
                       disabled={!puedeEditar || guardando}
                       onChange={e=>{
                         const raw = e.target.value;
@@ -26765,8 +26772,14 @@ function PermisosObra({obra, rol}){
                         borderRadius:5,
                         background: def ? C.surface : C.blueBg,
                         color: v===null ? C.redDk : v==="editar" ? C.greenDk : C.textPri}}>
+                      {/* Lo guardado manda, aunque esta versión ya no lo ofrezca.
+                          Sin esto, un permiso que no esté entre los tres pinta
+                          «Editar» —la primera opción— y el botón de guardar lo
+                          OTORGA de verdad: esta pantalla escribe permisos. */}
+                      {opcionAjena(claveAccion(v), CLAVES_ACCION,
+                        "no es un permiso de esta versión", "sin permiso definido")}
                       {ACCIONES_OPCIONES.map(op=>(
-                        <option key={op.v===null?"null":op.v} value={op.v===null?"null":op.v}>{op.l}</option>
+                        <option key={claveAccion(op.v)} value={claveAccion(op.v)}>{op.l}</option>
                       ))}
                     </select>
                     {!def && <div style={{fontSize:9,color:C.blueDk,marginTop:2}}>personalizado</div>}

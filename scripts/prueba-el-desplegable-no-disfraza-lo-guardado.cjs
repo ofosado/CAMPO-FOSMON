@@ -170,11 +170,90 @@ const declaracionLocal = (nombre, ruta) => {
   return src.slice(b.path.node.init.start, b.path.node.init.end);
 };
 
+const exprDe = (fuente) =>
+  parse(`const __a = (${fuente});`, OPTS).program.body[0].declarations[0].init;
+
+// ── El CAMINO hasta el dato guardado, no la forma de la punta ───────────────
+//
+// Un valor llega al `value` por varios saltos: una local (`const cc =
+// m.concepto`), un condicional (`v===null?"null":v`), una llamada a una función
+// que lo resuelve (`claveAccion(valorActual(rol, mod))`). La primera versión de
+// este banco clasificaba la PUNTA, y con eso dejaba fuera el desplegable de los
+// permisos por rol —el único del archivo que además ESCRIBE lo que pinta—
+// porque su punta es una llamada. Lo dejó escrito su propio preámbulo: decirle
+// «estado de pantalla» a un documento guardado era una afirmación sin medir.
+//
+// Así que se recorre el camino. Lo que decide es si en algún salto hay la
+// LECTURA de una propiedad: eso es un campo, venga de donde venga. Enumerar
+// formas del lenguaje es la misma clase de error que enumerar sitios, y este
+// banco ya la cometió dos veces.
+//
+// Devuelve `{campo:true}` o `{corte}` con el nodo donde se acabó el camino,
+// que es lo que el informe imprime como motivo. La plantilla NO se recorre a
+// propósito: lo que sale de un `${}` ya es texto armado, y un desplegable cuyo
+// valor se arma con texto no puede comparar contra lo guardado ni queriendo.
+const RECURSION = 16;
+const lecturaDeCampo = (nodo, ruta, vistos = new Set(), hondo = 0) => {
+  if (!nodo || hondo > RECURSION) return { corte: nodo };
+  const porAhi = (lista) => {
+    for (const r of lista) {
+      const x = lecturaDeCampo(r, ruta, vistos, hondo + 1);
+      if (x.campo) return x;
+    }
+    return null;
+  };
+  switch (nodo.type) {
+    case 'MemberExpression': case 'OptionalMemberExpression':
+      return { campo: true };
+    case 'LogicalExpression':
+      // El `|| omisión` no cambia de dónde viene el dato.
+      return (nodo.operator === '||' || nodo.operator === '??')
+        ? lecturaDeCampo(nodo.left, ruta, vistos, hondo + 1) : { corte: nodo };
+    case 'ConditionalExpression':
+      return porAhi([nodo.consequent, nodo.alternate]) || { corte: nodo };
+    case 'Identifier': {
+      if (vistos.has(nodo.name)) return { corte: nodo };
+      vistos.add(nodo.name);
+      const ini = declaracionLocal(nodo.name, ruta);
+      if (!ini) return { corte: nodo };
+      return lecturaDeCampo(exprDe(ini), ruta, vistos, hondo + 1);
+    }
+    case 'CallExpression': case 'OptionalCallExpression': {
+      // Los dos lados de una llamada cuentan: lo que la función DEVUELVE y lo
+      // que se le PASA. Sólo el primero dejaría fuera a un formateador de
+      // módulo —`claveAccion(v)`— que es puro pasamanos; sólo el segundo
+      // dejaría fuera a la función que va a leer el documento ella misma.
+      const ramas = [...nodo.arguments];
+      if (nodo.callee.type === 'Identifier' && !vistos.has(nodo.callee.name)) {
+        vistos.add(nodo.callee.name);
+        const ini = declaracionLocal(nodo.callee.name, ruta);
+        if (ini) ramas.push(...devueltosDe(exprDe(ini)));
+      }
+      return porAhi(ramas) || { corte: nodo };
+    }
+    default:
+      return { corte: nodo };
+  }
+};
+
+// Las expresiones que una función devuelve. Cuerpo de expresión (`x => x.a`) y
+// cuerpo de bloque con `return`, que son las dos formas que hay en el archivo.
+const devueltosDe = (fn) => {
+  if (!fn) return [];
+  if (fn.type !== 'ArrowFunctionExpression' && fn.type !== 'FunctionExpression') return [];
+  if (fn.body.type !== 'BlockStatement') return [fn.body];
+  const salidas = [];
+  traverse(fn.body, {
+    ReturnStatement(q) { if (q.node.argument) salidas.push(q.node.argument); },
+    noScope: true,
+  });
+  return salidas;
+};
+
 const aliasDeCampo = (nombre, ruta) => {
   const fuente = declaracionLocal(nombre, ruta);
   if (!fuente) return null;
-  const ini = sinOmision(parse(`const __a = (${fuente});`, OPTS)
-    .program.body[0].declarations[0].init);
+  const ini = sinOmision(exprDe(fuente));
   return (ini && (ini.type === 'MemberExpression' || ini.type === 'OptionalMemberExpression'))
     ? fuente : null;
 };
@@ -200,11 +279,17 @@ for (const s of todos) {
   if (v.type === 'MemberExpression' || v.type === 'OptionalMemberExpression') {
     sitios.push(s); continue;
   }
+  // El alias de un salto se conserva como caso propio porque la siembra entra
+  // por su RAÍZ y la omisión que el sitio le puso tiene que seguir corriendo.
   if (v.type === 'Identifier') {
     const ini = aliasDeCampo(v.name, s.ruta);
     if (ini) { sitios.push({ ...s, alias: v.name, aliasInit: ini }); continue; }
   }
-  descartados.push({ ...s, motivo: motivoDe(v) });
+  // Y si no es ninguno de los dos, se recorre el camino antes de darlo por
+  // estado de pantalla.
+  const camino = lecturaDeCampo(v, s.ruta);
+  if (camino.campo) { sitios.push(s); continue; }
+  descartados.push({ ...s, motivo: motivoDe(camino.corte || v) });
 }
 
 console.log(`\nArchivo: ${path.relative(raiz, ARCH_APP)}`);
@@ -240,6 +325,16 @@ const raizDeDatos = (devuelve = AJENO, salvo = {}) => new Proxy({}, {
   has: () => true,
 });
 
+// Una raíz de DOS niveles. El documento de permisos por obra se guarda como
+// `override[rol][modulo]`, así que el dato no está en la primera propiedad sino
+// en la segunda. Con una raíz de un nivel, `override[rol][mod]` sale
+// `undefined` y el sitio cae a su permiso por omisión: el banco mediría el
+// DEFAULT en vez de lo guardado y saldría verde sin haber mirado el caso.
+const raizAnidada = (devuelve = AJENO) => new Proxy({}, {
+  get: () => raizDeDatos(devuelve),
+  has: () => true,
+});
+
 // Las listas locales o que llegan por prop. No son el vocabulario de verdad y
 // no hacen falta: lo que se mide es si el desplegable sabe representar un
 // valor que no está entre las opciones QUE ÉL MISMO PINTA, y eso se lee del
@@ -264,6 +359,8 @@ const siembraPara = (v) => ({
   form: raizDeDatos(v), m: raizDeDatos(v),
   c: raizDeDatos(v, { opciones: LISTA_CADENAS }),
   usuario: raizDeDatos(v),
+  // El documento de permisos de la obra, con sus dos niveles.
+  override: raizAnidada(v),
   gpData: { obras: { [PROPIA]: { id: PROPIA, nombre: 'La propia' } } },
   // Los alias locales NO se siembran: se declaran con su propia fuente en
   // `monta`, para que la omisión que el sitio les puso siga corriendo.
@@ -271,6 +368,13 @@ const siembraPara = (v) => ({
   ROLES: LISTA_PARES, opciones: LISTA_CADENAS, campos: [],
   // Lo que el renglón ya había desempacado.
   key: 'campoCualquiera', i: 0, editar: true,
+  // El rol de quien mira y la fila que se está pintando. `rol` va crudo —y no
+  // `puedeEditar` ya resuelto— para que la condición que decide si el
+  // desplegable se habilita la siga calculando el código del archivo.
+  rol: 'director_general', rolKey: 'superintendente',
+  // Estado de guardado: una local de `useState` que ninguna siembra puede
+  // reconstruir desde su declaración, porque ahí dice `useState(false)`.
+  guardando: false, setValor: () => {},
   // Los `onChange` no se disparan en un render estático, pero tienen que
   // existir para que el JSX se monte.
   f: () => {}, onUpdate: () => {}, setForm: () => {}, setObra: () => {},
@@ -325,18 +429,61 @@ const monta = (sitio, valor) => {
     ...identificadoresLibres(sitio.fuente),
     ...(sitio.alias ? identificadoresLibres(sitio.aliasInit) : []),
   ])].filter(n => n !== sitio.alias);
-  const { cuerpo, faltan } = fuenteDe(ARCH_APP, libres,
-    { tolerante: true, excluir: [...NOMBRES_SIEMBRA, ...(sitio.alias ? [sitio.alias] : [])] });
-  // Lo que el módulo no resuelve puede estar declarado dentro del componente.
-  // Se busca ahí antes de darlo por perdido, porque dónde esté declarada una
-  // lista no es asunto de este banco.
-  const huerfanos = [], declaraLocales = [];
-  for (const n of faltan.map(x => String(x).replace(/^fn:/, ''))) {
-    if (n in siembra || n in global || n === 'React' || n === sitio.alias) continue;
-    const ini = declaracionLocal(n, sitio.ruta);
-    if (ini) declaraLocales.push(`const ${n} = (${ini});\n`);
-    else huerfanos.push(n);
+
+  // ── El cierre transitivo de las locales del componente ──────────────────
+  //
+  // Lo que el módulo no resuelve puede estar declarado dentro del componente, y
+  // ESO a su vez nombra cosas que nadie ha pedido todavía: el desplegable de
+  // permisos lee `v`, que es `valorActual(rol, mod)`, que lee `override` y
+  // `PERMISOS`. Una sola pasada declaraba `v` con una función que no existe y el
+  // banco salía 2 culpando al archivo medido.
+  //
+  // Es el #139 en las locales: `cierreDe` cierra las dependencias de nivel
+  // superior, y aquí hay que cerrar las de DENTRO del componente. Se hace por
+  // rondas y se le pregunta a `fuenteDe` PRIMERO en cada una, porque el módulo
+  // es quien manda: una lista declarada arriba no se sustituye por una local
+  // que se llame igual.
+  const pedidos = new Set(libres);
+  const locales = new Map();
+  let cuerpo, faltan;
+  for (let ronda = 0; ronda <= RECURSION; ronda++) {
+    ({ cuerpo, faltan } = fuenteDe(ARCH_APP, [...pedidos], {
+      tolerante: true,
+      excluir: [...NOMBRES_SIEMBRA, ...locales.keys(),
+        ...(sitio.alias ? [sitio.alias] : [])],
+    }));
+    let nuevos = 0;
+    for (const n of faltan.map(x => String(x).replace(/^fn:/, ''))) {
+      if (n in siembra || n in global || n === 'React' || n === sitio.alias) continue;
+      if (locales.has(n)) continue;
+      const ini = declaracionLocal(n, sitio.ruta);
+      if (!ini) continue;
+      locales.set(n, ini);
+      for (const q of identificadoresLibres(ini))
+        if (!pedidos.has(q)) { pedidos.add(q); nuevos++; }
+    }
+    if (nuevos === 0) break;
   }
+  // En orden de dependencia, no en el que aparecieron: `const v =
+  // valorActual(…)` se evalúa al montar el cierre, así que `valorActual`
+  // declarada después deja a `v` en la zona muerta del `const` y el banco sale
+  // 2 por un orden que él mismo eligió.
+  const declaraLocales = [];
+  {
+    const puestas = new Set(), enCurso = new Set();
+    const poner = (n) => {
+      if (puestas.has(n) || enCurso.has(n)) return;
+      enCurso.add(n);
+      for (const q of identificadoresLibres(locales.get(n)))
+        if (locales.has(q)) poner(q);
+      enCurso.delete(n); puestas.add(n);
+      declaraLocales.push(`const ${n} = (${locales.get(n)});\n`);
+    };
+    for (const n of locales.keys()) poner(n);
+  }
+  const huerfanos = faltan.map(x => String(x).replace(/^fn:/, ''))
+    .filter(n => !(n in siembra) && !(n in global) && n !== 'React'
+      && n !== sitio.alias && !locales.has(n));
   // Lo que ni el módulo resuelve, ni el componente declara, ni este banco
   // siembra: se dice con el nombre y el renglón, y se sale con 2. No con un
   // verde por haberlo saltado.
