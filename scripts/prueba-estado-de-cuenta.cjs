@@ -455,81 +455,24 @@ check(JSON.stringify(rD.renglones.map(r => r.e.no)) === '[1,2,3]',
   'también ordena por número de estimación, no por orden de recepción capturada',
   rD.renglones.map(r => r.e.no).join(','));
 
-// ── 6bis. Un estatus que no está en la lista se ve, no se disfraza ────────
-// Visto en el preview. Los dos lados del mostrador tienen vocabularios
-// distintos —allá se FACTURA, aquí se RECIBE— y un `<select>` cuyo `value` no
-// es ninguna de sus opciones no avisa: pinta la primera. Una estimación
-// guardada «Facturada» se veía como «Recibida», que es otro estado del
-// trámite. No se afirma que exista un guardián: se renderiza la celda con ese
-// dato y se mira qué cadena sale.
+// ── 6bis. El estatus de fuera de la lista: se mide en otro banco ──────────
 //
-// Se mide en LAS DOS pantallas. El defecto no era de la dependencia: era de
-// cualquier desplegable cuyo valor pueda no estar entre sus opciones, y las
-// dos pantallas de estimaciones cumplen esa condición por la misma razón —el
-// estatus se escribe de un lado y se lee del otro—. Arreglar sólo el renglón
-// que falló deja el gemelo esperando.
-console.log('\n6bis. Un estatus que no está en la lista del desplegable');
-{
-  const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
-  const React = require(path.join(raiz, 'node_modules/react'));
-  const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
+// Aquí vivía el barrido de los dos desplegables de estimación: una estimación
+// guardada «Facturada» se veía como «Recibida», porque un `<select>` cuyo
+// `value` no es ninguna de sus opciones no avisa — pinta la primera.
+//
+// Se mudó entero a `prueba-el-desplegable-no-disfraza-lo-guardado.cjs`, y la
+// razón es la clase del defecto, no el orden de los archivos. Lo de aquí
+// nombraba DOS pantallas con dos anclas, dos regex de lista y un «son cinco
+// opciones» tecleados a mano: la misma lista a mano que es el defecto #139.
+// El barrido nuevo no nombra ninguna: descubre los `<Sel>` del archivo por
+// AST, se queda con los que leen un campo guardado, dice en voz alta los que
+// descarta, y mide DIEZ — las dos de aquí entre ellas. Un desplegable escrito
+// mañana sin guardia cae solo, que es lo que esto no hacía.
+//
+// No se borró sin más: la conducta se sigue midiendo, con más sitios y sin la
+// lista tecleada. Lo que no podía quedarse era la segunda copia del grafo.
 
-  const PANTALLAS = [
-    { nombre: 'dependencia', ancla: 'function EstimacionesDependencia',
-      lista: /const ESTATUS_ESTIMACION_DEPENDENCIA\s*=\s*\[[^\]]*\]/,
-      marca: 'fuera del trámite', propio: 'Autorizada', ajeno: 'Facturada',
-      // El de la dependencia usa `ESTATUS_PAGADA` para colorear el renglón.
-      preludio: 'const ESTATUS_PAGADA = "Pagada";' },
-    { nombre: 'constructora', ancla: 'function Estimaciones(',
-      lista: /const ESTATUS\s*=\s*\[[^\]]*\]/,
-      marca: 'fuera del catálogo', propio: 'Aprobada', ajeno: 'Recibida',
-      preludio: '' },
-  ];
-
-  for (const p of PANTALLAS) {
-    // Sólo el `<td>` del estatus, con las piezas de verdad: la lista de estados
-    // del archivo y el JSX del archivo. El `<Sel>` real es un `<select>` con
-    // estilos; aquí basta uno pelón, porque lo que se mide son las OPCIONES.
-    const desde = src.indexOf(p.ancla);
-    const jsx = desde < 0 ? '' : src.slice(src.indexOf('<Sel value={e.estatus', desde));
-    const celdaEstatus = jsx.slice(0, jsx.indexOf('</Sel>') + 6);
-    const lista = src.match(p.lista)?.[0];
-    if (desde < 0 || !lista || !/^<Sel value=\{e\.estatus/.test(celdaEstatus)) {
-      const m = `${p.nombre}: un estatus de fuera de la lista se ve tal cual en la celda`;
-      fallos.push(m);
-      console.log(`   ✗ ${m}  ·  no se pudo extraer la celda del estatus de este archivo`);
-      continue;
-    }
-    const cuerpo = esbuild.transformSync(
-      `${p.preludio}\n${lista};\n` +
-      `const Sel = q => React.createElement('select', {value:q.value, readOnly:true}, q.children);\n` +
-      `return (e, actualiza) => (${celdaEstatus});`,
-      { loader: 'jsx' }).code;
-    const celda = new Function('React', cuerpo)(React);
-    const pinta = est => renderToStaticMarkup(
-      React.createElement('table', null, React.createElement('tbody', null,
-        React.createElement('tr', null, celda({ estatus: est }, () => {})))));
-
-    const ajeno = pinta(p.ajeno);
-    check(new RegExp(p.ajeno).test(ajeno),
-      `${p.nombre}: la celda enseña «${p.ajeno}» tal cual, no la primera opción de la lista`,
-      ajeno.match(/<option[^>]*>([^<]*)<\/option>/)?.[1] || '?');
-    check(ajeno.includes(p.marca),
-      `${p.nombre}: y dice que ese estado no es de su lista, para que lo corrijan`,
-      ajeno.match(new RegExp(`>([^<]*${p.marca}[^<]*)<`))?.[1] || 'no lo dice');
-    check((ajeno.match(/<option/g) || []).length === 5,
-      `${p.nombre}: son los cuatro estados propios más el ajeno, ninguno de más`,
-      `${(ajeno.match(/<option/g) || []).length} opciones`);
-
-    // Y uno propio NO se marca: si se marcara todo, la marca no diría nada.
-    const propio = pinta(p.propio);
-    check(!propio.includes(p.marca),
-      `${p.nombre}: un estado que sí es de la lista no lleva advertencia encima`,
-      (propio.match(/<option/g) || []).length + ' opciones');
-    check(/sin estatus/.test(pinta('')),
-      `${p.nombre}: y una estimación sin estatus lo dice, en vez de pasar por otro estado`);
-  }
-}
 
 // ── 7. El plazo de pago del renglón y el KPI «Atrasado» son una sola cuenta ─
 // Estaban escritas dos veces en la pantalla y las dos leían la fecha en UTC:
