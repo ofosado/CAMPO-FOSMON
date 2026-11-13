@@ -71,7 +71,14 @@ const raiz = path.resolve(__dirname, '..');
 const noArranco = require('./no-arranco.cjs');
 
 const PROYECTO = 'campo-fosmon-prueba';
-const EMU = '127.0.0.1:8080';
+// El destino sale del entorno, como en los otros catorce bancos que hablan con
+// el emulador. Estaba escrito `'127.0.0.1:8080'` a secas, y eso hacía dos
+// daños: `EMU_PORT` era mentira en este archivo —se podía exportar y el banco
+// seguía yendo al 8080— y el corredor, que es quien pregunta por los puertos,
+// no tenía forma de saber a cuál iba.
+const HOST = process.env.EMU_HOST || '127.0.0.1';
+const PUERTO = Number(process.env.EMU_PORT || 8080);
+const EMU = `${HOST}:${PUERTO}`;
 const ARCH_FNS = process.env.ARCH_FNS || path.join(raiz, 'functions/index.js');
 
 // ── La contraprueba ────────────────────────────────────────────────────────
@@ -191,6 +198,13 @@ if (process.argv[2] === '--contraprueba') {
 
 // ── El banco ───────────────────────────────────────────────────────────────
 noArranco.vigilarExcepciones(ARCH_FNS);
+
+// El puerto, antes de la primera aserción. Este banco habla por el Admin SDK, y
+// el Admin SDK no se queja: reintenta. Medido el 2026-11-12 con el destino
+// apuntado a un puerto muerto: **44 segundos** para acabar saliendo con 2 por
+// la puerta de la excepción, publicando «una declaración cambió de forma» y sin
+// nombrar el puerto ni una vez. Sólo Firestore: aquí no se abre sesión de Auth.
+noArranco.exigirPuertos({ firestore: PUERTO }, HOST);
 
 // El destino se APUNTA aquí, antes de cargar nada del Admin SDK: sin esto el
 // SDK iría a producción. Ver `scripts/destino.cjs` y el incidente del

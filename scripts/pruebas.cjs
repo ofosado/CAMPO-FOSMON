@@ -37,10 +37,14 @@ const { NO_ARRANCO } = require('./no-arranco.cjs');
 
 const dir = __dirname;
 const filtro = process.argv[2] || '';
-const archivos = fs.readdirSync(dir)
+// TODOS los bancos del repo, y aparte los que esta corrida va a correr. La
+// distinción importa para la revisión de la tabla de emuladores de más abajo:
+// esa tabla es una propiedad del repositorio, no de la corrida, y una corrida
+// filtrada que la diera por buena dejaría pasar un banco sin declarar.
+const todosLosBancos = fs.readdirSync(dir)
   .filter(f => /^prueba-.*\.cjs$/.test(f))
-  .filter(f => !filtro || f.includes(filtro))
   .sort();
+const archivos = todosLosBancos.filter(f => !filtro || f.includes(filtro));
 
 if (archivos.length === 0) {
   console.log(`No hay pruebas que empaten con "${filtro}".`);
@@ -71,16 +75,97 @@ const EMULADORES = {
   auth:      Number(process.env.EMU_AUTH_PORT || 9099),
   storage:   Number(process.env.EMU_STOR_PORT || 9199),
 };
+//
+// ACTUALIZADA el 2026-11-12. Tenía OCHO entradas y hay DIECISÉIS bancos que
+// hablan con el emulador. Los ocho que faltaban no se saltaban: se corrían, y
+// con el puerto caído acababan donde fuera. Lo medido ese día, con el 9099
+// apagado a mano y el 8080 vivo:
+//
+//   reglas-programa        salida 1, cero `FALLA`  → el corredor publicaba ROJO
+//   reglas-obra-cerrada    salida 1, cero `FALLA`  → el corredor publicaba ROJO
+//   frontera-de-la-bitacora  salida 2 por la puerta del símbolo renombrado
+//   canal-que-avisa        44 s, salida 2, sin nombrar el puerto ni una vez
+//   (y cuatro más en «sin arrancar», que es la casilla del renombre)
+//
+// Los dos primeros son el defecto completo: «no pude mirar» publicado como
+// regresión, con el número de comprobaciones en blanco porque no hubo ninguna,
+// mandando a buscar en `firestore.rules` algo que no estaba roto. Es el #132
+// por el otro lado — ahí el tercer estado se degradaba a verde, aquí a rojo.
 const NECESITAN_EMULADOR = new Map([
-  ['prueba-cierre-emulador.cjs',             ['firestore', 'auth']],
-  ['prueba-reglas-nomina-subcoleccion.cjs',  ['firestore', 'auth']],
-  ['prueba-reglas-dependencia-captura.cjs',  ['firestore', 'auth', 'storage']],
-  ['prueba-reglas-evidencia.cjs',            ['firestore', 'auth']],
-  ['prueba-reglas-extraordinarias.cjs',      ['firestore', 'auth']],
-  ['prueba-migracion-ata-la-partida.cjs',    ['firestore']],
-  ['prueba-prefijo-organizacion.cjs',        ['firestore', 'auth']],
-  ['prueba-aislamiento-de-usuarios.cjs',     ['firestore', 'auth']],
+  ['prueba-aislamiento-de-usuarios.cjs',       ['firestore', 'auth']],
+  ['prueba-canal-que-avisa.cjs',               ['firestore']],
+  ['prueba-cierre-emulador.cjs',               ['firestore', 'auth']],
+  ['prueba-el-canal-no-grita-en-falso.cjs',    ['firestore', 'auth']],
+  ['prueba-escritura-en-su-organizacion.cjs',  ['firestore', 'auth']],
+  ['prueba-frontera-de-la-bitacora.cjs',       ['firestore', 'auth']],
+  ['prueba-mensaje-de-permiso.cjs',            ['firestore', 'auth']],
+  ['prueba-migracion-ata-la-partida.cjs',      ['firestore']],
+  ['prueba-nota-no-calla.cjs',                 ['firestore', 'auth']],
+  ['prueba-prefijo-organizacion.cjs',          ['firestore', 'auth']],
+  ['prueba-reglas-dependencia-captura.cjs',    ['firestore', 'auth', 'storage']],
+  ['prueba-reglas-evidencia.cjs',              ['firestore', 'auth']],
+  ['prueba-reglas-extraordinarias.cjs',        ['firestore', 'auth']],
+  ['prueba-reglas-nomina-subcoleccion.cjs',    ['firestore', 'auth']],
+  ['prueba-reglas-obra-cerrada.cjs',           ['firestore', 'auth']],
+  ['prueba-reglas-programa.cjs',               ['firestore', 'auth']],
 ]);
+
+// ── Y LA TABLA NO SE PUEDE VOLVER A QUEDAR ATRÁS ───────────────────────────
+//
+// Corregir las ocho entradas que faltaban no arregla nada: ya se habían
+// corregido una por una antes —la tabla nació con dos y creció a ocho— y nada
+// impedía la novena. Lo que faltaba es esto.
+//
+// La dificultad es que el mismo hecho se escribe en DOS sitios y los dos son
+// necesarios. La tabla de arriba la lee el corredor, que es el único que puede
+// SALTARSE un banco antes de lanzarlo y contarlo en su propia casilla. El
+// `exigirPuertos` lo lee el banco, que es el único que sirve cuando se corre a
+// mano —que es justo como se trabaja mientras se arregla algo—. Ninguno de los
+// dos sobra, así que lo que se hace es prohibir que DISCREPEN.
+//
+// El disparador no puede ser la tabla ni la llamada: tiene que ser algo que
+// esté en el banco porque habla con el emulador y no se pueda omitir sin dejar
+// de hablar con él. Eso son las llamadas que abren la conexión y los dos
+// ayudantes que no hacen otra cosa. Medido el 2026-11-12: esta expresión empata
+// con 15 bancos y los 15 usan el emulador de verdad; `migracion-ata-la-partida`
+// se le escapa —habla por REST— y no importa, porque sí declara, y lo que esto
+// atrapa es al que NO declara.
+//
+// Los talleres de `prueba-corredor-no-se-cuelga` quedan fuera solos: sus bancos
+// de mentira no abren ninguna conexión al emulador, así que no disparan nada.
+const TOCA_EL_EMULADOR =
+  /connect(?:Firestore|Auth|Storage)Emulator\(|emulador-limpio\.cjs|reglas-del-repo\.cjs/;
+
+const puertosQueDeclara = (src) => {
+  const m = src.match(/exigirPuertos\(\s*\{([^}]*)\}/);
+  return m ? [...m[1].matchAll(/([A-Za-z_]\w*)\s*:/g)].map(x => x[1]) : null;
+};
+
+const juego = (xs) => [...xs].sort().join(', ');
+const sinDeclarar = [];
+for (const f of todosLosBancos) {
+  let src = '';
+  try { src = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; }
+  if (!TOCA_EL_EMULADOR.test(src)) continue;
+  const enTabla = NECESITAN_EMULADOR.get(f);
+  const declara = puertosQueDeclara(src);
+  if (!enTabla)
+    sinDeclarar.push([f, 'habla con el emulador y no está en la tabla de arriba: ' +
+      'se correría con el puerto caído y acabaría en la casilla equivocada']);
+  else if (!declara)
+    sinDeclarar.push([f, 'está en la tabla, pero corrido a mano no pide sus ' +
+      'puertos: le falta `noArranco.exigirPuertos({…})` antes de la primera aserción']);
+  else if (juego(declara) !== juego(enTabla))
+    sinDeclarar.push([f, `la tabla dice «${juego(enTabla)}» y el banco pide ` +
+      `«${juego(declara)}»: uno de los dos miente`]);
+  // Un nombre que el corredor no conoce no da error: da `EMULADORES[n] ===
+  // undefined`, una sonda a un puerto `NaN` que nunca contesta, y el banco
+  // queda «sin emulador» para siempre con los tres emuladores arriba.
+  const desconocidos = (declara || []).filter(n => !(n in EMULADORES));
+  if (desconocidos.length > 0)
+    sinDeclarar.push([f, `pide emuladores que el corredor no conoce: ` +
+      `${desconocidos.join(', ')} — los que hay son ${juego(Object.keys(EMULADORES))}`]);
+}
 
 // ¿Está escuchando ese puerto?
 //
@@ -479,6 +564,15 @@ for (const [f, causa, salida] of caducas) {
   console.log(`\nPara repetirlo solo:\n  FECHA_FALSA=${FECHA_BARRIDO} node --require ` +
     `./scripts/${path.basename(RUTA_FECHA_FALSA)} scripts/${f}`);
 }
+if (sinDeclarar.length > 0) {
+  console.log(`\n${sinDeclarar.length} banco(s) y la tabla de emuladores no dicen lo mismo:`);
+  for (const [f, razón] of sinDeclarar) console.log(`  ${corto(f)}: ${razón}`);
+  console.log('Esto sale con 1 sin haber medido nada de ellos, a propósito. El día que');
+  console.log('un puerto se caiga, un banco no declarado no dice «falta auth»: dice');
+  console.log('ROJO con cero comprobaciones, o se queda 44 s reintentando, y manda a');
+  console.log('buscar una regresión que no existe. Se arregla una vez, aquí, y no la');
+  console.log('novena vez que alguien se acuerde.');
+}
 if (exclusionesFantasma.length > 0) {
   console.log(`\nLa tabla de exclusiones del barrido nombra ${exclusionesFantasma.length} ` +
     `archivo(s) que no existe(n):`);
@@ -496,4 +590,5 @@ if (faltaElReloj) {
 }
 
 process.exit(rojas.length + mudas.length + colgadas.length + caducas.length
-  + exclusionesFantasma.length + (faltaElReloj ? 1 : 0) > 0 ? 1 : 0);
+  + exclusionesFantasma.length + sinDeclarar.length
+  + (faltaElReloj ? 1 : 0) > 0 ? 1 : 0);

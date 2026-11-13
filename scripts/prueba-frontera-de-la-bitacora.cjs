@@ -59,6 +59,14 @@ const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
 const PROYECTO = 'campo-fosmon-prueba';
 
+// Los puertos, antes de la primera aserción. Este banco ya salía con 2 sin
+// esto, pero por la puerta equivocada: el `noArranco(...)` de más abajo es la
+// puerta del SÍMBOLO RENOMBRADO, y lo que publicaba con el emulador caído era
+// «Lo más probable es que el símbolo haya cambiado de nombre · Buscar cómo se
+// llama ahora». Código de salida correcto, diagnóstico que manda a leer el AST
+// en lugar de a levantar un puerto. Medido el 2026-11-12.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const ARCH_REGLAS = process.env.ARCH_REGLAS || path.join(raiz, 'firestore.rules');
 
 // ── La contraprueba ────────────────────────────────────────────────────────
@@ -175,8 +183,10 @@ const FILA = (usuario, obra) => ({
 
   await cargarRulesetEnEmulador({ proyecto: PROYECTO, host: HOST, puerto: PUERTO, archivo: ARCH_REGLAS })
     .catch(e => {
-      noArranco(`no se pudo hablar con el emulador de Firestore en ${HOST}:${PUERTO} — ${e.message}\n` +
-        '  firebase emulators:start --only firestore,auth --project campo-fosmon-prueba');
+      noArranco.sinPrecondicion(
+        `no se pudieron cargar las reglas en el emulador de ${HOST}:${PUERTO} — ${e.message}`,
+        ['export PATH="/opt/homebrew/bin:/opt/homebrew/opt/openjdk/bin:$PATH"',
+         `firebase emulators:start --only firestore,auth --project ${PROYECTO}`]);
     });
 
   const abrir = async (nombre, uid, claims) => {
@@ -184,7 +194,10 @@ const FILA = (usuario, obra) => ({
     const auth = getAuth(app);
     connectAuthEmulator(auth, `http://${HOST}:${PUERTO_AUTH}`, { disableWarnings: true });
     try { await signInWithCustomToken(auth, tokenDe(uid, claims)); }
-    catch (e) { noArranco(`el emulador de Auth no aceptó el token — ${e.message}`); }
+    catch (e) { noArranco.sinPrecondicion(
+      `el emulador de Auth en ${HOST}:${PUERTO_AUTH} no aceptó el token — ${e.message}`,
+      ['Contesta, así que está arriba: lo que no acepta es un token sin firma.',
+       'Se levantó sin `--only auth`, o es un Auth de verdad y no el emulador.']); }
     const db = getFirestore(app);
     connectFirestoreEmulator(db, HOST, PUERTO);
     return db;

@@ -44,6 +44,13 @@ const raiz = path.resolve(__dirname, '..');
 const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const PUERTO_AUTH = Number(process.env.EMU_AUTH_PORT || 9099);
+
+// Los dos puertos, antes de la primera aserción. Sin esto, con el 9099 caído lo
+// que se publicaba era el objeto de error del SDK —`auth/network-request-failed`
+// y un `appName` con marca de tiempo— y el corredor lo contaba en «sin
+// arrancar». El puerto no aparecía por ninguna parte.
+noArranco.exigirPuertos({ firestore: PUERTO, auth: PUERTO_AUTH }, HOST);
+
 const PROYECTO = 'campo-fosmon-prueba';
 
 const OBRA = '0114';
