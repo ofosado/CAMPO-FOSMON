@@ -307,17 +307,25 @@ try {
 
 // ── la fixture ─────────────────────────────────────────────────────────────
 const DIA = 86400000;
-// Este día se escribe en UTC A PROPÓSITO, y el propósito es feo: `diasSinCapturaDe`
-// hace `new Date('2026-10-31')`, que el estándar parsea como MEDIANOCHE UTC, y
-// lo resta de un instante real. Si el fixture escribiera el día LOCAL —que es
-// lo correcto, y lo que hacen los otros bancos desde el 2026-11-12— la cuenta
-// de producción contestaría 13 donde el fixture puso 12, porque a las 18:00 en
-// México ya es el día siguiente en UTC. Se midió así: con el día local, el
-// banco sale ROJO a cualquier hora después de las 18:00 y en las cuatro fechas
-// del barrido. O sea que hoy el fixture y el producto se equivocan en la misma
-// dirección y el error se cancela. Es el **#137**, y el día que se arregle, esto
-// pasa a día local y la aserción de «hace 12 días → 12» sigue diciendo 12.
-const haceDias = (n) => new Date(Date.now() - n * DIA).toISOString().slice(0, 10);
+// El día se escribe en el calendario de la OBRA, que es donde lo cuenta el
+// producto desde el #137. Estuvo en UTC a propósito mientras ese defecto vivía:
+// `diasSinCapturaDe` hacía `new Date('2026-10-31')` —medianoche UTC— y lo
+// restaba de un instante real, así que el fixture y el producto se equivocaban
+// en la misma dirección y el error se cancelaba; con el día local, este banco
+// salía ROJO a cualquier hora después de las 18:00 y en las cuatro fechas del
+// barrido. Arreglada la cuenta, el día correcto es el de la obra y la aserción
+// de «hace 12 días → 12» sigue diciendo 12 a cualquier hora.
+//
+// Con `Intl` y la zona explícita, no con `getDate()`: el día del aparato que
+// corre la suite no es un hecho de la obra, y una máquina en otro huso movería
+// el fixture sin mover el producto.
+const DIA_DE_OBRA = (d) => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d).map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+};
+const haceDias = (n) => DIA_DE_OBRA(new Date(Date.now() - n * DIA));
 
 // Cuatro maneras de que a una estimación le falte el `no`, todas vistas en
 // datos reales: nunca escrito, escrito vacío, escrito como texto que no es
