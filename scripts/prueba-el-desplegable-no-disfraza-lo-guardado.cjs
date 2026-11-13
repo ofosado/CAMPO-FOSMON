@@ -506,6 +506,115 @@ console.log(`\n5. La regla misma, con las dos formas de lista del archivo`);
     'sin lista, un valor guardado no se da por bueno');
 }
 
+// ── 9. Un renglón más arriba: el formulario que inventa lo que no se guardó ─
+//
+// ESTO SALIÓ DEL RECORRIDO EN EL PREVIEW, no de leer el archivo. Con las ocho
+// secciones de arriba en verde, el modal de Editar usuario abierto sobre el
+// perfil `sinrol@fosmon.com.mx` enseñaba «Administrador de Obra» ya escogido.
+// El desplegable estaba bien: pintaba fielmente lo que le daban. Lo que le
+// daban era mentira, porque el estado inicial del formulario decía
+// `usuario?.rol || "administrador_obra"` y el perfil no tiene rol.
+//
+// Es la misma afirmación de este banco un renglón más arriba, y es peor: no es
+// que la pantalla enseñe un rol que el perfil no tiene, es que «Guardar
+// cambios» manda ese rol a `actualizarUsuario` y se lo OTORGA. Una omisión que
+// en un ALTA es correcta —hay que arrancar con un rol de la lista que se
+// muestra— y al EDITAR escribe un privilegio.
+//
+// La regla: CON REGISTRO, UN CAMPO QUE EL REGISTRO NO TRAE SALE VACÍO. Sin
+// registro —el alta— la omisión es libre.
+//
+// El barrido no nombra el modal: busca todo `useState({…})` que desempaque dos
+// o más campos de una misma raíz, que es la forma de «un registro cargado en un
+// formulario», y EJECUTA el inicializador dos veces. Hoy hay uno solo en el
+// archivo; el modal que se escriba mañana cae igual.
+console.log('\n6. Con registro cargado, el formulario no inventa un campo que no viene');
+{
+  const raizDe = (n) => {
+    let c = n;
+    while (c && (c.type === 'MemberExpression' || c.type === 'OptionalMemberExpression')) c = c.object;
+    return c && c.type === 'Identifier' ? c.name : null;
+  };
+  const formularios = [];
+  traverse(ast, {
+    CallExpression(p) {
+      const cal = p.node.callee;
+      if (!(cal.type === 'Identifier' && cal.name === 'useState')) return;
+      const obj = p.node.arguments[0];
+      if (!obj || obj.type !== 'ObjectExpression') return;
+      const cuenta = {};
+      for (const pr of obj.properties) {
+        if (pr.type !== 'ObjectProperty') continue;
+        const v = pr.value.type === 'LogicalExpression' ? pr.value.left : pr.value;
+        if (v.type !== 'MemberExpression' && v.type !== 'OptionalMemberExpression') continue;
+        const r = raizDe(v);
+        if (r) cuenta[r] = (cuenta[r] || 0) + 1;
+      }
+      const registro = Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0];
+      if (!registro || registro[1] < 2) return;
+      formularios.push({
+        linea: src.slice(0, p.node.start).split('\n').length,
+        registro: registro[0],
+        fuente: src.slice(obj.start, obj.end),
+        ruta: p,
+      });
+    },
+  });
+
+  // Cero formularios es el P4 por el lado que no avisa: si el archivo cambió de
+  // forma hasta dejar de parecerse a esto, lo que hay que decir es que no se
+  // midió.
+  if (formularios.length === 0) {
+    noArranco(['ningún `useState({…})` que cargue un registro en un formulario'], ARCH_APP);
+  }
+  console.log(`   (formularios con registro cargado: ${formularios.length})`);
+
+  for (const f of formularios) {
+    // Las libres del inicializador que no sean el registro: banderas como
+    // `esDep`, que deciden la omisión del alta. Se les da los dos valores,
+    // porque la omisión correcta en una rama no absuelve a la otra.
+    const libres = identificadoresLibres(f.fuente).filter(n => n !== f.registro);
+    const { cuerpo, faltan } = fuenteDe(ARCH_APP, libres,
+      { tolerante: true, excluir: [f.registro, ...libres] });
+    const perdidos = faltan.map(x => String(x).replace(/^fn:/, ''))
+      .filter(n => !libres.includes(n) && !(n in global));
+    if (perdidos.length) {
+      noArranco([`App.jsx:${f.linea} carga un registro y este banco no supo ` +
+                 `sembrarle ${perdidos.map(n => '`' + n + '`').join(', ')}`], ARCH_APP);
+    }
+    let hacer;
+    try {
+      const codigo = esbuild.transformSync(
+        `${cuerpo}\nreturn (${f.registro}, ${libres.join(', ') || '__nada'}) => (${f.fuente});`,
+        { loader: 'jsx' }).code;
+      hacer = new Function('React', '__nada', codigo)(React, undefined);
+    } catch (err) {
+      noArranco([`App.jsx:${f.linea} no se pudo montar — ${err.message}`], ARCH_APP);
+    }
+    // Un registro que EXISTE y no trae ningún campo. Es el perfil sin rol, y es
+    // el caso que distingue «no capturado» de «no hay registro».
+    for (const bandera of [false, true]) {
+      const estado = hacer({}, ...libres.map(() => bandera));
+      const inventados = Object.entries(estado)
+        .filter(([, v]) => typeof v === 'string' && v !== '')
+        .map(([k, v]) => `${k}="${v}"`);
+      check(inventados.length === 0,
+        `App.jsx:${f.linea} con \`${f.registro}\` vacío` +
+        (libres.length ? ` y ${libres.join('/')}=${bandera}` : '') +
+        ' no inventa ningún campo',
+        inventados.length ? inventados.join(', ') : 'todos vacíos');
+    }
+    // Y la otra mitad: en el ALTA la omisión sigue siendo libre, porque un
+    // formulario nuevo que arranque en blanco en un campo de lista cerrada es
+    // el defecto de la otra dirección. Esto no afirma CUÁL: afirma que el banco
+    // no está pidiendo que desaparezca.
+    const alta = hacer(undefined, ...libres.map(() => false));
+    check(alta && typeof alta === 'object',
+      `App.jsx:${f.linea} sin registro —el alta— sigue armando su estado inicial`,
+      alta ? Object.keys(alta).length + ' campos' : '(nada)');
+  }
+}
+
 // ── Resultado ──────────────────────────────────────────────────────────────
 console.log('');
 if (fallos.length === 0) {

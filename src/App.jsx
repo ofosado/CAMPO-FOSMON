@@ -11349,11 +11349,15 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, esAlta
   const[form,setForm]=useState({
     email: usuario?.email||"",
     nombre: usuario?.nombre||"",
-    // El rol por omisión tiene que existir en la lista que se está mostrando.
-    // Con `administrador_obra` fijo, un alta en dependencia arrancaba con un
-    // rol que el `<select>` no ofrecía: el campo salía en blanco y, si nadie
-    // lo tocaba, se guardaba un rol de constructora.
-    rol: usuario?.rol || (esDep ? "supervisor_obra" : "administrador_obra"),
+    // En un ALTA no hay registro, así que el rol por omisión tiene que existir
+    // en la lista que se está mostrando: con `administrador_obra` fijo, un alta
+    // en dependencia arrancaba con un rol que el `<select>` no ofrecía.
+    //
+    // Al EDITAR sí hay registro, y ahí el mismo valor por omisión miente. Un
+    // perfil guardado sin rol abría el modal con «Administrador de Obra» ya
+    // escogido —no lo tiene— y «Guardar cambios» se lo otorgaba de verdad.
+    // Vacío, el `<select>` enseña «sin rol asignado» y `submit` obliga a elegir.
+    rol: usuario ? (usuario.rol || "") : (esDep ? "supervisor_obra" : "administrador_obra"),
     obras_asignadas: usuario?.obras_asignadas||[],
     activo: usuario?.activo!==false,
   });
