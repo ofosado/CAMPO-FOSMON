@@ -6563,6 +6563,34 @@ const ESTATUS_PAGADA = "Pagada";
 // mismo estado.
 const ESTATUS_ESTIMACION_DEPENDENCIA = ["Recibida", "En revisión", "Autorizada", ESTATUS_PAGADA];
 
+// El trámite de la constructora: se elabora, se aprueba, se factura y se cobra.
+// Vivía DENTRO del componente de estimaciones, que es lo que obligaba a quien
+// quisiera ejercitarlo a sacarlo con una expresión regular tecleada contra el
+// texto del archivo. Los cuatro vocabularios que se guardan en `estatus` viven
+// aquí juntos, que es donde se puede ver de un golpe que la constructora
+// FACTURA donde la dependencia AUTORIZA.
+const ESTATUS = ["En proceso", "Aprobada", "Facturada", ESTATUS_PAGADA];
+
+// Una estimación DE SUBCONTRATO tiene tres estados, no los cuatro de las
+// estimaciones de obra: a un subcontratista no se le factura, se le autoriza y
+// se le paga. La lista estaba tecleada DOS VECES dentro del mismo `<Sel>` —una
+// en el `includes` que decide si el valor es ajeno y otra en los tres
+// `<option>`— y dos copias de un vocabulario son dos cuentas para un número:
+// agregar un estado en una y no en la otra deja el nuevo marcado «fuera del
+// catálogo» para siempre, o lo deja entrar sin que el guardia lo reconozca.
+const ESTATUS_ESTIMACION_SUBCONTRATO = ["En proceso", "Autorizada", ESTATUS_PAGADA];
+
+// El estado del subcontrato se guarda en minúsculas y se enseña capitalizado,
+// así que la lista va en pares: lo que viaja a Firestore es el primero. Estaba
+// escrita como cuatro `<option>` dentro del JSX, o sea invisible para
+// cualquiera que preguntara qué estados existen.
+const ESTADOS_SUBCONTRATO = [
+  ["activa",     "Activa"],
+  ["pausada",    "Pausada"],
+  ["completada", "Completada"],
+  ["cancelada",  "Cancelada"],
+];
+
 // Las fechas se capturan y se guardan como "AAAA-MM-DD" (el valor de un
 // <input type="date">). `new Date("2026-09-30")` las interpreta como medianoche
 // UTC, y al oeste de Greenwich eso pinta el día 29 y descuadra las restas por
@@ -9366,6 +9394,37 @@ function Sel({children,style,...rest}){
   return <select {...rest} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,
     padding:"6px 9px",color:C.textPri,fontSize:11,...style}}>{children}</select>;
 }
+
+// ── UN DESPLEGABLE NO PUEDE DISFRAZAR LO QUE ESTÁ GUARDADO ─────────────────
+//
+// `<select value="X">` cuando ninguna de sus `<option>` vale "X" no avisa de
+// nada: el navegador pinta la PRIMERA. El dato guardado se lee entonces como
+// otro —uno que nadie escribió— y donde el formulario guarda el campo entero,
+// apretar «Guardar» lo escribe de verdad.
+//
+// La comparación «¿está el valor guardado entre las opciones?» estaba tecleada
+// en tres desplegables y FALTABA en cinco. Vive aquí una vez. Devuelve la
+// `<option>` que hay que AÑADIR para que el desplegable diga la verdad, o
+// `null` cuando la lista ya cubre el valor.
+//
+// `valores` admite las dos formas que hay en el archivo: lista de cadenas
+// (`CPTS`, `ESTATUS`) y lista de pares `[id, etiqueta]` (`ROLES`). Se normaliza
+// aquí y no con un `.map(([id])=>id)` en cada sitio, porque eso sería el
+// conocimiento de la forma tecleado ocho veces — y el sitio que se equivocara
+// enseñaría la advertencia SIEMPRE, que es la manera de volverla decorativa.
+//
+// `vacio` es opcional porque los desplegables no coinciden en si el vacío es
+// un valor legítimo: los que ya ofrecen su propio «— Seleccionar —» no
+// necesitan nada, y los que no lo ofrecen tienen que decir «sin estatus» en
+// vez de pintar el primer estado del trámite.
+const opcionAjena = (valor, valores, marca, vacio) => {
+  const v = valor == null ? "" : String(valor);
+  const lista = (Array.isArray(valores) ? valores : [])
+    .map(o => String(Array.isArray(o) ? o[0] : o));
+  if (lista.includes(v)) return null;
+  if (v === "") return vacio ? <option value="">{vacio}</option> : null;
+  return <option value={v}>{`${v} — ${marca}`}</option>;
+};
 function PrimaryBtn({children,onClick,disabled}){
   return <button onClick={onClick} disabled={disabled}
     style={{background:disabled?C.border:C.blueDk,border:"none",borderRadius:8,padding:10,
@@ -9699,6 +9758,13 @@ const PERIODOS=[
 ];
 const CPTS=["Anticipo","En almacén","En tránsito","En fabricación"];
 const CT_COL={"Anticipo":C.yellow,"En almacén":C.green,"En tránsito":C.blue,"En fabricación":C.purple};
+// Un concepto que no está en `CT_COL` se pintaba de tres maneras distintas en
+// el mismo renglón: `undefined` en el borde izquierdo —o sea sin borde—,
+// `undefined` en la pastilla, y `C.blue` en el importe. Ese azul es el color
+// de «En tránsito»: le prestaba a un concepto desconocido el significado de
+// otro, que es el mismo defecto que el desplegable un centímetro más allá.
+// Gris apagado dice lo que de verdad pasa: no se sabe de qué concepto es.
+const colorDeConcepto = cc => CT_COL[cc] || C.textMut;
 const EST_COL={Pagada:C.green,Facturada:C.purple,Aprobada:C.blue,"En proceso":C.yellow};
 
 // Cómo va una estimación facturada contra su plazo de pago. Devuelve `null`
@@ -10744,6 +10810,7 @@ function ModalNuevaObra({usuario,onSave,onClose,gpData,onRefreshGP,gpLoading,gpE
                 {c.tipo==="opciones"
                   ? <Sel value={form[c.key]||""} onChange={e=>f(c.key,e.target.value)}>
                       <option value="">Selecciona…</option>
+                      {opcionAjena(form[c.key], c.opciones, "fuera del catálogo")}
                       {c.opciones.map(o=><option key={o} value={o}>{o}</option>)}
                     </Sel>
                   : <Inp type={c.tipo==="number"?"number":"text"} value={form[c.key]||""}
@@ -11282,11 +11349,15 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, esAlta
   const[form,setForm]=useState({
     email: usuario?.email||"",
     nombre: usuario?.nombre||"",
-    // El rol por omisión tiene que existir en la lista que se está mostrando.
-    // Con `administrador_obra` fijo, un alta en dependencia arrancaba con un
-    // rol que el `<select>` no ofrecía: el campo salía en blanco y, si nadie
-    // lo tocaba, se guardaba un rol de constructora.
-    rol: usuario?.rol || (esDep ? "supervisor_obra" : "administrador_obra"),
+    // En un ALTA no hay registro, así que el rol por omisión tiene que existir
+    // en la lista que se está mostrando: con `administrador_obra` fijo, un alta
+    // en dependencia arrancaba con un rol que el `<select>` no ofrecía.
+    //
+    // Al EDITAR sí hay registro, y ahí el mismo valor por omisión miente. Un
+    // perfil guardado sin rol abría el modal con «Administrador de Obra» ya
+    // escogido —no lo tiene— y «Guardar cambios» se lo otorgaba de verdad.
+    // Vacío, el `<select>` enseña «sin rol asignado» y `submit` obliga a elegir.
+    rol: usuario ? (usuario.rol || "") : (esDep ? "supervisor_obra" : "administrador_obra"),
     obras_asignadas: usuario?.obras_asignadas||[],
     activo: usuario?.activo!==false,
   });
@@ -11337,7 +11408,23 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, esAlta
 
       <div style={{marginBottom:10}}>
         <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Rol</div>
+        {/* Éste no es un desplegable que sólo PINTA mal: es el único que
+            ESCRIBE. `ROLES_CONSTRUCTORA` y `ROLES_DEPENDENCIA` no comparten ni
+            un identificador, así que un usuario con `administrador_obra`
+            abierto en una dependencia tenía su `<select>` en el primer rol de
+            la lista —«Director de Obras Públicas»— y `onConfirm` manda
+            `{...form}`: quien entraba a reasignarle una obra le reescribía el
+            rol a mando, sin tocar el campo y sin que nada lo dijera. El
+            arreglo del 2026-10 cubrió el rol POR OMISIÓN de un alta; el rol
+            GUARDADO de una edición seguía descubierto.
+
+            Y el HUECO escribe igual que el valor ajeno: un usuario sin `rol`
+            —migrado, o dado de alta por fuera— pintaba también el primer rol
+            de la lista, que es mando. Por eso el vacío va con palabras. El
+            resto del formulario ya lo sabe tratar: la asignación de obras
+            cuelga de `form.rol && PERMISOS[form.rol]`. */}
         <Sel value={form.rol} onChange={e=>setForm({...form, rol:e.target.value})}>
+          {opcionAjena(form.rol, ROLES, "no existe en esta organización", "sin rol asignado")}
           {ROLES.map(([id,lbl])=><option key={id} value={id}>{lbl}</option>)}
         </Sel>
       </div>
@@ -11667,7 +11754,19 @@ function PantallaPlataforma({ usuario, onLogout }) {
           </div>
           <div>
             <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Tipo</div>
+            {/* Hoy este formulario nace en blanco y `form.tipo` arranca en
+                "dependencia", así que el valor de fuera no puede llegar. Lleva
+                guardia igual, por una razón medida: `ModalUsuario` también
+                nació como alta en blanco y le creció un camino de edición que
+                siembra `form.rol` con `usuario?.rol` — y nadie volvió a mirar
+                su desplegable. Una línea aquí cuesta menos que el día que se
+                repita. Y el vacío va con palabras por lo mismo: aquí el tipo
+                decide qué roles existen, así que pintar «Constructora» sobre
+                un campo sin capturar sería la mentira más cara de todas. La
+                opción del vacío sólo se pinta cuando el campo está vacío, o
+                sea que hoy no aparece nunca. */}
             <Sel value={form.tipo} onChange={e=>setForm({...form, tipo:e.target.value})} style={{width:"100%"}}>
+              {opcionAjena(form.tipo, TIPOS_ORG, "fuera del catálogo", "sin tipo")}
               {TIPOS_ORG.map(t=><option key={t} value={t}>{t === "dependencia" ? "Dependencia (gobierno)" : "Constructora"}</option>)}
             </Sel>
             <div style={{fontSize:9,color:C.textMut,marginTop:3}}>
@@ -17846,16 +17945,22 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       </div>
       {materiales.map((m,i)=>{
         const cc=m.concepto||"En almacén";
-        return <div key={m.id} style={{background:C.bg,borderRadius:7,padding:"8px 10px",marginBottom:5,borderLeft:`2px solid ${CT_COL[cc]}`}}>
+        return <div key={m.id} style={{background:C.bg,borderRadius:7,padding:"8px 10px",marginBottom:5,borderLeft:`2px solid ${colorDeConcepto(cc)}`}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
             <span style={{fontSize:10,color:C.textMut,width:18,textAlign:"center",flexShrink:0}}>{i+1}</span>
             {editar?<Inp placeholder="Descripción..." value={m.desc} style={{flex:1,fontSize:10}}
               onChange={e=>setMateriales(mm=>mm.map((x,j)=>j===i?{...x,desc:e.target.value}:x))}/>
             :<span style={{flex:1,fontSize:10,color:C.textSec}}>{m.desc||"—"}</span>}
+            {/* Aquí los cuatro conceptos son CUATRO KPIs distintos —«Anticipo»
+                es dinero dado a un proveedor y «En almacén» es material que ya
+                está en la obra— y «Anticipo» es la primera opción de la lista,
+                o sea lo que el navegador pintaba. Un concepto renombrado no se
+                leía como un hueco: se leía como la otra cuenta. */}
             {editar?<Sel value={cc} style={{fontSize:10,padding:"5px 6px",flexShrink:0,width:110}}
               onChange={e=>setMateriales(mm=>mm.map((x,j)=>j===i?{...x,concepto:e.target.value}:x))}>
+              {opcionAjena(cc, CPTS, "fuera del catálogo")}
               {CPTS.map(c=><option key={c} value={c}>{c}</option>)}
-            </Sel>:<Bdg color={CT_COL[cc]} small>{cc}</Bdg>}
+            </Sel>:<Bdg color={colorDeConcepto(cc)} small>{cc}</Bdg>}
             {editar&&<button onClick={()=>setMateriales(mm=>mm.filter((_,j)=>j!==i))}
               style={{background:"none",border:"none",color:C.red,fontSize:14,lineHeight:1,flexShrink:0}}>×</button>}
           </div>
@@ -17871,7 +17976,7 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
             <div>
               <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Importe</div>
               <div style={{background:C.card,border:`0.5px solid ${C.border}`,borderRadius:6,
-                padding:"5px 7px",fontSize:12,fontWeight:700,color:CT_COL[cc]||C.blue,textAlign:"right"}}>{MXN(m.imp)}</div>
+                padding:"5px 7px",fontSize:12,fontWeight:700,color:colorDeConcepto(cc),textAlign:"right"}}>{MXN(m.imp)}</div>
             </div>
           </div>
         </div>;
@@ -18204,6 +18309,16 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
                   await fsSet(`obras/${obra.id}`, {gpId: nuevoId});
                 }}>
                 <option value="">— Selecciona una obra —</option>
+                {/* El noveno desplegable, y el único cuya lista no es fija:
+                    son las obras que GP contestó hoy. Un `gpId` guardado que
+                    ya no esté en esa lista —obra renombrada o archivada allá—
+                    se pintaba como «— Selecciona una obra —», o sea como obra
+                    SIN ligar, cuando sí está ligada y es ese enlace muerto el
+                    que deja el gasto sin medir. Se le pasan los ids y no los
+                    objetos: con los objetos, `opcionAjena` no reconocería
+                    ninguno y la advertencia saldría siempre. */}
+                {opcionAjena(obra.gpId, Object.values(gpData.obras).map(o=>o.id),
+                  "ya no está en GP")}
                 {Object.values(gpData.obras)
                   .sort((a,b)=>a.id.localeCompare(b.id))
                   .map(o => (
@@ -18844,7 +18959,6 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
       setSnapshotGuardado(JSON.stringify(nuevas.map(e=>({no:e.no, estatus:e.estatus, monto:e.monto}))));
     } catch(err) { console.error('dispararNotifsCambios', err); }
   };
-  const ESTATUS=["En proceso","Aprobada","Facturada","Pagada"];
   // Las deducciones de una estimación. Los tres porcentajes y el monto pasan
   // por `_n`, y ESO ES LO QUE ARREGLA UN DEFECTO QUE YA ESTABA EN PRODUCCIÓN.
   //
@@ -19152,10 +19266,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
                   {editar
                     ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"3px 5px"}}
                         onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
-                        {!ESTATUS.includes(e.estatus) &&
-                          <option value={e.estatus||""}>
-                            {e.estatus ? `${e.estatus} — fuera del catálogo` : "sin estatus"}
-                          </option>}
+                        {opcionAjena(e.estatus, ESTATUS, "fuera del catálogo", "sin estatus")}
                         {ESTATUS.map(s=><option key={s} value={s}>{s}</option>)}
                       </Sel>
                     : <Bdg color={ecol} small>{e.estatus||"—"}</Bdg>}
@@ -19547,10 +19658,7 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
                   {editar
                     ? <Sel value={e.estatus||""} style={{fontSize:10,padding:"3px 5px"}}
                         onChange={ev=>actualiza(i,{estatus:ev.target.value})}>
-                        {!ESTATUS_ESTIMACION_DEPENDENCIA.includes(e.estatus) &&
-                          <option value={e.estatus||""}>
-                            {e.estatus ? `${e.estatus} — fuera del trámite` : "sin estatus"}
-                          </option>}
+                        {opcionAjena(e.estatus, ESTATUS_ESTIMACION_DEPENDENCIA, "fuera del trámite", "sin estatus")}
                         {ESTATUS_ESTIMACION_DEPENDENCIA.map(s=><option key={s} value={s}>{s}</option>)}
                       </Sel>
                     : <Bdg color={col} small>{e.estatus||"—"}</Bdg>}
@@ -23928,10 +24036,8 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
             <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
             {type==="select" ? (
               editar ? <Sel value={sub[key]||"activa"} onChange={e=>onUpdate({[key]:e.target.value})}>
-                <option value="activa">Activa</option>
-                <option value="pausada">Pausada</option>
-                <option value="completada">Completada</option>
-                <option value="cancelada">Cancelada</option>
+                {opcionAjena(sub[key]||"activa", ESTADOS_SUBCONTRATO, "fuera del catálogo")}
+                {ESTADOS_SUBCONTRATO.map(([id,lbl])=><option key={id} value={id}>{lbl}</option>)}
               </Sel> : <div style={{fontSize:12,color:C.textSec,padding:"5px 0",borderBottom:`0.5px solid ${C.border}`}}>{sub[key]||"—"}</div>
             ) : (
               editar ? <Inp type={type} value={sub[key]||""}
@@ -24321,11 +24427,8 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
                       la lista pasaba igual de callado. */}
                   <Sel value={e.estatus||"En proceso"} style={{fontSize:10,padding:"4px 6px"}}
                     onChange={ev=>actualizarEstimacion(i,{estatus:ev.target.value})}>
-                    {!["En proceso","Autorizada","Pagada"].includes(e.estatus||"En proceso") &&
-                      <option value={e.estatus}>{`${e.estatus} — fuera del catálogo`}</option>}
-                    <option value="En proceso">En proceso</option>
-                    <option value="Autorizada">Autorizada</option>
-                    <option value="Pagada">Pagada</option>
+                    {opcionAjena(e.estatus||"En proceso", ESTATUS_ESTIMACION_SUBCONTRATO, "fuera del catálogo")}
+                    {ESTATUS_ESTIMACION_SUBCONTRATO.map(s=><option key={s} value={s}>{s}</option>)}
                   </Sel>
                   <button onClick={()=>eliminarEstimacion(i)}
                     style={{background:"none",border:"none",color:C.red,fontSize:14,cursor:"pointer"}}>×</button>
@@ -24779,8 +24882,15 @@ function Contrato({obra, setObra, rol, usuario, subs, subsCargados}) {
                 <div style={{fontSize:9,color:C.textMut,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.04em"}}>{lbl}</div>
                 {editar ? (
                   tipo==="opciones"
+                    /* La modalidad guardada que no esté en la lista se pintaba
+                       como «— Seleccionar —», o sea como campo vacío, mientras
+                       la misma pantalla en modo lectura —tres renglones más
+                       abajo— imprime `obra[key]` tal cual. Dos pantallas del
+                       mismo dato que no coincidían, y la que mentía era la que
+                       guarda. */
                     ? <Sel value={obra[key]||""} onChange={e=>f(key,e.target.value)} style={{width:"100%"}}>
                         <option value="">— Seleccionar —</option>
+                        {opcionAjena(obra[key], opciones, "fuera del catálogo")}
                         {opciones.map(o=><option key={o} value={o}>{o}</option>)}
                       </Sel>
                     : <Inp type={tipo} value={obra[key]||""}

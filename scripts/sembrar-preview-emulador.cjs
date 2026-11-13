@@ -743,6 +743,34 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
                 (asignadas.length ? `  obras=${asignadas.join(',')}` : ''));
   }
 
+  // ── Dos perfiles con el rol fuera de la lista de su organización ──────────
+  //
+  // No son cuentas: son PERFILES, sin identidad en Auth, y eso es a propósito.
+  // El caso que vienen a dejar ver es de lectura, no de sesión: el desplegable
+  // de rol de «Editar usuario» compara el rol GUARDADO contra la lista de la
+  // organización, y `ROLES_CONSTRUCTORA` y `ROLES_DEPENDENCIA` no comparten ni
+  // un identificador. Un usuario migrado entre tipos de organización, o uno sin
+  // `rol`, pintaba el PRIMER rol de la lista —que es mando— y «Editar usuario»
+  // manda `{rol: form.rol}` a `actualizarUsuario`: quien entraba a reasignarle
+  // una obra le reescribía el permiso sin tocar el campo.
+  //
+  // Sembrarles una identidad habría sembrado un usuario que puede iniciar
+  // sesión con un rol que su organización no reconoce, que es un escenario
+  // distinto y peor. `listarUsuarios` devuelve Firestore combinado con el
+  // estado de Auth, así que estos dos salen en la lista y se pueden abrir.
+  const PERFILES_HUERFANOS = [
+    { correo: 'migrado@fosmon.com.mx', nombre: 'Rol de la otra organización',
+      rol: 'director_obras' },   // existe, pero sólo en una dependencia
+    { correo: 'sinrol@fosmon.com.mx', nombre: 'Perfil sin rol', rol: '' },
+  ];
+  for (const p of PERFILES_HUERFANOS) {
+    await escribir(`usuarios/${idDeCorreo(p.correo)}`, {
+      nombre: p.nombre, correo: p.correo, rol: p.rol, activo: true,
+      orgId: 'fosmon', obras_asignadas: [], bienvenidaVista: true,
+    });
+    console.log(`  ${p.correo}  rol=${p.rol || '(vacío)'}  org=fosmon  (sin identidad en Auth)`);
+  }
+
   // ── Obras de la constructora, en la RAÍZ ──────────────────────────────────
   const EST_C = [
     { num: 1, monto: 4200000, estatus: 'pagada',    fecha: '2026-07-15' },
