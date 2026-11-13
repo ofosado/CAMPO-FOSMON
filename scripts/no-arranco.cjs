@@ -145,3 +145,64 @@ module.exports.vigilarExcepciones = function vigilarExcepciones(archivo) {
   process.on('uncaughtException', e => salir('excepción sin atrapar', e));
   process.on('unhandledRejection', e => salir('promesa rechazada sin atrapar', e));
 };
+
+// ── LA PUERTA QUE NO EXISTE ────────────────────────────────────────────────
+//
+// Las cuatro puertas de arriba se piden destructurando: `const {
+// sinPrecondicion } = require('./no-arranco.cjs')`. 129 sitios lo hacen hoy.
+// Si el nombre se escribe mal, o se renombra aquí, el destructurado deja
+// `undefined` y nada pasa: la llamada sólo revienta **cuando la precondición
+// falla**, o sea exactamente el día en que la puerta hacía falta. Hasta
+// entonces el banco sale verde SIN SU TERCER ESTADO, y el NO ARRANCÓ (2) queda
+// degradado en silencio a 0.
+//
+// Es la clase peor de todas las que hay en este repo: el andamio de las pruebas
+// fallando HACIA EL VERDE. Los cinco sitios que estaban mal se corrigieron en su
+// día uno por uno; nada impedía el sexto, y eso es lo que impide esto.
+//
+// Se contesta en el momento del destructurado, que es cuando se puede señalar
+// el renglón, y se contesta con el código 2 directo en vez de lanzando: lanzar
+// sale con 1 —el mismo código que un rojo— porque a esta altura del archivo
+// `vigilarExcepciones` todavía no está puesta; y aunque lo estuviera, el banco
+// que pide una puerta inexistente no tiene con qué reportar que no pudo mirar.
+// Lo que no puede pasar es que la respuesta sea `undefined`.
+//
+// Pasan sin preguntas los símbolos, lo que hereda de `Function` y un puñado de
+// nombres que pregunta el MOTOR y que ningún banco escribe: `then` cuando algo
+// se awaitea, `toJSON` cuando algo se serializa, `inspect` cuando se imprime,
+// `default`/`__esModule` si alguien lo importa desde un módulo ESM. Esos los
+// pregunta la máquina, no una persona, y matar el proceso ahí sería cambiar un
+// defecto por otro peor: un banco que muere al imprimir un diagnóstico.
+//
+// El primer intento dejó `toJSON` fuera y el propio banco de este guardia lo
+// puso en rojo con un `JSON.stringify`. Vale escribirlo: la lista se midió, no
+// se adivinó.
+const DEL_MOTOR = new Set(['then', 'toJSON', 'inspect', 'default', '__esModule',
+  'constructor', 'valueOf', 'toString']);
+// `length`, `name` y `prototype` son propias de cualquier función, no puertas:
+// se dejan pasar por el camino de siempre, pero no se anuncian como opciones.
+const PUERTAS = Object.getOwnPropertyNames(module.exports)
+  .filter(n => !['length', 'name', 'prototype'].includes(n));
+
+module.exports = new Proxy(module.exports, {
+  get(destino, prop, recibidor) {
+    if (typeof prop === 'symbol' || prop in Function.prototype || DEL_MOTOR.has(prop))
+      return Reflect.get(destino, prop, recibidor);
+    if (Object.prototype.hasOwnProperty.call(destino, prop))
+      return Reflect.get(destino, prop, recibidor);
+    console.log('');
+    console.log('NO ARRANCÓ — un banco pidió a `no-arranco.cjs` una puerta que no');
+    console.log('existe: `' + String(prop) + '`.');
+    console.log('');
+    console.log('Las que hay son: ' + PUERTAS.map(n => '`' + n + '`').join(', ') + ',');
+    console.log('más la función del módulo misma.');
+    console.log('');
+    console.log('Esto NO es un rojo, y tampoco se podía dejar pasar: un destructurado');
+    console.log('que deja `undefined` no revienta hoy, revienta el día que la');
+    console.log('precondición falle, que es el único día en que esa puerta servía de');
+    console.log('algo. Hasta entonces el banco sale VERDE sin su tercer estado.');
+    console.log('');
+    console.log('Buscar el nombre bien escrito arriba y apuntar el `require` a él.');
+    process.exit(NO_ARRANCO);
+  },
+});
