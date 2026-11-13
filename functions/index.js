@@ -2441,10 +2441,48 @@ const fechaUltimaCapturaDe = (historialAvance = []) => {
   return Number.isFinite(new Date(fecha).getTime()) ? fecha : null;
 };
 
+// Una obra municipal mexicana se mide en el calendario de la Ciudad de México.
+// Copia literal de `ZONA_OBRA` / `fechaEnZonaObra` / `diaDeObraDe` de
+// src/App.jsx, y están aquí por la misma razón que la cuenta de abajo: el
+// correo del lunes dice «Sin captura hace N días» y ese N tiene que ser el que
+// el residente ve en el tablero. Si el día se resolviera aquí en el huso del
+// servidor —que en Cloud Functions es UTC— las dos cifras se separarían seis
+// horas de cada día, que es cuando el umbral `>7` cambia de lado.
+const ZONA_OBRA = "America/Mexico_City";
+
+const fechaEnZonaObra = (fecha) => {
+  const d = fecha instanceof Date ? fecha : new Date(fecha);
+  if (isNaN(d.getTime())) return null;
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: ZONA_OBRA, year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(d).map((x) => [x.type, x.value]));
+  return (p.year && p.month && p.day) ? `${p.year}-${p.month}-${p.day}` : null;
+};
+
+// Un día de calendario pelado YA ES un día: pasarlo por `new Date` lo convierte
+// en medianoche UTC, que en México es la tarde del día anterior.
+const diaDeObraDe = (fecha) => {
+  const txt = String(fecha ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(txt)) return txt;
+  return fechaEnZonaObra(fecha);
+};
+
+// Los días transcurridos se cuentan en el CALENDARIO DE LA OBRA, de día a día,
+// y no como periodos de 24 horas entre dos instantes. Ver el preámbulo largo en
+// src/App.jsx. La resta va con los dos días a medianoche UTC: ya no se restan
+// instantes sino dos etiquetas de día, y a dos etiquetas les da igual el huso
+// con el que se resten mientras sea el mismo para las dos.
 const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
   const fecha = fechaUltimaCapturaDe(historialAvance);
   if (!fecha) return null;
-  return Math.floor((ahora - new Date(fecha).getTime()) / 86400000);
+  const capturo = diaDeObraDe(fecha);
+  const hoy = fechaEnZonaObra(new Date(ahora));
+  if (!capturo || !hoy) return null;
+  const a = Date.parse(`${capturo}T00:00:00Z`);
+  const b = Date.parse(`${hoy}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
 };
 
 // Construye los KPIs de una obra leyendo sus sub-colecciones de Firestore

@@ -5669,10 +5669,51 @@ const fechaUltimaCapturaDe = (historialAvance = []) => {
   return Number.isFinite(new Date(fecha).getTime()) ? fecha : null;
 };
 
+// ── EN QUÉ DÍA DE LA OBRA CAE UNA FECHA GUARDADA ──────────────────────────
+//
+// Los snapshots traen la fecha de DOS formas y las dos hay que respetarlas:
+//
+//   · un instante completo (`2026-10-31T23:40:12.000Z`), que es lo que escribe
+//     `crearSnapshotAvance` — su día es el del calendario de la OBRA, no el de
+//     UTC ni el del aparato. Ver `ZONA_OBRA`.
+//   · un día de calendario pelado (`2026-10-31`), de los registros viejos. Un
+//     día YA ES un día: pasarlo por `new Date` lo convierte en medianoche UTC,
+//     que en México es la tarde del día ANTERIOR, y así el día declarado se
+//     mueve hacia atrás.
+//
+// Reinterpretar la segunda forma como instante es justo el defecto que esto
+// cierra, así que se distinguen por la forma del texto y no por conveniencia.
+const diaDeObraDe = (fecha) => {
+  const txt = String(fecha ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(txt)) return txt;
+  return fechaEnZonaObra(fecha);
+};
+
+// Los días transcurridos se cuentan en el CALENDARIO DE LA OBRA, de día a día.
+//
+// Antes era `(ahora - instanteGuardado) / 86400000`, o sea periodos de 24 horas
+// entre dos instantes, y con un día pelado el instante era medianoche UTC. A
+// las 18:58 del 2026-11-12 —medido, no supuesto— un cierre de hace 12 días
+// locales contestaba 13. Seis horas de cada día, una obra que lleva 7 días sin
+// captura pasaba por una de 8: `>7` le ponía el pendiente de cierre semanal y
+// la alerta A4 se disparaba, y el correo del lunes lo imprimía.
+//
+// La resta se hace con los dos días a medianoche UTC. No es un descuido del
+// huso: ya no se están restando instantes, sino dos ETIQUETAS de día resueltas
+// en el calendario de la obra, y a dos etiquetas les da igual el huso con el
+// que se resten mientras sea el mismo para las dos. UTC es el único que no
+// depende del aparato ni de que el país vuelva a mover los relojes —México
+// dejó el horario de verano en 2022, pero esta cuenta no se apoya en eso—.
 const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
   const fecha = fechaUltimaCapturaDe(historialAvance);
   if (!fecha) return null;
-  return Math.floor((ahora - new Date(fecha).getTime()) / 86400000);
+  const capturo = diaDeObraDe(fecha);
+  const hoy = fechaEnZonaObra(new Date(ahora));
+  if (!capturo || !hoy) return null;
+  const a = Date.parse(`${capturo}T00:00:00Z`);
+  const b = Date.parse(`${hoy}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
 };
 
 // ── EL ATRASO PROYECTADO DE UNA OBRA ───────────────────────────────────────

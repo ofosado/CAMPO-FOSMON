@@ -275,6 +275,25 @@ const OBRA = { id: '0127', nombre: 'Obra 0127', estado: 'activa',
 // que la precedencia importe.
 const INFO = { presupuesto: 38500000, fin: '2026-11-30', finAmpliado: '2027-03-31' };
 
+// ── El instante en el que la obra y UTC no están en el mismo día ────────────
+//
+// 18:58 del jueves 12 de noviembre de 2026 EN LA OBRA, hora a la que se midió
+// el defecto; en UTC ya es el viernes 13. Un segundo reloj, aparte del `AHORA`
+// de arriba, porque aquél es un mediodía —obra y UTC coinciden— y con él
+// ninguna de las dos cuentas se distingue de la otra.
+const TARDE = Date.parse('2026-11-13T00:58:00.000Z');
+const capturaEn = (fecha) => [{
+  id: 'S45-2026', semana: 45, año: 2026, tipo: 'oficial', esquema: 3,
+  avancePonderado: 30, montoEjecutado: 300000,
+  fechaCaptura: fecha, capturadoPor: 'residente@fosmon.mx',
+}];
+// Lo que daba la cuenta vieja: restar dos INSTANTES y quedarse con los
+// periodos de 24 horas enteros. Se escribe aquí porque es la alternativa que
+// esta sección PROHÍBE, no la que mide: no es una copia de la cuenta de la
+// pantalla, es el número contra el que se la compara.
+const restandoInstantes = (fecha, ahora) =>
+  Math.floor((ahora - new Date(fecha).getTime()) / 86400000);
+
 // Cómo se le arma el entorno a cada expresión. `diasSinCapturaDe`,
 // `fechaUltimaCapturaDe` y `atrasoProyectado` entran como INYECCIÓN: ahí está
 // todo el método de esta prueba.
@@ -505,6 +524,103 @@ seccion('Qué contesta la cuenta única');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 3-bis) El día que se cuenta es el de la OBRA (#137)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// La cuenta única ya estaba, pero contaba mal: restaba dos instantes y dividía
+// entre 24 horas. México va seis horas detrás de UTC, así que a partir de las
+// 18:00 el día de la obra y el de UTC son distintos, y a esa hora la cuenta
+// contestaba un día de más o de menos según cómo estuviera escrita la fecha
+// guardada —día pelado o instante completo—.
+//
+// No es un redondeo. Los dos umbrales que la pantalla pone sobre este número
+// son `>= 7` —la obra entra en la lista de excepciones del panel y la celda se
+// pinta en rojo— y `=== 0` —la celda dice «hoy»—. Las dos fronteras se cruzaban
+// por el huso, y el correo del lunes imprimía el número cruzado.
+//
+// Las cuatro pantallas no se vuelven a medir aquí: la sección 2 ya demostró
+// que las cuatro salen de ESTA función. Lo que falta es que lo que contesta sea
+// verdad.
+seccion('El día que se cuenta es el de la obra, no el de UTC');
+{
+  const diaEn = (ms, zona) => {
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: zona, year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  };
+  // Precondición, y no una aserción: si el instante del fixture dejara de caer
+  // en dos días distintos, todo lo de abajo seguiría en verde midiendo nada.
+  // Se calcula con `Intl` aquí mismo, sin tocar el módulo, para que un ICU sin
+  // husos salga como NO ARRANCÓ y no como un rojo del producto.
+  const enLaObra = diaEn(TARDE, 'America/Mexico_City');
+  const enUTC = diaEn(TARDE, 'UTC');
+  if (enLaObra !== '2026-11-12' || enUTC !== '2026-11-13')
+    sinPrecondicion(
+      `el instante del fixture ya no cae en dos días distintos (obra ${enLaObra}, UTC ${enUTC})`,
+      ['Esta sección mide la diferencia entre el día de la obra y el de UTC.',
+       'Si el aparato que corre la suite no sabe resolver husos, el día de la',
+       'obra sale mal y las comprobaciones de abajo compararían dos cuentas',
+       'equivocadas entre sí. Hace falta un Node con datos de zona completos.']);
+
+  // (a) UN DÍA PELADO ES UN DÍA. `new Date('2026-11-06')` es medianoche UTC, o
+  //     sea el 5 a las 18:00 en la obra: la fecha declarada se corría un día
+  //     hacia atrás y el número salía uno más grande.
+  const pelado = mod.diasSinCapturaDe(capturaEn('2026-11-06'), TARDE);
+  const peladoViejo = restandoInstantes('2026-11-06', TARDE);
+  check(pelado === 6,
+    'del 6 al 12 en el calendario de la obra son 6 días', `contesta ${pelado}`);
+  check(pelado !== peladoViejo,
+    'y no los que salen de tratar ese día como un instante',
+    `obra ${pelado} · restando instantes ${peladoViejo}`);
+  check(pelado < 7 && peladoViejo >= 7,
+    'es la diferencia que decide: esa obra ya no entra en las excepciones del panel',
+    `umbral >= 7 · con la cuenta vieja entraba con ${peladoViejo}`);
+
+  // (b) UN INSTANTE DE LA NOCHE. Las 20:00 del 31 de octubre en la obra son el
+  //     1 de noviembre en UTC. Aquí la cuenta vieja se equivocaba al revés
+  //     —hacia abajo—, y por eso (a) y (b) no son el mismo defecto con otro
+  //     signo: uno declaraba abandono donde no había y el otro lo tapaba.
+  const anoche = '2026-11-01T02:00:00.000Z';
+  const instante = mod.diasSinCapturaDe(capturaEn(anoche), TARDE);
+  const instanteViejo = restandoInstantes(anoche, TARDE);
+  check(instante === 12,
+    'un cierre de las 20:00 del 31 de octubre quedó fechado el 31, no el 1',
+    `contesta ${instante}`);
+  check(instante !== instanteViejo,
+    'y la cuenta vieja se quedaba corta, no larga',
+    `obra ${instante} · restando instantes ${instanteViejo}`);
+
+  // (c) Y LAS DOS FORMAS DEL MISMO DÍA TIENEN QUE COINCIDIR. Es lo que hace que
+  //     esto sea una cuenta y no dos reglas: el historial trae las dos formas
+  //     —los registros viejos guardan el día pelado— y la pantalla no puede
+  //     decir una cosa distinta según cuál le toque.
+  check(mod.diasSinCapturaDe(capturaEn('2026-10-31'), TARDE) === instante,
+    'el 31 de octubre escrito de las dos formas cuenta los mismos días',
+    `pelado ${mod.diasSinCapturaDe(capturaEn('2026-10-31'), TARDE)} · instante ${instante}`);
+
+  // (d) LA OTRA FRONTERA: `=== 0` es lo que imprime «hoy». Un cierre de ayer a
+  //     las 23:00 está a dos horas de distancia, así que la cuenta vieja decía
+  //     cero y la celda contestaba «hoy» sobre una captura de ayer.
+  const ayerNoche = '2026-11-12T05:00:00.000Z';
+  const ayer = mod.diasSinCapturaDe(capturaEn(ayerNoche), TARDE);
+  check(ayer === 1,
+    'un cierre de ayer a las 23:00 es de AYER aunque hayan pasado dos horas',
+    `contesta ${ayer}`);
+  check(restandoInstantes(ayerNoche, TARDE) === 0 && ayer !== 0,
+    'la celda dice «hace 1 día» y ya no «hoy», que era una captura que nadie hizo',
+    `restando instantes ${restandoInstantes(ayerNoche, TARDE)}`);
+
+  // (e) Y el cero sigue existiendo cuando es verdad. Una cuenta que nunca
+  //     contesta 0 pasaría (d) y rompería la celda de la obra al día.
+  const hoy = mod.diasSinCapturaDe(capturaEn('2026-11-12T16:00:00.000Z'), TARDE);
+  check(hoy === 0,
+    'y un cierre de esta mañana sí es 0: la celda de la obra al día dice «hoy»',
+    `contesta ${hoy}`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // 4) La sexta copia, que vive en el OTRO despliegue
 // ════════════════════════════════════════════════════════════════════════════
 //
@@ -547,8 +663,17 @@ try {
       fechaCaptura: '2026-09-14T18:00:00.000Z',
       fechaCierre: '2026-09-20T18:00:00.000Z' }]],
     ['fecha ilegible', [{ semana: 37, año: 2026, fechaCaptura: 'ayer' }]],
+    // Los dos casos del #137, con el reloj de la tarde. Son los que más fácil
+    // se separan: en Cloud Functions el huso del servidor es UTC y en el
+    // navegador es el del aparato, así que una copia que resolviera el día con
+    // `getDate()` en vez de con la zona de la obra daría aquí otro número. Y
+    // la que se vería sería la del correo del lunes, al lado de un tablero que
+    // dice otra cosa.
+    ['un día pelado, de tarde en la obra', capturaEn('2026-11-06'), TARDE],
+    ['un instante de anoche en la obra', capturaEn('2026-11-12T05:00:00.000Z'), TARDE],
   ];
-  const dif = ([, h]) => [mod.diasSinCapturaDe(h, AHORA), fnMod.diasSinCapturaDe(h, AHORA)];
+  const dif = ([, h, cuando = AHORA]) =>
+    [mod.diasSinCapturaDe(h, cuando), fnMod.diasSinCapturaDe(h, cuando)];
   const discrepan = BATERIA.filter(c => {
     const [a, f] = dif(c);
     return a !== f || mod.fechaUltimaCapturaDe(c[1]) !== fnMod.fechaUltimaCapturaDe(c[1]);
