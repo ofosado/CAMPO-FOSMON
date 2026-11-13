@@ -17,12 +17,18 @@
 // segundo, y un punto ciego disfrazado de regresión se "arregla" tocando la
 // prueba hasta que pase, que es exactamente como se pierde la cobertura.
 //
-// Sale con código 1 si hay rojos o si hay pruebas que no arrancaron. Las dos
-// cosas paran un merge.
+// Y un cuarto veredicto, que no es un estado del banco sino del banco EN EL
+// TIEMPO: CADUCA — verde hoy, rojo con el reloj adelantado. Ver el bloque del
+// barrido más abajo.
+//
+// Sale con código 1 si hay rojos, si hay pruebas que no arrancaron o si hay
+// alguna que caduca. Las tres cosas paran un merge.
 //
 // Uso:  npm test
-//       node scripts/pruebas.cjs            todas
-//       node scripts/pruebas.cjs nomina     sólo las que digan "nomina"
+//       node scripts/pruebas.cjs            todas, con barrido de fechas
+//       node scripts/pruebas.cjs nomina     sólo las que digan "nomina", sin barrido
+//       BARRIDO=no npm test                 sin barrido, y lo dice
+//       BARRIDO=2028-01-11 npm test         barrido a una fecha a mano
 
 const fs = require('fs');
 const path = require('path');
@@ -196,7 +202,114 @@ const frasePorNoContestar = (plazo, tardó) => relojCreible(plazo, tardó)
   : `no se pudo medir · el reloj saltó ${Math.round(tardó / 1000)} s ` +
     `sobre un plazo de ${Math.round(plazo / 1000)} s`;
 
-const verdes = [], rojas = [], mudas = [], sinEmulador = [], colgadas = [];
+// Cómo se nombra un banco en el informe: sin el `prueba-` ni el `.cjs`, que
+// son ruido repetido en 118 renglones.
+const corto = (f) => f.replace(/^prueba-|\.cjs$/g, '');
+
+// ── EL BARRIDO DE FECHAS: VERDE HOY NO ES VERDE ────────────────────────────
+//
+// Una suite verde dice «la conducta se sostiene». Lo que no dice es CUÁNDO, y
+// buena parte de esta suite siembra sus datos contándolos desde hoy: «hace 45
+// días», «la semana pasada», «el año en curso». Un dato así no es un dato: es
+// una función del día en que se corre.
+//
+// El 2026-11-12 se midió la suite entera con el reloj congelado en 2027-02-15
+// y salieron CUATRO bancos en rojo y DOS sin arrancar, con el mismo código que
+// esa misma mañana había dado 118 verdes. Ninguno de los cuatro tenía un
+// defecto de producto: tres sembraban una hoja de Gastos Pendientes que GP no
+// puede mandar —semanas detalladas de un año ya cerrado (#136)— y uno
+// serializaba un instante local como día UTC, que es el #61 dentro del
+// instrumento que lo vigila. El quinto, en cambio, SÍ era producto: `hace 12
+// días → 13`, y es el #137.
+//
+// Eso es lo que este barrido compra: la diferencia entre «se nos rompe la
+// suite el 1 de enero» —que se descubre el 1 de enero, en caliente, sin saber
+// si lo roto es la prueba o el producto— y «este banco caduca», hoy, con el
+// banco nombrado.
+//
+// Cómo: se repiten los bancos que ya salieron en VERDE, cada uno con
+// `fecha-falsa.cjs` precargado. Sólo los verdes, porque de uno que ya está
+// rojo no hay nada que re-medir: lo que hay que arreglar ya se dijo.
+//
+// La fecha se DERIVA, no se teclea: 15 de febrero del año que viene. Se deriva
+// porque una fecha fija escrita en el archivo deja de ser futuro sin que nadie
+// se entere, y el barrido se volvería un segundo «hoy». Y es ese día y no otro
+// por dos razones: cae en el año SIGUIENTE —así cruza la frontera de año, que
+// es donde vive la clase entera de defectos del #136 y del #47— y cae en
+// febrero, lejos de la pared de enero, donde una obra tiene estructuralmente
+// menos de cuatro semanas detallables y un banco honesto no puede afirmar lo
+// mismo.
+const fechaDeBarrido = (hoy = new Date()) => `${hoy.getFullYear() + 1}-02-15`;
+
+// El módulo que adelanta el reloj. Va por `--require` y NO por una variable de
+// entorno a secas: `fecha-falsa.cjs` revienta si no hay `FECHA_FALSA`, pero
+// `FECHA_FALSA=… node banco.cjs` sin precargarlo no hace nada — y no hace nada
+// EN SILENCIO, con la suite en verde, que es la forma de barrido más caro que
+// hay: el que certifica que no hay nada.
+const RUTA_FECHA_FALSA = path.join(dir, 'fecha-falsa.cjs');
+
+// ── LOS QUE NO SE PUEDEN BARRER, CON SU RAZÓN ESCRITA ──────────────────────
+//
+// Esta tabla es la parte peligrosa del barrido. Un banco que falla con el
+// reloj adelantado porque tiene un defecto se ARREGLA; si se mete aquí, la
+// puerta nueva certifica una mentira y encima la certifica para siempre. Así
+// que aquí entra sólo lo que el INSTRUMENTO no alcanza, y entra con la razón
+// escrita en una línea que se publica en cada corrida: una exclusión que no se
+// ve es una exclusión que nadie vuelve a discutir.
+//
+// Los dos primeros comparan el «ahora» del proceso contra una marca de tiempo
+// que escribió el EMULADOR, y `fecha-falsa.cjs` congela el reloj de este
+// proceso, no el del emulador. Con el reloj adelantado un año, todo lo que el
+// emulador escriba queda un año en el pasado, y el banco mide esa distancia.
+// No es un defecto suyo: es que no hay un solo reloj que adelantar.
+const NO_SE_BARREN = new Map([
+  ['prueba-canal-que-avisa.cjs',
+    'compara contra marcas que escribe el emulador, cuyo reloj no se congela'],
+  ['prueba-mensaje-de-permiso.cjs',
+    'igual: la marca la pone el emulador, no este proceso'],
+  ['prueba-corredor-no-se-cuelga.cjs',
+    'corre este corredor dentro de un taller; barrerlo es barrer el barrido'],
+]);
+
+// Una sola perilla, `BARRIDO`. Sin ella, el barrido va con la fecha derivada:
+// una puerta que hay que acordarse de abrir está cerrada.
+const BARRIDO = (process.env.BARRIDO || '').trim();
+const esFecha = /^\d{4}-\d{2}-\d{2}$/.test(BARRIDO);
+if (BARRIDO && !esFecha && !/^(no|0|off)$/i.test(BARRIDO)) {
+  // Lo que NO se hace es caer al valor por omisión: un `BARRIDO=si` que se
+  // interpreta como «la fecha derivada» y un `BARRIDO=2027-2-15` que se
+  // interpreta igual son la misma perilla diciendo que entendió algo distinto
+  // de lo que se le pidió.
+  console.log(`BARRIDO="${BARRIDO}" no se entiende. Es "no", o una fecha AAAA-MM-DD.`);
+  process.exit(NO_ARRANCO);
+}
+
+// Por qué NO se barre, cuando no se barre. Siempre hay una frase: el barrido
+// se puede omitir, pero no en silencio.
+const sinBarridoPorque =
+  /^(no|0|off)$/i.test(BARRIDO) ? 'apagado a mano con BARRIDO=no'
+  : filtro ? `la corrida está filtrada por "${filtro}", y el barrido es de la suite entera`
+  : !fs.existsSync(RUTA_FECHA_FALSA)
+    ? `falta scripts/${path.basename(RUTA_FECHA_FALSA)}, que es con lo que se adelanta el reloj`
+    : null;
+const FECHA_BARRIDO = sinBarridoPorque ? null : (esFecha ? BARRIDO : fechaDeBarrido());
+// Querer barrer y no poder no es lo mismo que no querer: si el módulo no está,
+// la suite entera queda sin medir en el tiempo y eso sale con 1.
+const faltaElReloj = !/^(no|0|off)$/i.test(BARRIDO) && !filtro
+  && !fs.existsSync(RUTA_FECHA_FALSA);
+
+// Una exclusión que nombra un archivo que ya no existe es un agujero: el banco
+// se renombró y ahora se barre sin que nadie lo decidiera, o desapareció y la
+// razón quedó de adorno. Las dos cosas se denuncian y paran la suite, porque
+// la tabla de arriba sólo vale si alguien la mantiene.
+//
+// Se revisa sólo cuando el barrido corre de verdad. La tabla es parte del
+// barrido: en una corrida sin barrido no se usó, y un veredicto sobre ella
+// sería un veredicto sobre algo que no se midió.
+const exclusionesFantasma = !FECHA_BARRIDO ? []
+  : [...NO_SE_BARREN.keys()].filter(f => !fs.existsSync(path.join(dir, f)));
+
+const verdes = [], rojas = [], mudas = [], sinEmulador = [], colgadas = [], caducas = [];
 
 for (const f of archivos) {
   // Si le falta un emulador, NO SE CORRE. Antes se corría y se clasificaba
@@ -207,7 +320,7 @@ for (const f of archivos) {
   const faltan = faltanA(f);
   if (faltan.length > 0) {
     sinEmulador.push([f, faltan]);
-    console.log(`${'sin emulador'.padEnd(12)} ${f.replace(/^prueba-|\.cjs$/g, '').padEnd(34)} ` +
+    console.log(`${'sin emulador'.padEnd(12)} ${corto(f).padEnd(34)} ` +
       `falta ${faltan.join(', ')}`);
     continue;
   }
@@ -235,13 +348,56 @@ for (const f of archivos) {
   const detalle = seColgó
     ? frasePorNoContestar(PLAZO_BANCO, tardó)
     : (rojasAqui > 0 ? `${rojasAqui} comprobación(es)` : '');
-  console.log(`${estado.padEnd(12)} ${f.replace(/^prueba-|\.cjs$/g, '').padEnd(34)} ${detalle}`);
+  console.log(`${estado.padEnd(12)} ${corto(f).padEnd(34)} ${detalle}`);
+}
+
+// ── LA SEGUNDA PASADA, CON EL RELOJ ADELANTADO ─────────────────────────────
+if (FECHA_BARRIDO) {
+  console.log(`\nbarrido de fechas: los ${verdes.length} en verde, otra vez, ` +
+    `con el reloj en ${FECHA_BARRIDO}`);
+  // Las exclusiones se publican ANTES de la pasada y salgan o no en el
+  // recorrido, para que se vean también cuando el banco excluido ya venía rojo.
+  for (const [f, razón] of NO_SE_BARREN)
+    if (!exclusionesFantasma.includes(f))
+      console.log(`${'no se barre'.padEnd(12)} ${corto(f).padEnd(34)} ${razón}`);
+
+  for (const f of verdes) {
+    if (NO_SE_BARREN.has(f)) continue;
+    const t0 = Date.now();
+    const r = spawnSync(process.execPath, ['--require', RUTA_FECHA_FALSA, path.join(dir, f)], {
+      encoding: 'utf8', cwd: path.join(dir, '..'),
+      env: { ...entorno, FECHA_FALSA: FECHA_BARRIDO },
+      timeout: PLAZO_BANCO, killSignal: 'SIGKILL',
+    });
+    const tardó = Date.now() - t0;
+    const salida = (r.stdout || '') + (r.stderr || '');
+    const seColgó = r.error && r.error.code === 'ETIMEDOUT';
+    if (!seColgó && r.status === 0) continue;  // sigue en verde: no se publica
+
+    // Un banco que no arranca con el reloj adelantado también caduca: no se
+    // comprobó la conducta, y la causa es la fecha. Se cuenta igual que un
+    // rojo, porque la razón de ser de esta pasada es que no haya puntos ciegos
+    // con fecha de vencimiento.
+    const causa = seColgó ? frasePorNoContestar(PLAZO_BANCO, tardó)
+      : r.status === NO_ARRANCO ? 'no arranca con el reloj adelantado'
+      : `${(salida.match(/^FALLA/gm) || []).length} comprobación(es)`;
+    caducas.push([f, causa, salida]);
+    console.log(`${'CADUCA'.padEnd(12)} ${corto(f).padEnd(34)} ${causa}`);
+  }
+  if (caducas.length === 0)
+    console.log('ninguno caduca: lo verde de hoy sigue verde el ' + FECHA_BARRIDO);
+} else {
+  // Nunca callado. Una corrida sin barrido midió la mitad de lo que mide una
+  // con barrido, y quien la lea tiene que saber cuál de las dos leyó.
+  console.log(`\nSIN barrido de fechas: ${sinBarridoPorque}.`);
+  if (filtro) console.log('Para la puerta completa, `npm test` sin filtro.');
 }
 
 console.log('');
 console.log(`${verdes.length} en verde · ${rojas.length} en rojo · ` +
             `${mudas.length} sin arrancar · ${colgadas.length} colgada(s) · ` +
-            `${sinEmulador.length} sin emulador ` +
+            `${sinEmulador.length} sin emulador · ` +
+            `${caducas.length} que caduca(n) ` +
             `(de ${archivos.length})`);
 
 for (const [f, tardó, salida] of colgadas) {
@@ -301,4 +457,35 @@ if (sinEmulador.length > 0) {
   console.log(`  firebase emulators:start --only ${todos.join(',')} --project campo-fosmon-prueba`);
 }
 
-process.exit(rojas.length + mudas.length + colgadas.length > 0 ? 1 : 0);
+for (const [f, causa, salida] of caducas) {
+  console.log(`\n──────── ${f} caduca · con el reloj en ${FECHA_BARRIDO}: ${causa} ────────`);
+  console.log('Hoy está en verde. Eso no lo salva: lo que se midió es que su');
+  console.log('veredicto depende del día en que se corra, y ese día llega.');
+  console.log('Casi siempre es el fixture —un dato sembrado contando desde hoy, que');
+  console.log('en esa fecha ya no es el dato que el producto puede recibir—, pero a');
+  console.log('veces es el producto, y de cuál de los dos es no se puede decidir sin');
+  console.log('mirar. Lo que NO se hace es mover la fecha del barrido.');
+  const falla = (salida.match(/^FALLA.*(?:\n[ \t]+.*)*$/gm) || []).join('\n');
+  const cola = falla || salida.trim().split('\n').slice(-8).join('\n');
+  if (cola) console.log('\n' + cola);
+  console.log(`\nPara repetirlo solo:\n  FECHA_FALSA=${FECHA_BARRIDO} node --require ` +
+    `scripts/${path.basename(RUTA_FECHA_FALSA)} scripts/${f}`);
+}
+if (exclusionesFantasma.length > 0) {
+  console.log(`\nLa tabla de exclusiones del barrido nombra ${exclusionesFantasma.length} ` +
+    `archivo(s) que no existe(n):`);
+  for (const f of exclusionesFantasma) console.log(`  ${f}`);
+  console.log('Si el banco se renombró, ahora se está barriendo sin que nadie lo');
+  console.log('decidiera; si desapareció, la razón quedó escrita de adorno. En los');
+  console.log('dos casos la exclusión ya no dice la verdad, así que esto sale con 1:');
+  console.log('una lista de excepciones que nadie mantiene es una puerta sin llave.');
+}
+if (faltaElReloj) {
+  console.log(`\nNo se pudo barrer: falta scripts/${path.basename(RUTA_FECHA_FALSA)}.`);
+  console.log('La suite dice qué se sostiene hoy y nada sobre mañana, que es la mitad');
+  console.log('de lo que esta puerta promete. Sale con 1: "no se pudo medir" no es');
+  console.log('verde. Si de verdad se quiere sin barrido, se pide: BARRIDO=no.');
+}
+
+process.exit(rojas.length + mudas.length + colgadas.length + caducas.length
+  + exclusionesFantasma.length + (faltaElReloj ? 1 : 0) > 0 ? 1 : 0);
