@@ -108,8 +108,13 @@ traverse(ast, {
   },
 });
 
+// En orden de dependencia: cada uno se declara antes de quien lo llama.
+// `personalDeSemana` es la cuenta del personal, que `plantillaDeObra` dejó de
+// hacer por su cuenta para compartirla con el portafolio y la pestaña de
+// Nómina — una cuenta por número.
 const NECESARIOS = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina', 'plantillaDeObra'];
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina', 'personalDeSemana',
+  'plantillaDeObra'];
 const faltan = NECESARIOS.filter(n => !global[n]);
 // Estos tres no se buscan por nombre sino por lo que hacen —la ruta que leen,
 // el texto que pintan, el id del aviso—, así que si no aparecen no es un

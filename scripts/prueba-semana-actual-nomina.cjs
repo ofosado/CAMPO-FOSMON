@@ -53,6 +53,13 @@ const global = {};
 const rango = {};          // dónde vive cada uno, para poder mutarlo
 let oyenteNomina = null;   // el callback del onSnapshot de nomina/historial
 let kpiPersonal = null;  // el KPI «Personal» de DashboardPrincipal
+// Las dos cuentas que alimentan ese KPI, TAL CUAL están en el tablero. Antes
+// vivían copiadas aquí abajo, y copiarlas quería decir que el consolidado podía
+// cambiar de criterio —por ejemplo meter como cero a una obra cuya nómina no
+// trae el conteo— sin que esto se enterara. Se sacan por tramos contiguos de
+// sentencias, anclados por nombre: la cuenta lleva un `for` dentro y un `for`
+// no tiene nombre con el que pedirlo.
+const tramos = {};   // nombre del ancla → [inicio, fin] de su sentencia
 // El oyente ya no entrega `nominaSemanas` hecho: deja la lectura cruda y el
 // agrupado ocurre en `patch`, que es quien sabe de qué formato hay que leer.
 // Para ver lo que el tablero recibe hay que correr los dos.
@@ -81,6 +88,18 @@ traverse(ast, {
       }
     }
   },
+  // Los anclajes de los dos tramos, buscados DENTRO de `DashboardPrincipal`:
+  // `deltaPersonal` existe también en `Nomina` y en PanelEjecutivo, y tomar el
+  // primero que aparezca mediría otro sitio.
+  FunctionDeclaration(p) {
+    if (p.node.id?.name !== 'DashboardPrincipal') return;
+    p.traverse({ VariableDeclarator(q) {
+      const n = q.node.id.type === 'Identifier' ? q.node.id.name : null;
+      if (!n || tramos[n]) return;
+      if (!['obrasSinDesglose', 'personalAgg', 'personalPrev', 'deltaPersonal'].includes(n)) return;
+      tramos[n] = [q.parent.start, q.parent.end];
+    }});
+  },
   // El oyente que alimenta al tablero: `onSnapshot(doc(...,'nomina','historial'), cb)`.
   // Se localiza por la RUTA que escucha, no por el nombre de nada.
   CallExpression(p) {
@@ -92,7 +111,8 @@ traverse(ast, {
 });
 
 const necesarios = ['semanaISO', 'heImporte', 'numSemanaNomina', 'fechaCargaNomina',
-  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina',
+  'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina', 'personalDeSemana',
+  'limpiarNombreObra', 'resolverNombreCortoObra',
   'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION', 'formatoHistorial'];
 const faltan = necesarios.filter(n => !global[n]);
 // Los dos de abajo se localizan por lo que hacen —la ruta que escuchan, la
@@ -101,6 +121,8 @@ const faltan = necesarios.filter(n => !global[n]);
 if (!oyenteNomina) faltan.push('el oyente de obras/{id}/nomina/historial');
 if (!kpiPersonal)  faltan.push('el KPI «Personal» del tablero principal');
 if (!patchSrc)     faltan.push('el `patch` que recibe lo que lee el oyente');
+for (const n of ['obrasSinDesglose', 'personalAgg', 'personalPrev', 'deltaPersonal'])
+  if (!tramos[n]) faltan.push(`la cuenta \`${n}\` del consolidado de personal`);
 if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 // ── Contraprueba ──────────────────────────────────────────────────────────
@@ -128,7 +150,19 @@ if (process.argv.includes('--contraprueba')) {
 const api = new Function(`"use strict";
   ${necesarios.map(n => `const ${n} = ${global[n]};`).join('\n  ')}
   return { ${necesarios.join(', ')} };`)();
-const { semanasDeNomina, añoSemanaNomina, fechaCargaNomina } = api;
+const { semanasDeNomina, añoSemanaNomina, fechaCargaNomina,
+        personalDeSemana, resolverNombreCortoObra } = api;
+
+// Los dos tramos del consolidado, ejecutables. Reciben lo mismo que en el
+// tablero —el arreglo por obra y la cuenta del personal— y devuelven lo que el
+// KPI recibe. No hay copia: si el criterio del consolidado cambia, esto cambia.
+const consolidarPersonal = (kpisPorObra) => new Function(
+  'kpisPorObra', 'personalDeSemana', `
+  "use strict";
+  ${src.slice(tramos.obrasSinDesglose[0], tramos.personalAgg[1])}
+  ${src.slice(tramos.personalPrev[0], tramos.deltaPersonal[1])}
+  return { obrasSinDesglose, personalAgg, personalPrev, obrasSinPrevNom, deltaPersonal };
+`)(kpisPorObra, personalDeSemana);
 
 // Ejecuta el oyente real con un documento falso, le pasa lo que lee al `patch`
 // real, y devuelve lo que el tablero acaba teniendo en `nominaSemanas`. Las
@@ -161,7 +195,10 @@ const P0125 = PROD['0125'];   // siete semanas subidas de golpe, en desorden
 const trabs = (n, totalCada) =>
   [...Array(n)].map(() => ({ total: totalCada, impHE: 0, dias: 6, tipo: 'D' }));
 
-const personal = s => (s.totalDir || 0) + (s.totalInd || 0);
+// El conteo sale de la cuenta REAL de la app, no de una suma escrita aquí: una
+// suma propia volvería a aplanar a cero la semana que no trae desglose, que es
+// justo el defecto que esta prueba tiene que poder ver (#116).
+const personal = s => personalDeSemana(s).total;
 
 // ══════════════════════════════════════════════════════════════════════════
 console.log('1. La 0126 enseña su nómina completa, no la última raya que llegó');
@@ -269,25 +306,10 @@ const OBRAS = ['0112', '0114', '0125', '0126', '0127'];
 const datosPorObra = Object.fromEntries(OBRAS.map(id =>
   [id, { nominaSemanas: loQueRecibeElTablero(PROD[id]) }]));
 
-// Las dos cuentas que alimentan el KPI, copiadas del tablero: el total de la
-// semana actual de cada obra y el de su semana previa.
-const kpisPorObra = OBRAS.map(id => ({ d: datosPorObra[id] }));
-const personalAgg = kpisPorObra.reduce((t, { d }) => {
-  const ult = (d.nominaSemanas || []).slice(-1)[0];
-  if (!ult) return t;
-  return { total: t.total + personal(ult), dir: t.dir + (ult.totalDir || 0),
-    ind: t.ind + (ult.totalInd || 0), obrasConNom: t.obrasConNom + 1,
-    enPartes: t.enPartes + ((ult.partes || []).length > 1 ? 1 : 0) };
-}, { total: 0, dir: 0, ind: 0, obrasConNom: 0, enPartes: 0 });
-let personalPrev = 0, obrasSinPrevNom = 0;
-for (const { d } of kpisPorObra) {
-  const nom = d.nominaSemanas || [];
-  if (nom.length === 0) continue;
-  if (nom.length >= 2) personalPrev += personal(nom[nom.length - 2]);
-  else obrasSinPrevNom++;
-}
-const deltaPersonal = (personalAgg.obrasConNom > 0 && obrasSinPrevNom === 0)
-  ? personalAgg.total - personalPrev : null;
+const kpisPorObra = OBRAS.map(id =>
+  ({ obra: { id, nombre: `${id} OBRA-${id}` }, d: datosPorObra[id] }));
+const { personalAgg, personalPrev, obrasSinPrevNom, obrasSinDesglose, deltaPersonal } =
+  consolidarPersonal(kpisPorObra);
 
 const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
@@ -302,11 +324,16 @@ const _KpiConDelta = ({label, valor, valorSub, deltaValor, deltaSub, nota}) =>
     ` ${label}: ${valor} | ${valorSub} | ${deltaValor === null ? '·' : deltaValor} ${deltaSub} `
     + (nota ? `[tooltip: ${nota}] ` : ''));
 const js = esbuild.transformSync(`(${kpiPersonal})`, { loader: 'jsx' }).code.trim().replace(/;$/, '');
-const panel = renderToStaticMarkup(new Function(
-  'React', '_KpiConDelta', 'C', 'personalAgg', 'deltaPersonal', 'obrasSinPrevNom',
-  `"use strict"; return ${js};`)(
-  React, _KpiConDelta, C, personalAgg, deltaPersonal, obrasSinPrevNom));
-const txt = panel.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const ARGS = ['personalAgg', 'deltaPersonal', 'obrasSinPrevNom', 'obrasSinDesglose',
+  'resolverNombreCortoObra', 'gpData'];
+const pintarKPI = (ctx) => renderToStaticMarkup(new Function(
+  'React', '_KpiConDelta', 'C', ...ARGS, `"use strict"; return ${js};`)(
+  React, _KpiConDelta, C, ...ARGS.map(n => ctx[n])))
+  .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+const ctx = { personalAgg, deltaPersonal, obrasSinPrevNom, obrasSinDesglose,
+  resolverNombreCortoObra, gpData: null };
+const txt = pintarKPI(ctx);
 console.log('\n   « ' + txt + ' »\n');
 
 check(/Personal: 449 \|/.test(txt),
@@ -329,6 +356,42 @@ check(/449 \| 303 directos · 146 indirectos \|/.test(txt),
 const act = personalAgg.total, ant = personalPrev;
 check(act === 449 && act - ant === -11,
   'el delta de personal es -11, no -71', `${act} − ${ant} = ${act - ant}`);
+
+console.log('\n10. Y una obra cuya última nómina no trae el conteo no entra como cero');
+// Se le quita a la 0127 el desglose Y el listado de su última semana: así llega
+// una nómina que existe —tiene su total en pesos— pero de la que nadie puede
+// decir cuánta gente hubo. Antes la unión de partes la entregaba en 0, la obra
+// entraba al consolidado sumando cero y el delta publicaba la baja de toda su
+// plantilla como si se hubiera medido (#116).
+const semSin = datosPorObra['0127'].nominaSemanas.map((s, i, a) =>
+  i < a.length - 1 ? s
+    : { ...s, totalDir: undefined, totalInd: undefined, trabajadores: undefined });
+const personal0127 = personal(datosPorObra['0127'].nominaSemanas.slice(-1)[0]);
+const kpisMancos = kpisPorObra.map(k =>
+  k.obra.id === '0127' ? { ...k, d: { ...k.d, nominaSemanas: semSin } } : k);
+const sinC = consolidarPersonal(kpisMancos);
+const txtSin = pintarKPI({ ...sinC, resolverNombreCortoObra, gpData: null });
+console.log('\n   « ' + txtSin + ' »\n');
+
+check(sinC.obrasSinDesglose.length === 1
+  && sinC.obrasSinDesglose[0].obra.id === '0127',
+  'la obra sin conteo se aparta, con nombre y todo',
+  String(sinC.obrasSinDesglose.length));
+check(sinC.personalAgg.obrasConNom === 4,
+  'el consolidado dice que sumó CUATRO obras, no cinco con una en cero',
+  String(sinC.personalAgg.obrasConNom));
+check(sinC.personalAgg.total === 449 - personal0127,
+  `el total baja a ${449 - personal0127}: la gente de la 0127 no se cuenta, pero tampoco se niega`,
+  `449 − ${personal0127}`);
+check(sinC.deltaPersonal === null,
+  'y el delta NO se publica: con una obra sin conteo, la resta no es comparable',
+  String(sinC.deltaPersonal));
+check(/incompleto: 1 obra sin conteo de personal/.test(txtSin),
+  'el renglón del delta dice por qué falta, en vez de dejar un guion mudo');
+check(/OBRA-0127: su última nómina no trae el conteo de personal/.test(txtSin),
+  'y el tooltip nombra a la obra: el usuario puede ir a arreglarla');
+check(!/−\d+ trab\./.test(txtSin),
+  `no se imprime ninguna caída de trabajadores — la de −${personal0127} era inventada`);
 
 console.log(fallas === 0
   ? '\nTodas las comprobaciones en verde.'
