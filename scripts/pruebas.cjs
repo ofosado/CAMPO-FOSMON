@@ -468,8 +468,16 @@ for (const [f, causa, salida] of caducas) {
   const falla = (salida.match(/^FALLA.*(?:\n[ \t]+.*)*$/gm) || []).join('\n');
   const cola = falla || salida.trim().split('\n').slice(-8).join('\n');
   if (cola) console.log('\n' + cola);
+  // El `./` no es cosmética. `node --require scripts/fecha-falsa.cjs` resuelve
+  // el argumento como NOMBRE DE MÓDULO, no como ruta relativa: Node no lo
+  // encuentra, muere en el preload con MODULE_NOT_FOUND y sale con 1 sin
+  // imprimir una sola FALLA. O sea que el comando que este informe entrega para
+  // investigar una caduca se veía igual que el banco en rojo, pero por el reloj
+  // que nunca se adelantó — y quien lo copie se pone a buscar el defecto en el
+  // banco. Es la trampa de «no arrancó disfrazado de rojo», en el renglón
+  // mismo con el que se investiga.
   console.log(`\nPara repetirlo solo:\n  FECHA_FALSA=${FECHA_BARRIDO} node --require ` +
-    `scripts/${path.basename(RUTA_FECHA_FALSA)} scripts/${f}`);
+    `./scripts/${path.basename(RUTA_FECHA_FALSA)} scripts/${f}`);
 }
 if (exclusionesFantasma.length > 0) {
   console.log(`\nLa tabla de exclusiones del barrido nombra ${exclusionesFantasma.length} ` +

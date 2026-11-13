@@ -554,12 +554,41 @@ else
   falla('el informe dice con qué fecha midió',
     `la fecha ${añoQueViene}-02-15 escrita en el informe`, '(no la dijo)');
 
-if (/FECHA_FALSA=\S+ node --require scripts\/fecha-falsa\.cjs scripts\/prueba-de-mentira-que-caduca\.cjs/.test(salidaB))
-  ok('y cómo repetir ese banco solo, con el reloj adelantado');
-else
-  falla('y cómo repetir ese banco solo, con el reloj adelantado',
-    'el comando con FECHA_FALSA y el --require',
-    (salidaB.match(/.*FECHA_FALSA.*/) || ['(no lo dijo)'])[0].trim());
+// El comando para repetirla no se compara contra una cadena: se EJECUTA, en el
+// taller y tal como el informe lo imprimió. Esto no es rigor de adorno — la
+// versión que se comparaba contra una cadena estuvo verde todo el tiempo sobre
+// un comando que moría en el preload con MODULE_NOT_FOUND, porque
+// `--require scripts/x.cjs` sin `./` se resuelve como nombre de módulo. Salía
+// con 1 y sin FALLAs, o sea idéntico a «el banco está roto», y manda a
+// investigar el banco en vez del reloj. Un comando que se fija por su texto
+// está comprobado contra sí mismo.
+const cmd = (salidaB.match(/^\s*(FECHA_FALSA=.*)$/m) || ['', ''])[1].trim();
+if (!cmd) {
+  falla('el informe entrega un comando para repetir la caduca',
+    'un renglón que empiece con FECHA_FALSA=', '(no lo dijo)');
+} else if (!cmd.includes('prueba-de-mentira-que-caduca.cjs')) {
+  falla('el comando que entrega es el del banco que caducó',
+    'que nombrara prueba-de-mentira-que-caduca.cjs', cmd);
+} else {
+  const rC = spawnSync('/bin/sh', ['-c', cmd],
+    { encoding: 'utf8', cwd: taller2, timeout: PLAZO_DEL_BANCO,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+  const salidaC = (rC.stdout || '') + (rC.stderr || '');
+  // Lo que se afirma es que CORRIÓ con el reloj adelantado: el banco del taller
+  // está escrito para caer justo por eso y decirlo con su FALLA. Un rojo sin
+  // FALLA es el preload que se murió, y es el caso que esto vigila.
+  if (/MODULE_NOT_FOUND/.test(salidaC))
+    falla('el comando que entrega el informe corre de verdad',
+      'que el reloj falso se precargara',
+      'murió en el preload con MODULE_NOT_FOUND: sale con 1 sin una sola FALLA, ' +
+      'igual que un banco roto, y manda a investigar el banco');
+  else if (/^FALLA el dato sembrado quedó en un año ya cerrado/m.test(salidaC))
+    ok('y cómo repetir ese banco solo: el comando corre y reproduce la caduca');
+  else
+    falla('el comando que entrega el informe corre y reproduce la caduca',
+      'la FALLA del banco que caduca, con el reloj adelantado',
+      `salida ${rC.status}: ${salidaC.trim().split('\n').slice(-3).join(' / ') || '(nada)'}`);
+}
 
 // 5. La tabla de exclusiones se respeta Y se publica. El banco excluido es el
 //    mismo código que caduca: si la tabla no se mirara, saldría CADUCA.
