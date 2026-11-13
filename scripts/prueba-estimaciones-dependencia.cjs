@@ -58,6 +58,7 @@ const React = require(path.join(raiz, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(raiz, 'node_modules/react-dom/server'));
 
 const noArranco = require('./no-arranco.cjs');
+const { cierreDe } = require('./extraer-de-app.cjs');
 noArranco.vigilarExcepciones();
 
 const ARCH_APP = process.argv[2] ? path.resolve(process.argv[2]) : path.join(raiz, 'src/App.jsx');
@@ -148,9 +149,31 @@ const C = new Proxy({}, { get: () => '#888' });
 // Los dos escritores. Cada corrida decide qué hacen; `llamadas` guarda con
 // qué los llamaron, que es lo que permite afirmar dónde quedó el dato.
 let llamadas = [];
+
+// Los nombres que este banco INYECTA como parámetro: la paleta, los
+// componentes de la UI y los escritores. Tienen que quedar fuera del cuerpo
+// que se saca del archivo, porque una declaración de verdad dentro del mismo
+// ámbito pisa al parámetro y el banco acabaría midiendo la app en vez de medir
+// con sus dobles.
+const INYECTADOS = ['React', 'useState', 'can', 'C',
+  'Card', 'Tit', 'Kpi', 'Bdg', 'Inp', 'Sel', 'SecBtn',
+  'fsSetAEstricto', 'fsSetA', 'borrarFotoHuerfana',
+  'storageRef', 'uploadString', 'getDownloadURL', 'fbStor', 'conOrg'];
+
+// Y lo que el código extraído necesita del módulo y no está en `NOMBRES` se
+// calcula de ese mismo código. El 2026-11-13 la tabla de la dependencia pasó a
+// leer el monto por `montoDeEstimacion` —para que no quedaran dos lecturas del
+// mismo campo— y este banco reventó dentro del render de React con un `is not
+// defined`: ni una aserción medida, y el rastro apuntando a react-dom.
+// Lo ya cosechado en `trozos` también se excluye, o el cierre lo traería por
+// segunda vez por una rama distinta —`esEstimacionPagada` arrastra `_ne` y
+// `ESTATUS_PAGADA`— y esbuild se niega a declarar dos veces el mismo nombre.
+const PRELUDIO = cierreDe(trozos.join('\n'),
+  { archivo: ARCH_APP, excluir: [...INYECTADOS, ...vistos] });
+
 const hazBanco = ({ estricto, laxo, borrar, useState }) => {
   const js = esbuild.transformSync(
-    `${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`,
+    `${PRELUDIO}\n${trozos.join('\n')}\n;return {${[...vistos].join(',')}};`,
     { loader: 'jsx' }).code;
   return new Function(
     'React', 'useState', 'can', 'C',
@@ -511,8 +534,16 @@ const MUTACIONES = [
   ['guarda con el escritor que se traga el error',
     s => s.replace(/await fsSetAEstricto\(`obras\/\$\{obra\.id\}\/config\/estimaciones`/,
                    'await fsSetA(`obras/${obra.id}/config/estimaciones`')],
-  ['el estatus pagado se escribe «Pagado»',
-    s => s.replace(/const ESTATUS_PAGADA = "Pagada";/, 'const ESTATUS_PAGADA = "Pagado";')],
+  // El cable se corta por donde de verdad se puede cortar. Cambiar
+  // `ESTATUS_PAGADA` ya no sirve de mutación: desde que la lectura del corte
+  // sale de `esEstimacionPagada`, la constante mueve LAS DOS puntas a la vez y
+  // el cable sigue entero —el selector ofrecería «Pagado» y el corte contaría
+  // «Pagado»—, así que la prueba no veía nada y tenía razón en no verlo. Lo que
+  // sigue siendo posible es que la lectura recupere su propio literal, que es
+  // el defecto que hubo: un `'pagado'` tecleado aparte, mal escrito, contra un
+  // selector que escribe «Pagada».
+  ['la lectura del corte recupera su propio literal, mal escrito',
+    s => s.replace(/_ne\(e\?\.estatus\) === _ne\(ESTATUS_PAGADA\)/, "_ne(e?.estatus) === 'pagado'")],
   ['la fecha se interpreta en UTC',
     s => s.replace(/return m \? new Date\(\+m\[1\], \+m\[2\] - 1, \+m\[3\]\) : null;/,
                    'return m ? new Date(s) : null;')],

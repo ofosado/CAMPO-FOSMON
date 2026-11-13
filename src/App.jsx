@@ -3077,10 +3077,10 @@ const anioDeFechaFact = (e) => {
 function facturadoDelAnio(obrasConEstimaciones = [], anio) {
   const normal = (s) => String(s || '').trim().toLowerCase();
   const yaFacturado = new Set(ESTATUS_YA_FACTURADO.map(normal));
-  const monto = (e) => {
-    const n = parseFloat(e?.monto);
-    return Number.isFinite(n) ? n : 0;
-  };
+  // El monto lo lee `montoDeEstimacion`, igual que todos los demás sitios. Aquí
+  // la copia local usaba `parseFloat`, que ante "1,500.00" devuelve **1** —y un
+  // 1 no se ve como error, se ve como una estimación chica.
+  const monto = montoDeEstimacion;
 
   let delAnio = 0, cuantasDelAnio = 0;
   let sinFecha = 0, cuantasSinFecha = 0;
@@ -6467,6 +6467,64 @@ const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_AR
     `el archivo.`;
 };
 
+// ── EL DINERO DE UNA ESTIMACIÓN SE LEE EN UN SOLO SITIO ────────────────────
+//
+// Había CUATRO formas distintas de leer el mismo `monto` repartidas por el
+// repositorio, y TRES de decidir si una estimación está pagada o por cobrar.
+// «Una cuenta por número» dice que eso es un defecto esperando; medido el
+// 2026-11-13 contra producción, no estaba esperando: ya había pasado.
+//
+// El KPI de la pantalla de obra contaba por cobrar como «facturada + aprobada
+// + cualquier cosa que diga proceso», sin acentos y en minúsculas. El detector
+// de riesgo `fin_004`, que se pinta en ESA MISMA pantalla, contaba
+// `['Facturada','Aprobada'].includes(estatus)`: coincidencia exacta y sin «En
+// proceso». El comentario del propio KPI dejaba constancia de que la
+// definición había cambiado —«Antes: solo Facturada + Aprobada»— y el detector
+// se quedó con la vieja. Con los datos de hoy:
+//
+//   0126   KPI $53,523,612.95   ·  riesgo $33,399,787.90   (difieren $20.1M)
+//          la alerta decía «medio (62%)» donde correspondía «ALTO (100%)»
+//   0128   KPI  $3,944,641.77   ·  riesgo          $0.00   (difieren $3.9M)
+//          la alerta NO SE DISPARABA, con $3.9M por cobrar
+//
+// La de la 0128 es la peor de las dos: una tarjeta de riesgo que no se pinta
+// se lee como tranquilidad, igual que el hueco del #139-riesgos.
+//
+// Y las cuatro lecturas del monto no son equivalentes ante un monto guardado
+// como TEXTO —hoy no hay ninguno en producción, así que esto es latente y se
+// deja escrito como latente—:
+//
+//   valor         parseFloat||0   Number||0   (monto||0)
+//   "1500"        1500            1500        concatena: 0+"1500" → "01500"
+//   "1,500.00"    1 (!)           0           concatena
+//
+// `parseFloat` es la más peligrosa: devuelve **1** por $1,500 y eso no se ve
+// como error, se ve como una estimación chica. Y `(monto||0)` ni suma: tres
+// montos de 1500, 2000 y 800 dan "015002000800", o sea $15,002,000,800 por
+// $4,300. Así que la lectura única usa `Number`, que ante algo que no es un
+// número da `NaN` —ruidoso— y no una cifra creíble.
+const montoDeEstimacion = (e) => {
+  const n = Number(e?.monto);
+  return Number.isFinite(n) ? n : 0;
+};
+// El estatus se captura con un `<select>` de cuatro opciones exactas, pero hay
+// datos de antes y la comparación se hace sin acentos y en minúsculas en todas
+// las demás pantallas. Una sola lectura hace imposible que dos sitios
+// discrepen por la mayúscula.
+const esEstimacionPagada   = (e) => _ne(e?.estatus) === _ne(ESTATUS_PAGADA);
+const esEstimacionFacturada = (e) => _ne(e?.estatus) === 'facturada';
+const esEstimacionEnProceso = (e) => _ne(e?.estatus).includes('proceso');
+// POR COBRAR = todo lo que no está pagado: aprobada + facturada + en proceso.
+// Ésta es la definición nueva, y es la ÚNICA. La vieja —sólo facturada y
+// aprobada— sobrevivía en `fin_004` y es la que hacía discrepar la tarjeta de
+// riesgo del KPI que tiene tres centímetros más arriba.
+const esEstimacionPorCobrar = (e) =>
+  _ne(e?.estatus) === 'aprobada' || esEstimacionFacturada(e) || esEstimacionEnProceso(e);
+const sumaDeEstimaciones = (ests, filtro) =>
+  (Array.isArray(ests) ? ests : [])
+    .filter(e => (filtro ? filtro(e) : true))
+    .reduce((t, e) => t + montoDeEstimacion(e), 0);
+
 // El corte de estimaciones que se le pasa al cierre, a partir de la lista viva.
 //
 // `cargadas` es la condición y no un detalle: la lista arranca en `[]` y se
@@ -6478,13 +6536,9 @@ const mensajeFalloNomina = (err, semanas, obraId, formato = FORMATO_HISTORIAL_AR
 // Devuelve `null` —no un objeto de ceros— cuando no se puede afirmar nada.
 const corteDeEstimaciones = (estimaciones, cargadas) => {
   if (!cargadas || !Array.isArray(estimaciones)) return null;
-  const monto = e => parseFloat(e?.monto) || 0;
   return {
-    estimado: estimaciones.reduce((t, e) => t + monto(e), 0),
-    // La misma lectura de «pagada» que el resto de la app: sin acentos y en
-    // minúsculas, porque el estatus se captura a mano.
-    pagado: estimaciones.filter(e => _ne(e?.estatus) === 'pagada')
-                        .reduce((t, e) => t + monto(e), 0),
+    estimado: sumaDeEstimaciones(estimaciones),
+    pagado: sumaDeEstimaciones(estimaciones, esEstimacionPagada),
   };
 };
 
@@ -6969,7 +7023,7 @@ const BIBLIOTECA_RIESGOS = [
         .filter(({ a }) => a && a.color === C.red);
       const atrasadas = conAtraso.map(({ e }) => e);
       if (atrasadas.length === 0) return null;
-      const totalAtras = atrasadas.reduce((t,e)=>t+(e.monto||0), 0);
+      const totalAtras = sumaDeEstimaciones(atrasadas);
       const maxDias = Math.max(...conAtraso.map(({ a }) => a.diasAtraso));
       const sev = maxDias > 30 ? 'critico' : maxDias > 15 ? 'alto' : 'medio';
       return {severidad: sev, valor: `${atrasadas.length}`, detalle: `${MXN(totalAtras)} sin cobrar fuera de plazo`, extra: `Máximo atraso: ${maxDias} días vs plazo de ${diasPago}`};
@@ -6983,8 +7037,17 @@ const BIBLIOTECA_RIESGOS = [
     tab: 'operacion', subTab: 'estimaciones',
     detect: ({estimaciones}) => {
       if (!estimaciones?.length) return null;
-      const total = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
-      const porCob = estimaciones.filter(e => ['Facturada','Aprobada'].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+      // Las dos cifras salen de `sumaDeEstimaciones`, la misma que usa el KPI
+      // «por cobrar» de esta pantalla. Antes aquí había otra cuenta:
+      // `['Facturada','Aprobada'].includes(e.estatus)`, coincidencia exacta y
+      // sin «En proceso» —la definición vieja, que el comentario del KPI dice
+      // que ya cambió—. Medido contra producción el 2026-11-13: en la 0126 la
+      // tarjeta decía «medio (62%)» cuando el KPI de arriba daba 100%, y en la
+      // 0128 NO SE PINTABA con $3,944,641.77 por cobrar, o sea que la pantalla
+      // se leía como tranquilidad. $24,068,466.82 de diferencia entre las dos
+      // cuentas y veredicto distinto en las dos obras.
+      const total = sumaDeEstimaciones(estimaciones);
+      const porCob = sumaDeEstimaciones(estimaciones, esEstimacionPorCobrar);
       if (total === 0) return null;
       const pct = porCob/total*100;
       if (pct > 70) return {severidad:'alto', valor:`${pct.toFixed(0)}%`, detalle:'Mucho monto sin cobrar del cliente', extra:`${MXN(porCob)} de ${MXN(total)} estimado`};
@@ -7000,9 +7063,10 @@ const BIBLIOTECA_RIESGOS = [
     tab: 'operacion', subTab: 'estimaciones',
     detect: ({obra, estimaciones}) => {
       if (!estimaciones?.length || !obra.pctAnticipo) return null;
-      const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
-      const amortizado = estimaciones.filter(e=>e.estatus==='Pagada').reduce((t,e)=>t+(e.monto*obra.pctAnticipo/100), 0);
-      const porAmort = estimaciones.filter(e=>e.estatus!=='Pagada').reduce((t,e)=>t+(e.monto*obra.pctAnticipo/100), 0);
+      const totalEst = sumaDeEstimaciones(estimaciones);
+      const parte = obra.pctAnticipo / 100;
+      const amortizado = sumaDeEstimaciones(estimaciones, esEstimacionPagada) * parte;
+      const porAmort = sumaDeEstimaciones(estimaciones, e => !esEstimacionPagada(e)) * parte;
       const anticipoTotal = obra.presupuesto * (obra.pctAnticipo/100);
       const totalAmort = amortizado + porAmort;
       if (totalAmort < anticipoTotal * 0.5) return null; // solo alertar si ya amortizamos al menos 50%
@@ -8273,18 +8337,15 @@ const calcularKPIsObra = (obra, subs=[], maquinaria=[], materiales=[], estimacio
   // Margen
   const diff = me - gt;
   const mpct = me > 0 ? (diff/me)*100 : 0;
-  // Estimaciones — normalizador case-insensitive
-  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const estPag    = estimaciones.filter(e => _ne(e.estatus) === 'pagada').reduce((t,e) => t + (e.monto||0), 0);
-  // Por cobrar = TODO lo que NO está pagado (aprobado + facturado + en proceso)
-  // Antes: solo "Facturada" + "Aprobada" (excluía "En proceso").
-  const estPorCob = estimaciones.filter(e => {
-    const s = _ne(e.estatus);
-    return s === 'facturada' || s === 'aprobada' || s.includes('proceso');
-  }).reduce((t,e) => t + (e.monto||0), 0);
-  const estProc   = estimaciones.filter(e => _ne(e.estatus).includes('proceso')).reduce((t,e) => t + (e.monto||0), 0);
-  const estFact   = estimaciones.filter(e => _ne(e.estatus) === 'facturada').reduce((t,e) => t + (e.monto||0), 0);
-  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);
+  // Estimaciones. Las cinco cifras salen de `sumaDeEstimaciones` y de los
+  // predicados de arriba: aquí había una sexta copia del normalizador `_ne` y
+  // la definición de «por cobrar» escrita a mano, que es la que `fin_004`
+  // contradecía en la misma pantalla.
+  const estPag    = sumaDeEstimaciones(estimaciones, esEstimacionPagada);
+  const estPorCob = sumaDeEstimaciones(estimaciones, esEstimacionPorCobrar);
+  const estProc   = sumaDeEstimaciones(estimaciones, esEstimacionEnProceso);
+  const estFact   = sumaDeEstimaciones(estimaciones, esEstimacionFacturada);
+  const estTotal  = sumaDeEstimaciones(estimaciones);
   // Brecha = % gasto vs % avance físico (riesgo #1 del semáforo)
   const pctGasto = presupuesto > 0 ? (gt/presupuesto)*100 : 0;
   const brecha = pctGasto - af;
@@ -12918,8 +12979,6 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
   const incompletas = activas.filter(o => !datosObraCompletos(datosPorObra[o.id], true));
   const listas = activas.filter(o => datosObraCompletos(datosPorObra[o.id], true));
 
-  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-
   const filas = listas.map(o => {
     const d = datosPorObra[o.id] || {};
     const info = d.info || {};
@@ -12930,9 +12989,8 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
 
     const ejecutado = desgloseEjecutado(subs, modoVol).total;
     const af        = avanceFisicoPonderado(subs, contratado, modoVol);
-    const estimado  = ests.reduce((t,e) => t + (e.monto||0), 0);
-    const pagado    = ests.filter(e => _ne(e.estatus) === 'pagada')
-                          .reduce((t,e) => t + (e.monto||0), 0);
+    const estimado  = sumaDeEstimaciones(ests);
+    const pagado    = sumaDeEstimaciones(ests, esEstimacionPagada);
     const porEjercer = Math.max(contratado - pagado, 0);
 
     const avSemanas = d.historialAvanceSemanas || [];
@@ -13265,7 +13323,6 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   const puedeDarDeAlta=puedeAltaObra(usuario);
   // P5: de este lado de la pantalla el dinero del contratista no existe.
   const dep=esDependencia(usuario);
-  const _ne = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   // Nunca `useState("nombre")` con un `useEffect` que lo corrija después: eso
   // pinta un render en A→Z y lo reordena encima, y el usuario ve saltar su
   // propia lista. El orden de arranque se decide ANTES del primer render.
@@ -13712,8 +13769,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
       // Lo que sí es de la dependencia: lo que ya pagó de su propio dinero.
       const pagadoO = dep
-        ? (d.estimaciones || []).filter(e => _ne(e.estatus) === 'pagada')
-            .reduce((t,e) => t + (parseFloat(e.monto)||0), 0)
+        ? sumaDeEstimaciones(d.estimaciones, esEstimacionPagada)
         : 0;
       // Nombre corto (mismo formato que el PDF y el header de obra)
       const nombreShort = resolverNombreCortoObra(o, gpData);
@@ -14270,8 +14326,7 @@ const seriePagadaDeSemanas = ({ semanas = [], historialAvance = [],
   // el KPI del tablero. Ver `ESTATUS_PAGADA`: un lado que leyera "Pagado" se
   // saldría de la suma sin que nada en la pantalla lo dijera.
   const pagadoVivo = cargadas && Array.isArray(estimaciones)
-    ? estimaciones.filter(e => _ne(e?.estatus) === _ne(ESTATUS_PAGADA))
-                  .reduce((t, e) => t + (parseFloat(e?.monto) || 0), 0)
+    ? sumaDeEstimaciones(estimaciones, esEstimacionPagada)
     : null;
 
   const serie = [];
@@ -18756,7 +18811,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
           await notifARoles(['director_general','director_operaciones','admin_sistema'], {
             categoria: 'financiero', tipo: 'estim_creada',
             titulo: `Nueva estimación ${rotuloEstimacion(e)} · ${obra.nombre||obra.id}`,
-            mensaje: `${MXN(e.monto)} en estatus ${e.estatus}`,
+            mensaje: `${MXN(montoDeEstimacion(e))} en estatus ${e.estatus}`,
             link, creadaPor,
           });
         } else if (prev.estatus !== e.estatus) {
@@ -18765,21 +18820,21 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_facturada',
               titulo: `${rotuloEstimacion(e)} facturada · ${obra.nombre||obra.id}`,
-              mensaje: `${MXN(e.monto)} · ${obra.diasPago||30} días para vencer cobro`,
+              mensaje: `${MXN(montoDeEstimacion(e))} · ${obra.diasPago||30} días para vencer cobro`,
               link, creadaPor,
             });
           } else if (e.estatus === 'Pagada') {
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_pagada',
               titulo: `${rotuloEstimacion(e)} cobrada · ${obra.nombre||obra.id}`,
-              mensaje: `${MXN(e.monto)} recibidos del cliente`,
+              mensaje: `${MXN(montoDeEstimacion(e))} recibidos del cliente`,
               link, creadaPor,
             });
           } else if (e.estatus === 'Aprobada') {
             await notifARoles(['director_general','director_operaciones','admin_sistema'], {
               categoria: 'financiero', tipo: 'estim_aprobada',
               titulo: `${rotuloEstimacion(e)} aprobada · ${obra.nombre||obra.id}`,
-              mensaje: `${MXN(e.monto)} lista para facturar`,
+              mensaje: `${MXN(montoDeEstimacion(e))} lista para facturar`,
               link, creadaPor,
             });
           }
@@ -18807,13 +18862,14 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   // puede seguir pasando es que la aritmética reviente y el resultado se vea
   // como una cifra legítima.
   //
-  // Sólo los porcentajes. El monto se queda crudo a propósito: lo suman además
-  // `totalEst` y sus cuatro vecinos, y si aquí se leyera distinto que allá las
-  // columnas dejarían de cuadrar con los KPIs — que es justo lo que el renglón
-  // de TOTALES existe para que no pase.
+  // Los porcentajes con `_pct`, y el monto con `montoDeEstimacion`, que es el
+  // mismo que suman `totalEst` y sus cuatro vecinos. Antes aquí el monto se
+  // leía crudo (`e.monto`) a propósito, para que las columnas cuadraran con los
+  // KPIs; ese propósito es exactamente el que ahora cumple la lectura única, y
+  // sin el `NaN` que un monto guardado como texto metía en cada deducción.
   const _pct = v => Number(v) || 0;
-  const cE=e=>{const a=e.monto*_pct(obra.pctAnticipo)/100,fg=e.monto*_pct(obra.pctFondoGar)/100,re=e.monto*_pct(obra.pctRetencion)/100;return{a,fg,re,ef:e.monto-a-fg-re};};
-  const totalEst  =estimaciones.reduce((t,e)=>t+e.monto,0);
+  const cE=e=>{const m=montoDeEstimacion(e),a=m*_pct(obra.pctAnticipo)/100,fg=m*_pct(obra.pctFondoGar)/100,re=m*_pct(obra.pctRetencion)/100;return{a,fg,re,ef:m-a-fg-re};};
+  const totalEst  =sumaDeEstimaciones(estimaciones);
   // Dos cifras que hasta hoy se llamaban las DOS "Pagado", en dos bloques de
   // la misma pantalla, y no son lo mismo. En la 0114 una dice $109.2M y la
   // otra $54.6M: con la misma etiqueta encima, eso se lee como un error del
@@ -18822,11 +18878,11 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   //   · cobradoEfectivo — lo que de verdad entró, ya descontados fondo de
   //                       garantía, retención estratégica y la amortización
   //                       del anticipo. Es el que manda para flujo.
-  const pagadas         =estimaciones.filter(e=>e.estatus==="Pagada");
-  const pagadoBruto     =pagadas.reduce((t,e)=>t+e.monto,0);
+  const pagadas         =estimaciones.filter(esEstimacionPagada);
+  const pagadoBruto     =sumaDeEstimaciones(pagadas);
   const cobradoEfectivo =pagadas.reduce((t,e)=>t+cE(e).ef,0);
-  const facturado =estimaciones.filter(e=>e.estatus==="Facturada").reduce((t,e)=>t+e.monto,0);
-  const enProceso =estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+e.monto,0);
+  const facturado =sumaDeEstimaciones(estimaciones, esEstimacionFacturada);
+  const enProceso =sumaDeEstimaciones(estimaciones, esEstimacionEnProceso);
   const retenido  =estimaciones.reduce((t,e)=>t+cE(e).fg,0);
   const retenEstra=estimaciones.reduce((t,e)=>t+cE(e).re,0);
   // Anticipo por recuperar — lo que el cliente todavía no nos ha descontado
@@ -18850,7 +18906,13 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
   // en BRUTO, ignorando los porcentajes del contrato; aquí pasan por el mismo
   // `cE` que todo lo demás, que es la razón de traerlos: dos cifras vecinas
   // calculadas con criterios distintos vuelven a divergir tarde o temprano.
-  const porCobrar =estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus))
+  // El QUÉ entra lo decide `esEstimacionPorCobrar`, el mismo predicado que el
+  // KPI del tablero y que la tarjeta de riesgo. Aquí estaba la tercera copia de
+  // la definición vieja —`["Facturada","Aprobada"]`, sin «En proceso»—, y esta
+  // pantalla es precisamente donde la tarjeta de `fin_004` se pinta. Lo que
+  // sigue siendo distinto, y con razón, es el CUÁNTO: aquí es neto de
+  // deducciones (`cE(e).ef`) y en el tablero es bruto. Eso lo dice la etiqueta.
+  const porCobrar =estimaciones.filter(esEstimacionPorCobrar)
                                .reduce((t,e)=>t+cE(e).ef,0);
   const diasPago  =obra.diasPago||30;
   // Por la misma cuenta que la columna «Plazo de pago» de la tabla, no por una
@@ -18948,7 +19010,7 @@ function Estimaciones({obra,setObra,estimaciones,setEstimaciones,rol,usuario}){
         <Kpi label="Pagado bruto"      value={MXN(pagadoBruto)} sub="estimaciones ya pagadas" color={C.greenDk} size={12}/>
         <Kpi label="Cobrado efectivo"  value={MXN(cobradoEfectivo)} sub="lo que entró, sin retenciones" color={C.green} size={12}/>
         <Kpi label="Facturado"         value={MXN(facturado)}   sub="bruto, pendiente de cobro" color={C.purple} size={12}/>
-        <Kpi label="Por cobrar"        value={MXN(porCobrar)}   sub="neto de facturado + aprobado" color={C.purpleDk} size={12}/>
+        <Kpi label="Por cobrar"        value={MXN(porCobrar)}   sub="neto de aprobado, facturado y en proceso" color={C.purpleDk} size={12}/>
         {montoAtrasado > 0 && <Kpi label="Atrasado" value={MXN(montoAtrasado)}
           sub={`${atrasadas.length} fuera del plazo de ${diasPago}d`} color={C.red} size={12}/>}
         <Kpi label="En proceso"        value={MXN(enProceso)}   sub="en elaboración"     color={C.yellow} size={12}/>
@@ -19303,10 +19365,9 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
     </Card>;
   }
 
-  const monto = e => parseFloat(e?.monto) || 0;
-  const total    = estimaciones.reduce((t,e) => t + monto(e), 0);
-  const pagado   = estimaciones.filter(e => _ne(e?.estatus) === _ne(ESTATUS_PAGADA))
-                               .reduce((t,e) => t + monto(e), 0);
+  const monto = montoDeEstimacion;
+  const total    = sumaDeEstimaciones(estimaciones);
+  const pagado   = sumaDeEstimaciones(estimaciones, esEstimacionPagada);
   const porPagar = total - pagado;
   // El promedio se calcula SOLO sobre las que tienen las dos fechas, y la
   // pantalla dice sobre cuántas. Promediar metiendo las incompletas como 0
@@ -23130,10 +23191,17 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
 
 // ── ESTIMACIONES (CLIENTE): solo monto + período + estatus ─────────────────
 function EstimacionesCliente({obra, estimaciones}){
-  const totalEst = estimaciones.reduce((t,e)=>t+(e.monto||0), 0);
-  const pagado   = estimaciones.filter(e=>e.estatus==="Pagada").reduce((t,e)=>t+(e.monto||0), 0);
-  const enProc   = estimaciones.filter(e=>e.estatus==="En proceso").reduce((t,e)=>t+(e.monto||0), 0);
-  const factur   = estimaciones.filter(e=>["Facturada","Aprobada"].includes(e.estatus)).reduce((t,e)=>t+(e.monto||0), 0);
+  const totalEst = sumaDeEstimaciones(estimaciones);
+  const pagado   = sumaDeEstimaciones(estimaciones, esEstimacionPagada);
+  const enProc   = sumaDeEstimaciones(estimaciones, esEstimacionEnProceso);
+  // Aquí estaba la cuarta copia de `["Facturada","Aprobada"]`, y se queda con
+  // ese criterio —no con `esEstimacionPorCobrar`— porque esta vista descompone:
+  // el KPI se rotula «Por pagar · facturado/aprobado» y «En proceso» tiene su
+  // propio KPI al lado. Meterlo en los dos lo contaría dos veces y la suma de
+  // los cinco dejaría de dar el contrato. No es la definición vieja
+  // sobreviviendo: es una partición, y por eso el predicado se escribe aquí.
+  const factur   = sumaDeEstimaciones(estimaciones,
+    e => esEstimacionFacturada(e) || _ne(e?.estatus) === 'aprobada');
   const porEst   = Math.max((obra?.presupuesto||0) - totalEst, 0);
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -23514,13 +23582,22 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
   // Al marcar 'Pagada', se crea automáticamente un pago en sub.pagos para
   // mantener ambos módulos sincronizados.
   const estimacionesSub = Array.isArray(sub.estimaciones) ? sub.estimaciones : [];
-  const _neEst = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  const estSubTotal   = estimacionesSub.reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-  const estSubPagado  = estimacionesSub.filter(e => _neEst(e.estatus) === 'pagada').reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
-  const estSubPorPagar= estimacionesSub.filter(e => {
-    const st = _neEst(e.estatus);
+  // El MONTO se lee con `sumaDeEstimaciones`, igual que el dinero del cliente:
+  // era el mismo `parseFloat` que por "1,500.00" devuelve 1.
+  //
+  // El ESTATUS no, y es deliberado: este vocabulario es otro —'Autorizada', no
+  // 'Aprobada'— porque lo que el subcontratista nos presenta lo autorizamos
+  // nosotros. Por eso el predicado se escribe aquí y no se reusa
+  // `esEstimacionPorCobrar`: no es dinero por cobrar, es dinero POR PAGAR, y
+  // una lectura compartida entre los dos lados acabaría contando una cosa en
+  // lugar de la otra. Lo que sí se comparte es el normalizador `_ne`, del que
+  // aquí había una copia local (`_neEst`).
+  const estSubTotal   = sumaDeEstimaciones(estimacionesSub);
+  const estSubPagado  = sumaDeEstimaciones(estimacionesSub, esEstimacionPagada);
+  const estSubPorPagar= sumaDeEstimaciones(estimacionesSub, e => {
+    const st = _ne(e?.estatus);
     return st === 'autorizada' || st === 'aprobada' || st.includes('proceso');
-  }).reduce((t,e) => t + (parseFloat(e.monto)||0), 0);
+  });
 
   const agregarEstimacion = () => {
     const nueva = {
@@ -23540,12 +23617,12 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
     const ahora = { ...antes, ...cambios };
     onUpdate({ estimaciones: nuevas });
     // Notif a directivos si acaba de marcarse Pagada
-    if (cambios.estatus && _neEst(cambios.estatus) === 'pagada'
-        && _neEst(antes.estatus) !== 'pagada' && (ahora.monto||0) > 0) {
+    if (cambios.estatus && _ne(cambios.estatus) === 'pagada'
+        && _ne(antes.estatus) !== 'pagada' && montoDeEstimacion(ahora) > 0) {
       notifARoles(['director_general','director_operaciones','admin_sistema'], {
         categoria: 'financiero', tipo: 'estimacion_sub_pagada',
         titulo: `Estimación pagada · ${sub.proveedor || sub.nombre}`,
-        mensaje: `${rotuloEstimacion(ahora)} · ${MXN(ahora.monto)} · ${obra.nombre || obra.id}`,
+        mensaje: `${rotuloEstimacion(ahora)} · ${MXN(montoDeEstimacion(ahora))} · ${obra.nombre || obra.id}`,
         link: { tab:'operacion', subTab:'subcontratos', obraId: obra.id },
         creadaPor: usuario?.correo || 'sistema',
       });
@@ -24212,7 +24289,7 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               <div></div>
             </div>
             {estimacionesSub.map((e, i) => {
-              const stNorm = _neEst(e.estatus);
+              const stNorm = _ne(e.estatus);
               const stCol = stNorm === 'pagada' ? C.greenDk
                           : stNorm === 'autorizada' || stNorm === 'aprobada' ? C.blueDk
                           : C.yellowDk;

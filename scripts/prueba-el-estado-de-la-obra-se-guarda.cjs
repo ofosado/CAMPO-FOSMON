@@ -50,7 +50,7 @@ const path = require('path');
 const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones(__filename);
 
-const { fuenteDe, ARCHIVO } = require('./extraer-de-app.cjs');
+const { fuenteDe, cierreDe, ARCHIVO } = require('./extraer-de-app.cjs');
 const RAIZ = path.resolve(__dirname, '..');
 const React = require(path.join(RAIZ, 'node_modules/react'));
 const { renderToStaticMarkup } = require(path.join(RAIZ, 'node_modules/react-dom/server'));
@@ -115,20 +115,33 @@ function bloqueDeTarjeta(src) {
 const Bdg = ({ children, color }) =>
   React.createElement('span', { 'data-insignia': String(color) }, children);
 
+// Lo que el banco INYECTA: los dobles de la UI, la paleta, los manejadores y
+// las piezas que ya vienen de `regla`. Tienen que quedar fuera del cierre, o la
+// declaración de verdad pisaría al parámetro.
+const INYECTADOS = ['React', 'C', 'alfa', 'MXN', 'NUM', 'Bdg', 'calcularKPIsObra',
+  'presentacionEconomiaObra', 'resolverNombreCortoObra', 'selloDeEstadoLegible',
+  'datosPorObra', 'gpData', 'dep', '_ne', 'ec', 'usuario', 'puedeGestionar',
+  'puedeEliminar', 'cerrar', 'reabrir', 'setConfirmarArchivar', 'iniciarEliminar',
+  'onSelect'];
+
 function pintar(api, bloque, ec, { obra, usuario, dep = false, puedeGestionar = true,
   puedeEliminar = false }) {
   const js = esbuild.transformSync(`(${bloque})`, { loader: 'jsx' }).code;
-  const nombres = ['React', 'C', 'alfa', 'MXN', 'NUM', 'Bdg', 'calcularKPIsObra',
-    'presentacionEconomiaObra', 'resolverNombreCortoObra', 'selloDeEstadoLegible',
-    'datosPorObra', 'gpData', 'dep', '_ne', 'ec', 'usuario', 'puedeGestionar',
-    'puedeEliminar', 'cerrar', 'reabrir', 'setConfirmarArchivar', 'iniciarEliminar',
-    'onSelect'];
+  // Y lo que la tarjeta necesita del módulo sale de la tarjeta misma, no de una
+  // lista de aquí. El 2026-11-13 la tarjeta pasó a leer el dinero estimado por
+  // `sumaDeEstimaciones` y el render reventó con un `is not defined`: esto salía
+  // ROJO —«LA TARJETA SE CAYÓ AL PINTARSE»—, o sea acusaba de regresión a lo
+  // único que no había cambiado.
+  const pre = esbuild.transformSync(
+    cierreDe(`(${bloque})`, { archivo, excluir: INYECTADOS }),
+    { loader: 'jsx' }).code;
+  const nombres = INYECTADOS;
   const valores = [React, api.C, api.alfa, api.MXN, api.NUM, Bdg,
     api.calcularKPIsObra, api.presentacionEconomiaObra, api.resolverNombreCortoObra,
     api.selloDeEstadoLegible,
     {}, null, dep, (s) => (s || '').toLowerCase(), ec, usuario, puedeGestionar,
     puedeEliminar, () => {}, () => {}, () => {}, () => {}, () => {}];
-  const fn = new Function(...nombres, `return ${js}`)(...valores);
+  const fn = new Function(...nombres, `"use strict";\n${pre}\nreturn ${js}`)(...valores);
   try {
     return renderToStaticMarkup(fn(obra));
   } catch (e) {

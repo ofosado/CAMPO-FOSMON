@@ -57,10 +57,13 @@
 // dos puede imprimir un «NaN» en ninguna hoja, que es la otra cara del mismo
 // relleno.
 //
-// Al reanclar eso se midió algo que esta rama no arregla y que queda anotado en
-// `PENDIENTES.md`: cada papel suma las estimaciones por su cuenta —el Art. 73
-// con `corteDeEstimaciones`, el interno con `estTotal`— y las dos cuentas no
-// tienen la misma robustez. Por eso aquí hay una mutación por papel.
+// Al reanclar eso se midió algo que esa rama no arreglaba y que quedó anotado
+// en `PENDIENTES.md`: cada papel sumaba las estimaciones por su cuenta —el
+// Art. 73 con `parseFloat`, el interno con `||0`— y las dos cuentas no tenían
+// la misma robustez. El #131 las unificó, así que hoy la mutación que rompe la
+// lectura del monto tiene que poner rojos a LOS DOS papeles, y las que siguen
+// siendo una por papel son las de los dos SITIOS DE LLAMADA, que siguen siendo
+// dos.
 //
 // Uso:  node scripts/prueba-un-numero-que-nadie-midio.cjs
 //       node scripts/prueba-un-numero-que-nadie-midio.cjs --contraprueba
@@ -135,34 +138,31 @@ if (process.argv.includes('--contraprueba')) {
     // impresión falsa de que nadie la cubre.
 
     // ── Los dos papeles vuelven a perder dinero sin dueño ───────────────────
-    // REANCLADAS el 2026-11-12. Las tres de antes apuntaban a la relación de
-    // estimaciones del papel viejo, que ya no existe (ver el encabezado).
+    // REANCLADAS el 2026-11-12, y otra vez el 2026-11-13.
     //
-    // Y al reanclarlas salió un hallazgo que esta rama NO arregla: la suma de
-    // las estimaciones se cuenta DOS VECES, con dos robusteces distintas. El
-    // informe del Art. 73 la saca de `corteDeEstimaciones` (`parseFloat`); el
-    // documento interno, de `estTotal` dentro de `calcularKPIsObra` (`||0`,
-    // que no lee un monto guardado como texto). Son dos papeles del mismo mes
-    // sobre la misma obra, en manos de dos lectores que se hablan, y pueden
-    // discrepar. Es un «una cuenta por número» esperando, y unificar una cuenta
-    // de dinero no entra en una rama que parte un papel en dos: va a
-    // `PENDIENTES.md` medido.
+    // La primera vez fue porque la relación de estimaciones del papel viejo
+    // desapareció. Esta vez es por lo contrario: el hallazgo que la nota de
+    // entonces dejó anotado —cada papel sumaba las estimaciones por su cuenta,
+    // el Art. 73 con `parseFloat` y el interno con `||0`, dos robusteces para
+    // la misma cifra— SE ARREGLÓ (#131). Los dos papeles leen hoy
+    // `sumaDeEstimaciones`, y la lectura del monto es una sola.
     //
-    // Mientras eso siga así, cada papel necesita SU mutación: una sola no los
-    // pone rojos a los dos, y presentarla como si lo hiciera sería decir que el
-    // banco cubre dos cuentas cubriendo una.
+    // Por eso las cuatro mutaciones de antes son tres. Las dos primeras siguen
+    // siendo una por papel, porque los SITIOS DE LLAMADA siguen siendo dos y
+    // descartar una fila en uno solo es exactamente lo que dejaría un total que
+    // no cuadra con el del otro papel. La tercera sustituye a las dos de
+    // veneno: ahora hay una sola lectura del monto, y lo que esta prueba tiene
+    // que poder afirmar es que romperla pone rojos a LOS DOS papeles. Si
+    // mordiera uno solo, seguiría habiendo dos cuentas.
     ['app', 'el total del informe del Art. 73 vuelve a descartar la fila sin número, con su dinero',
-      (t) => t.replace('    estimado: estimaciones.reduce((t, e) => t + monto(e), 0),',
-        '    estimado: estimaciones.filter(e => e?.no).reduce((t, e) => t + monto(e), 0),')],
+      (t) => t.replace('    estimado: sumaDeEstimaciones(estimaciones),',
+        '    estimado: sumaDeEstimaciones(estimaciones.filter(e => e?.no)),')],
     ['app', 'el total del documento interno vuelve a descartar la fila sin número',
-      (t) => t.replace('  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);',
-        '  const estTotal  = estimaciones.filter(e=>e.no).reduce((t,e) => t + (e.monto||0), 0);')],
-    ['app', 'el monto sin capturar vuelve a envenenar el total del Art. 73: dice NaN',
-      (t) => t.replace('  const monto = e => parseFloat(e?.monto) || 0;',
-        '  const monto = e => parseFloat(e?.monto);')],
-    ['app', 'el monto sin capturar vuelve a envenenar el total del interno: dice NaN',
-      (t) => t.replace('  const estTotal  = estimaciones.reduce((t,e) => t + (e.monto||0), 0);',
-        '  const estTotal  = estimaciones.reduce((t,e) => t + e.monto, 0);')],
+      (t) => t.replace('  const estTotal  = sumaDeEstimaciones(estimaciones);',
+        '  const estTotal  = sumaDeEstimaciones(estimaciones.filter(e => e?.no));')],
+    ['app', 'la lectura única del monto vuelve a `parseFloat`: el hueco envenena los dos papeles',
+      (t) => t.replace('  const n = Number(e?.monto);\n  return Number.isFinite(n) ? n : 0;',
+        '  const n = parseFloat(e?.monto);\n  return n;')],
 
     // ── El correo del lunes vuelve a rellenar ───────────────────────────────
     ['fn', 'el 999 regresa a `calcularKpisObra`',

@@ -85,8 +85,18 @@ const NECESARIAS = ['_pct', 'cE', 'totalEst', 'retenido', 'retenEstra',
 const faltan = NECESARIAS.filter(n => !decl[n]);
 if (faltan.length) noArranco(faltan);
 
+// Lo que esos trozos necesitan del módulo —las lecturas únicas del monto y del
+// estatus— no se enumera: se calcula del código extraído. El 2026-11-13
+// `totalEst` pasó a apoyarse en `sumaDeEstimaciones` y este banco salió NO
+// ARRANCÓ con un `is not defined`, sin medir nada; una lista tecleada a mano
+// habría vuelto a quedarse corta a la siguiente.
+const { cierreDe } = require('./extraer-de-app.cjs');
+const PRELUDIO = cierreDe(
+  NECESARIAS.map((n, i) => `const _s${i} = ${decl[n]};`).join('\n'), { archivo });
+
 const montar = (obra, estimaciones) => new Function('obra', 'estimaciones', `
   "use strict";
+  ${PRELUDIO}
   ${NECESARIAS.map(n => `const ${n} = ${decl[n]};`).join('\n  ')}
   return { retenido, retenEstra, anticipoPactado, anticipoAmort, porRecuperarAnt };
 `)(obra, estimaciones);

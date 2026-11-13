@@ -69,6 +69,10 @@ const RAIZ_NOMBRES = [
   'sonComparables', 'snapshotId',
   'montoEjecutadoSnap', 'montoEstimadoSnap', 'montoPagadoSnap',
   'FRASE_SIN_CORTE_EST', 'corteDeEstimaciones',
+  // Las lecturas únicas del dinero de una estimación (#131). El corte dejó de
+  // traer su propia suma y su propio criterio de «pagada»: ahora los llama, y
+  // sin ellos aquí se extrae un `corteDeEstimaciones` que revienta al correr.
+  'ESTATUS_PAGADA', 'montoDeEstimacion', 'esEstimacionPagada', 'sumaDeEstimaciones',
   'estadoPorSemana', 'semanaISO', 'desgloseEjecutado', 'avanceFisicoPonderado',
   'importeEjecutadoPartida', 'importeCatalogoPartida',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',

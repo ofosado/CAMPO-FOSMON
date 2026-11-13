@@ -83,8 +83,8 @@ if (process.argv[2] === '--contraprueba') {
       de: `obra.presupuesto > 0 ? acum / obra.presupuesto * 100 : null`,
       a: `obra.presupuesto > 0 ? acum / obra.presupuesto * 100 : 0` },
     { nombre: 'los porcentajes del contrato vuelven a entrar crudos (NaN → «$0»)',
-      de: `const cE=e=>{const a=e.monto*_pct(obra.pctAnticipo)/100`,
-      a: `const cE=e=>{const a=e.monto*obra.pctAnticipo/100` },
+      de: `a=m*_pct(obra.pctAnticipo)/100`,
+      a: `a=m*obra.pctAnticipo/100` },
     { nombre: 'un estatus de fuera del trámite vuelve a disfrazarse de «Recibida»',
       de: `                        {!ESTATUS_ESTIMACION_DEPENDENCIA.includes(e.estatus) &&\n`
         + `                          <option value={e.estatus||""}>\n`
@@ -150,15 +150,6 @@ const check = (cond, m, detalle) => {
 };
 
 // ── Extracción ─────────────────────────────────────────────────────────────
-// De módulo: la paleta (con `tok`, sin el que no se arma), la lectura de fecha
-// local y la cuenta del plazo de pago, que la tabla comparte con el KPI
-// «Atrasado» justo para que no puedan discrepar.
-// `noDeEstimacion` y `ordenDeEstimaciones` van en este orden porque el
-// PRELUDIO se arma en el orden de la lista y la segunda usa la primera. Entran
-// las de verdad: el orden es lo que le da sentido al acumulado, y un doble
-// haría que este banco midiera su propio orden en vez del de la pantalla.
-const RAIZ = ['tok', 'C', 'fechaLocalDeISO', 'atrasoDeEstimacion',
-  'noDeEstimacion', 'ordenDeEstimaciones'];
 // Del componente: por nombre y por DUEÑO. Hay un `renglones`, un `actualiza` y
 // un `monto` en cada una de las dos pantallas; tomar el primero que aparezca
 // mediría la pantalla equivocada.
@@ -171,19 +162,12 @@ const ANIDADOS = [
   'EstimacionesDependencia.renglones', 'EstimacionesDependencia.actualiza',
 ];
 
-const raizSrc = {};
 const anid = {};
 // Los encabezados de la tabla de la dependencia son un literal en el JSX, no
 // una tabla de columnas como la de la constructora. Se saca el arreglo de
 // cadenas que se recorre para pintar el `thead`.
 let encabezadosDep = null;
 traverse(ast, {
-  VariableDeclaration(p) {
-    if (p.parent.type !== 'Program') return;
-    for (const d of p.node.declarations)
-      if (d.id?.type === 'Identifier' && RAIZ.includes(d.id.name) && d.init)
-        raizSrc[d.id.name] ||= src.slice(d.init.start, d.init.end);
-  },
   VariableDeclarator(p) {
     const n = p.node.id?.name;
     if (!n || !p.node.init) return;
@@ -203,10 +187,28 @@ traverse(ast, {
   },
 });
 
-const faltan = [...RAIZ.filter(n => !raizSrc[n]), ...ANIDADOS.filter(n => !anid[n])];
+const faltan = ANIDADOS.filter(n => !anid[n]);
 if (faltan.length) noArranco(faltan);
 
-const PRELUDIO = RAIZ.map(n => `const ${n} = ${raizSrc[n]};`).join('\n');
+// Lo que esos trozos necesitan del módulo —la paleta, la lectura de fecha
+// local, el plazo de pago, el orden de las estimaciones, las lecturas únicas
+// del dinero— no se enumera aquí: se calcula del propio código extraído.
+//
+// Antes era una lista tecleada a mano y se desincronizó exactamente como está
+// escrito en `extraer-de-app`: el 2026-11-13 `cE` y `totalEst` pasaron a
+// apoyarse en `sumaDeEstimaciones` —para que el KPI y el renglón no pudieran
+// discrepar— y este banco salió NO ARRANCÓ con un `is not defined`, sin medir
+// nada y culpando al archivo medido en lugar al andamiaje. El orden también lo
+// pone el archivo, así que la segunda copia del grafo desaparece entera.
+//
+// `diasDeRecepcion` y `periodoEnPalabras` quedan FUERA a propósito: el
+// andamiaje declara sus propios dobles abajo, y si la declaración de verdad
+// entrara en el cuerpo pisaría al doble —o reventaría por declararse dos veces
+// en el mismo ámbito—.
+const { cierreDe } = require('./extraer-de-app.cjs');
+const PRELUDIO = cierreDe(
+  ANIDADOS.map((n, i) => `const _s${i} = ${anid[n]};`).join('\n'),
+  { archivo: ARCH, excluir: ['diasDeRecepcion', 'periodoEnPalabras'] });
 
 // Arma el bloque de dinero de la constructora con las piezas del archivo, en
 // orden de dependencia. Devuelve lo que la pantalla tiene a la mano cuando
