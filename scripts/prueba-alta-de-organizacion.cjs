@@ -58,6 +58,7 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 const noArranco = require('./no-arranco.cjs');
+const { cierreDe } = require('./extraer-de-app.cjs');
 // El `FieldValue` de verdad, el que la función va a usar en producción.
 const { FieldValue } = require(path.join(raiz, 'functions/node_modules/firebase-admin/lib/firestore'));
 
@@ -167,6 +168,26 @@ const loginSrc = bloqueResolucionOrg();
 const gpArgSrc = argumentoDe('useGPConstruct');
 const efectoObrasSrc = efectoCargarObras();
 const crearOrgSrc = manejadorOnCall('crearOrganizacion');
+
+// Lo que un bloque extraído necesita del módulo NO se teclea aquí: se deriva.
+//
+// Teclearlo es mantener una copia del grafo de dependencias de App.jsx, y las
+// copias se desincronizan en una sola dirección: el día que el bloque empieza a
+// usar un nombre más, la lista sigue igual y el banco sale NO ARRANCÓ con un
+// `ReferenceError`. Pasó el 2026-11-12 con `veTodasLasObras`, que el efecto de
+// cargar obras adoptó para dejar de contar las obras de tres maneras. El banco
+// no midió nada, y la causa no estaba en nada de lo que mide.
+//
+// Lo que los bloques extraídos necesitan del módulo NO se teclea aquí: lo
+// resuelve `cierreDe`, que es el sitio único. Ver su preámbulo; el motivo es
+// este banco, que el 2026-11-12 salió NO ARRANCÓ porque el efecto de cargar
+// obras adoptó `veTodasLasObras` y la lista tecleada seguía igual.
+//
+// `yaDados` son los que este banco inyecta con un doble: no se pegan, porque la
+// declaración de verdad pisaría al doble y se mediría la app en vez de medirla
+// con el doble puesto.
+const cierreDeModulo = (fuente, yaDados = []) =>
+  cierreDe(fuente, { archivo: archivoApp, excluir: yaDados });
 
 const NEC_APP = ['ROLES_CROSS', 'esPlataforma', 'esDependencia', 'PERMISOS'];
 const NEC_FNS = ['RE_ORG_ID', 'TIPOS_ORG', 'ROLES_POR_TIPO', 'ROLES_ADMIN', 'ROLES_CROSS',
@@ -290,7 +311,6 @@ const lanza = (fn) => {
     const errores = [];
     let salio = false;
     const ctx = {
-      ROLES_CROSS: eval(`(${app.decl['ROLES_CROSS']})`),
       getIdTokenResult: async () => ({ claims }),
       cred: { user: { uid: 'u-prueba' } },
       fijarPrefijoOrg: (...a) => { llamadas.push({ fn: 'fijarPrefijoOrg', args: a }); return fijarPrefijoOrg(...a); },
@@ -301,9 +321,13 @@ const lanza = (fn) => {
       fbAuth: {},
       setLoading: () => {},
     };
+    const DOBLES = ['getIdTokenResult', 'cred', 'fijarPrefijoOrg',
+      'fijarSesionDePlataforma', 'limpiarPrefijoOrg', 'setError', 'signOut',
+      'fbAuth', 'setLoading'];
     const fabrica = new Function('ctx', `"use strict";
-      const { ROLES_CROSS, getIdTokenResult, cred, fijarPrefijoOrg, fijarSesionDePlataforma,
+      const { getIdTokenResult, cred, fijarPrefijoOrg, fijarSesionDePlataforma,
               limpiarPrefijoOrg, setError, signOut, fbAuth, setLoading } = ctx;
+      ${cierreDeModulo(loginSrc, DOBLES)}
       return async function handleLogin() {
         ${loginSrc}
         return { tipoOrg, orgIdUsuario };
@@ -361,9 +385,7 @@ const lanza = (fn) => {
   // Un read denegado no es inofensivo: pinta «no disponible» y manda a buscar
   // un problema de permisos donde lo que hay es que no corresponde.
   const activaGP = new Function('usuario', `"use strict";
-    const ROLES_CROSS = ${app.decl['ROLES_CROSS']};
-    const esDependencia = ${app.decl['esDependencia']};
-    const esPlataforma = ${app.decl['esPlataforma']};
+    ${cierreDeModulo(gpArgSrc, ['usuario'])}
     return !!(${gpArgSrc});`);
 
   check(activaGP({ rol: 'soporte', tipo: null }) === false,
@@ -379,10 +401,6 @@ const lanza = (fn) => {
     const errores = [];
     const ctx = {
       usuario,
-      PERMISOS: eval(`(${app.decl['PERMISOS']})`),
-      esPlataforma: new Function('usuario', `"use strict";
-        const ROLES_CROSS = ${app.decl['ROLES_CROSS']};
-        return (${app.decl['esPlataforma']})(usuario);`),
       // `collObra` y `docObra` resuelven con el `conOrg` REAL: para una sesión
       // de plataforma revientan, que es justo lo que el guardia evita.
       collObra: () => { llamadas.push('collObra'); return { ruta: conOrg('obras') }; },
@@ -396,10 +414,13 @@ const lanza = (fn) => {
         warn: (...a) => errores.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')),
       },
     };
+    const DOBLES = ['usuario', 'collObra', 'docObra', 'getDocs', 'getDoc',
+                    'fsGet', 'setObras', 'console'];
     const fabrica = new Function('ctx', `"use strict";
-      const { usuario, PERMISOS, esPlataforma, collObra, docObra, getDocs, getDoc,
+      const { usuario, collObra, docObra, getDocs, getDoc,
               fsGet, setObras, consola } = ctx;
       const console = consola;
+      ${cierreDeModulo(efectoObrasSrc, DOBLES)}
       return (${efectoObrasSrc});`);
     fabrica(ctx)();
     await new Promise(r => setTimeout(r, 30));

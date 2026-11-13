@@ -3,6 +3,7 @@ import { conOrg, fijarPrefijoOrg, fijarSesionDePlataforma, limpiarPrefijoOrg, or
 import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola, yaEstabaEscrito } from "./permiso-denegado.js";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult,
+         onAuthStateChanged,
          updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
@@ -8932,6 +8933,42 @@ const ordenInicialDeLista = rol => ROLES_SIN_CONCENTRADO.has(rol) ? "atraso" : "
 const necesitaDatosDeCartera = rol =>
   vePanelEjecutivo(rol) || ROLES_SIN_CONCENTRADO.has(rol);
 
+// ── CUÁLES OBRAS SON DE ESTA SESIÓN ────────────────────────────────────────
+// Una cuenta por número. La respuesta a «¿cuáles obras ve este usuario?»
+// estaba escrita dos veces y había un tercer sitio que no la hacía:
+//
+//   · el cargador de obras la decide por ID, para pedir sólo lo suyo;
+//   · `PantallaObras` la decidía filtrando el arreglo, para la lista;
+//   · la carga a granel —nueve oyentes por obra— NO la hacía: iteraba las
+//     activas, a secas (#62).
+//
+// Hoy eso se tapa con dos cosas, y ninguna es un acierto de diseño. Una son
+// las reglas de Firestore, que niegan obra por obra: el usuario no ve el dato,
+// pero la app pidió nueve veces algo que no le toca y la consola se llena de
+// denegaciones que no distinguen un defecto de permisos de esto. La otra es que
+// el cargador ya trae sólo las asignadas, así que el arreglo suele venir
+// filtrado — SUELE. Deja de venirlo en cuanto las asignaciones cambian a media
+// sesión: el oyente de `claimsVersion` mete el `obras_asignadas` nuevo en
+// `usuario`, pero el cargador de obras está anclado a `usuario?.uid`, que no
+// cambió. La lista de la pantalla sí deja de enseñar la obra retirada —filtra
+// con el dato fresco— y el granel se queda oyéndola. Una obra que se le acaba
+// de quitar a alguien es justo la que no puede seguir llegándole.
+//
+// No es un permiso nuevo ni un recorte: es el MISMO criterio de los otros dos
+// sitios, en una sola función. Qué se entrega de cada obra sigue decidiéndolo
+// `seSuscribe` por tipo de organización (P5); esto decide sobre cuáles se
+// pregunta.
+const veTodasLasObras = usuario => PERMISOS[usuario?.rol]?.todas_obras === true;
+
+const obrasDeLaSesion = (usuario, obras) => {
+  const lista = Array.isArray(obras) ? obras : [];
+  if (!usuario) return [];
+  if (veTodasLasObras(usuario)) return lista;
+  const asignadas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
+  if (asignadas.length === 0) return [];
+  return lista.filter(o => asignadas.includes(o.id));
+};
+
 // ── Completud de los datos de una obra en el Panel Ejecutivo ───────────
 // El panel se alimenta de 8 listeners por obra. Antes el guard preguntaba
 // si `datosPorObra[id]` existía, y la entrada se crea en cuanto llega el
@@ -9631,7 +9668,12 @@ const atrasoDeEstimacion = (e, diasPago) => {
 const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purple,[ESTATUS_PAGADA]:C.green};
 
 // ── PANTALLA LOGIN ─────────────────────────────────────────────────────────
-function Login({onLogin}){
+// `aviso` lo pone el armazón cuando la sesión se cayó por su cuenta: no es un
+// error de lo que el usuario acaba de teclear —no ha teclado nada— sino un
+// hecho sobre la sesión anterior, así que va en ámbar y no en rojo. Sin él, a
+// quien le revocan el acceso la app le aparece de pronto en la pantalla de
+// entrada, sin decir nada, y lo que parece es que se rompió.
+function Login({onLogin, aviso = ''}){
   const[correo,setCorreo]=useState("");
   const[pass,setPass]=useState("");
   const[error,setError]=useState("");
@@ -9805,6 +9847,8 @@ function Login({onLogin}){
             style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:8,
               padding:"12px 14px",color:C.textPri,fontSize:13,width:"100%",outline:"none"}}/>
         </div>
+        {aviso&&!error&&<div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,
+          borderRadius:7,padding:"9px 12px",fontSize:12,color:C.yellowDk}}>{aviso}</div>}
         {error&&<div style={{background:"rgba(220,38,38,0.12)",border:"0.5px solid rgba(220,38,38,0.3)",
           borderRadius:7,padding:"9px 12px",fontSize:12,color:C.red}}>{error}</div>}
         <button type="submit" disabled={loading||!correo||!pass}
@@ -9866,6 +9910,24 @@ function Login({onLogin}){
 //      — que es exactamente el estado que pinta el chip ámbar "GP Sheet · no
 //      disponible". `'inactivo'` existe para poder distinguir "no aplica" de
 //      "falló", que es la misma distinción del P4 en otro plano.
+//
+// `activo` tiene TRES valores, y el tercero es el arreglo del #40:
+//   null  → todavía no hay sesión; no se sabe si toca leer, así que no se lee
+//   false → esta organización no lee GP
+//   true  → se lee
+//
+// Con dos valores el corte no servía para lo que su propio comentario decía
+// que servía. `!esDependencia(null) && !esPlataforma(null)` es `true`, así que
+// al montar —sin sesión— la primera cosa que hacía la app era pedir
+// `global/gp_construct` SIN credencial: Firestore contesta `permission-denied`,
+// que está clasificado como terminal —y lo es, para esa lectura—, y el estado
+// quedaba en `'error'`. Después el usuario entraba como constructora y `activo`
+// seguía valiendo `true`: no cambiaba, así que ni `cargarGP` se volvía a armar
+// ni el efecto se volvía a disparar. La sesión a la que SÍ le corresponde el
+// Gasto Programado se pasaba entera con el chip ámbar «GP Sheet · no
+// disponible» y el gasto de todas las obras sin medir, por una lectura hecha
+// antes de que hubiera quien la hiciera. El reintento no la salvaba: la falla
+// de permiso es la única que no se reintenta, con razón.
 function useGPConstruct(activo = true) {
   // gpData ahora es el RESUMEN (~50KB): obras con totales pero sin rubros ni proveedores.
   // Para análisis detallado de una obra (rubros + proveedores), cargarDetalleGP(obraId).
@@ -9886,6 +9948,7 @@ function useGPConstruct(activo = true) {
   //   version_vieja    → hay caché pero de otro parser; sólo lo arregla Refrescar
   //   error            → falla transitoria agotados los reintentos
   //   inactivo         → esta organización no lee GP; no se pidió nada
+  //   sin_sesion       → no hay sesión todavía; no se ha preguntado nada
   // Los dos primeros terminales NO se reintentan: reintentar una lectura que
   // devuelve lo mismo sólo gasta cuota. Sólo se reintenta la falla transitoria.
   const [gpEstado, setGpEstado] = useState('cargando');
@@ -9918,6 +9981,11 @@ function useGPConstruct(activo = true) {
   const cargarGP = useCallback(async (forzar = false) => {
     // El corte también aquí y no sólo en el efecto de montaje: `cargarGP` y
     // `reintentarGP` salen del hook y cualquier pantalla puede llamarlas.
+    //
+    // `sin_sesion` antes que `inactivo`, y los dos antes de pedir nada: sin
+    // sesión no se puede saber si a este usuario le toca GP, y una lectura sin
+    // credencial deja el estado en una falla terminal que ya no se reintenta.
+    if (activo === null) { setGpEstado('sin_sesion'); return; }
     if (!activo) { setGpEstado('inactivo'); return; }
     setGpLoading(true); setGpError('');
     let mensajeError = '';
@@ -10054,6 +10122,7 @@ function useGPConstruct(activo = true) {
   const CATALOGO_GP_VERSION = 1;
 
   const cargarCatalogoGP = useCallback(async (forzar = false) => {
+    if (activo === null) { setCatalogoEstado('sin_sesion'); return; }
     if (!activo) { setCatalogoEstado('inactivo'); return; }
     setCatalogoCargando(true); setCatalogoError('');
     let mensajeError = '';
@@ -10093,13 +10162,17 @@ function useGPConstruct(activo = true) {
   // Se rearma cuando cambia `activo`: al montar no hay sesión todavía, así que
   // el tipo de organización no se conoce hasta que el login resuelve los
   // claims. Sin esta dependencia, un usuario de constructora que entra en una
-  // sesión nueva se quedaría sin GP hasta recargar.
+  // sesión nueva se quedaría sin GP hasta recargar — que es exactamente lo que
+  // pasaba, porque con dos valores `activo` no CAMBIABA al entrar (ver #40
+  // arriba). Con el tercero cambia `null → true` y el efecto sí se rearma.
   useEffect(() => {
+    if (activo === null) { setGpEstado('sin_sesion'); return; }
     if (!activo) { setGpEstado('inactivo'); return; }
     cargarGP();
   }, [activo, cargarGP]);
 
   useEffect(() => {
+    if (activo === null) { setCatalogoEstado('sin_sesion'); return; }
     if (!activo) { setCatalogoEstado('inactivo'); return; }
     cargarCatalogoGP();
   }, [activo, cargarCatalogoGP]);
@@ -11898,11 +11971,21 @@ function _KpiConDelta({ label, valor, valorSub, deltaValor, deltaSub, color, not
 // alarman sin ayudar.
 const _GP_NOTA = {
   cargando:          'GP: lectura en curso',
+  sin_sesion:        'GP: no se ha preguntado; no hay sesión todavía',
   sin_sincronizar:   'GP: no se encontró la caché (global/gp_construct)',
   version_vieja:     'GP: la caché es de otra versión del parser',
   error:             'GP: la lectura falló y se agotaron los reintentos',
   error_transitorio: 'GP: la lectura falló, reintentando',
 };
+
+// Los estados en los que la pregunta todavía no tiene respuesta. No hay dato,
+// pero tampoco hay fallo: no se ha terminado de preguntar —o no se ha
+// empezado—. Es UNA lista y no dos porque el chip la tenía escrita a mano con
+// dos de los tres, y el tercero —`sin_sesion`, el del #40— habría entrado en
+// el hook sin entrar aquí: el chip pintaría ámbar «no disponible» en el
+// instante entre resolverse la sesión y volver la lectura, anunciando una falla
+// de la pregunta que acaba de salir.
+const GP_SIN_VEREDICTO = new Set(['sin_sesion', 'cargando', 'error_transitorio']);
 
 // Componente principal: reemplaza Cobranza + OBRAS ATENCIÓN del PanelEjecutivo.
 // Alimentado con el mismo `datosPorObra` que ya existe (subs, maquinaria,
@@ -13197,12 +13280,10 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
   // Filtrado de obras visibles:
   // - Roles con todas_obras=true: ven todas
   // - Roles con todas_obras=false (cliente, administrador_obra): solo las que están en usuario.obras_asignadas
-  const asignadas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
-  const todasObras = PERMISOS[usuario.rol]?.todas_obras
-    ? obras
-    : (asignadas.length > 0
-        ? obras.filter(o => asignadas.includes(o.id))
-        : []);
+  //
+  // El criterio vive en `obrasDeLaSesion`, que es el mismo que usa la carga a
+  // granel. Estaba escrito aquí y el granel no lo hacía (#62).
+  const todasObras = obrasDeLaSesion(usuario, obras);
   const activas=todasObras.filter(o=>o.estado!=="archivada");
   const archivadas=todasObras.filter(o=>o.estado==="archivada");
 
@@ -13506,7 +13587,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
           // Sólo los estados TERMINALES de fallo pintan ámbar. Mientras
           // carga o reintenta no se muestra nada: un chip de alarma en cada
           // arranque normal sería ruido, no información.
-          const fallo = !gpDisponible && gpEstado !== 'cargando' && gpEstado !== 'error_transitorio';
+          const fallo = !gpDisponible && !GP_SIN_VEREDICTO.has(gpEstado);
           if (!fallo && !gpUltActualiz) return null;
 
           let color, bg, txt, texto, tip;
@@ -26595,8 +26676,14 @@ export default function App(){
   // soporte es que no la pide; y una lectura negada deja el chip en «no
   // disponible», que es la forma de decir "falló" cuando la verdad es "no me
   // toca".
+  //
+  // Y el tercer valor: SIN SESIÓN no se contesta ni que sí ni que no. Los dos
+  // cortes de abajo son falsos para `null` —ni es dependencia ni es
+  // plataforma—, así que sin este renglón la respuesta era «sí, lee», y leía
+  // antes de que hubiera con qué (#40).
   const { gpData, gpEstado, gpDisponible, gpLoading, gpError, gpUltActualiz, cargarGP, reintentarGP, cargarDetalleObra, gpDetalles,
-    catalogoGP, catalogoEstado, catalogoError, catalogoCargando, cargarCatalogoGP } = useGPConstruct(!esDependencia(usuario) && !esPlataforma(usuario));
+    catalogoGP, catalogoEstado, catalogoError, catalogoCargando, cargarCatalogoGP } = useGPConstruct(
+      !usuario ? null : (!esDependencia(usuario) && !esPlataforma(usuario)));
 
   // ── fix/actualizacion-pwa (2026-09-16) ──
   // Manejo de actualizaciones del Service Worker. Lógica de decisión:
@@ -26685,8 +26772,8 @@ export default function App(){
   // mostramos un toast. Reemplaza la espera de ~1 hora al auto-refresh.
   //
   // Guardarraíl anti-bucle: la primera pasada (mount) captura claimsVersion
-  // inicial en versionRef.current y NO refresca. Solo refrescamos si la nueva
-  // versión es ESTRICTAMENTE MAYOR a la que ya vimos.
+  // inicial en perfilVistoRef.current y NO refresca. Solo refrescamos si la
+  // nueva versión es ESTRICTAMENTE MAYOR a la que ya vimos.
   // ── MARCA DEL CLIENTE ──────────────────────────────────────────────────────
   // `orgs/{oid}/config/branding`. Es la marca de QUIEN USA la app, no la del
   // producto: la app se llama igual para todos y eso vive en el manifest. Aquí
@@ -26733,7 +26820,23 @@ export default function App(){
     return () => { cancelado = true; };
   }, [usuario?.orgId]);
 
-  const versionRef = useRef(null);
+  // Lo que se guarda es EL PERFIL VISTO, no sólo su versión. Antes era
+  // `versionRef`, un número, y el «antes» con el que se armaba el aviso salía
+  // del `usuario` que este efecto tenía cerrado encima: las dependencias son
+  // `[usuario?.emailId]`, así que ese `usuario` se congela al entrar y no se
+  // vuelve a mover mientras la sesión sea la misma. El propio `setUsuario` de
+  // aquí abajo tampoco lo rearma —el emailId no cambia—, y ahí está el #46: a
+  // la SEGUNDA modificación de permisos de la misma sesión, el «antes» seguía
+  // siendo el del login. Un residente al que le suben a superintendente y
+  // después a gerente recibía «Tu rol cambió a Superintendente» la segunda vez,
+  // con el rol que ya tenía; y a quien le agregan una obra y luego otra, «Se
+  // agregaron 2 obras» cuando acababa de llegar una. El aviso es lo único que
+  // le dice al usuario que sus permisos se movieron, así que decir mal CUÁNTO
+  // es inventar una cifra sobre lo único que no puede comprobar desde ahí.
+  //
+  // El perfil del snapshot es la autoridad sobre el perfil, y es el mismo dato
+  // con el que se arma el aviso: una cuenta por número.
+  const perfilVistoRef = useRef(null);
   useEffect(() => {
     if (!usuario?.emailId) return;
     const perfilRef = doc(fbDb, `usuarios/${usuario.emailId}`);
@@ -26741,19 +26844,25 @@ export default function App(){
       if (!snap.exists()) return;
       const perfil = snap.data();
       const nuevaVer = typeof perfil.claimsVersion === 'number' ? perfil.claimsVersion : 0;
-      // Primera pasada: captura versión inicial sin refrescar.
-      if (versionRef.current === null) {
-        versionRef.current = nuevaVer;
+      const delSnap = p => ({
+        ver: typeof p.claimsVersion === 'number' ? p.claimsVersion : 0,
+        rol: p.rol,
+        obras: Array.isArray(p.obras_asignadas) ? p.obras_asignadas : [],
+      });
+      // Primera pasada: captura el perfil inicial sin refrescar.
+      if (perfilVistoRef.current === null) {
+        perfilVistoRef.current = delSnap(perfil);
         return;
       }
       // Sin incremento → nada que hacer.
-      if (nuevaVer <= versionRef.current) return;
-      versionRef.current = nuevaVer;
+      if (nuevaVer <= perfilVistoRef.current.ver) return;
+      const visto = perfilVistoRef.current;
+      perfilVistoRef.current = delSnap(perfil);
       try {
-        // Guardar snapshot del estado viejo ANTES del refresh para poder
-        // comparar (creció vs redujo) y armar el mensaje del toast.
-        const rolViejo = usuario.rol;
-        const obrasViejas = Array.isArray(usuario.obras_asignadas) ? usuario.obras_asignadas : [];
+        // El estado viejo es el ÚLTIMO QUE SE VIO, que es lo que el usuario
+        // tiene delante — no el del login.
+        const rolViejo = visto.rol;
+        const obrasViejas = visto.obras;
         // Forzar refresh del JWT: trae los custom claims nuevos desde Auth.
         // Firebase invalida el token viejo en cache y devuelve uno con
         // los claims ya actualizados por la Cloud Function.
@@ -26808,7 +26917,7 @@ export default function App(){
     });
     return () => {
       unsub();
-      versionRef.current = null;
+      perfilVistoRef.current = null;
     };
   }, [usuario?.emailId]);
 
@@ -27106,7 +27215,7 @@ export default function App(){
     if (esPlataforma(usuario)) return;
     (async () => {
       try {
-        const esDirectivo = PERMISOS[usuario.rol]?.todas_obras === true;
+        const esDirectivo = veTodasLasObras(usuario);
         let obrasFromDB;
         if (esDirectivo) {
           // Directivos: lista completa (mismo comportamiento previo)
@@ -27210,13 +27319,21 @@ export default function App(){
   // Usa onSnapshot por obra para que estimaciones/otros gastos/etc de
   // cualquier residente aparezcan en tiempo real sin reiniciar la app.
   const[datosPorObra,setDatosPorObra]=useState({});
-  const obrasActivasKey = obras.filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
+  // La llave la arma `obrasDeLaSesion`, no `obras` a secas, y por dos razones.
+  // La primera es que las obras sobre las que se levantan oyentes sean las
+  // mismas que la lista enseña (#62). La segunda es que así la llave CAMBIA
+  // cuando cambian las asignaciones a media sesión: el oyente de los permisos
+  // mete el `obras_asignadas` nuevo en `usuario` y este efecto se rearma, que
+  // es lo que suelta los nueve oyentes de la obra retirada. Con `obras` a secas
+  // la llave no se movía —el arreglo es el mismo— y seguían oyendo.
+  const obrasActivasKey = obrasDeLaSesion(usuario, obras)
+    .filter(o=>o.estado!=="archivada").map(o=>o.id).sort().join(",");
   const cargarCartera = !!usuario && necesitaDatosDeCartera(usuario.rol);
   useEffect(()=>{
     if(!usuario) return;
     if(screen !== "obras") return;   // solo cargar cuando estoy en la lista de obras
     if(!cargarCartera) return;       // panel ejecutivo, u orden por atraso sin panel
-    const activas = obras.filter(o=>o.estado!=="archivada");
+    const activas = obrasDeLaSesion(usuario, obras).filter(o=>o.estado!=="archivada");
     // El umbral era `<2` con el comentario "el Panel solo se muestra con ≥2
     // obras", pero DashboardPrincipal se pinta desde 1. Con exactamente una
     // obra activa nadie cargaba sus datos y el panel esperaba en vano — el
@@ -27455,7 +27572,61 @@ export default function App(){
     };
   }, [cfgEvidencia, evidencia, evidenciaCargada, obra?.id, obra?.contrato, obra?.nombre, usuario]);
 
-  if(!usuario) return <><style>{css}</style><Login onLogin={u=>{
+  // ── CUANDO LA SESIÓN SE CAE SOLA ──────────────────────────────────────────
+  // Todo lo que esta sesión dejó en memoria, en un solo sitio. `logout` ya lo
+  // hacía —y el comentario de ahí abajo explica obra por obra por qué cada cosa
+  // tiene que irse— pero lo hacía SÓLO él: era el único camino por el que la
+  // app se enteraba de que la sesión terminó. El otro camino no existía (#6b).
+  //
+  // Firebase Auth avisa por `onAuthStateChanged` cuando se queda sin
+  // credencial: cuenta deshabilitada, usuario borrado, token revocado. Sin
+  // oyente, la app no se enteraba y la pantalla seguía en pie con todo lo que
+  // ya había leído —obras, montos, avance, nómina— mientras cada lectura nueva
+  // rebotaba en las reglas y caía en un `console.warn`. Una sesión a la que le
+  // acaban de quitar el acceso no puede seguir enseñando lo que alcanzó a leer:
+  // eso es exactamente lo que se le quitó.
+  //
+  // Lo que NO hace es cerrar sesión por su cuenta ni reaccionar a un `null` sin
+  // sesión que mostrar: sólo desmonta lo que había. Al arrancar la app el oyente
+  // dispara con `null` —todavía nadie entró— y las tres salidas de `handleLogin`
+  // llaman a `signOut` antes de que exista `usuario`; en los cuatro casos no hay
+  // nada que tirar y no se pone aviso, porque nadie perdió nada.
+  //
+  // Estar sin red no dispara esto: el SDK conserva al usuario y los fallos de
+  // refresco por falta de red no lo borran. Lo borra el rechazo con nombre
+  // —`user-disabled`, `user-token-expired`, `user-not-found`—, que es el caso.
+  const [avisoSesion, setAvisoSesion] = useState('');
+  const olvidarSesion = useCallback(() => {
+    limpiarPrefijoOrg();
+    setObras([]);
+    setDatosPorObra({});
+    setMarca(null);
+    setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
+    setPermisosObraOverride(null);
+    setUsuario(null); setScreen("obras"); setObraId(null);
+  }, []);
+  const haySesionRef = useRef(false);
+  haySesionRef.current = !!usuario;
+  // El botón de salir pasa por el MISMO oyente: `signOut` deja a Auth sin
+  // cuenta y esto dispara con `null`, con `usuario` todavía puesto porque
+  // `olvidarSesion` corre después. Sin distinguir las dos cosas, salir a
+  // propósito terminaba leyendo «tu acceso fue revocado», que es un hecho
+  // sobre la cuenta y es falso: nadie le quitó nada, le dio al botón. Visto
+  // en el preview del 2026-11-12, después de arreglar el #6b y antes de
+  // mezclarlo.
+  const salidaVoluntariaRef = useRef(false);
+  useEffect(() => onAuthStateChanged(fbAuth, (cuenta) => {
+    if (cuenta) return;
+    if (salidaVoluntariaRef.current) { salidaVoluntariaRef.current = false; return; }
+    if (!haySesionRef.current) return;
+    // El aviso primero: `olvidarSesion` provoca el re-render que pinta el Login.
+    setAvisoSesion('Tu sesión se cerró porque el acceso de esta cuenta cambió o '
+      + 'fue revocado. Vuelve a entrar.');
+    olvidarSesion();
+  }), [olvidarSesion]);
+
+  if(!usuario) return <><style>{css}</style><Login aviso={avisoSesion} onLogin={u=>{
+    setAvisoSesion('');
     setUsuario(u);
     if (u.bienvenidaVista !== true) setMostrarBienvenida(true);
   }}/></>;
@@ -27501,12 +27672,17 @@ export default function App(){
         new Promise(r => setTimeout(r, 3000)),
       ]);
     } catch {}
+    // Se marca ANTES de `signOut`: el oyente de Auth dispara dentro de esa
+    // llamada, y marcarlo después llegaría tarde a decirle que esta salida la
+    // pidió el usuario.
+    salidaVoluntariaRef.current = true;
     try { await signOut(fbAuth); } catch {}
-    // El prefijo es estado de módulo, no de React: si no se borra aquí, la
-    // siguiente sesión arrancaría apuntando a la organización de la anterior.
-    limpiarPrefijoOrg();
-    // Y las obras, que son estado de React y sobrevivían al cierre de sesión.
+    // Lo que se desmonta y por qué cada cosa, en `olvidarSesion`:
     //
+    // El prefijo es estado de módulo, no de React: si no se borra, la siguiente
+    // sesión arrancaría apuntando a la organización de la anterior.
+    //
+    // Y las obras, que son estado de React y sobrevivían al cierre de sesión.
     // Mientras todos los usuarios eran de FOSMON esto no se notaba: la lista
     // que quedaba en memoria era la misma que iba a cargar el siguiente. Con
     // dos organizaciones deja de ser inofensivo. La carga de obras MEZCLA lo
@@ -27517,16 +27693,14 @@ export default function App(){
     // legítimas— ni el prefijo de ruta, que sólo decide a dónde se pregunta.
     //
     // `datosPorObra` va junto y no por simetría: es lo pesado —catálogo,
-    // estimaciones, nómina, maquinaria— y lo que alimenta el consolidado.
-    setObras([]);
-    setDatosPorObra({});
-    // Y la marca, por la misma razón: es lo que el encabezado afirma sobre de
-    // quién es la app. Heredada, le presenta la sesión siguiente como si fuera
-    // de la organización anterior.
-    setMarca(null);
-    setAuditCtx({ correo:"anonimo", nombre:"", rol:"", obraId:null, obraNombre:"" });
-    setPermisosObraOverride(null);
-    setUsuario(null); setScreen("obras"); setObraId(null);
+    // estimaciones, nómina, maquinaria— y lo que alimenta el consolidado. Y la
+    // marca, que es lo que el encabezado afirma sobre de quién es la app:
+    // heredada, le presenta la sesión siguiente como si fuera de la anterior.
+    //
+    // Está aparte porque éste no es el único camino: una revocación cierra la
+    // sesión sin pasar por aquí (#6b), y dos desmontajes que se copian se
+    // desincronizan — uno de los dos se quedaría enseñando las obras de otro.
+    olvidarSesion();
   };
 
   // ── LA SESIÓN DE PLATAFORMA SE VA POR OTRO LADO ──────────────────────────

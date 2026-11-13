@@ -259,6 +259,7 @@ const NECESARIOS = [
   'ALERTA_REGLAS',
   'CLAVES_BULK', 'CLAVES_BULK_DEPENDENCIA', 'datosObraCompletos',
   'MXN', 'avanceFisicoPonderado', 'heImporte',
+  'logout', 'olvidarSesion',
 ];
 const faltan = NECESARIOS.filter(n => !decl[n]);
 if (efectoMarca === null) faltan.push('el efecto que carga orgs/{orgId}/config/branding');
@@ -1486,6 +1487,15 @@ const montarGP = () => {
     const setMarca = v => { visto.marca = v; };
     const setAuditCtx = () => {}; const setPermisosObraOverride = () => {};
     const setScreen = () => {}; const setObraId = () => {};
+    // El aviso de «tu acceso fue revocado» lo pinta el oyente de Auth, no esto.
+    // Aquí sólo se mide qué hereda la sesión siguiente, y para eso el logout
+    // tiene que poder marcar que esta salida la pidió el usuario.
+    const salidaVoluntariaRef = { current: false };
+    // El desmonte vive aparte desde que el oyente de Auth lo comparte, y se
+    // trae de producción tal cual. Si se imitara aquí, estas aserciones dirían
+    // «quedó limpio» midiendo la imitación, no la app.
+    const useCallback = f => f;
+    const olvidarSesion = ${decl['olvidarSesion']};
     const logout = ${decl['logout']};
     return logout().then(() => visto);`)();
 

@@ -241,7 +241,8 @@ traverse(parse(srcApp, { sourceType: 'module', plugins: ['jsx'] }), {
     if (!(llave in dentro)) dentro[llave] = srcApp.slice(p.node.init.start, p.node.init.end);
   },
 });
-if (!('App.logout' in dentro)) noArranco(['App.logout'], path.relative(raiz, ARCH_APP));
+for (const n of ['App.logout', 'App.olvidarSesion'])
+  if (!(n in dentro)) noArranco([n], path.relative(raiz, ARCH_APP));
 
 // Arma un trozo con todo inyectado por parámetro: los nombres que se pasan
 // SOMBREAN cualquier global, y por eso `console` y `setTimeout` de mentira
@@ -477,7 +478,18 @@ const armar = (expresion, inyecciones, { conModulo = true } = {}) => new Functio
       setObras: inerte, setDatosPorObra: inerte, setMarca: inerte,
       setAuditCtx: inerte, setPermisosObraOverride: inerte,
       setUsuario: inerte, setScreen: inerte, setObraId: inerte,
+      // Lo que mide esta sección es el ORDEN: renglón de auditoría, luego
+      // `signOut`. La marca de salida voluntaria la lee el oyente de Auth, que
+      // aquí no corre, pero `logout` la pone y sin ella no arranca.
+      salidaVoluntariaRef: { current: false },
     };
+    // El desmonte NO se vuelve a teclear aquí: se arma el `olvidarSesion` de
+    // producción con los mismos dobles. Teclear una imitación que empujara
+    // `'limpiarPrefijoOrg'` al orden dejaría la aserción de abajo midiendo la
+    // imitación: diría «el prefijo quedó limpio» aunque el desmonte de verdad
+    // dejara de limpiarlo.
+    inyecciones.olvidarSesion = armar(dentro['App.olvidarSesion'],
+      { useCallback: f => f, ...inyecciones }, { conModulo: false });
     const logout = armar(dentro['App.logout'], inyecciones, { conModulo: false });
     return { orden, promesa: logout() };
   };
