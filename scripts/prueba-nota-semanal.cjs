@@ -252,14 +252,25 @@ if (!mGuardar) {
       'recién escrita, las dos marcas de tiempo coinciden');
 
     // Corrección: el `escritaEn` de la primera no se puede perder.
-    docPrevio = { notas: { 'S40-2026': { ...n1 } } };
-    await new Promise(r => setTimeout(r, 5));
+    //
+    // La nota previa llega con una marca ANTIGUA y conocida, no con la que
+    // acabó de escribir el reloj. Antes esto dormía 5 ms y pedía
+    // `editadaEn !== n1.editadaEn`: una apuesta a que el reloj avanzó entre
+    // las dos escrituras. Falla con el reloj quieto —el barrido de fechas— y
+    // en producción fallará el día que las dos escrituras caigan en el mismo
+    // milisegundo, que es lo mismo que decir que ese día la prueba no habría
+    // visto el defecto. Con una marca de 2020 la comprobación no depende del
+    // reloj en absoluto, y de paso es MÁS estricta: un código que pise
+    // `escritaEn` ya no puede salvarse por coincidir con el instante de la
+    // primera escritura.
+    const ANTIGUO = '2020-01-01T00:00:00.000Z';
+    docPrevio = { notas: { 'S40-2026': { ...n1, escritaEn: ANTIGUO, editadaEn: ANTIGUO } } };
     await sandbox('0114', 'S40-2026', { texto: 'Lluvia tres días y media.' });
     const n2 = escrito[1]?.notas?.['S40-2026'];
-    check(n2?.escritaEn === n1?.escritaEn,
-      'al corregir, cuándo se escribió por primera vez NO se pisa');
-    check(n2?.editadaEn !== n1?.editadaEn,
-      'y queda registrado que se tocó después');
+    check(n2?.escritaEn === ANTIGUO,
+      `al corregir, cuándo se escribió por primera vez NO se pisa (${n2?.escritaEn})`);
+    check(n2?.editadaEn !== ANTIGUO && !!n2?.editadaEn,
+      `y queda registrado que se tocó después (${n2?.editadaEn})`);
 
     // Texto y "sin novedad" a la vez: manda el texto. Quien escribió algo
     // tenía algo que decir, y guardar las dos cosas dejaría una nota que se

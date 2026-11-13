@@ -45,6 +45,11 @@
 
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
+
+// El identificador de esta corrida. Sale de una fuente de azar y NO del reloj:
+// el por qué está escrito entero donde se usa para las organizaciones.
+const CORRIDA = randomUUID().replace(/-/g, '').slice(0, 10);
 
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
@@ -120,14 +125,18 @@ if (process.argv[2] === '--contraprueba') {
       a:  `    const q = query(collection(fbDb, 'usuarios'), where('rol', 'in', roles));` },
   ];
   let malas = 0;
-  for (const m of MUTACIONES) {
+  for (const [iMut, m] of MUTACIONES.entries()) {
     const base = fs.readFileSync(m.archivo, 'utf8');
     if (!base.includes(m.de)) {
       console.log(`SIN APLICAR  ${m.nombre}`);
       console.log(`             el texto a mutar ya no está en ${path.basename(m.archivo)}.`);
       malas++; continue;
     }
-    const roto = path.join(os.tmpdir(), `aisl-mut-${Date.now()}${m.ext}`);
+    // El nombre del archivo mutado lleva el identificador de la corrida y el
+    // de la mutación, no la hora: con el reloj parado `Date.now()` daba el
+    // MISMO nombre a los dos mutantes, y dos contrapruebas a la vez se
+    // pisaban el archivo una a otra.
+    const roto = path.join(os.tmpdir(), `aisl-mut-${CORRIDA}-${iMut}${m.ext}`);
     fs.writeFileSync(roto, base.replace(m.de, m.a));
     const r = spawnSync(process.execPath, [__filename],
       { encoding: 'utf8', env: { ...process.env, [m.env]: roto } });
@@ -260,7 +269,16 @@ const cargarReglas = (archivo) =>
 //     depende de cuántas veces se corrió antes no mide conducta.
 // Borrar la base del emulador arreglaría lo segundo y empeoraría lo primero: se
 // llevaría la siembra del preview por delante.
-const SUFIJO = `p${Date.now().toString(36)}`;
+//
+// EL SUFIJO NO SALE DEL RELOJ, y esto no es un detalle de estilo. Era
+// `Date.now().toString(36)`: el reloj como fuente de unicidad. Dos corridas en
+// el mismo milisegundo chocan, y con el reloj parado —el barrido de fechas—
+// chocan SIEMPRE: el alta de §2 contesta `auth/email-already-in-use` y el banco
+// sale NO ARRANCÓ, o sea que la conducta se queda sin medir. Medido el
+// 2026-11-12 con el reloj en 2027-02-15: `intruso.1802649600000@ejemplo.com` es
+// el mismo correo en todas las corridas de esa fecha. Un identificador de
+// corrida tiene que venir de una fuente de azar, no de la hora.
+const SUFIJO = `p${CORRIDA}`;
 
 // ── El `admin` de mentira ───────────────────────────────────────────────────
 // Lo mínimo para que las funciones reales corran y se pueda mirar qué hicieron.
@@ -353,7 +371,7 @@ class HttpsErrorFalso extends Error {
 
   const apps = [];
   const abrir = async (nombre, uid, claims) => {
-    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, `${nombre}-${Date.now()}`);
+    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, `${nombre}-${CORRIDA}`);
     apps.push(app);
     const auth = getAuth(app);
     connectAuthEmulator(auth, `http://${HOST}:${PUERTO_AUTH}`, { disableWarnings: true });
@@ -367,7 +385,7 @@ class HttpsErrorFalso extends Error {
   // Alta propia, con correo y contraseña: así nace la cuenta de quien se
   // registra solo. El token resultante lleva el correo y CERO claims.
   const abrirConAlta = async (nombre, email) => {
-    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, `${nombre}-${Date.now()}`);
+    const app = initializeApp({ projectId: PROYECTO, apiKey: 'emulador' }, `${nombre}-${CORRIDA}`);
     apps.push(app);
     const auth = getAuth(app);
     connectAuthEmulator(auth, `http://${HOST}:${PUERTO_AUTH}`, { disableWarnings: true });
@@ -463,7 +481,7 @@ class HttpsErrorFalso extends Error {
   // token sin correo haría pasar esta sección por la razón equivocada —y la
   // lectura de más abajo es la que lo demuestra.
   console.log('\n§2 · una cuenta sin claims no se asciende a sí misma');
-  const EMAIL_INTRUSO = `intruso.${Date.now()}@ejemplo.com`;
+  const EMAIL_INTRUSO = `intruso.${CORRIDA}@ejemplo.com`;
   const DOC_INTRUSO = EMAIL_INTRUSO.replace('@', '_').replace(/\./g, '_');
   const dbIntruso = await abrirConAlta('intruso', EMAIL_INTRUSO);
   err = null;
