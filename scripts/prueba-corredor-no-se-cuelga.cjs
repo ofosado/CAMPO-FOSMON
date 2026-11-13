@@ -100,6 +100,37 @@ if (process.argv.includes('--contraprueba')) {
     // Y el consejo fijo, que es lo que mandó a levantar lo que ya estaba vivo.
     ['el consejo vuelve a nombrar sólo firestore,auth',
       /--only \$\{todos\.join\(','\)\}/, '--only firestore,auth'],
+
+    // ── El barrido de fechas ──────────────────────────────────────────────
+    // La más importante de todas: `fecha-falsa.cjs` revienta si no hay
+    // `FECHA_FALSA`, pero la variable SIN el `--require` no hace nada, y no
+    // hace nada en silencio. Un barrido así corre la suite dos veces con el
+    // mismo reloj y certifica que no hay nada que caduque.
+    ['barrer sin precargar el reloj falso (la variable sola no hace nada)',
+      /\['--require', RUTA_FECHA_FALSA, path\.join\(dir, f\)\]/,
+      '[path.join(dir, f)]'],
+    ['ver la caduca y no contarla',
+      /caducas\.push\(\[f, causa, salida\]\);/, ''],
+    ['no contar las caducas al salir',
+      /colgadas\.length \+ caducas\.length/, 'colgadas.length'],
+    ['borrar las caducas del resumen',
+      /`\$\{caducas\.length\} que caduca\(n\) ` \+\n            /, ''],
+    // La tabla de exclusiones, por sus dos lados: no mirarla, y no publicarla.
+    ['barrer igual a los que están excluidos',
+      /if \(NO_SE_BARREN\.has\(f\)\) continue;/, ''],
+    ['callar las exclusiones en el informe',
+      /console\.log\(`\$\{'no se barre'\.padEnd\(12\)\} \$\{corto\(f\)\.padEnd\(34\)\} \$\{razón\}`\);/,
+      ''],
+    ['no denunciar una exclusión que nombra un archivo que no existe',
+      /\.filter\(f => !fs\.existsSync\(path\.join\(dir, f\)\)\)/, '.filter(() => false)'],
+    // Omitir el barrido está permitido; omitirlo callado, no.
+    ['omitir el barrido sin decirlo',
+      /console\.log\(`\\nSIN barrido de fechas: \$\{sinBarridoPorque\}\.`\);/, ''],
+    // Y la fecha: que deje de ser futuro, y que deje de cruzar el año.
+    ['barrer a una fecha ya pasada',
+      /`\$\{hoy\.getFullYear\(\) \+ 1\}-02-15`/, '`${hoy.getFullYear() - 1}-02-15`'],
+    ['barrer dentro del mismo año, sin cruzar la frontera',
+      /`\$\{hoy\.getFullYear\(\) \+ 1\}-02-15`/, '`${hoy.getFullYear()}-12-15`'],
   ];
 
   let vistas = 0;
@@ -129,7 +160,11 @@ if (process.argv.includes('--contraprueba')) {
 
 // El corredor de verdad y sus dos módulos. Si alguno no está, no se midió
 // nada: no es rojo.
-const MODULOS = ['pruebas.cjs', 'no-arranco.cjs', 'reloj.cjs'];
+// `fecha-falsa.cjs` entra aquí porque el corredor ya no sólo corre bancos:
+// los repite con el reloj adelantado, y ése es el módulo con el que lo
+// adelanta. Sin él en el taller, el corredor de mentira no podría barrer y
+// esta prueba mediría un corredor distinto del que corre la suite.
+const MODULOS = ['pruebas.cjs', 'no-arranco.cjs', 'reloj.cjs', 'fecha-falsa.cjs'];
 for (const m of MODULOS) {
   try { fs.accessSync(path.join(DIR, m)); }
   catch { sinPrecondicion(`no está scripts/${m}`,
@@ -189,13 +224,20 @@ const falla = (q, esperado, obtenido) => {
 const PLAZO_DEL_BANCO = 10_000;
 const PLAZO_DEL_CORREDOR = 40000;
 
+// `BARRIDO=no` en las corridas SIN FILTRO de este taller, y a propósito: lo
+// que se mide aquí es la colgada, y el barrido repetiría los bancos verdes con
+// el reloj adelantado —segundos de más y renglones de más— sobre un resumen
+// cuyas cifras exactas son la afirmación. El barrido tiene su propio taller y
+// sus propias secciones más abajo; apagarlo aquí no lo deja sin medir, y el
+// corredor lo dice en voz alta en cada una de estas corridas.
+const SIN_BARRIDO = { PATH: process.env.PATH, HOME: process.env.HOME,
+                      PLAZO_BANCO: String(PLAZO_DEL_BANCO), BARRIDO: 'no' };
+
 console.log('\n── El corredor, con un banco que no vuelve delante ──');
 const t0 = Date.now();
 const r = spawnSync(process.execPath, [path.join(dentro, 'pruebas.cjs')], {
   encoding: 'utf8', cwd: taller, killSignal: 'SIGKILL',
-  timeout: PLAZO_DEL_CORREDOR,
-  env: { PATH: process.env.PATH, HOME: process.env.HOME,
-         PLAZO_BANCO: String(PLAZO_DEL_BANCO) },
+  timeout: PLAZO_DEL_CORREDOR, env: SIN_BARRIDO,
 });
 const tardó = Date.now() - t0;
 const salida = (r.stdout || '') + (r.stderr || '');
@@ -309,7 +351,7 @@ else
 console.log('\n── Con PLAZO_BANCO=1, que es como se teclea un plazo por error ──');
 const r1 = spawnSync(process.execPath, [path.join(dentro, 'pruebas.cjs')], {
   encoding: 'utf8', cwd: taller, killSignal: 'SIGKILL', timeout: 40000,
-  env: { PATH: process.env.PATH, HOME: process.env.HOME, PLAZO_BANCO: '1' },
+  env: { ...SIN_BARRIDO, PLAZO_BANCO: '1' },
 });
 const salida1 = (r1.stdout || '') + (r1.stderr || '');
 const resumen1 = (salida1.match(/^\d+ en verde .*/m) || [''])[0];
@@ -398,6 +440,229 @@ else
   falla('el sobrecosto de matar al banco no se confunde con un salto',
     'que 12.3 s sobre un plazo de 10 s se creyeran',
     'los declaró increíbles: la primera sección se volvería «no se pudo medir»');
+
+// ════════════════════════════════════════════════════════════════════════════
+// EL BARRIDO DE FECHAS: UN VERDE CON FECHA DE CADUCIDAD SE DENUNCIA HOY
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El corredor ya no sólo corre cada banco: repite los que salieron en verde con
+// el reloj adelantado al 15 de febrero del año que viene. Por qué, medido: el
+// 2026-11-12 la suite entera, con el reloj congelado en 2027-02-15, sacó cuatro
+// bancos en rojo y dos sin arrancar que esa misma mañana habían dado 118 verdes.
+// Cuatro eran fixturas que siembran sus datos contando desde hoy y uno era
+// producto (#137). Sin esta pasada, eso se descubre el 1 de enero, en caliente,
+// y sin saber si lo roto es la prueba o el producto.
+//
+// Lo que se afirma aquí es conducta, y se afirma con un taller propio: un banco
+// de mentira que es VERDE HOY y ROJO el año que viene —la clase exacta del
+// #136, un dato sembrado con el calendario de hoy— tiene que salir CADUCA,
+// contarse, y hacer que el corredor salga con 1. Y uno que no caduca no puede
+// salir nombrado: un barrido que pinta todo de rojo no distingue nada.
+console.log('\n── El barrido: un banco verde hoy que no lo será el año que viene ──');
+
+const taller2 = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-barrido-'));
+const dentro2 = path.join(taller2, 'scripts');
+fs.mkdirSync(dentro2);
+for (const m of MODULOS) fs.copyFileSync(path.join(DIR, m), path.join(dentro2, m));
+if (process.env.ARCH_CORREDOR)
+  fs.copyFileSync(process.env.ARCH_CORREDOR, path.join(dentro2, 'pruebas.cjs'));
+
+// El banco que caduca. No apuesta a nada raro: afirma que el dato que sembró
+// —el año en que se escribió— sigue siendo el año en curso, que es lo que
+// afirma sin darse cuenta cualquier fixtura que diga «la semana pasada».
+const CADUCA = `// Verde hoy, rojo el año que viene: la clase del #136.
+const AÑO_DE_SIEMBRA = ${new Date().getFullYear()};
+const año = new Date().getFullYear();
+if (año === AÑO_DE_SIEMBRA) {
+  console.log(' ok   el dato sembrado sigue siendo del año en curso');
+  process.exit(0);
+}
+console.log('FALLA el dato sembrado quedó en un año ya cerrado');
+console.log('        esperaba: ' + AÑO_DE_SIEMBRA);
+console.log('        obtuvo:   ' + año);
+process.exit(1);
+`;
+fs.writeFileSync(path.join(dentro2, 'prueba-de-mentira-que-caduca.cjs'), CADUCA);
+// El que no caduca, para que el barrido tenga que distinguir.
+fs.writeFileSync(path.join(dentro2, 'prueba-de-mentira-firme.cjs'),
+  `console.log(' ok   2 + 2 siguen siendo 4 en febrero'); process.exit(0);\n`);
+// Los tres de la tabla de exclusiones tienen que EXISTIR en el taller, porque
+// el corredor denuncia una exclusión que nombra un archivo fantasma. Y el
+// primero se escribe CADUCANDO: es la afirmación de que la exclusión se
+// respeta de verdad y no por casualidad.
+const EXCLUIDOS = ['prueba-canal-que-avisa.cjs', 'prueba-mensaje-de-permiso.cjs',
+                   'prueba-corredor-no-se-cuelga.cjs'];
+fs.writeFileSync(path.join(dentro2, EXCLUIDOS[0]), CADUCA);
+for (const f of EXCLUIDOS.slice(1))
+  fs.writeFileSync(path.join(dentro2, f), `console.log(' ok   excluido'); process.exit(0);\n`);
+
+const correrTaller2 = (extra = {}, filtro = null) => spawnSync(process.execPath,
+  [path.join(dentro2, 'pruebas.cjs'), ...(filtro ? [filtro] : [])], {
+    encoding: 'utf8', cwd: taller2, killSignal: 'SIGKILL', timeout: PLAZO_DEL_CORREDOR,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME,
+           PLAZO_BANCO: String(PLAZO_DEL_BANCO), ...extra },
+  });
+
+const rB = correrTaller2();
+const salidaB = (rB.stdout || '') + (rB.stderr || '');
+const resumenB = (salidaB.match(/^\d+ en verde .*/m) || [''])[0];
+
+// 1. El banco que caduca sale nombrado y con el rótulo CADUCA.
+const renglónCaduca = (salidaB.match(/^CADUCA\s+de-mentira-que-caduca.*/m) || [''])[0];
+if (renglónCaduca)
+  ok('un banco verde hoy y rojo el año que viene sale CADUCA', renglónCaduca.trim());
+else
+  falla('un banco verde hoy y rojo el año que viene sale CADUCA',
+    'el renglón «CADUCA  de-mentira-que-caduca»',
+    (salidaB.match(/.*que-caduca.*/) || ['(no lo nombró)'])[0].trim());
+
+// 2. Se cuenta en el resumen. Sin cifra propia, una caduca se lee como un verde
+//    con un renglón raro arriba.
+if (/1 que caduca\(n\)/.test(resumenB))
+  ok('se cuenta aparte en el resumen', resumenB.trim());
+else
+  falla('se cuenta aparte en el resumen',
+    'el resumen dice «1 que caduca(n)»', resumenB.trim() || '(no hubo resumen)');
+
+// 3. Y SOLA basta para salir con 1. En este taller no hay ningún rojo: si la
+//    caduca no contara, la salida sería 0 y un merge pasaría por encima. Es la
+//    misma cuenta por número de la sección de la colgada.
+if (/ en rojo/.test(resumenB) && !/0 en rojo/.test(resumenB))
+  falla('una caduca sola basta para que el corredor salga con 1',
+    'un taller sin rojos, para que la salida 1 sea de la caduca',
+    `había rojos: ${resumenB.trim()}`);
+else if (rB.status === 1)
+  ok('una caduca sola basta para que el corredor salga con 1');
+else
+  falla('una caduca sola basta para que el corredor salga con 1',
+    'salida 1', `salida ${rB.status} — un verde caducado no paraba nada`);
+
+// 4. El que no caduca no se nombra, y el informe dice la fecha con la que midió
+//    y cómo repetirlo solo. Sin la fecha, el renglón no se puede investigar.
+if (!/^CADUCA\s+de-mentira-firme/m.test(salidaB) && !/firme.*caduca/i.test(salidaB))
+  ok('el banco que no caduca no sale nombrado',
+    'un barrido que pinta todo de rojo no distingue nada');
+else
+  falla('el banco que no caduca no sale nombrado',
+    'que «de-mentira-firme» no apareciera como caduca',
+    (salidaB.match(/.*firme.*caduca.*/i) || [''])[0].trim());
+
+const añoQueViene = new Date().getFullYear() + 1;
+if (salidaB.includes(`${añoQueViene}-02-15`))
+  ok('el informe dice con qué fecha midió', `${añoQueViene}-02-15`);
+else
+  falla('el informe dice con qué fecha midió',
+    `la fecha ${añoQueViene}-02-15 escrita en el informe`, '(no la dijo)');
+
+if (/FECHA_FALSA=\S+ node --require scripts\/fecha-falsa\.cjs scripts\/prueba-de-mentira-que-caduca\.cjs/.test(salidaB))
+  ok('y cómo repetir ese banco solo, con el reloj adelantado');
+else
+  falla('y cómo repetir ese banco solo, con el reloj adelantado',
+    'el comando con FECHA_FALSA y el --require',
+    (salidaB.match(/.*FECHA_FALSA.*/) || ['(no lo dijo)'])[0].trim());
+
+// 5. La tabla de exclusiones se respeta Y se publica. El banco excluido es el
+//    mismo código que caduca: si la tabla no se mirara, saldría CADUCA.
+if (!/^CADUCA\s+canal-que-avisa/m.test(salidaB))
+  ok('un banco de la tabla de exclusiones no se barre');
+else
+  falla('un banco de la tabla de exclusiones no se barre',
+    'que «canal-que-avisa» no saliera CADUCA (está excluido)',
+    'salió CADUCA: la tabla no se miró');
+
+const renglónExcl = (salidaB.match(/^no se barre\s+canal-que-avisa\s+(.+)$/m) || ['', ''])[1];
+if (renglónExcl && renglónExcl.trim().length > 20)
+  ok('y la exclusión se publica con su razón escrita', renglónExcl.trim());
+else
+  falla('y la exclusión se publica con su razón escrita',
+    'el renglón «no se barre  canal-que-avisa  <razón>»',
+    renglónExcl.trim() || '(la exclusión no se vio: nadie la volverá a discutir)');
+
+// ── Un barrido que no se hizo se DICE ──────────────────────────────────────
+//
+// Con filtro no se barre, y está bien: el barrido es de la suite entera. Lo que
+// no puede pasar es que se calle, porque entonces una corrida filtrada en verde
+// y una completa en verde se leen igual y no miden lo mismo.
+console.log('\n── Una corrida filtrada no barre, y lo dice ──');
+const rFiltrada = correrTaller2({}, 'que-caduca');
+const salidaF = (rFiltrada.stdout || '') + (rFiltrada.stderr || '');
+if (/SIN barrido de fechas/.test(salidaF) && /filtrada/.test(salidaF))
+  ok('lo dice en voz alta, nombrando el filtro',
+    (salidaF.match(/SIN barrido.*/) || [''])[0].trim());
+else
+  falla('lo dice en voz alta, nombrando el filtro',
+    'el renglón «SIN barrido de fechas: la corrida está filtrada…»',
+    (salidaF.match(/.*barrido.*/) || ['(no dijo nada del barrido)'])[0].trim());
+if (rFiltrada.status === 0)
+  ok('y el banco que caduca sigue en verde para la corrida filtrada',
+    'sin barrido no hay veredicto sobre el tiempo, y no se finge uno');
+else
+  falla('y el banco que caduca sigue en verde para la corrida filtrada',
+    'salida 0: lo que no se midió no se publica', `salida ${rFiltrada.status}`);
+
+// ── La fecha se deriva, y lo que deriva es futuro ──────────────────────────
+//
+// Una fecha fija escrita en el archivo deja de ser futuro sin que nadie se
+// entere, y el barrido se vuelve un segundo «hoy»: la puerta sigue ahí, verde,
+// sin medir nada. Así que la cuenta se SACA del corredor del taller y se
+// EJECUTA con varios «hoy», incluidos los dos bordes del año.
+console.log('\n── La fecha del barrido se deriva del día en que se corre ──');
+const fuente2 = fs.readFileSync(path.join(dentro2, 'pruebas.cjs'), 'utf8');
+const textoFecha = (fuente2.match(/^const fechaDeBarrido = [\s\S]*?;$/m) || [])[0];
+if (!textoFecha)
+  sinPrecondicion('no se pudo sacar `fechaDeBarrido` de pruebas.cjs',
+    ['Es la cuenta que decide a qué fecha se barre. Si se renombró, esta',
+     'sección no midió nada, y eso no es verde.']);
+const fechaDeBarrido = new Function(`${textoFecha}\nreturn fechaDeBarrido;`)();
+
+const DIAS = ['2026-11-12', '2026-12-31', '2027-01-01', '2027-02-14', '2027-06-30'];
+const noFuturos = [], fueraDeQ1 = [];
+for (const d of DIAS) {
+  const hoy = new Date(`${d}T12:00:00`);
+  const f = fechaDeBarrido(hoy);
+  if (!(f > d)) noFuturos.push(`${d} → ${f}`);
+  // Q1 y año siguiente: cruzar la frontera de año es donde vive la clase del
+  // #136, y febrero está lejos de la pared de enero —las primeras semanas del
+  // año tienen estructuralmente menos de cuatro semanas detallables (#47), y
+  // un banco honesto no puede afirmar ahí lo mismo que en febrero.
+  const [a, m] = f.split('-');
+  if (Number(a) !== hoy.getFullYear() + 1 || !['01', '02', '03'].includes(m))
+    fueraDeQ1.push(`${d} → ${f}`);
+}
+if (noFuturos.length === 0)
+  ok('la fecha derivada siempre está en el futuro', DIAS.map(d => fechaDeBarrido(new Date(`${d}T12:00:00`))).join(' · '));
+else
+  falla('la fecha derivada siempre está en el futuro',
+    'que ningún «hoy» derivara una fecha ya pasada', noFuturos.join(', '));
+if (fueraDeQ1.length === 0)
+  ok('y cae en el primer trimestre del año siguiente, cruzando la frontera de año');
+else
+  falla('y cae en el primer trimestre del año siguiente, cruzando la frontera de año',
+    'año+1 y mes 01–03', fueraDeQ1.join(', '));
+
+// ── Una exclusión que nombra un archivo que ya no existe se denuncia ───────
+//
+// La tabla de exclusiones es la parte peligrosa del barrido: lo que entra ahí
+// deja de medirse para siempre. Si uno de esos bancos se renombra, se estaría
+// barriendo sin que nadie lo decidiera; si desaparece, la razón quedó de
+// adorno. En los dos casos la tabla dejó de decir la verdad, y una lista de
+// excepciones que nadie mantiene es una puerta sin llave.
+console.log('\n── Una exclusión que ya no corresponde a ningún banco ──');
+fs.unlinkSync(path.join(dentro2, EXCLUIDOS[1]));
+const rFantasma = correrTaller2();
+const salidaFa = (rFantasma.stdout || '') + (rFantasma.stderr || '');
+if (new RegExp(`no existe[\\s\\S]*${EXCLUIDOS[1].replace('.', '\\.')}`).test(salidaFa))
+  ok('se denuncia, por su nombre', EXCLUIDOS[1]);
+else
+  falla('se denuncia, por su nombre',
+    `que el informe nombrara ${EXCLUIDOS[1]} como exclusión sin banco`,
+    (salidaFa.match(/.*exclusion.*/i) || ['(no dijo nada)'])[0].trim());
+if (rFantasma.status === 1)
+  ok('y para la suite: una exclusión sin mantener no se tolera');
+else
+  falla('y para la suite: una exclusión sin mantener no se tolera',
+    'salida 1', `salida ${rFantasma.status}`);
+try { fs.rmSync(taller2, { recursive: true, force: true }); } catch {}
 
 // ── UN EMULADOR CAÍDO SE NOMBRA, NO SE ESPERA ───────────────────────────────
 //
