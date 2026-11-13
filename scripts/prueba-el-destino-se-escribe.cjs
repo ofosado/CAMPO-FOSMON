@@ -213,6 +213,99 @@ for (const g of PASAN_POR_EL_PORTON) {
 // no escribe en ningún sitio, y de paso imprime los alias con su proyecto: la
 // misma corrida contesta «no hay destino de omisión» y «los dos destinos
 // siguen siendo pedibles por nombre».
+// ── El rastro, para cuando el CLI no contesta ──────────────────────────────
+//
+// EL DEFECTO (#97). Esta sección ya clasificaba bien —un CLI que no contesta
+// es NO ARRANCÓ, no rojo— pero el mensaje repetía la frase genérica del CLI
+// («An unexpected error has occurred») y no dejaba nada más. El 2026-11-04 la
+// suite salió con 1 por esto y la corrida siguiente dio 83 en verde sin tocar
+// nada: media hora de diagnóstico que acabó en «volví a correrla y pasó», que
+// es exactamente lo que el acuerdo prohíbe. No se reproduce en aislamiento
+// —nueve intentos en verde, sueltos y en paralelo— así que la información hay
+// que recogerla EN EL MOMENTO, que es el único en que existe.
+//
+// Esto NO reintenta para ponerse verde. La segunda pregunta es con `--debug` y
+// su respuesta no se usa para juzgar nada: el banco sale 2 igual, conteste o
+// no. Un reintento que decide el veredicto convierte «si falla y luego pasa,
+// no quedó» en «volvé a correrla», que es el hábito que se está combatiendo.
+// Si la segunda SÍ contesta, eso tampoco se calla: que el fallo no se repita a
+// los dos segundos es el dato más útil que tiene el informe.
+//
+// Lo que se recoge son las tres cosas que cada aparición costaba averiguar a
+// mano: el log que `--debug` sí escribe, qué otros `firebase` estaban vivos
+// —la hipótesis que trae escrita el banco es el configstore tomado, y el
+// corredor es secuencial, así que la suite no puede ser consigo misma— y si el
+// configstore existía y de cuándo era.
+const rastroDelCLI = (RAIZ) => {
+  const fs = require('fs');
+  const lineas = [];
+  const LOG = path.join(RAIZ, 'firebase-debug.log');
+  // De cuándo era el log de antes: si `--debug` no lo reescribe, lo que se
+  // lea es de otra corrida y pegarlo sería inventar evidencia.
+  const antes = (() => { try { return fs.statSync(LOG).mtimeMs; } catch { return 0; } })();
+
+  const t0 = Date.now();
+  const otra = spawnSync('firebase',
+    ['deploy', '--only', 'firestore:rules', '--dry-run', '--debug'], {
+      encoding: 'utf8', cwd: RAIZ, timeout: 45000,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    });
+  const tardo = ((Date.now() - t0) / 1000).toFixed(1);
+  const dijo2 = ((otra.stdout || '') + (otra.stderr || '')).trim();
+  const contesto = otra.status === 0 || /No project active|No active project/i.test(dijo2);
+
+  lineas.push(`Se volvió a preguntar con \`--debug\` (${tardo} s): ` + (contesto
+    ? 'ESTA VEZ SÍ CONTESTÓ. El fallo es intermitente y no está en el ' +
+      'repositorio; lo de abajo es de la corrida que sí anduvo.'
+    : `tampoco — status=${otra.status} signal=${otra.signal}.`));
+
+  // El log sólo se cita si `--debug` lo escribió ahora. Se copia fuera del
+  // árbol porque la corrida siguiente lo pisa, y la que se quiere leer es ésta.
+  let ahora = 0;
+  try { ahora = fs.statSync(LOG).mtimeMs; } catch { /* no lo escribió */ }
+  if (ahora > antes) {
+    const guardado = path.join(require('os').tmpdir(),
+      `firebase-debug-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+    let cola = [];
+    try {
+      fs.copyFileSync(LOG, guardado);
+      cola = fs.readFileSync(LOG, 'utf8').trim().split('\n').slice(-12);
+    } catch (e) { cola = [`(no se pudo leer el log: ${e.message})`]; }
+    lineas.push('', `Log completo guardado en ${guardado}`, '', 'Últimas líneas:',
+      ...cola.map(l => '  ' + l.slice(0, 160)));
+  } else {
+    // Qué significa que no haya log depende de si contestó, y decir lo mismo
+    // en los dos casos sería inventar la mitad de las veces.
+    lineas.push('', contesto
+      ? '`--debug` no dejó `firebase-debug.log` pese a haber contestado, que ' +
+        'no es lo normal: el CLI salió por un camino que no abre el log.'
+      : '`--debug` no dejó `firebase-debug.log`: murió antes de abrirlo, y eso ' +
+        'ya es un dato — no llegó ni a arrancar.');
+  }
+
+  // El único otro candidato vivo que nombra la fila: otro `firebase` tomando
+  // el configstore. Se dicen los que hay, no se afirma que sean la causa.
+  const ps = spawnSync('/bin/ps', ['-eo', 'pid,lstart,command'], { encoding: 'utf8' });
+  const otros = (ps.stdout || '').split('\n')
+    .filter(l => /\bfirebase\b/.test(l) && !/\bps -eo\b/.test(l))
+    .map(l => '  ' + l.trim().slice(0, 140));
+  lineas.push('', otros.length
+    ? `Otros procesos \`firebase\` vivos en este momento (${otros.length}):`
+    : 'No había ningún otro proceso `firebase` vivo en este momento.',
+    ...otros);
+
+  const CONFIG = path.join(process.env.HOME || '',
+    '.config/configstore/firebase-tools.json');
+  try {
+    const st = fs.statSync(CONFIG);
+    lineas.push('', `Configstore: ${CONFIG} — ${st.size} bytes, ` +
+      `tocado ${new Date(st.mtimeMs).toISOString()}`);
+  } catch {
+    lineas.push('', `Configstore: no existe (${CONFIG}). Sin él no hay sesión.`);
+  }
+  return lineas;
+};
+
 console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde ──');
 {
   const RAIZ = path.join(DIR, '..');
@@ -270,8 +363,10 @@ console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde �
        '  ' + (dijo ? dijo.split('\n').slice(0, 6).join('\n  ') : '(nada)'),
        '',
        'Eso no dice NADA sobre el destino de omisión, ni a favor ni en contra.',
-       'Suele ser sesión caducada o el configstore tomado por otro `firebase`',
-       'corriendo a la vez. Arreglarlo y volver a correr:',
+       '',
+       ...rastroDelCLI(RAIZ),
+       '',
+       'Si el rastro de arriba no señala a nadie, suele ser sesión caducada:',
        '  firebase login',
        '  node scripts/prueba-el-destino-se-escribe.cjs']);
   }
