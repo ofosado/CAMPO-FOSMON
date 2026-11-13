@@ -334,6 +334,29 @@ const SIN_DINERO = {
 
 const casi = (a, b, tol = 0.5) => typeof a === 'number' && Math.abs(a - b) <= tol;
 
+// Corre `f` con el reloj parado en `instante`. Las cuentas extraídas resuelven
+// `Date` del global en CADA llamada —no entra como variable libre, está en
+// BUILTINS—, así que sustituirlo aquí las alcanza sin tocar el archivo.
+//
+// Hace falta porque hay conducta que sólo existe en una época del año: la
+// ventana de doce semanas cruza el año únicamente de enero a marzo, y ahí es
+// donde vivía el defecto de la sección 9. Un banco que mida siempre «hoy» lo
+// ve tres meses al año y lo declara verde los otros nueve, que es exactamente
+// cómo ese defecto llegó a producción.
+//
+// El reloj de verdad se devuelve en `finally`: dejarlo parado contaminaría las
+// secciones de arriba, que sí miden contra hoy a propósito.
+const conElRelojEn = (instante, f) => {
+  const Real = Date;
+  const t = instante.getTime();
+  class Congelado extends Real {
+    constructor(...a) { super(...(a.length ? a : [t])); }
+    static now() { return t; }
+  }
+  globalThis.Date = Congelado;
+  try { return f(); } finally { globalThis.Date = Real; }
+};
+
 // Busca una magnitud dentro de cualquier valor, por profundo que esté.
 const lleva = (valor, monto, visto = new Set()) => {
   if (typeof valor === 'number') return Math.abs(valor - monto) < 1;
@@ -652,6 +675,174 @@ function correr(codigo) {
     'y mucho menos afirma que el salto entero se gastó en esos siete días',
     `el salto es ${salto}`);
 
+  // ── 9 · EL AÑO QUE YA CERRÓ NO SE DIBUJA EN $0 ───────────────────────────
+  //
+  // PENDIENTES #134. El Sheet del GP detalla por semana SÓLO el año en curso;
+  // de los años cerrados publica un TOTAL, sin reparto. `ultimoGPHasta`
+  // devolvía un 0 literal para toda semana sin delta anterior, así que la curva
+  // dibujaba $0 en las semanas de diciembre y SALTABA al total del año cerrado
+  // en la primera de enero. Medido con el reloj en el 2027-02-15 sobre una obra
+  // con $30M en el año cerrado: $0, $0, $0, $0, $0 → $30,400,000.
+  //
+  // Las dos mitades mienten, y la de la izquierda es la que cuesta dinero: con
+  // el gasto en cero, la columna Margen publicaba el ejecutado ENTERO como
+  // ganancia en esas semanas. El salto, por su parte, afirma que $30M se
+  // gastaron en siete días.
+  //
+  // Lo afirmable, y lo que esta sección exige:
+  //   · semana de un año ya CERRADO → no se sabe, porque sólo hay un total y
+  //     repartirlo sería inventar la cifra;
+  //   · semana del año en curso sin delta todavía → lo de los años cerrados,
+  //     que sí es una cifra medida;
+  //   · sin años cerrados, esas mismas semanas valen un CERO medido. Esto
+  //     último es el canario del arreglo: un `null` a manta convertiría en
+  //     hueco el arranque de toda obra nueva.
+  sec('9. De enero a marzo, las semanas del año cerrado no valen $0');
+  {
+    const AÑO = new Date().getFullYear() + 1;      // el año en curso del escenario
+    const CERRADO = AÑO - 1;
+    // 15 de febrero: la ventana de doce semanas cruza el año seguro, caiga ese
+    // día en el lunes que caiga. La fecha se deriva de hoy —no se teclea— para
+    // que el escenario siga estando en el futuro el año que viene.
+    const EN_FEBRERO = new Date(AÑO, 1, 15, 12, 0, 0);
+    const DEL_AÑO_CERRADO = 30_000_000;
+    const DELTAS = { S3: 400_000, S4: 900_000, S5: 1_500_000, S6: 2_000_000, S7: 2_400_000 };
+    const SUMA_DELTAS = Object.values(DELTAS).reduce((t, v) => t + v, 0);
+
+    // La hoja del GP como llega de verdad en febrero: el año cerrado como un
+    // total y sólo las semanas del año en curso detalladas. La primera delta va
+    // en la S3 a propósito, para que queden semanas de enero sin delta todavía
+    // —el segundo caso de la lista de arriba— dentro de la ventana.
+    const hoja = (años) => {
+      const base = Object.values(años).reduce((t, v) => t + v, 0);
+      return {
+        ultimaSemana: 'S7', obrasPedidas: ['0199'],
+        semanasDisponibles: Object.keys(DELTAS).map(k => ({ año: AÑO, semana: +k.slice(1) })),
+        obras: { '0199': { id: '0199', nombre: 'Obra de prueba',
+                           grandTotal: base + SUMA_DELTAS, años, semanas: DELTAS } },
+      };
+    };
+    const OBRA_LARGA = { id: '0199-TEST', nombre: 'Obra de prueba', gpId: '0199',
+                         presupuesto: PRESUPUESTO, modoAvance: 'volumen',
+                         inicio: `${CERRADO - 1}-02-02`, fin: `${AÑO + 1}-06-30` };
+
+    const semanasDeVentana = cuenta('semanasDeVentana');
+    const jueveDeSemanaISO = cuenta('jueveDeSemanaISO');
+    const snapDe = (s, { av, me }) => ({
+      semana: s.sem, año: s.año, fechaCaptura: jueveDeSemanaISO(s.año, s.sem).toISOString(),
+      avancePonderado: av, montoEjecutado: me, esquema: 3,
+    });
+
+    conElRelojEn(EN_FEBRERO, () => {
+      const SEMS = semanasDeVentana(OBRA_LARGA, 12);
+      const deCerrado = SEMS.filter(s => s.año === CERRADO);
+      const delAño = SEMS.filter(s => s.año === AÑO);
+
+      // (0) El fixture. Sin estas dos cosas, todo lo de abajo pasaría por la
+      //     razón equivocada: una ventana que no cruce el año no tiene semanas
+      //     de año cerrado que mirar.
+      check(new Date().getFullYear() === AÑO && new Date().getMonth() === 1,
+        `el reloj del bloque está parado en febrero de ${AÑO}`,
+        new Date().toISOString().slice(0, 10));
+      check(deCerrado.length >= 3 && delAño.length >= 3,
+        `la ventana CRUZA el año: ${deCerrado.length} semanas de ${CERRADO} y ` +
+        `${delAño.length} de ${AÑO}`,
+        `${SEMS[0]?.key} … ${SEMS[SEMS.length - 1]?.key}`);
+      // Y que haya semanas del año en curso ANTERIORES a la primera delta: son
+      // las del tercer caso de la lista, el que distingue «hueco» de «base».
+      const antesDeLaPrimeraDelta = delAño.filter(s => s.sem < 3);
+      check(antesDeLaPrimeraDelta.length >= 1,
+        'y trae semanas del año en curso previas a la primera delta del Sheet',
+        antesDeLaPrimeraDelta.map(s => s.key).join(', ') || 'ninguna');
+
+      // (a) LO QUE NO SE SABE. De un año cerrado el Sheet trae un total, y
+      //     repartirlo entre sus semanas sería teclear una cifra.
+      const props = { obra: OBRA_LARGA, gpData: hoja({ [`Y${CERRADO}`]: DEL_AÑO_CERRADO }),
+                      historialAvance: [snapDe(SEMS[1], { av: 40, me: 4_000_000 }),
+                                        snapDe(SEMS[SEMS.length - 2], { av: 55, me: 6_200_000 })],
+                      subs: SUBS, programa: null,
+                      otrosGastos: [], maquinaria: [], materiales: [], estimaciones: [] };
+      const g9 = curvaUnicaDeObra({ semanas: SEMS, ...props });
+
+      const cerradasEnCero = deCerrado.filter(s => g9.gastoPorSem?.[s.key] === 0);
+      check(cerradasEnCero.length === 0,
+        `ninguna semana de ${CERRADO} se publica en $0`,
+        cerradasEnCero.length ? `en cero: ${cerradasEnCero.map(s => s.key).join(', ')}`
+                              : `${deCerrado.length} semanas revisadas`);
+      check(deCerrado.every(s => g9.gastoPorSem?.[s.key] === null),
+        'quedan en «no se sabe», que es lo único afirmable de un total sin reparto',
+        deCerrado.map(s => `${s.key}=${g9.gastoPorSem?.[s.key]}`).join(' '));
+
+      // (b) LO QUE SÍ SE SABE. Una semana de enero sin delta todavía arrastra
+      //     lo de los años cerrados: es un acumulado medido, no un hueco.
+      const kAntes = antesDeLaPrimeraDelta[antesDeLaPrimeraDelta.length - 1]?.key;
+      check(casi(g9.gastoPorSem?.[kAntes], DEL_AÑO_CERRADO, 1),
+        `${kAntes} arrastra los $30,000,000 del año cerrado`,
+        `${g9.gastoPorSem?.[kAntes]}`);
+
+      // (c) Y EL SALTO DESAPARECE. Antes, entre dos semanas DIBUJADAS había un
+      //     brinco del total del año cerrado. Se mide sobre la serie que se
+      //     dibuja, no sobre el objeto intermedio.
+      const saltos = SEMS.map((s, i) => (i === 0 ? null
+        : (typeof g9.gasto?.[i] === 'number' && typeof g9.gasto?.[i - 1] === 'number'
+            ? g9.gasto[i] - g9.gasto[i - 1] : null)))
+        .filter(v => typeof v === 'number');
+      check(saltos.length >= 3 && Math.max(...saltos) < DEL_AÑO_CERRADO,
+        'y entre dos semanas dibujadas ya no hay un brinco del total del año cerrado',
+        `${saltos.length} saltos, el mayor ${Math.max(...saltos)}`);
+
+      // (d) EL MARGEN, que es por donde esto costaba dinero. En esas semanas
+      //     hay ejecutado capturado, así que el margen SÍ se habría dibujado:
+      //     ejecutado menos un gasto de cero es el ejecutado entero rotulado
+      //     como ganancia.
+      const iEjec = SEMS.findIndex((s, i) => typeof g9.ejecutado?.[i] === 'number'
+                                          && s.año === CERRADO);
+      check(iEjec >= 0 && g9.ejecutado[iEjec] > 0,
+        'canario: hay una semana del año cerrado CON ejecutado capturado',
+        iEjec >= 0 ? `${SEMS[iEjec].key} = ${g9.ejecutado[iEjec]}` : 'ninguna');
+      check(g9.margen?.[iEjec] === null,
+        'y su margen no se publica: sin gasto conocido no hay resta que rotular ganancia',
+        `${g9.margen?.[iEjec]}`);
+      check(!casi(g9.margen?.[iEjec], g9.ejecutado?.[iEjec], 1),
+        'y mucho menos el ejecutado entero',
+        `ejecutado ${g9.ejecutado?.[iEjec]} · margen ${g9.margen?.[iEjec]}`);
+
+      // (e) LA TABLA. El componente arma su propio eje de semanas con el reloj
+      //     parado, así que aquí se mide la columna «Gasto de la semana» tal
+      //     como la ve quien la lee: un «$0» en diciembre y el salto entero en
+      //     la primera de enero son las dos salidas falsas.
+      const t9 = ejecutar('TarjetaGraficaUnica', props);
+      check(t9.semanas?.length === SEMS.length
+            && t9.semanas?.[0]?.key === SEMS[0].key,
+        'la tabla mira el mismo eje que la cuenta',
+        `${t9.semanas?.[0]?.key} … ${t9.semanas?.[t9.semanas.length - 1]?.key}`);
+      const iCruce = t9.semanas.findIndex(s => s.año === AÑO);
+      const cerradasConCifra = t9.semanas
+        .map((s, i) => [s, i])
+        .filter(([s, i]) => s.año === CERRADO && i > 0 && t9.gastoDelta?.[i] !== null);
+      check(cerradasConCifra.length === 0,
+        `la columna «Gasto de la semana» va en «—» en las semanas de ${CERRADO}`,
+        cerradasConCifra.length
+          ? cerradasConCifra.map(([s, i]) => `${s.key}=${t9.gastoDelta[i]}`).join(' ')
+          : `${deCerrado.length - 1} renglones revisados`);
+      check(iCruce > 0 && t9.gastoDelta?.[iCruce] === null,
+        'y el renglón que cruza el año tampoco afirma un gasto de esos siete días',
+        `idx ${iCruce}: ${t9.gastoDelta?.[iCruce]}`);
+
+      // (f) EL CANARIO DEL ARREGLO. La misma obra, la misma época, sin años
+      //     cerrados: ahí el cero SÍ está medido —GP contestó y no hay un peso
+      //     antes de la S3— y tiene que seguir saliendo cero. Si esto se
+      //     volviera `null`, toda obra nueva arrancaría su gráfica con un hueco.
+      const g9sin = curvaUnicaDeObra({ semanas: SEMS, ...props, gpData: hoja({}) });
+      check(deCerrado.every(s => g9sin.gastoPorSem?.[s.key] === 0),
+        'sin años cerrados, esas mismas semanas valen un CERO medido, no un hueco',
+        deCerrado.map(s => `${s.key}=${g9sin.gastoPorSem?.[s.key]}`).join(' '));
+      check(g9sin.gastoPorSem?.[kAntes] === 0,
+        `y ${kAntes} también: no hay nada que arrastrar`,
+        `${g9sin.gastoPorSem?.[kAntes]}`);
+    });
+  }
+
   return fallos;
 }
 
@@ -775,9 +966,53 @@ const MUTACIONES = [
   ['la última semana publica un $0 de gasto junto a un acumulado que saltó',
     'if (i === semanas.length - 1 && g.gastoSinFechar) return null;',
     ''],
+  // REANCLADA el 2026-11-12. El anclaje era esta guarda MÁS la línea `const
+  // act =` de abajo, y al meterse en medio la guarda de #134 —el acumulado que
+  // no se conoce— se quedó sin anclaje y la contraprueba salió en 2. Ahora se
+  // ancla sólo a la guarda, que es lo que la mutación tiene que cambiar: un
+  // anclaje que arrastra la línea de al lado se pudre con el vecino.
   ['el salto del ancla se publica como el gasto de esa semana',
-    'if (i === semanas.length - 1 && g.gastoSinFechar) return null;\n    const act =',
-    'if (i === semanas.length - 1 && g.gastoSinFechar) {\n      return g.gasto[i] - (g.gastoPorSem[semanas[i - 1].key] ?? 0);\n    }\n    const act ='],
+    'if (i === semanas.length - 1 && g.gastoSinFechar) return null;',
+    'if (i === semanas.length - 1 && g.gastoSinFechar) {\n' +
+    '      return g.gasto[i] - (g.gastoPorSem[semanas[i - 1].key] ?? 0);\n' +
+    '    }'],
+
+  // ── LAS CINCO DE #134, el año que cerró ───────────────────────────────────
+  // La primera es el defecto TAL CUAL estaba el 2026-11-12. Las otras cuatro
+  // son las maneras de «arreglarlo» que dejan la pantalla igual de falsa, y
+  // están aquí porque cada una la escribiría cualquiera con buena intención.
+  ['la semana sin delta anterior vuelve a valer un cero literal',
+    '    let ult = null;\n' +
+    '    for (const k of gpKeys) { if (k <= semKey) ult = gpAcumPorSem[k]; else break; }\n' +
+    '    if (ult !== null) return ult;\n' +
+    '    if (semKey >= PRIMERA_DEL_AÑO_EN_CURSO) return gpBase;\n' +
+    '    return gpBase > 0 ? null : 0;',
+    '    let ult = 0;\n' +
+    '    for (const k of gpKeys) { if (k <= semKey) ult = gpAcumPorSem[k]; else break; }\n' +
+    '    return ult;'],
+  // El `null` a manta: arregla diciembre y rompe el arranque de toda obra
+  // nueva, que pasa a dibujar un hueco donde hay un cero medido.
+  ['el hueco se extiende a las semanas sin años cerrados que repartir',
+    '    if (semKey >= PRIMERA_DEL_AÑO_EN_CURSO) return gpBase;\n' +
+    '    return gpBase > 0 ? null : 0;',
+    '    return null;'],
+  // Y al revés: las semanas de enero previas a la primera delta se quedan sin
+  // la única cifra que de ellas se sabe, el total de los años cerrados.
+  ['enero pierde lo gastado en los años cerrados y sale en hueco',
+    '    if (semKey >= PRIMERA_DEL_AÑO_EN_CURSO) return gpBase;\n',
+    ''],
+  // Los gastos manuales rescatando la serie: publica uno de tres sumandos con
+  // cara de total medido, que es el mismo error con otra ropa.
+  ['el acumulado de la semana se publica con sólo los gastos manuales',
+    '    porSem[s.key] = gp === null ? null : gp + acumManual;',
+    '    porSem[s.key] = (gp || 0) + acumManual;'],
+  // Y la tabla, que es donde se lee: sin la guarda, diciembre publica «$0» y
+  // el renglón de la primera semana de enero publica el total del año cerrado
+  // como el gasto de siete días.
+  ['la tabla publica $0 en diciembre y el salto entero en la primera de enero',
+    '    if (g.gastoPorSem[s.key] === null ||\n' +
+    '        g.gastoPorSem[semanas[i - 1].key] === null) return null;\n',
+    ''],
 ];
 
 if (process.argv.includes('--contraprueba')) {
