@@ -86,9 +86,13 @@ if (process.argv.includes('--contraprueba')) {
     ['quitarle el suelo al plazo',
       /Math\.max\(10_000, Number\(process\.env\.PLAZO_BANCO\) \|\| 240_000\)/,
       'Number(process.env.PLAZO_BANCO) || 240_000'],
+    // Mudada a `no-arranco.cjs` con el resto del criterio del reloj. El ancla se
+    // quedó apuntando a `pruebas.cjs` y la contraprueba lo cantó —«Sólo 35 de
+    // 36»— en vez de contar 36 sobre una que no se aplicó: es el precedente del
+    // #140, un ancla que deja de apuntar no mide y no avisa.
     ['callar cuánto esperó',
       /\? `sin contestar en \$\{Math\.round\(tardó \/ 1000\)\} s`\n/,
-      "? 'no contestó'\n"],
+      "? 'no contestó'\n", 'no-arranco.cjs'],
     // El defecto del reloj, exacto: creerle al reloj de pared contra el plazo.
     // Vive en `no-arranco.cjs` desde el #142, y el corredor lo toma de ahí: si
     // se mutara la copia del corredor no habría nada que mutar, y la mutación
