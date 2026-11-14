@@ -27,7 +27,6 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawnSync } = require('child_process');
 
 const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
@@ -58,8 +57,13 @@ const postizo = (nombre, cuerpo) => {
   return dir;
 };
 
+// Por `hijoConPlazo` y no por `spawnSync`: ESTE banco es el que mordió. El
+// 2026-11-14, con la máquina suspendiéndose cada 16 minutos en batería, el
+// plazo de 180 s venció mientras dormía, el hijo volvió con `status: null` y
+// las siete comprobaciones de abajo —que comparan contra 2 y contra 0— salieron
+// todas falsas: ROJO publicado sobre una medición que no ocurrió.
 const correr = (dir) => {
-  const r = spawnSync(process.execPath, [BANCO], {
+  const r = noArranco.hijoConPlazo(process.execPath, [BANCO], {
     encoding: 'utf8', cwd: raiz, timeout: 180000,
     env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
   });
@@ -167,7 +171,7 @@ console.log('\n4. Sin `firebase` instalado, el mensaje sigue siendo el de instal
 {
   limpiar();
   const vacio = fs.mkdtempSync(path.join(os.tmpdir(), 'sin-cli-'));
-  const r = spawnSync(process.execPath, [BANCO], {
+  const r = noArranco.hijoConPlazo(process.execPath, [BANCO], {
     encoding: 'utf8', cwd: raiz, timeout: 180000,
     env: { ...process.env, PATH: vacio },
   });

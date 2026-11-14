@@ -146,6 +146,130 @@ module.exports.vigilarExcepciones = function vigilarExcepciones(archivo) {
   process.on('unhandledRejection', e => salir('promesa rechazada sin atrapar', e));
 };
 
+// ── EL QUINTO MODO: UN HIJO AL QUE SE LLEVÓ EL PLAZO ───────────────────────
+//
+// EL DEFECTO, medido el 2026-11-14. La máquina estaba en batería al 18% y
+// macOS la suspendía cada ~16 minutos. `Date.now()` cuenta el rato suspendido;
+// el plazo de un `spawnSync` también, pero el hijo no corrió durante él: al
+// despertar, un plazo de 180 s llevaba 1000 s vencido y el hijo murió sin
+// haber hecho nada. Eso vuelve del `spawnSync` como `status: null`, `signal:
+// 'SIGTERM'`, `error.code: 'ETIMEDOUT'`, y **cualquier** comparación contra un
+// número sale falsa: `null === 2` es falso, `null === 0` es falso, `null === 1`
+// es falso y hasta `null > 0` es falso.
+//
+// Así que el banco que compara publica un FALLO. Ese día
+// `prueba-el-cli-que-no-contesta-deja-rastro` salió **ROJO con 7
+// comprobaciones caídas** —«sale NO ARRANCÓ (2), no rojo · vio: salió null»—
+// y las dos vueltas siguientes salieron verdes sin tocar nada. Es el ROJO
+// FALSO del #139 otra vez: «un NO ARRANCÓ dice *no medí*, un ROJO afirma que
+// hay un defecto y manda a buscarlo donde no está».
+//
+// LA FORMA PEOR es la de los corredores de mutaciones, que son 7 de los 12
+// sitios: hacen `const vio = r.status === 1 && rojas > 0`, así que un mutante
+// al que se llevó el plazo se publica como **«la mutación NO se vio»** — una
+// afirmación sobre el poder de la prueba que nadie midió. El veredicto no dice
+// «no pude»: dice que el banco está ciego.
+//
+// Por qué una puerta y no un arreglo en los doce sitios: el corredor ya sabía
+// distinguir esto para SUS hijos desde el #133, y los bancos no. Dos cuentas
+// del mismo número, y la que faltaba era la de los doce. El criterio vive aquí
+// —`relojCreible`— y el corredor lo importa, para que no puedan discrepar.
+//
+// Un rebase legítimo del reloj es chico: matar el proceso y recoger su salida
+// costó 12 ms sobre un plazo de 1200 en la medición del #133. El margen es
+// multiplicativo con un piso, porque un plazo de 10 s y uno de 240 no toleran
+// lo mismo en términos absolutos.
+const relojCreible = (plazo, tardó) => tardó <= plazo * 1.25 + 10_000;
+module.exports.relojCreible = relojCreible;
+
+// Lo que se publica de una colgada. No es cosmético: cuando el reloj saltó, lo
+// que NO se puede decir es un número de segundos, porque no se esperó eso.
+// 901 s con un plazo de 240 manda a «súbele el plazo o arregla ese banco», y
+// la verdad era «repítela con la máquina despierta». Media tarde de
+// diferencia.
+module.exports.frasePorNoContestar = function frasePorNoContestar(plazo, tardó) {
+  return relojCreible(plazo, tardó)
+    ? `sin contestar en ${Math.round(tardó / 1000)} s`
+    : `no se pudo medir · el reloj saltó ${Math.round(tardó / 1000)} s ` +
+      `sobre un plazo de ${Math.round(plazo / 1000)} s`;
+};
+
+// La puerta. Lanza el hijo, mide el reloj de pared, y si al hijo se lo llevó
+// el plazo —o cualquier otra señal— NO devuelve nada que se pueda comparar:
+// sale con 2 diciendo qué pasó.
+//
+// Lo que NO intercepta, a propósito: un hijo que no se pudo lanzar. `ENOENT`
+// vuelve tal cual, porque varios bancos lo tratan ellos —`el-destino-se-escribe`
+// manda a `npm i -g firebase-tools`, que es un diagnóstico mejor que cualquiera
+// que se pueda dar desde aquí—. Tragárselo sería cambiar un mensaje útil por
+// uno genérico.
+//
+// El plazo es obligatorio y se exige aquí: un `spawnSync` sin plazo no se
+// cuelga con un veredicto equivocado, se cuelga para siempre, que es el defecto
+// del #109 una planta más abajo.
+module.exports.hijoConPlazo = function hijoConPlazo(cmd, args, opciones) {
+  const { spawnSync } = require('child_process');
+  const plazo = opciones && opciones.timeout;
+  if (!Number.isFinite(plazo) || plazo <= 0) {
+    console.log('');
+    console.log('NO ARRANCÓ — se pidió `hijoConPlazo` sin plazo:');
+    console.log('  · ' + [cmd, ...(args || [])].join(' ').slice(0, 120));
+    console.log('');
+    console.log('Un hijo sin plazo no se cuelga con un veredicto equivocado: se');
+    console.log('cuelga para siempre, y lo que ve quien corrió la suite es una');
+    console.log('terminal quieta. Poner `timeout` en las opciones.');
+    process.exit(NO_ARRANCO);
+  }
+
+  const t0 = Date.now();
+  const r = spawnSync(cmd, args, opciones);
+  const tardó = Date.now() - t0;
+
+  // Dos formas de que no haya veredicto, y se distinguen porque mandan a
+  // sitios distintos. `spawnSync` marca el plazo vencido con
+  // `error.code === 'ETIMEDOUT'`; la señal sola no alcanza para decidir,
+  // porque un ^C también deja `status: null`.
+  const loMatóElPlazo = !!(r.error && r.error.code === 'ETIMEDOUT');
+  const loMatóOtraCosa = !loMatóElPlazo && r.status === null && !!r.signal;
+  if (!loMatóElPlazo && !loMatóOtraCosa) return r;
+
+  const qué = [cmd, ...(args || [])].join(' ');
+  console.log('');
+  console.log('NO ARRANCÓ — al hijo que esta prueba necesitaba no le dio tiempo:');
+  console.log('  · ' + qué.slice(0, 140));
+  console.log('');
+  if (loMatóOtraCosa) {
+    console.log(`Murió por señal ${r.signal} a los ${Math.round(tardó / 1000)} s, antes`);
+    console.log('de vencer su plazo. No lo mató esta prueba.');
+  } else if (relojCreible(plazo, tardó)) {
+    console.log(`Se lo llevó el plazo: ${module.exports.frasePorNoContestar(plazo, tardó)},`);
+    console.log(`sobre un plazo de ${Math.round(plazo / 1000)} s. El reloj cuadra, así que`);
+    console.log('el hijo de verdad estuvo ese rato sin contestar: o tarda más de lo que');
+    console.log('se le dio, o se quedó esperando algo que no llega.');
+  } else {
+    console.log(module.exports.frasePorNoContestar(plazo, tardó) + '.');
+    console.log('');
+    console.log('El reloj no cuadra con el plazo, y cuando no cuadran el que miente es');
+    console.log('el reloj: a los ' + Math.round(plazo / 1000) + ' s el hijo ya estaba muerto, así que no');
+    console.log('pudo esperar ' + Math.round(tardó / 1000) + ' s. Lo que pasó es que la máquina se');
+    console.log('suspendió a mitad de la corrida y el plazo venció mientras dormía.');
+    console.log('');
+    console.log('Repítela despierta. `caffeinate -i` NO alcanza en batería: macOS');
+    console.log('suspende igual. Enchúfala, o `caffeinate -dimsu` con corriente.');
+  }
+  console.log('');
+  console.log('Esto NO es un rojo. El hijo no llegó a contestar, así que su código de');
+  console.log('salida es `null` y comparado contra CUALQUIER número da falso — lo que');
+  console.log('publicaría el banco es un defecto que nadie midió.');
+  const dijo = ((r.stdout || '') + (r.stderr || '')).trim();
+  if (dijo) {
+    console.log('');
+    console.log('Lo último que alcanzó a decir:');
+    for (const l of dijo.split('\n').slice(-8)) console.log('  ' + l.slice(0, 160));
+  }
+  process.exit(NO_ARRANCO);
+};
+
 // ── LA PUERTA QUE NO EXISTE ────────────────────────────────────────────────
 //
 // Las cuatro puertas de arriba se piden destructurando: `const {

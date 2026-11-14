@@ -211,7 +211,7 @@ if (process.argv.includes('--contraprueba')) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-marca-'));
     const copia = path.join(dir, path.basename(origen));
     fs.writeFileSync(copia, despues);
-    const r = spawnSync(process.execPath, [__filename], {
+    const r = noArranco.hijoConPlazo(process.execPath, [__filename], {
       encoding: 'utf8', cwd: RAIZ, timeout: 120000,
       env: { ...process.env, [cual === 'FN' ? 'ARCH_FUNCIONES' : 'ARCH_APP']: copia },
     });

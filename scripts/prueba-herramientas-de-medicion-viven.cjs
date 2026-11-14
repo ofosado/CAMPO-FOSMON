@@ -34,7 +34,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion } = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion, hijoConPlazo } = require('./no-arranco.cjs');
 const { deApp, SimboloPerdido, ARCHIVO } = require('./extraer-de-app.cjs');
 
 vigilarExcepciones('scripts/medir-*.cjs y src/App.jsx');
@@ -136,7 +136,7 @@ if (process.argv.includes('--contraprueba')) {
       continue;
     }
     fs.writeFileSync(path.join(tmp, conPeticion.archivo), despues);
-    const r = spawnSync(process.execPath, [__filename], {
+    const r = hijoConPlazo(process.execPath, [__filename], {
       encoding: 'utf8', cwd: RAIZ, timeout: 120000,
       env: { ...process.env, DIR_MEDICIONES: tmp },
     });

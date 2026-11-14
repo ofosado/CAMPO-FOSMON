@@ -33,7 +33,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion } = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion, hijoConPlazo } = require('./no-arranco.cjs');
 
 vigilarExcepciones('scripts/fecha-falsa.cjs');
 
@@ -63,7 +63,7 @@ function conLaHerramienta(programa, { fecha = CADENA, tz = 'UTC', conBarra = tru
     // Sin `./` Node la busca en node_modules. La cabecera avisa de la trampa;
     // §7 comprueba que sigue siendo una muerte RUIDOSA y no un verde vacío.
     : path.relative(RAIZ, HERRAMIENTA);
-  const r = spawnSync(process.execPath, ['--require', ruta, '-e', programa],
+  const r = hijoConPlazo(process.execPath, ['--require', ruta, '-e', programa],
     { encoding: 'utf8', cwd: RAIZ, timeout: 60000, env });
   const texto = (r.stdout || '') + (r.stderr || '');
   let datos = null;
@@ -130,7 +130,7 @@ if (process.argv.includes('--contraprueba')) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-fecha-falsa-'));
     const copia = path.join(dir, 'fecha-falsa.cjs');
     fs.writeFileSync(copia, despues);
-    const r = spawnSync(process.execPath, [__filename], {
+    const r = hijoConPlazo(process.execPath, [__filename], {
       encoding: 'utf8', cwd: RAIZ, timeout: 120000,
       env: { ...process.env, RUTA_FECHA_FALSA: copia },
     });

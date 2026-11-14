@@ -22,7 +22,7 @@
 
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion, NO_ARRANCO } = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion, NO_ARRANCO, hijoConPlazo } = require('./no-arranco.cjs');
 
 vigilarExcepciones('los guiones que pueden escribir');
 
@@ -61,7 +61,7 @@ for (const g of PASAN_POR_EL_PORTON) {
 // prueba quiere decir.
 const correr = (guion, args = [], extra = {}) => {
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, ...extra };
-  const r = spawnSync(process.execPath, [path.join(DIR, guion), ...args], {
+  const r = hijoConPlazo(process.execPath, [path.join(DIR, guion), ...args], {
     encoding: 'utf8', cwd: path.join(DIR, '..'), env, timeout: 30000,
   });
   return { status: r.status, salida: (r.stdout || '') + (r.stderr || '') };
@@ -244,6 +244,12 @@ const rastroDelCLI = (RAIZ) => {
   // lea es de otra corrida y pegarlo sería inventar evidencia.
   const antes = (() => { try { return fs.statSync(LOG).mtimeMs; } catch { return 0; } })();
 
+  // POR `spawnSync` Y NO POR `hijoConPlazo`, a propósito, y es la única razón
+  // que vale: esto ya está DENTRO del diagnóstico. `hijoConPlazo` sale con 2 en
+  // el momento, que aquí cortaría el informe justo antes de las tres cosas que
+  // esta función existe para recoger —el log, los `firebase` vivos, el
+  // configstore—. Un plazo vencido aquí no se calla: se publica en la línea de
+  // abajo con su `status` y su `signal`, que es más de lo que diría la puerta.
   const t0 = Date.now();
   const otra = spawnSync('firebase',
     ['deploy', '--only', 'firestore:rules', '--dry-run', '--debug'], {
@@ -309,6 +315,12 @@ const rastroDelCLI = (RAIZ) => {
 console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde ──');
 {
   const RAIZ = path.join(DIR, '..');
+  // POR `spawnSync` Y NO POR `hijoConPlazo`: este sitio ya resuelve el plazo, y
+  // mejor. Un CLI al que se lleva el plazo deja `status: null`, o sea `!== 0` y
+  // sin «No project active», así que cae en el `sinPrecondicion` de abajo —2,
+  // no 1— y además con `rastroDelCLI` entero pegado. La puerta genérica saldría
+  // con el mismo código pero sin el rastro, que es lo único que sirve el día
+  // que pasa.
   const cli = spawnSync('firebase',
     ['deploy', '--only', 'firestore:rules', '--dry-run'], {
       encoding: 'utf8', cwd: RAIZ, timeout: 60000,

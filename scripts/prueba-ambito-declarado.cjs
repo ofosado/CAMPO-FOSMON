@@ -26,7 +26,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion } = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion, hijoConPlazo } = require('./no-arranco.cjs');
 
 vigilarExcepciones('los archivos de código del repositorio');
 
@@ -57,7 +57,7 @@ if (fuentes.length < 3)
      'vacío es la forma más barata de no comprobar nada.']);
 
 const revisar = (archivos) => {
-  const r = spawnSync(process.execPath, [HERRAMIENTA, ...archivos], {
+  const r = hijoConPlazo(process.execPath, [HERRAMIENTA, ...archivos], {
     encoding: 'utf8', cwd: RAIZ, timeout: 120000,
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
   });
