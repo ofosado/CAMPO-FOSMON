@@ -380,12 +380,35 @@ service cloud.firestore {
       // —5 de archivo y 8 verificadas vigentes— y la pantalla decía «15 de
       // archivo, sin autor», que es exactamente lo que dice el mapa viejo.
       //
-      // `write` NEGADO para todos. La escribe sólo la migración, que entra por
-      // la API de administración y no pasa por aquí. Un cliente que pudiera
-      // voltearla apagaría la evidencia de una obra entera con un campo.
+      // `update` y `delete` NEGADOS para todos, y eso no se toca: la migración
+      // entra por la API de administración y no pasa por aquí, y un cliente que
+      // pudiera voltear esta bandera apagaría la evidencia de una obra entera
+      // con un campo.
+      //
+      // EL ÚNICO `create`, Y POR QUÉ NO ES EL MISMO AGUJERO.  (#143)
+      // Negarlo del todo tenía un costo que nadie había contado: la bandera se
+      // escribía en un solo sitio del repo —la migración, sobre obras que YA
+      // existían— así que toda obra nueva nacía en el camino viejo y su
+      // evidencia salía sin autor y sin hora de servidor. El alta la escribe
+      // ahora, y necesita pasar por aquí.
+      //
+      // Las tres condiciones juntas hacen que esto no pueda apagar nada:
+      //   · es `create`, así que la bandera de una obra que ya la tiene no se
+      //     puede tocar — `create` falla si el documento existe;
+      //   · `migrada` tiene que venir en `true`, así que el único valor que un
+      //     cliente puede dejar escrito es el que enciende, nunca el que apaga;
+      //   · la obra TODAVÍA NO EXISTE. Esto es lo que cierra el caso feo: sin
+      //     ello, un directivo podría encenderle la bandera a una obra vieja
+      //     sin migrar y dejar sus fotos del mapa incrustado fuera de la
+      //     galería para siempre. Por eso el alta escribe esta bandera ANTES
+      //     que el documento de la obra: el orden que la hace segura de
+      //     escribir es el mismo que la hace segura de permitir.
       match /config/evidencia {
         allow read: if puedeVerObraC(obraId);
-        allow write: if false;
+        allow create: if esDirectivoC()
+                      && request.resource.data.migrada == true
+                      && !exists(/databases/$(database)/documents/obras/$(obraId));
+        allow update, delete: if false;
       }
 
       match /avance/subs {
@@ -669,9 +692,18 @@ service cloud.firestore {
       // del expediente municipal: sin poder leer la bandera, la galería que se
       // le enseña a la dependencia seguiría pintando el mapa viejo y ninguna
       // foto capturada después de la migración aparecería.
+      // El `create` del alta, con las mismas tres condiciones y por las mismas
+      // razones que allá arriba (#143): sólo encender, sólo una vez, y sólo
+      // sobre una obra que todavía no existe. Aquí importa más que en el otro
+      // bloque: la primera obra de una dependencia se da de alta por esta
+      // ruta, así que sin esto el expediente municipal nace entero rotulado
+      // «de archivo, sin autor» — y eso es lo que le llega impreso al cliente.
       match /config/evidencia {
         allow read:  if oid == orgId() && puedeVerObraD(obraId);
-        allow write: if false;
+        allow create: if oid == orgId() && esDirectivoDEditor()
+                      && request.resource.data.migrada == true
+                      && !exists(/databases/$(database)/documents/orgs/$(oid)/obras/$(obraId));
+        allow update, delete: if false;
       }
 
       // Donde escribe el supervisor cuando captura.

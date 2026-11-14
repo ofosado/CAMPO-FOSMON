@@ -386,7 +386,11 @@ console.log('1. Quién decide de dónde se lee');
 // cierre transitivo. Una lista tecleada aprueba su propia revisión de
 // completitud y luego revienta a media corrida con un `is not defined`.
 function montarEscritura() {
-  const { fuenteDeApp } = require('./extraer-de-app.cjs');
+  // `fuenteDe(archivo, …)` y no `fuenteDeApp`: este banco acepta un fuente
+  // MUTILADO por `argv[2]`, y `fuenteDeApp` lee siempre `src/App.jsx`, así que
+  // una mutación de nivel de módulo sobrevivía con el banco creyendo medir al
+  // mutante. Ver la nota larga en `prueba-anular-no-borra.cjs`.
+  const { fuenteDe } = require('./extraer-de-app.cjs');
   if (!arranqueFormatoHist) {
     console.error('No se encontró con qué valor arranca `formatoHist` en la pantalla de');
     console.error('nómina. Sin eso esta prueba no puede afirmar nada sobre el estado');
@@ -398,7 +402,7 @@ function montarEscritura() {
   traverse(parse(`(${arranqueFormatoHist})`, { sourceType: 'module' }), {
     ReferencedIdentifier(p) { if (!p.scope.hasBinding(p.node.name, true)) libres.add(p.node.name); },
   });
-  const { cuerpo } = fuenteDeApp(['escribirHistorialNomina',
+  const { cuerpo } = fuenteDe(archivo, ['escribirHistorialNomina',
     'FORMATO_HISTORIAL_ARREGLO', 'FORMATO_HISTORIAL_SUBCOLECCION', ...libres]);
 
   const escrituras = [], borrados = [];

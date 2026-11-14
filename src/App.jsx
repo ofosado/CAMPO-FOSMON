@@ -13580,6 +13580,36 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
     if(!nueva.id) return 'La obra no tiene identificador. No se guardó nada.';
     if(await fsGet(`obras/${nueva.id}`))
       return `Ya existe una obra con el identificador ${nueva.id}. No se guardó nada.`;
+    // ── LA OBRA NACE MIGRADA, Y LA BANDERA SE ESCRIBE PRIMERO ──  (#143)
+    //
+    // `config/evidencia.migrada` decide A DÓNDE va una foto: a su propio
+    // documento en `obras/{id}/evidencia`, o al mapa incrustado de
+    // `avance/subs`. Hasta hoy la escribía un solo sitio del repo —la
+    // migración, al terminar una obra que ya existía— y el alta no, así que
+    // toda obra nueva arrancaba en el camino viejo. Medido en el emulador el
+    // 2026-11-14 recorriendo el #69: la foto que un director de obras acababa
+    // de subir quedaba con tres campos (`fecha`, `id`, `url`) y la galería la
+    // rotulaba «de archivo · subida antes de que la app registrara autor».
+    // Las dos cosas falsas, y la segunda llega al PDF del cliente.
+    //
+    // Aquí la bandera es segura de un modo que no lo es en la migración: la
+    // obra no existe todavía, así que no hay mapa viejo que pueda quedar
+    // huérfano. La migración sigue negándose a levantarla sobre una obra sin
+    // fotos y hace bien — de esas no puede responder.
+    //
+    // PRIMERO, y abortando si rebota, por el orden que deja el mundo entero:
+    // si se escribiera después y fallara, quedaría una obra existente y
+    // nacida sin bandera, que es exactamente el defecto, y de vuelta no hay
+    // —habría que migrarla—. Fallando antes no existe nada que arreglar y el
+    // usuario puede volver a intentar. El documento suelto que queda si la
+    // siguiente escritura rebota no estorba: es la bandera de una obra que no
+    // está, y si mañana se crea con ese id es justo la que le toca.
+    if(!await fsSet(`obras/${nueva.id}/config/evidencia`,
+                    { migrada: true, nacidaMigrada: true,
+                      creadaPor: nueva.creadaPor, creadaEn: hoyLocalISO() }))
+      return 'No se pudo preparar el expediente de evidencia de la obra. ' +
+             'No se guardó nada: una obra sin esa marca archivaría cada foto ' +
+             'sin autor y sin hora del servidor.';
     // Guardar en Firestore: top-level + sub-doc info
     const okObra = await fsSet(`obras/${nueva.id}`, nueva);
     if(!okObra) return 'Firestore rechazó la escritura. Tu rol no puede dar de alta obras, o perdiste la sesión.';

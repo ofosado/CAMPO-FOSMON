@@ -119,7 +119,12 @@ const ast = parse(src, OPTS);
 // obra y no en el del aparato— este banco reventó con un `is not defined`.
 // `tolerante` conserva la conducta que el banco quiere a propósito: un nombre
 // ausente deja la aserción en ROJO, no al banco sin arrancar.
-const { fuenteDeApp } = require('./extraer-de-app.cjs');
+//
+// `fuenteDe(ARCH_APP, …)` y no `fuenteDeApp(…)`: este banco acepta un fuente
+// MUTILADO por `argv[2]`, y `fuenteDeApp` lee siempre `src/App.jsx`, así que una
+// mutación de nivel de módulo sobrevivía con el banco creyendo medir al mutante.
+// Ver la nota larga en `prueba-anular-no-borra.cjs`.
+const { fuenteDe } = require('./extraer-de-app.cjs');
 // `sinComentarios` viene del taller porque §8 mide una FORMA sobre el texto de
 // un componente, y un comentario que nombra el defecto cuenta como si el
 // defecto estuviera. Ya pasó una vez: la explicación que escribí arriba de una
@@ -141,7 +146,7 @@ const cuerpoDeComponente = (nombre) => {
   return out;
 };
 const { cuerpo: cuerpoModulo, presentes: vistos } =
-  fuenteDeApp(RAIZ_NOMBRES, { tolerante: true });
+  fuenteDe(ARCH_APP, RAIZ_NOMBRES, { tolerante: true });
 const anidados = {};
 traverse(ast, {
   VariableDeclarator(p) {
