@@ -81,7 +81,17 @@ traverse(ast, {
 // banco el 2026-10-26: `fechaDeTimestamp` empezó a apoyarse en
 // `fechaEnZonaObra`, la lista seguía completa —así que la comprobación de
 // abajo no dijo nada— y reventó al ejecutar.
-const { fuenteDeApp, SimboloPerdido } = require('./extraer-de-app.cjs');
+//
+// `fuenteDe(archivo, …)` y NO `fuenteDeApp(…)`: este banco acepta un fuente
+// MUTILADO por `argv[2]` para que su contraprueba lo corra, y `fuenteDeApp` lee
+// siempre `src/App.jsx`. Con `fuenteDeApp` las piezas de nivel de módulo venían
+// del archivo BUENO aunque el banco creyera estar midiendo el mutante, así que
+// cualquier mutación en `evidenciaNormalizada`, `selloDeEvidencia` o
+// `evidenciaDeObra` sobrevivía sin que nadie la viera. Medido el 2026-11-14 al
+// escribir la contraprueba de `prueba-la-obra-nace-con-su-expediente`: dos
+// mutaciones de nivel de módulo salieron «PASÓ · NADIE la detectó» y la causa
+// era ésta. Arreglado en los cuatro bancos que toman el fuente por argumento.
+const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
 const PIEZAS_MODULO = ['fechaLocalDeISO', 'semanaISO', 'snapshotId',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
@@ -92,7 +102,7 @@ const PIEZAS_DENTRO = ['App.evid', 'Captura.addFoto', 'Captura.anularFoto'];
 
 let cuerpoModulo;
 try {
-  cuerpoModulo = fuenteDeApp(PIEZAS_MODULO).cuerpo;
+  cuerpoModulo = fuenteDe(archivo, PIEZAS_MODULO).cuerpo;
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);
