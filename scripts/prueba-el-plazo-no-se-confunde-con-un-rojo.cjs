@@ -330,22 +330,25 @@ console.log('\n7. Todo hijo con plazo va por la puerta, o está en la tabla con 
 //
 // «Una cuenta por número». El criterio vivía sólo en el corredor y por eso los
 // bancos no lo tenían; si vuelve a haber dos copias, pueden discrepar y el día
-// que discrepen uno de los dos publicará un rojo falso. Se mide ejecutando: que
-// el corredor y la puerta contesten lo MISMO en los dos bordes.
-console.log('\n8. El corredor y la puerta usan la misma cuenta del reloj');
+// que discrepen uno de los dos publicará un rojo falso. Se mide ejecutando la
+// cuenta, no leyéndola.
+console.log('\n8. La cuenta del reloj contesta en los bordes, y está en un sitio');
 {
+  // La primera versión comparaba `mod.relojCreible` contra el mismo módulo
+  // pedido por otro camino y publicaba `MISMA=true`: una tautología, que es una
+  // comprobación que no puede salir falsa y por tanto no afirma nada. Lo que
+  // sostiene que el corredor use ESTA cuenta y no una propia está medido donde
+  // corresponde: `prueba-corredor-no-se-cuelga` requiere el `no-arranco.cjs` de
+  // su taller y lo ejecuta, y sus dos mutaciones del criterio salen en ROJO.
+  // Aquí queda lo que sí es de este banco: que la cuenta conteste bien en los
+  // bordes, y que el corredor no haya vuelto a teclear una segunda copia.
   const r = correr(`
     const mod = require(MOD);
-    const corredor = require(${JSON.stringify(path.join(__dirname, 'pruebas.cjs'))
-      }.replace(/pruebas\\.cjs$/, 'no-arranco.cjs'));
-    console.log('MISMA=' + (mod.relojCreible === corredor.relojCreible));
     console.log('BORDES=' + [mod.relojCreible(240000, 250000),
                              mod.relojCreible(240000, 954000),
                              mod.relojCreible(10000, 20000),
                              mod.relojCreible(10000, 31000)].join(','));
     process.exit(0);`);
-  check(/MISMA=true/.test(r.salida),
-    'es la misma función, no dos que se parecen');
   check(/BORDES=true,false,true,false/.test(r.salida),
     'y contesta lo que tiene que contestar en los cuatro bordes medidos',
     (/BORDES=[^\s]*/.exec(r.salida) || ['nada'])[0]);
