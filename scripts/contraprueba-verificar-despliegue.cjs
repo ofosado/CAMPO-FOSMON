@@ -29,6 +29,8 @@ const os = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 
+const { hijoConPlazo } = require('./no-arranco.cjs');
+
 const raiz = path.resolve(__dirname, '..');
 const VERIFICADOR = path.join('scripts', 'verificar-despliegue.cjs');
 const NO_ARRANCO = 2;
@@ -57,7 +59,10 @@ function clonar() {
 }
 
 function ejecutar(caja, entorno = {}) {
-  const r = spawnSync(process.execPath, [VERIFICADOR], {
+  // Por la puerta: `r.codigo === codigo` de más abajo compara contra un número,
+  // y un hijo al que se lleve el plazo vuelve con `null`. Eso publicaría FALLA
+  // sobre un escenario que no llegó a correr.
+  const r = hijoConPlazo(process.execPath, [VERIFICADOR], {
     cwd: caja, encoding: 'utf8',
     env: { ...process.env, ...entorno },
     timeout: 180_000,

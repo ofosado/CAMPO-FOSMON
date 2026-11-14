@@ -33,7 +33,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { NO_ARRANCO } = require('./no-arranco.cjs');
+const { NO_ARRANCO, relojCreible, frasePorNoContestar } = require('./no-arranco.cjs');
 
 const dir = __dirname;
 const filtro = process.argv[2] || '';
@@ -339,14 +339,14 @@ const PLAZO_BANCO = Math.max(10_000, Number(process.env.PLAZO_BANCO) || 240_000)
 // costó 12 ms sobre un plazo de 1200 en la medición del 2026-11-05. El margen
 // es multiplicativo con un piso, porque un plazo de 10 s y uno de 240 no
 // toleran lo mismo en términos absolutos.
-const relojCreible = (plazo, tardó) => tardó <= plazo * 1.25 + 10_000;
-
-// Lo que se publica de una colgada. No es cosmético: cuando el reloj saltó, lo
-// que NO se puede decir es un número de segundos, porque no se esperó eso.
-const frasePorNoContestar = (plazo, tardó) => relojCreible(plazo, tardó)
-  ? `sin contestar en ${Math.round(tardó / 1000)} s`
-  : `no se pudo medir · el reloj saltó ${Math.round(tardó / 1000)} s ` +
-    `sobre un plazo de ${Math.round(plazo / 1000)} s`;
+//
+// EL CRITERIO YA NO VIVE AQUÍ. Vivía, y era la única copia que existía: los 12
+// sitios de los bancos que lanzan un hijo con plazo no tenían ninguna, así que
+// el 2026-11-14 una máquina dormida les salió ROJO mientras el corredor sabía
+// decir «el reloj saltó». Dos cuentas del mismo número, y la que faltaba era la
+// de los bancos. Hoy las dos salen de `no-arranco.cjs` —se piden arriba, con
+// `NO_ARRANCO`— que es el módulo que todos requieren, y por eso no pueden
+// discrepar.
 
 // Cómo se nombra un banco en el informe: sin el `prueba-` ni el `.cjs`, que
 // son ruido repetido en 118 renglones.

@@ -211,7 +211,7 @@ if (process.argv.includes('--contraprueba')) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-relleno-'));
     const copia = path.join(dir, cual === 'app' ? 'App.jsx' : 'index.js');
     fs.writeFileSync(copia, despues);
-    const r = spawnSync(process.execPath, [__filename], {
+    const r = noArranco.hijoConPlazo(process.execPath, [__filename], {
       encoding: 'utf8', cwd: RAIZ, timeout: 180000,
       env: { ...process.env, [cual === 'app' ? 'ARCH_APP' : 'ARCH_FUNCIONES']: copia },
     });

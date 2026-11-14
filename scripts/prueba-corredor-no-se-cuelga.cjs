@@ -62,7 +62,16 @@ const ENTORNO_BASE = {
 // que es otra cosa.
 if (process.argv.includes('--contraprueba')) {
   const { spawnSync: correr } = require('child_process');
-  const fuente = fs.readFileSync(path.join(DIR, 'pruebas.cjs'), 'utf8');
+  // Cada mutación dice de qué módulo es. Antes todas eran de `pruebas.cjs` y el
+  // módulo iba implícito; el criterio del reloj se mudó a `no-arranco.cjs` —para
+  // que los bancos y el corredor no tengan dos cuentas del mismo número— y una
+  // contraprueba que sólo sabe mutar un archivo deja sin medir justo el que
+  // cambió de sitio. El cuarto elemento es el módulo, y `pruebas.cjs` por omisión.
+  const fuentes = new Map();
+  const fuenteDe = (m) => {
+    if (!fuentes.has(m)) fuentes.set(m, fs.readFileSync(path.join(DIR, m), 'utf8'));
+    return fuentes.get(m);
+  };
   const MUTACIONES = [
     ['quitarle el plazo al spawn (el defecto original)',
       /timeout: PLAZO_BANCO,/, ''],
@@ -77,18 +86,25 @@ if (process.argv.includes('--contraprueba')) {
     ['quitarle el suelo al plazo',
       /Math\.max\(10_000, Number\(process\.env\.PLAZO_BANCO\) \|\| 240_000\)/,
       'Number(process.env.PLAZO_BANCO) || 240_000'],
+    // Mudada a `no-arranco.cjs` con el resto del criterio del reloj. El ancla se
+    // quedó apuntando a `pruebas.cjs` y la contraprueba lo cantó —«Sólo 35 de
+    // 36»— en vez de contar 36 sobre una que no se aplicó: es el precedente del
+    // #140, un ancla que deja de apuntar no mide y no avisa.
     ['callar cuánto esperó',
       /\? `sin contestar en \$\{Math\.round\(tardó \/ 1000\)\} s`\n/,
-      "? 'no contestó'\n"],
+      "? 'no contestó'\n", 'no-arranco.cjs'],
     // El defecto del reloj, exacto: creerle al reloj de pared contra el plazo.
+    // Vive en `no-arranco.cjs` desde el #142, y el corredor lo toma de ahí: si
+    // se mutara la copia del corredor no habría nada que mutar, y la mutación
+    // saldría NO LA VE sin que nada esté roto.
     ['creerle al reloj aunque contradiga al plazo',
       /const relojCreible = \(plazo, tardó\) => tardó <= plazo \* 1\.25 \+ 10_000;/,
-      'const relojCreible = (plazo, tardó) => true;'],
+      'const relojCreible = (plazo, tardó) => true;', 'no-arranco.cjs'],
     // Y el otro lado: desconfiar de todo deja a las colgadas de verdad sin su
     // número, que es el dato con el que se decide si subir el plazo.
     ['desconfiar del reloj siempre, hasta de una colgada de verdad',
       /const relojCreible = \(plazo, tardó\) => tardó <= plazo \* 1\.25 \+ 10_000;/,
-      'const relojCreible = (plazo, tardó) => false;'],
+      'const relojCreible = (plazo, tardó) => false;', 'no-arranco.cjs'],
     // Tirar la medición de un rojo y dejar sólo el titular: el estado exacto
     // en el que un fallo irreproducible dejó de poder clasificarse.
     ['publicar el titular del rojo y tirar lo que midió',
@@ -191,16 +207,17 @@ if (process.argv.includes('--contraprueba')) {
   ];
 
   let vistas = 0;
-  for (const [nombre, busca, pone] of MUTACIONES) {
+  for (const [nombre, busca, pone, modulo = 'pruebas.cjs'] of MUTACIONES) {
+    const fuente = fuenteDe(modulo);
     if (!busca.test(fuente)) {
-      console.log(`NO LA VE  ${nombre}  ·  el ancla ya no está en pruebas.cjs`);
+      console.log(`NO LA VE  ${nombre}  ·  el ancla ya no está en ${modulo}`);
       continue;
     }
     const arch = path.join(os.tmpdir(), `corredor-mutado-${Date.now()}-${vistas}.cjs`);
     fs.writeFileSync(arch, fuente.replace(busca, pone));
     const r = correr(process.execPath, [__filename], {
       encoding: 'utf8', timeout: 180000, killSignal: 'SIGKILL',
-      env: { ...process.env, ARCH_CORREDOR: arch },
+      env: { ...process.env, ARCH_MUTADO: arch, MOD_MUTADO: modulo },
     });
     const vio = r.status === 1 &&
       ((r.stdout || '') + (r.stderr || '')).split('\n').some(l => l.startsWith('FALLA'));
@@ -266,9 +283,16 @@ process.exit(1);\n`);
 fs.writeFileSync(path.join(dentro, 'prueba-de-mentira-lenta.cjs'),
   `setTimeout(() => { console.log(' ok   tardé lo normal'); process.exit(0); }, 2000);\n`);
 
-// Permite correr contra una copia mutada del corredor (la contraprueba).
-if (process.env.ARCH_CORREDOR)
-  fs.copyFileSync(process.env.ARCH_CORREDOR, path.join(dentro, 'pruebas.cjs'));
+// Permite correr contra una copia mutada del corredor o de uno de sus módulos
+// (la contraprueba). El módulo viene nombrado en `MOD_MUTADO` porque desde el
+// #142 no siempre es `pruebas.cjs`: el criterio del reloj vive en
+// `no-arranco.cjs`, y suponer el archivo sería mutar el que no cambió.
+const MOD_MUTADO = process.env.MOD_MUTADO || 'pruebas.cjs';
+const ponerElMutante = (dir) => {
+  if (process.env.ARCH_MUTADO)
+    fs.copyFileSync(process.env.ARCH_MUTADO, path.join(dir, MOD_MUTADO));
+};
+ponerElMutante(dentro);
 
 let fallas = 0, oks = 0;
 const ok = (q, d) => { oks++; console.log(` ok   ${q}${d ? `  ·  ${d}` : ''}`); };
@@ -441,27 +465,24 @@ else
 // número manda al sitio equivocado: 901 s dice «súbele el plazo o arregla ese
 // banco», cuando lo que había que hacer era repetirla con la máquina despierta.
 console.log('\n── El reloj no puede contradecir al plazo ──');
-// Se lee la copia DEL TALLER, no `scripts/pruebas.cjs`. Son el mismo archivo
-// en una corrida normal, pero bajo la contraprueba el del taller es el mutado:
-// leer el de verdad haría que esta sección saliera verde contra un corredor
-// roto, que es la prueba comprobándose contra sí misma.
-const fuenteCorredor = fs.readFileSync(path.join(dentro, 'pruebas.cjs'), 'utf8');
-const saca = (nombre) => {
-  const m = fuenteCorredor.match(
-    new RegExp(`^const ${nombre} = [\\s\\S]*?;$`, 'm'));
-  return m && m[0];
-};
-const textoReloj = saca('relojCreible');
-const textoFrase = saca('frasePorNoContestar');
-if (!textoReloj || !textoFrase) {
-  sinPrecondicion('no se pudieron sacar las cuentas del reloj de pruebas.cjs',
-    ['`relojCreible` y `frasePorNoContestar` son las que deciden qué se',
-     'publica de una colgada. Si se renombraron, esta sección no midió nada:',
-     'eso no es verde.']);
-}
+// Se toma la copia DEL TALLER, no la de `scripts/`. Son el mismo archivo en una
+// corrida normal, pero bajo la contraprueba la del taller es la mutada: leer la
+// de verdad haría que esta sección saliera verde contra un corredor roto, que es
+// la prueba comprobándose contra sí misma.
+//
+// Desde el #142 las dos cuentas viven en `no-arranco.cjs` y el corredor las toma
+// de ahí, para que los 125 bancos y el corredor no puedan tener dos cuentas del
+// mismo número. Antes se sacaban del texto de `pruebas.cjs` con una expresión
+// regular y se ejecutaban con un `new Function`; ya no hace falta, porque son
+// exportaciones de un módulo: se requiere y se ejecutan. Lo que no cambia es que
+// se EJECUTAN con los números de la corrida real, en vez de leer el archivo
+// buscando palabras.
+//
+// Sin guarda a propósito: pedirle a `no-arranco.cjs` un nombre que no tiene
+// contesta solo —con el nombre pedido, la lista de los que hay y salida 2—, que
+// es la puerta del #132. Una guarda aquí sería una segunda respuesta peor.
 const { relojCreible, frasePorNoContestar } =
-  new Function(`${textoReloj}\n${textoFrase}\n` +
-    'return { relojCreible, frasePorNoContestar };')();
+  require(path.join(dentro, 'no-arranco.cjs'));
 
 // El caso real, con sus cifras.
 const PLAZO = 240_000, SALTO = 901_000;
@@ -527,8 +548,7 @@ const taller2 = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-barrido-'));
 const dentro2 = path.join(taller2, 'scripts');
 fs.mkdirSync(dentro2);
 for (const m of MODULOS) fs.copyFileSync(path.join(DIR, m), path.join(dentro2, m));
-if (process.env.ARCH_CORREDOR)
-  fs.copyFileSync(process.env.ARCH_CORREDOR, path.join(dentro2, 'pruebas.cjs'));
+ponerElMutante(dentro2);
 
 // El banco que caduca. No apuesta a nada raro: afirma que el dato que sembró
 // —el año en que se escribió— sigue siendo el año en curso, que es lo que
@@ -776,8 +796,7 @@ const taller3 = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-tabla-emu-'));
 const dentro3 = path.join(taller3, 'scripts');
 fs.mkdirSync(dentro3);
 for (const m of MODULOS) fs.copyFileSync(path.join(DIR, m), path.join(dentro3, m));
-if (process.env.ARCH_CORREDOR)
-  fs.copyFileSync(process.env.ARCH_CORREDOR, path.join(dentro3, 'pruebas.cjs'));
+ponerElMutante(dentro3);
 fs.writeFileSync(path.join(dentro3, 'prueba-de-mentira-verde.cjs'),
   `console.log(' ok   nada que ver'); process.exit(0);\n`);
 
@@ -956,8 +975,8 @@ try { fs.rmSync(taller3, { recursive: true, force: true }); } catch {}
 // repositorio entero, que es lo que hay que mirar.
 //
 // El directorio se arma con ENLACES a todo lo que hay en `scripts/`, y el
-// corredor que se pone ahí es EL QUE SE ESTÁ MIDIENDO (`ARCH_CORREDOR` cuando
-// lo hay, el del repo cuando no). Apuntar directo a `scripts/pruebas.cjs`
+// corredor que se pone ahí es EL QUE SE ESTÁ MIDIENDO (el mutante cuando lo
+// hay, el del repo cuando no). Apuntar directo a `scripts/pruebas.cjs`
 // parecía más simple y era una trampa: la contraprueba lanza el mutante desde
 // /tmp, así que esta comprobación corría el corredor SANO y la mutación que
 // vuelve a buscar los nombres en el texto salía NO LA VE —medido, no deducido—.
@@ -969,10 +988,16 @@ const tallerRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'campo-repo-real-'));
 const dentroRepo = path.join(tallerRepo, 'scripts');
 fs.mkdirSync(dentroRepo);
 for (const e of fs.readdirSync(DIR))
-  if (e !== 'pruebas.cjs')
+  if (e !== 'pruebas.cjs' && e !== MOD_MUTADO)
     fs.symlinkSync(path.join(DIR, e), path.join(dentroRepo, e));
-fs.copyFileSync(process.env.ARCH_CORREDOR || path.join(DIR, 'pruebas.cjs'),
-  path.join(dentroRepo, 'pruebas.cjs'));
+// Los dos que pueden venir mutados se COPIAN, no se enlazan: un enlace al del
+// repositorio pondría el archivo sano y la mutación saldría NO LA VE sin que
+// nada estuviera roto. Se copian del repo primero y el mutante los pisa después,
+// para que esto valga también cuando no hay contraprueba.
+fs.copyFileSync(path.join(DIR, 'pruebas.cjs'), path.join(dentroRepo, 'pruebas.cjs'));
+if (MOD_MUTADO !== 'pruebas.cjs')
+  fs.copyFileSync(path.join(DIR, MOD_MUTADO), path.join(dentroRepo, MOD_MUTADO));
+ponerElMutante(dentroRepo);
 const rRepo = spawnSync(process.execPath,
   [path.join(dentroRepo, 'pruebas.cjs'), 'reglas-evidencia'], {
     encoding: 'utf8', cwd: tallerRepo, killSignal: 'SIGKILL',

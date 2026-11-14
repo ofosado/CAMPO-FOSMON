@@ -64,7 +64,13 @@ const correr = (cuerpo) => {
     `banco-de-mentira-${process.pid}-${n++}.cjs`);
   fs.writeFileSync(archivo, `const MOD = ${JSON.stringify(MODULO)};\n${cuerpo}\n`);
   try {
-    const r = spawnSync(process.execPath, [archivo], { encoding: 'utf8', timeout: 20000 });
+    // Por la puerta del módulo del REPO, igual que `vigilarExcepciones` y por
+    // la misma razón de arriba: nunca por el `MODULO` que puede venir mutilado.
+    // Un hijo al que se lleve el plazo deja `status: null`, y `null` comparado
+    // contra los códigos de abajo da falso en todos — o sea un FALLA publicado
+    // sobre un banco de mentira que no llegó a correr.
+    const r = noArranco.hijoConPlazo(process.execPath, [archivo],
+      { encoding: 'utf8', timeout: 20000 });
     return { estado: r.status, salida: (r.stdout || '') + (r.stderr || '') };
   } finally { fs.unlinkSync(archivo); }
 };
@@ -258,7 +264,11 @@ for (const [titulo, de, a] of MUTACIONES) {
   fs.writeFileSync(alLado, mutado);
   let r;
   try {
-    r = spawnSync(process.execPath, [__filename, alLado], { encoding: 'utf8', timeout: 120000 });
+    // Por la puerta del repo: un mutante al que se lleve el plazo caería en el
+    // `rojos === 0 || r.status !== 1` de abajo y se publicaría como MUTANTE
+    // VIVO, que es una afirmación sobre el poder de este banco que nadie midió.
+    r = noArranco.hijoConPlazo(process.execPath, [__filename, alLado],
+      { encoding: 'utf8', timeout: 120000 });
   } finally { fs.unlinkSync(alLado); }
   const rojos = ((r.stdout || '').match(/^FALLA/gm) || []).length;
   if (r.status === 2) {
