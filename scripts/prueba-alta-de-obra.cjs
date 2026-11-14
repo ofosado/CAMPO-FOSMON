@@ -404,6 +404,10 @@ const correrAlta = async ({ dep, form, yaExiste = false, fsSetFalla = null }) =>
     const { dep, yaExiste, fsSetFalla } = entorno;
     const usuario = { correo: 'quien.captura@coatza.gob.mx', rol: 'director_obras' };
     const MXN = ${decl['MXN']};
+    // Desde el #143 el alta fecha la bandera de evidencia con \`hoyLocalISO\`.
+    // Se inyecta fijo en vez de traerlo del archivo para que la aserción no
+    // dependa del reloj de la máquina que corre la suite.
+    const hoyLocalISO = () => '2026-11-14';
     const fsGet = async (p) => { reg.gets.push(p); return yaExiste ? { nombre: 'la que ya estaba' } : null; };
     const fsSet = async (p, d) => { reg.sets.push([p, d]); return !(fsSetFalla && fsSetFalla.test(p)); };
     const fsAudit = (a, d) => reg.audits.push([a, d]);
@@ -426,21 +430,34 @@ const correr = async () => {
 
 seccion('El alta, ejecutada');
 
+// El documento DE LA OBRA se busca por su ruta, no por `sets[0]`. Lo de antes
+// era por posición, y el #143 metió una escritura delante —la bandera de
+// evidencia—: las seis aserciones que leían `sets[0]` pasaron a leer la bandera
+// y preguntaban por el presupuesto de un documento que no lo tiene. Por ruta
+// esto no vuelve a pasar cuando el orden cambie.
+const docObra = (reg, id) => (reg.sets.find(s => s[0] === `obras/${id}`) || [])[1];
+
 // ── El camino bueno, dependencia ──
 const okD = await correrAlta({ dep: true, form: FORM_D });
 check(okD.resultado === null, 'el alta de dependencia devuelve "sin problema"',
   String(okD.resultado));
-check(okD.sets.map(s => s[0]).join(' + ') === `obras/${FORM_D.id} + obras/${FORM_D.id}/config/info`,
-  'y escribe los DOS documentos que la obra necesita para listarse y para leerse',
+// TRES, desde el #143. La bandera de evidencia va PRIMERO y es parte del alta,
+// no un añadido: sin ella la obra nace sin migrar y cada foto que le suban se
+// archiva sin autor y sin hora del servidor. El orden se afirma porque la regla
+// de Firestore sólo concede ese `create` mientras la obra NO existe.
+check(okD.sets.map(s => s[0]).join(' + ') === `obras/${FORM_D.id}/config/evidencia`
+  + ` + obras/${FORM_D.id} + obras/${FORM_D.id}/config/info`,
+  'y escribe los TRES documentos que la obra necesita, con la bandera de evidencia primero',
   okD.sets.map(s => s[0]).join(' + '));
+const obraD = docObra(okD, FORM_D.id);
 // El monto llega como texto de la casilla y tiene que quedar como NÚMERO: si se
 // guarda "4850000" en texto, toda suma del portafolio lo concatena.
-check(typeof okD.sets[0]?.[1]?.presupuesto === 'number' && okD.sets[0][1].presupuesto === 4850000,
+check(typeof obraD?.presupuesto === 'number' && obraD.presupuesto === 4850000,
   'el monto contratado queda como número, no como el texto de la casilla',
-  `${typeof okD.sets[0]?.[1]?.presupuesto} ${okD.sets[0]?.[1]?.presupuesto}`);
-check(okD.sets[0]?.[1]?.modalidad === 'Licitación pública'
-   && okD.sets[0]?.[1]?.empresaEjecutante === 'Constructora del Golfo SA de CV'
-   && okD.sets[0]?.[1]?.origenRecursos === 'FAISMUN 2026',
+  `${typeof obraD?.presupuesto} ${obraD?.presupuesto}`);
+check(obraD?.modalidad === 'Licitación pública'
+   && obraD?.empresaEjecutante === 'Constructora del Golfo SA de CV'
+   && obraD?.origenRecursos === 'FAISMUN 2026',
   'y con él la modalidad, la empresa ejecutante y el origen de los recursos');
 check(okD.obras === 1 && okD.cerrado, 'la obra entra a la lista y el modal se cierra');
 check(okD.audits.length === 1 && okD.audits[0][0] === 'crear', 'queda una entrada de auditoría');
@@ -467,9 +484,9 @@ check(okD.audits.length === 1 && okD.audits[0][0] === 'crear', 'queda una entrad
 check(okD.notifs.length === 0,
   'el navegador NO intenta avisar: el aviso lo manda el servidor (#85)',
   okD.notifs.length ? `llamó a notifARoles con ${JSON.stringify(okD.notifs[0][0])}` : 'no lo intenta');
-check(okD.sets[0]?.[1]?.creadaPor === 'quien.captura@coatza.gob.mx',
+check(obraD?.creadaPor === 'quien.captura@coatza.gob.mx',
   'y el documento de la obra guarda quién la dio de alta, que el disparador no lo sabe',
-  String(okD.sets[0]?.[1]?.creadaPor));
+  String(obraD?.creadaPor));
 
 // Y se entra directo al catálogo: una obra sin catálogo no acepta captura, así
 // que dejar al usuario en la lista es dejarlo a un paso de una obra inservible.
@@ -480,11 +497,17 @@ check(okD.selects.length === 1 && okD.selects[0][0] === FORM_D.id
 
 // ── El camino bueno, constructora: no se rompió ──
 const okC = await correrAlta({ dep: false, form: FORM_C });
-check(okC.resultado === null && okC.obras === 1 && okC.sets.length === 2,
-  'el alta de constructora sigue funcionando igual');
-check(okC.notifs.length === 0 && okC.sets[0]?.[1]?.creadaPor === 'quien.captura@coatza.gob.mx',
+check(okC.resultado === null && okC.obras === 1 && okC.sets.length === 3,
+  'el alta de constructora sigue funcionando igual', `${okC.sets.length} escritura(s)`);
+// La bandera no es cosa de las dependencias: una obra de la constructora que
+// naciera sin ella archivaría igual de mal, y es la que más fotos recibe.
+check(okC.sets[0]?.[0] === `obras/${FORM_C.id}/config/evidencia`
+   && okC.sets[0]?.[1]?.migrada === true,
+  'y también nace migrada: la bandera no es un trato especial de la dependencia',
+  `${okC.sets[0]?.[0]} → migrada: ${okC.sets[0]?.[1]?.migrada}`);
+check(okC.notifs.length === 0 && docObra(okC, FORM_C.id)?.creadaPor === 'quien.captura@coatza.gob.mx',
   'y por el mismo camino: sin avisar desde el navegador y firmando quién la creó',
-  okC.notifs.length ? 'intentó avisar' : String(okC.sets[0]?.[1]?.creadaPor));
+  okC.notifs.length ? 'intentó avisar' : String(docObra(okC, FORM_C.id)?.creadaPor));
 
 // ── EL ID REPETIDO ──────────────────────────────────────────────────────────
 // La peor de las cinco, porque no da error: `fsSet` escribe con `merge`, así que
@@ -509,8 +532,13 @@ check(typeof negada.resultado === 'string', 'una escritura denegada se reporta',
   String(negada.resultado));
 check(negada.obras === 0 && !negada.cerrado,
   'y la obra NO aparece en la lista — ni el modal se cierra sobre el error');
-check(negada.sets.length === 1 && negada.notifs.length === 0 && negada.selects.length === 0,
-  'no se sigue escribiendo después del rechazo, ni se avisa de una obra que no existe');
+// DOS escrituras, no una: la bandera de evidencia ya se había puesto cuando la
+// obra rebotó. Queda un `config/evidencia` suelto y eso es inocuo —es la
+// bandera de una obra que no existe, y si mañana se crea con ese id es justo la
+// que le toca—. Lo que no puede pasar es seguir escribiendo el resto.
+check(negada.sets.length === 2 && negada.notifs.length === 0 && negada.selects.length === 0,
+  'no se sigue escribiendo después del rechazo, ni se avisa de una obra que no existe',
+  negada.sets.map(s => s[0]).join(' + '));
 
 // Y la mitad que SÍ se tolera: `config/info` es una relectura del mismo dato, y
 // `obras/{id}` ya lo tiene entero. Abortar aquí dejaría la obra creada y al
@@ -599,7 +627,14 @@ process.exit(fallas > 0 ? 1 : 0);
 correr().catch(e => {
   console.error('\nLa prueba reventó antes de terminar de comprobar:');
   console.error(e);
-  process.exit(NO_ARRANCO);
+  // `noArranco.NO_ARRANCO`, no un `NO_ARRANCO` suelto: ese nombre NO ESTABA
+  // DECLARADO en este archivo. O sea que este `catch` —escrito justo para que
+  // un reventón se distinguiera de un rojo— reventaba él mismo con un
+  // `ReferenceError`, y la causa de verdad quedaba sepultada bajo el fallo del
+  // manejador. Pasó el 2026-11-14: el informe abría con `NO_ARRANCO is not
+  // defined` y el `hoyLocalISO is not defined`, que era lo que había que
+  // arreglar, salía al final como si fuera el daño colateral.
+  process.exit(noArranco.NO_ARRANCO);
 });
 
 
