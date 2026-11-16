@@ -253,6 +253,7 @@ const NECESARIOS = [
   'vanLasOT', 'vaElInterruptorOT',
   'CAMPOS_CONTRATO', 'camposContrato', 'ROLES_EDITAN_CONTRATO_D', 'puedeEditarContrato',
   'MODALIDADES_ADJUDICACION', 'PERMISOS', 'can',
+  'ROLES_MARCA_C', 'ROLES_MARCA_D', 'puedeEditarMarca',
   'LEXICO', 'lexico', 'PASOS_DEPENDENCIA_BASE', 'PASOS_BIENVENIDA', 'pasosDe',
   'useGPConstruct',
   'BIBLIOTECA_RIESGOS', 'RIESGOS_SOLO_CONSTRUCTORA', 'evaluarRiesgos', 'SEVERIDADES',
@@ -355,6 +356,14 @@ const cfg = new Function(`"use strict";
   const ROLES_CONFIG_C = ${decl['ROLES_CONFIG_C']};
   const ROLES_CONFIG_D = ${decl['ROLES_CONFIG_D']};
   const veConfiguracion = ${decl['veConfiguracion']};
+  // La opción «Marca» cuelga de esto y no de las dos listas de arriba: los
+  // roles que la regla deja escribir \`config/branding\` no son los mismos que
+  // alcanzan el menú. Quién la ve y quién no lo mide
+  // \`prueba-el-logo-entra-por-la-app\`; aquí hace falta para que el arreglo
+  // real se pueda evaluar.
+  const ROLES_MARCA_C = ${decl['ROLES_MARCA_C']};
+  const ROLES_MARCA_D = ${decl['ROLES_MARCA_D']};
+  const puedeEditarMarca = ${decl['puedeEditarMarca']};
   // El arreglo real, con sus dos datos de entrada atados: el rol y el contador
   // de alertas. Trae ya aplicado su propio \`.filter(o => o.visible)\`.
   const opcionesDe = (rol, alertasNoLeidas) => ${opcionesConfig};
