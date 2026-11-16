@@ -3,7 +3,13 @@
 // EL TABLERO DA UN SOLO VEREDICTO DE PLAZO, Y DICE DE DÓNDE SALE
 // ════════════════════════════════════════════════════════════════════════════
 //
-// QUÉ SE AFIRMA. Lo que el bloque «Proyección al término» PUBLICA, no que sus
+// LA TARJETA SE LLAMA «Fecha de término de obra» DESDE EL 2026-11-16. Antes se
+// titulaba «Proyección al término» —así sigue llamándose el KPI del PDF, donde
+// el valor son días de desviación y no una fecha—. Este banco anclaba en el
+// título viejo y habría salido 2 sin medir nada; lo que cambió es el rótulo, no
+// lo que la tarjeta afirma, y por eso el ancla se mueve y las aserciones no.
+//
+// QUÉ SE AFIRMA. Lo que el bloque «Fecha de término de obra» PUBLICA, no que sus
 // símbolos existan:
 //
 //   1. Un veredicto y nada más. Antes salían dos —«Proyección al fin 74.0%» y
@@ -90,13 +96,13 @@ let fuenteBloque = null, fuenteDashboard = null;
       if (p.node.callee.type !== 'ArrowFunctionExpression') return;
       if (p.node.arguments.length) return;
       const txt = src.slice(p.node.start, p.node.end);
-      if (!txt.includes('<Tit>Proyección al término</Tit>')) return;
+      if (!txt.includes('<Tit>Fecha de término de obra</Tit>')) return;
       fuenteBloque = txt;
     },
   });
 }
 if (!fuenteBloque || !fuenteDashboard) {
-  console.error('\nNO ARRANCÓ: no se encontró el bloque «Proyección al término» ni/o `Dashboard`.');
+  console.error('\nNO ARRANCÓ: no se encontró el bloque «Fecha de término de obra» ni/o `Dashboard`.');
   console.error('Si la tarjeta cambió de título, lo que hay que arreglar es el ancla.');
   process.exit(2);
 }
@@ -183,7 +189,7 @@ ok(v0127.deltaPesos > 3.4e6 && v0127.deltaPesos < 3.5e6,
 console.log('\n── 2 · UN SOLO VEREDICTO, Y ES EL DE LA DEPENDENCIA ────────────────\n');
 
 const pant = pintar(obra0127, hist0127, AV, AHORA);
-ok(/TIT\[Proyección al término\]/.test(pant), 'la tarjeta se titula «Proyección al término»');
+ok(/TIT\[Fecha de término de obra\]/.test(pant), 'la tarjeta se titula «Fecha de término de obra»');
 ok(/\+128 días/.test(pant), 'el veredicto sale impreso en la tarjeta');
 ok(/de atraso, del plazo del contrato/.test(pant), 'dice contra qué plazo se mide');
 ok(/Término proyectado/.test(pant), 'y debajo la fecha de término proyectada');
