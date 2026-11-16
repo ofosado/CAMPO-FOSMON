@@ -31,20 +31,28 @@
 //
 //   §1. El hueco se agrupa POR DATO, no por regla, y el orden lo encabeza el
 //       dato que tumba más reglas. Lo que se va a capturar es el dato.
-//   §2. La pantalla NOMBRA el dato que falta —todos, no una muestra—, dice por
-//       qué cuando el dato sabe decirlo, e imprime que una lista vacía no
-//       significa que no haya riesgo.
-//   §3. Con CERO riesgos detectados y huecos, la tarjeta se pinta igual y dice
-//       cuántas reglas no pudieron medir. La guarda del tablero lo permite.
+//   §2. La pantalla NOMBRA el dato que falta —todos, no una muestra— y lo dice
+//       como HUECO, no como cero: lleva el verbo «falta capturar» y no afirma
+//       en ningún sitio que el dato no exista.
+//   §3. Con CERO riesgos detectados y huecos, la tarjeta se pinta igual. La
+//       guarda del tablero lo permite.
 //   §4. Un hueco NO lleva severidad. No se midió: ponerle color de semáforo
 //       inventaría un juicio que nadie hizo, y el verde no se pinta encima.
-//   §5. Lo que REVENTÓ va aparte y dicho como defecto nuestro, no revuelto con
-//       los huecos de captura del cliente.
-//   §6. UNA CUENTA POR NÚMERO: el número publicado es el de reglas sin medir.
-//       La suma de los grupos es mayor —una regla puede caer por dos datos— y
-//       ésa no se publica, porque dos cuentas del mismo hecho se contradicen.
+//   §5. Lo que REVENTÓ va aparte y en rojo, no revuelto con los huecos de
+//       captura — y sin nombrarnos ante el cliente.
+//   §6. CERO CUENTAS, no dos: la nota NO publica ningún número de reglas ni de
+//       grupos. Las dos cuentas del mismo hecho pueden discrepar, y «reglas»
+//       no es una palabra del cliente. El detalle vive en los dos PDF.
 //   §7. La dependencia ve SU hueco, y la frontera aguanta: ni nómina, ni
 //       almacén, ni el gasto del contratista se nombran de ese lado.
+//
+// QUÉ CAMBIÓ EL 2026-11-16 Y QUÉ NO. El panel se reescribió como NOTA: fuera el
+// encabezado «LO QUE NO SE PUDO MEDIR», la insignia de «N reglas sin dato», el
+// desplegable, el párrafo de «una lista vacía no significa que no haya riesgo»
+// y la palabra «cotea» en la confesión del defecto. La afirmación NO se movió,
+// y §2 es ahora más estricto que antes: no sólo comprueba que el dato se nombre,
+// comprueba que la pantalla **no diga «no hay»** de ningún dato. Ése era el
+// riesgo real del acortamiento y es el que queda clavado.
 //
 // Uso:
 //     node scripts/prueba-el-hueco-de-riesgo-se-ve.cjs
@@ -115,7 +123,11 @@ const unico = (que, marca) => {
   process.exit(2);
 };
 
-const FUENTE_PANEL  = unico('el panel de lo que no se pudo medir', 'LO QUE NO SE PUDO MEDIR</span>');
+// EL ANCLA DEL PANEL ES «No se pudo calcular», no «Falta capturar». El rótulo
+// que encabeza la nota también lo usa el tablero de dependencia para titular su
+// tarjeta, así que buscar por él casa dos funciones y el banco no arranca. Este
+// otro rótulo lo pinta un solo sitio, y es un sitio del mismo panel.
+const FUENTE_PANEL  = unico('la nota de lo que falta capturar', 'No se pudo calcular</div>');
 const FUENTE_BANNER = unico('el banner de indicadores de riesgo', 'INDICADORES DE RIESGO</span>');
 
 // LA GUARDA DEL TABLERO, SACADA DEL PROPIO `<BannerRiesgos/>`. Es la que dejaba
@@ -284,11 +296,11 @@ function correr() {
   ok(conPorQue.length > 0,
     `el motivo sube cuando el dato lo tiene: «${(conPorQue[0]?.porQue || '').slice(0, 58)}…»`);
 
-  // ══ §2 · LA PANTALLA NOMBRA EL DATO QUE FALTA ════════════════════════════
-  sec('§2 · la pantalla nombra el dato que falta, todos, y por qué');
+  // ══ §2 · NOMBRA EL DATO, Y LO DICE COMO HUECO, NO COMO CERO ══════════════
+  sec('§2 · la pantalla nombra el dato que falta, todos, y no afirma que no exista');
 
   const htmlSana = panel({ noEvaluables: V_SANA.noEvaluables,
-    reventaron: V_SANA.reventaron, sinHallazgo: V_SANA.sinHallazgo });
+    reventaron: V_SANA.reventaron });
   ok(!/SE CAYO AL PINTARSE/.test(htmlSana), 'el panel se pinta', htmlSana.slice(0, 180));
 
   const noNombrados = H_SANA.filter(g => !dice(htmlSana, g.nombre));
@@ -296,29 +308,79 @@ function correr() {
     `los ${H_SANA.length} datos que faltan salen nombrados en pantalla, no una muestra`,
     `callados: ${noNombrados.map(g => g.nombre).join(' · ')}`);
 
-  ok(dice(htmlSana, 'no significa que no haya riesgo'),
-    'y la pantalla imprime que una lista vacía no significa que no haya riesgo');
+  // EL VERBO. Sin él, el lector pone uno de gratis y el que pone es «no hay».
+  ok(dice(htmlSana, 'falta capturar'),
+    'y la nota dice FALTA CAPTURAR: el hueco lleva verbo, no se deja al lector');
 
   const htmlVacio = panel({ noEvaluables: V_VACIO.noEvaluables,
-    reventaron: V_VACIO.reventaron, sinHallazgo: V_VACIO.sinHallazgo });
-  ok(dice(htmlVacio, (conPorQue[0]?.porQue || 'xxxx').slice(0, 40)),
-    'el motivo del dato se publica cuando lo hay, no se traga');
+    reventaron: V_VACIO.reventaron });
 
-  // Los títulos de las reglas son el detalle, no el titular: con la tarjeta
-  // cerrada no pueden sepultar lo urgente debajo de veintidós renglones.
+  // ── LA AFIRMACIÓN QUE NO SE PUEDE HACER ───────────────────────────────────
+  //
+  // Es la aserción por la que esta rama existe. Al acortar el texto, la forma
+  // más natural de decirlo es la que el usuario propuso con sus palabras: «no
+  // hay movimientos en almacén». Y eso es FALSO en el único caso que le da
+  // sentido al panel —la obra que sí tuvo movimientos y nadie los capturó—.
+  // Así que no se comprueba que el texto sea corto: se comprueba que, por
+  // corto que sea, no afirme el cero. Se mide sobre los DOS escenarios y sobre
+  // el renglón del dato, no sobre el panel entero, para que un «no hay» dentro
+  // de un mensaje de error de `reventaron` no dé un rojo que no corresponde.
+  // La lista negra es corta y deliberada: NINGUNO de estos giros aparece en los
+  // nombres de `DATOS_DEL_RIESGO`, así que un rojo aquí sólo puede venir de que
+  // alguien escribió la afirmación. Palabras como «cero» NO entran a la lista
+  // —«monto ejecutado mayor que cero» es un nombre de dato legítimo— porque una
+  // lista negra que muerde al dato en vez de a la afirmación se desactiva sola.
+  const CEROS = ['no hay', 'no existe', 'no tiene', 'no se registr',
+    'sin movimientos', 'sin costos', 'está en orden', 'todo bien'];
+  const parteDeHuecos = (html) => html.split('No se pudo calcular')[0];
+  for (const [quien, html] of [['la obra sana', htmlSana], ['la obra vacía', htmlVacio]]) {
+    const afirma = CEROS.filter(c => dice(parteDeHuecos(html), c));
+    ok(afirma.length === 0,
+      `en ${quien} la nota NO afirma que el dato no exista`,
+      `dijo: ${afirma.join(' · ')} — «falta el dato» y «el dato es cero» no son ` +
+      'la misma afirmación, y la segunda es falsa en la obra que sí capturó y no subió');
+  }
+
+  // Y EL RENGLÓN NO DICE NADA MÁS QUE EL NOMBRE DEL DATO. Es la otra mitad: lo
+  // único que se afirma sobre cada dato lo afirma el encabezado, que lleva el
+  // verbo. Un renglón que además opine reabre la puerta por la que entra el
+  // cero sin que la lista negra de arriba lo vea venir.
+  // EL RENGLÓN SE RECONOCE POR SU FRANJA IZQUIERDA, que es lo único que lo
+  // distingue del encabezado, y en `border-left` —con guion—, que es como React
+  // escribe `borderLeft` al pintar. Buscarlo en camelCase casa cero veces y
+  // deja esta mitad de §2 pasando en verde sin haber mirado nada: fue el primer
+  // rojo de esta reescritura, y un cero de renglones tiene que ser rojo.
+  const renglones = [...parteDeHuecos(htmlSana)
+    .matchAll(/<div style="[^"]*border-left[^"]*">([^<]+)<\/div>/g)].map(m => m[1].trim());
+  ok(renglones.length === H_SANA.length,
+    `la nota pinta ${H_SANA.length} renglones, uno por dato`,
+    `pintó ${renglones.length}: ${JSON.stringify(renglones)}`);
+  const conOpinion = renglones.filter(t => !H_SANA.some(g => g.nombre === t));
+  ok(conOpinion.length === 0,
+    'y cada renglón dice EXACTAMENTE el nombre del dato, sin añadir juicio',
+    `de más: ${JSON.stringify(conOpinion)}`);
+
+  // EL DETALLE SE FUE A LOS DOS PDF, y la pantalla no lo arrastra: ni los
+  // títulos de las reglas, ni el motivo largo, ni la palabra «regla».
   const unTitulo = H_SANA[0].reglas[0];
   ok(!dice(htmlSana, unTitulo),
-    `cerrado NO lista los títulos de las reglas («${unTitulo}» no sale)`);
-  const abiertoSana = panel({ noEvaluables: V_SANA.noEvaluables,
-    reventaron: V_SANA.reventaron, sinHallazgo: V_SANA.sinHallazgo }, { abierto: true });
-  ok(dice(abiertoSana, unTitulo),
-    `y al desplegar SÍ los lista («${unTitulo}» sale)`);
+    `la nota NO lista los títulos de las reglas («${unTitulo}» no sale)`);
+  ok(!dice(htmlSana, 'regla'),
+    'y la palabra «regla» no aparece: no es vocabulario del cliente');
+  const motivoLargo = (conPorQue[0]?.porQue || 'xxxx');
+  ok(!dice(htmlVacio, motivoLargo.slice(0, 40)),
+    `ni el motivo largo del dato («${motivoLargo.slice(0, 44)}…»), que vive en los PDF`);
 
-  // `sinHallazgo` se NOMBRA, no sólo se cuenta — misma regla que el documento.
-  ok(V_SANA.sinHallazgo.length > 0, `el escenario tiene ${V_SANA.sinHallazgo.length} reglas que midieron y no encontraron nada`);
-  const unSano = V_SANA.sinHallazgo[0].titulo || V_SANA.sinHallazgo[0].id;
-  ok(dice(abiertoSana, unSano),
-    `las que midieron sin encontrar se NOMBRAN al desplegar («${unSano}»), no se cuentan nomás`);
+  // Y QUE DE VERDAD VIVA EN LOS PDF, no que se haya perdido. Se afirma sobre
+  // la fuente de los dos generadores: si alguien saca esa columna, el detalle
+  // deja de existir en el producto y esta nota corta pasa a ser una pérdida.
+  for (const gen of ['generarPDFInterno', 'generarPDFArt73']) {
+    const i = src.indexOf(`function ${gen}(`);
+    const trozo = i >= 0 ? src.slice(i, i + 40000) : '';
+    ok(/Por qué no se pudo medir/.test(trozo) && /f\.porQue/.test(trozo),
+      `${gen} sigue publicando el motivo por dato: el detalle no se perdió, se movió`,
+      'si esto cae, la nota corta de la pantalla dejó al producto sin el detalle');
+  }
 
   // ══ §3 · CON CERO DETECTADOS LA TARJETA SE PINTA IGUAL ═══════════════════
   sec('§3 · con cero riesgos detectados y huecos, la tarjeta se pinta y dice cuántos');
@@ -335,16 +397,19 @@ function correr() {
 
   const bSana = banner({ riesgos: V_SANA.detectados, veredicto: V_SANA });
   ok(!/SE CAYO AL PINTARSE/.test(bSana), 'el banner se pinta sin un solo riesgo detectado', bSana.slice(0, 180));
-  ok(dice(bSana, `${V_SANA.noEvaluables.length} reglas sin dato`),
-    `y publica «${V_SANA.noEvaluables.length} reglas sin dato»`);
   ok(dice(bSana, H_SANA[0].nombre),
     `y nombra el dato que más pesa («${H_SANA[0].nombre}»)`);
-  ok(dice(bSana, 'ninguna de las reglas que sí pudieron medir encontró algo'),
-    'y dice que el silencio de arriba no es un veredicto sobre la obra');
+  // El silencio de arriba se explica, pero sin decir «reglas» ni «veredicto»:
+  // lo que el lector necesita es que el vacío no se lea como «todo en orden» y
+  // que sepa dónde mirar. Dos frases, no un párrafo.
+  ok(dice(bSana, 'no encontraron nada') && dice(bSana, 'falta capturar'),
+    'y dice que el silencio no es un visto bueno, y a dónde mirar');
+  ok(!dice(bSana, 'veredicto sobre la obra'),
+    'sin explicarle al cliente nuestra mecánica («veredicto sobre la obra» no sale)');
 
-  // El panel vacío no deja un cascarón: si no hay nada que no se pudo medir,
-  // no hay panel. Un «todo medido» permanente enseña a ignorar el sitio.
-  ok(panel({ noEvaluables: [], reventaron: [], sinHallazgo: V_SANA.sinHallazgo }) === '',
+  // El panel vacío no deja un cascarón: si no hay nada que falte, no hay panel.
+  // Un «todo medido» permanente enseña a ignorar el sitio.
+  ok(panel({ noEvaluables: [], reventaron: [] }) === '',
     'sin un solo hueco el panel no pinta nada, ni un cascarón que diga «todo medido»');
 
   // ══ §4 · UN HUECO NO LLEVA SEVERIDAD, Y EL VERDE NO LO TAPA ══════════════
@@ -368,19 +433,23 @@ function correr() {
   ok(acento(banner({ riesgos: critico.detectados, veredicto: critico })) === C.red,
     'y un hueco no rebaja una alarma: con un crítico el acento sigue siendo rojo');
 
-  // ══ §5 · LO QUE REVIENTA, APARTE Y COMO DEFECTO NUESTRO ══════════════════
-  sec('§5 · lo que reventó va aparte y dicho como defecto nuestro');
+  // ══ §5 · LO QUE REVIENTA, APARTE Y SIN NOMBRARNOS ════════════════════════
+  sec('§5 · lo que reventó va aparte, en rojo, y sin confesarle el defecto al cliente');
 
   ok(V_VACIO.reventaron.length > 0,
     `el escenario sí hace reventar ${V_VACIO.reventaron.length} detectores de verdad: ` +
     V_VACIO.reventaron.map(r => r.id).join(', '),
     'sin un detector que truene esta sección no comprueba nada');
 
-  ok(dice(htmlVacio, 'defecto de cotea'),
-    'la pantalla lo dice como defecto de cotea, no como hueco de captura');
+  // SEPARADO SIGUE, porque un hueco se arregla capturando y esto no se arregla
+  // desde la app: revolverlos manda a capturar a quien no tiene nada que hacer.
+  ok(dice(htmlVacio, 'no se pudo calcular'),
+    'la pantalla lo pone bajo su propio rótulo, no entre los datos que faltan');
+  ok(!dice(htmlVacio, 'cotea'),
+    'y ya no nos nombra: el cliente no tiene por qué leer de quién es el defecto');
   const unError = V_VACIO.reventaron[0].error;
   ok(dice(htmlVacio, unError.slice(0, 40)),
-    `y publica qué falló («${unError.slice(0, 44)}…»), no un «error» a secas`);
+    `pero sí publica qué falló («${unError.slice(0, 44)}…»), no un «error» a secas`);
 
   // No se cuela entre los huecos de captura: el grupo por dato no lo nombra.
   const tituloRevent = V_VACIO.reventaron[0].titulo || V_VACIO.reventaron[0].id;
@@ -394,22 +463,33 @@ function correr() {
   ok(acento(banner({ riesgos: [], veredicto: soloRevent })) === C.red,
     'y la tarjeta que sólo trae reventados se pinta en rojo');
 
-  // ══ §6 · UNA CUENTA POR NÚMERO ═══════════════════════════════════════════
-  sec('§6 · una cuenta por número: se publica la de reglas, no la de grupos');
+  // ══ §6 · CERO CUENTAS, NO DOS ════════════════════════════════════════════
+  sec('§6 · la nota no publica ningún conteo: ni el de reglas ni el de grupos');
 
+  // EL ESCENARIO SIGUE DISTINGUIENDO LAS DOS CUENTAS. Se mide aunque ya no se
+  // publique ninguna: es lo que hace que esta sección signifique algo. Si las
+  // dos coincidieran, no publicar sería gratis.
   const suma = H_VACIO.reduce((t, g) => t + g.reglas.length, 0);
   ok(suma > V_VACIO.noEvaluables.length,
-    `el escenario sí distingue las dos cuentas: ${V_VACIO.noEvaluables.length} reglas sin dato ` +
+    `siguen siendo dos cuentas distintas: ${V_VACIO.noEvaluables.length} reglas sin dato ` +
     `pero ${suma} apariciones en grupos —hay reglas tumbadas por dos datos a la vez`,
-    'si las dos cuentas coincidieran, esta sección no comprobaría nada');
+    'si coincidieran, no publicar ninguna no demostraría nada');
 
-  const ins = insignias(htmlVacio);
-  const delHueco = ins.filter(t => /sin dato/i.test(t));
-  ok(delHueco.length === 1 && delHueco[0] === `${V_VACIO.noEvaluables.length} reglas sin dato`,
-    `la insignia publica «${V_VACIO.noEvaluables.length} reglas sin dato», la cuenta de reglas`,
-    `publicó: ${JSON.stringify(delHueco)}`);
-  ok(!delHueco.some(t => t.includes(String(suma))),
-    `y NO publica la suma de los grupos (${suma}), que es la otra cuenta del mismo hecho`);
+  // Y NO SALE NINGUNA DE LAS DOS. Antes se publicaba la de reglas y se prohibía
+  // la de grupos; hoy no se publica cuenta alguna, que es la forma fuerte de lo
+  // mismo —dos cuentas del mismo hecho no pueden discrepar si no hay ninguna—.
+  // La insignia desapareció con el rediseño: se comprueba que no volvió.
+  ok(insignias(htmlVacio).length === 0,
+    'la nota no lleva insignia con número: desapareció con el texto interno',
+    `publicó: ${JSON.stringify(insignias(htmlVacio))}`);
+  for (const n of [V_VACIO.noEvaluables.length, suma]) {
+    ok(!dice(parteDeHuecos(htmlVacio), `${n} regla`),
+      `y no publica «${n} reglas» por ningún lado`);
+  }
+  // Los renglones siguen siendo el número visible, y ése no puede discrepar con
+  // nada: se cuenta mirándolo.
+  ok(H_VACIO.length > 0,
+    `lo que el lector cuenta son los ${H_VACIO.length} renglones, uno por dato`);
 
   // ══ §7 · LA DEPENDENCIA VE SU HUECO, Y LA FRONTERA AGUANTA ═══════════════
   sec('§7 · la dependencia ve su hueco, y la frontera del margen aguanta');
@@ -419,7 +499,7 @@ function correr() {
     `del lado dependencia la misma obra deja ${V_DEP.noEvaluables.length} reglas sin medir`);
 
   const htmlDep = panel({ noEvaluables: V_DEP.noEvaluables,
-    reventaron: V_DEP.reventaron, sinHallazgo: V_DEP.sinHallazgo });
+    reventaron: V_DEP.reventaron });
   ok(H_DEP.every(g => dice(htmlDep, g.nombre)),
     `y los nombra todos en pantalla: ${H_DEP.map(g => g.nombre).join(' · ')}`);
 
@@ -444,6 +524,17 @@ function correr() {
 // Cada una vuelve a poner un defecto que esta rama cerró, dejando la pantalla
 // compilando y con aspecto razonable. Mutan `src` entero porque lo que se
 // prueba es LA PANTALLA, y la pantalla vive en el JSX.
+//
+// REESCRITAS EL 2026-11-16 CON EL PANEL. Seis de las once anclaban en texto que
+// la nota ya no tiene —el encabezado interno, la insignia, el desplegable, el
+// párrafo— y habrían salido como «no halló su anclaje», o sea 2, o sea nada
+// medido. Las nuevas muerden los defectos que el ACORTAMIENTO hizo posibles, y
+// la primera es la más importante del banco: es la que pone en la pantalla la
+// afirmación que el texto corto invita a escribir y que sería falsa.
+//
+// NINGUNA TOCA «No se pudo calcular», que es por donde el banco encuentra el
+// panel. Una mutación que rompe el ancla sale 2 y no demuestra nada; lo que se
+// muta es la CONDICIÓN que decide si ese bloque se pinta, no su rótulo.
 const MUTACIONES = [
   ['el hueco se agrupa por regla otra vez, y la lista vuelve a ser una fila por regla',
     `      const k = f.dato || f.nombre;`,
@@ -461,46 +552,71 @@ const MUTACIONES = [
     || veredictoRiesgos.reventaron.length > 0;`,
     `  const hayQueDecirAlgo = riesgos.length > 0;`],
 
-  ['el panel deja de nombrar el dato y sólo dice que falta algo',
-    `          <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>Falta: {h.nombre}</div>`,
-    `          <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>Falta un dato</div>`],
+  // LA MUTACIÓN QUE JUSTIFICA LA RAMA. Es el texto del usuario, puesto tal cual
+  // en el renglón: «No hay movimientos de almacén». Compila, se lee natural,
+  // cabe en una línea — y afirma un cero sobre un dato que nadie midió. Si esta
+  // sale verde, el banco no está protegiendo nada de lo que importa aquí.
+  ['el renglón afirma el cero en vez del hueco: «No hay ‹dato›»',
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            {h.nombre}`,
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            No hay {h.nombre}`],
 
-  ['la frase de que una lista vacía no significa que no haya riesgo se cae',
-    `      Una lista de riesgos vacía no significa que no haya riesgo: estas reglas no
-      se callaron por estar en orden, se callaron porque les faltó el dato.`,
-    `      Revisa los datos pendientes de captura cuando puedas.`],
+  // Y LA VARIANTE SIN VERBO, que es cómo se llega a la de arriba sin escribirla:
+  // el rótulo se queda en un sustantivo y el lector pone el verbo de gratis.
+  ['el rótulo pierde el verbo y deja al lector poniendo «no hay»',
+    `      <div style={{fontSize:10,fontWeight:700,color:C.textSec,marginBottom:6}}>
+        Falta capturar
+      </div>`,
+    `      <div style={{fontSize:10,fontWeight:700,color:C.textSec,marginBottom:6}}>
+        Almacén, maquinaria y demás
+      </div>`],
 
-  ['lo que reventó se publica como un hueco de captura más',
-    `      <div style={{fontSize:10,fontWeight:700,color:C.red,marginBottom:4}}>
-        Reventaron · esto es un defecto de cotea, no un hueco de captura</div>`,
-    `      <div style={{fontSize:10,fontWeight:700,color:C.red,marginBottom:4}}>
-        Faltan datos para estas reglas</div>`],
+  ['el renglón arrastra a la pantalla los títulos de las reglas internas',
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            {h.nombre}`,
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            {h.nombre} — {h.reglas.join(' · ')}`],
+
+  ['el motivo largo del dato vuelve a la pantalla en vez de quedarse en los PDF',
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            {h.nombre}`,
+    `            borderLeft:\`3px solid \${C.border}\`,fontSize:10,color:C.textPri}}>
+            {h.nombre}{h.porQue ? \` — \${h.porQue}\` : ''}`],
+
+  // La insignia vuelve, y con ella las dos cuentas del mismo hecho.
+  ['la insignia con el conteo de reglas vuelve al encabezado de la nota',
+    `      <div style={{fontSize:10,fontWeight:700,color:C.textSec,marginBottom:6}}>
+        Falta capturar
+      </div>`,
+    `      <div style={{fontSize:10,fontWeight:700,color:C.textSec,marginBottom:6}}>
+        Falta capturar <Bdg color={C.textMut} small>
+          {noEvaluables.length} regla{noEvaluables.length>1?'s':''} sin dato</Bdg>
+      </div>`],
+
+  // NO SE TOCA EL RÓTULO, SE TOCA LA CONDICIÓN. El bloque rojo deja de pintarse
+  // en cuanto hay algo más en la nota, que es el defecto de maquetación típico:
+  // se prueba con la obra que tiene las dos cosas y ahí desaparece.
+  ['lo que reventó se calla en cuanto además falta capturar algo',
+    `    {reventaron.length > 0 && <div style={{marginTop:huecos.length?7:0}}>`,
+    `    {reventaron.length > 0 && huecos.length === 0 && <div style={{marginTop:0}}>`],
+
+  ['la guarda del cascarón se cae y el panel pinta un marco vacío',
+    `  if (!noEvaluables.length && !reventaron.length) return null;`,
+    `  // la guarda se fue con el rediseño`],
+
+  ['el banner deja de explicar el silencio y el vacío se lee como «todo en orden»',
+    `      Las revisiones que pudieron medir no encontraron nada. Abajo, lo que falta
+      capturar en esta obra.`,
+    `      Sin indicadores de riesgo.`],
 
   ['el verde vuelve a pintarse encima de una tarjeta con huecos y cero disparos',
     `               : hayHuecos ? C.textMut : C.green;`,
     `               : C.green;`],
 
-  ['los títulos de las reglas salen con la tarjeta cerrada y sepultan lo urgente',
-    `          {abierto && <div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.4}}>
-            Sin este dato no se pudo medir: {h.reglas.join(' · ')}</div>}`,
-    `          {<div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.4}}>
-            Sin este dato no se pudo medir: {h.reglas.join(' · ')}</div>}`],
-
-  ['la insignia publica la suma de los grupos y no la cuenta de reglas',
-    `        {noEvaluables.length > 0 && <Bdg color={C.textMut} small>
-          {noEvaluables.length} regla{noEvaluables.length>1?'s':''} sin dato</Bdg>}`,
-    `        {noEvaluables.length > 0 && <Bdg color={C.textMut} small>
-          {huecosPorDato(noEvaluables).reduce((t,g)=>t+g.reglas.length,0)} reglas sin dato</Bdg>}`],
-
   ['la dependencia recibe la biblioteca entera y le entran los datos del contratista',
     `  const soloContrato = contexto?.tipo === 'dependencia';`,
     `  const soloContrato = false;`],
-
-  ['las que midieron sin encontrar nada se cuentan en vez de nombrarse',
-    `      {sinHallazgo.length
-        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
-        : 'ninguna — todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.'}`,
-    `      {\`\${sinHallazgo.length} reglas.\`}`],
 ];
 
 if (process.argv.includes('--contraprueba')) {

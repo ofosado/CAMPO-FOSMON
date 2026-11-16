@@ -14462,7 +14462,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
-// LO QUE NO SE PUDO MEDIR — EL HUECO, EN PANTALLA
+// FALTA CAPTURAR — EL HUECO, EN PANTALLA
 // ════════════════════════════════════════════════════════════════════════════
 //
 // POR QUÉ EXISTE. El motor separa cuatro estados desde el #120 y el documento
@@ -14484,53 +14484,62 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
 // En producción hoy no revienta ninguna, así que esta rama no la ejerce ninguna
 // obra real: la prueba es lo único que la va a ver.
 //
-// `sinHallazgo` SE NOMBRA, no sólo se cuenta —misma regla que en el documento—.
-// «18 sin hallazgo» no dice cuáles, y la que falte de la lista es la que nadie
-// va a notar. Los nombres salen al desplegar, para que la tarjeta cerrada no
-// sepulte lo urgente debajo de dieciocho títulos tranquilizadores.
-function PanelSinDato({noEvaluables = [], reventaron = [], sinHallazgo = []}){
-  const [abierto, setAbierto] = useState(false);
+// ── POR QUÉ ESTO ES UNA NOTA Y NO UN INFORME (2026-11-16) ──────────────────
+//
+// La primera versión de este panel ganó la discusión de fondo y perdió la de
+// forma. Decía la verdad —y la sigue diciendo— pero la decía en el idioma del
+// motor: encabezado «LO QUE NO SE PUDO MEDIR», una insignia con «5 reglas sin
+// dato», un desplegable de «qué reglas y qué midió el resto», un párrafo
+// explicando que una lista vacía no significa que no haya riesgo, y la palabra
+// «cotea» confesándole al cliente un defecto nuestro con nuestro nombre.
+//
+// El usuario lo leyó y dijo que parecía algo interno que ningún otro usuario
+// entendería. Tiene razón, y el motivo es que REGLA NO ES UNA PALABRA DEL
+// CLIENTE. Un director de obra no sabe que el producto tiene treinta y un
+// detectores; lo que necesita saber es qué falta capturar en SU obra.
+//
+// LO QUE NO SE AFLOJÓ, Y ES EL PUNTO ENTERO. La nota dice qué dato FALTA, no
+// que el dato sea cero. «Falta capturar · movimientos de almacén» y «no hay
+// movimientos de almacén» se leen parecido y son afirmaciones distintas: la
+// segunda es falsa en el único caso que importa —la obra que sí tuvo
+// movimientos y nadie los capturó— y ésa es justo la obra por la que este panel
+// existe. Así que el texto se acortó hasta el hueso y la afirmación no se
+// movió ni un milímetro.
+//
+// DÓNDE SE FUE EL DETALLE: a los dos documentos, que es donde va el detalle.
+// `porQue`, los títulos de las reglas que cada dato tumba y las que midieron
+// sin encontrar nada se publican enteros en `generarPDFInterno` y en
+// `generarPDFArt73` —tabla «Dato que falta / Por qué no se pudo medir»—. No se
+// perdió nada del producto; se sacó de la pantalla que se lee de un vistazo.
+//
+// `reventaron` sigue aparte y sigue en rojo, porque un hueco de captura y un
+// defecto nuestro piden cosas opuestas: uno se arregla capturando y el otro no
+// se arregla desde la app. Lo que ya no hace es nombrarnos.
+function PanelSinDato({noEvaluables = [], reventaron = []}){
   const huecos = huecosPorDato(noEvaluables);
   if (!noEvaluables.length && !reventaron.length) return null;
 
   return <div style={{marginTop:10,borderTop:`1px solid ${C.border}`,paddingTop:9}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:6}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,fontWeight:700,color:C.textSec,letterSpacing:"0.04em"}}>LO QUE NO SE PUDO MEDIR</span>
-        {noEvaluables.length > 0 && <Bdg color={C.textMut} small>
-          {noEvaluables.length} regla{noEvaluables.length>1?'s':''} sin dato</Bdg>}
-        {reventaron.length > 0 && <Bdg color={C.red} small>
-          {reventaron.length} revent{reventaron.length>1?'aron':'ó'}</Bdg>}
+    {huecos.length > 0 && <>
+      {/* «Falta capturar» lleva el verbo a propósito: es lo que distingue el
+          hueco del cero. Un rótulo como «Almacén · maquinaria» a secas deja al
+          lector poniendo el verbo, y el que pone de gratis es «no hay». */}
+      <div style={{fontSize:10,fontWeight:700,color:C.textSec,marginBottom:6}}>
+        Falta capturar
       </div>
-      <button onClick={()=>setAbierto(!abierto)} style={{background:"none",border:"none",
-        fontSize:10,color:C.blueDk,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
-        {abierto ? "Ocultar detalle ▴" : "Qué reglas y qué midió el resto ▾"}
-      </button>
-    </div>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {huecos.map(h => (
+          <div key={h.dato} style={{background:C.bg,borderRadius:6,padding:"7px 10px",
+            borderLeft:`3px solid ${C.border}`,fontSize:10,color:C.textPri}}>
+            {h.nombre}
+          </div>
+        ))}
+      </div>
+    </>}
 
-    {/* LA FRASE VA IMPRESA, igual que en el documento. Un lector que vea la
-        lista de arriba corta tiene que leer en el mismo sitio por qué eso no
-        quiere decir que la obra esté bien. */}
-    <div style={{fontSize:9,color:C.textSec,marginBottom:7,lineHeight:1.45}}>
-      Una lista de riesgos vacía no significa que no haya riesgo: estas reglas no
-      se callaron por estar en orden, se callaron porque les faltó el dato.
-    </div>
-
-    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-      {huecos.map(h => (
-        <div key={h.dato} style={{background:C.bg,borderRadius:6,padding:"7px 10px",
-          borderLeft:`3px solid ${C.border}`}}>
-          <div style={{fontSize:10,fontWeight:700,color:C.textPri}}>Falta: {h.nombre}</div>
-          {h.porQue && <div style={{fontSize:9,color:C.textSec,marginTop:2,lineHeight:1.4}}>{h.porQue}</div>}
-          {abierto && <div style={{fontSize:9,color:C.textMut,marginTop:3,lineHeight:1.4}}>
-            Sin este dato no se pudo medir: {h.reglas.join(' · ')}</div>}
-        </div>
-      ))}
-    </div>
-
-    {reventaron.length > 0 && <div style={{marginTop:7}}>
+    {reventaron.length > 0 && <div style={{marginTop:huecos.length?7:0}}>
       <div style={{fontSize:10,fontWeight:700,color:C.red,marginBottom:4}}>
-        Reventaron · esto es un defecto de cotea, no un hueco de captura</div>
+        No se pudo calcular</div>
       <div style={{display:"flex",flexDirection:"column",gap:4}}>
         {reventaron.map(r => (
           <div key={r.id} style={{background:C.bg,borderRadius:6,padding:"7px 10px",
@@ -14540,13 +14549,6 @@ function PanelSinDato({noEvaluables = [], reventaron = [], sinHallazgo = []}){
           </div>
         ))}
       </div>
-    </div>}
-
-    {abierto && <div style={{fontSize:9,color:C.textMut,marginTop:8,lineHeight:1.45}}>
-      <span style={{fontWeight:700}}>Midieron y no encontraron nada: </span>
-      {sinHallazgo.length
-        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
-        : 'ninguna — todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.'}
     </div>}
   </div>;
 }
@@ -14599,8 +14601,8 @@ function BannerRiesgos({riesgos, onNavTab, veredicto}){
         la justifican. Sin este renglón la lista saldría vacía y sin decir nada,
         que es el silencio que el panel vino a quitar. */}
     {riesgos.length === 0 && <div style={{fontSize:10,color:C.textSec,lineHeight:1.45}}>
-      Ninguna de las reglas que SÍ pudieron medir encontró algo. Eso no es un
-      veredicto sobre la obra: mira abajo lo que no se pudo medir antes de leerlo así.
+      Las revisiones que pudieron medir no encontraron nada. Abajo, lo que falta
+      capturar en esta obra.
     </div>}
     <div style={{display:"flex",flexDirection:"column",gap:5}}>
       {mostrar.map((r,i)=>{
@@ -14628,7 +14630,7 @@ function BannerRiesgos({riesgos, onNavTab, veredicto}){
       })}
     </div>
     <PanelSinDato noEvaluables={veredicto?.noEvaluables}
-      reventaron={veredicto?.reventaron} sinHallazgo={veredicto?.sinHallazgo}/>
+      reventaron={veredicto?.reventaron}/>
   </Card>;
 }
 
@@ -16644,7 +16646,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
     {(riesgosTop.length > 0 || veredictoRiesgos.noEvaluables.length > 0
       || veredictoRiesgos.reventaron.length > 0) && <Card
       accent={riesgosTop.length > 0 || veredictoRiesgos.reventaron.length > 0 ? C.red : C.textMut}>
-      <Tit>{riesgosTop.length > 0 ? 'Requiere atención' : 'Qué no se pudo medir'}</Tit>
+      <Tit>{riesgosTop.length > 0 ? 'Requiere atención' : 'Falta capturar'}</Tit>
       <div style={{display:"flex",flexDirection:"column",gap:6}}>
         {riesgosTop.map(r => (
           <div key={r.id} onClick={irA(r.tab, r.subTab)}
@@ -16665,8 +16667,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
           del mismo hueco se desincronizan, y el día que una diga el motivo y la
           otra no, nadie va a notar cuál es la que miente. */}
       <PanelSinDato noEvaluables={veredictoRiesgos.noEvaluables}
-        reventaron={veredictoRiesgos.reventaron}
-        sinHallazgo={veredictoRiesgos.sinHallazgo}/>
+        reventaron={veredictoRiesgos.reventaron}/>
     </Card>}
 
     {/* Lo que dijo quien estuvo ahí. Sin `onGuardar`: la dependencia LEE la
