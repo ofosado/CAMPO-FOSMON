@@ -67,7 +67,8 @@ const ok = (c, m) => { if (c) { verdes++; console.log(`  ok   ${m}`); }
 
 // ── EL MOTOR VIVO ──────────────────────────────────────────────────────────
 const PEDIDOS = ['evaluarRiesgos', 'BIBLIOTECA_RIESGOS',
-  'RIESGOS_SOLO_CONSTRUCTORA', 'DATOS_DEL_RIESGO', 'MOTIVO_SIN_GASTO'];
+  'RIESGOS_SOLO_CONSTRUCTORA', 'RIESGOS_SOLO_DEPENDENCIA',
+  'DATOS_DEL_RIESGO', 'MOTIVO_SIN_GASTO'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 if (faltan.length) {
   console.error(`\nNO ARRANCÓ: faltan en ${path.basename(archivo)}: ${faltan.join(', ')}`);
@@ -75,9 +76,23 @@ if (faltan.length) {
 }
 const APP = new Function(`"use strict";\n${cuerpo}\nreturn { ${PEDIDOS.join(', ')} };`)();
 const { evaluarRiesgos, BIBLIOTECA_RIESGOS,
-        RIESGOS_SOLO_CONSTRUCTORA, DATOS_DEL_RIESGO, MOTIVO_SIN_GASTO } = APP;
+        RIESGOS_SOLO_CONSTRUCTORA, RIESGOS_SOLO_DEPENDENCIA,
+        DATOS_DEL_RIESGO, MOTIVO_SIN_GASTO } = APP;
 
 const TOTAL = BIBLIOTECA_RIESGOS.length;
+
+// LA FRONTERA TIENE DOS LADOS, Y ESTE BANCO CONTABA UNO. Lo que la dependencia
+// no ve de la economía del contratista estaba medido desde que nació; lo que el
+// contratista no ve del otro lado —el plazo de pago del art. 63, que mide la
+// obligación del Ente— se agregó después, y hasta entonces aquí se exigía que
+// en una obra de constructora salieran TODAS las reglas. Esa exigencia es la
+// que deja puesto el defecto en espejo: una regla que sólo sabe mirar a una
+// dependencia, evaluada sobre un contratista, se publica «revisada sin
+// hallazgo» para siempre. Por eso lo vedado se cuenta del lado que toque, y no
+// se da por hecho que el único lado vedado sea el del municipio.
+const vedadasEn = (ctx) => ctx?.tipo === 'dependencia'
+  ? RIESGOS_SOLO_CONSTRUCTORA : RIESGOS_SOLO_DEPENDENCIA;
+const aplicanEn = (ctx) => TOTAL - vedadasEn(ctx).size;
 const ids = (arr) => arr.map(x => x.id);
 const buscar = (r, id) =>
   (['detectados', 'sinHallazgo', 'noEvaluables', 'reventaron']
@@ -119,10 +134,16 @@ for (const [nombre, ctx] of [['contexto vacío', {}], ['sin GP', sinGP],
   const r = evaluarRiesgos(ctx);
   const todos = [...ids(r.detectados), ...ids(r.sinHallazgo),
                  ...ids(r.noEvaluables), ...ids(r.reventaron)];
-  ok(todos.length === TOTAL,
-    `«${nombre}»: las ${TOTAL} reglas salen (${r.detectados.length} disparó · ${r.sinHallazgo.length} sin hallazgo · ${r.noEvaluables.length} no evaluable · ${r.reventaron.length} reventó)`);
+  ok(todos.length === aplicanEn(ctx),
+    `«${nombre}»: las ${aplicanEn(ctx)} reglas que aplican salen (${r.detectados.length} disparó · ${r.sinHallazgo.length} sin hallazgo · ${r.noEvaluables.length} no evaluable · ${r.reventaron.length} reventó)`);
   ok(new Set(todos).size === todos.length,
     `«${nombre}»: ninguna regla sale en dos cubos a la vez`);
+  // Y LAS QUE NO APLICAN NO SALEN EN NINGÚN CUBO, tampoco en el de los huecos:
+  // en el tablero de una constructora, «no se pudo evaluar el plazo de pago del
+  // Ente» sería nombrarle una obligación que no es la suya.
+  ok(!todos.some(id => vedadasEn(ctx).has(id)),
+    `«${nombre}»: ninguna de las ${vedadasEn(ctx).size} vedadas de este lado se asoma` +
+    ` (${[...vedadasEn(ctx)].join(', ')})`);
 }
 
 // EN DEPENDENCIA SE EVALÚA MENOS, Y LO QUE NO SE EVALÚA NO APARECE EN NINGÚN
@@ -134,7 +155,20 @@ const todosDep = [...ids(dep.detectados), ...ids(dep.sinHallazgo),
 ok(todosDep.length === TOTAL - RIESGOS_SOLO_CONSTRUCTORA.size,
   `en dependencia salen ${TOTAL - RIESGOS_SOLO_CONSTRUCTORA.size} de ${TOTAL} reglas — salieron ${todosDep.length}`);
 ok(!todosDep.some(id => RIESGOS_SOLO_CONSTRUCTORA.has(id)),
-  'y ninguna de las 18 de la constructora se asoma, ni como hueco declarado');
+  `y ninguna de las ${RIESGOS_SOLO_CONSTRUCTORA.size} de la constructora se asoma, ni como hueco declarado`);
+// NINGUNA REGLA PUEDE ESTAR VEDADA EN LAS DOS INTERFACES: sería una regla que
+// no se evalúa nunca, en ninguna pantalla, y que igual se mantiene en la
+// biblioteca pareciendo viva.
+const enLasDos = [...RIESGOS_SOLO_DEPENDENCIA].filter(id => RIESGOS_SOLO_CONSTRUCTORA.has(id));
+ok(enLasDos.length === 0,
+  `y las dos vedas no se cruzan: ${RIESGOS_SOLO_CONSTRUCTORA.size} + ${RIESGOS_SOLO_DEPENDENCIA.size} ids sin repetir`);
+// Y LAS DOS LISTAS NOMBRAN REGLAS QUE EXISTEN. Un id mal escrito en una veda no
+// veda nada: la regla sigue saliendo, y la lista dice que no.
+const idsBiblioteca = new Set(BIBLIOTECA_RIESGOS.map(r => r.id));
+const fantasmas = [...RIESGOS_SOLO_CONSTRUCTORA, ...RIESGOS_SOLO_DEPENDENCIA]
+  .filter(id => !idsBiblioteca.has(id));
+ok(fantasmas.length === 0,
+  `y las dos vedas sólo nombran reglas de la biblioteca — sobran: ${fantasmas.join(', ') || 'ninguna'}`);
 
 console.log('\n── B · UN DETECTOR QUE REVIENTA SE DECLARA ─────────────────────────\n');
 
@@ -279,7 +313,7 @@ for (const [nombre, ctx] of [['contexto vacío', {}], ['sin GP', sinGP],
                              ['dependencia', { ...conDinero, tipo: 'dependencia' }]]) {
   const v = evaluarRiesgos(ctx);
   const callados = v.sinHallazgo.length + v.noEvaluables.length + v.reventaron.length;
-  const aplican = TOTAL - (ctx.tipo === 'dependencia' ? RIESGOS_SOLO_CONSTRUCTORA.size : 0);
+  const aplican = aplicanEn(ctx);
   ok(v.detectados.length + callados === aplican && callados > 0,
     `«${nombre}»: disparan ${v.detectados.length} de ${aplican}; las otras ${callados} ` +
     'se callan, y el veredicto dice por qué cada una');
@@ -336,6 +370,12 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         '    if (soloContrato && RIESGOS_SOLO_CONSTRUCTORA.has(plantilla.id)) continue;',
         '    if (false && soloContrato) continue;') },
+    // Y EL MISMO DEFECTO DEL OTRO LADO: el plazo de pago del Ente evaluado
+    // sobre una constructora, que no lo debe, para publicarlo «sin hallazgo».
+    { nombre: 'la obligación de pago del municipio se asoma en el tablero del contratista',
+      hacer: () => src.replace(
+        '    if (!soloContrato && RIESGOS_SOLO_DEPENDENCIA.has(plantilla.id)) continue;',
+        '    if (false && !soloContrato) continue;') },
     { nombre: 'el cero medido de GP se vuelve a leer como hueco',
       hacer: () => src.replace(
         "      return medido(0, 'sin-cheques');",

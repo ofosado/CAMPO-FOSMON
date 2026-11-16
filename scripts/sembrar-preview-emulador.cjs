@@ -470,9 +470,29 @@ const estimacionComoLaApp = (e, i) => {
     periodoFin: fin,
     fechaRecepcion: fact ? desplazar(fact, 3) : '',
     recibidaPor: fact ? 'ventanilla@coatzacoalcos.gob.mx' : '',
+    // LAS DOS FECHAS DEL PLAZO DE LEY, y las dos pueden venir vacías a
+    // propósito. De la autorización arrancan los 20 días naturales del art. 63
+    // y con la del pago se cierra la cuenta; sin ellas la pantalla no mide y lo
+    // dice. Las vacías NO son un descuido de la siembra: es el estado de las
+    // siete obras de producción hoy, y es el renglón gris que hay que poder
+    // mirar al lado de los medidos para saber si se distingue de un «en plazo».
+    fechaAutorizacion: e.autorizada || '',
+    fechaPago: e.pagada || '',
     adjuntos: [],
   };
 };
+
+// Hoy en el calendario de la máquina, para las fechas que tienen que seguir
+// significando lo mismo cada vez que se siembra. Las del plazo de ley son de
+// ésas: una fecha de autorización tecleada en duro vale «vencida por 40 días»
+// hoy y «vencida por 400» el año que viene, y el renglón azul —el que está
+// DENTRO del plazo, que es el que hay que poder distinguir del vencido— se
+// vuelve rojo solo y deja de poderse mirar en el preview.
+const hoyISO = () => {
+  const f = new Date();
+  return `${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}-${String(f.getDate()).padStart(2,'0')}`;
+};
+const haceDias = (dias) => desplazar(hoyISO(), -dias);
 
 const desplazar = (iso, dias) => {
   const [a, m, d] = iso.split('-').map(Number);
@@ -1130,10 +1150,23 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     // desplegable no encuentra la opción, se queda en la primera, y la demo
     // enseña «Recibida» en una estimación que el guion sembró facturada. Nadie
     // ve el error; sólo ve un estado que no es.
+    //
+    // Y CON LAS CUATRO LECTURAS DEL PLAZO DE LEY, una por renglón: pagada
+    // dentro de los 20 días del art. 63, pagada fuera, autorizada y todavía en
+    // plazo, y autorizada con el plazo vencido —que es la que le cuesta dinero
+    // al municipio y la que dispara la tarjeta—. Las cuatro juntas en una obra
+    // porque lo que hay que poder mirar es si se DISTINGUEN entre sí; una sola
+    // pastilla verde no dice si la roja se ve distinta.
     estimaciones: [
-      { num: 1, monto: 2800000, estatus: 'pagada',      fecha: '2026-06-20' },
-      { num: 2, monto: 3100000, estatus: 'pagada',      fecha: '2026-07-25' },
+      { num: 1, monto: 2800000, estatus: 'pagada',      fecha: '2026-06-20',
+        autorizada: '2026-06-25', pagada: '2026-07-10' },          // 15 d · en plazo
+      { num: 2, monto: 3100000, estatus: 'pagada',      fecha: '2026-07-25',
+        autorizada: '2026-07-30', pagada: '2026-08-28' },          // 29 d · 9 tarde
       { num: 3, monto: 2400000, estatus: 'en revisión', fecha: '2026-09-05' },
+      { num: 4, monto: 1800000, estatus: 'autorizada',  fecha: haceDias(12),
+        autorizada: haceDias(8) },                                 // dentro, corriendo
+      { num: 5, monto: 2100000, estatus: 'autorizada',  fecha: haceDias(45),
+        autorizada: haceDias(41) },                                // 21 d sobre el plazo
     ],
     semanas: 4, diasSinCaptura: 3, fotosSemanas: 5,
   });
@@ -1145,6 +1178,10 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     // Con acento inicial a propósito: la columna ordena por clave normalizada,
     // y así se ve que «Áridos» cae junto a la A y no al final de la lista.
     empresa: 'Áridos y Asfaltos del Istmo, S.A. de C.V.', rfc: 'AAI210930M14',
+    // SIN LAS FECHAS DEL PLAZO DE LEY, que es el estado de producción hoy: una
+    // estimación pagada de la que el expediente no dice cuándo se autorizó ni
+    // cuándo se pagó. Su renglón tiene que leerse como un hueco —gris, con el
+    // dato que falta dicho en letra— y no como un «pagada en plazo».
     estimaciones: [{ num: 1, monto: 1900000, estatus: 'pagada', fecha: '2026-08-12' }],
     // Sin captura en 19 días: dispara la alerta que SÍ le sirve a una
     // dependencia, y así se ve que el recorte no la dejó ciega.

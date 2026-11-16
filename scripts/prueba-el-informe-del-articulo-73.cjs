@@ -102,9 +102,19 @@ const ok = (c, m) => { if (c) { verdes++; console.log(`  ok   ${m}`); }
 // banco no debe tener tecleado por su cuenta —si mañana la casa cambia
 // «(no capturado)» por otra fórmula, la aserción tiene que seguirla, no
 // contradecirla.
+// `riesgosDeDependencia` y `BIBLIOTECA_RIESGOS` entran por la §H, y por el
+// mismo motivo que `economiaDeDependencia` entró por la §B: la §5 del papel
+// publica un veredicto de riesgo, y la expectativa de lo que tiene que estar
+// impreso sale del MISMO veredicto que lo alimenta. Teclear aquí los títulos de
+// las reglas haría que la aserción siguiera diciendo verde el día que el papel
+// dejara de imprimirlos y la biblioteca los renombrara.
+// `hoyLocalISO` es el calendario de la obra: las fechas del caso se construyen
+// desde ahí, no desde `new Date()`, que al oeste de Greenwich pinta el día
+// anterior y correría el plazo de ley un día.
 const PEDIDOS = ['generarPDFArt73', 'economiaDeDependencia', 'presentacionDependencia',
   'semanasDeVentana', 'selloDeTiempo', 'textoImprimible',
-  'camposContrato', 'NO_CAPTURADO'];
+  'camposContrato', 'NO_CAPTURADO',
+  'riesgosDeDependencia', 'BIBLIOTECA_RIESGOS', 'hoyLocalISO'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 if (faltan.length) {
   console.error(`\nNO ARRANCÓ: faltan en ${archivo}: ${faltan.join(', ')}`);
@@ -119,7 +129,8 @@ try {
   process.exit(2);
 }
 const { generarPDFArt73, economiaDeDependencia, presentacionDependencia,
-        semanasDeVentana, textoImprimible, camposContrato, NO_CAPTURADO } = APP;
+        semanasDeVentana, textoImprimible, camposContrato, NO_CAPTURADO,
+        riesgosDeDependencia, BIBLIOTECA_RIESGOS, hoyLocalISO } = APP;
 
 // La única transformación que el papel le hace a la cadena de la pantalla es
 // pasarla por la puerta de la fuente: las helvetica estándar de jsPDF sólo
@@ -634,6 +645,105 @@ ok(!!campoResidCon && !!campoResid && campoResidCon.lbl !== campoResid.lbl
   'y el residente del contratista se pide con otra etiqueta, que dice de quién es'
   + (campoResidCon ? ` — «${campoResidCon.lbl}»` : ' — el campo no está'));
 
+// ══════════════════════════════════════════════════════════════════════════
+// H · EL PLAZO DE PAGO DEL ART. 63, Y LAS TRES REGLAS QUE MIRABAN AL REVÉS
+// ══════════════════════════════════════════════════════════════════════════
+// ESTE PAPEL PODÍA IMPRIMIR «revisada sin hallazgo» DE COBRANZA EN UNA OBRA
+// QUE EL MUNICIPIO NO HA PAGADO. Tres reglas medían la deuda con el vocabulario
+// del otro mostrador: dos buscaban estatus que la ventanilla de la dependencia
+// no tiene («Facturada», «Aprobada», «En proceso») y por eso contaban cero, y la
+// tercera pedía para siempre un `diasPago` que esa alta no captura. Ninguna
+// disparaba nunca, todas caían en «sin hallazgo», y el papel las nombraba una
+// por una — en el documento que el municipio archiva cinco años.
+//
+// En su lugar va el plazo que la Ley 233 sí le pone al Ente Público: 20 días
+// naturales desde que el residente autoriza la estimación para pago (art. 62
+// párr. 3 y art. 63). Lo que esta sección afirma es lo que se IMPRIME, no lo
+// que el motor calcula —eso lo mide `prueba-el-reloj-del-articulo-63.cjs`—.
+console.log('\n── H · el plazo de pago del Ente, en el papel ────────────────');
+
+const tituloDe = (id) => (BIBLIOTECA_RIESGOS.find(r => r.id === id) || {}).titulo;
+const TIT_PLAZO = tituloDe('ctr_003');
+const RETIRADAS = ['fin_003', 'fin_004', 'ctr_001'];
+if (!TIT_PLAZO || RETIRADAS.some(id => !tituloDe(id))) {
+  console.error('\nNO ARRANCÓ: la biblioteca de riesgos no tiene las reglas que esta '
+    + `sección mide (ctr_003: ${TIT_PLAZO || 'no está'}; retiradas: `
+    + `${RETIRADAS.map(id => `${id}: ${tituloDe(id) || 'no está'}`).join(', ')}).`);
+  process.exit(2);
+}
+
+// NINGUNA DE LAS TRES SE NOMBRA EN LA HOJA, por ningún motivo: ni detectada, ni
+// sin hallazgo, ni como hueco. Un «no se pudo medir los días de pago» sería
+// pedirle al municipio un dato del contratista.
+for (const id of RETIRADAS) {
+  const t = enLaHoja(tituloDe(id));
+  ok(!corrido.some(x => x.includes(t)),
+    `«${tituloDe(id)}» no aparece en el papel: su cuenta es del otro mostrador`);
+}
+
+// Y EL CASO DE LA DEMO: una estimación pagada que no dice cuándo se autorizó ni
+// cuándo se pagó. El plazo de ley NO se puede medir, y la obligación del papel
+// es decirlo en la lista de lo que falta pedir — nunca callarlo.
+const vFixture = riesgosDeDependencia({ obra: OBRA, subs: CATALOGO,
+  estimaciones: ESTIMACIONES, historialAvance: HIST, programa: null, eco: e.eco });
+const huecoPlazo = vFixture.noEvaluables.find(r => r.id === 'ctr_003');
+ok(!!huecoPlazo,
+  'con las fechas sin capturar, el plazo de ley sale como hueco y no como hallazgo'
+  + ` — salió en ${['detectados','sinHallazgo','noEvaluables','reventaron']
+      .find(k => vFixture[k].some(r => r.id === 'ctr_003')) || 'ninguno'}`);
+ok(corrido.some(x => x.includes(enLaHoja(TIT_PLAZO))),
+  `y el papel lo nombra: «${TIT_PLAZO}»`);
+if (huecoPlazo) {
+  // EL DATO QUE HAY QUE PEDIR, con las palabras del motor y no con las del
+  // banco: el renglón de la tabla es lo único que le dice al municipio qué
+  // capturar para que el papel pueda medir el plazo.
+  const dato = (huecoPlazo.faltan || [])[0] || {};
+  ok(!!dato.nombre && corrido.some(x => x.includes(enLaHoja(dato.nombre))),
+    `y dice qué dato falta: «${dato.nombre || 'sin nombre'}»`);
+  ok(!!dato.porQue && corrido.some(x => x.includes(enLaHoja(dato.porQue))),
+    `y por qué no se pudo medir: «${(dato.porQue || '').slice(0, 60)}…»`);
+}
+
+// EL CASO QUE LE CUESTA DINERO AL ENTE: autorizada hace 70 días y sin pagar.
+// La fecha se construye desde el calendario de la obra, y hacia atrás, para que
+// el caso no dependa de la hora en que corra el banco.
+const haceDias = (k) => {
+  const [a, m, d] = hoyLocalISO().split('-').map(Number);
+  return new Date(Date.UTC(a, m - 1, d - k)).toISOString().slice(0, 10);
+};
+const EST_VENCIDA = [
+  { id: 'e1', num: 1, monto: 4000000, estatus: 'Autorizada',
+    fecha: haceDias(75), fechaAutorizacion: haceDias(70) },
+  { id: 'e2', num: 2, monto: 7000000, estatus: 'Recibida', fecha: haceDias(10) },
+];
+const dVencida = datosDe({ estimaciones: EST_VENCIDA });
+const hojaVencida = await dibujar(dVencida);
+const corridoVencida = textoCorrido(hojaVencida).map(x => x.texto);
+const vVencida = riesgosDeDependencia({ obra: OBRA, subs: CATALOGO,
+  estimaciones: EST_VENCIDA, historialAvance: HIST, programa: null,
+  eco: economiaDeDependencia({ obra: OBRA, subs: CATALOGO,
+    estimaciones: EST_VENCIDA, estCargadas: true }) });
+const plazoVencido = vVencida.detectados.find(r => r.id === 'ctr_003');
+ok(!!plazoVencido,
+  'con una estimación autorizada hace 70 días y sin pagar, el plazo de ley dispara'
+  + ` — salió en ${['detectados','sinHallazgo','noEvaluables','reventaron']
+      .find(k => vVencida[k].some(r => r.id === 'ctr_003')) || 'ninguno'}`);
+if (plazoVencido) {
+  // UNA CUENTA POR NÚMERO: el papel publica la cifra del motor, no una suya.
+  // Si el generador recalculara el monto vencido por su cuenta, el expediente
+  // y la pantalla podrían discrepar el mismo día sobre la misma obra.
+  ok(corridoVencida.some(x => x.includes(enLaHoja(plazoVencido.detalle))),
+    `y publica la cifra con la que se disparó: «${plazoVencido.detalle}»`);
+  ok(corridoVencida.some(x => x.includes(enLaHoja(plazoVencido.extra))),
+    'y que corren gastos financieros a cargo del Ente, con los días de atraso');
+}
+// Y NO SE DISFRAZA DE TRANQUILIDAD. Con el municipio debiendo 4 millones fuera
+// de plazo, ningún renglón de «revisadas sin hallazgo» puede hablar de cobranza.
+const sinHallazgoVencida = vVencida.sinHallazgo.map(r => r.titulo || r.id);
+ok(!sinHallazgoVencida.some(t => /atrasad|por cobrar|d[íi]as de pago/i.test(t)),
+  'y ninguna revisión «sin hallazgo» habla de cobranza'
+  + ` — las que se callaron: ${sinHallazgoVencida.length}`);
+
 console.log('');
 if (fallas) {
   console.log(`${verdes} en verde · ${fallas} en rojo.`);
@@ -817,6 +927,38 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         '{ lbl:"Residente de obra (del contratista)", key:"residente",  tipo:"text" },',
         '{ lbl:"Residente de obra (lo designa la dependencia)", key:"residente",  tipo:"text" },') },
+
+    // ── H · el plazo de pago del Ente ──────────────────────────────────────
+    // LAS DOS MUTACIONES SON DEL PAPEL, no del motor de riesgo: lo que la §H
+    // afirma es que el veredicto se IMPRIME. Que el plazo del art. 63 se mida
+    // bien lo afirma `prueba-el-reloj-del-articulo-63.cjs`, con sus catorce.
+    //
+    // El encabezado se queda y las filas se van: es la forma exacta en que esta
+    // sección miente sin decir una sola cosa falsa. «Sin poder medir» con la
+    // tabla vacía se lee como que no faltó ningún dato.
+    { nombre: 'la tabla de lo que no se pudo medir se queda sin renglones',
+      hacer: () => src.replace(
+        "      ['Incidencia', 'Dato que falta', 'Por qué no se pudo medir'],\n"
+        + '      noEvaluables.map(r => [',
+        "      ['Incidencia', 'Dato que falta', 'Por qué no se pudo medir'],\n"
+        + '      [].map(r => [') },
+    // Y la incidencia detectada sin la cifra con la que se detectó: el papel
+    // dice que el pago está vencido y no dice de cuánto ni de cuántos días, que
+    // es lo único con lo que el municipio puede hacer algo.
+    { nombre: 'la incidencia se publica sin la cifra con la que se detectó',
+      hacer: () => src.replace(
+        "      ['Nivel', 'Incidencia', 'Cifra', 'Qué dice'],\n"
+        + '      detectados.map(r => [\n'
+        + '        labelSev(r.severidad),\n'
+        + '        r.titulo || r.id,\n'
+        + '        disparoCon(r.valor),\n'
+        + "        [r.detalle, r.extra].filter(Boolean).join(' · ') || '—',",
+        "      ['Nivel', 'Incidencia', 'Cifra', 'Qué dice'],\n"
+        + '      detectados.map(r => [\n'
+        + '        labelSev(r.severidad),\n'
+        + '        r.titulo || r.id,\n'
+        + "        '',\n"
+        + "        '—',") },
   ];
 
   // ── QUE LA MUTACIÓN CAIGA DONDE DEBE ──────────────────────────────────────

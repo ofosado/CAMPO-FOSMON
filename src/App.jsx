@@ -6598,7 +6598,19 @@ const ESTATUS_PAGADA = "Pagada";
 // ventanilla, se revisa, se autoriza y se paga. Son los mismos cuatro pasos
 // contados desde el otro lado del mostrador, y el último es literalmente el
 // mismo estado.
-const ESTATUS_ESTIMACION_DEPENDENCIA = ["Recibida", "En revisión", "Autorizada", ESTATUS_PAGADA];
+// «Autorizada» no es un rótulo más del desplegable: es el acto del que la Ley
+// 233 cuelga el dinero. El art. 62 párr. 3 pone en el residente de obra la
+// autorización de las estimaciones PARA PAGO, y el art. 63 arranca ahí el
+// plazo de 20 días naturales. O sea que este literal es el disparador del
+// único reloj de pago que la ley fija, y por eso tiene nombre propio en vez de
+// quedarse tecleado dentro de la lista y otra vez dentro de la función que lo
+// compara. Es el mismo motivo de `ESTATUS_PAGADA`.
+const ESTATUS_AUTORIZADA = "Autorizada";
+const ESTATUS_ESTIMACION_DEPENDENCIA = ["Recibida", "En revisión", ESTATUS_AUTORIZADA, ESTATUS_PAGADA];
+// Sin acentos y en minúsculas, igual que `esEstimacionPagada` y por lo mismo:
+// hay datos de antes del desplegable y una mayúscula distinta dejaría una
+// estimación autorizada fuera del reloj del art. 63 sin que nadie lo note.
+const esEstimacionAutorizada = (e) => _ne(e?.estatus) === _ne(ESTATUS_AUTORIZADA);
 
 // El trámite de la constructora: se elabora, se aprueba, se factura y se cobra.
 // Vivía DENTRO del componente de estimaciones, que es lo que obligaba a quien
@@ -6615,7 +6627,7 @@ const ESTATUS = ["En proceso", "Aprobada", "Facturada", ESTATUS_PAGADA];
 // `<option>`— y dos copias de un vocabulario son dos cuentas para un número:
 // agregar un estado en una y no en la otra deja el nuevo marcado «fuera del
 // catálogo» para siempre, o lo deja entrar sin que el guardia lo reconozca.
-const ESTATUS_ESTIMACION_SUBCONTRATO = ["En proceso", "Autorizada", ESTATUS_PAGADA];
+const ESTATUS_ESTIMACION_SUBCONTRATO = ["En proceso", ESTATUS_AUTORIZADA, ESTATUS_PAGADA];
 
 // El estado del subcontrato se guarda en minúsculas y se enseña capitalizado,
 // así que la lista va en pares: lo que viaja a Firestore es el primero. Estaba
@@ -6664,6 +6676,97 @@ const diasDeRecepcion = est => {
   const cierre = _fechaLocal(est?.periodoFin), recibo = _fechaLocal(est?.fechaRecepcion);
   if (!cierre || !recibo) return null;
   return Math.round((recibo - cierre) / 86400000);
+};
+
+// ── EL RELOJ DEL ART. 63: EL ÚNICO PLAZO DE PAGO QUE LA LEY FIJA ───────────
+//
+// La Ley 233 de Obras Públicas del Estado de Veracruz da al Ente Público
+// VEINTE DÍAS NATURALES para pagar una estimación —contados desde que se
+// autoriza y el contratista presenta su factura—, y pasado el plazo corren
+// gastos financieros a su cargo (art. 63). No es un plazo que se negocie como
+// el `diasPago` del contrato: lo fija la ley, no se captura en ningún campo, y
+// hasta hoy el único plazo que esta aplicación conocía era `obra.diasPago ||
+// 30`. Treinta no es veinte, y los diez días de diferencia son exactamente el
+// tramo en que el municipio ya debe gastos financieros mientras la pantalla lo
+// pinta «dentro de plazo».
+//
+// NO ES `atrasoDeEstimacion` CON OTRO NÚMERO, y son dos funciones por eso:
+//   · allá el acreedor es la constructora, el reloj arranca con la FACTURA
+//     emitida (`fechaFact`, estatus «Facturada») y el plazo sale del contrato;
+//   · aquí el deudor es el municipio, el reloj arranca con la AUTORIZACIÓN
+//     —art. 62 párr. 3: el residente autoriza las estimaciones para pago— y el
+//     plazo sale de la ley.
+// Los dos vocabularios de estatus no se mezclan: «Facturada» no existe de este
+// lado del mostrador y «Autorizada» no existe del otro. Juntarlas en una sola
+// función obligaría a una de las dos a leer el estatus de la contraria, que es
+// justo el defecto que este lote vino a quitar.
+const PLAZO_PAGO_LEY_233 = 20;   // días naturales, art. 63
+const AVISO_PAGO_LEY_233 = 5;    // ámbar cuando quedan éstos o menos
+
+// LO QUE ESTE RELOJ NO PUEDE MEDIR, dicho aquí y repetido en la pantalla: el
+// art. 63 arranca el plazo con la autorización **Y** la presentación de la
+// factura, y la fecha de la factura no se captura de este lado. Se cuenta
+// desde la autorización, que es la fecha que sí está.
+//
+// La fecha del adjunto «Factura» NO sirve de sustituto, y la tentación es
+// grande porque existe: es el día en que alguien SUBIÓ el archivo, que puede
+// ser semanas después de que el contratista lo presentó en ventanilla. Usarla
+// correría el arranque del plazo hacia adelante y escondería un atraso real
+// detrás de un papel escaneado tarde — el error que no se puede permitir, que
+// es el que tranquiliza.
+//
+// Devuelve tres cosas distintas y nunca las confunde:
+//   · `null`                 — no hay nada que decir: todavía no se autoriza.
+//   · `{medible:false, …}`   — hay plazo corriendo y NO se puede medir. Lleva
+//                              en `texto` qué fecha falta.
+//   · `{medible:true, …}`    — medido, con `dias` y `excedido` junto al rótulo
+//                              para que nadie tenga que sacarlos de la letra.
+const relojDePagoDependencia = (e, hoyISO = hoyLocalISO()) => {
+  const pagada = esEstimacionPagada(e);
+  // En ventanilla o en revisión no se debe nada: el residente no la ha
+  // autorizado y el plazo del art. 63 no ha arrancado. Ése es el `null`, y es
+  // distinto de «no se puede medir»: ahí no hay reloj, no es que no se lea.
+  if (!esEstimacionAutorizada(e) && !pagada) return null;
+
+  const ciego = (texto, sub) => ({ medible: false, color: C.textMut, dias: null,
+                                   excedido: null, texto, sub });
+
+  const desde = _fechaLocal(e?.fechaAutorizacion);
+  if (!desde) return ciego('sin fecha de autorización',
+    `el plazo del art. 63 corre desde que se autoriza para pago: sin esa fecha no hay de dónde contar los ${PLAZO_PAGO_LEY_233} días`);
+
+  const hasta = pagada ? _fechaLocal(e?.fechaPago) : _fechaLocal(hoyISO);
+  if (!hasta) return ciego('sin fecha de pago',
+    'está marcada como pagada y no dice cuándo: no se puede saber si se pagó dentro del plazo de ley');
+
+  const dias = Math.round((hasta - desde) / 86400000);
+  // Fechas que no pueden ser: un pago anterior a su autorización, o una
+  // autorización con fecha futura. Es captura mala, no un hueco y no un
+  // hallazgo, y en un expediente que se conserva cinco años (art. 74) hay que
+  // decirlo. Con «pagada en -5 d» o «faltan 25 días de 20» el renglón pasaría
+  // por bueno y nadie volvería a mirarlo.
+  if (dias < 0) return ciego('fechas al revés',
+    pagada
+      ? 'la fecha de pago es anterior a la de autorización'
+      : 'la fecha de autorización es posterior a hoy');
+
+  const excedido = dias - PLAZO_PAGO_LEY_233;
+  const dePlazo = `de los ${PLAZO_PAGO_LEY_233} días naturales del art. 63`;
+  const medido = (color, texto, sub) => ({ medible: true, color, dias, excedido, texto, sub });
+
+  // UN CASO CERRADO Y UNO ABIERTO, y no dicen lo mismo. Pagada, el número es
+  // un hecho del expediente —se pagó en tantos días— y ya no cambia. Sólo
+  // autorizada, el número crece cada día que nadie paga.
+  if (pagada) return excedido > 0
+    ? medido(C.red,   `pagada ${excedido} d tarde`, `${dias} d de la autorización al pago, ${dePlazo}`)
+    : medido(C.green, `pagada en ${dias} d`,        `dentro ${dePlazo}`);
+
+  if (excedido > 0)  return medido(C.red, `${excedido} d sobre el plazo`,
+    `autorizada hace ${dias} d ${dePlazo} · corren gastos financieros a cargo del Ente`);
+  if (excedido === 0) return medido(C.yellow, 'vence hoy', `día ${dias} ${dePlazo}`);
+  if (excedido >= -AVISO_PAGO_LEY_233) return medido(C.yellow,
+    `${-excedido} d para vencer`, `autorizada hace ${dias} d ${dePlazo}`);
+  return medido(C.blue, `${-excedido} d de plazo`, `autorizada hace ${dias} d ${dePlazo}`);
 };
 
 // Crear snapshot del avance actual y guardarlo en el historial
@@ -6918,6 +7021,29 @@ const DATOS_DEL_RIESGO = {
   cierres:      { nombre: 'al menos una semana cerrada',          hay: c => (c.historialAvance || []).some(s => s.tipo === 'oficial') },
   avance:       { nombre: 'algún avance capturado',               hay: c => (c.historialAvance || []).some(s => s.avance !== null && s.avance !== undefined) },
   estimaciones: { nombre: 'estimaciones capturadas',              hay: c => !!c.estimaciones?.length },
+  // EL DATO DEL RELOJ DEL ART. 63, y es más fino que «estimaciones
+  // capturadas»: el plazo de ley no corre con la captura, corre con la
+  // autorización. Una relación de diez estimaciones todas en ventanilla no
+  // tiene ni una fecha desde la cual contar, y declarar esta regla con
+  // `estimaciones` la mandaría a «evaluada sin hallazgo» en una obra donde no
+  // se pudo medir nada.
+  //
+  // `hay` pregunta POR EL RELOJ MISMO y no por los campos a mano. Es la regla
+  // de la casa que el plazo ya demostró: el requisito se copia de la guarda
+  // del detector, no se afloja ni se aprieta. Aquí se cumple de la única
+  // manera que no puede divergir — llamando a la misma función.
+  autorizaciones: {
+    nombre: 'estimaciones autorizadas con su fecha de autorización',
+    hay: c => (c.estimaciones || []).some(e => relojDePagoDependencia(e)?.medible),
+    porQue: c => {
+      const es = c.estimaciones || [];
+      if (!es.length) return 'esta obra todavía no tiene estimaciones registradas';
+      if (!es.some(e => relojDePagoDependencia(e)))
+        return 'ninguna estimación está autorizada todavía: el plazo del art. 63 no ha arrancado en ninguna';
+      return 'las autorizadas no traen fecha de autorización —ni fecha de pago, las ya pagadas—, ' +
+             'que es de donde sale el plazo del art. 63';
+    },
+  },
   // DOS DATOS DISTINTOS, NO UNO CON DOS NOMBRES. «¿Se midió el gasto de esta
   // obra?» la contesta `estadoGastoGP`, que es la respuesta autorizada y trae
   // el motivo. «¿Está el renglón de esta obra en la corrida?» la contesta el
@@ -7636,6 +7762,79 @@ const BIBLIOTECA_RIESGOS = [
       return {severidad:'medio', valor: '!', detalle: 'Sin esto no se ven gastos de GP', extra: 'Captura gpId en Contrato'};
     },
   },
+  // LA ÚNICA REGLA QUE SÓLO EXISTE DEL LADO DEPENDENCIA (ver
+  // RIESGOS_SOLO_DEPENDENCIA). Mide la obligación del municipio, no la del
+  // contratista: el art. 63 le da 20 días naturales para pagar lo autorizado y
+  // después corren gastos financieros a su cargo. Viene a ocupar el sitio que
+  // dejó `fin_003`, que de este lado del mostrador no podía disparar nunca.
+  {
+    id: 'ctr_003', categoria: 'contractual',
+    requiere: ['autorizaciones'],
+    titulo: 'Pago vencido del plazo de ley (art. 63)',
+    descripcion: 'Estimaciones autorizadas que pasaron los 20 días naturales del art. 63',
+    tab: 'operacion', subTab: 'estimaciones',
+    detect: ({estimaciones}) => {
+      // La cuenta sale de `relojDePagoDependencia`, la MISMA que pinta la
+      // pastilla de cada renglón en la pantalla de estimaciones. Una cuenta
+      // por número: escrita otra vez aquí, esta tarjeta podría acusar un
+      // vencimiento que el renglón pinta en azul, delante del cliente.
+      const relojes = (estimaciones || [])
+        .map(e => ({ e, r: relojDePagoDependencia(e) }))
+        .filter(({ r }) => r);
+      const fuera = relojes.filter(({ r }) => r.medible && r.excedido > 0);
+      // DOS INCUMPLIMIENTOS DISTINTOS, Y NO SE SUMAN EN UN SOLO PESO. Se vio en
+      // el preview: la tarjeta decía «$5,200,000 con el plazo del art. 63
+      // vencido» y de esos, $3.1 M eran de una estimación que el municipio YA
+      // PAGÓ, nueve días tarde. Las dos cosas son faltas a la ley, pero una es
+      // deuda viva —sigue corriendo— y la otra es historia cerrada. Juntarlas
+      // en un monto le dice al director que debe cinco millones cuando debe
+      // dos, y el número que decide si se paga hoy es el de la deuda viva.
+      const debiendo = fuera.filter(({ e }) => !esEstimacionPagada(e));
+      const tarde = fuera.length - debiendo.length;
+      const dias = (xs) => Math.max(...xs.map(({ r }) => r.excedido));
+      // LAS QUE NO SE PUDIERON MEDIR SE DICEN, no se descuentan en silencio.
+      // Una estimación autorizada sin fecha de autorización —o pagada sin
+      // fecha de pago— NO está al día: no se sabe. Contando sólo las vencidas,
+      // tres estimaciones sin fecha y ninguna vencida saldrían «revisada sin
+      // hallazgo», que es la tranquilidad falsa que este lote vino a quitar.
+      //
+      // Cuando NINGUNA se puede medir esta rama ni corre: el dato
+      // `autorizaciones` tumba la regla antes y el hueco sale por
+      // `noEvaluables` con su motivo. Así el mismo hecho no se cuenta dos veces.
+      const ciegas = relojes.filter(({ r }) => !r.medible).length;
+      const sinMedir = ciegas ? ` · ${ciegas} más sin fecha, no se pudieron medir` : '';
+      if (!fuera.length) {
+        if (!ciegas) return null;
+        return {severidad: 'bajo', valor: `${ciegas}`,
+          detalle: 'No se puede saber si se pagaron dentro del plazo de ley',
+          extra: 'Falta la fecha de autorización, o la de pago en las ya pagadas'};
+      }
+      // LA DEUDA VIVA MANDA: mientras haya una autorizada sin pagar fuera de
+      // plazo, es lo que la tarjeta publica, y las ya pagadas tarde van de
+      // contexto. La gravedad la pone ESA, no la peor de la historia: una falta
+      // cerrada hace un año no tiene por qué pintar de crítica una obra que hoy
+      // debe tres días.
+      if (debiendo.length) {
+        const peor = dias(debiendo);
+        const sev = peor > 30 ? 'critico' : peor > 10 ? 'alto' : 'medio';
+        return {severidad: sev, valor: `${debiendo.length}`,
+          detalle: `${MXN(sumaDeEstimaciones(debiendo.map(({ e }) => e)))} sin pagar `
+                 + 'con el plazo del art. 63 vencido',
+          extra: `Hasta ${peor} d sobre los ${PLAZO_PAGO_LEY_233} de ley · corren gastos `
+               + 'financieros a cargo del Ente'
+               + (tarde ? ` · ${tarde} ya pagada(s) fuera de plazo` : '') + sinMedir};
+      }
+      // Y SI YA SE PAGARON TODAS, la tarjeta no desaparece: el plazo de ley se
+      // incumplió y eso se archiva. Pero no se dice «sin pagar» de un dinero
+      // que sí se pagó, ni se pinta de crítico lo que ya no corre.
+      const peor = dias(fuera);
+      return {severidad: peor > 30 ? 'medio' : 'bajo', valor: `${tarde}`,
+        detalle: `${MXN(sumaDeEstimaciones(fuera.map(({ e }) => e)))} se pagó fuera `
+               + 'del plazo del art. 63',
+        extra: `Hasta ${peor} d sobre los ${PLAZO_PAGO_LEY_233} de ley · ya pagadas, `
+             + 'pero el plazo se incumplió y corrieron gastos financieros' + sinMedir};
+    },
+  },
   // ── COMPLIANCE ──
   {
     id: 'cmp_001', categoria: 'compliance',
@@ -7679,6 +7878,32 @@ const BIBLIOTECA_RIESGOS = [
 // `gpData`. No alcanza: un riesgo que se calla porque le faltó el dato es
 // indistinguible de uno que se calló porque no hay riesgo, y `ctr_002` de
 // hecho pediría capturar un `gpId` que en dependencia no significa nada.
+//
+// LAS TRES ÚLTIMAS NO ENTRARON POR LA ECONOMÍA DEL CONTRATISTA, sino porque
+// del lado dependencia MENTÍAN, y las tres de la misma manera: el papel que el
+// municipio archiva las nombraba «revisada sin hallazgo». Un renglón que dice
+// eso en un expediente no es un silencio, es una afirmación — y en las tres
+// era falsa.
+//
+//   · `fin_003` exige `estatus === "Facturada"` para contar un atraso de
+//     cobro. «Facturada» es vocabulario de la constructora: del lado
+//     dependencia los cuatro estados son Recibida · En revisión · Autorizada ·
+//     Pagada, así que el detector no podía disparar NUNCA. El municipio podía
+//     llevar meses sin pagar y el informe del art. 73 imprimía
+//     «Estimaciones atrasadas en cobro — revisada sin hallazgo».
+//   · `fin_004` tiene el mismo defecto por otro camino: mide con
+//     `esEstimacionPorCobrar`, que es aprobada + facturada + en proceso. Los
+//     tres son del otro vocabulario, así que el «por cobrar» salía en 0 y el
+//     porcentaje en 0% con la relación entera sin pagar.
+//   · `ctr_001` pide capturar `diasPago` «para detectar atrasos». El alta de
+//     dependencia no tiene ese campo —a propósito: el plazo de pago del
+//     contratista es su flujo, no el de la dependencia— así que la tarjeta
+//     pedía para siempre un dato que esa pantalla no puede dar. Y además el
+//     plazo que de ahí sale no es el suyo: a la dependencia la obliga el
+//     art. 63, no el contrato.
+//
+// Quien sí mide la obligación de pago del municipio es `ctr_003`, y vive del
+// otro lado de la frontera.
 const RIESGOS_SOLO_CONSTRUCTORA = new Set([
   'fin_001',                                          // margen bruto, por nivel
   'fin_007',                                          // margen bruto, por tendencia
@@ -7690,6 +7915,26 @@ const RIESGOS_SOLO_CONSTRUCTORA = new Set([
   'sub_001', 'sub_002', 'sub_003',                    // subcontratos
   'gst_001', 'gst_002', 'gst_003', 'gst_004', 'gst_005',  // gasto de GP por proveedor
   'ctr_002',                                          // vinculación con GP
+  'fin_003',                      // atraso de cobro, medido sobre «Facturada»
+  'fin_004',                      // cuentas por cobrar, mismo vocabulario
+  'ctr_001',                      // pide `diasPago`, que la dependencia no captura
+]);
+
+// ── Y la frontera del otro lado: riesgos que SÓLO existen en dependencia ───
+//
+// La frontera era de una sola dirección y eso bastaba mientras todas las
+// reglas nuevas fueran del contratista. `ctr_003` es la primera que no: mide
+// los 20 días naturales del art. 63, o sea la obligación de pago del ENTE
+// PÚBLICO, y arranca con el estatus «Autorizada», que del lado constructora no
+// existe.
+//
+// Sin esta lista el defecto se repetiría EN ESPEJO, que es exactamente lo que
+// este lote vino a quitar: en el informe interno del contratista saldría «Pago
+// vencido del plazo de ley (art. 63) — revisada sin hallazgo» en todas sus
+// obras, para siempre, porque ninguna de sus estimaciones puede estar
+// «Autorizada». Arreglar el patrón en un solo sentido es dejarlo puesto.
+const RIESGOS_SOLO_DEPENDENCIA = new Set([
+  'ctr_003',                      // el plazo de pago del art. 63
 ]);
 
 // UNA LISTA VACÍA NO SIGNIFICA QUE NO HAY RIESGO. Ésa es toda la razón de que
@@ -7724,6 +7969,7 @@ const evaluarRiesgos = (contexto) => {
   const ctx = contexto || {};
   for (const plantilla of BIBLIOTECA_RIESGOS) {
     if (soloContrato && RIESGOS_SOLO_CONSTRUCTORA.has(plantilla.id)) continue;
+    if (!soloContrato && RIESGOS_SOLO_DEPENDENCIA.has(plantilla.id)) continue;
 
     // La ficha que llevan los tres estados que NO disparan. No lleva `detect`
     // ni `requiere`: quien consume un hueco no tiene nada que ejecutar.
@@ -19465,11 +19711,17 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
     return n;
   }));
 
+  // Las dos fechas del art. 63 nacen vacías como todas las demás, y vacías
+  // quieren decir «no se puede medir el plazo», no «hoy». Ponerles la fecha
+  // del día al crear el renglón —como hace la estimación nueva del lado
+  // constructora con `fechaFact`— arrancaría el reloj de ley el día de la
+  // captura, que es un hecho inventado sobre el expediente.
   const nueva = () => setEstimaciones(es => [...es, {
     no: Math.max(0, ...es.map(e => Number(e?.no) || 0)) + 1,
     monto: 0, periodo: "", periodoIni: "", periodoFin: "",
     estatus: ESTATUS_ESTIMACION_DEPENDENCIA[0],
     fechaRecepcion: "", recibidaPor: "", adjuntos: [],
+    fechaAutorizacion: "", fechaPago: "",
   }]);
 
   // Adjuntar carátula o factura. Sube primero a Storage y después escribe la
@@ -19641,11 +19893,18 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
           —cuánto lleva reclamado el contratista contra el contrato— no se
           podía ver de ningún modo. */}
       {renglones.length > 0 && <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:940}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:1210}}>
           <thead>
             <tr>
+              {/* Las dos columnas nuevas van PEGADAS AL ESTATUS y no al final:
+                  el reloj del art. 63 lo arranca el estatus «Autorizada», así
+                  que leído de izquierda a derecha el renglón cuenta la
+                  historia en orden —en qué paso va, cuándo se autorizó y se
+                  pagó, cuánto plazo queda—. Al final de la fila, detrás del
+                  expediente, el plazo de ley se leería como un adorno. */}
               {['Nº','Periodo de ejecución','Monto','Acumulado','% contrato',
-                'Recibida en ventanilla','Días en presentarla','Estatus','Expediente','']
+                'Recibida en ventanilla','Días en presentarla','Estatus',
+                'Autorizada → pagada','Plazo de ley (art. 63)','Expediente','']
                 .map((l,k) =>
                   <th key={l+k} scope="col"
                     style={{padding:"6px 7px",borderBottom:`1px solid ${C.border}`,
@@ -19666,6 +19925,12 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
                 : dias < 0
                   ? { color: C.yellow, texto: `${-dias} d ANTES del cierre` }
                   : { color: C.blue,   texto: `${dias} d` };
+              // El plazo del art. 63 de este renglón. Sale de la MISMA función
+              // que alimenta la tarjeta de riesgo `ctr_003` y, por ella, el
+              // informe que se archiva: si fueran dos cuentas, la pastilla
+              // podría decir «12 d de plazo» mientras el papel acusa el mismo
+              // renglón de vencido.
+              const reloj = relojDePagoDependencia(e);
               const celda = {padding:"5px 7px",borderBottom:`0.5px solid ${C.border}`,
                 verticalAlign:"middle",whiteSpace:"nowrap"};
               const num = {...celda, textAlign:"right", fontVariantNumeric:"tabular-nums"};
@@ -19730,6 +19995,38 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
                       </Sel>
                     : <Bdg color={col} small>{e.estatus||"—"}</Bdg>}
                 </td>
+                {/* Las dos fechas del art. 63, una junto a otra como las del
+                    periodo: son los dos extremos de un mismo plazo y partirlas
+                    en dos columnas obliga a cruzar el renglón para leerlo. */}
+                <td style={celda}>
+                  {editar
+                    ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        <Inp type="date" value={e.fechaAutorizacion||""} style={{fontSize:10,minWidth:108}}
+                          aria-label={`Fecha de autorización de la ${rotuloEstimacion(e)}`}
+                          onChange={ev=>actualiza(i,{fechaAutorizacion:ev.target.value})}/>
+                        <span style={{color:C.textMut}}>→</span>
+                        <Inp type="date" value={e.fechaPago||""} style={{fontSize:10,minWidth:108}}
+                          aria-label={`Fecha de pago de la ${rotuloEstimacion(e)}`}
+                          onChange={ev=>actualiza(i,{fechaPago:ev.target.value})}/>
+                      </div>
+                    : <span style={{color:C.textSec}}>
+                        {e.fechaAutorizacion || "—"} → {e.fechaPago || "—"}
+                      </span>}
+                </td>
+                {/* EL PLAZO DE LEY, y las tres cosas que esta celda no
+                    confunde. `reloj` es `null` cuando no hay plazo corriendo
+                    —todavía no se autoriza, así que no se debe nada— y eso se
+                    dice con letra pequeña, «sin autorizar», no con una
+                    pastilla: una pastilla gris ahí dejaría tres cuartas partes
+                    de la tabla pareciendo «no se pudo medir», y el hueco de
+                    verdad —una autorizada SIN fecha de autorización— se
+                    perdería entre ellas. Y la celda no se deja vacía, que en
+                    una tabla de dinero se lee «falta capturar». */}
+                <td style={celda} title={reloj ? reloj.sub : undefined}>
+                  {reloj
+                    ? <Bdg color={reloj.color} small>{reloj.texto}</Bdg>
+                    : <span style={{fontSize:9,color:C.textMut}}>sin autorizar</span>}
+                </td>
                 {/* Carátula y factura. Que falten se dice con todas sus letras
                     y no con una celda vacía: en una relación de estimaciones
                     un hueco se lee como «todavía no lo capturo», y aquí el
@@ -19779,7 +20076,12 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
               <td style={{padding:"7px",textAlign:"right",color:C.caliza,fontVariantNumeric:"tabular-nums"}}>
                 {obra.presupuesto > 0 ? `${NUM(total/obra.presupuesto*100, 2)}%` : "—"}
               </td>
-              <td/><td/><td/><td/><td/>
+              {/* Siete celdas vacías para las siete columnas que no se suman:
+                  recepción, días en presentarla, estatus, las dos fechas del
+                  art. 63, su plazo y el expediente, más la del botón. Si
+                  faltara una, el pie se corre y el porcentaje queda bajo otra
+                  columna. */}
+              <td/><td/><td/><td/><td/><td/><td/>
             </tr>
           </tfoot>
         </table>
@@ -19788,6 +20090,19 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
         Montos SIN IVA, como los presenta el contratista. «Días en presentarla» va del
         cierre del periodo a la recepción en ventanilla. «Acumulado» suma por número de
         estimación, de la 1 en adelante.
+        {/* LO QUE EL PLAZO NO MIDE, dicho donde se lee la columna y no sólo en
+            el código. El art. 63 arranca el plazo con la autorización Y la
+            presentación de la factura; la fecha de la factura no se captura
+            aquí, así que la cuenta sale de la autorización. Quien lee la
+            columna tiene que poder saber eso: sin la advertencia, un «8 d
+            sobre el plazo» se tomaría por un vencimiento firme cuando la
+            factura pudo llegar después. Y por qué son 20 y no el plazo del
+            contrato: a la dependencia la obliga la ley, no lo que pactó el
+            contratista. */}
+        {' '}«Plazo de ley» son los {PLAZO_PAGO_LEY_233} días naturales que el art. 63 de la
+        Ley 233 da para pagar lo autorizado, pasados los cuales corren gastos financieros.
+        Se cuentan desde la fecha de autorización; la ley los cuenta desde la autorización
+        <i> y</i> la presentación de la factura, que no se captura en esta pantalla.
         {/* Igual que en la pantalla del contratista: la leyenda de arriba sólo
             vale si todas traen número. Aquí importa más, porque esta tabla es
             el libro de entradas de la ventanilla y el acumulado es lo que la
