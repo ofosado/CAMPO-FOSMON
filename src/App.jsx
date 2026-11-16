@@ -25852,6 +25852,10 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
     { id: "usuarios", label: "Usuarios",
       visible: ["director_general","director_operaciones","admin_sistema",
                 ...ROLES_CONFIG_D].includes(rol) },
+    // Los mismos roles que `esAdminSistemaC() || esAdminSistemaD()`, que es lo
+    // que la regla de `config/branding` deja escribir. `gerente_construccion`
+    // ve este menú y NO ve esto a propósito: la regla le niega la escritura.
+    { id: "marca", label: "Marca", visible: puedeEditarMarca(rol) },
     { id: "bitacora", label: "Bitácora",
       visible: ["director_general","director_operaciones","admin_sistema"].includes(rol) },
     // Los mismos roles que `esDirectivoC() || esAdminSistemaC()` en
@@ -25861,7 +25865,7 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
       visible: ["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(rol) },
   ].filter(o => o.visible);
 
-  const enConfig = ["usuarios","bitacora","alertas","salud"].includes(screen);
+  const enConfig = ["usuarios","marca","bitacora","alertas","salud"].includes(screen);
 
   return <div ref={ref} style={{position:"relative"}}>
     <button onClick={()=>setAbierto(v=>!v)}
@@ -25912,6 +25916,209 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
         )}
       </div>
     )}
+  </div>;
+}
+
+// ── LA MARCA DE LA ORGANIZACIÓN, PUESTA DESDE LA APP ───────────────────────
+//
+// QUÉ FALTABA. La cadena de la marca estaba completa salvo la puerta de
+// entrada: `orgs/{oid}/config/branding` se lee al entrar, el logo se pinta
+// junto al saludo, y `firestore.rules` ya deja escribirlo al admin de cada
+// organización. Lo único que no existía era el sitio donde alguien lo
+// *pusiera*: el alta de organización manda `empresa`, `empresaCorta` y
+// `dominio` y no tiene campo de logo, y después no había pantalla. En
+// producción eso se nota en que NINGUNA organización tiene logo —ni el
+// municipio ni FOSMON, cuyo documento de marca no existe—.
+//
+// QUIÉN ENTRA, Y POR QUÉ ESTOS ROLES Y NO LOS DEL MENÚ. Los mismos que
+// `esAdminSistemaC()` y `esAdminSistemaD()` en `firestore.rules`, que son los
+// que la regla deja escribir. NO son los de `ROLES_CONFIG_C`: ésa incluye
+// `gerente_construccion`, al que la regla niega la escritura. Ofrecerle la
+// pantalla sería ofrecerle un botón que termina en `permission-denied`.
+const ROLES_MARCA_C = ["director_general","director_operaciones","admin_sistema"];
+const ROLES_MARCA_D = ["director_obras","subdirector"];
+const puedeEditarMarca = (rol) =>
+  ROLES_MARCA_C.includes(rol) || ROLES_MARCA_D.includes(rol);
+
+// EL LOGO SE GUARDA EN EL PROPIO DOCUMENTO, como data URI, y no en Storage.
+// El campo es el `src` de un `<img>`, así que acepta las dos cosas; lo que
+// decide es que un documento de Firestore viaja con la sesión y funciona sin
+// red —la app es una PWA y el saludo es lo primero que se pinta—, mientras una
+// URL de Storage pide otra petición, otra regla y un objeto que alguien puede
+// borrar por debajo dejando el `<img>` roto.
+//
+// Lo que eso impone es un TOPE, y de ahí salen estas dos medidas. Un documento
+// de Firestore no pasa de 1 048 487 bytes contando TODO lo demás que va en el
+// mismo documento, así que el logo se acota muy por debajo: lo que se pinta
+// mide 34 px de alto y 110 de ancho como máximo, y 220 px de lado cubre el
+// doble para una pantalla retina.
+const LOGO_LADO_MAX = 220;
+const LOGO_TOPE_BYTES = 120 * 1024;
+const TOPE_DOCUMENTO_FIRESTORE = 1048487;
+
+// La medida a la que se reduce, conservando la proporción y SIN AGRANDAR: un
+// escudo de 80 px estirado a 220 se ve peor que pequeño, y además pesaría más.
+const medidaDelLogo = ({ ancho, alto }, ladoMax = LOGO_LADO_MAX) => {
+  const a = Math.max(1, Math.round(ancho || 0));
+  const h = Math.max(1, Math.round(alto || 0));
+  const lado = Math.max(a, h);
+  if (lado <= ladoMax) return { w: a, h };
+  const k = ladoMax / lado;
+  return { w: Math.max(1, Math.round(a * k)), h: Math.max(1, Math.round(h * k)) };
+};
+
+// Lo que se afirma no es "la imagen es chica": es cuántos bytes va a ocupar el
+// campo. Un data URI es ASCII, así que su longitud ES su peso en el documento.
+const veredictoDelLogo = (dataURI) => {
+  const bytes = String(dataURI || '').length;
+  return { bytes, tope: LOGO_TOPE_BYTES, cabe: bytes > 0 && bytes <= LOGO_TOPE_BYTES };
+};
+
+const kb = (bytes) => `${(bytes / 1024).toFixed(0)} KB`;
+
+// Del archivo que el usuario elige al data URI acotado. El SVG pasa tal cual
+// —es vector, no hay nada que reducir— y el resto se redibuja en un canvas a
+// la medida de arriba y sale en PNG, que conserva la transparencia: un escudo
+// municipal en JPEG llega con un recuadro blanco alrededor.
+async function logoDesdeArchivo(archivo) {
+  const bruto = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('el archivo no se pudo leer'));
+    fr.readAsDataURL(archivo);
+  });
+  if (archivo.type === 'image/svg+xml')
+    return { dataURI: bruto, w: null, h: null, vector: true };
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('el navegador no pudo abrir el archivo como imagen'));
+    i.src = bruto;
+  });
+  const { w, h } = medidaDelLogo({ ancho: img.naturalWidth, alto: img.naturalHeight });
+  const lienzo = document.createElement('canvas');
+  lienzo.width = w; lienzo.height = h;
+  lienzo.getContext('2d').drawImage(img, 0, 0, w, h);
+  return { dataURI: lienzo.toDataURL('image/png'), w, h, vector: false };
+}
+
+function PantallaMarca({usuario, marca, onMarca}){
+  const [pend, setPend] = useState(null);
+  const [problema, setProblema] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [guardado, setGuardado] = useState(false);
+
+  // El que la app pinta hoy, con la MISMA preferencia que el encabezado: así
+  // esta pantalla no puede enseñar un logo distinto del que el usuario ve
+  // arriba. `logoBlanco` es el del fondo claro, que es donde se pinta.
+  const actual = marca?.logoBlanco || marca?.logoNegro || null;
+
+  const elegir = async (e) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setProblema(""); setGuardado(false); setPend(null);
+    let hecho;
+    try { hecho = await logoDesdeArchivo(archivo); }
+    catch (err) { setProblema(err.message); return; }
+    const v = veredictoDelLogo(hecho.dataURI);
+    if (!v.cabe) {
+      setProblema(`Reducido pesa ${kb(v.bytes)} y el tope es ${kb(v.tope)}. `
+        + (hecho.vector
+          ? 'Es un SVG con mucho detalle; conviene exportarlo a PNG.'
+          : 'Conviene recortar el margen vacío alrededor del escudo.'));
+      return;
+    }
+    setPend({ ...hecho, bytes: v.bytes, nombre: archivo.name });
+  };
+
+  const guardar = async () => {
+    setGuardando(true); setProblema("");
+    try {
+      await setDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`),
+        { logoBlanco: pend.dataURI }, { merge: true });
+      // La marca de la sesión se actualiza con lo que SE ESCRIBIÓ, para que el
+      // saludo lo enseñe sin recargar. No se vuelve a leer: lo que se pinta es
+      // lo mismo que acaba de quedar en el documento.
+      onMarca({ ...(marca || {}), logoBlanco: pend.dataURI });
+      setPend(null); setGuardado(true);
+    } catch (err) {
+      setProblema(`No se guardó: ${err?.code || err?.message || err}. `
+        + 'El logo de arriba sigue siendo el que está en la base.');
+    }
+    setGuardando(false);
+  };
+
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    <Card>
+      <Tit>Marca de la organización</Tit>
+      <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:12}}>
+        El logo que acompaña al saludo en esta organización
+        {marca?.empresa ? ` · ${marca.empresa}` : ""}
+      </div>
+
+      <div style={{fontSize:10,color:C.textSec,marginBottom:6}}>Logo actual</div>
+      {actual
+        ? <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+            padding:"10px 12px",display:"flex",alignItems:"center",gap:10}}>
+            <img src={actual} alt="Logo actual de la organización"
+              style={{height:34,width:"auto",maxWidth:110,objectFit:"contain"}}/>
+            <span style={{fontSize:10,color:C.textMut}}>
+              así se ve junto al saludo
+            </span>
+          </div>
+        /* Sin logo no se pinta uno de muestra ni un marco con iniciales: el
+           hueco es la verdad, y un sustituto haría creer que ya hay algo. */
+        : <div style={{fontSize:11,color:C.textMut,background:C.bg,
+            border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px"}}>
+            Esta organización no tiene logo. La app no pinta ninguno en su lugar.
+          </div>}
+
+      <div style={{marginTop:14,fontSize:10,color:C.textSec,marginBottom:6}}>
+        {actual ? "Reemplazar" : "Subir el logo"}
+      </div>
+      <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        onChange={elegir}
+        style={{fontSize:11,color:C.textSec}}/>
+      <div style={{fontSize:9,color:C.textMut,marginTop:6}}>
+        PNG, JPG, WebP o SVG. Se reduce a {LOGO_LADO_MAX} px de lado y se guarda
+        en la organización. PNG con fondo transparente es el que mejor se ve.
+      </div>
+
+      {problema && <div style={{marginTop:10,background:alfa(C.red, 8.24),
+        border:`0.5px solid ${alfa(C.red, 33.33)}`,borderRadius:8,
+        padding:"9px 12px",fontSize:11,color:C.redDk}}>⚠ {problema}</div>}
+
+      {guardado && !pend && <div style={{marginTop:10,fontSize:11,color:C.green}}>
+        Guardado. El logo de arriba es el que ya está en la organización.
+      </div>}
+
+      {pend && <div style={{marginTop:12,background:C.bg,
+        border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          <img src={pend.dataURI} alt="Logo elegido, sin guardar"
+            style={{height:34,width:"auto",maxWidth:110,objectFit:"contain"}}/>
+          <div style={{fontSize:10,color:C.textMut,minWidth:0}}>
+            <div style={{color:C.textSec}}>{pend.nombre}</div>
+            {/* El peso se dice porque es lo que decide si cabe, y es lo que
+                el usuario puede cambiar recortando el archivo. */}
+            <div>{pend.vector ? "vector" : `${pend.w}×${pend.h} px`} · {kb(pend.bytes)}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <SecBtn onClick={()=>{setPend(null);setProblema("");}} disabled={guardando}>
+            Descartar
+          </SecBtn>
+          <button onClick={guardar} disabled={guardando}
+            style={{background:guardando?C.border:C.caliza,border:"none",borderRadius:6,
+              padding:"5px 12px",fontSize:11,fontWeight:600,
+              color:guardando?C.textMut:"#fff",
+              cursor:guardando?"not-allowed":"pointer"}}>
+            {guardando ? "Guardando…" : "Guardar logo"}
+          </button>
+        </div>
+      </div>}
+    </Card>
   </div>;
 }
 
@@ -28258,6 +28465,7 @@ export default function App(){
 
     <div style={{maxWidth:980,margin:"0 auto",padding:"14px 14px 56px"}}>
       {screen==="usuarios"&&<GestionUsuarios usuario={usuario} obras={obras} onClose={()=>setScreen("obras")}/>}
+      {screen==="marca"&&<PantallaMarca usuario={usuario} marca={marca} onMarca={setMarca}/>}
       {screen==="bitacora"&&<Bitacora obras={obras}/>}
       {screen==="salud"&&<PantallaSalud/>}
       {screen==="alertas"&&<PanelAlertas obras={obras} gpData={gpData} onCountChange={setAlertasNoLeidasCount} soloContrato={dep}/>}
