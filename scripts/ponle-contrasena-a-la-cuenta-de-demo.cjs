@@ -40,6 +40,12 @@
 //
 //     node scripts/ponle-contrasena-a-la-cuenta-de-demo.cjs --prod --escribir
 //         pide la contraseña dos veces y la pone
+//
+//     …  --correo=supervisor@cotea.com.mx
+//         la otra cuenta de la org de demo. El correo es un FLAG y no un
+//         argumento suelto a propósito: el guardarraíl de abajo rechaza
+//         argumentos sueltos porque podrían ser la contraseña, y un correo que
+//         quedara en `~/.zsh_history` no hace daño — una contraseña sí.
 
 'use strict';
 
@@ -56,8 +62,18 @@ noArranco.vigilarExcepciones();
 
 const fs = require('fs');
 
-const CORREO = 'orlando@cotea.com.mx';
+// La org de demo tiene ahora DOS cuentas —`director_obras` y `supervisor_obra`,
+// porque sin organigrama la rendición del cierre semanal no tiene destinatario
+// y no se puede enseñar—, así que el correo deja de estar clavado. Lo que NO
+// cambia es que la contraseña no entra por aquí.
+const CORREO = (process.argv.slice(2).find(a => a.startsWith('--correo='))
+  || '--correo=orlando@cotea.com.mx').slice('--correo='.length).trim().toLowerCase();
 const MINIMO = 6;   // el mínimo que impone Firebase Auth
+
+if (!CORREO.includes('@')) noArranco.sinPrecondicion(
+  `\`--correo=${CORREO}\` no parece un correo`,
+  'no sigo con un correo a medias: `getUserByEmail` diría «no existe» y eso se ' +
+  'lee como que falta sembrar la cuenta, cuando lo que falta es la arroba');
 
 // ── LA CONTRASEÑA NO PUEDE VENIR DE NINGÚN OTRO SITIO ──────────────────────
 // Se rechazan de forma explícita las tres vías que dejan rastro. No se
@@ -218,10 +234,5 @@ const idDeCorreo = (c) => String(c || '').toLowerCase().replace(/@/g, '_').repla
   console.log('LISTA. La cuenta ya tiene contraseña y el proveedor `password`');
   console.log('aparece en Auth. Lo que sigue es entrar por la app con ese correo');
   console.log('y la contraseña que acabas de teclear — este guion no la sabe más.');
-  console.log('');
-  console.log('Y una cosa que conviene hacer antes de la cita: el correo de');
-  console.log('restablecimiento que salió hoy sigue siendo válido un rato. No');
-  console.log('estorba —ese buzón no lo abre nadie— pero si alguien lo usara,');
-  console.log('cambiaría esta contraseña. Caduca solo en una hora.');
   console.log('');
 })();

@@ -23,9 +23,13 @@
 // `sembrar-dependencia-demo.cjs` todavía trae a mano
 // (`orlando@ayuntamientocoatza.gob`, cuando en producción es `@cotea.com.mx`).
 //
-// LA CONTRASEÑA NO SE PONE AQUÍ, igual que en la siembra: la identidad en Auth
-// se crea sin contraseña y la establece una persona desde la consola de
-// Firebase. Este guion no genera, no escribe y no imprime ninguna credencial.
+// LA CONTRASEÑA NO SE PONE AQUÍ. Este guion no genera, no escribe y no imprime
+// ninguna credencial. Y NO manda a la consola de Firebase, que para esto no
+// sirve: en una cuenta ya creada sólo ofrece «Reset password», y teclear una
+// contraseña se puede únicamente al CREAR el usuario — recrearlo cambiaría el
+// uid y con él se irían los claims. La teclea una persona con
+//     node scripts/ponle-contrasena-a-la-cuenta-de-demo.cjs \
+//          --prod --escribir --correo=supervisor@cotea.com.mx
 //
 // Uso:
 //   gcloud auth application-default login
