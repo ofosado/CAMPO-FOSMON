@@ -12635,13 +12635,17 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
   // que la tabla de abajo. Una obra CERRADA sigue aquí —ése es el motivo por
   // el que el cierre no la saca del tablero—; una ARCHIVADA no, y además sus
   // datos ni siquiera se cargan (ver el efecto que arma `datosPorObra`: filtra
-  // por `estado !== "archivada"`). Así que archivar sí baja esta cifra, y por
-  // eso se declara abajo en vez de dejar que el número encoja en silencio.
+  // por `estado !== "archivada"`). Así que archivar sí baja esta cifra.
+  //
+  // Ya NO se imprime como tarjeta —el total del año salió del tablero—; lo que
+  // queda de ella es la alarma `factura_sin_fecha`, que nombra obra por obra el
+  // dinero que no pudo colocarse en el año. El conteo de obras archivadas se
+  // fue con la tarjeta: era el pie de una cifra anual que ya no existe, y la
+  // alarma no habla de totales.
   const anioEnCurso = new Date().getFullYear();
   const facturado = facturadoDelAnio(
     kpisPorObra.map(({ obra, d }) => ({ obra, estimaciones: d.estimaciones || [] })),
     anioEnCurso);
-  const obrasArchivadas = obras.length - activas.length;
 
   // Personal consolidado — suma del ÚLTIMO snapshot de nómina de cada obra.
   // Misma fuente que la columna Personal de la tabla (bloque 3).
@@ -13008,7 +13012,12 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
       <div style={{marginBottom:12}}>
         <Tit>Panel principal — {fraseObrasDelTablero(activas)}</Tit>
         <div style={{fontSize:9,color:C.textMut,marginTop:-6}}>
-          Consolidado, excepciones y ranking por margen
+          {/* El orden de esta frase es el orden de los bloques, y al bajar las
+              excepciones debajo de la tabla la frase quedó describiendo un
+              tablero que ya no es. Un subtítulo que enumera en otro orden del
+              que se ve no es un detalle: es la primera instrucción de lectura
+              que recibe quien abre la pantalla. */}
+          Consolidado, ranking por margen y excepciones
         </div>
       </div>
 
@@ -13039,9 +13048,19 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
           valorSub={`${activas.length} obra${activas.length !== 1 ? 's' : ''}`}
           color={C.caliza}
         />
+        {/* EL % DEL CONTRATO ES LA ESCALA QUE FALTABA. «$14.9M» no dice si la
+            cartera va empezando o acabando; «55.4% de lo contratado» sí, y es
+            el renglón que el tablero de dependencia ya traía en sus cinco
+            cifras. El denominador es el MISMO `consolidado.contratado` que
+            imprime la tarjeta de al lado, no una suma aparte: dos cuentas del
+            mismo cociente pueden discrepar. Sin contrato capturado no hay
+            denominador y se dice, no se pone 0% (P2). */}
         <_KpiConDelta
           label="Ejecutado"
           valor={MXN(consolidado.ejecutado)}
+          valorSub={consolidado.contratado > 0
+            ? `${NUM(consolidado.ejecutado / consolidado.contratado * 100, 1)}% de lo contratado`
+            : 'sin contrato capturado no hay porcentaje'}
           deltaValor={deltaEjecutado}
           deltaSub={deltaEjecutado !== null
             ? `${MXND(deltaEjecutado)} vs semana previa`
@@ -13064,10 +13083,22 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             de "sin ejecución": aquélla matiza un total correcto, ésta avisa
             que al total le FALTA dinero. No se ajusta la cifra porque no se
             sabe cuánto falta; inventar el ajuste sería peor que declararlo. */}
+        {/* El renglón decía de qué estaba hecha la cifra —«GP + maquinaria +
+            otros»— y eso es la procedencia, no la escala: nombra tres sistemas
+            internos y no ayuda a leer si $9.2M es mucho o poco. En su lugar va
+            el mismo cociente que la tarjeta de Ejecutado, contra el MISMO
+            `consolidado.contratado`. Dos guardas, no una: sin GP la cifra de
+            arriba ya dice «no disponible» y un porcentaje de nada sería peor
+            que el rótulo que se fue; y sin contrato capturado no hay
+            denominador, que se declara en vez de imprimir 0% (P2). */}
         <_KpiConDelta
           label="Gastado"
           valor={gpDisponible ? MXN(consolidado.gastado) : 'no disponible'}
-          valorSub={gpDisponible ? "GP + maquinaria + otros" : 'sin dato de GP'}
+          valorSub={!gpDisponible
+            ? 'sin dato de GP'
+            : (consolidado.contratado > 0
+                ? `${NUM(consolidado.gastado / consolidado.contratado * 100, 1)}% de lo contratado`
+                : 'sin contrato capturado no hay porcentaje')}
           deltaValor={null}
           deltaSub={gpDisponible && sinMedirTxt ? 'incompleto: falta el gasto de GP de alguna obra' : null}
           nota={gpDisponible && sinMedirTxt
@@ -13124,62 +13155,14 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
                 : 'primera semana con nómina')}
           color={C.purpleDk}
         />
-        {/* Facturado del año. El renglón de abajo NO es un matiz: es la parte
-            del dinero que la cifra no pudo colocar en el año porque no trae
-            fecha de factura. Sin él, $181M se leen como «todo lo del año» y
-            quedan $105M invisibles. La cifra no se ajusta para taparlo —no se
-            sabe de qué año es ese dinero—, se declara. */}
-        <_KpiConDelta
-          label={`Facturado ${anioEnCurso}`}
-          valor={MXN(facturado.monto)}
-          valorSub={`${facturado.cuantas} ${facturado.cuantas === 1 ? 'estimación' : 'estimaciones'} con fecha de factura`}
-          deltaValor={null}
-          deltaSub={facturado.sinFecha.cuantas > 0
-            ? `${MXN(facturado.sinFecha.monto)} sin fecha de factura: fuera del año`
-            : (obrasArchivadas > 0 ? null : 'todas las estimaciones están fechadas')}
-          nota={[
-            facturado.montoACorregir > 0
-              ? `${MXN(facturado.montoACorregir)} ya facturados o pagados y sin fecha: ésos son el hueco que se corrige tecleando la fecha.`
-              : null,
-            facturado.montoTodaviaNo > 0
-              ? `${MXN(facturado.montoTodaviaNo)} todavía no se facturan, así que no hay fecha que teclear: no están mal, pero tampoco son del año.`
-              : null,
-            obrasArchivadas > 0
-              ? `${obrasArchivadas} obra${obrasArchivadas > 1 ? 's' : ''} archivada${obrasArchivadas > 1 ? 's' : ''}: su facturación no entra a esta cifra.`
-              : null,
-          ].filter(Boolean).join(' ') || null}
-          color={C.purple}
-        />
-      </div>
-
-      {/* BLOQUE 2 — Requiere atención */}
-      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:6}}>
-        Requiere atención
-      </div>
-      <div style={{marginBottom:14}}>
-        {excepciones.length === 0 ? (
-          <div style={{fontSize:11,color:C.textMut,padding:"6px 4px",fontStyle:"italic"}}>
-            Ninguna obra requiere atención esta semana.
-          </div>
-        ) : (
-          excepciones.map((e, i) => (
-            <div key={i}
-                 onClick={() => onSelectObra && onSelectObra(e.obraId)}
-                 style={{background:C.bg,borderRadius:6,padding:"7px 11px",marginBottom:4,
-                         cursor:"pointer",display:"flex",alignItems:"center",gap:8,
-                         borderLeft:`3px solid ${
-                           e.tipo === 'sin_captura' ? C.yellow :
-                           e.tipo === 'caida_margen' ? C.red :
-                           // Un gasto sin medir no es una mala noticia: es una
-                           // noticia ausente. Gris, no naranja.
-                           e.tipo === 'gasto_sin_medir' ? C.textMut :
-                           C.orange
-                         }`}}>
-              <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
-              <span style={{fontSize:11,color:C.textMut}}>›</span>
-            </div>
-          ))
-        )}
+        {/* AQUÍ ESTABA «Facturado 2026», y se fue por pedido expreso: la cifra
+            del año no es la pregunta que este tablero contesta. Lo que NO se
+            fue es el cálculo: `facturadoDelAnio` sigue alimentando la alarma
+            `factura_sin_fecha` de «Requiere atención», que nombra el dinero sin
+            fecha obra por obra y es accionable por sí sola. Lo que desaparece
+            de la pantalla es el total del año —y con él, el malentendido que su
+            renglón inferior existía para evitar: ya no hay una cifra anual que
+            se pueda leer como «todo lo del año». */}
       </div>
 
       {/* BLOQUE 3 — Ranking por margen.
@@ -13424,6 +13407,43 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
           </div>
         );
       })()}
+
+      {/* BLOQUE 4 — Requiere atención. ESTABA ARRIBA, entre el consolidado y la
+          tabla, y empujaba las obras fuera de la primera pantalla: con ocho
+          alarmas había que bajar para ver la cartera, que es el objeto del
+          tablero. Abajo no pierde nada —cada renglón sigue siendo un enlace a
+          su obra— y gana contexto: se lee después de haber visto de qué obras
+          se habla. Queda al final a propósito, no por descarte: es lo último
+          que se revisa, no lo primero que se mira. */}
+      <div style={{fontSize:9,color:C.textMut,fontWeight:600,letterSpacing:"0.06em",
+                   textTransform:"uppercase",marginTop:16,marginBottom:6}}>
+        Requiere atención
+      </div>
+      <div>
+        {excepciones.length === 0 ? (
+          <div style={{fontSize:11,color:C.textMut,padding:"6px 4px",fontStyle:"italic"}}>
+            Ninguna obra requiere atención esta semana.
+          </div>
+        ) : (
+          excepciones.map((e, i) => (
+            <div key={i}
+                 onClick={() => onSelectObra && onSelectObra(e.obraId)}
+                 style={{background:C.bg,borderRadius:6,padding:"7px 11px",marginBottom:4,
+                         cursor:"pointer",display:"flex",alignItems:"center",gap:8,
+                         borderLeft:`3px solid ${
+                           e.tipo === 'sin_captura' ? C.yellow :
+                           e.tipo === 'caida_margen' ? C.red :
+                           // Un gasto sin medir no es una mala noticia: es una
+                           // noticia ausente. Gris, no naranja.
+                           e.tipo === 'gasto_sin_medir' ? C.textMut :
+                           C.orange
+                         }`}}>
+              <span style={{fontSize:11,color:C.textPri,flex:1}}>{e.texto}</span>
+              <span style={{fontSize:11,color:C.textMut}}>›</span>
+            </div>
+          ))
+        )}
+      </div>
     </Card>
   );
 }
