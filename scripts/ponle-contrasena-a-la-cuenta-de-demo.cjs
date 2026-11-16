@@ -142,11 +142,59 @@ const db = admin.firestore();
 
 const idDeCorreo = (c) => String(c || '').toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
 
+// ── QUÉ VA A VER LA SESIÓN, QUE ES LO QUE AQUÍ SE GUARDA ───────────────────
+//
+// La guarda de abajo exigía `tipo == dependencia` y nada más, porque cuando se
+// escribió la única cuenta sin contraseña era la de la demo. Con la cuenta de
+// plataforma (#147) eso se volvió falso: `soporte` tiene `tipo: null` **a
+// propósito** —el login niega la entrada a un rol cross que traiga `orgId`— y
+// la guarda la rechazaba como si el claim estuviera mal puesto.
+//
+// Lo que hay que seguir impidiendo no cambia: poner contraseña a una cuenta
+// cuyo claim la haría ver una interfaz distinta de la que quien teclea cree.
+// Así que en vez de comparar con una constante, se CLASIFICA el claim y se
+// imprime qué pantalla sale. `ROLES_CROSS` se extrae de producción en vez de
+// teclear `'soporte'`: la lista de roles que cruzan organizaciones ya está
+// escrita una vez.
+const { fuenteDe } = require('./extraer-de-app.cjs');
+const ARCH_FUNCS = process.env.ARCHIVO_FUNCS ||
+  require('path').join(__dirname, '..', 'functions/index.js');
+let ROLES_CROSS;
+try {
+  const { cuerpo } = fuenteDe(ARCH_FUNCS, ['ROLES_CROSS']);
+  ({ ROLES_CROSS } = new Function(`"use strict";\n${cuerpo}\nreturn { ROLES_CROSS };`)());
+} catch (e) {
+  noArranco.sinPrecondicion(`no se pudo leer ROLES_CROSS de ${ARCH_FUNCS}: ${e.message}`,
+    'sin esa lista no se puede distinguir una cuenta de plataforma de un claim roto, ' +
+    'y esa distinción es lo que decide si se escribe');
+}
+
+// Devuelve `{ pantalla, problema }`. `problema` no nulo es NO ARRANCÓ.
+function loQueVeria(claims) {
+  const rol = claims.rol;
+  if (!rol) return { problema: 'el claim no trae `rol`, así que la sesión no sabría qué es' };
+  if (ROLES_CROSS.includes(rol)) {
+    // Mismo criterio que src/App.jsx:10275, y por el mismo motivo: una sesión
+    // de plataforma con organización asignada no sabría si es de plataforma o
+    // de ese cliente, y el login la saca en voz alta.
+    if (claims.orgId) return { problema:
+      `es un rol de plataforma (\`${rol}\`) pero trae la organización ` +
+      `\`${claims.orgId}\`; el login niega la entrada con ese claim` };
+    return { pantalla: 'la pantalla de PLATAFORMA — alta de clientes, sin operación' };
+  }
+  if (claims.tipo === 'dependencia') return { pantalla: 'la interfaz de dependencia → informe del Art. 73' };
+  if (claims.tipo === 'constructora') return { problema:
+    'es una cuenta de CONSTRUCTORA: vería el documento interno, con el margen ' +
+    'del contratista. Si eso es lo que quieres, este guion no es el camino' };
+  return { problema: `el claim \`tipo\` dice \`${claims.tipo}\` y no es ni dependencia ` +
+    'ni constructora ni plataforma: la sesión no se puede montar' };
+}
+
 (async () => {
   // ── LA CUENTA, Y LAS DOS COSAS QUE LA HACEN SERVIR ───────────────────────
   // Se miden siempre, también en el ensayo: poner la contraseña de una cuenta
-  // cuyo claim no diga `dependencia` dejaría a Oscar enseñando la interfaz de
-  // constructora —con el margen del contratista— en la cita.
+  // cuyo claim diga otra cosa dejaría a quien la teclea enseñando una interfaz
+  // que no es la que cree —en la cita, el margen del contratista.
   let u;
   try { u = await auth.getUserByEmail(CORREO); }
   catch (e) {
@@ -165,11 +213,10 @@ const idDeCorreo = (c) => String(c || '').toLowerCase().replace(/@/g, '_').repla
   console.log(`  uid:             ${u.uid}`);
   console.log(`  deshabilitada:   ${u.disabled}`);
   console.log(`  ya tiene clave:  ${yaTienePass ? 'SÍ — esto la REEMPLAZA' : 'no'}`);
-  console.log(`  claim tipo:      ${claims.tipo}` +
-    (claims.tipo === 'dependencia'
-      ? '   → verá el informe del Art. 73'
-      : '   ⚠ NO es dependencia: vería el documento interno, con el margen'));
-  console.log(`  claim rol/org:   ${claims.rol} / ${claims.orgId}`);
+  const veria = loQueVeria(claims);
+  console.log(`  claim rol/tipo:  ${claims.rol} / ${claims.tipo}`);
+  console.log(`  claim org:       ${claims.orgId === null ? 'null (ninguna, es de plataforma)' : claims.orgId}`);
+  console.log(`  al entrar verá:  ${veria.pantalla || `⚠ ${veria.problema}`}`);
   console.log(`  perfil del login: usuarios/${idPerfil}  ${perfil.exists ? 'existe' : 'NO EXISTE'}`);
   if (perfil.exists) console.log(`  saludo:          «Hola, ` +
     `${String(perfil.data().nombre || '').split(' ').find(p => p.length > 2 && !p.endsWith('.')) || '?'}!»`);
@@ -178,14 +225,21 @@ const idDeCorreo = (c) => String(c || '').toLowerCase().replace(/@/g, '_').repla
   if (u.disabled) noArranco.sinPrecondicion('la cuenta está deshabilitada',
     'habilítala: con la contraseña puesta seguiría sin poder entrar');
   if (!perfil.exists) noArranco.sinPrecondicion(`falta usuarios/${idPerfil}`,
-    'el login deriva ese id del correo tecleado (App.jsx:9825) y sin el ' +
+    'el login deriva ese id del correo tecleado (App.jsx:10207) y sin el ' +
     'documento cierra la sesión: la contraseña no serviría de nada');
   if (perfil.data().activo === false) noArranco.sinPrecondicion(
     `usuarios/${idPerfil} tiene \`activo: false\``,
     'el login lo rechaza igual que si no existiera');
-  if (claims.tipo !== 'dependencia') noArranco.sinPrecondicion(
-    `el claim \`tipo\` dice \`${claims.tipo}\``,
-    'con ese claim la sesión ve la interfaz de constructora; corrígelo primero');
+  if (veria.problema) noArranco.sinPrecondicion(veria.problema,
+    'corrige el claim primero: una contraseña puesta sobre un claim así da una ' +
+    'cuenta que entra a una pantalla que no es la que esperas, o que no entra');
+  // El perfil también tiene que decir el rol: `esPlataforma` (App.jsx:9076)
+  // decide con `usuario.rol`, que sale del documento y no del token. Un claim
+  // de soporte con un perfil sin rol monta el armazón de un cliente.
+  if (perfil.data().rol !== claims.rol) noArranco.sinPrecondicion(
+    `el perfil dice rol \`${perfil.data().rol}\` y el token dice \`${claims.rol}\``,
+    'la pantalla se elige con el perfil y los permisos con el token: ' +
+    'discrepando, la sesión ve una cosa y puede otra');
 
   if (!DESTINO.escribir) {
     console.log('La cuenta está lista para recibir una contraseña. No se tocó nada.');
