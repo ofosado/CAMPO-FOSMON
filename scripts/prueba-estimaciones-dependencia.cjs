@@ -476,8 +476,16 @@ console.log('\n5 · UN GUARDADO QUE FALLA SE VE EN LA PANTALLA');
       rutas.fijarPrefijoOrg('dependencia', 'cotea');
       let rutaUsada = null;
       // Se arma aparte, inyectando el `conOrg` real y capturando la ruta.
+      // CON EL PRELUDIO, igual que `hazBanco`. Sin él este armado se cae en
+      // cuanto cualquier trozo cosechado necesita algo del módulo: el
+      // 2026-11-15 `ESTATUS_ESTIMACION_DEPENDENCIA` pasó a nombrar la constante
+      // del estatus «Autorizada» —el acto del que la ley cuelga el plazo de
+      // pago— y este bloque reventó con un `is not defined` antes de medir la
+      // ruta del adjunto. Dos armados del mismo código con dos ámbitos
+      // distintos es el defecto; el ámbito es uno.
       const js = esbuild.transformSync(
-        `${trozos.join('\n')}\n;return subirAdjuntoEstimacion;`, { loader: 'jsx' }).code;
+        `${PRELUDIO}\n${trozos.join('\n')}\n;return subirAdjuntoEstimacion;`,
+        { loader: 'jsx' }).code;
       const subir = new Function('React', 'storageRef', 'uploadString', 'getDownloadURL',
         'fbStor', 'conOrg', 'C', `"use strict";\n${js}`)(
         React,
