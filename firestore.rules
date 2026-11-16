@@ -452,13 +452,21 @@ service cloud.firestore {
       // nada. Es el documento con el que alguien sostendría que cumplió el
       // art. 73, así que no puede depender de que la ruta se declarara.
       //
-      // `delete` NO, a diferencia de sus vecinas: un acuse que el firmante
-      // puede quitar después no acredita nada. Vive fuera de `avance/historial`
-      // porque ése se recorta a 52 semanas y el art. 74 pide cinco años.
+      // SÓLO LECTURA, y es lo que lo separa de todas sus vecinas. La escribe
+      // `rendirCierreSemanal` con el Admin SDK, que no pasa por aquí. Mientras
+      // la escribía el cliente, este bloque tuvo `create, update: if
+      // puedeEditarObraC(obraId)` —así se desplegó unas horas el 2026-11-16—, y
+      // eso dejaba que cualquiera capaz de editar la obra pusiera CUALQUIER
+      // contenido: firmar un acuse nombrando a tres mandos a los que nunca se
+      // avisó costaba una línea en la consola del navegador. Un acuse que el
+      // firmante se extiende a sí mismo no acredita nada, y éste es el papel
+      // con el que alguien sostendría que cumplió el art. 73.
+      //
+      // Vive fuera de `avance/historial` porque ése se recorta a 52 semanas y
+      // el art. 74 pide cinco años.
       match /avance/rendiciones {
         allow read: if puedeVerObraC(obraId) && !esCliente();
-        allow create, update: if puedeEditarObraC(obraId);
-        allow delete: if false;
+        allow write: if false;
       }
 
       match /nomina/historial {
@@ -756,8 +764,7 @@ service cloud.firestore {
       // dato del contratista.
       match /avance/rendiciones {
         allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
-        allow create, update: if oid == orgId() && puedeEditarObraD(obraId);
-        allow delete: if false;
+        allow write: if false;
       }
       // Incidencias. Append-only para quien captura; sólo dirección corrige.
       match /bitacora/{id} {

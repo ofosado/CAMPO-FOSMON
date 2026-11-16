@@ -4398,3 +4398,204 @@ exports.backfillClaims = onCall({ region: "us-central1" }, async (request) => {
     detalle: resultados,
   };
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// RENDIR EL CIERRE SEMANAL — art. 73 de la Ley 233 de Veracruz
+// ════════════════════════════════════════════════════════════════════════════
+//
+// POR QUÉ ESTO NO PUEDE VIVIR EN EL FRONT.
+//
+// Rendir el cierre es, mecánicamente, «buscar en el padrón quién tiene tal rol
+// en mi organización y avisarle». Pero `usuarios` es una colección raíz
+// compartida por todos los clientes, y las reglas sólo dejan LISTARLA a los
+// admin de cada org: `director_obras` y `subdirector` en dependencia,
+// `director_general`/`director_operaciones`/`admin_sistema` en constructora.
+//
+// El resultado era al revés de lo que pide la ley. Quien está obligado a rendir
+// —el residente en la constructora, el supervisor de obra en la dependencia— es
+// justo quien NO puede leer el padrón, así que su cierre no avisaba a nadie. Y
+// quien sí podía era el jefe, que no tiene a quién rendirle.
+//
+// Las dos salidas eran abrir el padrón a toda la organización —exponer nombre,
+// correo y rol de todos, incluido el contratista, que está del otro lado del
+// mostrador— o hacer el reparto aquí, donde el Admin SDK no pasa por reglas y
+// el padrón no sale nunca hacia el cliente. Esto es lo segundo: lo único que
+// cruza de vuelta son los correos de quienes SÍ recibieron el aviso.
+//
+// Y DE PASO CIERRA UN AGUJERO QUE NO ERA EL QUE SE BUSCABA.
+//
+// La constancia se escribe aquí también, no en el cliente. Mientras la escribía
+// el front, las reglas tenían que dejar que cualquiera que pudiera editar la
+// obra escribiera CUALQUIER contenido en `avance/rendiciones`: nada impedía
+// firmar un acuse nombrando a tres mandos a los que nunca se avisó. Para el
+// documento con el que alguien sostiene que cumplió la ley, eso no sirve. Ahora
+// la lista de destinatarios que queda grabada es exactamente la que esta
+// función acaba de notificar, y el cliente sólo puede leerla.
+//
+// UNA SOLA TABLA. `QUIEN_SE_ENTERA` vive únicamente aquí; el front ya no decide
+// a quién se rinde, sólo pinta lo que esta función contesta. Dos copias de la
+// misma lista en dos repos que se despliegan por separado es una discrepancia
+// esperando: la de producción sería la que estuviera más atrasada.
+
+// A quién se le rinde, por tipo de organización. Son los mandos que responden
+// por la obra ARRIBA de quien la captura — nunca el contratista ni el cliente,
+// que están del otro lado del contrato, ni el contralor, que fiscaliza el
+// expediente completo y no recibe el parte de cada semana.
+const QUIEN_SE_ENTERA = {
+  constructora: ["director_general", "director_operaciones", "gerente_construccion", "admin_sistema"],
+  dependencia: ["director_obras", "subdirector", "jefe_supervision"],
+};
+
+// Quién puede rendir: los roles que capturan avance. No es la misma lista que
+// la de arriba y no debe serlo — se cruzan en los jefes, que pueden cerrar y
+// además reciben.
+//
+// ESTO SÍ ES UNA COPIA, y de la única que no se puede evitar: el original es
+// `PERMISOS[rol].captura === "editar"` en src/App.jsx, y esa tabla no existe de
+// este lado. Sin el filtro, un `cliente` o un `auditor` —que ven la obra y no
+// la capturan— podrían invocar la callable desde el SDK, mandarle a los mandos
+// el parte de una semana que nadie cerró y dejar grabada la constancia. Como la
+// copia no se puede borrar, se mide: el banco extrae `PERMISOS` de App.jsx y
+// exige que las dos listas coincidan rol por rol, así que una divergencia sale
+// en rojo en vez de quedarse como un permiso que se abrió solo.
+const QUIEN_CIERRA = {
+  constructora: ["director_general", "director_operaciones", "gerente_construccion",
+    "admin_sistema", "superintendente", "residente", "administrador_obra"],
+  dependencia: ["director_obras", "subdirector", "jefe_supervision", "supervisor_obra",
+    "administrativo"],
+};
+
+exports.rendirCierreSemanal = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const correo = String(request.auth.token.email || "").toLowerCase();
+  if (!correo) throw new HttpsError("unauthenticated", "Token sin email.");
+
+  const { obraId, clave, obraNombre, semana, avance } = request.data || {};
+  if (!obraId || !clave) {
+    throw new HttpsError("invalid-argument", "Falta la obra o la semana que se cerró.");
+  }
+
+  const db = admin.firestore();
+  const perfilSnap = await db.doc(`usuarios/${emailAId(correo)}`).get();
+  const perfil = perfilSnap.exists ? perfilSnap.data() : null;
+  if (!perfil || perfil.activo === false) {
+    throw new HttpsError("permission-denied", "Tu usuario no está activo.");
+  }
+
+  // El `tipo` y el `orgId` salen de los CLAIMS, que es el mismo dato que
+  // evalúan las reglas de Firestore, y nunca de `request.data`: un `onCall` se
+  // invoca desde el SDK sin pasar por la interfaz, así que un `orgId` que
+  // viniera en la llamada sería el cliente eligiendo a qué padrón entrar.
+  const tipo = request.auth.token.tipo;
+  const orgId = request.auth.token.orgId;
+  if (!orgId || !QUIEN_SE_ENTERA[tipo]) {
+    throw new HttpsError("failed-precondition",
+      "Tu cuenta no pertenece a una organización que rinda cierres semanales.");
+  }
+  if (!(QUIEN_CIERRA[tipo] || []).includes(perfil.rol)) {
+    throw new HttpsError("permission-denied",
+      "Tu rol no captura avance, así que no cierra semanas.");
+  }
+  // Y la obra tiene que ser de su organización. Sin esto, un supervisor podría
+  // mandar el parte de una obra ajena a los mandos de la suya.
+  //
+  // La ruta se PREGUNTA a `rutaObrasDeOrg`, no se teclea: las obras de una
+  // constructora viven en la raíz y las de una dependencia bajo su
+  // organización. Teclear aquí `orgs/${orgId}/obras` —como estuvo escrito— deja
+  // la función correcta para el municipio y muerta para la constructora: la
+  // obra «no existe», sale `not-found`, y la pantalla pinta «el aviso no salió»
+  // sin que nada en el registro diga por qué. Se vio en el emulador, no en el
+  // banco, porque el banco se había inventado la asimetría al revés.
+  const rutaObra = `${rutaObrasDeOrg(orgId, tipo)}/${obraId}`;
+  const obraSnap = await db.doc(rutaObra).get();
+  if (!obraSnap.exists) {
+    throw new HttpsError("not-found", "Esa obra no existe en tu organización.");
+  }
+  // Quien no ve todas las obras sólo rinde las suyas. La distinción se pregunta
+  // a `ROLES_TODAS_OBRAS`, que es la misma que alimenta el claim `todas` que
+  // evalúan las reglas: teclear aquí una cuarta lista de roles sería una copia
+  // más que desincronizar.
+  if (!ROLES_TODAS_OBRAS.has(perfil.rol)) {
+    const asignadas = Array.isArray(perfil.obras_asignadas)
+      ? perfil.obras_asignadas.map(String) : [];
+    if (!asignadas.includes(String(obraId))) {
+      throw new HttpsError("permission-denied", "Esa obra no está asignada a ti.");
+    }
+  }
+
+  const roles = QUIEN_SE_ENTERA[tipo];
+  const padron = await db.collection("usuarios").where("orgId", "==", orgId).get();
+  // `correo` y no `email`: así está el documento de usuario en Firestore. Leer
+  // de `email` caía al `uid`, y una constancia que nombra un identificador
+  // opaco no nombra a nadie. `email` se consulta de segundo porque hay
+  // documentos viejos que sí lo traen.
+  //
+  // Y se excluye a quien llama: el director de Obras es a la vez quien puede
+  // cerrar y uno de los roles a los que hay que rendir, así que sin esto se
+  // extendía el acuse a sí mismo.
+  const gente = padron.docs
+    .map((d) => d.data())
+    .filter((u) => roles.includes(u.rol) && u.activo !== false && u.uid
+      && String(u.correo || u.email || "").toLowerCase() !== correo);
+
+  if (gente.length === 0) {
+    // Hueco de la organización, no fallo: nadie activo tiene esos roles. No se
+    // escribe constancia, porque no hubo rendición que acreditar.
+    return { ok: true, roles, destinatarios: [], constancia: null };
+  }
+
+  const titulo = `Cierre semanal${semana ? ` S${semana}` : ""} · ${obraNombre || obraId}`;
+  const mensaje = `Avance: ${Number(avance || 0).toFixed(1)}% · ${perfil.nombre || correo} cerró el reporte`;
+  const lote = db.batch();
+  for (const u of gente) {
+    lote.set(db.collection(`notificaciones/${u.uid}/items`).doc(), {
+      categoria: "actividad",
+      tipo: "cierre_semana",
+      titulo,
+      mensaje,
+      link: { tab: "operacion", subTab: "avance", obraId },
+      leida: false,
+      archivada: false,
+      // `FieldValue` modular, nunca `admin.firestore.FieldValue`: dentro del
+      // emulador de funciones ese namespace es `undefined` y la función moriría
+      // con «Cannot read properties of undefined». El por qué está arriba, en
+      // el `require`.
+      fecha: FieldValue.serverTimestamp(),
+      creadaPor: correo,
+    });
+  }
+  await lote.commit();
+
+  const destinatarios = gente.map((u) => u.correo || u.email);
+
+  // La constancia DESPUÉS del aviso y sólo si el aviso salió: al revés sería
+  // afirmar en el expediente una rendición que puede no haber ocurrido. Si el
+  // commit de arriba hubiera lanzado, no llegamos aquí.
+  //
+  // Vive fuera de `avance/historial` porque ése se recorta a 52 semanas y el
+  // art. 74 pide conservar el expediente cinco años.
+  let constancia = true;
+  try {
+    await db.doc(`${rutaObra}/avance/rendiciones`).set({
+      rendiciones: {
+        [clave]: {
+          en: new Date().toISOString(),
+          a: destinatarios,
+          roles,
+          porQuien: correo,
+          rol: perfil.rol,
+        },
+      },
+    }, { merge: true });
+  } catch (e) {
+    // El aviso ya salió y no se deshace. Se contesta `false` para que la
+    // pantalla pueda decir la verdad —avisados sí, acreditado no— en vez de
+    // anunciar una rendición completa.
+    console.error("rendirCierreSemanal: constancia", e);
+    constancia = false;
+  }
+
+  return { ok: true, roles, destinatarios, constancia };
+});

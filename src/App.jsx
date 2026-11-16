@@ -6936,35 +6936,24 @@ const guardarNotaSemanal = async (obraId, clave, { texto = '', sinNovedad = fals
 
 // ── LA CONSTANCIA DE A QUIÉN SE LE RINDIÓ LA SEMANA ────────────────────────
 //
-// Documento aparte, `avance/rendiciones`, por lo mismo que las notas: el
-// historial se recorta a 52 semanas y la constancia de una rendición tiene que
-// durar lo que dura el expediente —cinco años, art. 74—, no un año.
+// Vive en `avance/rendiciones`, documento aparte, por lo mismo que las notas:
+// el historial se recorta a 52 semanas y la constancia de una rendición tiene
+// que durar lo que dura el expediente —cinco años, art. 74—, no un año.
+//
+// AQUÍ YA NO SE ESCRIBE. La escribe `rendirCierreSemanal` en
+// functions/index.js, con el Admin SDK, inmediatamente después de mandar los
+// avisos. Mientras la escribía esta pantalla, las reglas tenían que dejar que
+// cualquiera capaz de editar la obra pusiera CUALQUIER contenido en esa ruta:
+// nada impedía firmar un acuse nombrando a tres mandos a los que nunca se
+// avisó. Para el papel con el que alguien sostiene que cumplió el art. 73, eso
+// no sirve de nada. Ahora la lista que queda grabada es exactamente la que la
+// función acaba de notificar, y desde el cliente la ruta es de sólo lectura.
 //
 // `a: []` NO es «se le rindió a nadie»: es que se buscó a los roles de `roles`
 // y en la organización no hay nadie activo con ninguno de ellos. Las dos cosas
 // se leen distinto y por eso los roles buscados se guardan también.
-//
-// Lo que este documento NUNCA dice es que el aviso salió cuando no salió: el
-// llamador sólo llega aquí si `notifARoles` confirmó. No lanza, por lo mismo
-// que la nota: el cierre ya está escrito.
-const guardarRendicionDelCierre = async (obraId, clave, { a = [], roles = [],
-    porQuien = null, rol = null } = {}) => {
-  if (!obraId || !clave) return false;
-  try {
-    await setDoc(docObra(obraId, 'avance', 'rendiciones'), {
-      rendiciones: { [clave]: {
-        en: new Date().toISOString(),
-        a, roles, porQuien, rol,
-      } },
-    }, { merge: true });
-    return true;
-  } catch (err) {
-    console.error('guardarRendicionDelCierre', err);
-    return false;
-  }
-};
 
-// Las tres salidas de una rendición, en la letra que se le enseña a quien
+// Las cuatro salidas de una rendición, en la letra que se le enseña a quien
 // acaba de cerrar la semana. Es una función aparte y pura para que la prueba
 // pueda preguntarle qué dice en cada caso sin montar la pantalla: el defecto
 // que esto vigila es que el cierre se vea igual cuando se rindió y cuando no.
@@ -6979,11 +6968,13 @@ const fraseDeRendicion = (r) => {
          + `hay nadie activo con el rol de ${roles || 'mando'}.` };
   // El aviso salió y la constancia no. Es una cuarta salida y hace falta
   // nombrarla: hasta el 2026-11-16 la ruta `avance/rendiciones` no estaba
-  // declarada en firestore.rules, así que caía en el `deny` del final,
-  // `guardarRendicionDelCierre` devolvía `false` sin lanzar y la pantalla
-  // seguía diciendo «Rendida a …». Aquello era verdad a medias: los mandos se
-  // enteraron, pero el expediente no lo registró, y es el expediente lo que
-  // alguien enseña dentro de un año.
+  // declarada en firestore.rules, así que caía en el `deny` del final, la
+  // escritura devolvía `false` sin lanzar y la pantalla seguía diciendo
+  // «Rendida a …». Aquello era verdad a medias: los mandos se enteraron, pero
+  // el expediente no lo registró, y es el expediente lo que alguien enseña
+  // dentro de un año. La escritura se mudó a la función, pero la salida sigue
+  // siendo posible —la función contesta `constancia: false`— y la pantalla
+  // sigue teniendo que saber decirlo.
   if (r.constancia === false) return { tono: 'sin-constancia',
     texto: `Avisado a ${r.destinatarios.join(' · ')}, pero NO quedó constancia `
          + 'en el expediente de la obra. El aviso salió; el registro que lo '
@@ -8170,23 +8161,21 @@ const crearNotifPara = async (uids, {categoria, tipo, titulo, mensaje, link, cre
 //                                      hueco de la organización, no un fallo.
 //   · `{ok:false, destinatarios:[]}`   no se pudo avisar.
 //
-// `excepto` saca un uid de la lista. Lo pide el cierre semanal y no es cosmético:
-// el director de Obras es a la vez quien puede cerrar la semana y uno de los
-// roles a los que hay que rendirla, así que sin esto la constancia del art. 73
-// quedaba diciendo que se le rindió a quien la rindió. Visto en el emulador el
-// 2026-11-16: «Rendida a jefesup@… · oscar@… · subdirector@…», cerrando como
-// oscar. Una rendición a uno mismo no sostiene una corresponsabilidad, y si el
-// que cierra es el único con rol de destino lo correcto es que la lista quede
-// vacía y la pantalla lo diga, no que se autofirme el acuse.
-const notifARoles = async (roles, payload, { excepto = null } = {}) => {
+// LO QUE ESTO NO PUEDE HACER, y por eso el cierre semanal ya no pasa por aquí:
+// la consulta a `usuarios` sólo la dejan correr las reglas si quien llama es
+// admin de su organización. Un residente o un supervisor de obra —justo quien
+// está obligado a rendir el cierre— cae en `permission-denied` y entra por el
+// `catch` de abajo, así que su aviso no llegaba a nadie. El cierre se reparte
+// ahora en `rendirCierreSemanal`, del lado del servidor, donde el padrón se lee
+// con el Admin SDK y no sale nunca hacia el cliente.
+const notifARoles = async (roles, payload) => {
   if (!Array.isArray(roles)) roles = [roles];
   try {
     const q = query(collection(fbDb, 'usuarios'), where('orgId', '==', orgIdSesion()));
     const snap = await getDocs(q);
     const gente = snap.docs
       .map(d => d.data())
-      .filter(u => roles.includes(u.rol) && u.activo !== false && u.uid
-                   && u.uid !== excepto);
+      .filter(u => roles.includes(u.rol) && u.activo !== false && u.uid);
     const ok = gente.length === 0
       ? true                                  // nada que mandar no es un fallo
       : await crearNotifPara(gente.map(u => u.uid), payload) !== false;
@@ -9004,36 +8993,22 @@ const ROLES_CROSS = ["soporte"];
 
 // ── A QUIÉN SE LE RINDE EL CIERRE SEMANAL ──────────────────────────────────
 //
-// Esto era una lista literal de cuatro nombres en el único sitio que notifica
-// el cierre, y los cuatro son de constructora. Ninguno aparece en
-// `ROLES_POR_TIPO.dependencia`, así que cuando un supervisor del municipio
-// cerraba la semana —y puede: `supervisor_obra` tiene `captura: "editar"`—
-// `notifARoles` cruzaba esos cuatro nombres contra los roles de SU
-// organización, no encontraba a nadie, y el cierre se iba sin que su superior
-// se enterara. No fallaba: callaba, que es peor, porque la pantalla decía
-// «Guardado» igual.
+// La lista NO está aquí: vive en `QUIEN_SE_ENTERA`, dentro de
+// `rendirCierreSemanal` en functions/index.js, y el front sólo pinta lo que esa
+// función contesta.
 //
-// Por eso se declara por tipo y aquí, pegado a la tabla con la que tiene que
-// concordar: un rol que no existe en su tipo no avisa a nadie mientras
-// aparenta avisar. La prueba cruza las dos listas contra `ROLES_POR_TIPO`.
+// No es una preferencia de arquitectura, es que desde el front no se puede
+// hacer. Buscar quién tiene tal rol en la organización exige LISTAR `usuarios`,
+// que es una colección raíz compartida entre todos los clientes, y las reglas
+// sólo dejan listarla a los admin de cada org. Quien está obligado a rendir
+// —el residente, el supervisor de obra— es justo quien no puede leer el
+// padrón: su cierre no avisaba a nadie. Abrir el padrón a toda la organización
+// para arreglarlo habría expuesto nombre, correo y rol de todos, incluido el
+// contratista.
 //
-// El criterio es quién responde por la obra ARRIBA de quien captura, no quién
-// quiere estar al tanto. La rendición semanal es lo que sostiene la
-// corresponsabilidad del art. 73 de la Ley 233, y un aviso que le llega a
-// todos no se lee.
-const ROLES_QUE_SE_ENTERAN_DEL_CIERRE = {
-  constructora: ["director_general", "director_operaciones",
-                 "gerente_construccion", "admin_sistema"],
-  // El mando de Obras Públicas. `contralor` NO: su papel es revisar el
-  // expediente, no recibir el parte de cada semana, y ponerlo aquí convierte
-  // al control interno en destinatario de rutina. `supervisor_obra` tampoco:
-  // es quien normalmente captura, y nadie se rinde cuentas a sí mismo.
-  // `contratista` menos: es la empresa que ejecuta, del otro lado del
-  // mostrador.
-  dependencia: ["director_obras", "subdirector", "jefe_supervision"],
-};
-const quienSeEnteraDelCierre = (tipo) => ROLES_QUE_SE_ENTERAN_DEL_CIERRE[
-  tipo === "dependencia" ? "dependencia" : "constructora"];
+// Y al moverse, la lista deja de estar duplicada. Tenerla en los dos lados
+// —dos repos que se despliegan por separado— es una discrepancia esperando, y
+// la que mandaría en producción sería la que estuviera más atrasada.
 
 // ── EL MODO DE CAPTURA POR OMISIÓN, Y QUIÉN PUEDE SALIRSE DE ÉL ────────────
 // Las obras NUEVAS nacen en volumen. En un contrato a precio unitario —que es
@@ -16875,34 +16850,22 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
         const ok = await onGuardarNota(snapshotId(snap.semana, snap.año), nota);
         if (!ok) setFalloNota(true);
       }
-      // Si es oficial, se rinde a quien responde por la obra arriba de quien
-      // capturó —`quienSeEnteraDelCierre` decide quién es eso según el tipo de
-      // organización— y queda constancia de a quién.
+      // Si es oficial, se rinde al mando que responde por la obra arriba de
+      // quien capturó, y queda constancia en el expediente de a quién y cuándo.
+      //
+      // Las dos cosas las hace `rendirCierreSemanal`, no esta pantalla: hay que
+      // leer el padrón de la organización para saber quién tiene cada rol, y
+      // las reglas sólo dejan listarlo a los admin —o sea, a casi nadie de los
+      // que cierran—. El detalle está en el comentario de la función.
       if (tipoSnapshot === "oficial" && snap) {
-        const rend = await notifARoles(quienSeEnteraDelCierre(usuario?.tipo), {
-          categoria: 'actividad', tipo: 'cierre_semana',
-          titulo: `Cierre semanal S${snap.semana} · ${obra.nombre || obra.id}`,
-          mensaje: `Avance: ${snap.avancePonderado.toFixed(1)}% · ${usuario?.nombre || usuario?.correo} cerró el reporte`,
-          link: { tab: 'operacion', subTab: 'avance', obraId: obra.id },
-          creadaPor: usuario?.correo || 'sistema',
-        }, { excepto: usuario?.uid || null });
-        // La constancia se escribe DESPUÉS del aviso y sólo si el aviso salió.
-        // Al revés sería afirmar en el expediente una rendición que puede no
-        // haber ocurrido, y éste es el documento con el que alguien sostendría
-        // que cumplió.
-        //
-        // Y si la constancia rebota, la pantalla tiene que decirlo: el aviso
-        // salió pero el expediente no lo registró, y eso no es lo mismo que
-        // haber rendido. `null` cuando no se intentó.
-        let constancia = null;
-        if (rend.ok && rend.destinatarios.length) {
-          constancia = await guardarRendicionDelCierre(obra.id, snap.id, {
-            a: rend.destinatarios, roles: rend.roles,
-            porQuien: usuario?.correo || null, rol: usuario?.rol || null });
-        }
-        // Y se dice en pantalla, siempre: que el cierre no se vea igual cuando
-        // se rindió y cuando no hubo a quién es la mitad del arreglo.
-        setRendicion({ ...rend, constancia });
+        const r = await callFn('rendirCierreSemanal', {
+          obraId: obra.id, clave: snap.id, obraNombre: obra.nombre || obra.id,
+          semana: snap.semana, avance: snap.avancePonderado,
+        });
+        // `callFn` ya no lanza: contesta `{ok:false}` si la función no
+        // respondió. Eso es exactamente el caso «el cierre quedó pero el aviso
+        // no salió», que la pantalla sabe decir.
+        setRendicion(r.ok ? r.data : { ok: false, roles: [], destinatarios: [] });
       }
       setEstado("saved");
       if(onSaved) onSaved();
