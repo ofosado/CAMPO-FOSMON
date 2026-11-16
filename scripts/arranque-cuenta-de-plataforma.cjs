@@ -38,8 +38,6 @@
 // La teclea una persona con:
 //     node scripts/ponle-contrasena-a-la-cuenta-de-demo.cjs \
 //          --prod --escribir --correo=soporte@cotea.com.mx
-// (ese guion exige `tipo: dependencia` para las cuentas de demo; para ésta hay
-// que mirar su guarda antes de correrlo — ver el aviso que imprime al final).
 //
 // Uso:
 //   gcloud auth application-default login
@@ -217,11 +215,8 @@ const auth = admin.auth();
     console.log('  2. entrar por la app: debe salir la pantalla de plataforma, no un');
     console.log('     tablero de obras. Si sale un tablero, el perfil no tiene `rol`.');
     console.log('');
-    console.log('AVISO sobre el guion de la contraseña: su guarda exige');
-    console.log('`claim tipo == dependencia` —se escribió para las cuentas de demo— y');
-    console.log('esta cuenta tiene `tipo: null` a propósito, así que saldrá NO ARRANCÓ.');
-    console.log('Eso es la guarda funcionando, no un defecto: hay que enseñarle el caso');
-    console.log('de plataforma antes de usarlo aquí.');
+    console.log('El guion de la contraseña ya conoce este caso: con un rol cross y sin');
+    console.log('organización dice «la pantalla de PLATAFORMA» y deja teclear.');
   } else {
     console.log('\nEnsayo: no se tocó nada. Agrega `--escribir` para aplicar.');
   }
