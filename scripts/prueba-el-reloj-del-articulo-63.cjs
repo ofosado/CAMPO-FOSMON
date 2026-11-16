@@ -63,6 +63,7 @@
 'use strict';
 
 const noArranco = require('./no-arranco.cjs');
+const contraprueba = require('./contraprueba.cjs');
 const { fuenteDeApp } = require('./extraer-de-app.cjs');
 noArranco.vigilarExcepciones('src/App.jsx');
 
@@ -599,25 +600,23 @@ const dondeCayo = (antes, despues) => {
   return null;
 };
 
+// LA REVISIÓN DE ANCLAJES CORRE SIEMPRE, no sólo con `--contraprueba`.
+// `scripts/pruebas.cjs` lanza los bancos sin argumentos, así que la
+// contraprueba de este archivo no la vuelve a mirar nadie después del día en
+// que se escribió, y un anclaje se queda viejo sin avisar: pasó en este mismo
+// lote —al partir la cuenta de `ctr_003` en deuda viva y falta cerrada, la
+// mutación «descuenta en silencio» dejó de aplicar y el banco siguió verde,
+// protegiendo una conducta menos de las que decía—. La guarda barata es la del
+// corredor común del repositorio, y vale lo que cuesta buscar una cadena.
+contraprueba.exigirAnclajes(
+  MUTANTES.map(([titulo, de, a]) => ({ titulo, de, a })),
+  cuerpo, { archivo: 'src/App.jsx' });
+
 if (process.argv.includes('--contraprueba')) {
   console.log('CONTRAPRUEBA · cada mutación tiene que salir en ROJO\n');
   let sobrevivieron = 0;
   for (const [titulo, de, a] of MUTANTES) {
-    const cuenta = cuerpo.split(de).length - 1;
-    if (cuenta === 0) {
-      console.error(`NO ARRANCÓ: la mutación «${titulo}» no halló su anclaje`);
-      process.exit(2);
-    }
-    if (cuenta > 1) {
-      console.error(`NO ARRANCÓ: el anclaje de «${titulo}» aparece ${cuenta} veces: ` +
-                    'mutaría un sitio que no es el que se quiere medir');
-      process.exit(2);
-    }
     const mutado = cuerpo.replace(de, a);
-    if (mutado === cuerpo) {
-      console.error(`NO ARRANCÓ: la mutación «${titulo}» no cambió nada`);
-      process.exit(2);
-    }
     const cayo = dondeCayo(cuerpo, mutado);
     if (!cayo) {
       console.error(`NO ARRANCÓ: la mutación «${titulo}» cayó fuera de las anclas conocidas`);
