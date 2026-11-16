@@ -15548,7 +15548,16 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",
       marginBottom:10,flexWrap:"wrap",gap:8}}>
       <div>
-        <Tit>Lo construido, lo programado y lo gastado</Tit>
+        {/* EL TÍTULO NOMBRA LAS CURVAS POR SU NOMBRE DE OBRA. «Lo construido,
+            lo programado y lo gastado» describía bien y no se podía buscar: un
+            residente llama a esto Curva S, y llama a sus dos trazos avance
+            programado y avance físico. El dibujo no cambió —son las mismas
+            series en los mismos pesos acumulados—, cambió cómo se le llama.
+            La gemela de dependencia NO dice «gastos» porque no dibuja gasto:
+            dice «lo pagado», que es su cuarta serie. Igualar los dos títulos
+            por simetría pondría en la pantalla del municipio el nombre de una
+            curva que la frontera del margen le quita. */}
+        <Tit>Curva S, avance programado, avance físico y gastos</Tit>
         {/* El subtítulo nombra el eje y las dos áreas, y no promete ninguna
             comparación que la gráfica no vaya a dibujar: cuáles faltan lo dice
             la leyenda, obra por obra, con el motivo. */}
@@ -15818,7 +15827,10 @@ function GraficaDelContrato({obra, historialAvance = [], subs = [], programa,
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",
       marginBottom:10,flexWrap:"wrap",gap:8}}>
       <div>
-        <Tit>Lo construido, lo programado y lo pagado</Tit>
+        {/* La gemela del tablero de constructora, con su cuarta serie. Ahí la
+            cuarta es el gasto y aquí es lo pagado: el título lo dice, porque un
+            título que nombra una curva que no se dibuja es peor que uno vago. */}
+        <Tit>Curva S, avance programado, avance físico y lo pagado</Tit>
         {/* El subtítulo nombra el eje y el sombreado, y no promete ninguna
             comparación que la gráfica no vaya a dibujar: cuáles faltan lo dice
             la leyenda, obra por obra, con el motivo. */}
@@ -16172,11 +16184,22 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
             fontWeight:400,marginTop:1}}>{glosa}</span>}
         </span>
       </div>;
+      // EL TÍTULO NOMBRA LA PREGUNTA, NO EL MÉTODO. «Proyección al término» con
+      // un subtítulo que preguntaba «Al ritmo de los últimos cierres, ¿termina
+      // dentro del plazo?» describía cómo se calcula antes de decir qué se está
+      // viendo. La pregunta retórica no la pidió el lector y no la contesta el
+      // subtítulo, la contesta el veredicto que está tres renglones abajo.
+      //
+      // EL SUPUESTO NO SE PERDIÓ CON EL SUBTÍTULO: el pie de la tarjeta sigue
+      // diciendo que supone el mismo paso de esos cierres y que es una recta, no
+      // una promesa, y `tendenciaDeRitmo` sigue poniendo los dos ritmos cuando
+      // discrepan. Ésa era la carga honesta del subtítulo y vive abajo.
+      //
+      // EL KPI DEL PDF SIGUE LLAMÁNDOSE «Proyección al término» a propósito: ahí
+      // el valor son DÍAS de desviación, no una fecha, y ponerle este rótulo a
+      // una cuenta de días sería nombrar algo que esa celda no imprime.
       return <Card>
-        <Tit>Proyección al término</Tit>
-        <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-          Al ritmo de los últimos cierres, ¿termina dentro del plazo?
-        </div>
+        <Tit>Fecha de término de obra</Tit>
         {/* EL VEREDICTO, AL FRENTE Y EN GRANDE. Con signo, porque «46 días»
             pelado se lee como lo que le convenga al lector, y con color. */}
         <div style={{textAlign:"center",padding:"6px 0 10px"}}>
@@ -16217,7 +16240,17 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
 
     {lbFoto&&<Lightbox url={lbFoto} onClose={()=>setLbFoto(null)}/>}
     <Card {...clickableCard("operacion","avance")}>
-      <Tit>Lo que pesa — avance y evidencia {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
+      {/* «REPORTE FOTOGRÁFICO», Y NO PORQUE LO DIGA LA LEY. Se buscó el término
+          legal para hablar el mismo idioma y la Ley 233 de Veracruz NO NOMBRA
+          LA FOTOGRAFÍA: medido sobre el texto publicado el 2025-02-04, cero
+          apariciones de «fotografía», «evidencia» e «imagen». No hay idioma que
+          igualar, así que el nombre es decisión nuestra.
+          Se eligió «Reporte fotográfico» y no «Evidencia fotográfica» por dos
+          razones de dentro de la app: «Evidencia» ya es el nombre de una
+          pestaña —otra cosa, la galería entera— y este bloque es una selección;
+          y el vacío de esta misma tarjeta ya dice «Sin evidencia fotográfica»,
+          así que el título repetiría las palabras de su propio hueco. */}
+      <Tit>Reporte fotográfico {onNavTab && <span style={{fontSize:9,color:C.textMut,fontWeight:400}}>· ver avance ›</span>}</Tit>
       {(() => {
         // La selección sale de `seleccionFotografica`, la MISMA función que arma
         // el resumen fotográfico del PDF: el corte del 80% del contrato por
