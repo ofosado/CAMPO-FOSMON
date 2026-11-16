@@ -1386,6 +1386,21 @@ async function generarPDFArt73({
     ...(contr.objeto ? [['Objeto:', contr.objeto]] : []),
     ['Dependencia:', comoSeImprime(obra?.cliente)],
     ['Organización:', comoSeImprime(organizacion)],
+    // LOS DOS QUE RESPONDEN POR LA OBRA, que es lo que el art. 73 párr. 2 pone
+    // en este papel: «el residente de obra designado por el Ente Público,
+    // junto al superintendente de construcción o de servicios, serán
+    // CORRESPONSABLES de la calidad y debida ejecución de la obra». Hasta hoy
+    // el informe no nombraba a ninguno de los dos, aunque los dos campos ya se
+    // capturaban: un informe de corresponsabilidad sin los corresponsables
+    // deja al expediente sin saber a quién se le reclama.
+    //
+    // `supervisorDependencia` se imprime como RESIDENTE porque es la palabra
+    // de la ley para esa figura —el servidor público que el Ente Público
+    // designa POR ESCRITO, art. 62 párr. 1— y el formulario de la dependencia
+    // ya la pide con ese nombre. El `residente` del lado constructora NO es
+    // éste: es personal del contratista y no entra en este papel.
+    ['Residente de obra:', comoSeImprime(obra?.supervisorDependencia)],
+    ['Superintendente:', comoSeImprime(obra?.superintendente)],
     ['Inicio de obra:', comoSeImprime(obra?.inicio)],
     // El fin que manda es el VIGENTE, y si hay ampliación se dice: un plazo
     // ampliado que no se declara se lee como el del contrato firmado, y eso
@@ -1405,6 +1420,19 @@ async function generarPDFArt73({
     T(lineas, xR+38, yR);
     yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
   });
+
+  // POR QUÉ ESTOS DOS NOMBRES ESTÁN AQUÍ, dicho en el papel y no sólo en el
+  // código. Sin esta línea los dos renglones de arriba se leen como dos datos
+  // administrativos más; con ella, el informe dice qué obligación está
+  // cumpliendo y de dónde sale. No se usa `nota()` a propósito: esa caja mide
+  // el ancho de la columna izquierda y aquí desbordaría sobre el panel pizarra.
+  yR += 2;
+  st(Q.mu); fs(6); fw('normal');
+  T(doc.splitTextToSize(
+    'Art. 73: el residente de obra designado por el Ente Público y el '
+    + 'superintendente de construcción o de servicios son corresponsables de la '
+    + 'calidad y debida ejecución de los trabajos. La designación del residente '
+    + 'debe constar por escrito (art. 62).', PW-xR-MR), xR, yR);
 
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
@@ -24725,7 +24753,12 @@ const CAMPOS_CONTRATO = {
     { lbl:"Número de contrato",            key:"contrato",        tipo:"text" },
     { lbl:"Cliente / Dependencia",         key:"cliente",         tipo:"text" },
     { lbl:"Superintendente de obra",       key:"superintendente", tipo:"text" },
-    { lbl:"Residente de obra",             key:"residente",       tipo:"text" },
+    // «(del contratista)» no es una aclaración de cortesía: en la Ley 233 el
+    // residente de obra es el servidor público que designa el Ente Público
+    // (art. 62 párr. 1), o sea la figura CONTRARIA a la que esta clave guarda.
+    // Las dos altas tienen ahora un renglón con la palabra «residente», y sin
+    // el paréntesis son indistinguibles para quien captura las dos.
+    { lbl:"Residente de obra (del contratista)", key:"residente",  tipo:"text" },
     { lbl:"Administrador de obra",         key:"admin",           tipo:"text" },
     { lbl:"Presupuesto total (SIN IVA)",   key:"presupuesto",     tipo:"number" },
     { lbl:"Días de pago según contrato",   key:"diasPago",        tipo:"number" },
@@ -24736,8 +24769,19 @@ const CAMPOS_CONTRATO = {
       opciones: MODALIDADES_ADJUDICACION },
     { lbl:"Empresa ejecutante (razón social)",            key:"empresaEjecutante",     tipo:"text", fuente:"padron" },
     { lbl:"RFC de la empresa ejecutante",                 key:"empresaRFC",            tipo:"text", fuente:"padron" },
-    { lbl:"Supervisor por parte de la dependencia",       key:"supervisorDependencia", tipo:"text" },
-    { lbl:"Superintendente por parte de la constructora", key:"superintendente",       tipo:"text" },
+    // La etiqueta dice RESIDENTE y no «supervisor» porque es la figura que
+    // nombra la ley y porque es la que el informe del art. 73 imprime: el campo
+    // y el papel tienen que llamar igual a la misma persona, o el informe
+    // publica bajo un rótulo legal a quien se capturó bajo otro.
+    //
+    // No son sinónimos en la Ley 233: el residente lo designa el Ente Público
+    // por escrito (art. 62 párr. 1) y es quien autoriza las estimaciones para
+    // pago (art. 62 párr. 3), mientras que «supervisión» es otra figura, que
+    // puede ser externa y por contrato (art. 2 fracc. XXII-XXIII). La clave
+    // `supervisorDependencia` se queda como está: renombrarla obligaría a
+    // migrar los documentos de las obras vivas para no cambiar nada que se vea.
+    { lbl:"Residente de obra (lo designa la dependencia)",  key:"supervisorDependencia", tipo:"text" },
+    { lbl:"Superintendente de construcción (contratista)",  key:"superintendente",       tipo:"text" },
     { lbl:"Monto contratado (SIN IVA)",    key:"presupuesto",     tipo:"number" },
     { lbl:"Origen de los recursos",        key:"origenRecursos",  tipo:"text" },
   ],

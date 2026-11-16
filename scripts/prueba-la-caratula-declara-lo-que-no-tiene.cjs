@@ -42,8 +42,11 @@
 //       0127 (residente y admin vacíos) y con la de la 0128 («N/A» en los
 //       dos). Se mira QUÉ TEXTO sale AL LADO DE QUÉ ETIQUETA: la posición es la
 //       afirmación. Y se mira lo que NO sale: ninguno de los dos rotula un
-//       cargo de obra, así que el nombre del superintendente no aparece en
-//       ninguna parte y no hay renglón donde pueda caer prestado.
+//       cargo de obra ni abre casillas de firma, así que no hay renglón donde
+//       un nombre pueda caer prestado. El informe del Art. 73 SÍ nombra al
+//       superintendente desde el 2026-11-15 —el art. 73 párr. 2 lo hace
+//       corresponsable— y lo que se exige es que salga UNA vez y junto a su
+//       propia etiqueta; en el documento interno sigue sin aparecer.
 //   §3  La expresión que está EN EL `key=` de las dos listas de rubros, sacada
 //       por AST del sitio donde vive y ejecutada contra los cinco rubros reales
 //       de la 0112. No se mira el texto del archivo: se agrupa el dinero con
@@ -459,6 +462,7 @@ try {
     for (const [etiqueta, obra] of [['0127, sin capturar', OBRA_0127],
       ['0128, con «N/A» tecleado', OBRA_0128]]) {
       const donde = `${papel} de la ${etiqueta}`;
+      const esArt73 = generar === generarPDFArt73;
       const dib = await dibujarCon(generar, obra);
       if (dib.length < 20)
         sinPrecondicion(`${donde} sólo dibujó ${dib.length} textos`,
@@ -496,11 +500,38 @@ try {
         `${donde}: no abre casillas de firma`,
         'cero apariciones de «Elaboró», «Revisó» y «Vo.Bo.»',
         verbos.join(' · ') || 'ninguna');
-      const super_ = textos.filter((t) => t.includes(obra.superintendente));
-      check(super_.length === 0,
-        `${donde}: el nombre del superintendente no se imprime en ninguna parte`,
-        `cero apariciones de «${obra.superintendente}»`,
-        super_.length ? `${super_.length} en «${String(super_[0]).slice(0, 40)}»` : 'ninguna');
+      // EL NOMBRE DEL SUPERINTENDENTE: DÓNDE PUEDE ESTAR, NO SI ESTÁ.
+      //
+      // Hasta el 2026-11-15 aquí se afirmaba que no salía en ninguna parte de
+      // ninguno de los dos papeles, y para el documento interno sigue siendo
+      // eso. Para el informe del Art. 73 ya no puede ser: el art. 73 párr. 2
+      // hace al superintendente CORRESPONSABLE de la calidad y debida
+      // ejecución junto al residente designado por el Ente Público, así que un
+      // informe que no lo nombra deja al expediente sin saber a quién se le
+      // reclama. Nombrarlo es lo correcto; por eso se imprime.
+      //
+      // Lo que este banco defiende no cambió, y se dice al derecho: el nombre
+      // no puede caer PRESTADO en un renglón que no es el suyo. Así que en el
+      // informe se exige que aparezca UNA vez y junto a «Superintendente:» —si
+      // volviera el `||` que lo hacía firmar de residente, saldría dos veces, o
+      // una junto a la etiqueta equivocada, y las dos cosas caen aquí—.
+      if (esArt73) {
+        const vSup = valorJuntoA(dib, 'Superintendente:');
+        const sueltos = textos.filter((t) => t.includes(obra.superintendente));
+        check(!vSup.falta && vSup.textos.includes(obra.superintendente)
+              && sueltos.length === 1,
+          `${donde}: el superintendente se imprime una vez y junto a su etiqueta`,
+          `una aparición de «${obra.superintendente}», bajo «Superintendente:»`,
+          vSup.falta ? 'no hay etiqueta «Superintendente:»'
+            : `${sueltos.length} aparición(es); al lado de la etiqueta: `
+              + (vSup.textos.map((t) => `«${String(t).slice(0, 34)}»`).join(' · ') || 'nada'));
+      } else {
+        const super_ = textos.filter((t) => t.includes(obra.superintendente));
+        check(super_.length === 0,
+          `${donde}: el nombre del superintendente no se imprime en ninguna parte`,
+          `cero apariciones de «${obra.superintendente}»`,
+          super_.length ? `${super_.length} en «${String(super_[0]).slice(0, 40)}»` : 'ninguna');
+      }
 
       // (c) Y EL RELLENO TECLEADO NO LLEGA A LA HOJA. En la 0128 «N/A» está en
       // `residente` y en `admin`, que ya no se imprimen; lo que se afirma es
@@ -513,7 +544,7 @@ try {
 
       // (d) LA CUENTA DE LAS AUSENCIAS, Y AL LADO DE QUÉ ETIQUETAS. El
       // documento declara exactamente las que tiene etiqueta para declarar:
-      // el número de contrato, la organización y quién lo generó. Tres.
+      // el número de contrato, la organización y quién lo generó.
       //
       // Ni una más, y aquí está lo que se defendía con `ubicacion`: ese campo
       // no existe en el modelo, ningún formulario lo escribe, y la hoja NO le
@@ -521,17 +552,26 @@ try {
       // «Ubicación:» sería reclamarle al usuario un campo que la aplicación no
       // le ofrece. La cuenta es la que lo sostiene: un renglón nuevo para un
       // campo fantasma la mueve.
+      //
+      // EL INFORME DEL ART. 73 DECLARA UNA CUARTA desde el 2026-11-15, y la
+      // cuenta la sigue de propósito: el residente que la dependencia designó
+      // por escrito. En estas dos obras el campo está vacío, y eso es un hecho
+      // sobre la CAPTURA, no sobre la obra. Dejar el renglón en blanco se
+      // leería como que no hay residente designado —que sería una afirmación
+      // sobre la dependencia— y por eso se declara. El documento interno no la
+      // trae: ese papel no publica la corresponsabilidad del art. 73.
       const declaradas = dib.filter((d) => d.texto === NO_CAPTURADO);
       const junto = declaradas.map((d) => {
         const lbl = dib.filter((q) => q.pagina === d.pagina && q.y === d.y && q.x < d.x)
           .sort((p, q) => q.x - p.x)[0];
         return lbl ? String(lbl.texto) : '—';
       });
-      const esperadas = ['Contrato:', 'Organización:', 'Generado por:'];
+      const esperadas = ['Contrato:', 'Organización:', 'Generado por:',
+        ...(esArt73 ? ['Residente de obra:'] : [])];
       check(declaradas.length === esperadas.length
         && esperadas.every((e) => junto.includes(e)),
-      `${donde}: declara las tres ausencias que sabe rotular, y ni una más`,
-      `3 declaraciones, junto a ${esperadas.join(' · ')}`,
+      `${donde}: declara las ${esperadas.length} ausencias que sabe rotular, y ni una más`,
+      `${esperadas.length} declaraciones, junto a ${esperadas.join(' · ')}`,
       `${declaradas.length} declaración(es) junto a ${junto.join(' · ') || '—'}`);
     }
   }

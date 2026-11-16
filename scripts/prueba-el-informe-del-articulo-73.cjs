@@ -18,7 +18,7 @@
 // una mal puesta aquí queda en un expediente que alguien va a leer para
 // discutir una multa cuando nadie se acuerde de cómo se generó.
 //
-// LAS SEIS AFIRMACIONES:
+// LAS SIETE AFIRMACIONES:
 //
 //   A. LA FRONTERA ESTÁ EN LA FIRMA, NO EN UN FILTRO. Al generador se le pasa
 //      la economía ENTERA del contratista —gasto de GP, nómina, maquinaria,
@@ -50,6 +50,18 @@
 //   F. LAS FOTOS SE ROTULAN «SUBIDA», NUNCA CON UNA FECHA DE EJECUCIÓN. El
 //      sistema no lee la fecha de la cámara. Un expediente que archiva una foto
 //      como «avance de la semana N» afirma por años algo que nadie capturó.
+//
+//   G. LOS CORRESPONSABLES VAN NOMBRADOS, Y SON LOS DOS QUE LA LEY NOMBRA. El
+//      art. 73 párr. 2 hace al residente designado por el Ente Público y al
+//      superintendente CORRESPONSABLES de la calidad y debida ejecución. Un
+//      informe de corresponsabilidad que no los nombra deja al expediente sin
+//      saber a quién se le reclama. Y el residente que va aquí es el de la
+//      DEPENDENCIA: imprimir en su lugar al residente del contratista —que es
+//      otra persona, guardada en otra clave, y es a quien la app le dio esa
+//      palabra— publicaría a un empleado del contratista como el servidor
+//      público designado. El banco se lo empuja al generador para medirlo.
+//      Cuando el campo no está capturado el papel lo DECLARA, que es lo único
+//      honesto en una hoja que se archiva por años.
 //
 // LAS SEMANAS SON LAS DE HOY, no unas fijas: `semanasDeVentana` arma su ventana
 // contra el reloj de la obra. Un caso con semanas tecleadas fallaría al cambiar
@@ -84,8 +96,15 @@ const ok = (c, m) => { if (c) { verdes++; console.log(`  ok   ${m}`); }
 // sólo el generador: la de B sale de la misma función que alimenta la pantalla,
 // así que el banco no tiene una segunda copia de ninguna cuenta. El cierre
 // transitivo trae el resto.
+// `camposContrato` y `NO_CAPTURADO` entran por la §G: la una dice con qué
+// rótulo se CAPTURA al residente y el papel dice con cuál se PUBLICA, y los dos
+// tienen que ser el mismo; el otro es el vocabulario de la ausencia, que el
+// banco no debe tener tecleado por su cuenta —si mañana la casa cambia
+// «(no capturado)» por otra fórmula, la aserción tiene que seguirla, no
+// contradecirla.
 const PEDIDOS = ['generarPDFArt73', 'economiaDeDependencia', 'presentacionDependencia',
-  'semanasDeVentana', 'selloDeTiempo', 'textoImprimible'];
+  'semanasDeVentana', 'selloDeTiempo', 'textoImprimible',
+  'camposContrato', 'NO_CAPTURADO'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 if (faltan.length) {
   console.error(`\nNO ARRANCÓ: faltan en ${archivo}: ${faltan.join(', ')}`);
@@ -100,7 +119,7 @@ try {
   process.exit(2);
 }
 const { generarPDFArt73, economiaDeDependencia, presentacionDependencia,
-        semanasDeVentana, textoImprimible } = APP;
+        semanasDeVentana, textoImprimible, camposContrato, NO_CAPTURADO } = APP;
 
 // La única transformación que el papel le hace a la cadena de la pantalla es
 // pasarla por la puerta de la fuente: las helvetica estándar de jsPDF sólo
@@ -115,11 +134,26 @@ const SELLO = { ms: Date.UTC(2026, 2, 15, 18, 0, 0), fuente: 'servidor' };
 // La obra se llama de modo que su nombre NO contenga el de ninguna empresa: la
 // §A mira cuántas veces aparece «FOSMON» en la hoja, y un nombre de obra que lo
 // trajera la cumpliría por accidente.
+//
+// LOS TRES NOMBRES SON DISTINTOS Y NINGUNO ES PREFIJO DE OTRO, a propósito: la
+// §G afirma que el papel publica al residente DE LA DEPENDENCIA y no al del
+// contratista, y con nombres parecidos un `includes` daría verde con el
+// equivocado impreso.
+const RESIDENTE_DEP   = 'Arq. Rosalba Uscanga Prieto';
+const SUPERINTENDENTE = 'Ing. Aldo Torres Aculteco';
+const RESIDENTE_CONTR = 'C. Melquiades Fierro Zavaleta';
+
 const OBRA = {
   id: '0131', nombre: 'Centro de convenciones', contrato: 'SIOP-2026-0131',
   cliente: 'H. Ayuntamiento de Coatzacoalcos',
   inicio: `${AÑO - 1}-02-02`, fin: `${AÑO + 1}-06-30`,
   presupuesto: 45000000, gpId: '0131', diasPago: 30,
+  supervisorDependencia: RESIDENTE_DEP,
+  superintendente: SUPERINTENDENTE,
+  // El residente del CONTRATISTA viaja en la obra porque en producción viaja:
+  // es el mismo documento. Que esté aquí es lo que permite afirmar que el papel
+  // no lo confunde con el otro, en vez de suponerlo porque la clave no se lee.
+  residente: RESIDENTE_CONTR,
 };
 
 const SEMS = semanasDeVentana(OBRA, 12);
@@ -460,11 +494,18 @@ ok(corrido.some(t => /Art\.?\s*73/.test(t)),
   'y el papel se nombra por lo que es: el informe del Art. 73');
 
 // SIN RENGLONES DE FIRMA INVENTADOS. El sistema no conoce los cargos de quien
-// suscribe: imprimir «Supervisor» y «Residente» sobre dos rayas sería inventar
-// los puestos de una organización que no los capturó.
-ok(!corrido.some(t => /^_{5,}/.test(t) || /\bResidente de obra\b/.test(t)
-                   || /Nombre y firma/i.test(t)),
-  'no hay renglones de firma ni cargos inventados');
+// suscribe: imprimir «Supervisor» y «Jefe de Obras Públicas» sobre dos rayas
+// sería inventar el organigrama de una dependencia que no lo capturó.
+//
+// ESTA ASERCIÓN YA NO PUEDE MIRAR «Residente de obra», y la §G es la razón: el
+// papel ahora SÍ nombra al residente, porque el art. 73 lo obliga. La
+// diferencia entre nombrar y inventar no está en el rótulo, está en lo que va
+// al lado: un dato capturado lleva un valor —el nombre, o la declaración de que
+// falta— y un renglón de firma lleva una raya para que alguien escriba encima.
+// Lo que se mide aquí es la raya.
+ok(!corrido.some(t => /^_{5,}/.test(t) || /Nombre y firma/i.test(t)
+                   || /^Firma del?\b/i.test(t) || /\bsello y firma\b/i.test(t)),
+  'no hay rayas de firma, ni rótulos de firma, ni cargos inventados');
 ok(dice(/no lleva renglones de firma porque el sistema no conoce los cargos/),
   'y se dice por qué no los lleva, en vez de dejar el hueco a la vista');
 ok(dice(/ORIGEN DE ESTE INFORME/) && dice(/Generado por cotea el/)
@@ -495,6 +536,103 @@ ok(textos.includes('sin fecha de subida'),
 // Ningún pie de foto afirma una fecha de obra.
 ok(!textos.some(t => /^(tomada|ejecutada|del d[íi]a|avance de la semana)/i.test(t)),
   'ningún pie de foto se rotula como fecha de ejecución ni de toma');
+
+// ══════════════════════════════════════════════════════════════════════════
+// G · LOS CORRESPONSABLES VAN NOMBRADOS, Y SON LOS DOS QUE LA LEY NOMBRA
+// ══════════════════════════════════════════════════════════════════════════
+// Art. 73 párr. 2: el residente de obra designado por el Ente Público y el
+// superintendente de construcción son CORRESPONSABLES de la calidad y debida
+// ejecución. Los dos campos ya se capturaban y ninguno se imprimía: el papel
+// que se archiva por años decía cómo iba la obra y no a quién se le reclama.
+console.log('\n── G · los dos corresponsables, nombrados ───────────────────');
+
+// EL NOMBRE QUE VA AL LADO DEL RÓTULO, no el que esté en algún sitio de la
+// hoja. La §1 dibuja el rótulo en `xR` y su valor 38 mm a la derecha, en el
+// mismo renglón; con un `includes` sobre la hoja entera, un papel que imprimiera
+// los dos nombres cruzados —el superintendente bajo «Residente»— saldría verde.
+const valorDe = (hoja, rotulo) => {
+  const i = hoja.findIndex(x => x.texto === rotulo);
+  if (i < 0) return { falta: true };
+  const lbl = hoja[i];
+  const val = hoja.slice(i + 1).find(x => x.pagina === lbl.pagina && x.y === lbl.y
+                                       && x.x > lbl.x);
+  return val ? { texto: val.texto } : { vacio: true };
+};
+
+const resid = valorDe(hoja, 'Residente de obra:');
+const supte = valorDe(hoja, 'Superintendente:');
+
+ok(resid.texto === enLaHoja(RESIDENTE_DEP),
+  `el residente designado por la dependencia va nombrado en la §1: `
+  + `«${RESIDENTE_DEP}»` + (resid.texto === undefined
+    ? ` — el rótulo ${resid.falta ? 'no está' : 'está vacío'}`
+    : ` — dice «${resid.texto}»`));
+ok(supte.texto === enLaHoja(SUPERINTENDENTE),
+  `y el superintendente de construcción también: «${SUPERINTENDENTE}»`
+  + (supte.texto === undefined ? '' : ` — dice «${supte.texto}»`));
+
+// EL RESIDENTE DEL CONTRATISTA NO ES ÉSTE, Y NO ENTRA. La app le dio la palabra
+// de la ley a la figura contraria: `obra.residente` es personal del contratista.
+// Publicarlo aquí nombraría a un empleado de la constructora como el servidor
+// público designado por el Ente Público, en el papel que el municipio archiva.
+ok(!corrido.some(t => t.includes(enLaHoja(RESIDENTE_CONTR))),
+  'el residente del CONTRATISTA no aparece en ninguna parte de la hoja');
+
+// POR QUÉ ESTÁN AHÍ, DICHO EN EL PAPEL. Sin la leyenda los dos renglones se
+// leen como dos datos administrativos más, y el informe no dice qué obligación
+// está cumpliendo ni de dónde sale.
+ok(dice(/corresponsables de la calidad y debida ejecución/),
+  'el papel dice que los dos son corresponsables de la calidad y debida ejecución');
+ok(dice(/designación del residente debe constar por escrito/),
+  'y que la designación del residente debe constar por escrito (art. 62)');
+
+// CUANDO NO ESTÁ CAPTURADO, SE DECLARA. Es el caso de la demo: las dos obras de
+// la cita traen superintendente y NO traen residente. Un rótulo con el renglón
+// en blanco se lee como que la obra no tiene residente designado —que es una
+// afirmación sobre la dependencia—; lo que pasa es que nadie lo capturó.
+const dSinNombres = datosDe({ obra: { ...OBRA,
+  supervisorDependencia: null, superintendente: undefined } });
+const hojaSinNombres = await dibujar(dSinNombres);
+for (const [rotulo, quien] of [['Residente de obra:', 'el residente'],
+                               ['Superintendente:', 'el superintendente']]) {
+  const v = valorDe(hojaSinNombres, rotulo);
+  ok(v.texto === enLaHoja(NO_CAPTURADO),
+    `sin capturar, ${quien} sale declarado como «${NO_CAPTURADO}»`
+    + (v.texto === undefined
+      ? ` — el rótulo ${v.falta ? 'desapareció' : 'quedó con el renglón en blanco'}`
+      : ` — dice «${v.texto}»`));
+}
+
+// Y UN RELLENO DE CAPTURA TAMPOCO ES UN NOMBRE. «N/A» teclado en el formulario
+// es la forma en que alguien declara que no lo sabe; imprimirlo tal cual
+// publicaría «Residente de obra: N/A» en un expediente.
+const vRelleno = valorDe(await dibujar(datosDe({
+  obra: { ...OBRA, supervisorDependencia: 'N/A' } })), 'Residente de obra:');
+ok(vRelleno.texto === enLaHoja(NO_CAPTURADO),
+  `un «N/A» capturado se publica como «${NO_CAPTURADO}», no como el nombre del residente`
+  + (vRelleno.texto === undefined ? '' : ` — dice «${vRelleno.texto}»`));
+
+// EL FORMULARIO Y EL PAPEL LLAMAN IGUAL A LA MISMA PERSONA. El informe publica
+// `supervisorDependencia` bajo el rótulo legal «Residente de obra»; si el alta
+// lo pidiera como «supervisor», el papel estaría publicando bajo un título de
+// ley a quien se capturó bajo otro, y nadie podría saber si es la persona que
+// la dependencia designó por escrito.
+const camposDep = camposContrato({ tipo: 'dependencia' });
+const campoResid = (camposDep || []).find(c => c.key === 'supervisorDependencia');
+ok(!!campoResid && /\bresidente\b/i.test(campoResid.lbl || ''),
+  'el alta de la dependencia pide al residente con la palabra que el papel imprime'
+  + (campoResid ? ` — la etiqueta dice «${campoResid.lbl}»` : ' — el campo no está'));
+
+// Y LAS DOS FIGURAS SIGUEN SIENDO DISTINGUIBLES. Del lado constructora hay otro
+// campo con la misma palabra para la figura contraria; si las dos etiquetas
+// fueran iguales, quien captura las dos altas no tendría cómo saber a quién le
+// está poniendo el nombre.
+const camposCon = camposContrato({ tipo: 'constructora' });
+const campoResidCon = (camposCon || []).find(c => c.key === 'residente');
+ok(!!campoResidCon && !!campoResid && campoResidCon.lbl !== campoResid.lbl
+   && /contratista/i.test(campoResidCon.lbl || ''),
+  'y el residente del contratista se pide con otra etiqueta, que dice de quién es'
+  + (campoResidCon ? ` — «${campoResidCon.lbl}»` : ' — el campo no está'));
 
 console.log('');
 if (fallas) {
@@ -643,6 +781,42 @@ if (process.argv.includes('--contraprueba')) {
         + "        + 'aparece con fecha de septiembre, y por eso el pie de cada una dice «subida». Este '\n"
         + "        + 'respaldo acredita QUÉ partida tiene evidencia, no CUÁNDO se ejecutó.', yf);",
         "      yf = nota('Fotografías que respaldan el avance de esta obra.', yf);") },
+
+    // ── G · los corresponsables ────────────────────────────────────────────
+    { nombre: 'el informe vuelve a no nombrar al residente designado por la dependencia',
+      hacer: () => src.replace(
+        "    ['Residente de obra:', comoSeImprime(obra?.supervisorDependencia)],\n",
+        '') },
+    { nombre: 'el informe vuelve a no nombrar al superintendente',
+      hacer: () => src.replace(
+        "    ['Superintendente:', comoSeImprime(obra?.superintendente)],\n",
+        '') },
+    // LA PEOR DE LAS SIETE, y la que justifica que el caso traiga los dos
+    // nombres: el papel publica al residente DEL CONTRATISTA como el servidor
+    // público designado por el Ente Público. No es un hueco, es una afirmación
+    // falsa sobre quién responde, firmada por cotea y archivada por años.
+    { nombre: 'el residente que se imprime es el del contratista, no el de la dependencia',
+      hacer: () => src.replace(
+        "    ['Residente de obra:', comoSeImprime(obra?.supervisorDependencia)],",
+        "    ['Residente de obra:', comoSeImprime(obra?.residente)],") },
+    { nombre: 'el residente sin capturar sale con el renglón en blanco en vez de declarado',
+      hacer: () => src.replace(
+        "    ['Residente de obra:', comoSeImprime(obra?.supervisorDependencia)],",
+        "    ['Residente de obra:', obra?.supervisorDependencia || ''],") },
+    { nombre: 'la leyenda de la corresponsabilidad no se escribe',
+      hacer: () => src.replace(
+        "  T(doc.splitTextToSize(\n"
+        + "    'Art. 73: el residente de obra designado por el Ente Público y el '",
+        "  if (false) T(doc.splitTextToSize(\n"
+        + "    'Art. 73: el residente de obra designado por el Ente Público y el '") },
+    { nombre: 'el alta vuelve a pedir al residente como «supervisor» y el papel lo publica como residente',
+      hacer: () => src.replace(
+        '{ lbl:"Residente de obra (lo designa la dependencia)",  key:"supervisorDependencia", tipo:"text" },',
+        '{ lbl:"Supervisor por parte de la dependencia",  key:"supervisorDependencia", tipo:"text" },') },
+    { nombre: 'las dos altas vuelven a llamar igual a las dos figuras contrarias',
+      hacer: () => src.replace(
+        '{ lbl:"Residente de obra (del contratista)", key:"residente",  tipo:"text" },',
+        '{ lbl:"Residente de obra (lo designa la dependencia)", key:"residente",  tipo:"text" },') },
   ];
 
   // ── QUE LA MUTACIÓN CAIGA DONDE DEBE ──────────────────────────────────────
@@ -657,9 +831,15 @@ if (process.argv.includes('--contraprueba')) {
   // Así que no se confía en el ojo: se mide DÓNDE cayó el cambio. El papel son
   // tres cuentas y nada más, y una mutación que caiga fuera de las tres no está
   // midiendo este banco.
+  // `CAMPOS_CONTRATO` entra desde la §G y no es una excepción al criterio: el
+  // papel publica `supervisorDependencia` bajo el rótulo legal «Residente de
+  // obra», así que el rótulo con el que ese campo SE CAPTURA es parte de lo que
+  // este informe afirma. Una etiqueta y la otra tienen que decir lo mismo o el
+  // papel publica bajo un título de ley a quien se capturó bajo otro.
   const ESPACIO = ['async function generarPDFArt73(',
                    'const economiaDeDependencia = (',
-                   'const presentacionDependencia = ('];
+                   'const presentacionDependencia = (',
+                   'const CAMPOS_CONTRATO = {'];
   const tramos = ESPACIO.map((ancla) => {
     const i = src.indexOf(ancla);
     if (i < 0) {
