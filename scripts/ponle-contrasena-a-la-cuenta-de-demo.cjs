@@ -96,38 +96,65 @@ if (process.argv.slice(2).some(a => !a.startsWith('--'))) noArranco.sinPrecondic
 // `echo "secreto" | node …` funcionaría, y eso es exactamente el caso que deja
 // la contraseña en el historial del shell. Pidiéndola a la terminal de verdad,
 // esa forma no existe: sin terminal el guion se para.
+//
+// SE LEE SÍNCRONO, Y ESO NO ES PEREZA. La versión anterior usaba un
+// `fs.createReadStream` por prompt y creía apagarle el modo crudo con
+// `entrada.setRawMode(...)` — método que un `fs.ReadStream` NO tiene; es de
+// `tty.ReadStream`. Consecuencias medidas, no supuestas: el stream del primer
+// prompt quedaba vivo con una lectura en vuelo sobre la terminal y se COMÍA
+// teclas del segundo. Teclando `abc` las dos veces, la segunda llegaba como
+// `b`, y el guion culpaba a la persona con «las dos no coinciden». Un
+// `fs.readSync` byte a byte no deja nada en vuelo que pueda robar teclas, y el
+// fd se cierra en el `finally` del mismo prompt que lo abrió.
+const ttyMod = require('tty');
+
+// Borrar un carácter no es borrar un byte: en UTF-8 una `ñ` ocupa dos y una
+// `é` también. Quitar uno dejaría medio carácter y la contraseña se volvería
+// otra sin que nada lo diga.
+function sinElUltimoCaracter(bytes) {
+  let i = bytes.length - 1;
+  while (i >= 0 && (bytes[i] & 0xc0) === 0x80) i--;   // continuaciones 10xxxxxx
+  return bytes.slice(0, Math.max(0, i));
+}
+
 function pedirOculta(rotulo) {
-  return new Promise((resolve, reject) => {
-    let tty;
-    try { tty = fs.openSync('/dev/tty', 'r+'); }
-    catch { return reject(new Error('sin terminal')); }
+  if (!process.stdin.isTTY) throw new Error('sin terminal');
 
-    fs.writeSync(tty, rotulo);
-    const entrada = fs.createReadStream('', { fd: tty, autoClose: false });
-    entrada.setRawMode?.(true);
-    if (entrada.setRawMode) entrada.setRawMode(true);
-    else if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  let fd;
+  try { fd = fs.openSync('/dev/tty', 'r+'); }
+  catch { throw new Error('sin terminal'); }
+  if (!ttyMod.isatty(fd)) { fs.closeSync(fd); throw new Error('sin terminal'); }
 
-    let acc = '';
-    entrada.on('data', (buf) => {
-      for (const ch of buf.toString('utf8')) {
-        if (ch === '\r' || ch === '\n') {
-          if (entrada.setRawMode) entrada.setRawMode(false);
-          fs.writeSync(tty, '\n');
-          entrada.pause();
-          entrada.removeAllListeners('data');
-          return resolve(acc);
-        }
-        if (ch === '\u0003') {                       // Ctrl-C
-          if (entrada.setRawMode) entrada.setRawMode(false);
-          fs.writeSync(tty, '\n');
-          return reject(new Error('cancelado'));
-        }
-        if (ch === '\u007f' || ch === '\b') { acc = acc.slice(0, -1); continue; }
-        acc += ch;
-      }
-    });
-  });
+  // `tty.ReadStream` sólo para apagar el eco: nunca se le pide un dato, así que
+  // no compite con el `readSync` de abajo por los bytes de la terminal.
+  const mando = new ttyMod.ReadStream(fd);
+  mando.pause();
+  mando.setRawMode(true);
+  fs.writeSync(fd, rotulo);
+
+  const uno = Buffer.alloc(1);
+  let bytes = [];
+  let cancelada = false;
+  try {
+    for (;;) {
+      let n;
+      try { n = fs.readSync(fd, uno, 0, 1, null); }
+      catch (e) { if (e.code === 'EAGAIN') continue; throw e; }
+      if (n === 0) break;                                  // EOF
+      const b = uno[0];
+      if (b === 0x0d || b === 0x0a) break;                  // Enter
+      if (b === 0x03 || b === 0x04) { cancelada = true; break; }   // Ctrl-C, Ctrl-D
+      if (b === 0x7f || b === 0x08) { bytes = sinElUltimoCaracter(bytes); continue; }
+      bytes.push(b);
+    }
+  } finally {
+    mando.setRawMode(false);
+    fs.writeSync(fd, '\n');
+    mando.destroy();                 // cierra el fd: no se vuelve a cerrar aquí
+  }
+
+  if (cancelada) throw new Error('cancelado');
+  return Buffer.from(bytes).toString('utf8');
 }
 
 let admin;
