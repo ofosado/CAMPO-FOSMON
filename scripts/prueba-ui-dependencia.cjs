@@ -1175,8 +1175,17 @@ const montarGP = () => {
   const PEDIDOS = [
     [/empresa ejecutante/i,                          'la empresa ejecutante, por razón social'],
     [/rfc/i,                                         'su RFC'],
-    [/supervisor por parte de la dependencia/i,      'el supervisor por parte de la dependencia'],
-    [/superintendente por parte de la constructora/i,'el superintendente por parte de la constructora'],
+    // LA PALABRA ES «RESIDENTE», NO «SUPERVISOR», y el cambio no es de estilo:
+    // la Ley 233 llama residente de obra al servidor público que el Ente
+    // Público designa POR ESCRITO (art. 62 párr. 1), lo hace corresponsable de
+    // la calidad y debida ejecución (art. 73 párr. 2) y es quien autoriza las
+    // estimaciones para pago (art. 62 párr. 3). La «supervisión» es otra
+    // figura, que puede ser externa y por contrato. El informe del art. 73
+    // publica este campo bajo el rótulo legal, así que el alta tiene que
+    // pedirlo con el mismo nombre: la §G de
+    // `prueba-el-informe-del-articulo-73.cjs` afirma las dos puntas juntas.
+    [/residente de obra.*dependencia/i,              'el residente de obra que designa la dependencia'],
+    [/superintendente de construcción/i,             'el superintendente de construcción, del contratista'],
     [/número de contrato/i,                          'el número de contrato'],
     [/modalidad de adjudicación/i,                   'la modalidad de adjudicación'],
     [/monto contratado/i,                            'el monto contratado'],
