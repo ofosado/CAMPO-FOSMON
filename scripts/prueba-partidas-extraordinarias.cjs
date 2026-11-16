@@ -121,6 +121,11 @@ const DEL_ENTORNO = {
   getDoc: async () => ({ exists: () => false, data: vacio }),
   getDocs: async () => ({ docs: [] }), getDownloadURL: async () => 'x',
   getFirestore: vacio, getIdToken: async () => '',
+  // El cierre semanal dejó de repartirse desde la pantalla y ahora llama a
+  // `rendirCierreSemanal`, así que el grafo de `Captura` arrastra `callFn` y con
+  // él el cliente de funciones. Aquí no se mide la rendición: la callable
+  // contesta vacío y basta. Sin estos dos, el banco entero no arrancaba.
+  getFunctions: vacio, httpsCallable: () => async () => ({ data: {} }),
   getIdTokenResult: async () => ({ claims: {} }),
   getStorage: vacio, initializeApp: vacio, orgIdSesion: () => 'fosmon',
   query: vacio, rutaAuditoria: () => 'auditoria', serverTimestamp: vacio,
