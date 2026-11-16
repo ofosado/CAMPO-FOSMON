@@ -25,12 +25,30 @@
 // lo que no está roto — el defecto del #126 con otra cara: el problema de una
 // lista no es que sea larga, es que sea FALSA.
 //
+// LA TARJETA DEL AÑO YA NO ESTÁ EN LA PANTALLA (2026-11-16). Se quitó por
+// pedido expreso —«me expresé mal cuando pedí la construcción»— y con ella se
+// fueron de este banco siete aserciones y cuatro mutaciones que miraban su
+// `valor`, su `deltaSub` y su `nota`. NO ES UNA PÉRDIDA DE COBERTURA, y conviene
+// dejar dicho por qué, porque borrar pruebas es exactamente lo que hace alguien
+// que quiere que el verde sea barato:
+//
+//   · La CUENTA no se fue. `facturadoDelAnio` sigue viva y sigue siendo quien
+//     parte el hueco en dos; §1, §2, §4 y §6 la miden igual que antes, y ocho
+//     de las doce mutaciones siguen aquí porque muerden la cuenta, no el JSX.
+//   · Lo que esas siete aserciones defendían era UNA LECTURA: que $181M no se
+//     leyeran como «todo lo del año». Esa mala lectura ya no es posible, no
+//     porque se declare mejor, sino porque no hay cifra anual en pantalla que
+//     se pueda leer mal. Un riesgo que se elimina no se sigue vigilando.
+//   · Lo que SÍ sobrevive en pantalla es la alarma `factura_sin_fecha`, y es la
+//     mitad accionable: nombra obra, filas y dinero, y de eso alguien puede
+//     hacer algo. Esa mitad se mide aquí abajo con más cuidado que antes,
+//     porque ahora es el único sitio donde el hueco se ve.
+//
 // QUÉ AFIRMA ESTE BANCO, Y CÓMO. No afirma que exista ningún símbolo. Saca de
 // `src/App.jsx` la cuenta y la EJECUTA; y para la pantalla no se conforma con
-// eso: saca del JSX del tablero las expresiones que de verdad se imprimen —el
-// `valor`, el `deltaSub` y la `nota` de la tarjeta, y el `texto` de la alarma—
-// y las evalúa con el resultado de la cuenta. Así el KPI y la alarma no pueden
-// publicar cifras distintas del mismo hecho: una cuenta por número.
+// eso: saca del JSX el `texto` de la alarma —la expresión que de verdad se
+// imprime— y lo evalúa con el resultado de la cuenta. Así la alarma no puede
+// publicar una cifra distinta de la que calculó: una cuenta por número.
 //
 // LAS SEIS AFIRMACIONES:
 //
@@ -41,8 +59,8 @@
 //       de cada fila — una alarma que no dice a qué renglón ir es ruido.
 //   §4. Una obra CERRADA sigue sumando al año. Es la propiedad por la que el
 //       cierre existe, y por eso se mide aquí y no sólo en las reglas.
-//   §5. La pantalla imprime lo que la cuenta dice: el total, el hueco y la
-//       partición en dos salen de la misma llamada.
+//   §5. La pantalla imprime lo que la cuenta dice: el renglón de la alarma
+//       publica las filas y el dinero que devolvió la misma llamada.
 //   §6. La basura no envenena: estatus en mayúsculas, monto en texto, fecha
 //       mal formada. Un `NaN` en este total sería un «$NaN» en el tablero.
 //
@@ -79,33 +97,13 @@ const APP = new Function(`"use strict";\n${cuerpo}\nreturn { ${PEDIDOS.join(', '
 const { facturadoDelAnio, alarmasDeFacturaSinFecha, MXN } = APP;
 
 // ── LO QUE LA PANTALLA IMPRIME, SACADO DEL JSX ─────────────────────────────
-// Se busca la tarjeta por su RÓTULO pintado, no por una variable: el día que
-// alguien renombre `facturado`, esta prueba tiene que seguir mirando la misma
-// tarjeta. Si el ancla se rompe es NO ARRANCÓ, porque lo que hay que arreglar
-// es el ancla y no se puede fingir que se midió.
-function atributosDeLaTarjeta() {
-  const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
-  let hallado = null;
-  traverse(ast, {
-    JSXOpeningElement(p) {
-      if (hallado) return;
-      const attr = p.node.attributes.find(a =>
-        a.type === 'JSXAttribute' && a.name?.name === 'label');
-      if (!attr || !attr.value) return;
-      if (!/Facturado \$\{/.test(src.slice(attr.value.start, attr.value.end))) return;
-      hallado = {};
-      for (const a of p.node.attributes) {
-        if (a.type !== 'JSXAttribute' || !a.value) continue;
-        const v = a.value.type === 'JSXExpressionContainer' ? a.value.expression : a.value;
-        hallado[a.name.name] = src.slice(v.start, v.end);
-      }
-    },
-  });
-  return hallado;
-}
-
-// El `texto` de la alarma, buscado por su etiqueta de tipo. Es el renglón que
-// el usuario lee y sobre el que pincha.
+// El `texto` de la alarma, buscado por su etiqueta de tipo —no por una
+// variable: el día que alguien renombre `facturado`, esta prueba tiene que
+// seguir mirando el mismo renglón. Si el ancla se rompe es NO ARRANCÓ, porque
+// lo que hay que arreglar es el ancla y no se puede fingir que se midió.
+//
+// Es el renglón que el usuario lee y sobre el que pincha, y desde que la
+// tarjeta del año salió del tablero es el ÚNICO sitio donde el hueco se ve.
 function textoDeLaAlarma() {
   const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
   let hallado = null;
@@ -122,13 +120,6 @@ function textoDeLaAlarma() {
   return hallado;
 }
 
-const ATTRS = atributosDeLaTarjeta();
-if (!ATTRS || !ATTRS.valor) {
-  console.error('\nNO ARRANCÓ: no se halló la tarjeta de «Facturado <año>» en el tablero.');
-  console.error('Se busca un `label` cuyo texto empiece por «Facturado ${…}».');
-  console.error('Si la tarjeta se reescribió, lo que hay que arreglar es el ancla.');
-  process.exit(2);
-}
 const TEXTO_ALARMA = textoDeLaAlarma();
 if (!TEXTO_ALARMA) {
   console.error("\nNO ARRANCÓ: no se halló la excepción `tipo: 'factura_sin_fecha'`.");
@@ -150,15 +141,12 @@ const evaluar = (expr, ambito) => {
   }
 };
 
-// Lo que la tarjeta publica, con el resumen de la cuenta de verdad.
-const pintarTarjeta = (facturado, anioEnCurso, obrasArchivadas = 0) => {
-  const ambito = { facturado, anioEnCurso, obrasArchivadas, MXN };
-  const salida = {};
-  for (const k of ['label', 'valor', 'valorSub', 'deltaSub', 'nota'])
-    if (ATTRS[k]) salida[k] = evaluar(ATTRS[k], ambito);
-  return salida;
-};
-const pintarAlarma = (a) => evaluar(TEXTO_ALARMA, { a, MXN });
+// El ámbito se le da COMPLETO, igual que el tablero: donde vive esa expresión
+// están a la vista `a` —la alarma de una obra— y también `facturado`, el
+// resumen de toda la cartera. Darle sólo `a` haría que un renglón que publica
+// el total de la cartera reventara el banco en vez de salir en rojo, o sea que
+// el defecto más probable de este renglón no se podría medir.
+const pintarAlarma = (a, facturado) => evaluar(TEXTO_ALARMA, { a, facturado, MXN });
 
 // ── EL ESCENARIO: PRODUCCIÓN, TAL COMO SE MIDIÓ ────────────────────────────
 // Los montos y los estatus salen de `medir-que-hace-archivar-una-obra.cjs
@@ -335,45 +323,33 @@ function correr() {
   // ══ §5 · LA PANTALLA IMPRIME LO QUE LA CUENTA DICE ═══════════════════════
   sec('§5 · la pantalla imprime lo que la cuenta dice, no un número tecleado aparte');
 
-  const tarjeta = pintarTarjeta(prod, 2026, 0);
-  ok(String(tarjeta.valor) === MXN(prod.monto),
-    `el valor de la tarjeta es el total de la cuenta (${MXN(prod.monto)})`,
-    `imprime ${tarjeta.valor}`);
-  ok(String(tarjeta.label).includes('2026'),
-    'y el rótulo dice de qué año habla', String(tarjeta.label));
-
-  const bajo = String(tarjeta.deltaSub || '');
-  ok(bajo.includes(MXN(prod.sinFecha.monto)),
-    `el renglón de abajo declara el hueco entero (${MXN(prod.sinFecha.monto)})`,
-    `dice: ${bajo}`);
-  ok(/fuera del a/i.test(bajo),
-    'y dice que eso queda FUERA del año, no que sea un matiz', `dice: ${bajo}`);
-
-  const nota = String(tarjeta.nota || '');
-  ok(nota.includes(MXN(prod.montoACorregir)) && nota.includes(MXN(prod.montoTodaviaNo)),
-    'la nota separa las dos mitades con sus cifras, no revuelve las ocho',
-    `dice: ${nota}`);
-
+  // Lo que se mide aquí es el renglón de «Requiere atención», no una tarjeta:
+  // el total del año salió del tablero el 2026-11-16 y con él sus aserciones
+  // (ver la nota de la cabecera). Esta mitad es la accionable, y ahora es la
+  // ÚNICA que enseña el hueco, así que se mide entera: la obra, las filas y el
+  // dinero, los tres contra lo que devolvió la cuenta.
+  //
   // La 0127 tiene que SEGUIR teniendo alarma. Si no la tiene, la cuenta dejó
   // de ver el hueco — y eso es una aserción caída, no un banco roto: por eso
   // se comprueba antes de pintar en vez de dejar que reviente al pintar.
   const a0127 = alarmas.find(a => a.obraId === '0127');
   ok(!!a0127, 'la 0127 sigue teniendo alarma que pintar',
     `alarmas: ${alarmas.map(a => a.obraId).join(' · ') || 'ninguna'}`);
-  const renglon = a0127 ? pintarAlarma(a0127) : '';
+  const renglon = a0127 ? pintarAlarma(a0127, prod) : '';
   ok(renglon.includes('EST-01') && renglon.includes('EST-02'),
     'la alarma impresa nombra las filas a las que hay que ir', renglon || '(no se pintó)');
   ok(renglon.includes(MXN(7315124 + 23813069)),
     'y publica el dinero de esa obra, el mismo que devolvió la cuenta', renglon || '(no se pintó)');
+  ok(renglon.includes(a0127 ? a0127.nombre : '\u0000'),
+    'y nombra la obra, que es a dónde lleva el enlace', renglon || '(no se pintó)');
 
-  // La archivada se confiesa. Si no, la cifra del año encoge en silencio el
-  // día que alguien archiva una obra con facturación.
-  const conArchivada = String(pintarTarjeta(prod, 2026, 2).nota || '');
-  ok(/archivada/i.test(conArchivada) && conArchivada.includes('2 obras'),
-    'con obras archivadas fuera de la cartera, la tarjeta lo dice',
-    `dice: ${conArchivada}`);
-  ok(!/archivada/i.test(nota),
-    'y sin archivadas no inventa la advertencia', `dice: ${nota}`);
+  // Y no publica el total: el renglón habla del dinero de SU obra. Si pintara
+  // el hueco entero, las dos alarmas dirían la misma cifra y el usuario leería
+  // $105M dos veces — que es la mala lectura que la tarjeta del año tenía que
+  // evitar, reapareciendo en el único sitio que queda.
+  ok(!renglon.includes(MXN(prod.sinFecha.monto)),
+    'y no publica el hueco de toda la cartera en el renglón de una obra',
+    renglon || '(no se pintó)');
 
   // ══ §6 · LA BASURA NO ENVENENA EL TOTAL ══════════════════════════════════
   sec('§6 · la basura no envenena el total — un $NaN en el tablero es peor que un cero');
@@ -394,6 +370,17 @@ function correr() {
     `salieron ${sucio.aCorregir.length}: ${sucio.aCorregir.map(f => f.estatus).join(' · ')}`);
   ok(sucio.aCorregir.some(f => f.rotulo === 'EST-03'),
     'la de fecha ilegible se trata como sin fecha, no como del año');
+
+  // «1,500.00» con coma de miles. `parseFloat` devuelve **1** —ése fue el
+  // defecto que obligó a unificar la lectura del monto en `montoDeEstimacion`—
+  // y un 1 no se ve como error, se ve como una estimación chica que nadie va a
+  // ir a buscar. Un cero sí se ve como hueco.
+  const conComa = facturadoDelAnio(UNA_OBRA([
+    { no: 1, estatus: 'Pagada', monto: '1,500.00', fechaFact: '2026-04-01' },
+  ]), 2026);
+  ok(conComa.monto !== 1,
+    'un monto con coma de miles no entra al año valiendo $1',
+    `salió ${conComa.monto}`);
   ok(facturadoDelAnio([], 2026).monto === 0 &&
      facturadoDelAnio(undefined, 2026).monto === 0,
     'y una cartera vacía da cero sin reventar');
@@ -438,46 +425,51 @@ const MUTACIONES = [
     `      texto: \`\${a.nombre} — \${a.rotulos.join(', ')} sin fecha de factura (\${MXN(a.monto)}): no suman al año\`,`,
     `      texto: \`\${a.nombre} — tiene estimaciones sin fecha de factura\`,`],
 
+  // ESTA MUTACIÓN ESTABA PODRIDA Y LA CONTRAPRUEBA ERA ROJA (2026-11-16).
+  // Buscaba una copia local del monto —`const monto = (e) => { parseFloat… }`—
+  // que ya no existe: `facturadoDelAnio` pasó a leer `montoDeEstimacion`, la
+  // misma lectura que el resto del archivo, y el anclaje se quedó apuntando al
+  // código viejo. O sea que desde ese cambio esta mutación salía como NO
+  // ARRANCÓ y no medía nada. Se reancla en la lectura de hoy, y se parte en
+  // dos porque son dos defectos distintos y sólo uno se veía antes.
   ['el monto deja de normalizarse y un texto envenena el total con NaN',
+    `  const monto = montoDeEstimacion;`,
+    `  const monto = (e) => Number(e?.monto);`],
+
+  // Y el defecto que motivó unificar la lectura: `parseFloat("1,500.00")` es
+  // **1**. Un cero se ve como hueco; un 1 se ve como una estimación chica, y
+  // nadie lo va a buscar.
+  ['la coma del monto se come la cifra y $1,500.00 entra al año como $1',
+    `  const monto = montoDeEstimacion;`,
     `  const monto = (e) => {
     const n = parseFloat(e?.monto);
     return Number.isFinite(n) ? n : 0;
-  };`,
-    `  const monto = (e) => Number(e?.monto);`],
+  };`],
 
   ['el estatus se compara crudo y una «PAGADA» deja de ser un hueco corregible',
     `  const normal = (s) => String(s || '').trim().toLowerCase();`,
     `  const normal = (s) => String(s || '');`],
 
-  ['la tarjeta se calla el hueco y $181M se leen como todo lo del año',
-    `          deltaSub={facturado.sinFecha.cuantas > 0
-            ? \`\${MXN(facturado.sinFecha.monto)} sin fecha de factura: fuera del año\`
-            : (obrasArchivadas > 0 ? null : 'todas las estimaciones están fechadas')}`,
-    `          deltaSub={null}`],
+  // AQUÍ ESTABAN CUATRO MUTACIONES MÁS, todas contra el JSX de la tarjeta del
+  // año: que se callara el hueco, que revolviera las ocho en una advertencia,
+  // que publicara el histórico en vez de lo del año, y que archivar dejara de
+  // declararse. Se fueron con la tarjeta. No se sustituyen por equivalentes
+  // sobre la alarma porque ya los hay —«manda a corregir las ocho», «deja de
+  // agrupar», «deja de nombrar la fila»— y una mutación duplicada no mide dos
+  // veces: da dos veces el mismo verde.
 
-  ['la tarjeta revuelve las ocho en una sola advertencia',
-    `          nota={[
-            facturado.montoACorregir > 0
-              ? \`\${MXN(facturado.montoACorregir)} ya facturados o pagados y sin fecha: ésos son el hueco que se corrige tecleando la fecha.\`
-              : null,
-            facturado.montoTodaviaNo > 0
-              ? \`\${MXN(facturado.montoTodaviaNo)} todavía no se facturan, así que no hay fecha que teclear: no están mal, pero tampoco son del año.\`
-              : null,`,
-    `          nota={[
-            facturado.sinFecha.monto > 0
-              ? \`\${MXN(facturado.sinFecha.monto)} sin fecha de factura.\`
-              : null,
-            null,`],
+  // Dos defectos del renglón que antes no hacía falta vigilar porque la cifra
+  // del año estaba al lado y los delataba por contraste. Ahora el renglón está
+  // solo, así que se miden: que publique el hueco de TODA la cartera (y las dos
+  // alarmas digan la misma cifra), y que deje de nombrar la obra (y el enlace
+  // no diga a dónde lleva).
+  ['el renglón de una obra publica el hueco de toda la cartera',
+    `sin fecha de factura (\${MXN(a.monto)}): no suman al año\`,`,
+    `sin fecha de factura (\${MXN(facturado.sinFecha.monto)}): no suman al año\`,`],
 
-  ['la tarjeta publica el histórico y no lo del año',
-    `          valor={MXN(facturado.monto)}`,
-    `          valor={MXN(facturado.monto + facturado.sinFecha.monto)}`],
-
-  ['archivar deja de declararse y la cifra del año encoge en silencio',
-    `            obrasArchivadas > 0
-              ? \`\${obrasArchivadas} obra\${obrasArchivadas > 1 ? 's' : ''} archivada\${obrasArchivadas > 1 ? 's' : ''}: su facturación no entra a esta cifra.\`
-              : null,`,
-    `            null,`],
+  ['el renglón deja de nombrar la obra y el enlace no dice a dónde lleva',
+    `      texto: \`\${a.nombre} — \${a.rotulos.join(', ')} sin fecha`,
+    `      texto: \`\${a.rotulos.join(', ')} sin fecha`],
 ];
 
 if (process.argv.includes('--contraprueba')) {
