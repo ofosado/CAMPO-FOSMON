@@ -115,6 +115,25 @@ const CUENTAS = [
   // 34 obras de la hoja. Un alta que nadie puede abrir se verifica sola.
   { correo: 'gerencia@fosmon.com.mx', nombre: 'Gerencia de Construcción',
     rol: 'gerente_construccion', tipo: 'constructora', orgId: 'fosmon' },
+  // Las tres últimas son UNA CADENA DE MANDO del municipio, y existen por una
+  // conducta que sin ellas no se podía mirar: a quién le llega el cierre
+  // semanal. Hasta ahora las dos cuentas de dependencia eran `director_obras`
+  // y `contralor`, las dos con `todas_obras:true`; el cierre lo cerraba el
+  // propio director y el aviso le llegaba a sí mismo, que es justo el caso en
+  // el que un ruteo roto y uno bueno se ven iguales.
+  //
+  // `supervisor_obra` es quien CAPTURA —tiene `captura:"editar"` y
+  // `todas_obras:false`—, así que se le asigna una obra: con cero asignadas no
+  // llega a la pantalla de avance y no puede cerrar nada. Las otras dos son el
+  // mando que tiene que enterarse, y tienen que ser DOS para que se vea que el
+  // aviso sube a varios y no a uno.
+  { correo: 'supervisor@cotea.com.mx', nombre: 'Laura Méndez',
+    rol: 'supervisor_obra', tipo: 'dependencia', orgId: 'coatzacoalcos',
+    obras: ['OP-2026-001'] },
+  { correo: 'subdirector@cotea.com.mx', nombre: 'Raúl Beltrán',
+    rol: 'subdirector', tipo: 'dependencia', orgId: 'coatzacoalcos' },
+  { correo: 'jefesup@cotea.com.mx', nombre: 'Ana Lagunes',
+    rol: 'jefe_supervision', tipo: 'dependencia', orgId: 'coatzacoalcos' },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');

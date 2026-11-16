@@ -445,6 +445,21 @@ service cloud.firestore {
         allow read: if puedeVerObraC(obraId) && !esCliente();
         allow write: if puedeEditarObraC(obraId);
       }
+      // Constancia de a quién se le rindió el cierre de cada semana, y cuándo.
+      // Sin este bloque la ruta caía en el `match /{document=**}` del final y
+      // la escritura se negaba en silencio: medido en el emulador el
+      // 2026-11-16, la pantalla decía «Rendida a …» y en Firestore no había
+      // nada. Es el documento con el que alguien sostendría que cumplió el
+      // art. 73, así que no puede depender de que la ruta se declarara.
+      //
+      // `delete` NO, a diferencia de sus vecinas: un acuse que el firmante
+      // puede quitar después no acredita nada. Vive fuera de `avance/historial`
+      // porque ése se recorta a 52 semanas y el art. 74 pide cinco años.
+      match /avance/rendiciones {
+        allow read: if puedeVerObraC(obraId) && !esCliente();
+        allow create, update: if puedeEditarObraC(obraId);
+        allow delete: if false;
+      }
 
       match /nomina/historial {
         allow read: if puedeVerObraC(obraId) && !esCliente();
@@ -733,6 +748,16 @@ service cloud.firestore {
       match /avance/notas {
         allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
         allow write: if oid == orgId() && puedeEditarObraD(obraId);
+      }
+      // Constancia de la rendición semanal — el gemelo del bloque de la
+      // constructora, y por lo mismo. El `!esContratista()` es aquí más
+      // necesario todavía: la constancia lleva los correos de los mandos del
+      // municipio, y quién le reporta a quién dentro del ayuntamiento no es
+      // dato del contratista.
+      match /avance/rendiciones {
+        allow read:  if oid == orgId() && puedeVerObraD(obraId) && !esContratista();
+        allow create, update: if oid == orgId() && puedeEditarObraD(obraId);
+        allow delete: if false;
       }
       // Incidencias. Append-only para quien captura; sólo dirección corrige.
       match /bitacora/{id} {
