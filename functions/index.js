@@ -3433,8 +3433,10 @@ async function generarYEnviarResumenSemanal(apiKey) {
   // no tiene presupuesto con el que dividir—, así que el empate en 0 es el caso
   // normal, no el raro. Sin segundo criterio esas obras salen en el orden en
   // que Firestore las devolvió, que no está garantizado entre corridas: el
-  // director vería la tabla reacomodarse de un viernes a otro sin que nada
-  // hubiera avanzado, y eso se lee como que el correo miente.
+  // director vería la tabla reacomodarse de un lunes a otro sin que nada
+  // hubiera avanzado, y eso se lee como que el correo miente. (Lunes: este
+  // correo sale con `7 9 * * 1`. El de los viernes es el recordatorio de
+  // captura, que es otro trabajo.)
   const kpisValidos = kpisObras.filter(Boolean)
     .sort((a, b) => (b.avancePct || 0) - (a.avancePct || 0) ||
                     (b.presupuesto || 0) - (a.presupuesto || 0));
