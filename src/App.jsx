@@ -14966,6 +14966,10 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
     lineas.push({
       clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
       valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+      // El programa lleva su cifra desde el 2026-11-16. Sin ella la curva
+      // punteada decía «vas por debajo» y no decía por cuánto: para saberlo
+      // había que bajar a la tabla, o sea dejar de mirar la gráfica.
+      rotulada: true,
     });
   } else {
     declarar('prog', 'Avance programado',
@@ -14981,6 +14985,11 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
     lineas.push({
       clave: 'gasto', nombre: 'Gasto acumulado', color: COLOR_CURVA.gasto,
       valores: gasto, fmt: fmtDineroCorto,
+      // Por DEBAJO de su línea: el gasto corre bajo el ejecutado y sus cifras
+      // encima se encontrarían con las del ejecutado justo donde las dos
+      // curvas se juntan, que es donde el margen se cierra y donde más falta
+      // hace leerlas.
+      rotulada: true, ladoRotulo: 'abajo',
     });
   } else {
     declarar('gasto', 'Gasto acumulado',
@@ -15229,11 +15238,39 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
   const minValor = minFijo !== null ? minFijo : Math.min(...todos, 0);
   const rangoY = (maxValor - minValor) || 1;
 
-  const xPos = (i) => PL + (cw / Math.max(semanas.length - 1, 1)) * i;
+  const sep = cw / Math.max(semanas.length - 1, 1);
+  const xPos = (i) => PL + sep * i;
   const yPos = (v) => PT + ch - ((v - minValor) / rangoY) * ch;
   const yZero = yPos(0);
   const hayNegativos = todos.some(v => v < 0);
   const rotar = semanas.length >= 12;
+
+  // ── CADA CUÁNTAS SEMANAS SE ESCRIBE LA CIFRA DE UNA SERIE ─────────────────
+  //
+  // Hasta el 2026-11-16 sólo una serie llevaba cifras y las llevaba en TODAS
+  // las semanas; las otras dos eran una línea sin números. Ahora las llevan las
+  // tres, y escribir tres cifras en cada semana de una ventana de 26 no es
+  // informar: es tapar la gráfica con su propia leyenda.
+  //
+  // El ancho se mide POR SERIE y a partir de lo que de verdad dice, no con una
+  // constante: «$22.1M · 57%» ocupa el doble que «$31.6M», y con una constante
+  // la serie de rótulo largo es justo la que se encima. Rotado −30° el texto
+  // proyecta cos30 de su largo sobre el eje, que es lo que compite por el sitio.
+  //
+  // Y el conteo arranca DESDE LA ÚLTIMA SEMANA, no desde la primera: la cifra
+  // que se busca primero es la de esta semana, y es la única que no se puede
+  // saltar. Contando desde el principio, un paso de 2 sobre 26 semanas dejaba
+  // la actual sin número la mitad de las veces.
+  const anchoTexto = (t) => String(t).length * 4.9;   // 8.5px, dígito ≈ 0.58em
+  const pasoDe = (s) => {
+    const f = s.fmt || fmt;
+    const ancho = Math.max(1, ...semanas.map((m, i) => {
+      const v = s.valores[i];
+      return (v === null || v === undefined || v === 0) ? 0 : anchoTexto(f(v));
+    }));
+    const ocupa = (rotar ? ancho * 0.87 : ancho) + 6;
+    return Math.max(1, Math.ceil(ocupa / sep));
+  };
 
   // Las áreas que de verdad se pueden sombrear: las dos series encendidas.
   const puntosDe = (clave) => {
@@ -15375,6 +15412,7 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
           const pts = semanas.map((m, i) => punto(i));
           const tramos = tramosDeSerie({ pts, medido: s.medido, idxFrontera: iF });
           const esPunteada = s.estilo === 'punteada';
+          const paso = pasoDe(s);
           return <g key={s.clave}>
             {tramos.map((t, k) => (
               <path key={k} d={caminoSuave(t.pts)} fill="none" stroke={s.color}
@@ -15393,20 +15431,43 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
                 <circle key={`${k}-${j}`} cx={p[0]} cy={p[1]} r={2.2}
                   fill={C.card} stroke={s.color} strokeWidth={1.2}/>
               )))}
-            {/* Los puntos y sus cifras sólo en la serie principal: con tres
-                series rotuladas no se lee ninguna. */}
-            {s.rotulada && semanas.map((m, i) => {
+            {/* EL PUNTO DE CADA SEMANA VA EN TODAS LAS SERIES. Antes sólo la
+                serie principal los llevaba, y una curva suave sin puntos no
+                dice cuántas semanas la sostienen: entre dos cortes capturados
+                y doce, la Bézier se ve igual. El punto es la medición; la
+                línea es la interpolación.
+
+                LA CIFRA, en cambio, va cada `paso` semanas, y el paso lo pone
+                el ancho de lo que esa serie escribe. Ver `pasoDe`.
+
+                ARRIBA O ABAJO DE LA LÍNEA, según lo pida la serie. El gasto
+                corre por debajo del ejecutado, así que sus cifras encima
+                chocarían con las del ejecutado justo donde las dos curvas se
+                acercan —que es donde el margen se está cerrando y es cuando
+                más importa leerlas. */}
+            {semanas.map((m, i) => {
               const v = s.valores[i];
               if (v === null || v === undefined) return null;
               const x = xPos(i), y = yPos(v);
-              const yLabel = y - 8;
+              // Abajo SI CABE ABAJO. Una serie que corre pegada al suelo del
+              // dibujo —el gasto de las primeras semanas de una obra— pondría
+              // su cifra encima de las etiquetas de semana, y ahí se lee como
+              // parte del eje. Cuando no cabe, se sube: el sitio es una
+              // preferencia, que el número se lea no lo es.
+              const abajo = s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2;
+              const yLabel = abajo ? y + 13 : y - 8;
+              const escribe = s.rotulada && v !== 0
+                && (semanas.length - 1 - i) % paso === 0;
+              // La última semana ancla por el final SIEMPRE, rotada o no. Con
+              // `start` el texto arranca en el último punto y se sale del SVG
+              // por la derecha: «$22.1M · 57%» quedaba en «$22.1». Era un
+              // defecto de antes y con tres series rotuladas se triplicaba.
               let anchor = "middle";
-              if (rotar) anchor = "start";
-              else if (i === semanas.length - 1) anchor = "end";
-              else if (i === 0) anchor = "start";
+              if (i === semanas.length - 1) anchor = "end";
+              else if (rotar || i === 0) anchor = "start";
               return <g key={m.key} opacity={hayViejo && i < iF ? 0.5 : 1}>
                 <circle cx={x} cy={y} r={2.5} fill={s.color} stroke="white" strokeWidth={1}/>
-                {v !== 0 && <text x={x} y={yLabel} textAnchor={anchor}
+                {escribe && <text x={x} y={yLabel} textAnchor={anchor}
                   fontSize="8.5" fill={v < 0 ? C.redDk : C.textPri} fontWeight="600"
                   transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
                   {/* El rótulo de la serie manda sobre el del panel: el
@@ -15721,6 +15782,7 @@ const curvaDeGobierno = ({ semanas = [], obra = null, historialAvance = [],
     lineas.push({
       clave: 'prog', nombre: 'Avance programado', color: COLOR_CURVA.prog,
       valores: programado, estilo: 'punteada', fmt: fmtDineroCorto,
+      rotulada: true,                      // igual que en la otra tarjeta
     });
   } else {
     declarar('prog', 'Avance programado',
@@ -15737,6 +15799,10 @@ const curvaDeGobierno = ({ semanas = [], obra = null, historialAvance = [],
     lineas.push({
       clave: 'pagado', nombre: 'Pagado al contratista', color: COLOR_CURVA.pagado,
       valores: pagado, medido: pagadoMedido, fmt: fmtDineroCorto,
+      // Debajo de su línea, por lo mismo que el gasto en la otra tarjeta: lo
+      // pagado corre por debajo de lo construido y el hueco entre las dos es
+      // justo lo que el municipio viene a mirar.
+      rotulada: true, ladoRotulo: 'abajo',
     });
   } else {
     // UN SOLO MOTIVO, y no un ternario, porque la otra rama estaría muerta: con
