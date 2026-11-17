@@ -842,7 +842,91 @@ const GP_SHEET_CSV = `https://docs.google.com/spreadsheets/d/${GP_SHEET_ID}/expo
 // CAMBIAN —la caché v4 está congelada al viernes 23 de octubre y le faltan
 // $6,960,926.22— y el documento ya no trae `colMap`, porque no hay columnas.
 // Por lo mismo que en v4: la caché vieja no se reaprovecha, se rechaza.
-const PARSER_VERSION = 5;
+//
+// v6 (2026-11-17): la clave de la semana lleva su año —`S2026-47` en vez de
+// `S47`— y la serie ya no es sólo del año vivo, es una VENTANA. La caché v5
+// trae las claves viejas, así que si se reaprovechara el front buscaría
+// `S2026-47` en un documento que sólo tiene `S47`, no encontraría nada y
+// pintaría CERO. Cero no es un hueco: es una cifra, y falsa. Se rechaza.
+const PARSER_VERSION = 6;
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA CLAVE DE LA SEMANA LLEVA SU AÑO, Y LA SERIE ES UNA VENTANA (#47)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Dos defectos que se tapaban entre sí, y que dejan de taparse el primer
+// cierre de 2027:
+//
+//   · la clave era `S47`, sin año, así que la semana 1 de 2026 y la de 2027
+//     son LA MISMA CLAVE. Mientras sólo sobrevive un año no chocan, y por eso
+//     a mitad de 2026 no se veía nada raro.
+//   · sólo se publicaba el año más reciente. El 5 de enero de 2027 la lista
+//     entera pasa a ser `["S1"]`: las 47 semanas de 2026 se caen del
+//     documento, y los cuatro sitios que piden «las últimas cuatro seguidas»
+//     se quedan un mes enteros diciendo «faltan semanas».
+//
+// El motivo que había escrito para publicar un solo año era el tamaño:
+// «publicar los siete años que arrastra una obra multiplicaría `gp_detalle`
+// por siete». MEDIDO el 2026-11-17 sobre las siete obras de producción
+// (`scripts/medir-el-costo-del-ano-en-la-semana.cjs`), eso era falso: el peor
+// caso son DOS años —la 0112 y la 0114 traen Y2025 y Y2026, las otras cinco
+// sólo Y2026— y el documento más gordo, el de la 0114, va en 129.6 KB, el
+// 12.7% del tope de 1 MiB. Con el año en la clave sube a 134.6 KB (13.1%).
+//
+// Pero publicar TODOS los años sí sería un documento que crece sin tope con
+// la edad de la obra, que es exactamente el defecto que se arregla aparte. Así
+// que la serie no es «todos los años» ni «un año»: es una VENTANA de tamaño
+// fijo —las últimas 53 semanas y los últimos 13 meses QUE EXISTEN en el
+// dato—, que cruza el 31 de diciembre sin romperse y no engorda nunca.
+//
+// 53 y 13, no 52 y 12: un año tiene 52 o 53 semanas ISO, y la ventana tiene
+// que poder contener un año entero MÁS la semana en curso del siguiente; si
+// no, el 5 de enero volvería a faltar la semana de diciembre contra la que se
+// compara.
+const VENTANA_SEMANAS_GP = 53;
+const VENTANA_MESES_GP = 13;
+
+// `S2026-47`. El año delante y la semana a dos dígitos, igual que `M2026-01`:
+// así la clave ORDENA sola, sin tener que partirla para compararla, y la lista
+// publicada se puede ordenar con un `.sort()` pelado. Devuelve `null` si el
+// año o la semana no son lo que dicen ser; una clave a medias sería una
+// columna de la pantalla colgada de un dato inventado.
+function claveSemanaGP(año, semana) {
+  const a = Number(año);
+  const s = Number(semana);
+  if (!Number.isInteger(a) || a < 2000 || a > 2100) return null;
+  if (!Number.isInteger(s) || s < 1 || s > 53) return null;
+  return `S${a}-${String(s).padStart(2, "0")}`;
+}
+
+// Lee una clave de semana de las DOS formas: la nueva con año y la vieja sin
+// él. La vieja hace falta mientras exista un documento escrito antes de este
+// cambio —el arrastre de una obra que falló copia su serie tal cual— y
+// devuelve `año: null`, que es lo honesto: de esa clave no se sabe el año.
+function piezasDeClaveSemanaGP(clave) {
+  const t = String(clave == null ? "" : clave);
+  const conAño = /^S(\d{4})-(\d{2})$/.exec(t);
+  if (conAño) {
+    const s = Number(conAño[2]);
+    if (s < 1 || s > 53) return null;
+    return { año: Number(conAño[1]), semana: s, llevaAño: true };
+  }
+  const sinAño = /^S(\d{1,2})$/.exec(t);
+  if (sinAño) {
+    const s = Number(sinAño[1]);
+    if (s < 1 || s > 53) return null;
+    return { año: null, semana: s, llevaAño: false };
+  }
+  return null;
+}
+
+// Las últimas `n` claves que EXISTEN, en orden. Sirve igual para semanas
+// (`S2026-47`) y para meses (`M2026-01`) porque las dos formas llevan el año
+// delante. No rellena los huecos a propósito: una semana que el dato no trae
+// no debe aparecer en la lista de lo que se puede pintar.
+function ventanaDeClavesGP(claves, n) {
+  return [...new Set(claves)].filter(Boolean).sort().slice(-n);
+}
 
 // ── Parser CSV robusto (maneja comillas con comas dentro) ──
 function parseCsvLine(line) {
@@ -1031,23 +1115,56 @@ function parsearGPConstruct(csvText) {
       if (mesColsByYear[año][mes] === undefined) mesColsByYear[año][mes] = ci;
     }
   }
-  // Tomar las semanas del año más reciente como las "semanas disponibles" del Sheet
+  // El año más reciente ya no decide QUÉ semanas se publican —eso lo decide la
+  // ventana, abajo— pero sigue siendo el año de `total2026`.
   const añoMasReciente = Object.keys(weekColsByYear).sort().pop() || '2026';
-  const weekColsActual = weekColsByYear[añoMasReciente] || {};
+
+  // Las semanas de TODOS los años entran al `colMap`, no sólo las del año
+  // vivo. Lo que acota el tamaño es la ventana, que se aplica unas líneas más
+  // abajo: quedarse con un año era lo que hacía que la serie se cayera entera
+  // el 5 de enero (#47).
+  //
   // El valor de una entrada `week_*` es una LISTA de columnas. Las demás
   // entradas de `colMap` siguen siendo un índice suelto: una semana es lo
   // único que la hoja puede repartir en varias columnas.
-  Object.entries(weekColsActual).forEach(([n, cols]) => {
-    colMap[`week_${añoMasReciente}_${n}`] = cols;
+  Object.entries(weekColsByYear).forEach(([año, porSemana]) => {
+    Object.entries(porSemana).forEach(([n, cols]) => {
+      colMap[`week_${año}_${n}`] = cols;
+    });
   });
 
-  // Sólo los meses del año en curso, igual que las semanas. Emitir los tres años
-  // triplicaría `meses` en cada obra, rubro y proveedor de `gp_detalle` —que ya
-  // pesa unos 3 MB— y la pantalla sigue leyendo doce meses, no treinta y seis.
-  const mesColsActual = mesColsByYear[añoMasReciente] || {};
-  Object.entries(mesColsActual).forEach(([mes, ci]) => {
-    colMap[`total_month_${añoMasReciente}_${mes}`] = ci;
+  // Igual con los meses. Y por la misma razón: el mes que la pantalla compara
+  // contra «el mes pasado» en enero es diciembre, que es del año anterior.
+  Object.entries(mesColsByYear).forEach(([año, porMes]) => {
+    Object.entries(porMes).forEach(([mes, ci]) => {
+      colMap[`total_month_${año}_${mes}`] = ci;
+    });
   });
+
+  // ── La ventana, aplicada al `colMap` y no a cada nodo ──
+  // Aquí es donde tiene que ir: `extraerValores` saca la serie de cada obra,
+  // rubro y proveedor leyendo ESTE mapa, así que recortarlo una vez recorta
+  // los tres niveles a la vez y garantiza que ningún nodo publique una semana
+  // que no esté en `semanasDisponibles`. Recortar nodo por nodo dejaría esa
+  // garantía dependiendo de que nadie olvide un sitio.
+  {
+    const claveDeColumnaSemana = (k) => {
+      const p = String(k).split('_'); // ['week', '2026', '47']
+      return claveSemanaGP(p[1], p[2]);
+    };
+    const ventanaSem = new Set(ventanaDeClavesGP(
+      Object.keys(colMap).filter((k) => k.startsWith('week_')).map(claveDeColumnaSemana),
+      VENTANA_SEMANAS_GP));
+    const ventanaMes = new Set(ventanaDeClavesGP(
+      Object.keys(colMap).filter((k) => k.startsWith('total_month_'))
+        .map((k) => `M${k.replace('total_month_', '').replace('_', '-')}`),
+      VENTANA_MESES_GP));
+    for (const k of Object.keys(colMap)) {
+      if (k.startsWith('week_') && !ventanaSem.has(claveDeColumnaSemana(k))) delete colMap[k];
+      if (k.startsWith('total_month_') &&
+          !ventanaMes.has(`M${k.replace('total_month_', '').replace('_', '-')}`)) delete colMap[k];
+    }
+  }
 
   // Asociar columnas de años individuales (sin desplegar) si existen
   Object.entries(yearCols).forEach(([año, ci]) => {
@@ -1110,11 +1227,20 @@ function parsearGPConstruct(csvText) {
           const v = parseMonto(row[ci]);
           if (!isNaN(v)) suma += Math.abs(v);
         }
-        if (suma !== 0) semanas[`S${partes[2]}`] = suma;
+        const clave = claveSemanaGP(partes[1], partes[2]);
+        if (suma !== 0 && clave) semanas[clave] = suma;
       });
 
-      // total2026 = el más reciente total anual
-      const total2026 = años['Y2026'] || meses['M2026-' + (Object.keys(meses).map(k=>k.slice(-2)).sort().pop()||'01')] || 0;
+      // El total del año VIVO. Estaba escrito `años['Y2026']` con el año
+      // teclado, y el respaldo buscaba meses `M2026-*`: en 2027 las dos cosas
+      // habrían dado 0 y la cifra se habría ido al último respaldo, que es el
+      // gran total de todos los años. El año no se teclea, se lee.
+      const claveDelAñoVivo = `Y${añoMasReciente}`;
+      const mesesDelAñoVivo = Object.keys(meses)
+        .filter(k => k.startsWith(`M${añoMasReciente}-`)).sort();
+      const total2026 = años[claveDelAñoVivo]
+        || (mesesDelAñoVivo.length ? meses[mesesDelAñoVivo[mesesDelAñoVivo.length - 1]] : 0)
+        || 0;
 
       return { semanas, meses, años, total2026, grandTotal };
     };
@@ -1178,10 +1304,15 @@ function parsearGPConstruct(csvText) {
   }
 
   // ── PASO 3: listas de semanas y meses disponibles ──
+  // El `colMap` ya viene recortado a la ventana, así que estas dos listas son
+  // exactamente lo que los nodos pueden traer. Se ordenan con un `.sort()`
+  // pelado porque la clave lleva el año delante; el orden viejo —por el número
+  // de semana— habría puesto la S1 de 2027 antes que la S52 de 2026.
   const semanasDisponibles = Object.keys(colMap)
     .filter(k => k.startsWith('week_'))
-    .map(k => `S${k.split('_')[2]}`)
-    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    .map(k => { const p = k.split('_'); return claveSemanaGP(p[1], p[2]); })
+    .filter(Boolean)
+    .sort();
   const ultimaSemana = semanasDisponibles[semanasDisponibles.length - 1] || '';
 
   const mesesDisponibles = Object.keys(colMap)
@@ -1378,9 +1509,10 @@ function agruparRenglonesGP(filas) {
     proveedoresEnCero: 0,
   };
 
-  // El año más reciente manda, igual que en la hoja: `semanas` y `meses` son
-  // sólo de ese año. Publicar los siete años que arrastra una obra
-  // multiplicaría `gp_detalle` por siete y la pantalla sigue leyendo doce meses.
+  // El año más reciente sigue mandando para UNA cosa: `total2026`, que es el
+  // total del año vivo. Ya NO manda sobre `semanas` ni `meses`: ésas se
+  // acumulan de todos los años y se recortan al final a la ventana (ver
+  // `VENTANA_SEMANAS_GP`), que es lo que las deja cruzar el 31 de diciembre.
   let añoMasReciente = null;
   for (const fila of lista) {
     const a = Number(fila && fila.Amo);
@@ -1412,14 +1544,17 @@ function agruparRenglonesGP(filas) {
     const año = Number(fila.Amo);
     const tieneAño = Number.isInteger(año);
     if (!tieneAño) descartes.sinAño++;
-    const esAñoVivo = tieneAño && año === añoMasReciente;
-    const mes = esAñoVivo ? mesDeRenglonGP(fila.Mes) : null;
-    const semana = esAñoVivo ? semanaDeRenglonGP(fila.Semana) : null;
-    if (esAñoVivo && !mes) descartes.sinMes++;
-    if (esAñoVivo && !semana) descartes.sinSemana++;
+    // Sin año no hay clave de mes ni de semana que se pueda escribir: `S47` a
+    // secas es justo la clave ambigua que este cambio quita de en medio. Un
+    // renglón así se cuenta y entra en el acumulado del año y en el gran
+    // total, pero no en ninguna serie.
+    const mes = tieneAño ? mesDeRenglonGP(fila.Mes) : null;
+    const semana = tieneAño ? semanaDeRenglonGP(fila.Semana) : null;
+    if (tieneAño && !mes) descartes.sinMes++;
+    if (tieneAño && !semana) descartes.sinSemana++;
     const claveAño = tieneAño ? `Y${año}` : null;
     const claveMes = mes ? `M${año}-${mes}` : null;
-    const claveSem = semana ? `S${semana}` : null;
+    const claveSem = claveSemanaGP(año, semana);
     if (claveMes) mesesVistos.add(claveMes);
     if (claveSem) semanasVistas.add(claveSem);
 
@@ -1481,6 +1616,20 @@ function agruparRenglonesGP(filas) {
       for (const k of Object.keys(serie)) if (serie[k] === 0) delete serie[k];
     }
   };
+
+  // La ventana se decide una vez, con TODAS las claves que aparecieron, y se
+  // aplica igual a los tres niveles. Si cada nodo recortara su propia ventana,
+  // un proveedor que lleva dos años sin cobrar publicaría semanas que no están
+  // en `semanasDisponibles`, y la pantalla pintaría una columna que su propia
+  // cabecera no reconoce. Los años NO se recortan: son doce o trece claves en
+  // toda la vida de la obra y es la única serie que cuenta la historia entera.
+  const ventanaSemanas = new Set(ventanaDeClavesGP([...semanasVistas], VENTANA_SEMANAS_GP));
+  const ventanaMeses = new Set(ventanaDeClavesGP([...mesesVistos], VENTANA_MESES_GP));
+  const podarFueraDeVentana = (nodo) => {
+    for (const k of Object.keys(nodo.semanas)) if (!ventanaSemanas.has(k)) delete nodo.semanas[k];
+    for (const k of Object.keys(nodo.meses)) if (!ventanaMeses.has(k)) delete nodo.meses[k];
+  };
+
   for (const obra of Object.values(obras)) {
     for (const rubro of Object.values(obra.rubros)) {
       const vivos = rubro.proveedores.filter((p) => p.grandTotal !== 0);
@@ -1488,20 +1637,26 @@ function agruparRenglonesGP(filas) {
       rubro.proveedores = vivos;
       for (const p of vivos) {
         podarCeros(p);
+        podarFueraDeVentana(p);
         p.total2026 = claveAñoVivo ? (p.años[claveAñoVivo] || 0) : 0;
         p.total = p.grandTotal;
       }
       podarCeros(rubro);
+      podarFueraDeVentana(rubro);
       rubro.total2026 = claveAñoVivo ? (rubro.años[claveAñoVivo] || 0) : 0;
     }
     obra.proveedores = obra.proveedores.filter((p) => p.grandTotal !== 0);
     podarCeros(obra);
+    podarFueraDeVentana(obra);
     obra.total2026 = claveAñoVivo ? (obra.años[claveAñoVivo] || 0) : 0;
   }
 
-  const semanasDisponibles = [...semanasVistas]
-    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
-  const mesesDisponibles = [...mesesVistos].sort();
+  // Ya vienen ordenadas y recortadas: la clave lleva el año delante, así que
+  // `.sort()` pelado es el orden cronológico. El orden de antes —por el número
+  // de semana— era el que no podía existir con dos años en la lista: habría
+  // puesto la S1 de 2027 antes que la S52 de 2026.
+  const semanasDisponibles = [...ventanaSemanas];
+  const mesesDisponibles = [...ventanaMeses];
 
   return {
     obras,
@@ -1613,12 +1768,34 @@ async function descargarYGuardarGPPorObra(credenciales = {}) {
     };
   }
   // Arrastre de las que fallaron: su cifra anterior, marcada como vieja.
+  //
+  // Y TRADUCIDA. El documento anterior puede estar escrito con las claves de
+  // semana sin año (`S47`, hasta `parserVersion` 5). Si se copiara tal cual,
+  // esa obra quedaría con claves que no están en `semanasDisponibles` —que ya
+  // viene con año— y la pantalla no vería un hueco: vería CERO. Un cero es una
+  // cifra, y en gasto es la mentira más cara que esta pantalla sabe decir.
+  // El año con el que se traduce es el `añoVivo` de ESE documento, que es el
+  // único año que esas claves pudieron tener: hasta la v5 sólo se publicaba el
+  // año vivo. Si el documento viejo no lo trae, no se adivina — se deja la
+  // clave como está y la obra se queda sin serie semanal, que es lo honesto.
+  const traducirSemanasViejas = (semanas, añoDelDocumento) => {
+    const fuera = {};
+    for (const [k, v] of Object.entries(semanas || {})) {
+      const p = piezasDeClaveSemanaGP(k);
+      if (!p) { fuera[k] = v; continue; }
+      if (p.llevaAño) { fuera[k] = v; continue; }
+      const nueva = claveSemanaGP(añoDelDocumento, p.semana);
+      fuera[nueva || k] = v;
+    }
+    return fuera;
+  };
   const arrastradas = [];
   for (const { clave } of fallos) {
     const anterior = Object.values(obrasPrevias).find((o) => o && o.id === clave);
     if (!anterior) continue;
     obrasResumen[anterior.nombre || clave] = {
       ...anterior,
+      semanas: traducirSemanasViejas(anterior.semanas, previo.añoVivo),
       desactualizadaDesde: previo.ultimaActualizacion || null,
     };
     arrastradas.push(clave);

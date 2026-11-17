@@ -4,12 +4,21 @@
 // Dos defectos de la misma familia: una semana escrita sin lo que la hace
 // única, y una pantalla que afirma sobre ella de todos modos.
 //
-//   (A) LA SEMANA SIN SU AÑO. `gpData.semanasDisponibles` son claves `S42` sin
-//       año, y el parser del Sheet además sólo conserva el año más reciente.
-//       El 5 de enero la lista entera es ["S1"], y cuatro sitios hacían
+//   (A) LA SEMANA SIN SU AÑO. `gpData.semanasDisponibles` eran claves `S42`
+//       sin año, y el parser además sólo conservaba el año más reciente.
+//       El 5 de enero la lista entera era ["S1"], y cuatro sitios hacían
 //       `slice(-4)` y dividían entre `length` — con el renglón diciendo
 //       «últimas 4 semanas» pase lo que pase. Un promedio de una semana
 //       presentado como promedio de cuatro es una cifra inventada (P2).
+//
+//       El ORIGEN se arregló el 2026-11-17: desde `parserVersion` 6 la clave
+//       lleva su año (`S2026-47`) y la serie es una ventana de 53 semanas que
+//       cruza el 31 de diciembre. Lo que esta pantalla tiene que seguir
+//       haciendo —y lo que aquí se mide— es DOS cosas a la vez: entender la
+//       forma nueva, incluida la frontera de año, y seguir negándose a
+//       promediar cuando falta una semana, porque un hueco en el dato sigue
+//       siendo posible y no tiene nada que ver con el año. La forma vieja se
+//       sigue leyendo mientras exista un documento v5 por el camino.
 //
 //   (B) LA SEMANA SIN SU LUGAR. El día de un instante depende de dónde se
 //       pregunte. `fechaDeTimestamp` lo resolvía con `getDate()`, o sea en el
@@ -24,6 +33,27 @@
 // caliente funciona en Node moderno, pero si algún día dejara de funcionar
 // esto daría verde por no haber probado nada — así que se COMPRUEBA que el
 // cambio mordió, y si no, NO ARRANCÓ 2.
+//
+// CONTRAPRUEBA de la parte (A), comprobada el 2026-11-17 reponiendo cada
+// defecto sobre `src/App.jsx` y corriendo este mismo banco:
+//
+//   · la frontera del año la decide la LISTA y no el calendario
+//     (`pa.semana === _semanasDelAñoGP(pa.año)` → `true`)   → 2 en rojo, salida 1
+//   · mezclar las dos formas de clave encadena
+//     (`pa.llevaAño !== pb.llevaAño` → `!pa.llevaAño || !pb.llevaAño`)
+//                                                            → 1 en rojo, salida 1
+//   · la cadena no cruza el año (`if (pa.año !== pb.año) return false`)
+//                                                            → 4 en rojo, salida 1
+//   · el rótulo maquilla la clave ilegible («última semana»)  → 2 en rojo, salida 1
+//   · el rótulo imprime la clave cruda (`String(clave)`)      → 3 en rojo, salida 1
+//
+// Sobre el archivo bueno: 0 en rojo, salida 0.
+//
+// Un hallazgo de hacerlas: la contraprueba de la MEZCLA salía verde con el
+// caso que tenía escrito, porque la frontera elegida era la de 2026 —53
+// semanas— y la rechazaba antes el calendario. El renglón pasaba por el motivo
+// equivocado. El caso ahora cruza 2025, que tiene 52, para que lo único capaz
+// de romper esa cadena sea la mezcla.
 
 'use strict';
 
@@ -45,6 +75,7 @@ let app;
 try {
   app = deApp(
     'ultimasSemanasSeguidasGP', 'velocidadSemanalGP', 'semanaAnteriorGP',
+    'etiquetaSemanaGP',
     'proveedoresNuevosGP', 'incrementosDeProveedorGP',
     'fechaEnZonaObra', 'fechaDeTimestamp', 'semanaDeEvidencia',
     'semanaISO', 'snapshotId', 'ZONA_OBRA',
@@ -60,6 +91,7 @@ try {
 
 const {
   ultimasSemanasSeguidasGP, velocidadSemanalGP, semanaAnteriorGP,
+  etiquetaSemanaGP,
   proveedoresNuevosGP, incrementosDeProveedorGP,
   fechaEnZonaObra, fechaDeTimestamp, semanaDeEvidencia, ZONA_OBRA,
 } = app;
@@ -68,27 +100,96 @@ const {
 console.log('\n1. La serie dice cuántas semanas tiene de verdad');
 // ════════════════════════════════════════════════════════════════════════════
 
-const serieCompleta = Array.from({ length: 42 }, (_, i) => `S${i + 1}`);
+// La forma que escribe `parserVersion` 6: la clave lleva su año.
+const sem = (año, n) => `S${año}-${String(n).padStart(2, '0')}`;
+const serieCompleta = Array.from({ length: 42 }, (_, i) => sem(2026, i + 1));
 
-// El caso de hoy, medido contra producción el 2026-10-26: 42 semanas seguidas.
+// El caso de hoy. Medido contra producción el 2026-11-17: 47 semanas seguidas.
 check(
   JSON.stringify(ultimasSemanasSeguidasGP(serieCompleta, 4)) ===
-    JSON.stringify(['S39', 'S40', 'S41', 'S42']),
-  'con 42 semanas seguidas, las últimas cuatro son S39..S42',
+    JSON.stringify([sem(2026,39), sem(2026,40), sem(2026,41), sem(2026,42)]),
+  'con 42 semanas seguidas, las últimas cuatro son S39..S42 de 2026',
   JSON.stringify(ultimasSemanasSeguidasGP(serieCompleta, 4)));
 
-// El 5 de enero. Esto es lo que el parser produce al cambiar de año.
-check(ultimasSemanasSeguidasGP(['S1'], 4) === null,
-  'la primera semana del año NO son cuatro semanas');
+// Una obra que arranca: una sola semana no son cuatro.
+check(ultimasSemanasSeguidasGP([sem(2026,1)], 4) === null,
+  'una sola semana NO son cuatro semanas');
 
-// Un hueco en el Sheet: S38, S39, S41, S42 son cuatro claves pero cinco
-// semanas de calendario.
-check(ultimasSemanasSeguidasGP(['S36','S37','S38','S39','S41','S42'], 4) === null,
+// Un hueco en el dato: S38, S39, S41, S42 son cuatro claves pero cinco
+// semanas de calendario. Esto es lo que sigue mordiendo después del #47.
+check(ultimasSemanasSeguidasGP(
+  [sem(2026,36), sem(2026,37), sem(2026,38), sem(2026,39), sem(2026,41), sem(2026,42)], 4) === null,
   'cuatro claves con un hueco en medio NO son cuatro semanas seguidas');
 
-// El cruce de año en una lista que no se vació: 41, 42, 1, 2.
+// ── LA FRONTERA DE AÑO, QUE ES LO QUE EL #47 CAMBIÓ ──
+// El 5 de enero la serie trae diciembre del año viejo y la S1 del nuevo, y
+// AHORA sí se puede afirmar que son seguidas: la clave dice de qué año es
+// cada una. 2025 tuvo 52 semanas ISO, así que su S52 pega con la S1 de 2026.
+const cruceBueno = [sem(2025,50), sem(2025,51), sem(2025,52), sem(2026,1)];
+check(JSON.stringify(ultimasSemanasSeguidasGP(cruceBueno, 4)) === JSON.stringify(cruceBueno),
+  'S52 de 2025 → S1 de 2026 SÍ son seguidas: la velocidad no se apaga en enero',
+  JSON.stringify(ultimasSemanasSeguidasGP(cruceBueno, 4)));
+
+// Y el caso que NO se puede dar por bueno: si en la lista 2026 llega hasta la
+// S52 pero la ventana enseña la S50 pegada a la S1 de 2027, faltan dos
+// semanas. El año en la clave no es permiso para encadenar cualquier cosa.
+check(ultimasSemanasSeguidasGP([sem(2026,48), sem(2026,49), sem(2026,50), sem(2027,1)], 4) === null,
+  'S50 de 2026 → S1 de 2027 NO son seguidas: faltan la 51 y la 52');
+
+// Dónde acaba el año lo dice EL CALENDARIO, no la lista. **2026 tiene 53
+// semanas ISO**, así que la S52 NO es su última y no encadena con enero de
+// 2027: falta la S53. Esta es la frontera de verdad, la que llega en semanas.
+check(ultimasSemanasSeguidasGP([sem(2026,50), sem(2026,51), sem(2026,52), sem(2027,1)], 4) === null,
+  'S52 de 2026 → S1 de 2027 NO son seguidas: 2026 tiene 53 semanas y falta la 53');
+const cruce53 = [sem(2026,51), sem(2026,52), sem(2026,53), sem(2027,1)];
+check(JSON.stringify(ultimasSemanasSeguidasGP(cruce53, 4)) === JSON.stringify(cruce53),
+  'S53 de 2026 → S1 de 2027 SÍ son seguidas: la 53 sí es la última de 2026',
+  JSON.stringify(ultimasSemanasSeguidasGP(cruce53, 4)));
+
+// Un salto de año entero no encadena ni siendo la última de su año.
+check(ultimasSemanasSeguidasGP([sem(2025,50), sem(2025,51), sem(2025,52), sem(2027,1)], 4) === null,
+  'de 2025 a 2027 no se encadena: falta un año entero');
+
+// ── LA FORMA VIEJA, QUE TODAVÍA PUEDE LLEGAR ──
+// Un documento `parserVersion` 5 arrastrado trae claves sin año. De `S42 → S1`
+// no se puede saber si son diez semanas de hueco o el año nuevo, así que se
+// sigue rechazando: ahí no hay nada que afirmar.
 check(ultimasSemanasSeguidasGP(['S39','S40','S41','S42','S1','S2'], 4) === null,
-  'S42 → S1 no es «la siguiente»: la lista cruza un año y se rechaza');
+  'sin año, S42 → S1 se sigue rechazando: no se sabe si es un hueco o el año nuevo');
+check(JSON.stringify(ultimasSemanasSeguidasGP(['S39','S40','S41','S42'], 4)) ===
+  JSON.stringify(['S39','S40','S41','S42']),
+  'y la forma vieja se sigue leyendo dentro de un mismo año');
+// Mezclar las dos formas no encadena: una clave sin año no se puede comparar
+// con una que sí lo lleva sin suponerle un año. La frontera se elige en 2025 a
+// propósito —52 semanas, cruce bueno— para que lo ÚNICO que pueda romper la
+// cadena sea la mezcla de formas. Con 2026 de por medio la rechazaría el
+// calendario y el renglón pasaría por el motivo equivocado: medido el
+// 2026-11-17, la contraprueba de la mezcla salía verde.
+check(ultimasSemanasSeguidasGP(['S50','S51',sem(2025,52),sem(2026,1)], 4) === null,
+  'mezclar las dos formas no encadena: no se le supone el año a la que no lo trae');
+
+// ── LA CLAVE NO SE ASOMA A LA PANTALLA ──
+// `S2026-47` es para buscar en un objeto, no para leerlo. Dos rótulos de
+// Gastos imprimían la clave cruda, y con el año dentro quedaban peor.
+check(etiquetaSemanaGP(sem(2026,47)) === 'semana 47 de 2026',
+  'la clave se lee «semana 47 de 2026», no «S2026-47»',
+  etiquetaSemanaGP(sem(2026,47)));
+// El cero a la izquierda lo lleva la clave para que un `.sort()` ordene; el
+// rótulo no tiene por qué cargarlo.
+check(etiquetaSemanaGP(sem(2026,3)) === 'semana 3 de 2026',
+  'el cero de la clave es para ordenar, no para leerse: «semana 3», no «semana 03»',
+  etiquetaSemanaGP(sem(2026,3)));
+check(etiquetaSemanaGP('S47') === 'semana 47',
+  'la forma vieja se rotula sin inventarle un año',
+  etiquetaSemanaGP('S47'));
+// Una clave que esta cuenta no sabe leer SE VE. Cambiarla por una frase
+// redonda —«última semana»— esconde justo lo que hay que arreglar.
+check(etiquetaSemanaGP('S2026-99') === 'S2026-99',
+  'una clave ilegible se enseña tal cual, no se maquilla',
+  etiquetaSemanaGP('S2026-99'));
+check(etiquetaSemanaGP('') === '' && etiquetaSemanaGP(null) === '',
+  'sin clave no se rotula nada: la tarjeta ya decide qué poner en su lugar',
+  `${JSON.stringify(etiquetaSemanaGP(''))} · ${JSON.stringify(etiquetaSemanaGP(null))}`);
 
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n2. La velocidad dice sobre cuántas semanas se calculó');
@@ -121,49 +222,71 @@ check(vTres.semanasBase === 3, 'la base la dice la cuenta, no el renglón',
 console.log('\n3. «Vs semana anterior» es la anterior de verdad');
 // ════════════════════════════════════════════════════════════════════════════
 
-check(semanaAnteriorGP(serieCompleta, 'S42') === 'S41',
-  'la anterior de S42 es S41');
-check(semanaAnteriorGP(['S1'], 'S1') === null,
-  'la primera semana del año no tiene anterior');
-check(semanaAnteriorGP(['S40','S42'], 'S42') === null,
+check(semanaAnteriorGP(serieCompleta, sem(2026,42)) === sem(2026,41),
+  'la anterior de la S42 es la S41 del mismo año');
+check(semanaAnteriorGP([sem(2026,1)], sem(2026,1)) === null,
+  'la primera semana de la serie no tiene anterior');
+check(semanaAnteriorGP([sem(2026,40), sem(2026,42)], sem(2026,42)) === null,
   'con un hueco, la de la lista está a dos semanas y no sirve de «anterior»');
+// La frontera de año también aquí: la anterior de la S1 de 2026 es la S52 de
+// 2025, y eso es lo que el #47 hizo decible.
+check(semanaAnteriorGP([sem(2025,52), sem(2026,1)], sem(2026,1)) === sem(2025,52),
+  'la anterior de la S1 de 2026 es la S52 de 2025, no «ninguna»',
+  String(semanaAnteriorGP([sem(2025,52), sem(2026,1)], sem(2026,1))));
 
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n4. Un proveedor nuevo necesita un «antes» del que faltar');
 // ════════════════════════════════════════════════════════════════════════════
 
 const provs = [
-  { nombre: 'Aceros del Norte', semanas: { S40: 10, S41: 20, S42: 40 }, total: 70 },
-  { nombre: 'Grúas Omega',      semanas: { S42: 50 }, total: 50 },
-  { nombre: 'Cementos Sur',     semanas: { S39: 10 }, total: 10 },
+  { nombre: 'Aceros del Norte',
+    semanas: { [sem(2026,40)]: 10, [sem(2026,41)]: 20, [sem(2026,42)]: 40 }, total: 70 },
+  { nombre: 'Grúas Omega',      semanas: { [sem(2026,42)]: 50 }, total: 50 },
+  { nombre: 'Cementos Sur',     semanas: { [sem(2026,39)]: 10 }, total: 10 },
   // Justo en la raya: +50% exacto. El umbral es «más de 50», no «50 o más»,
   // y la raya se fija aquí para que nadie la mueva sin darse cuenta.
-  { nombre: 'Arena y Grava',    semanas: { S41: 20, S42: 30 }, total: 50 },
+  { nombre: 'Arena y Grava',
+    semanas: { [sem(2026,41)]: 20, [sem(2026,42)]: 30 }, total: 50 },
 ];
 
-const nuevos = proveedoresNuevosGP(provs, serieCompleta, 'S42');
+const nuevos = proveedoresNuevosGP(provs, serieCompleta, sem(2026,42));
 check(nuevos.length === 1 && nuevos[0].nombre === 'Grúas Omega',
   'con historia, sólo el que aparece por primera vez es nuevo',
   nuevos.map(p => p.nombre).join(', '));
 
 // EL DEFECTO. El 5 de enero todos tienen exactamente una semana y es la
 // última, así que todos salían anunciados como proveedores nuevos.
-const provsEnero = provs.map(p => ({ ...p, semanas: { S1: 10 } }));
-check(proveedoresNuevosGP(provsEnero, ['S1'], 'S1').length === 0,
+const provsEnero = provs.map(p => ({ ...p, semanas: { [sem(2027,1)]: 10 } }));
+check(proveedoresNuevosGP(provsEnero, [sem(2027,1)], sem(2027,1)).length === 0,
   'en la primera semana del año NO se anuncia a nadie como nuevo',
-  `anunciados: ${proveedoresNuevosGP(provsEnero, ['S1'], 'S1').length}`);
+  `anunciados: ${proveedoresNuevosGP(provsEnero, [sem(2027,1)], sem(2027,1)).length}`);
+
+// Y la otra mitad de lo mismo, que es lo que el #47 destrabó: en enero de 2027
+// la serie TRAE 2026, así que el que ya venía no se anuncia como nuevo y el que
+// aparece por primera vez sí. Antes de la ventana de 53 semanas no había
+// diciembre que consultar y los cuatro salían anunciados.
+const serieACaballo = [sem(2026,51), sem(2026,52), sem(2026,53), sem(2027,1)];
+const provsACaballo = [
+  { nombre: 'Aceros del Norte', semanas: { [sem(2026,52)]: 20, [sem(2027,1)]: 30 }, total: 50 },
+  { nombre: 'Grúas Omega',      semanas: { [sem(2027,1)]: 50 }, total: 50 },
+];
+const nuevosEnero = proveedoresNuevosGP(provsACaballo, serieACaballo, sem(2027,1));
+check(nuevosEnero.length === 1 && nuevosEnero[0].nombre === 'Grúas Omega',
+  'en enero, el que ya venía de diciembre NO es nuevo: la serie cruza el año',
+  nuevosEnero.map(p => p.nombre).join(', ') || '(ninguno)');
 
 // Un hueco en el Sheet NO borra la historia. Con S38..S41 y S43 —sin S42—
 // Grúas Omega sigue sin aparecer nunca antes, y decirlo es cierto. Exigir
 // cuatro semanas seguidas aquí escondía una tarjeta verdadera: lo comprobó el
 // preview el 2026-10-27, con la tarjeta desapareciendo al abrir un hueco.
-const conHueco = ['S38','S39','S40','S41','S42'];
-const nuevosConHueco = proveedoresNuevosGP(provs, conHueco.filter(s => s !== 'S40'), 'S42');
+const conHueco = [38, 39, 40, 41, 42].map(n => sem(2026, n));
+const nuevosConHueco = proveedoresNuevosGP(
+  provs, conHueco.filter(s => s !== sem(2026,40)), sem(2026,42));
 check(nuevosConHueco.length === 1 && nuevosConHueco[0].nombre === 'Grúas Omega',
   'un hueco en el Sheet no borra la historia: el nuevo se sigue nombrando',
   nuevosConHueco.map(p => p.nombre).join(', ') || '(ninguno)');
 
-const incs = incrementosDeProveedorGP(provs, serieCompleta, 'S42');
+const incs = incrementosDeProveedorGP(provs, serieCompleta, sem(2026,42));
 check(incs.length === 1 && incs[0].nombre === 'Aceros del Norte'
   && Math.round(incs[0].incrementoPct) === 100,
   'un salto de 20 a 40 es +100% contra la semana contigua, y es el único',
@@ -172,8 +295,18 @@ check(incs.length === 1 && incs[0].nombre === 'Aceros del Norte'
 check(!incs.some(p => p.nombre === 'Arena y Grava'),
   '+50% exacto no pasa la raya de «más de 50%»');
 
-check(incrementosDeProveedorGP(provs, ['S40','S42'], 'S42').length === 0,
+check(incrementosDeProveedorGP(provs, [sem(2026,40), sem(2026,42)], sem(2026,42)).length === 0,
   'sin semana contigua no se afirma ningún incremento «vs semana anterior»');
+
+// El incremento también cruza el año: de 20 a 30 entre la S53 de 2026 y la S1
+// de 2027 son +50%, que no pasa la raya; de 20 a 40 sí. Lo que importa es que
+// la pregunta se puede HACER en enero, no que la respuesta sea sí.
+const incEnero = incrementosDeProveedorGP(
+  [{ nombre: 'Aceros del Norte', semanas: { [sem(2026,53)]: 20, [sem(2027,1)]: 40 }, total: 60 }],
+  [sem(2026,51), sem(2026,52), sem(2026,53), sem(2027,1)], sem(2027,1));
+check(incEnero.length === 1 && Math.round(incEnero[0].incrementoPct) === 100,
+  'el +100% de diciembre a enero se afirma: la anterior está al otro lado del año',
+  JSON.stringify(incEnero.map(p => [p.nombre, p.incrementoPct])));
 
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n5. El día de una foto es el de la OBRA, no el del aparato');

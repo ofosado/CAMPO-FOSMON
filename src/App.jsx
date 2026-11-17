@@ -8539,15 +8539,17 @@ const archivarViejas = async (uid, notifs) => {
 // LA SERIE SEMANAL DE GASTO: CUÁNTAS SEMANAS HAY DE VERDAD
 // ════════════════════════════════════════════════════════════════════════════
 //
-// `gpData.semanasDisponibles` son claves `S42` SIN AÑO —el parser del Sheet
-// tira el año (#47)— y encima sólo conserva las columnas del año más reciente.
-// Los dos defectos se tapan entre sí: como sólo sobrevive un año las claves no
-// chocan, y por eso hoy, a mitad de 2026, no se ve nada raro. Medido contra
-// producción el 2026-10-26: `colMap` trae 42 claves `week_`, todas de 2026,
-// mientras `year_2024` y `year_2025` sí existen.
+// HISTORIA, porque explica por qué esta cuenta tiene la forma que tiene.
 //
-// Donde se ve es al cambiar de año. El 5 de enero la lista entera es `["S1"]`,
-// y cuatro sitios hacían `slice(-4)` y dividían entre `length`:
+// Hasta el 2026-11-17, `gpData.semanasDisponibles` eran claves `S42` SIN AÑO
+// —el parser tiraba el año (#47)— y encima sólo conservaba el año más
+// reciente. Los dos defectos se tapaban entre sí: como sólo sobrevivía un año
+// las claves no chocaban, y por eso a mitad de 2026 no se veía nada raro.
+// Medido contra producción el 2026-10-26: `colMap` traía 42 claves `week_`,
+// todas de 2026, mientras `year_2024` y `year_2025` sí existían.
+//
+// Donde se veía era al cambiar de año. El 5 de enero la lista entera era
+// `["S1"]`, y cuatro sitios hacían `slice(-4)` y dividían entre `length`:
 //
 //   · el KPI «Velocidad prom.» con el subtítulo FIJO «últimas 4 semanas» —el
 //     renglón decía cuatro mientras la cuenta usaba una;
@@ -8560,18 +8562,87 @@ const archivarViejas = async (uid, notifs) => {
 // Ninguno decía que le faltaban semanas. Un promedio de una semana presentado
 // como promedio de cuatro no es un promedio impreciso: es una cifra inventada.
 //
-// El hueco no tiene que ser de fin de año. Si al Sheet le falta una columna,
+// El hueco no tiene que ser de fin de año. Si al dato le falta una semana,
 // `slice(-4)` toma S38, S39, S41, S42 —cinco semanas de calendario divididas
 // entre cuatro— y tampoco lo dice.
 //
 // Por eso la pregunta que se contesta aquí no es «dame las últimas cuatro»
-// sino «¿hay cuatro SEGUIDAS?». La no-consecutividad es justo la firma del
-// cambio de año —42 → 1 no es +1—, así que esto muerde en los dos casos sin
-// necesitar el año, que es precisamente lo que el documento no trae.
-const _numeroDeSemanaGP = (clave) => {
-  const m = /^S(\d{1,2})$/.exec(String(clave || ''));
-  const n = m ? Number(m[1]) : null;
-  return (n !== null && n >= 1 && n <= 53) ? n : null;
+// sino «¿hay cuatro SEGUIDAS?». Y por eso la pregunta SE QUEDA aunque el
+// origen ya esté arreglado: el cambio de año era UNA de las formas de que
+// faltara una semana, no la única.
+// ── LO QUE CAMBIÓ AL ARREGLAR EL ORIGEN (2026-11-17, #47) ──────────────────
+//
+// Desde `parserVersion` 6 la clave SÍ lleva el año (`S2026-47`) y la serie es
+// una ventana de 53 semanas que cruza el 31 de diciembre. Eso cambia esta
+// pregunta de sitio: ya no hay que decidir a ciegas si `S42 → S1` es un cruce
+// de año o un hueco de diez semanas — ahora se sabe.
+//
+// Lo que NO cambia es el criterio: se sigue contestando «¿hay `n` SEGUIDAS?»,
+// porque un hueco en el dato sigue siendo posible y un promedio de tres
+// semanas presentado como de cuatro sigue siendo una cifra inventada.
+//
+// La forma vieja (`S42`, sin año) se sigue leyendo, y con ella se sigue
+// rechazando el cruce: de `S42 → S1` sin año no se puede saber si son diez
+// semanas de hueco o el año nuevo, y afirmar sobre lo que no se sabe es lo que
+// este arreglo quita. Hace falta mientras exista un documento v5 en el camino
+// —el arrastre de una obra que falló— y el día que no exista, estas dos ramas
+// se caen solas.
+const _piezasDeSemanaGP = (clave) => {
+  const t = String(clave == null ? '' : clave);
+  const conAño = /^S(\d{4})-(\d{2})$/.exec(t);
+  if (conAño) {
+    const s = Number(conAño[2]);
+    return (s >= 1 && s <= 53) ? { año: Number(conAño[1]), semana: s, llevaAño: true } : null;
+  }
+  const sinAño = /^S(\d{1,2})$/.exec(t);
+  if (sinAño) {
+    const s = Number(sinAño[1]);
+    return (s >= 1 && s <= 53) ? { año: null, semana: s, llevaAño: false } : null;
+  }
+  return null;
+};
+
+// Cuántas semanas ISO tiene un año: 52 o 53. El 28 de diciembre cae SIEMPRE
+// en la última semana ISO del año —es la definición de la norma—, así que se
+// pregunta en qué semana cae y eso es la cuenta. Nada de contar días.
+//
+// Esto es calendario, no dato, y por eso vive aquí y no en una tabla: 2026
+// tiene 53 semanas y 2027 tiene 52, y una tabla de dos renglones sería una
+// copia que caduca.
+const _semanasDelAñoGP = (año) => {
+  const d = new Date(Date.UTC(año, 11, 28));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const ini = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d - ini) / 86400000 + 1) / 7);
+};
+
+// ¿`b` es la semana inmediatamente siguiente a `a`?
+//
+// Dentro del mismo año es una suma. En la frontera hay que saber dónde acabó
+// el año de `a`, y eso se pregunta al CALENDARIO, no a la lista publicada.
+// Preguntárselo a la lista parecía más honesto —«dónde acabó el año en el
+// dato»— y es justo lo contrario: si al dato le falta la última semana de
+// diciembre, la lista diría que el año acabó donde se quedó el dato y la
+// cadena se daría por buena saltándose una semana real. Medido: 2026 tiene 53
+// semanas ISO, así que `S2026-52 → S2027-01` NO son seguidas; falta la 53.
+//
+// Si el campo `Semana` de GP no fuera ISO, esto fallaría del lado prudente:
+// la cadena se rompe y la pantalla dice «faltan semanas seguidas» una semana
+// de más. Nunca al revés, que sería afirmar un promedio sobre un hueco.
+const _semanaSiguienteGP = (a, b) => {
+  const pa = _piezasDeSemanaGP(a), pb = _piezasDeSemanaGP(b);
+  if (!pa || !pb) return false;
+  // Las dos claves tienen que hablar el mismo idioma. Comparar una con año
+  // contra una sin año obliga a SUPONERLE un año a la que no lo trae, y ese
+  // supuesto es el defecto entero del #47.
+  if (pa.llevaAño !== pb.llevaAño) return false;
+  // Sin año sólo se puede afirmar la suma dentro de lo que parece un año; el
+  // cruce (42 → 1) se sigue rechazando porque no se sabe si es el año nuevo o
+  // un hueco de diez semanas. Es lo que hacía esta cuenta antes del #47.
+  if (!pa.llevaAño) return pb.semana === pa.semana + 1;
+  if (pa.año === pb.año) return pb.semana === pa.semana + 1;
+  return pb.año === pa.año + 1 && pb.semana === 1 &&
+         pa.semana === _semanasDelAñoGP(pa.año);
 };
 
 // Las últimas `n` semanas de la serie, SÓLO si son `n` seguidas; si no, `null`.
@@ -8579,10 +8650,29 @@ const _numeroDeSemanaGP = (clave) => {
 const ultimasSemanasSeguidasGP = (semanasDisponibles = [], n = 4) => {
   if (!Array.isArray(semanasDisponibles) || semanasDisponibles.length < n) return null;
   const ult = semanasDisponibles.slice(-n);
-  const nums = ult.map(_numeroDeSemanaGP);
-  if (nums.some(x => x === null)) return null;
-  for (let i = 1; i < nums.length; i++) if (nums[i] !== nums[i - 1] + 1) return null;
+  if (ult.some(k => _piezasDeSemanaGP(k) === null)) return null;
+  for (let i = 1; i < ult.length; i++) {
+    if (!_semanaSiguienteGP(ult[i - 1], ult[i])) return null;
+  }
   return ult;
+};
+
+// La clave de la semana es para buscar, no para leer. Desde que lleva el año
+// (#47) tres rótulos de Gastos imprimían `S2026-47` a la cara, que es la clave
+// asomándose por la pantalla. Aquí se le pone nombre: «semana 47 de 2026».
+//
+// El tercero —los renglones de «Tendencia semanal»— no salió leyendo el código
+// sino recorriendo el preview: con las claves viejas decía `S38` y se leía como
+// un rótulo, así que nadie lo había contado como clave cruda.
+//
+// Una clave que no se entiende SE DEVUELVE TAL CUAL en vez de convertirse en
+// «—» o en «última semana». Si algún día llega una forma que esta cuenta no
+// sabe leer, que se vea la clave rara en pantalla; sustituirla por una frase
+// redonda la esconde, y lo que hay que arreglar es la clave.
+const etiquetaSemanaGP = (clave) => {
+  const p = _piezasDeSemanaGP(clave);
+  if (!p) return String(clave == null ? '' : clave);
+  return p.llevaAño ? `semana ${p.semana} de ${p.año}` : `semana ${p.semana}`;
 };
 
 // El gasto semanal promedio de una obra, o `null` cuando no se puede medir.
@@ -8604,11 +8694,10 @@ const velocidadSemanalGP = (semanasObra, semanasDisponibles, n = 4) => {
 // con un hueco la anterior de la lista está a dos semanas: restar contra ella
 // y llamarlo «vs semana anterior» es nombrar mal el dato.
 const semanaAnteriorGP = (semanasDisponibles = [], ultimaSemana) => {
-  const i = (semanasDisponibles || []).indexOf(ultimaSemana);
+  const lista = semanasDisponibles || [];
+  const i = lista.indexOf(ultimaSemana);
   if (i <= 0) return null;
-  const a = _numeroDeSemanaGP(semanasDisponibles[i - 1]);
-  const b = _numeroDeSemanaGP(ultimaSemana);
-  return (a !== null && b !== null && b === a + 1) ? semanasDisponibles[i - 1] : null;
+  return _semanaSiguienteGP(lista[i - 1], ultimaSemana) ? lista[i - 1] : null;
 };
 
 // Un proveedor es NUEVO si su único gasto cae en la última semana. Eso sólo se
@@ -10760,7 +10849,7 @@ function useGPConstruct(activo = true) {
   // y los dos viajan por canales de despliegue distintos. Mientras uno esté
   // arriba y el otro no, esta pantalla dice «version_vieja» y no enseña cifras
   // —que es lo correcto— pero no enseña ninguna. Hay que desplegar los dos.
-  const PARSER_VERSION = 5;
+  const PARSER_VERSION = 6;
   // Reintentos con espera creciente. Tres intentos cubren el corte de red
   // corto y el arranque en frío; más allá de eso el problema no es transitorio
   // y seguir reintentando sólo esconde el fallo.
@@ -19324,7 +19413,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
           <Card>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
               <Tit>Desglose por rubro</Tit>
-              <span style={{fontSize:9,color:C.textMut}}>{rubrosOrdenados.length} rubros · al {ultimaSem}</span>
+              <span style={{fontSize:9,color:C.textMut}}>{rubrosOrdenados.length} rubros · al cierre de la {etiquetaSemanaGP(ultimaSem)}</span>
             </div>
             {rubrosOrdenados.map((r,i)=>{
               const pctR = totalRubros > 0 ? r.total/totalRubros*100 : 0;
@@ -19439,7 +19528,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
           {/* Nuevos esta semana */}
           {nuevosEstaSem.length > 0 && (
             <Card accent={C.blue}>
-              <Tit>Proveedores nuevos en {ultimaSem}</Tit>
+              <Tit>Proveedores nuevos en la {etiquetaSemanaGP(ultimaSem)}</Tit>
               <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
                 Aparecen por primera vez en esta semana
               </div>
@@ -19579,7 +19668,7 @@ function GastosGP({obra,setObra,maquinaria,rol,gpData,gpLoading,gpError,gpUltAct
               return <div key={s} style={{marginBottom:7}}>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3}}>
                   <span style={{color:col,fontWeight:s===ultimaSem?700:400}}>
-                    {s} {esAnomala && <span style={{color:C.red,fontSize:9}}>· anomalía</span>}
+                    {etiquetaSemanaGP(s)} {esAnomala && <span style={{color:C.red,fontSize:9}}>· anomalía</span>}
                   </span>
                   <span style={{fontWeight:600,color:col}}>{MXN(v)}</span>
                 </div>

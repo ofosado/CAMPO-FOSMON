@@ -57,7 +57,17 @@
 //   · no acumular `descartes.montoSinObra`           →  3 en rojo, salida 1
 //   · asignar la semana con `=` en vez de `+=`       → 10 en rojo, salida 1
 //
-// Sobre el archivo bueno: 87 en verde, 0 en rojo, salida 0.
+// Y las del #47 —la clave con su año y la ventana de 53 semanas— comprobadas
+// el 2026-11-17 de la misma manera:
+//
+//   · la clave de la semana pierde el año (`S${s}`)   → 27 en rojo, salida 1
+//   · vuelve el filtro del año vivo, que era lo que
+//     hacía `parserVersion` 5                         → 17 en rojo, salida 1
+//   · la ventana se achica a 52 semanas               →  1 en rojo, salida 1
+//   · se publica la lista entera sin podar, y quedan
+//     claves de semana que ningún nodo tiene          →  2 en rojo, salida 1
+//
+// Sobre el archivo bueno: 140 en verde, 0 en rojo, salida 0.
 //
 // Un dato que justifica la forma del banco: con el defecto del rubro puesto, el
 // acumulado de la obra SIGUE EN VERDE —el dinero no se va a ningún lado, sólo
@@ -80,9 +90,14 @@ vigilarExcepciones('functions/index.js');
 const { deFunciones, SimboloPerdido } = require('./extraer-de-app.cjs');
 
 let parsearGPConstruct, agruparRenglonesGP, mesDeRenglonGP, semanaDeRenglonGP;
+let claveSemanaGP, piezasDeClaveSemanaGP, ventanaDeClavesGP, VENTANA_SEMANAS_GP, VENTANA_MESES_GP;
 try {
-  ({ parsearGPConstruct, agruparRenglonesGP, mesDeRenglonGP, semanaDeRenglonGP } =
-    deFunciones('parsearGPConstruct', 'agruparRenglonesGP', 'mesDeRenglonGP', 'semanaDeRenglonGP'));
+  ({ parsearGPConstruct, agruparRenglonesGP, mesDeRenglonGP, semanaDeRenglonGP,
+    claveSemanaGP, piezasDeClaveSemanaGP, ventanaDeClavesGP,
+    VENTANA_SEMANAS_GP, VENTANA_MESES_GP } =
+    deFunciones('parsearGPConstruct', 'agruparRenglonesGP', 'mesDeRenglonGP', 'semanaDeRenglonGP',
+      'claveSemanaGP', 'piezasDeClaveSemanaGP', 'ventanaDeClavesGP',
+      'VENTANA_SEMANAS_GP', 'VENTANA_MESES_GP'));
 } catch (e) {
   if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
   throw e;
@@ -287,16 +302,21 @@ exigir(api.ultimaSemana === hoja.ultimaSemana, `ultimaSemana (${hoja.ultimaSeman
 exigir(api.ultimoMes === hoja.ultimoMes, `ultimoMes (${hoja.ultimoMes})`,
   [`hoja ${hoja.ultimoMes} · consulta ${api.ultimoMes}`]);
 
-// La semana partida: la que aparece en más de un mes del año vivo. En la hoja
-// ocupa DOS columnas; aquí son renglones con el mismo `Semana` y distinto `Mes`.
+// La semana partida: la que aparece en más de un mes. En la hoja ocupa DOS
+// columnas; aquí son renglones con el mismo (año, semana) y distinto `Mes`.
 // Lo que se exige es que SUME, no que se quede con el último.
+//
+// El filtro por `añoVivo` que tenía esta sección se cayó con el #47: la serie
+// ya no es de un año, así que la semana partida se busca en TODOS los años. Y
+// la clave no se teclea, se pide a `claveSemanaGP` — tecleársela aquí era la
+// copia que puso esta sección en rojo al cambiar la forma.
 {
   const porSemana = {};
   for (const f of filas) {
-    if (Number(f.Amo) !== api.añoVivo) continue;
-    const s = semanaDeRenglonGP(f.Semana), m = mesDeRenglonGP(f.Mes);
-    if (!s || !m) continue;
-    (porSemana[s] = porSemana[s] || new Set()).add(m);
+    const clave = claveSemanaGP(f.Amo, semanaDeRenglonGP(f.Semana));
+    const m = mesDeRenglonGP(f.Mes);
+    if (!clave || !m) continue;
+    (porSemana[clave] = porSemana[clave] || new Set()).add(m);
   }
   const partidas = Object.entries(porSemana).filter(([, s]) => s.size > 1).map(([s]) => s);
   if (partidas.length === 0) {
@@ -304,11 +324,11 @@ exigir(api.ultimoMes === hoja.ultimoMes, `ultimoMes (${hoja.ultimoMes})`,
       ['Sin ella no se puede exigir que la semana SUME en vez de pisarse,',
        'que es el defecto que costó $15,409,486.89 por el lado de la hoja.']);
   }
-  ok(`el insumo trae ${partidas.length} semana(s) repartida(s) entre dos meses: ${partidas.map(s => 'S' + s).join(' ')}`);
-  for (const s of partidas) {
-    const clave = 'S' + s;
+  ok(`el insumo trae ${partidas.length} semana(s) repartida(s) entre dos meses: ${partidas.join(' ')}`);
+  for (const clave of partidas) {
+    const p = piezasDeClaveSemanaGP(clave);
     const esperado = filas
-      .filter(f => Number(f.Amo) === api.añoVivo && semanaDeRenglonGP(f.Semana) === s &&
+      .filter(f => Number(f.Amo) === p.año && Number(semanaDeRenglonGP(f.Semana)) === p.semana &&
                    /^\d{4}\s/.test(String(f.DesProy || '')))
       .reduce((t, f) => t + Math.abs(Number(f.ImporteDisSIva) || 0), 0);
     const real = Object.values(api.obras).reduce((t, o) => t + (o.semanas[clave] || 0), 0);
@@ -415,6 +435,199 @@ for (const [entrada, esperado] of [
   const real = semanaDeRenglonGP(entrada);
   exigir(real === esperado, `semana de ${JSON.stringify(entrada)} → ${JSON.stringify(esperado)}`,
     [`salió ${JSON.stringify(real)}`]);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+seccion('9. LA SEMANA LLEVA SU AÑO, Y LA SERIE CRUZA EL 31 DE DICIEMBRE (#47)');
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Lo que se afirma aquí no es la forma de la cadena por bonita: es que DOS
+// semanas de años distintos no puedan caer en la misma clave, y que la serie
+// no se caiga entera el 5 de enero. Las dos cosas se miran en el resultado,
+// con insumos construidos para que el defecto, si vuelve, se vea.
+{
+  // Precondición: el insumo tiene que traer DOS años, o esta sección no
+  // afirma nada. Lo trae —16 renglones de 2025 y 18 de 2026—, pero si alguien
+  // recorta el archivo, el banco tiene que NO ARRANCAR, no pasar en verde.
+  const años = new Set(filas.map(f => Number(f.Amo)).filter(Number.isInteger));
+  if (años.size < 2) {
+    sinPrecondicion('renglones de DOS años en ' + path.relative(RAIZ, RENGLONES),
+      ['Con un solo año, la semana 5 de 2025 y la de 2026 no pueden chocar,',
+       'y toda esta sección pasaría en verde sin medir el defecto del #47.']);
+  }
+  ok(`el insumo trae ${años.size} años: ${[...años].sort().join(' ')}`);
+
+  // (1) Ninguna clave publicada es ambigua.
+  for (const [etiqueta, r] of [['la consulta', api], ['la hoja', hoja]]) {
+    const malas = r.semanasDisponibles.filter(k => {
+      const p = piezasDeClaveSemanaGP(k);
+      return !p || !p.llevaAño;
+    });
+    exigir(malas.length === 0,
+      `${etiqueta}: las ${r.semanasDisponibles.length} claves publicadas dicen de qué año son`,
+      malas.map(k => `\`${k}\` no lleva año: la misma clave valdría para dos años`));
+  }
+
+  // (2) Las semanas de los DOS años están en la serie. Antes del #47 sólo
+  //     sobrevivían las del año vivo: las de 2025 no existían en el documento.
+  for (const [etiqueta, r] of [['la consulta', api], ['la hoja', hoja]]) {
+    const porAño = {};
+    for (const k of r.semanasDisponibles) {
+      const p = piezasDeClaveSemanaGP(k);
+      if (p) porAño[p.año] = (porAño[p.año] || 0) + 1;
+    }
+    exigir(Object.keys(porAño).length === años.size,
+      `${etiqueta}: la serie semanal cubre los ${años.size} años, no sólo el vivo`,
+      [`años en la serie: ${JSON.stringify(porAño)} · años del insumo: ${[...años].sort().join(' ')}`]);
+  }
+
+  // (3) Y las de cada año están DENTRO de los nodos, no sólo en la lista. Una
+  //     cabecera con semanas que ningún nodo trae es una columna en blanco
+  //     presentada como un cero.
+  {
+    const clavesEnNodos = new Set();
+    for (const o of Object.values(api.obras)) {
+      for (const k of Object.keys(o.semanas || {})) clavesEnNodos.add(k);
+    }
+    const huerfanas = api.semanasDisponibles.filter(k => !clavesEnNodos.has(k));
+    exigir(huerfanas.length === 0,
+      'cada semana publicada la trae al menos una obra',
+      huerfanas.map(k => `\`${k}\` está en semanasDisponibles y en ninguna obra`));
+    const colada = [...clavesEnNodos].filter(k => !api.semanasDisponibles.includes(k));
+    exigir(colada.length === 0,
+      'ninguna obra trae una semana que la lista no publique',
+      colada.map(k => `\`${k}\` está en una obra y no en semanasDisponibles`));
+  }
+}
+
+// (4) LA VENTANA ESTÁ ACOTADA Y SE QUEDA CON LAS ÚLTIMAS, NO CON LAS PRIMERAS.
+// Ocho años de 53 semanas cada uno: 424 claves posibles. Es el caso que el
+// comentario viejo temía —«multiplicaría gp_detalle por siete»— y la respuesta
+// no es publicar un año, es publicar una ventana.
+{
+  const muchos = [];
+  for (let año = 2019; año <= 2026; año++) {
+    for (let s = 1; s <= 53; s++) {
+      muchos.push({
+        DesProy: '0101 CANGREJERA UNO', AgrConce: '300 INDIRECTOS',
+        Nombre_Beneficiario: 'FERRETERIA DEL GOLFO',
+        Amo: año, Mes: `${((s - 1) % 12) + 1} .- X`, Semana: s,
+        ImporteDisSIva: 100,
+      });
+    }
+  }
+  const r = agruparRenglonesGP(muchos);
+  exigir(r.semanasDisponibles.length === VENTANA_SEMANAS_GP,
+    `8 años × 53 semanas (424) se publican como ${VENTANA_SEMANAS_GP}`,
+    [`salieron ${r.semanasDisponibles.length}`]);
+  exigir(r.mesesDisponibles.length === VENTANA_MESES_GP,
+    `8 años de meses (96) se publican como ${VENTANA_MESES_GP}`,
+    [`salieron ${r.mesesDisponibles.length}`]);
+  exigir(r.semanasDisponibles[r.semanasDisponibles.length - 1] === 'S2026-53',
+    'la ventana se queda con las ÚLTIMAS, no con las primeras',
+    [`la última publicada es \`${r.semanasDisponibles[r.semanasDisponibles.length - 1]}\``]);
+  exigir(r.semanasDisponibles[0] === 'S2026-01',
+    'y empieza donde tiene que empezar',
+    [`la primera publicada es \`${r.semanasDisponibles[0]}\``]);
+  // El nodo no puede traer más de lo que la lista publica.
+  const obra = Object.values(r.obras)[0];
+  exigir(Object.keys(obra.semanas).length === VENTANA_SEMANAS_GP,
+    'la obra tampoco guarda las 424: guarda las de la ventana',
+    [`la obra trae ${Object.keys(obra.semanas).length} clave(s)`]);
+  // Y el dinero de los años recortados NO desaparece: sigue en `años` y en el
+  // gran total. Una ventana que se comiera el acumulado sería peor que el
+  // defecto que arregla.
+  exigirCifra(obra.grandTotal, muchos.length * 100,
+    'el dinero de los años fuera de la ventana sigue en el gran total');
+  exigir(Object.keys(obra.años).length === 8,
+    'y la serie ANUAL no se recorta: están los 8 años',
+    [`salieron ${Object.keys(obra.años).length}`]);
+}
+
+// (5) EL 5 DE ENERO. Es el renglón con fecha de todo el #47: en la primera
+// semana de 2027, diciembre de 2026 tiene que seguir en la serie. Antes, ese
+// día `semanasDisponibles` era `["S1"]` y los cuatro sitios que piden cuatro
+// semanas seguidas se quedaban un mes sin poder contar.
+{
+  const cruce = [];
+  const empujar = (año, s, mes) => cruce.push({
+    DesProy: '0101 CANGREJERA UNO', AgrConce: '300 INDIRECTOS',
+    Nombre_Beneficiario: 'FERRETERIA DEL GOLFO',
+    Amo: año, Mes: `${mes} .- X`, Semana: s, ImporteDisSIva: 100,
+  });
+  for (let s = 45; s <= 52; s++) empujar(2026, s, 12);
+  empujar(2027, 1, 1);
+
+  const r = agruparRenglonesGP(cruce);
+  exigir(r.añoVivo === 2027, 'el año vivo es 2027', [`salió ${r.añoVivo}`]);
+  exigir(r.ultimaSemana === 'S2027-01', 'la última semana es la S1 de 2027',
+    [`salió \`${r.ultimaSemana}\``]);
+  const deDiciembre = r.semanasDisponibles.filter(k => {
+    const p = piezasDeClaveSemanaGP(k);
+    return p && p.año === 2026;
+  });
+  exigir(deDiciembre.length === 8,
+    'las 8 semanas de 2026 siguen en la serie en enero de 2027',
+    [`sobrevivieron ${deDiciembre.length}: ${deDiciembre.join(' ')}`]);
+  exigir(r.semanasDisponibles.length === 9,
+    'la serie tiene 9 semanas seguidas a caballo del año, no 1',
+    [`salieron ${r.semanasDisponibles.length}: ${r.semanasDisponibles.join(' ')}`]);
+  // Y el orden: la S1 de 2027 va DESPUÉS de la S52 de 2026. Con el orden
+  // viejo —por el número de semana— habría ido primera.
+  exigir(r.semanasDisponibles.indexOf('S2027-01') >
+         r.semanasDisponibles.indexOf('S2026-52'),
+    'la S1 de 2027 va después de la S52 de 2026, no antes',
+    [r.semanasDisponibles.join(' ')]);
+  // El mes también: diciembre de 2026 sigue ahí en enero de 2027.
+  exigir(r.mesesDisponibles.includes('M2026-12') && r.mesesDisponibles.includes('M2027-01'),
+    'diciembre de 2026 y enero de 2027 conviven en `mesesDisponibles`',
+    [r.mesesDisponibles.join(' ')]);
+  // `total2026` es el total del año VIVO, y en enero de 2027 eso son $100,
+  // no los $800 de 2026. El nombre del campo miente desde antes del #47; lo
+  // que no puede mentir es la cifra.
+  const obra = Object.values(r.obras)[0];
+  exigirCifra(obra.total2026, 100, 'el total del año vivo es el de 2027, no el de 2026');
+  exigirCifra(obra.grandTotal, 900, 'y el gran total sigue trayendo los dos años');
+}
+
+// (6) LOS DOS AYUDANTES, EN SUS BORDES. La clave no se construye a mano en
+// ningún sitio del repo; si esto se tuerce, se tuerce en todos a la vez.
+for (const [año, semana, esperado] of [
+  [2026, '47', 'S2026-47'], [2026, 7, 'S2026-07'], [2027, 1, 'S2027-01'],
+  [2026, 53, 'S2026-53'],
+  [2026, 0, null], [2026, 54, null], [2026, null, null], [2026, '', null],
+  [null, 47, null], ['', 47, null], [1999, 47, null], [2101, 47, null],
+  [2026.5, 47, null], ['dos mil', 47, null],
+]) {
+  const real = claveSemanaGP(año, semana);
+  exigir(real === esperado,
+    `claveSemanaGP(${JSON.stringify(año)}, ${JSON.stringify(semana)}) → ${JSON.stringify(esperado)}`,
+    [`salió ${JSON.stringify(real)}`]);
+}
+// Y la lectura, que tiene que entender las DOS formas: la nueva y la vieja del
+// documento que todavía está escrito en producción.
+for (const [clave, esperado] of [
+  ['S2026-47', { año: 2026, semana: 47, llevaAño: true }],
+  ['S2027-01', { año: 2027, semana: 1, llevaAño: true }],
+  ['S47', { año: null, semana: 47, llevaAño: false }],
+  ['S1', { año: null, semana: 1, llevaAño: false }],
+  ['S2026-00', null], ['S2026-54', null], ['S0', null], ['S54', null],
+  ['M2026-01', null], ['', null], [null, null], ['S2026-7', null],
+]) {
+  const real = piezasDeClaveSemanaGP(clave);
+  exigir(JSON.stringify(real) === JSON.stringify(esperado),
+    `piezasDeClaveSemanaGP(${JSON.stringify(clave)}) → ${JSON.stringify(esperado)}`,
+    [`salió ${JSON.stringify(real)}`]);
+}
+// La ventana: ordena por la clave, no por el orden en que llegaron.
+{
+  const r = ventanaDeClavesGP(['S2027-01', 'S2026-52', 'S2026-51', 'S2026-52'], 3);
+  exigir(r.join(' ') === 'S2026-51 S2026-52 S2027-01',
+    'ventanaDeClavesGP ordena y quita repetidas', [r.join(' ')]);
+  exigir(ventanaDeClavesGP(['S2027-01', 'S2026-52', 'S2026-51'], 2).join(' ') === 'S2026-52 S2027-01',
+    'y se queda con las últimas');
+  exigir(ventanaDeClavesGP([null, 'S2026-01', null], 5).join(' ') === 'S2026-01',
+    'una clave nula no ocupa sitio en la ventana');
 }
 
 // ── cierre ─────────────────────────────────────────────────────────────────

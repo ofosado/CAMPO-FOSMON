@@ -638,7 +638,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   const semanas = semanasDe(filas, obra.contratado, obra.semanas ?? 3, obra.curva);
   await escribir(`${prefijo}obras/${id}/avance/historial`, { semanas });
   // Las notas cuelgan de `avance/notas`, con la MISMA clave que el snapshot
-  // (`S40-2026`). Si la clave no coincide, la nota existe en Firestore y la
+  // (`S38-2026`). Si la clave no coincide, la nota existe en Firestore y la
   // pantalla sigue diciendo «sin nota» — y eso se lee como defecto del producto.
   await escribir(`${prefijo}obras/${id}/avance/notas`, {
     notas: notasDe(semanas, obra.semilla,
@@ -912,13 +912,23 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // Cuáles semanas hay es del SHEET (`semanasDisponibles`), no de la obra. Una
   // obra sin gasto en una semana que el Sheet sí midió gastó CERO; eso no es un
   // hueco, y promediarla contra cero es la cuenta correcta. El hueco que sí
-  // impide medir el ritmo es una columna que el Sheet no trae —o el cambio de
-  // año, que es el #47—, y ése es global a las dos obras, así que no se puede
-  // enseñar con una obra sí y otra no. Lo fija el banco
-  // `prueba-la-semana-sin-su-año.cjs`; aquí se siembra la forma de producción.
+  // impide medir el ritmo es una columna que el Sheet no trae, y ése es global
+  // a las dos obras, así que no se puede enseñar con una obra sí y otra no. Lo
+  // fija el banco `prueba-la-semana-sin-su-año.cjs`; aquí se siembra la forma
+  // de producción.
   //
-  //   0114 — gasta las cuatro últimas: el ritmo sale de cuatro semanas reales.
-  //   0121 — se salta S39, S41 y S42: mismo ritmo medible, con ceros dentro.
+  // LAS SEIS SEMANAS CRUZAN EL 31 DE DICIEMBRE, a propósito. Desde el #47
+  // (2026-11-17) la clave lleva su año (`S2025-52`) y la serie es una ventana
+  // de 53 semanas que no se corta en enero; el escenario que el preview tiene
+  // que poder enseñar es justamente ése, porque era el único que salía mal y
+  // que antes no se podía ni preguntar. **2025 tiene 52 semanas ISO**, así que
+  // `S2025-51 → S2025-52` encadena y la velocidad de las últimas cuatro se
+  // mide a caballo del año. Sembrarlo todo dentro de un año dejaría el
+  // recorrido por el preview sin el caso que importa.
+  //
+  //   0114 — gasta las cuatro últimas: el ritmo sale de cuatro semanas
+  //          reales, dos de 2025 y dos de 2026.
+  //   0121 — se salta S2025-49, S2025-51 y S2025-52: mismo ritmo medible, con ceros dentro.
   //
   // La 0114 además trae un proveedor que aparece por primera vez en la última
   // semana y otro que sube más del 50%, para que la tarjeta de excepciones y
@@ -947,7 +957,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   // pestaña de rubros lee `r.semanas[s]` sin red y tronaba la vista entera.
   // Un dato de prueba más delgado que el que escribe producción esconde el
   // defecto en lugar de enseñarlo.
-  const gpSemanas = ['S38','S39','S40','S41','S42','S43'];
+  const gpSemanas = ['S2025-48','S2025-49','S2025-50','S2025-51','S2025-52','S2026-01'];
   const GP = {
     '0114': {
       id: '0114', nombre: 'Oaxaca Parque Lineal', grandTotal: 21400000,
@@ -957,39 +967,39 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       rubros: {
         '100 MATERIALES': { id: '100', nombre: '100 MATERIALES',
           nombreCorto: 'Materiales', grandTotal: 12300000,
-          semanas: { S40: 1060000, S41: 1210000, S42: 1000000, S43: 1330000 } },
+          semanas: { 'S2025-50': 1060000, 'S2025-51': 1210000, 'S2025-52': 1000000, 'S2026-01': 1330000 } },
         '300 INDIRECTOS': { id: '300', nombre: '300 INDIRECTOS',
           nombreCorto: 'Indirectos', grandTotal: 1310000,
-          semanas: { S40: 115000, S41: 130000, S42: 105000, S43: 140000 } },
+          semanas: { 'S2025-50': 115000, 'S2025-51': 130000, 'S2025-52': 105000, 'S2026-01': 140000 } },
         '300 SUBCONTRATOS': { id: '300', nombre: '300 SUBCONTRATOS',
           nombreCorto: 'Subcontratos', grandTotal: 2590000,
-          semanas: { S40: 225000, S41: 250000, S42: 215000, S43: 280000 } },
+          semanas: { 'S2025-50': 225000, 'S2025-51': 250000, 'S2025-52': 215000, 'S2026-01': 280000 } },
         '400 MAQUINARIA Y EQUIPO': { id: '400', nombre: '400 MAQUINARIA Y EQUIPO',
           nombreCorto: 'Maquinaria y equipo', grandTotal: 5200000,
-          semanas: { S40: 450000, S41: 510000, S42: 420000, S43: 560000 } },
+          semanas: { 'S2025-50': 450000, 'S2025-51': 510000, 'S2025-52': 420000, 'S2026-01': 560000 } },
       },
       proveedores: [
         { nombre: 'Aceros del Istmo', rubroId: '100', rubroNombre: 'Materiales',
           total: 6200000, grandTotal: 6200000,
-          semanas: { S40: 820000, S41: 910000, S42: 760000, S43: 1180000 } },
+          semanas: { 'S2025-50': 820000, 'S2025-51': 910000, 'S2025-52': 760000, 'S2026-01': 1180000 } },
         { nombre: 'Concretos Oaxaca', rubroId: '100', rubroNombre: 'Materiales',
           total: 4900000, grandTotal: 4900000,
-          semanas: { S40: 700000, S41: 880000, S42: 640000, S43: 690000 } },
-        // Nuevo de verdad: no aparece antes de S43. La tarjeta de excepción y
+          semanas: { 'S2025-50': 700000, 'S2025-51': 880000, 'S2025-52': 640000, 'S2026-01': 690000 } },
+        // Nuevo de verdad: no aparece antes de S2026-01. La tarjeta de excepción y
         // la tabla de abajo tienen que coincidir en que es uno solo.
         { nombre: 'Rentas Tehuantepec', rubroId: '400', rubroNombre: 'Maquinaria y equipo',
-          total: 440000, grandTotal: 440000, semanas: { S43: 440000 } },
+          total: 440000, grandTotal: 440000, semanas: { 'S2026-01': 440000 } },
         // Los dos rubros que comparten el 300 traen proveedor propio: en
         // producción es el proveedor el que crea el rubro, así que un rubro
-        // con dinero y sin proveedor no existe. Ambos empiezan en S40 y suben
-        // menos del 50% en S43, para no inventar una excepción que la tarjeta
+        // con dinero y sin proveedor no existe. Ambos empiezan en S2025-50 y suben
+        // menos del 50% en S2026-01, para no inventar una excepción que la tarjeta
         // de arriba tendría que explicar.
         { nombre: 'Nómina Indirecta Oaxaca', rubroId: '300', rubroNombre: 'Indirectos',
           total: 1310000, grandTotal: 1310000,
-          semanas: { S40: 115000, S41: 130000, S42: 105000, S43: 140000 } },
+          semanas: { 'S2025-50': 115000, 'S2025-51': 130000, 'S2025-52': 105000, 'S2026-01': 140000 } },
         { nombre: 'Terracerías del Sur', rubroId: '300', rubroNombre: 'Subcontratos',
           total: 2590000, grandTotal: 2590000,
-          semanas: { S40: 225000, S41: 250000, S42: 215000, S43: 280000 } },
+          semanas: { 'S2025-50': 225000, 'S2025-51': 250000, 'S2025-52': 215000, 'S2026-01': 280000 } },
       ],
     },
     '0121': {
@@ -997,15 +1007,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       rubros: {
         '100 MATERIALES': { id: '100', nombre: '100 MATERIALES',
           nombreCorto: 'Materiales', grandTotal: 19900000,
-          semanas: { S38: 1400000, S40: 1950000, S43: 1620000 } },
+          semanas: { 'S2025-48': 1400000, 'S2025-50': 1950000, 'S2026-01': 1620000 } },
       },
       proveedores: [
         { nombre: 'Triturados del Golfo', rubroId: '100', rubroNombre: 'Materiales',
           total: 3100000, grandTotal: 3100000,
-          semanas: { S38: 900000, S40: 1200000, S43: 1000000 } },
+          semanas: { 'S2025-48': 900000, 'S2025-50': 1200000, 'S2026-01': 1000000 } },
         { nombre: 'Asfaltos Coatza', rubroId: '100', rubroNombre: 'Materiales',
           total: 1870000, grandTotal: 1870000,
-          semanas: { S38: 500000, S40: 750000, S43: 620000 } },
+          semanas: { 'S2025-48': 500000, 'S2025-50': 750000, 'S2026-01': 620000 } },
       ],
     },
   };
@@ -1043,9 +1053,9 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     ultimaActualizacion: new Date(Date.now() - 3 * 3600000).toISOString(),
     fuente: 'api-gp-por-obra',
     semanasDisponibles: gpSemanas,
-    ultimaSemana: 'S43',
-    mesesDisponibles: ['M2026-09', 'M2026-10'],
-    ultimoMes: 'M2026-10',
+    ultimaSemana: 'S2026-01',
+    mesesDisponibles: ['M2025-12', 'M2026-01'],
+    ultimoMes: 'M2026-01',
     totalObras: Object.keys(GP).length,
     obrasPedidas: Object.keys(GP),
     obrasConError: [],
@@ -1163,7 +1173,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   console.log('  programa: 0114 cuadra al peso · 0128 NO cuadra (#96) · 0121 sin programa');
   console.log('            OP-2026-002 NO cuadra del lado dependencia (#98): monto y fin, arranque sí');
   console.log(`  GP: parserVersion ${PARSER_VERSION} (leída de functions/index.js)`);
-  console.log('  0114 con S40-S43 seguidas · 0121 con huecos (S38, S40, S43)');
+  console.log('  0114 con S2025-50-S2026-01 seguidas · 0121 con huecos (S2025-48, S2025-50, S2026-01)');
   console.log(`  fuente api-gp-por-obra · ${gpRenglones + 2} renglones · 1 sin obra ($183,450.75)`);
   console.log('  y su detalle en global/gp_detalle/obras/<id>, que es el que gana');
   console.log(`  catálogo aparte en global/gp_catalogo: ${CATALOGO_GP.length} obras, sin montos`);
