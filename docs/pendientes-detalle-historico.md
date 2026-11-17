@@ -502,6 +502,86 @@ rojo, salida 1, y la propia salida dice `=== Deploying to 'campo-fosmon'...`.
 
 ---
 
+## P8. El banco de pruebas guarda su propia copia del grafo de dependencias, y eso castiga compartir código
+
+**Medido**: 2026-11-17, intentando cerrar el residual del #107. No es un
+principio adoptado todavía: es un bloqueo medido, con nombre y tamaño, que
+hay que quitar antes de que se pueda adoptar nada.
+
+El P3 dice que una prueba **ejecuta** la cuenta extraída del archivo, no una
+copia. Eso funciona, y 47 bancos viven de ello. Lo que no se había medido es
+el precio: la herramienta que extrae **teclea su propia idea de dónde vive
+cada símbolo**, y esa idea es «en `src/App.jsx`, y en ningún otro sitio».
+
+Mientras `App.jsx` fuera un monolito eso era cierto por accidente. Dejó de
+serlo el día en que una decisión tuvo que compartirse con `ot.jsx`: `ot.jsx`
+**no puede** importar de `App.jsx` —`App.jsx` importa de `ot.jsx`— así que la
+decisión tiene que bajar a un módulo hermano. Y bajarla es lo que se midió.
+
+**El experimento, entero.** `src/instante-guardado.js` con `fechaLocalDeISO`,
+`instanteGuardado` y las dos frases de las órdenes de trabajo; `App.jsx`
+importándolas y ya no declarándolas; los dos sitios defectuosos de `ot.jsx`
+(`:348`, el mensaje que le NIEGA a alguien volver a subir una orden, y `:753`,
+el renglón del listado) pasando por la decisión compartida; `npm run build`
+limpio. Ninguna cuenta cambió. **La suite pasó de 134 en verde a 119 en verde,
+4 en rojo y 11 sin arrancar**, con mensajes de la forma
+`fechaLocalDeISO is not a function` y `No se encontraron estas piezas en
+src/App.jsx`.
+
+**Las cuatro capas, que no se hablan entre sí:**
+
+| | Dónde | Cómo decide qué existe |
+|---|---|---|
+| 1 | `scripts/extraer-de-app.cjs` (`indexar`/`fuenteDe`) | Indexa **un** archivo y hace el cierre transitivo dentro de él |
+| 2 | `scripts/taller-de-app.cjs` (`taller`/`cuenta`/`correr`) | Su propio parseo, y recibe el **texto**, no la ruta — a propósito, para que la contraprueba mute en el mismo proceso |
+| 3 | Copias privadas de `taller` dentro de los bancos | `prueba-las-dos-curvas-y-un-eje.cjs:113` y `prueba-una-sola-pregunta-a-gp.cjs:103` |
+| 4 | Listas de piezas tecleadas a mano | p. ej. `PIEZAS_MODULO` en `prueba-galeria-cliente.cjs` |
+
+Las capas 1 y 2 **se arreglaron y funcionó**: siguiendo el `import` relativo,
+`prueba-dos-numeros-con-el-mismo-nombre`, `prueba-el-numero-con-su-calificativo`
+y `prueba-hueco-sin-captura` volvieron a verde sin tocar una sola aserción. El
+arreglo es de unas 40 líneas por capa. Lo que paró el trabajo no fue el
+tamaño: fueron las dos cosas de abajo.
+
+**Trampa 1 — un hermano declara con `export const`, y el padre del nodo es el
+`export`, no el `Program`.** Las cuatro capas filtran por
+`p.parent.type !== 'Program'`, así que **se saltan todas** las declaraciones de
+cualquier módulo compartido: la capa se ve arreglada y sigue sin encontrar
+nada. Y al cortar la fuente hay que cortar el nodo de la declaración, **sin la
+palabra `export`**, porque lo extraído entra en un `new Function`, donde
+`export` es un error de sintaxis. Es media tarde la primera vez.
+
+**Trampa 2, la que importa — seguir los `import` NO es inerte: colisiona con
+los dobles que los bancos ponen a propósito.** `src/permiso-denegado.js`
+exporta `CASO`, y `App.jsx` lo importa. `prueba-partidas-extraordinarias.cjs`
+dobla `CASO` con `CASO: {}` en su entorno, porque hasta ahora era un nombre
+que la extracción no podía resolver. Con el `import` seguido, `CASO` llega a
+la vez como **parámetro** del `new Function` y como `const` dentro del cuerpo
+extraído: `Identifier 'CASO' has already been declared`, **salida 2**. Y la
+solución fácil —quitar del doble lo que la extracción ya resuelve— es peor que
+el síntoma: los dobles existen para que un trozo bajo examen no abra Firestore,
+así que **desdoblar en silencio** cambia lo que un banco mide sin que nadie lo
+vea. Es el P7 otra vez, por el otro extremo.
+
+**Por eso lo que falta no es «un módulo compartido»**, que es lo que el
+renglón #107 decía y era falso. Falta **una sola capa de extracción para el
+repo** y, dentro de ella, **una decisión escrita sobre qué gana cuando un
+banco dobla un símbolo que la extracción ya puede resolver** — probablemente
+que el doble gana y se DICE, nunca en silencio.
+
+**Lo que esto cuesta mientras no se quite**, y es el motivo de escribirlo:
+una suite que se cae cuando se saca un helper a un módulo **empuja a copiarlo**.
+Y copiar una decisión es exactamente el defecto que el #107 existe para cerrar.
+Hoy hay dos cosas paradas por esto y las dos son del mismo tamaño: los dos
+sitios de `ot.jsx`, y `baseFalsa`, que va por su **cuarta** copia (ver el 149).
+
+**Todo revertido el mismo día.** Con la demo de oficina encima, un refactor de
+la infraestructura de medición no se mete la noche de antes, y el residual del
+#107 son dos renglones de pantalla en una pantalla que el cliente de la demo
+no abre. El código se tiró; **el hallazgo es lo que valía la medición**.
+
+---
+
 # BLOQUEAN LA PRIMERA DEMO
 
 Cinco puntos que hay que resolver ANTES de mostrar el sistema por
