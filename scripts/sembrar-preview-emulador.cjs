@@ -134,6 +134,22 @@ const CUENTAS = [
     rol: 'subdirector', tipo: 'dependencia', orgId: 'coatzacoalcos' },
   { correo: 'jefesup@cotea.com.mx', nombre: 'Ana Lagunes',
     rol: 'jefe_supervision', tipo: 'dependencia', orgId: 'coatzacoalcos' },
+  // La última es el rol de FUERA, y existe por lo que NO se podía mirar. Ni
+  // `cliente` ni `contratista` tenían cuenta sembrada, y son los dos únicos
+  // roles cuyo menú no lleva Dashboard: su primera pestaña es Avance y la
+  // segunda Fotos. Por eso el #3 vivió meses sin que nadie lo viera —la carga
+  // diferida del historial sólo se disparaba en Dashboard y en Operación, así
+  // que la galería del cliente enseñaba el riel sobre un historial que nadie
+  // había pedido y el encabezado publicaba «0 semanas cerradas» de una obra que
+  // sí tenía cierres—. Con las nueve cuentas anteriores ese defecto no se puede
+  // reproducir en el preview: todas entran por Dashboard, que ya pedía el dato.
+  //
+  // Va del lado dependencia y con UNA obra asignada: `contratista` tiene
+  // `todas_obras:false`, así que con cero asignadas no llega a ninguna obra y
+  // la pestaña de Fotos no se puede abrir.
+  { correo: 'contratista@cotea.com.mx', nombre: 'Constructora del Golfo',
+    rol: 'contratista', tipo: 'dependencia', orgId: 'coatzacoalcos',
+    obras: ['OP-2026-001'] },
 ];
 
 const idDeCorreo = c => c.toLowerCase().replace(/@/g, '_').replace(/\./g, '_');
