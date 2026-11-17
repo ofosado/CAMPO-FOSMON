@@ -5569,27 +5569,49 @@ const MARCA_CERRADA      = 'cerrada';      // cierre con delta comparable
 const MARCA_SIN_COMPARAR = 'sinComparar';  // hay cierre, pero el delta no se puede calcular
 const MARCA_SOLO_FOTOS   = 'soloFotos';    // nadie cerró; lo único que consta son fotos
 const MARCA_SIN_DATO     = 'sinDato';      // ni cierre ni fotos: el hueco
+const MARCA_NO_LEIDO     = 'cierreNoLeido';// no se sabe si cerró: el cierre no se leyó
 
-// Los cuatro estados de arriba son cuatro HECHOS distintos y se guardan los
-// cuatro. Pero el riel se lee de un golpe, y un golpe no admite diccionario:
-// cuatro colores obligaban a una leyenda debajo, y una leyenda que hay que
-// leer para entender el riel es una leyenda que nadie lee. El riel acababa
-// diciendo menos por querer decir más.
+// El quinto estado no es un hecho sobre la obra: es un hecho sobre la LECTURA.
+// Los cuatro primeros se afirman habiendo leído `avance/historial`; el quinto
+// existe para quien no lo leyó —porque la regla se lo niega, o porque todavía
+// viaja—. Sin él, `cierre: null` significaba a la vez «nadie cerró» y «no me
+// dejaron ver si cerró», y el riel escogía la primera: le decía al contratista
+// «sólo fotos, sin cierre» de una semana que sí estaba cerrada.
+//
+// Los cinco estados son cinco HECHOS distintos y se guardan los cinco. Pero el
+// riel se lee de un golpe, y un golpe no admite diccionario: cinco colores
+// obligarían a una leyenda debajo, y una leyenda que hay que leer para
+// entender el riel es una leyenda que nadie lee.
 //
 // Así que la PINTURA contesta lo único que se contesta de un vistazo: si la
-// semana se cerró o no. La diferencia entre los cuatro la dice el panel con
-// palabras al seleccionar la semana —`fraseSinDelta` separa el cierre que no
-// se puede comparar, `frasePanelSinCierre` separa la semana con sólo fotos de
-// la vacía—, que es donde hay espacio para explicarla.
+// semana se cerró o no. La diferencia entre los que comparten color la dice el
+// panel con palabras al seleccionar la semana —`fraseSinDelta` separa el cierre
+// que no se puede comparar, `frasePanelSinCierre` separa la semana con sólo
+// fotos de la vacía—, que es donde hay espacio para explicarla.
+//
+// Con una excepción, y es la que obliga el #36: «no se sabe» NO puede pintarse
+// igual que «no se cerró». Las dos son barras apagadas y entre ellas no hay
+// grado, hay una frontera: una afirma algo de la obra y la otra no afirma nada.
+// Por eso ese estado no se distingue por el TONO —que es lo que no ve quien no
+// distingue colores— sino por la FORMA: hueca, con borde y sin relleno. Vacía
+// en la pantalla porque está vacía de dato.
 //
 // Vive aquí, junto a los estados, y no dentro del componente: es una regla
 // sobre el riel, no sobre una pantalla. Si mañana otra lo pinta, pinta igual.
 const marcaCerrada = (marca) => !!marca?.cierre;
+const marcaCierreNoLeido = (marca) => marca?.estado === MARCA_NO_LEIDO;
 
 // `clavesConFoto` es UNA CLAVE POR FOTO —no el conjunto— para que la marca
 // pueda decir cuántas hay. Las fotos sin fecha no entran: no se sabe de qué
 // semana son y colgarlas de una sería inventar evidencia fechada.
-const rielDeSemanas = (historialAvance = [], clavesConFoto = [], notas = {}) => {
+//
+// `cierreLegible` es lo que separa un historial VACÍO de un historial NO
+// LEÍDO, y los dos llegan aquí como `[]`. El riel no pregunta por qué no se
+// leyó —eso lo sabe la pantalla, que es la que tiene el `historialEstado`—;
+// sólo necesita saber si puede afirmar «esta semana no se cerró». Por omisión
+// sí: quien llame con un historial de verdad no tiene que declarar nada.
+const rielDeSemanas = (historialAvance = [], clavesConFoto = [], notas = {},
+                       cierreLegible = true) => {
   const estados = estadoPorSemana(historialAvance);
   const porClave = new Map(estados.map(e => [e.clave, e]));
 
@@ -5617,6 +5639,7 @@ const rielDeSemanas = (historialAvance = [], clavesConFoto = [], notas = {}) => 
       fotos: nFotos,
       estado: cierre
         ? (cierre.sinDelta ? MARCA_SIN_COMPARAR : MARCA_CERRADA)
+        : !cierreLegible ? MARCA_NO_LEIDO
         : (nFotos > 0 ? MARCA_SOLO_FOTOS : MARCA_SIN_DATO),
       // La nota es de quien CERRÓ la semana. Una semana sin cierre no tiene
       // hueco de nota: no hay a quién reclamárselo.
@@ -9854,7 +9877,6 @@ const MXNS = n => `${(Number(n)||0) < 0 ? '−' : ''}${MXN(n)}`;
 const MXND = n => { const v = Number(n)||0; return `${v > 0 ? '+' : v < 0 ? '−' : ''}${MXN(v)}`; };
 const NUM = (n,d=1)=>Number(n||0).toLocaleString("es-MX",{maximumFractionDigits:d});
 const semA = p=>p>=85?C.green:p>=55?C.yellow:C.red;
-const semM = p=>p>15?C.green:p>=6?C.yellow:C.red;
 
 // ── ESCALA UNIFICADA DE 5 NIVELES (misma que el PDF ejecutivo) ─────────────
 // Bien → Normal → Aceptable → Atención → Crítico. Se usa en Dashboard, banner
@@ -18566,8 +18588,14 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{s.sec}</span>
                   <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>
-                  {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
-                  {excedePresup && <Bdg color={C.yellow} small>{`${pctDerivado.toFixed(0)}%`}</Bdg>}
+                  {/* La insignia dice su sustantivo. Estas dos iban una al
+                      lado de la otra con un número pelado cada una —«3» y
+                      «117%»— y lo único que decía cuál era cuál era el tono:
+                      morada la de fotos, ámbar la del excedente. En el mismo
+                      renglón, para quien no distingue morado de ámbar, el
+                      concepto decía «3 · 117%» y nada más. */}
+                  {nF>0&&<Bdg color={C.purple} small>{`${nF} foto${nF===1?'':'s'}`}</Bdg>}
+                  {excedePresup && <Bdg color={C.yellow} small>{`${pctDerivado.toFixed(0)}% del catálogo`}</Bdg>}
                 </div>
                 <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                   {modoVol
@@ -18756,7 +18784,10 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
                     onChange={e=>rExtra(s.id||s.sec,'sub',e.target.value)}
                     style={{flex:1,minWidth:140,fontSize:10,padding:"3px 6px"}}/>
                 : <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{s.sub}</span>}
-              {nF>0&&<Bdg color={C.purple} small>{nF}</Bdg>}
+              {/* Esta iba morada al lado de la morada que dice EXTRA: dos
+                  insignias del mismo tono, una con palabra y otra con un
+                  número suelto. */}
+              {nF>0&&<Bdg color={C.purple} small>{`${nF} foto${nF===1?'':'s'}`}</Bdg>}
             </div>
             {editar
               ? <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",marginBottom:3}}>
@@ -23931,9 +23962,14 @@ function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
   // El eje de la línea de tiempo sale de `rielDeSemanas`, la misma cuenta que
   // leen los KPIs: la galería por semana y el expediente por semana son la
   // misma pantalla, y calcularlas aparte haría nacer la segunda cuenta.
+  //
+  // El riel sólo puede afirmar «esta semana no se cerró» si el cierre se leyó.
+  // El estado de esa lectura ya viaja hasta aquí —lo trajo el #3— y aquí es
+  // donde se traduce a lo único que el riel necesita saber.
+  const cierreLegible = historialEstado === HIST_LEIDO;
   const marcas = useMemo(
-    () => rielDeSemanas(historialAvance, todas.map(f => f.semana), notasSemana),
-    [historialAvance, todas, notasSemana]);
+    () => rielDeSemanas(historialAvance, todas.map(f => f.semana), notasSemana, cierreLegible),
+    [historialAvance, todas, notasSemana, cierreLegible]);
   const conAño   = cruzaAños(marcas);
   const hueco    = huecoDeArranque(estadoPorSemana(historialAvance), obra, recorteHistorial);
   const claves   = marcas.map(m => m.clave);
@@ -23968,15 +24004,19 @@ function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
     moverRiel(salto);
   };
 
-  // El riel pinta dos estados; ver `marcaCerrada`. Los cuatro siguen aquí
-  // porque el LECTOR DE PANTALLA sí los oye, uno por uno, en el nombre
-  // accesible de cada marca: ahí no hay problema de espacio ni de diccionario,
-  // y quien no ve el color necesita que se los digan todos.
+  // El riel pinta tres formas; ver `marcaCerrada` y `marcaCierreNoLeido`. Los
+  // cinco estados siguen aquí porque el LECTOR DE PANTALLA sí los oye, uno por
+  // uno, en el nombre accesible de cada marca: ahí no hay problema de espacio
+  // ni de diccionario, y quien no ve el color necesita que se los digan todos.
+  //
+  // El quinto no dice nada de la obra, y está redactado para eso: no «sin
+  // cierre» —que sería afirmar— sino «no se muestra», que es lo que pasa.
   const LEYENDA_MARCA = {
     [MARCA_CERRADA]:      "semana cerrada",
     [MARCA_SIN_COMPARAR]: "cerrada, sin comparar",
     [MARCA_SOLO_FOTOS]:   "sólo fotos, sin cierre",
     [MARCA_SIN_DATO]:     "sin cierre ni fotos",
+    [MARCA_NO_LEIDO]:     "el cierre no se muestra",
   };
 
   // Una obra puede tener cierres y ninguna foto: entonces la línea de tiempo
@@ -24116,8 +24156,14 @@ function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
                       distintos y fundirlos en un color los confunde. */}
                   <span style={{width:4,height:4,borderRadius:99,
                     background:m.fotos>0?C.blue:"transparent"}}/>
+                  {/* Tres formas, no tres tonos: rellena si cerró, rellena y
+                      apagada si no cerró, y HUECA si no se sabe. Ver el
+                      comentario de `MARCA_NO_LEIDO`. */}
                   <span style={{width:"100%",height:act?22:14,borderRadius:2,
-                    background:marcaCerrada(m)?C.green:C.borderM}}/>
+                    background:marcaCierreNoLeido(m) ? "transparent"
+                      : marcaCerrada(m) ? C.green : C.borderM,
+                    border:marcaCierreNoLeido(m) ? `1px dashed ${C.borderM}` : "none",
+                    boxSizing:"border-box"}}/>
                   {/* El hueco de nota, en ámbar, bajo la marca del cierre. */}
                   <span style={{width:"100%",height:2,borderRadius:2,
                     background:m.nota?.estado===NOTA_FALTA?C.yellow:"transparent"}}/>
@@ -24140,6 +24186,15 @@ function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
             <span style={{display:"flex",alignItems:"center",gap:3}}>
               <span style={{width:8,height:3,borderRadius:2,background:C.yellow}}/>cerrada sin nota
             </span>
+            {/* La forma hueca sólo se explica cuando hay alguna: una leyenda
+                de algo que no está en pantalla es ruido. Y cuando hay, hay que
+                explicarla — una forma nueva sin nombre es un acertijo. */}
+            {!cierreLegible && marcas.length > 0 && (
+              <span style={{display:"flex",alignItems:"center",gap:3}}>
+                <span style={{width:8,height:6,borderRadius:2,border:`1px dashed ${C.borderM}`,
+                  boxSizing:"border-box"}}/>el cierre no se muestra en esta vista
+              </span>
+            )}
             {hueco && <span>{fraseHuecoDeArranque(hueco)}</span>}
           </div>
         </>}
@@ -24290,7 +24345,10 @@ function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
             <span style={{fontSize:9,color:C.textMut,fontWeight:600,flexShrink:0}}>{p.sec}</span>
             <span style={{fontSize:11,fontWeight:600,color:C.caliza,flex:1,minWidth:0,
               overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.sub}</span>
-            <Bdg color={C.blue} small>{p.fotos.length}</Bdg>
+            {/* Con un número pelado, el renglón decía «1.1 · Terracerías · 12
+                · 5 sems»: dos cifras seguidas y sólo una con su unidad. La de
+                al lado ya dice «sem»; ésta tenía su sustantivo en el tono. */}
+            <Bdg color={C.blue} small>{p.fotos.length} foto{p.fotos.length===1?"":"s"}</Bdg>
             <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>
               {p.semanas.size} sem{p.semanas.size===1?"":"s"}
             </span>
@@ -25467,8 +25525,10 @@ function DetalleSubcontrato({sub, editar, obra, onUpdate, onVolver, onEliminar, 
               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <span style={{fontSize:9,fontWeight:700,color:C.caliza}}>{c.clave||`#${i+1}`}</span>
                 <span style={{fontSize:11,color:C.textSec,overflow:"hidden",textOverflow:"ellipsis"}}>{c.desc||"(sin descripción)"}</span>
-                {nFotos > 0 && <Bdg color={C.purple} small>{nFotos}</Bdg>}
-                {excedePresup && <Bdg color={C.yellow} small>{`${pctSinTopar.toFixed(0)}%`}</Bdg>}
+                {/* Mismo arreglo que en el capturador de la obra madre: la
+                    insignia dice su sustantivo y no sólo su tono. */}
+                {nFotos > 0 && <Bdg color={C.purple} small>{`${nFotos} foto${nFotos===1?'':'s'}`}</Bdg>}
+                {excedePresup && <Bdg color={C.yellow} small>{`${pctSinTopar.toFixed(0)}% del catálogo`}</Bdg>}
               </div>
               <div style={{fontSize:9,color:C.textMut,marginTop:1}}>
                 {modoAvance === "volumen"
