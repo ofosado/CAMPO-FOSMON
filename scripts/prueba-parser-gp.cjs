@@ -53,6 +53,24 @@
 //   · el guardia `!/^\d/.test(label)` del proveedor  →  5 en rojo, salida 1
 //   · el filtro `/^total/i` suelto                   →  5 en rojo, salida 1
 //
+// Y las del #47, comprobadas el 2026-11-17 de la misma manera:
+//
+//   · el mes se cuelga del año más reciente, sea cual
+//     sea el suyo (el defecto B, redivivo)            →  2 en rojo, salida 1
+//   · la clave de la semana pone la semana delante del
+//     año (`S47-2026`), y el orden deja de ser el
+//     cronológico                                     →  2 en rojo, salida 1
+//   · la clave del mes, igual (`M01-2026`)            →  3 en rojo, salida 1
+//
+// Y una que NO da rojo aquí, dicho en voz alta: achicar `VENTANA_MESES_GP` por
+// debajo de lo que la hoja de prueba trae deja este banco en **NO ARRANCÓ 2**,
+// no en rojo. Es lo correcto —este banco mide que la hoja entre ENTERA, y con
+// una ventana más chica que la hoja eso no se puede ni preguntar— y lo que la
+// ventana hace cuando sí muerde se mide en `prueba-agrupador-gp.cjs`, donde
+// bajarla a 52 da rojo con salida 1. Lo que sí se corrigió al medirlo: la
+// cuenta esperada llevaba un `Math.min(…, VENTANA_MESES_GP)`, así que la
+// aserción se movía con el defecto y el banco salía VERDE con la ventana en 2.
+//
 // Y el dato que justifica la forma: con el defecto A puesto, «la suma de las
 // obras es el Total general» SIGUE EN VERDE —el dinero no se va a ningún lado,
 // sólo cambia de etiqueta— y lo que se mueve son los renglones de cada rubro.
@@ -61,6 +79,15 @@
 // sumas cuadran entre sí, porque el parser lee consistentemente la columna
 // equivocada; lo único que lo delata es comparar los meses contra el total
 // ANUAL de su propio año.
+//
+// LO QUE EL #47 CAMBIÓ AQUÍ (2026-11-17). Las secciones 3 y 7 exigían que
+// TODOS los meses y semanas publicados fueran del año más reciente, porque la
+// serie se recortaba al año vivo. Con la ventana de 53 semanas y 13 meses eso
+// pasó de ser lo correcto a ser lo contrario, así que la afirmación se
+// reescribió en la forma que sobrevive y además es más fuerte: cada mes y cada
+// semana cuadran contra el total de SU PROPIO año, año por año. La hoja de
+// prueba trae 2025 y 2026, así que ahora se cuadran los dos en vez de uno —y
+// antes de esto las semanas de 2025 se tiraban en silencio.
 
 'use strict';
 
@@ -77,9 +104,12 @@ vigilarExcepciones('functions/index.js');
 const { deFunciones, deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
 
 let parsearGPConstruct, parseCsvLine, parseMonto, extraerGastoTotalGP, resolverGastoGP;
+let VENTANA_SEMANAS_GP, VENTANA_MESES_GP;
 try {
-  ({ parsearGPConstruct, parseCsvLine, parseMonto } =
-    deFunciones('parsearGPConstruct', 'parseCsvLine', 'parseMonto'));
+  ({ parsearGPConstruct, parseCsvLine, parseMonto,
+     VENTANA_SEMANAS_GP, VENTANA_MESES_GP } =
+    deFunciones('parsearGPConstruct', 'parseCsvLine', 'parseMonto',
+      'VENTANA_SEMANAS_GP', 'VENTANA_MESES_GP'));
 } catch (e) {
   if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
   throw e;
@@ -228,18 +258,77 @@ const filaMeses = filas.find(f => f.some(c => /total\s+\d+\s*[.\-]+\s*[a-záéí
 const mesesDelAñoReciente = (filaMeses || []).filter((c, ci) =>
   ci > colAñoReciente && /total\s+\d+\s*[.\-]+\s*[a-záéíóúA-ZÁÉÍÓÚ]+/i.test(c || '')).length;
 
-exigir(r.mesesDisponibles.length === mesesDelAñoReciente,
-  `se publican ${mesesDelAñoReciente} meses, los que la hoja tiene en ${añoReciente}`,
-  [`mesesDisponibles: ${r.mesesDisponibles.join(' ') || '(vacío)'}`]);
+// Cuántos bloques mensuales tiene CADA año, no sólo el reciente. Desde el #47
+// la serie no se queda en el año vivo —es una ventana de 13 meses que cruza el
+// 31 de diciembre— así que «todos los meses publicados son de 2026» dejó de
+// ser lo correcto y pasó a ser lo contrario. Lo que sigue en pie, y es más
+// fuerte, es que CADA mes esté colgado del año que de verdad le toca.
+const esTotalDeMes = (c) => /total\s+\d+\s*[.\-]+\s*[a-záéíóúA-ZÁÉÍÓÚ]+/i.test(c || '');
+const mesesPorAñoEnHoja = {};
+for (const año of añosEnHoja) {
+  const ini = (filaAños || []).findIndex(c => (c || '').trim() === año);
+  const fin = (filaAños || []).findIndex((c, ci) => ci > ini && (c || '').trim() === `Total ${año}`);
+  mesesPorAñoEnHoja[año] = (filaMeses || []).filter((c, ci) =>
+    ci > ini && (fin < 0 || ci < fin) && esTotalDeMes(c)).length;
+}
 
-const deOtroAño = r.mesesDisponibles.filter(m => !m.startsWith('M' + añoReciente));
-exigir(deOtroAño.length === 0,
-  `ningún mes publicado es de un año que no sea ${añoReciente}`,
-  [`colados: ${deOtroAño.join(' ')}`]);
+const mesesEnLaHoja = Object.values(mesesPorAñoEnHoja).reduce((t, v) => t + v, 0);
 
-// La prueba de fondo: para cada nodo con meses, los meses suman su total de
-// ESE año. Con el defecto puesto sumaban el del año anterior, que es un número
-// creíble y completamente ajeno.
+// La hoja de prueba cabe de sobra en la ventana, así que aquí la cuenta
+// esperada es TODA la hoja, sin un `Math.min` que siga a la constante. Medido
+// el 2026-11-17: con el `Math.min` puesto, bajar `VENTANA_MESES_GP` a 2 dejaba
+// este banco en verde, porque la aserción se movía con el defecto. Lo que la
+// ventana hace cuando SÍ muerde se mide en `prueba-agrupador-gp.cjs`, con ocho
+// años sintéticos; aquí lo que se exige es que no se pierda nada de la hoja.
+if (mesesEnLaHoja > VENTANA_MESES_GP) {
+  sinPrecondicion(`una hoja de prueba que quepa en la ventana de ${VENTANA_MESES_GP} meses`,
+    [`la hoja trae ${mesesEnLaHoja} meses y la ventana es de ${VENTANA_MESES_GP}`,
+     'así no se puede exigir que la hoja entre entera, que es lo que esta',
+     'sección mide. O crece la ventana, o se recorta la hoja de prueba.']);
+}
+exigir(r.mesesDisponibles.length === mesesEnLaHoja,
+  `se publican los ${mesesEnLaHoja} meses de la hoja, repartidos en ${añosEnHoja.length} año(s)`,
+  [`mesesDisponibles: ${r.mesesDisponibles.join(' ') || '(vacío)'}`,
+   `la hoja tiene ${añosEnHoja.map(a => `${a}:${mesesPorAñoEnHoja[a]}`).join(' ')}`]);
+
+// Y publicados EN ORDEN CRONOLÓGICO. Esto es lo que la ventana del #47
+// necesita: se queda con las ÚLTIMAS claves de un `.sort()` pelado, así que si
+// el orden alfabético de la clave no fuese el cronológico la ventana tiraría
+// los meses equivocados y «el último mes» de la pantalla sería otro.
+//
+// Comparar la lista contra su propio `.sort()` no afirma nada —se compara con
+// ella misma—, así que la cronología se DECODIFICA de la clave: año y mes
+// como números. La forma `M2026-01` existe para que las dos coincidan.
+const cronologiaDeMes = (k) => {
+  const m = /^M(\d{4})-(\d{2})$/.exec(k);
+  return m ? Number(m[1]) * 12 + Number(m[2]) : null;
+};
+const cronoMeses = r.mesesDisponibles.map(cronologiaDeMes);
+exigir(cronoMeses.every(v => v !== null) &&
+  cronoMeses.every((v, i) => i === 0 || v > cronoMeses[i - 1]),
+  'los meses se publican en orden cronológico, decodificando año y mes de la clave',
+  [`salieron: ${r.mesesDisponibles.join(' ')}`]);
+exigir(JSON.stringify(r.mesesDisponibles) === JSON.stringify([...r.mesesDisponibles].sort()),
+  'y ese orden coincide con el alfabético, que es de lo que la ventana se fía');
+
+const deAñoAjeno = r.mesesDisponibles.filter(m => !añosEnHoja.some(a => m.startsWith('M' + a)));
+exigir(deAñoAjeno.length === 0,
+  'ningún mes publicado es de un año que la hoja no tenga',
+  [`colados: ${deAñoAjeno.join(' ')}`]);
+
+// La hoja de prueba TIENE que traer más de un año, o esta sección mide aire:
+// con uno solo, colgar los meses del año equivocado no se puede distinguir de
+// colgarlos del bueno. Es el defecto B, que era exactamente eso.
+if (añosEnHoja.length < 2) {
+  sinPrecondicion('dos años en la hoja de prueba',
+    ['El defecto B era colgar los meses de un año del total de otro.',
+     'Con un solo año en la hoja no hay otro año del que confundirse y',
+     'esta sección daría verde sin haber probado nada.']);
+}
+
+// La prueba de fondo: para cada nodo y para CADA año, los meses de ese año
+// suman el total de ESE año. Con el defecto puesto sumaban el del año
+// anterior, que es un número creíble y completamente ajeno.
 const todosLosNodos = [];
 for (const o of obras) {
   todosLosNodos.push([o.id, o]);
@@ -248,23 +337,31 @@ for (const o of obras) {
     for (const p of ru.proveedores) todosLosNodos.push([`${o.id}/${ru.id}/${p.nombre.slice(0, 24)}`, p]);
   }
 }
-let mesesMal = 0, mesesIgualAlAnterior = 0;
-const añoAnterior = añosEnHoja[añosEnHoja.length - 2];
+// Sólo se le puede exigir el cuadre a un año cuyos meses estén TODOS
+// publicados: la ventana puede cortar un año por la mitad, y entonces que sus
+// meses sumen menos que su total es lo correcto, no un descuadre.
+const añosConMesesCompletos = añosEnHoja.filter(a =>
+  r.mesesDisponibles.filter(m => m.startsWith('M' + a)).length === mesesPorAñoEnHoja[a]
+  && mesesPorAñoEnHoja[a] > 0);
+let mesesMal = 0, mesesIgualAOtroAño = 0;
 for (const [quien, n] of todosLosNodos) {
-  const suma = Object.values(n.meses || {}).reduce((t, v) => t + v, 0);
-  const propio = (n.años || {})['Y' + añoReciente] || 0;
-  if (!cerca(suma, propio)) {
+  for (const año of añosConMesesCompletos) {
+    const suma = Object.entries(n.meses || {})
+      .filter(([k]) => k.startsWith('M' + año)).reduce((t, [, v]) => t + v, 0);
+    const propio = (n.años || {})['Y' + año] || 0;
+    if (cerca(suma, propio)) continue;
     mesesMal++;
-    const delAnterior = (n.años || {})['Y' + añoAnterior] || 0;
-    if (cerca(suma, delAnterior)) mesesIgualAlAnterior++;
-    console.log(`         ${quien}: meses suman ${pesos(suma)} y su Y${añoReciente} es ${pesos(propio)}` +
-      (cerca(suma, delAnterior) ? `  ← es su Y${añoAnterior}` : ''));
+    const ajeno = añosEnHoja.find(a => a !== año && cerca(suma, (n.años || {})['Y' + a] || 0));
+    if (ajeno) mesesIgualAOtroAño++;
+    console.log(`         ${quien}: meses de ${año} suman ${pesos(suma)} y su Y${año} es ${pesos(propio)}` +
+      (ajeno ? `  ← es su Y${ajeno}` : ''));
   }
 }
 exigir(mesesMal === 0,
-  `en los ${todosLosNodos.length} nodos, los meses suman el total de ${añoReciente}`,
-  mesesMal === 0 ? null : [`${mesesMal} nodo(s) descuadrados` +
-    (mesesIgualAlAnterior ? `, de los cuales ${mesesIgualAlAnterior} traen el total de ${añoAnterior}` : '')]);
+  `en los ${todosLosNodos.length} nodos, los meses de cada año suman el total de ESE año ` +
+  `(${añosConMesesCompletos.join(', ')})`,
+  mesesMal === 0 ? null : [`${mesesMal} cuadre(s) descuadrados` +
+    (mesesIgualAOtroAño ? `, de los cuales ${mesesIgualAOtroAño} traen el total de otro año` : '')]);
 
 // ───────────────────────────────────────────────────────────────────────────
 seccion('4 · un proveedor que se llama con un número sigue siendo un proveedor (defecto C)');
@@ -324,8 +421,18 @@ if (o1) {
     Object.values(o1.meses).reduce((t, v) => t + v, 0);
   exigirCifra(extraerGastoTotalGP(sinAcumulado), esperado,
     '0101 · sin acumulado, el lector cae a años + meses del año en curso');
-  exigir(!cerca(Object.values(o1.meses).reduce((t, v) => t + v, 0), o1.años['Y' + añoAnterior]),
-    `0101 · y esos meses no son los de ${añoAnterior} disfrazados`);
+  // El defecto B disfrazaba los meses de un año con la etiqueta de otro. Con
+  // la ventana del #47 los meses cubren VARIOS años, así que la señal de que
+  // no están disfrazados ya no es «no coinciden con el año anterior» —podrían
+  // coincidir de casualidad— sino que la suma de los meses sea la suma de los
+  // años que de verdad cubren, ni uno de más ni uno de menos.
+  const añosCubiertos = [...new Set(Object.keys(o1.meses)
+    .map(k => /^M(\d{4})-/.exec(k)).filter(Boolean).map(m => m[1]))];
+  const sumaMeses = Object.values(o1.meses).reduce((t, v) => t + v, 0);
+  const sumaDeEsosAños = añosCubiertos.reduce((t, a) => t + (o1.años['Y' + a] || 0), 0);
+  exigir(añosCubiertos.length > 0 && cerca(sumaMeses, sumaDeEsosAños),
+    `0101 · y esos meses son los de ${añosCubiertos.join(' y ') || '(ningún año)'}, no los de otro disfrazados`,
+    [`los meses suman ${pesos(sumaMeses)} y esos años suman ${pesos(sumaDeEsosAños)}`]);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -393,21 +500,70 @@ for (const [n, cols] of partidasEnLaHoja) {
        'quedarse con una columna tira el dinero de la otra, en silencio']);
 }
 
-// (b) de fondo: la serie semanal de cada nodo suma su total de ese año.
+// (b) de fondo: la serie semanal de cada nodo suma su total de ESE año, año
+//     por año. Antes del #47 esto sólo se podía exigir del año vivo porque era
+//     el único publicado; ahora se exige de cada año entero que la ventana no
+//     haya cortado, que es la misma afirmación repetida tantas veces como años.
+const semanasEnLaHoja = añosEnHoja
+  .reduce((t, a) => t + Object.keys(colsSemanaPorAño[a] || {}).length, 0);
+if (semanasEnLaHoja > VENTANA_SEMANAS_GP) {
+  sinPrecondicion(`una hoja de prueba que quepa en la ventana de ${VENTANA_SEMANAS_GP} semanas`,
+    [`la hoja trae ${semanasEnLaHoja} semanas y la ventana es de ${VENTANA_SEMANAS_GP}`]);
+}
+// Igual que con los meses: la cuenta esperada es TODA la hoja, no un
+// `Math.min` que siga a la constante y se mueva con el defecto.
+exigir(r.semanasDisponibles.length === semanasEnLaHoja,
+  `se publican las ${semanasEnLaHoja} semanas de la hoja, de los ${añosEnHoja.length} año(s)`,
+  [`semanasDisponibles: ${r.semanasDisponibles.join(' ') || '(vacío)'}`]);
+// Mismo trato que los meses: la cronología se decodifica de la clave, no se
+// compara la lista con su propio `.sort()`. El orden viejo —`S47` ordenado por
+// `Number(a.slice(1))`— habría puesto la S1 de 2027 ANTES de la S52 de 2026.
+const cronologiaDeSemana = (k) => {
+  const m = /^S(\d{4})-(\d{2})$/.exec(k);
+  return m ? Number(m[1]) * 100 + Number(m[2]) : null;
+};
+const cronoSem = r.semanasDisponibles.map(cronologiaDeSemana);
+exigir(cronoSem.every(v => v !== null) &&
+  cronoSem.every((v, i) => i === 0 || v > cronoSem[i - 1]),
+  'las semanas se publican en orden cronológico, decodificando año y semana de la clave',
+  [`salieron: ${r.semanasDisponibles.join(' ')}`]);
+exigir(JSON.stringify(r.semanasDisponibles) === JSON.stringify([...r.semanasDisponibles].sort()),
+  'y ese orden coincide con el alfabético, que es de lo que la ventana se fía');
+
+const añosConSemanasCompletas = añosEnHoja.filter(a => {
+  const enHoja = Object.keys(colsSemanaPorAño[a] || {}).length;
+  return enHoja > 0 &&
+    r.semanasDisponibles.filter(k => k.startsWith('S' + a + '-')).length === enHoja;
+});
+// Que haya al menos un año completo no es una precondición del banco: con la
+// hoja cabiendo en la ventana —ya exigido arriba— es una CONDUCTA, y si no se
+// cumple es porque la clave cambió de forma y las semanas dejaron de poderse
+// atribuir a su año. Como falla tiene que salir ROJA, no «no arrancó»: medido
+// el 2026-11-17, puesta la clave al revés (`S47-2026`) esto abortaba en 2
+// después de haber anotado ya una falla, que es el peor de los dos mundos.
+exigir(añosConSemanasCompletas.length > 0,
+  'al menos un año tiene todas sus semanas publicadas, y su cuadre se puede exigir',
+  [`semanasDisponibles: ${r.semanasDisponibles.join(' ') || '(vacío)'}`,
+   `la hoja tiene ${añosEnHoja.map(a => `${a}:${Object.keys(colsSemanaPorAño[a] || {}).length}`).join(' ')}`,
+   'sin esto, las series no se pueden comparar contra ningún total anual']);
 let semanasMal = 0, dineroTirado = 0;
 for (const [quien, n] of todosLosNodos) {
-  const suma = Object.values(n.semanas || {}).reduce((t, v) => t + v, 0);
-  const propio = (n.años || {})['Y' + añoReciente] || 0;
-  if (cerca(suma, propio)) continue;
-  semanasMal++;
-  dineroTirado += propio - suma;
-  console.log(`         ${quien}: las semanas suman ${pesos(suma)} y su Y${añoReciente} es ${pesos(propio)}` +
-    `  ← faltan ${pesos(propio - suma)}`);
+  for (const año of añosConSemanasCompletas) {
+    const suma = Object.entries(n.semanas || {})
+      .filter(([k]) => k.startsWith('S' + año + '-')).reduce((t, [, v]) => t + v, 0);
+    const propio = (n.años || {})['Y' + año] || 0;
+    if (cerca(suma, propio)) continue;
+    semanasMal++;
+    dineroTirado += propio - suma;
+    console.log(`         ${quien}: las semanas de ${año} suman ${pesos(suma)} y su Y${año} ` +
+      `es ${pesos(propio)}  ← faltan ${pesos(propio - suma)}`);
+  }
 }
 exigir(semanasMal === 0,
-  `en los ${todosLosNodos.length} nodos, las semanas suman el total de ${añoReciente}`,
+  `en los ${todosLosNodos.length} nodos, las semanas de cada año suman el total de ESE año ` +
+  `(${añosConSemanasCompletas.join(', ')})`,
   semanasMal === 0 ? null : [
-    `${semanasMal} nodo(s) descuadrados, ${pesos(dineroTirado)} que la serie semanal no ve`,
+    `${semanasMal} cuadre(s) descuadrados, ${pesos(dineroTirado)} que la serie semanal no ve`,
     'medido contra la hoja real el 2026-10-28, esto eran $9,719,396.98 en las',
     'cinco obras activas y $15,409,486.89 en las 34 de la hoja']);
 
