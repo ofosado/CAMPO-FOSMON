@@ -2161,6 +2161,12 @@ exports.actualizarCatalogoGP = onSchedule({
       (cat.renglonesSinClave ? `, ${cat.renglonesSinClave} sin clave` : "") +
       (cat.obrasRenombradas.length ? `, ${cat.obrasRenombradas.length} renombrada(s)` : "");
     console.log(mensaje);
+    // Este `true` NO es de los que mienten, y se midió antes de tocarlo: el
+    // único modo de falla silenciosa sería un catálogo vacío, y
+    // `descargarYGuardarCatalogoGP` ya LANZA con cero obras para no pisar el
+    // catálogo bueno (ver su cuerpo). Si se llegó a este renglón, hay obras.
+    // Derivar aquí `cat.obras.length > 0` habría escrito una rama inalcanzable
+    // y un mensaje —«CATÁLOGO VACÍO»— que nunca se puede imprimir.
     await registrarSalud("gp_catalogo", true, mensaje, {
       duracionMs: Date.now() - t0,
       totalObras: cat.obras.length,
@@ -2716,6 +2722,23 @@ function bloqueFueraDeAlcance({ sinOrg = [], deOtra = [] } = {}) {
           </div>`;
 }
 
+// El mosaico dice CUÁNTAS no se pudieron leer; esto dice CUÁLES. Sin el
+// nombre el aviso no sirve de nada: el que lo recibe no puede ir a ver qué
+// pasó con una obra que no se nombra. El motivo también va, porque un
+// `PERMISSION_DENIED` y un documento ausente se arreglan en lugares distintos.
+function bloqueObrasNoLeidas(noLeidas = []) {
+  if (!noLeidas.length) return "";
+  const n = noLeidas.length;
+  const filas = noLeidas
+    .map(o => `${ESC_HTML(o.nombre || o.obraId)} — ${ESC_HTML(String(o.motivo || "sin motivo registrado"))}`)
+    .join("<br>");
+  return `
+          <div style="margin-top:14px;padding:10px 14px;background:#FDECEC;border-left:3px solid #A32D2D;border-radius:4px;font-size:12px;color:#7A1F1F;">
+            <b>${n} obra${n !== 1 ? "s" : ""} no se pudo leer</b> y por eso no aparece${n !== 1 ? "n" : ""}
+            en la tabla ni en los cuatro totales de arriba, que van cortos:<br>${filas}
+          </div>`;
+}
+
 // HTML del email semanal — diseño compacto, mobile-friendly
 // `marca` viene de `marcaDeOrg`, el MISMO documento que firma los tres correos
 // de alta y que pinta el encabezado de la app. Antes este correo tecleaba
@@ -2748,7 +2771,7 @@ const motivoSinMedir = (motivo) => {
   }
 };
 
-function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marca) {
+function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marca, noLeidas = []) {
   const filasObras = kpisObras.map(k => {
     const colorAvance = semaforoColor(k.avancePct, "avance");
     // El semáforo del gasto es la trampa fina: `semaforoColor` pinta VERDE lo
@@ -2809,6 +2832,18 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
     ? `${sinMedirN} obra${sinMedirN !== 1 ? "s" : ""} sin medir: va corto`
     : null;
 
+  // Una obra que no se pudo leer falta en la tabla Y en los cuatro totales,
+  // así que el aviso no va pegado a un número: va pegado a TODOS. Por eso
+  // cuelga del mosaico de la cuenta de obras, que es el que dice cuántas se
+  // están presentando.
+  //
+  // «no se pudieron leer» y no «sin datos»: lo primero dice que hubo un fallo
+  // y tiene a quién preguntársele; lo segundo suena a que la obra está vacía.
+  const nNoLeidas = noLeidas.length;
+  const avisoNoLeidas = nNoLeidas > 0
+    ? `${nNoLeidas} obra${nNoLeidas !== 1 ? "s" : ""} no se pudo leer: falta${nNoLeidas !== 1 ? "n" : ""} en los cuatro totales`
+    : null;
+
   const firma = marca?.empresa ? ESC_HTML(marca.empresa).toUpperCase() : "";
   const casa = marca?.empresa ? ESC_HTML(marca.empresa) : "";
 
@@ -2816,7 +2851,11 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
   // de las obras de la raíz, así que distinguirla en la bandeja no hace falta y
   // el encabezado ya la nombra. Lo que sí lleva es el conteo, que es lo que se
   // lee de un vistazo sin abrirlo.
-  const subject = `cotea · Resumen semanal · ${totalObras} obras activas`;
+  // El asunto lleva el conteo de lo que SE PUDO presentar. Si algo se quedó
+  // fuera, lo dice ahí: es lo único que se lee sin abrir el correo, y un
+  // «7 obras activas» cuando son 8 es la mentira más barata de todas.
+  const subject = `cotea · Resumen semanal · ${totalObras} obras activas` +
+    (nNoLeidas > 0 ? ` · ${nNoLeidas} sin leer` : "");
 
   const html = `<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>Resumen semanal · cotea</title></head>
@@ -2834,13 +2873,13 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
         <tr><td style="padding:20px 28px;background:#F8F9FB;border-bottom:1px solid #E8EAF0;">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
             <tr>
-              <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:#0D1619;">${totalObras}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:#0D1619;">${totalObras}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div>${avisoNoLeidas ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoNoLeidas}</div>` : ""}</td>
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#185FA5;">${MXN_FMT(presupuestoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Presupuesto</div></td>
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div>${avisoGastoCorto ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoGastoCorto}</div>` : ""}</td>
               <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
             </tr>
           </table>
-          ${avisoDeCaptura(obrasSinCaptura, obrasSinUnCierre)}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}
+          ${avisoDeCaptura(obrasSinCaptura, obrasSinUnCierre)}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}${bloqueObrasNoLeidas(noLeidas)}
         </td></tr>
         <!-- Tabla de obras -->
         <tr><td style="padding:0;">
@@ -3363,9 +3402,22 @@ async function generarYEnviarResumenSemanal(apiKey) {
   const gpData = gpResumenSnap.exists ? gpResumenSnap.data() : null;
 
   // 3) Calcula KPIs por obra en paralelo
+  // Una obra cuyos KPIs no se pueden leer NO se puede dejar caer en silencio.
+  // El `catch` que devuelve `null` existe para que una obra rota no tumbe el
+  // correo de las otras seis, y eso está bien; lo que estaba mal es que el
+  // `null` desaparecía sin rastro: la obra se iba de la tabla, se iba de los
+  // cuatro totales, y el mosaico seguía diciendo «N obras activas» con N
+  // corto. Los directivos leían un portafolio incompleto presentado como
+  // completo, y el registro de salud lo anotaba como corrida buena.
+  //
+  // Se recoge cuál falló y por qué. Igual que con `avisoGastoCorto`, la cifra
+  // NO se corrige y la obra NO se cuela: lo único honesto es declarar el hueco
+  // pegado al número.
+  const noLeidas = [];
   const kpisObras = await Promise.all(
     obras.map(o => calcularKpisObra(o.id, gpData).catch(e => {
       console.error(`Error KPIs obra ${o.id}:`, e.message);
+      noLeidas.push({ obraId: o.id, nombre: o.nombre || o.id, motivo: e?.message || String(e) });
       return null;
     }))
   );
@@ -3385,7 +3437,7 @@ async function generarYEnviarResumenSemanal(apiKey) {
 
   if (destinatarios.length === 0) {
     console.warn("No hay destinatarios para resumen semanal");
-    return { enviados: 0, motivo: "sin_destinatarios" };
+    return { enviados: 0, motivo: "sin_destinatarios", noLeidas };
   }
 
   // 4bis) Las denegaciones que la app no supo explicar, de los últimos 7 días.
@@ -3410,7 +3462,7 @@ async function generarYEnviarResumenSemanal(apiKey) {
   // decidió a quién se le manda: si el correo lo firmara otra, estaría
   // diciéndole al destinatario que el dinero de adentro es de alguien más.
   const marca = await marcaDeOrg(orgRaiz);
-  const { subject, html } = correoResumenSemanal(kpisValidos, fechaCorte, denegaciones, reparto, marca);
+  const { subject, html } = correoResumenSemanal(kpisValidos, fechaCorte, denegaciones, reparto, marca, noLeidas);
 
   // 6) Envía
   const resultado = await enviarEmailResend(apiKey, {
@@ -3427,6 +3479,9 @@ async function generarYEnviarResumenSemanal(apiKey) {
     orgId: orgRaiz,
     sinOrg: reparto.sinOrg.map(u => u.email).filter(Boolean),
     excluidosDeOtraOrg: reparto.deOtra.length,
+    // Y las obras que no se pudieron leer, por la misma razón: que el registro
+    // de salud pueda decir «salió, pero incompleto», que es distinto de «salió».
+    noLeidas,
   };
 }
 
@@ -3442,11 +3497,21 @@ exports.resumenSemanalEmail = onSchedule({
   try {
     const res = await generarYEnviarResumenSemanal(RESEND_API_KEY.value());
     console.log("Resumen semanal OK:", res);
-    await registrarSalud("email_semanal", true, `Enviado a ${res.enviados || 0} destinatarios`, {
+    // Dos cosas distintas pueden salir mal sin que esto lance, y las dos
+    // dejaban el renglón en `ok:true`: que el correo no llegue a nadie (cero
+    // destinatarios dentro de la organización) y que vaya incompleto porque
+    // una obra no se pudo leer. La segunda es la grave: el correo lleva
+    // dinero, y un total al que le falta una obra se lee como el total.
+    const noLeidas = res.noLeidas || [];
+    const salio = (res.enviados || 0) > 0;
+    await registrarSalud("email_semanal", salio && noLeidas.length === 0,
+      (salio ? `Enviado a ${res.enviados} destinatarios` : `NO SALIÓ: ${res.motivo || "cero destinatarios"}`) +
+      (noLeidas.length ? ` · INCOMPLETO: ${noLeidas.length} obra(s) no se pudo leer (${noLeidas.map(o => o.obraId).join(", ")})` : ""), {
       duracionMs: Date.now() - t0,
       enviados: res.enviados,
       destinatarios: res.destinatarios,
       resendId: res.resendId,
+      noLeidas,
     });
   } catch (e) {
     console.error("Error en resumen semanal:", e);
@@ -3780,8 +3845,15 @@ async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) 
         fecha: FieldValue.serverTimestamp(),
         creadaPor: "sistema:recordatorios",
       });
+    return true;
   } catch (e) {
+    // El `catch` se queda: una campana que no se puede escribir no tumba las
+    // de los demás. Lo que cambia es que ahora CONTESTA. Antes devolvía
+    // `undefined` tanto si escribió como si no, y los dos sitios que la llaman
+    // hacían `contador++` después del `await`, así que contaban intentos y los
+    // reportaban como notificaciones enviadas. La cuenta era siempre perfecta.
     console.warn(`crearNotifCloud fallo para uid=${uid}:`, e.message);
+    return false;
   }
 }
 
@@ -3919,6 +3991,7 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
   // pueden existir, así que un correo pertenece a una sola organización.
   const porPersona = new Map();
   let notifs = 0;
+  const notifsFallidas = [];
   let obrasSinCierre = 0;
 
   for (const org of destinos) {
@@ -3936,7 +4009,7 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
       const nombreCorto = nombreObraNotif(obra);
       for (const u of usuarios) {
         if (u.uid) {
-          await crearNotifCloud(u.uid, {
+          const puesta = await crearNotifCloud(u.uid, {
             categoria: "recordatorio",
             tipo: "captura_obra_pendiente",
             titulo: `Cierre semanal · ${nombreCorto}`,
@@ -3944,7 +4017,8 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
               "El corte es mañana sábado a las 2 p.m.",
             link: { tab: "operacion", subTab: "avance", obraId: obra.id },
           });
-          notifs++;
+          if (puesta) notifs++;
+          else notifsFallidas.push({ uid: u.uid, obraId: obra.id });
         }
         const correo = String(u.email || "").trim();
         if (!correo) continue;
@@ -3961,6 +4035,7 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
   // documento y son lecturas que se pagan.
   const marcas = new Map();
   const enviados = [];
+  const rebotados = [];
   for (const [correo, p] of porPersona) {
     if (!marcas.has(p.orgId)) marcas.set(p.orgId, await marcaDeOrg(p.orgId));
     const marca = marcas.get(p.orgId);
@@ -3974,7 +4049,14 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
       // Un buzón que rebota no puede tumbar el aviso de los demás. Pero
       // tampoco se traga: queda en el registro y en el resumen de salud, que
       // es la diferencia entre «no le llegó» y «no se mandó».
+      //
+      // Ese comentario lo escribí el 2026-11-16 y era FALSO: el `console.warn`
+      // iba a los registros de Cloud, y el objeto que se devuelve —de donde
+      // sale el renglón de salud— sólo traía `enviados`. Una corrida donde los
+      // siete buzones rebotan devolvía `correos: 0` y se anotaba igual que una
+      // semana sin nada que avisar. Ahora el rebote viaja.
       console.warn(`recordatorio de cierre: no salió el correo a ${correo}:`, e.message);
+      rebotados.push({ correo, motivo: e?.message || String(e) });
     }
   }
 
@@ -3982,6 +4064,7 @@ async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
     idSem, obrasSinCierre, notifs,
     correos: enviados.length, destinatarios: enviados,
     orgs: destinos.map(o => o.orgId), sinTipoConocido,
+    rebotados, notifsFallidas,
   };
 }
 
@@ -4024,8 +4107,14 @@ exports.recordatorioCapturaObra = onSchedule({
   const t0 = Date.now();
   try {
     const r = await avisarCierreSemanalPendiente(RESEND_API_KEY.value(), new Date());
-    await registrarSalud("recordatorio_obra", true,
-      `${r.correos} correo(s) y ${r.notifs} notif(s) por ${r.obrasSinCierre} obra(s) sin cerrar`,
+    // `ok` sale de lo que la corrida MIDIÓ, no de haber llegado hasta aquí.
+    // Un `true` tecleado sólo distingue «el trabajo reventó» de «el trabajo
+    // terminó»; lo que hace falta saber es si el aviso salió, y eso puede
+    // fallar buzón por buzón sin que nada lance.
+    const falló = r.rebotados.length + r.notifsFallidas.length;
+    await registrarSalud("recordatorio_obra", falló === 0,
+      `${r.correos} correo(s) y ${r.notifs} notif(s) por ${r.obrasSinCierre} obra(s) sin cerrar` +
+      (falló ? ` · NO SALIERON ${r.rebotados.length} correo(s) y ${r.notifsFallidas.length} notif(s)` : ""),
       { duracionMs: Date.now() - t0, ...r });
   } catch (e) {
     console.error("recordatorioCapturaObra falló:", e);
@@ -4064,6 +4153,7 @@ exports.recordatorioLunes = onSchedule({
     const orgRaiz = await orgDeLaRaiz(admin.firestore());
     const obrasSnap = await admin.firestore().collection("obras").get();
     let contadorNotifs = 0;
+    const notifsFallidas = [];
 
     for (const obraDoc of obrasSnap.docs) {
       const obra = { id: obraDoc.id, ...obraDoc.data() };
@@ -4126,14 +4216,14 @@ exports.recordatorioLunes = onSchedule({
         const nombreCorto = nombreObraNotif(obra);
         for (const u of usuarios) {
           if (!u.uid) continue;
-          await crearNotifCloud(u.uid, {
+          const puesta = await crearNotifCloud(u.uid, {
             categoria: "recordatorio",
             tipo: "pendientes_lunes",
             titulo: `${pendientes} pendientes esta semana · ${nombreCorto}`,
             mensaje: `Aún faltan por capturar: ${razones.join(", ")}.`,
             link: { tab: "operacion", obraId: obra.id },
           });
-          contadorNotifs++;
+          if (puesta) contadorNotifs++; else notifsFallidas.push({ uid: u.uid, obraId: obra.id });
         }
       }
 
@@ -4165,7 +4255,7 @@ exports.recordatorioLunes = onSchedule({
         const nombreCorto = nombreObraNotif(obra);
         for (const u of receptores) {
           if (!u.uid) continue;
-          await crearNotifCloud(u.uid, {
+          const puesta2 = await crearNotifCloud(u.uid, {
             categoria: "alerta",
             tipo: "sin_captura_10d",
             // Sin cierres no hay número de días que decir, y escribir uno
@@ -4178,13 +4268,14 @@ exports.recordatorioLunes = onSchedule({
               : `La última captura fue el ${fechaUltima.slice(0, 10)}. Revisar con el equipo.`,
             link: { tab: "dash", obraId: obra.id },
           });
-          contadorNotifs++;
+          if (puesta2) contadorNotifs++; else notifsFallidas.push({ uid: u.uid, obraId: obra.id });
         }
       }
     }
-    await registrarSalud("recordatorio_lunes", true,
-      `${contadorNotifs} notifs enviadas`,
-      { duracionMs: Date.now() - t0, notifsEnviadas: contadorNotifs });
+    await registrarSalud("recordatorio_lunes", notifsFallidas.length === 0,
+      `${contadorNotifs} notifs enviadas` +
+      (notifsFallidas.length ? ` · NO SE PUDIERON ESCRIBIR ${notifsFallidas.length}` : ""),
+      { duracionMs: Date.now() - t0, notifsEnviadas: contadorNotifs, notifsFallidas });
   } catch (e) {
     console.error("recordatorioLunes falló:", e);
     await registrarFalloDeSalud("recordatorio_lunes", e, { duracionMs: Date.now() - t0 });
