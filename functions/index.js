@@ -3054,6 +3054,46 @@ function rolVisible(rol, rolLabel) {
 const rutaObrasDeOrg = (orgId, tipo) =>
   tipo === "dependencia" ? `orgs/${orgId}/obras` : "obras";
 
+// Quién puede cerrar una semana: los roles que capturan avance. No es la misma
+// lista que `QUIEN_SE_ENTERA` y no debe serlo — se cruzan en los jefes, que
+// pueden cerrar y además reciben.
+//
+// ESTO SÍ ES UNA COPIA, y de la única que no se puede evitar: el original es
+// `PERMISOS[rol].captura === "editar"` en src/App.jsx, y esa tabla no existe de
+// este lado. Sin el filtro, un `cliente` o un `auditor` —que ven la obra y no
+// la capturan— podrían invocar `rendirCierreSemanal` desde el SDK, mandarle a
+// los mandos el parte de una semana que nadie cerró y dejar grabada la
+// constancia. Como la copia no se puede borrar, se mide: el banco extrae
+// `PERMISOS` de App.jsx y exige que las dos listas coincidan rol por rol, así
+// que una divergencia sale en rojo en vez de quedarse como un permiso que se
+// abrió solo.
+const QUIEN_CIERRA = {
+  constructora: ["director_general", "director_operaciones", "gerente_construccion",
+    "admin_sistema", "superintendente", "residente", "administrador_obra"],
+  dependencia: ["director_obras", "subdirector", "jefe_supervision", "supervisor_obra",
+    "administrativo"],
+};
+
+// Quién tiene que capturar la semana DE UNA OBRA EN CONCRETO. No es una tercera
+// lista: se CRUZAN las dos que ya existen. De los roles que pueden cerrar una
+// semana, se quitan los que ven TODAS las obras —dirección, gerencia,
+// subdirección, jefatura de supervisión—, porque un rol que responde por el
+// portafolio no es el que responde por el cierre de una obra, y un aviso por
+// obra a quien tiene veinte es un aviso que se aprende a ignorar.
+//
+// Lo que queda:
+//   constructora → superintendente, residente, administrador_obra
+//   dependencia  → supervisor_obra, administrativo
+//
+// El renglón de arriba es EXACTAMENTE la lista que estaba tecleada a mano en
+// `usuariosCapturaDeObra` hasta hoy, así que el recordatorio de la constructora
+// no cambia de destinatarios. El de abajo es el que no existía: en una
+// dependencia captura el `supervisor_obra`, y a ése nunca se le avisó nada
+// porque el trabajo sólo miraba la raíz y sólo conocía vocabulario de
+// constructora.
+const QUIEN_CAPTURA_EN_CAMPO = (tipo) =>
+  (QUIEN_CIERRA[tipo] || []).filter(rol => !ROLES_TODAS_OBRAS.has(rol));
+
 // Cómo se llama una obra en un correo: por su `nombre`, que es el apodo con el
 // que se nombra en la casa y mide entre 24 y 40 caracteres en las siete obras
 // vivas. Antes iba `contrato || nombre`, igual que la bitácora de la app, para
@@ -3745,13 +3785,13 @@ async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) 
   }
 }
 
-// Helper: lista de usuarios activos que pueden capturar avance en una obra
-// (Superintendente, Residente, Admin de Obra) según usuario.obras_asignadas.
-// Filtra: solo usuarios ACTIVOS con la obra en su lista.
-// `orgId` es obligatorio: estas obras son las de la raíz y el aviso sólo va a
-// quien es de esa organización. El rol y `obras_asignadas` no son frontera —un
-// id de obra que coincida basta para que un aviso con el nombre de la obra
-// caiga en la bandeja de otro cliente—. Ver `orgDeLaRaiz`.
+// Helper: lista de usuarios activos que capturan avance en una obra, según
+// `usuario.obras_asignadas`. Filtra: solo usuarios ACTIVOS con la obra en su
+// lista.
+// `orgId` es obligatorio: el aviso sólo va a quien es de esa organización. El
+// rol y `obras_asignadas` no son frontera —un id de obra que coincida basta
+// para que un aviso con el nombre de la obra caiga en la bandeja de otro
+// cliente—. Ver `orgDeLaRaiz`.
 //
 // De paso, `activo` pasa a mirarse en memoria. La consulta decía
 // `where("activo", "!=", false)`, y en Firestore una desigualdad DESCARTA los
@@ -3759,9 +3799,19 @@ async function crearNotifCloud(uid, { categoria, tipo, titulo, mensaje, link }) 
 // activo— no recibía un solo aviso. Hoy los 14 perfiles de producción lo
 // traen, así que esto no cambia ningún envío; cambia el día que alguien dé de
 // alta una cuenta a mano.
-async function usuariosCapturaDeObra(obraId, orgId, incluirSupervisor = false) {
-  const rolesCaptura = ["superintendente", "residente", "administrador_obra"];
-  if (incluirSupervisor) rolesCaptura.push("supervisor");
+//
+// Y el `tipo` de la organización es obligatorio desde el 2026-11-16. Los tres
+// roles que estaban tecleados aquí son vocabulario de constructora: en una
+// dependencia nadie se llama `residente` —el que captura es `supervisor_obra`—
+// así que esta función devolvía SIEMPRE la lista vacía para un municipio, y un
+// recordatorio que no le llega a nadie no se distingue de uno que no existe.
+// Ahora la lista se pregunta a `QUIEN_CAPTURA_EN_CAMPO`, que la deriva de las
+// tablas que ya deciden quién puede cerrar una semana.
+async function usuariosCapturaDeObra(obraId, orgId, tipo) {
+  const rolesCaptura = QUIEN_CAPTURA_EN_CAMPO(tipo);
+  // Sin roles no hay a quién avisar, y recorrer el padrón para descartarlo todo
+  // es una lectura que se paga por nada.
+  if (!rolesCaptura.length) return [];
   const snap = await admin.firestore().collection("usuarios")
     .where("orgId", "==", orgId).get();
   const out = [];
@@ -3771,7 +3821,19 @@ async function usuariosCapturaDeObra(obraId, orgId, incluirSupervisor = false) {
     if (!rolesCaptura.includes(u.rol)) return;
     const asignadas = Array.isArray(u.obras_asignadas) ? u.obras_asignadas : [];
     if (asignadas.includes(obraId)) {
-      out.push({ uid: u.uid || doc.id, email: u.email, nombre: u.nombre, rol: u.rol });
+      // `correo` antes que `email`: los dos campos existen en los perfiles y
+      // `correo` es el que el login usa para derivar el id del documento, así
+      // que es el que no puede estar desfasado.
+      //
+      // Y el `uid` va A SECAS. Aquí decía `u.uid || doc.id`, y ese respaldo
+      // escribía la notificación en `notificaciones/{id-derivado-del-correo}`.
+      // Esa ruta no la puede leer nadie: la regla sólo deja leer
+      // `request.auth.uid == uid`, y el id del documento de perfil se deriva
+      // del correo —`admvo_cotea_com_mx`—, que nunca es un uid de Auth. O sea
+      // que el respaldo no salvaba el aviso: lo escribía donde no se ve, y
+      // encima lo contaba como mandado en el registro de salud. Un número que
+      // cuenta avisos que nadie puede leer es peor que un cero.
+      out.push({ uid: u.uid || null, email: u.correo || u.email, nombre: u.nombre, rol: u.rol });
     }
   });
   return out;
@@ -3783,53 +3845,188 @@ function nombreObraNotif(obra) {
   return n.replace(/^\d{4}\s+/, "").replace(/\s+\d{4}\s*$/, "").trim() || n;
 }
 
-// A1 · Viernes 10am — Recordatorio de captura semanal (obra)
-exports.recordatorioCapturaObra = onSchedule({
-  schedule: "0 10 * * 5",   // viernes 10:00
-  timeZone: "America/Mexico_City",
-  region: "us-central1",
-}, async () => {
-  const t0 = Date.now();
-  try {
-    const { semana, año } = semanaISOFn(new Date());
-    const idSem = snapIdFn(semana, año);
-    // De quién son estas obras. Si no se puede contestar, no se avisa a nadie:
-    // ver `orgDeLaRaiz`. El `throw` lo recoge el `catch` de abajo, y Scheduler
-    // lo cuenta como fallo, que es lo que tiene que pasar.
-    const orgRaiz = await orgDeLaRaiz(admin.firestore());
-    const obrasSnap = await admin.firestore().collection("obras").get();
-    let contadorNotifs = 0;
-    let obrasSinCaptura = 0;
+// ════════════════════════════════════════════════════════════════════════════
+// A1 · EL RECORDATORIO QUE SOSTIENE LA FECHA DE TÉRMINO
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ── POR QUÉ ESTE AVISO NO ES UN LUJO ───────────────────────────────────────
+// La fecha de término que la app enseña no se calcula con el gasto: se calcula
+// con el AVANCE FÍSICO de los últimos cierres —`ritmoEntreCierres` en
+// src/App.jsx divide puntos de avance entre semanas de calendario, y el gasto
+// no entra en esa cuenta—. Y ahí está la asimetría que hace falta cubrir: el
+// gasto se carga solo desde GP, mientras el avance lo teclea una persona.
+//
+// La consecuencia es fea y callada. Si el residente se rezaga, el denominador
+// —semanas de calendario— sigue corriendo y el numerador no, así que la
+// velocidad baja y la fecha proyectada se va al futuro. La pantalla no dice
+// «faltan cierres»: dice una fecha, con la misma cara con la que diría una
+// buena. Un dato que se degrada sin avisar es peor que un hueco.
+//
+// ── LA HORA, Y POR QUÉ CAMBIÓ ──────────────────────────────────────────────
+// El corte es el SÁBADO A LAS 2 P.M. El aviso sale 24 h antes: viernes 14:00.
+// Antes salía a las 10:00 —28 h— y el texto hablaba de «el corte del viernes»,
+// que es un plazo que no existe. Un recordatorio que nombra mal el plazo
+// enseña a no creerle, y entonces deja de servir el día que acierte.
+//
+// ── Y POR CORREO, NO SÓLO EN LA CAMPANA ────────────────────────────────────
+// La campana sólo la ve quien entra a la app. Quien se rezagó es, por
+// definición, quien no entró. El correo va además de la campana, no en su
+// lugar: la campana lleva el enlace a la obra, el correo llega donde está la
+// persona.
+//
+// UN CORREO POR PERSONA, no uno por obra. Un residente con tres obras sin
+// cerrar recibe un correo con las tres. Tres correos iguales salvo el nombre
+// se leen como ruido y se archivan sin abrir.
+//
+// ── LO QUE NO CRUZA ────────────────────────────────────────────────────────
+// Cada organización se recorre por SU ruta (`rutaObrasDeOrg`) y su padrón se
+// consulta con SU `orgId`, así que el correo de un municipio no puede nombrar
+// una obra de la constructora. Y no lleva una sola cifra: dice qué semana
+// falta y en qué obras, nada de presupuesto, gasto ni avance. Un recordatorio
+// no es un informe, y el margen de un contratista no es dato de nadie más.
+async function avisarCierreSemanalPendiente(apiKey, ahora = new Date()) {
+  const db = admin.firestore();
+  const { semana, año } = semanaISOFn(ahora);
+  const idSem = snapIdFn(semana, año);
 
+  // ── A qué organizaciones se les habla, y por qué ruta ────────────────────
+  // Antes esto era `collection("obras")` a secas: la raíz, o sea la
+  // constructora. Las obras de una dependencia viven en `orgs/{oid}/obras`, de
+  // modo que ningún supervisor de un municipio recibió nunca este aviso.
+  //
+  // La frontera de `orgDeLaRaiz` se conserva, pero expresada sobre la lista que
+  // de verdad se usa: si DOS organizaciones resolvieran a la raíz, no se puede
+  // decir de quién son esas obras y el trabajo no corre. Adivinar aquí es
+  // mandarle a un cliente el recordatorio de la obra de otro.
+  const orgsSnap = await db.collection("orgs").get();
+  const destinos = [];
+  const sinTipoConocido = [];
+  orgsSnap.forEach(d => {
+    const tipo = (d.data() || {}).tipo;
+    if (!QUIEN_CIERRA[tipo]) { sinTipoConocido.push(`${d.id}:${tipo || "(sin tipo)"}`); return; }
+    destinos.push({ orgId: d.id, tipo, ruta: rutaObrasDeOrg(d.id, tipo) });
+  });
+  const enLaRaiz = destinos.filter(o => o.ruta === "obras");
+  if (enLaRaiz.length > 1) {
+    throw new Error(
+      `No se puede determinar de quién es \`obras/\`: ${enLaRaiz.length} organizaciones ` +
+      `resuelven a la raíz (${enLaRaiz.map(o => o.orgId).join(", ")}). El trabajo no corre: ` +
+      "mandar el recordatorio de una obra al cliente equivocado no se deshace.");
+  }
+
+  // Lo pendiente, juntado por PERSONA. La clave es el correo porque el id del
+  // documento de perfil se deriva de él: dos perfiles con el mismo correo no
+  // pueden existir, así que un correo pertenece a una sola organización.
+  const porPersona = new Map();
+  let notifs = 0;
+  let obrasSinCierre = 0;
+
+  for (const org of destinos) {
+    const obrasSnap = await db.collection(org.ruta).get();
     for (const obraDoc of obrasSnap.docs) {
       const obra = { id: obraDoc.id, ...obraDoc.data() };
       if (obra.estado === "archivada") continue;
 
-      // ¿Hay snapshot esta semana?
-      const histSnap = await admin.firestore()
-        .doc(`obras/${obra.id}/avance/historial`).get();
+      const histSnap = await db.doc(`${org.ruta}/${obra.id}/avance/historial`).get();
       const semanas = histSnap.exists ? (histSnap.data().semanas || []) : [];
-      const yaCapturado = semanas.some(s => s.id === idSem);
-      if (yaCapturado) continue;
+      if (semanas.some(s => s.id === idSem)) continue;
 
-      obrasSinCaptura++;
-      const usuarios = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
+      obrasSinCierre++;
+      const usuarios = await usuariosCapturaDeObra(obra.id, org.orgId, org.tipo);
       const nombreCorto = nombreObraNotif(obra);
       for (const u of usuarios) {
-        if (!u.uid) continue;
-        await crearNotifCloud(u.uid, {
-          categoria: "recordatorio",
-          tipo: "captura_obra_pendiente",
-          titulo: `Cierre semanal · ${nombreCorto}`,
-          mensaje: `Falta capturar avance físico de la S${semana}. Aprovecha antes del corte del viernes.`,
-          link: { tab: "operacion", subTab: "avance", obraId: obra.id },
-        });
-        contadorNotifs++;
+        if (u.uid) {
+          await crearNotifCloud(u.uid, {
+            categoria: "recordatorio",
+            tipo: "captura_obra_pendiente",
+            titulo: `Cierre semanal · ${nombreCorto}`,
+            mensaje: `Falta capturar el avance físico de la ${idSem}. ` +
+              "El corte es mañana sábado a las 2 p.m.",
+            link: { tab: "operacion", subTab: "avance", obraId: obra.id },
+          });
+          notifs++;
+        }
+        const correo = String(u.email || "").trim();
+        if (!correo) continue;
+        if (!porPersona.has(correo)) {
+          porPersona.set(correo, { nombre: u.nombre, orgId: org.orgId, obras: [] });
+        }
+        porPersona.get(correo).obras.push(String(obra.nombre || obra.id));
       }
     }
+  }
+
+  // ── Los correos ──────────────────────────────────────────────────────────
+  // La marca se lee una vez por organización, no una por persona: es el mismo
+  // documento y son lecturas que se pagan.
+  const marcas = new Map();
+  const enviados = [];
+  for (const [correo, p] of porPersona) {
+    if (!marcas.has(p.orgId)) marcas.set(p.orgId, await marcaDeOrg(p.orgId));
+    const marca = marcas.get(p.orgId);
+    const { subject, html } = correoCierrePendiente({
+      marca, nombre: p.nombre, idSem, obras: p.obras,
+    });
+    try {
+      await enviarEmailResend(apiKey, { from: FROM_EMAIL, to: [correo], subject, html });
+      enviados.push(correo);
+    } catch (e) {
+      // Un buzón que rebota no puede tumbar el aviso de los demás. Pero
+      // tampoco se traga: queda en el registro y en el resumen de salud, que
+      // es la diferencia entre «no le llegó» y «no se mandó».
+      console.warn(`recordatorio de cierre: no salió el correo a ${correo}:`, e.message);
+    }
+  }
+
+  return {
+    idSem, obrasSinCierre, notifs,
+    correos: enviados.length, destinatarios: enviados,
+    orgs: destinos.map(o => o.orgId), sinTipoConocido,
+  };
+}
+
+// El correo. Sin cifras: ver el preámbulo.
+function correoCierrePendiente({ marca, nombre, idSem, obras }) {
+  const nombres = [...new Set(obras)];
+  const nombrePila = String(nombre || "").trim().split(/\s+/)[0] || "";
+  const lista = `<ul style="margin:4px 0 18px 0;padding-left:20px;font-size:13px;` +
+    `color:#0D1619;line-height:1.8;font-weight:600;">` +
+    nombres.map(n => `<li>${ESC_HTML(n)}</li>`).join("") + `</ul>`;
+  const cuerpoHTML =
+    `<div style="font-size:12px;font-weight:700;color:#0D1619;margin:0 0 4px 0;">` +
+    `${nombres.length === 1 ? "Obra sin cerrar" : `Obras sin cerrar (${nombres.length})`}</div>` +
+    lista +
+    botonHTML("Capturar el avance", APP_URL) +
+    avisoHTML("La fecha de término que ve la dirección se calcula con el avance " +
+      "físico de los últimos cierres. Una semana sin cerrar no deja un hueco en " +
+      "la pantalla: corre la fecha hacia adelante sin decir por qué.");
+  return {
+    subject: `Falta cerrar la ${idSem} — el corte es mañana 2 p.m.`,
+    html: sobreCorreo({
+      marca,
+      titulo: `Falta cerrar la semana ${idSem}`,
+      entradilla: `${nombrePila ? `${ESC_HTML(nombrePila)}, t` : "T"}ienes hasta ` +
+        `<b>mañana sábado a las 2 p.m.</b> para capturar el avance físico de la ` +
+        `semana. Después de esa hora la semana queda sin cierre.`,
+      cuerpoHTML,
+      pie: "Este recordatorio lo manda cotea los viernes a las 2 p.m., " +
+        "24 horas antes del corte, a quien captura avance en cada obra.",
+    }),
+  };
+}
+
+exports.recordatorioCapturaObra = onSchedule({
+  schedule: "0 14 * * 5",   // viernes 14:00 — 24 h antes del corte del sábado
+  timeZone: "America/Mexico_City",
+  region: "us-central1",
+  secrets: [RESEND_API_KEY],
+}, async () => {
+  const t0 = Date.now();
+  try {
+    const r = await avisarCierreSemanalPendiente(RESEND_API_KEY.value(), new Date());
     await registrarSalud("recordatorio_obra", true,
-      `${contadorNotifs} notifs a ${obrasSinCaptura} obras sin capturar`,
-      { duracionMs: Date.now() - t0, obrasSinCaptura, notifsEnviadas: contadorNotifs });
+      `${r.correos} correo(s) y ${r.notifs} notif(s) por ${r.obrasSinCierre} obra(s) sin cerrar`,
+      { duracionMs: Date.now() - t0, ...r });
   } catch (e) {
     console.error("recordatorioCapturaObra falló:", e);
     await registrarFalloDeSalud("recordatorio_obra", e, { duracionMs: Date.now() - t0 });
@@ -3921,7 +4118,11 @@ exports.recordatorioLunes = onSchedule({
 
       // Notif A3: 3+ pendientes
       if (pendientes >= 3) {
-        const usuarios = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
+        // `"constructora"` no es una suposición: `orgDeLaRaiz` ya lanzó si la
+        // raíz no es de exactamente una, y lo que busca es `tipo ==
+        // "constructora"`. Esta alerta del lunes sigue recorriendo sólo la raíz
+        // —ampliarla a las dependencias es otro cambio y se mide aparte—.
+        const usuarios = await usuariosCapturaDeObra(obra.id, orgRaiz, "constructora");
         const nombreCorto = nombreObraNotif(obra);
         for (const u of usuarios) {
           if (!u.uid) continue;
@@ -3944,7 +4145,7 @@ exports.recordatorioLunes = onSchedule({
       // exactamente la única que no disparaba la alerta.
       if (nuncaSeCerro || diasDesdeUltima > 10) {
         // También al gerente / dirección de operaciones
-        const usuariosObra = await usuariosCapturaDeObra(obra.id, orgRaiz, false);
+        const usuariosObra = await usuariosCapturaDeObra(obra.id, orgRaiz, "constructora");
         // Por organización, no por nombre de rol. La alerta lleva el nombre de
         // la obra y cuántos días lleva sin captura; eso es operación de la
         // constructora. Se acota en la consulta por `orgId` y el rol se filtra
@@ -4446,24 +4647,10 @@ const QUIEN_SE_ENTERA = {
   dependencia: ["director_obras", "subdirector", "jefe_supervision"],
 };
 
-// Quién puede rendir: los roles que capturan avance. No es la misma lista que
-// la de arriba y no debe serlo — se cruzan en los jefes, que pueden cerrar y
-// además reciben.
-//
-// ESTO SÍ ES UNA COPIA, y de la única que no se puede evitar: el original es
-// `PERMISOS[rol].captura === "editar"` en src/App.jsx, y esa tabla no existe de
-// este lado. Sin el filtro, un `cliente` o un `auditor` —que ven la obra y no
-// la capturan— podrían invocar la callable desde el SDK, mandarle a los mandos
-// el parte de una semana que nadie cerró y dejar grabada la constancia. Como la
-// copia no se puede borrar, se mide: el banco extrae `PERMISOS` de App.jsx y
-// exige que las dos listas coincidan rol por rol, así que una divergencia sale
-// en rojo en vez de quedarse como un permiso que se abrió solo.
-const QUIEN_CIERRA = {
-  constructora: ["director_general", "director_operaciones", "gerente_construccion",
-    "admin_sistema", "superintendente", "residente", "administrador_obra"],
-  dependencia: ["director_obras", "subdirector", "jefe_supervision", "supervisor_obra",
-    "administrativo"],
-};
+// `QUIEN_CIERRA` vivía aquí. Se subió junto a `rutaObrasDeOrg` el 2026-11-16,
+// cuando el recordatorio del viernes pasó a necesitarla: las dos contestan la
+// misma pregunta —dónde están las obras de una organización y quién las
+// captura— y tenerlas separadas invitaba a teclear una segunda lista.
 
 exports.rendirCierreSemanal = onCall({ region: "us-central1" }, async (request) => {
   if (!request.auth) {
