@@ -50,7 +50,9 @@
 //   §4. El lado del rótulo lo pide la serie, pero ninguno cae sobre el eje de
 //       semanas: cuando abajo no cabe, se sube.
 //   §5. Un cero no se rotula.
-//   §6. En 26 semanas la cifra se ralea y en 4 no: ni apretado ni mudo. Y en la
+//   §6. Ninguna cifra se encima con otra, CRUZANDO series —que es lo que «sin
+//       que se vea muy apretado» quiere decir—, y en 26 semanas eso se cobra
+//       raleando mientras en 4 no se cobra nada: ni apretado ni mudo. Y en la
 //       tarjeta de dependencia no aparece una cifra de gasto ni de margen.
 //
 // LO QUE NO CUBRE: los colores, la tipografía, las áreas sombreadas y las
@@ -298,10 +300,15 @@ const puntosDel = (html) =>
     const c = m[1].match(/<circle cx="([-\d.]+)" cy="([-\d.]+)" r="2\.5" fill="([^"]+)"/);
     if (!c) return null;
     const t = m[1].match(
-      /<text x="([-\d.]+)" y="([-\d.]+)" text-anchor="([^"]+)"[^>]*>([^<]*)<\/text>/);
+      /<text x="([-\d.]+)" y="([-\d.]+)" text-anchor="([^"]+)"([^>]*)>([^<]*)<\/text>/);
+    // El giro se lee del atributo, no se supone por el número de semanas: la
+    // última cifra de la ventana NO se inclina aunque sus vecinas sí, y una
+    // caja calculada sin girar para un texto girado no toca donde el texto
+    // toca — justamente el solape que §6 tiene que ver.
+    const gr = t && /rotate\((-?[\d.]+)/.exec(t[4]);
     return { cx: +c[1], cy: +c[2], color: c[3],
-      rotulo: t ? t[4] : null, lx: t ? +t[1] : null, ly: t ? +t[2] : null,
-      anchor: t ? t[3] : null };
+      rotulo: t ? t[5] : null, lx: t ? +t[1] : null, ly: t ? +t[2] : null,
+      anchor: t ? t[3] : null, grados: gr ? +gr[1] : 0 };
   }).filter(Boolean);
 
 const deLaSerie = (puntos, serie) => puntos.filter(p => p.color === serie.color);
@@ -464,17 +471,18 @@ function correr() {
   ok(conAbajo.length > 0 && sinLado.length > 0,
     `canario: hay series de los dos lados (${conAbajo.length} abajo, ${sinLado.length} arriba)`);
 
-  // Las dos ventanas, porque el lado del rótulo no es una propiedad de la serie
-  // sino del sitio donde cae su curva: en la ventana larga el gasto arranca
-  // pegado al suelo y en la corta ya va alto. Las dos se dibujan.
+  // SOBRE LA TARJETA DE VERDAD SÓLO SE AFIRMA LO ABSOLUTO, que es que ninguna
+  // cifra cae sobre el eje. El LADO es una preferencia y aquí no se puede
+  // afirmar: para que dos cifras no se encimen, una se corre —y correrse puede
+  // dejarla del otro lado de su línea—. Un número desplazado se sigue leyendo;
+  // un número que no está, no. Qué lado pide cada serie y que se respete cuando
+  // hay sitio se mide abajo, en un escenario con holgura y sin calendario, que
+  // es donde la afirmación es verdadera y donde las mutaciones del lado muerden.
+  //
+  // Las dos ventanas, porque dónde cae una curva depende de la ventana: en la
+  // larga el gasto arranca pegado al suelo y en la corta ya va alto.
   for (const v of [V12, V26]) {
     const suelo = sueloDel(v.html);
-    for (const s of v.props.series.filter(x => !x.ladoRotulo)) {
-      const malas = deLaSerie(v.puntos, s).filter(p => p.rotulo !== null && !arriba(p));
-      ok(malas.length === 0,
-        `${v.rango} semanas · «${s.nombre}» rotula por encima de su línea`,
-        `${malas.length} cifras por debajo`);
-    }
     const caidas = v.puntos.filter(p => p.rotulo !== null && p.ly > suelo - 2);
     ok(caidas.length === 0,
       `${v.rango} semanas · ninguna cifra cae sobre el eje (suelo del lienzo en y=${suelo})`,
@@ -535,6 +543,17 @@ function correr() {
     `y ninguna de las seis cruza el suelo del lienzo (y=${sueloLado})`,
     cruzan.map(p => `«${p.rotulo}» en y=${p.ly}`).join(', '));
 
+  // Y LA OTRA MITAD: la que NO pide lado rotula por encima de su línea. Con
+  // estas dos series bien separadas —una en el techo y la otra abajo— ninguna
+  // cifra tiene que correrse, así que aquí el lado sí es afirmable.
+  const ptsTecho = puntosDel(htmlLado).filter(p => p.color === '#111111'
+    && p.rotulo !== null);
+  ok(ptsTecho.length > 0, `canario: la serie sin lado escribe ${ptsTecho.length} cifra(s)`);
+  ok(ptsTecho.every(p => arriba(p)),
+    'y la serie que no pide lado rotula por encima de su línea',
+    ptsTecho.filter(p => !arriba(p))
+      .map(p => `«${p.rotulo}» cy=${p.cy} ly=${p.ly}`).join(', '));
+
   // Y QUE ESTO NO SEA UN ESCENARIO DE LABORATORIO: la serie que de verdad pide
   // el lado en la pantalla de la constructora es el gasto, con su nombre.
   ok(conAbajo.some(s => s.clave === 'gasto'),
@@ -588,39 +607,132 @@ function correr() {
     'en 26 semanas ninguna serie escribe las 26 cifras: el raleo existe',
     `escriben todas: ${apretadas.map(s => s.nombre).join(', ')}`);
 
-  // Y EL RALEO LO PONE CADA SERIE CON SU PROPIO ANCHO, no una constante
-  // compartida. «$22.1M · 57%» ocupa el doble que «$3.0M», así que con un paso
-  // único la serie de rótulo largo es justo la que se encima — y es la del
-  // ejecutado, la única que publica el porcentaje del contrato. Se lee del
-  // dibujo: el largo del texto que de verdad salió y cada cuántas semanas
-  // salió. Nada de esto reconstruye la cuenta del panel.
-  const raleo = SERIES26.map(s => {
-    const pts = deLaSerie(P26, s);
-    const idx = conDato(s);
-    const rot = pts.map((p, k) => ({ i: idx[k], r: p.rotulo })).filter(x => x.r !== null);
-    return { nombre: s.nombre,
-      largo: Math.max(0, ...rot.map(x => x.r.length)),
-      paso: rot.length > 1 ? Math.min(...rot.slice(1).map((x, j) => x.i - rot[j].i)) : null };
-  }).filter(x => x.paso !== null);
-  ok(raleo.length >= 2, `canario: ${raleo.length} series con cifras raleadas que comparar`);
-  ok(new Set(raleo.map(x => x.paso)).size > 1,
-    'y cada serie ralea con su propio paso: ' +
-    raleo.map(x => `${x.nombre} ${x.largo} car/${x.paso} sem`).join(' · '),
-    'todas con el mismo paso significa que el ancho se mide con una constante, ' +
-    'y entonces la de rótulo largo se encima mientras la corta desperdicia sitio');
-  const porLargo = [...raleo].sort((a, b) => a.largo - b.largo);
-  const alReves = porLargo.filter((x, i) => i > 0 && porLargo[i - 1].paso > x.paso);
-  ok(alReves.length === 0,
-    'y el que escribe más largo escribe menos seguido, no al contrario',
-    alReves.map(x => `${x.nombre} (${x.largo} car) ralea menos que otra más corta`).join(', '));
+  // NINGUNA CIFRA SE ENCIMA CON OTRA, QUE ES LO QUE SE PIDIÓ. El raleo no es
+  // el fin: es el medio. «Que no se vea muy apretado» no se cumple porque las
+  // series escriban menos, se cumple porque dos números no se pisen — y eso
+  // CRUZA las series. El primer intento raleaba cada serie contra sí misma, el
+  // banco lo dio por bueno, y midiendo la pantalla salieron seis rótulos
+  // encimados: dos cifras superpuestas casi por completo. Un banco que afirma
+  // «cada serie ralea con su propio paso» no habría visto ni uno.
+  //
+  // Se juzga el DIBUJO ENTERO: cada cifra que de verdad salió, con su ancla y
+  // su giro leídos del atributo, contra todas las demás.
+  //
+  // LO QUE ESTA AFIRMACIÓN NO ALCANZA, dicho para que nadie la lea de más: el
+  // ancho de un texto se estima por carácter, con el mismo criterio que usa el
+  // panel. Así que esto demuestra que el reparto RESUELVE los choques que ve,
+  // no que los vea todos. Que el estimador no se queda corto se comprobó
+  // midiendo los rótulos de verdad en el navegador —4.88, 5.07 y 5.42 por
+  // carácter a 8.5px— y por eso el panel usa el mayor. Aquí se mide sin margen
+  // de holgura: se cuenta solape de letra sobre letra, no cercanía.
+  const cajaDel = (p) => {
+    const w = p.rotulo.length * 5.2, alto = 9;
+    const x0 = p.anchor === 'end' ? p.lx - w
+      : p.anchor === 'start' ? p.lx : p.lx - w / 2;
+    const rad = p.grados * Math.PI / 180, co = Math.cos(rad), si = Math.sin(rad);
+    const esq = [[x0, p.ly - alto], [x0 + w, p.ly - alto],
+                 [x0, p.ly + 2], [x0 + w, p.ly + 2]]
+      .map(([px, py]) => { const dx = px - p.lx, dy = py - p.ly;
+        return [p.lx + dx * co - dy * si, p.ly + dx * si + dy * co]; });
+    const xs = esq.map(e => e[0]), ys = esq.map(e => e[1]);
+    return { x0: Math.min(...xs), x1: Math.max(...xs),
+             y0: Math.min(...ys), y1: Math.max(...ys) };
+  };
+  const seEncima = (a, b) => a.caja.x0 < b.caja.x1 && b.caja.x0 < a.caja.x1
+                          && a.caja.y0 < b.caja.y1 && b.caja.y0 < a.caja.y1;
 
-  const mudas = V4.props.series.filter(s => {
-    const pts = sinCero(s, deLaSerie(V4.puntos, s));
-    return pts.some(p => p.rotulo === null);
+  for (const v of [V4, V12, V26]) {
+    const escritas = v.puntos.filter(p => p.rotulo)
+      .map(p => ({ rotulo: p.rotulo, caja: cajaDel(p) }));
+    // El canario pide DOS, que es el mínimo con el que un choque es posible.
+    // Pedía seis y eso lo hacía depender del calendario: en la primera semana
+    // de enero el gasto todavía no tiene detalle del año en curso, la ventana
+    // corta sale con cinco cifras, y el canario gritaba por un dibujo sano. Lo
+    // cazó el barrido con el reloj en 2027-01-04. El caso denso y sin
+    // calendario —doce cifras— se pide abajo, a propósito.
+    ok(escritas.length >= 2,
+      `canario: ${v.rango} semanas · ${escritas.length} cifras escritas que pueden chocar`,
+      'con menos de dos cifras en el dibujo no hay choque posible y la ' +
+      'comprobación de abajo se cumple sola');
+    const choques = [];
+    for (let i = 0; i < escritas.length; i++)
+      for (let j = i + 1; j < escritas.length; j++)
+        if (seEncima(escritas[i], escritas[j]))
+          choques.push(`«${escritas[i].rotulo}» con «${escritas[j].rotulo}»`);
+    ok(choques.length === 0,
+      `${v.rango} semanas · ninguna de las ${escritas.length} cifras se encima con otra`,
+      `${choques.length} par(es) encimado(s): ${choques.slice(0, 6).join(', ')}`);
+  }
+
+  // Y CON SITIO NO SE CALLA NINGUNA. «Sitio» quiere decir dos cosas y las dos
+  // hacen falta: que las curvas vayan separadas —sitio a lo alto— y que el
+  // rótulo se mida por lo que ocupa —sitio a lo ancho—. Sobre la tarjeta de
+  // verdad esto no es afirmable: el programado y el ejecutado de una obra al
+  // corriente corren casi pegados, sus cifras nacen una sobre otra, y entonces
+  // callar una es lo correcto, no un defecto. Pasa de veras: con el reloj en
+  // 2027-09-05 el fixture deja las dos curvas a menos del 1% y tres de las
+  // cuatro cifras del programado sobran. Así que se pide directo.
+  //
+  // DOCE SEMANAS, no cuatro, aunque cuatro fuera más fácil de leer: con cuatro
+  // las semanas quedan a 213 unidades y ahí cabe cualquier cosa, así que la
+  // afirmación no distinguía un estimador de ancho sano de uno que se pasa casi
+  // tres veces. A doce las semanas van a 58 y el ancho empieza a importar, que
+  // es el régimen en el que la pantalla se usa.
+  const SEM_H = Array.from({ length: 12 }, (_, k) => String(k + 1).padStart(2, '0'))
+    .map(n => ({ key: `2026-W${n}`, sem: +n, año: 2026, label: `S${+n}`,
+                 fecha: `${n}/01` }));
+  const sube = (base) => SEM_H.map((_, k) => base + k * 50_000);
+  const TRES = [
+    { clave: 'alta', color: '#111111', valores: sube(9_000_000) },
+    { clave: 'media', color: '#2E86C1', valores: sube(5_000_000) },
+    { clave: 'baja', color: '#C0392B', valores: sube(1_000_000) },
+  ];
+  const htmlHolgado = pintar({
+    semanas: SEM_H, ejeAbajo: true, altura: V12.props.altura, fmt: fmtDineroCorto,
+    series: TRES.map(s => ({ ...s, nombre: s.clave, rotulada: true })),
   });
-  ok(mudas.length === 0,
-    'y en 4 semanas se escriben todas: el raleo no se cobra cuando hay sitio',
-    `callan cifras: ${mudas.map(s => s.nombre).join(', ')}`);
+  if (/SE CAYO AL PINTARSE/.test(htmlHolgado)) muere(`escenario holgado: ${htmlHolgado}`);
+  const ptsHolgado = puntosDel(htmlHolgado);
+  ok(ptsHolgado.length === 36,
+    `canario: el escenario holgado dibuja sus ${ptsHolgado.length} puntos (3 series × 12 semanas)`);
+  const calladas = ptsHolgado.filter(p => p.rotulo === null);
+  ok(calladas.length === 0,
+    'con las series separadas se escriben las 36 cifras de las 12 semanas: ' +
+    'el raleo se cobra por falta de sitio, no por costumbre',
+    `${calladas.length} punto(s) sin cifra`);
+  // Y escribirlas todas no vale si salen una sobre otra: éste es el caso denso
+  // que no depende del calendario, y es el que ancla la afirmación de arriba.
+  const cajasH = ptsHolgado.filter(p => p.rotulo)
+    .map(p => ({ rotulo: p.rotulo, caja: cajaDel(p) }));
+  const choquesH = [];
+  for (let i = 0; i < cajasH.length; i++)
+    for (let j = i + 1; j < cajasH.length; j++)
+      if (seEncima(cajasH[i], cajasH[j]))
+        choquesH.push(`«${cajasH[i].rotulo}» con «${cajasH[j].rotulo}»`);
+  ok(choquesH.length === 0,
+    'y ninguna de las 36 se encima con otra',
+    choquesH.slice(0, 6).join(', '));
+
+  // Y EL RALEO NO MATA DE HAMBRE AL EJECUTADO. Cuando no caben todas, alguien
+  // escribe menos, y quién es eso no da igual: el avance ejecutado es la serie
+  // que se viene a leer y la única que publica el porcentaje del contrato.
+  // También es la de rótulo más largo —monto Y porcentaje—, así que es la que
+  // pierde si el sitio se reparte semana por semana en vez de serie por serie:
+  // las tres cifras de la última semana, luego las tres de la anterior, parece
+  // lo justo y en la ventana de 26 deja al ejecutado con UNA cifra mientras el
+  // programado escribe doce. Medido así, con el reparto bueno y con el malo.
+  const cuenta = (s) => deLaSerie(P26, s).filter(p => p.rotulo !== null).length;
+  const rotuladas = SERIES26.filter(s => s.rotulada && cuenta(s) > 0);
+  ok(rotuladas.length >= 3,
+    `canario: ${rotuladas.length} series rotuladas en la ventana larga que se reparten el sitio`);
+  const elEjec = rotuladas.find(s => s.clave === 'ejec');
+  if (!elEjec) muere('la ventana de 26 no trae la serie del ejecutado',
+    'Sin ella no se puede afirmar a quién protege el reparto.');
+  const detalle = rotuladas.map(s => `${s.nombre} ${cuenta(s)}`).join(' · ');
+  ok(rotuladas.some(s => s.clave !== 'ejec' && cuenta(s) <= cuenta(elEjec)),
+    `y el ejecutado no es el que menos cifras escribe: ${detalle}`,
+    'repartir por semana deja al de rótulo largo —el único con el porcentaje ' +
+    `del contrato— sin nada que leer · ${detalle}`);
 
   // ── LA FRONTERA DEL MARGEN, DEL LADO DE LA DEPENDENCIA ───────────────────
   //
@@ -718,58 +830,64 @@ const MUTACIONES = [
               if (v === null || v === undefined) return null;
               const x = xPos(i), y = yPos(s.valores[i]);`],
 
-  // §3 · el raleo cuenta desde la primera semana, y entonces la cifra de esta
-  // semana se salta la mitad de las veces.
-  ['el raleo cuenta desde la primera semana y deja la actual sin cifra',
-    `              const escribe = s.rotulada && v !== 0
-                && (semanas.length - 1 - i) % paso === 0;`,
-    `              const escribe = s.rotulada && v !== 0
-                && i % paso === 0;`],
+  // §6 · el sitio se reparte semana por semana —las tres cifras de la última,
+  // luego las tres de la anterior— en vez de serie por serie. Parece lo justo
+  // y mata de hambre al de rótulo largo: el ejecutado baja de 8 cifras a 1 en
+  // la ventana de 26 mientras el programado sube a 12. La gráfica se ve
+  // ordenada y sin encimar; lo que falta es justo lo que se viene a leer.
+  ['el sitio se reparte por semana y el ejecutado se queda con una sola cifra',
+    `  candidatos.sort((a, b) => (a.orden - b.orden) || (b.i - a.i));`,
+    `  candidatos.sort((a, b) => (b.i - a.i) || (a.orden - b.orden));`],
 
   // §3 · el ancla del final se cae y el último rótulo se derrama por la derecha.
   ['la última cifra ancla por el principio y se derrama fuera del lienzo',
-    `              let anchor = "middle";
-              if (i === semanas.length - 1) anchor = "end";
-              else if (rotar || i === 0) anchor = "start";`,
-    `              let anchor = "middle";
-              if (rotar || i === 0) anchor = "start";`],
+    `  const anclaDe = (i) => i === semanas.length - 1 ? 'end'
+    : (rotar || i === 0) ? 'start' : 'middle';`,
+    `  const anclaDe = (i) => (rotar || i === 0) ? 'start' : 'middle';`],
 
   // §4 · la excepción del suelo se cae y la cifra del gasto se lee como parte
   // del eje de semanas.
   ['el rótulo de abajo deja de subirse cuando no cabe y cae sobre el eje de semanas',
-    `              const abajo = s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2;`,
-    `              const abajo = s.ladoRotulo === 'abajo';`],
+    `    (s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2) ? y + 13 : y - 8;`,
+    `    (s.ladoRotulo === 'abajo') ? y + 13 : y - 8;`],
 
   // §4 · el lado que pide la serie se ignora y todo se rotula encima.
   ['el lado del rótulo se ignora y el gasto escribe encima de su línea, contra el ejecutado',
-    `              const yLabel = abajo ? y + 13 : y - 8;`,
-    `              const yLabel = y - 8;`],
+    `  const yRotuloDe = (s, y) =>
+    (s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2) ? y + 13 : y - 8;`,
+    `  const yRotuloDe = (s, y) => y - 8;`],
 
-  // §5 · el cero se rotula y doce «$0» tapan la gráfica.
+  // §5 · el cero entra al reparto y las semanas sin gasto publican «$0».
   ['el cero se rotula y las semanas sin gasto publican «$0» con cara de medido',
-    `              const escribe = s.rotulada && v !== 0`,
-    `              const escribe = s.rotulada`],
+    `      if (v === null || v === undefined || v === 0) return;`,
+    `      if (v === null || v === undefined) return;`],
 
-  // §6 · el raleo se desactiva y 26 semanas por tres series se enciman.
-  ['el raleo se desactiva y las tres series escriben las 26 semanas encimadas',
-    `    const ocupa = (rotar ? ancho * 0.87 : ancho) + 6;`,
-    `    const ocupa = 1;`],
+  // §6 · el reparto deja de ver los choques: todo se escribe, y 26 semanas por
+  // tres series se enciman. Es el defecto que este banco no veía antes.
+  ['nada impide que dos cifras se encimen y las tres series escriben todas las semanas',
+    `  const chocan = (a, b) => a.x0 < b.x1 && b.x0 < a.x1
+                        && a.y0 < b.y1 && b.y0 < a.y1;`,
+    `  const chocan = (a, b) => false;`],
 
-  // §6 · el raleo se cobra incluso cuando hay sitio, y una ventana de 4 semanas
-  // sale con la mitad de las cifras.
-  ['el raleo se cobra aunque haya sitio y la ventana corta sale a medias',
-    `    return Math.max(1, Math.ceil(ocupa / sep));`,
-    `    return Math.max(2, Math.ceil(ocupa / sep));`],
+  // §6 · el ancho se estima casi tres veces de más, así que el reparto cree que
+  // no hay sitio donde sí lo hay y calla cifras que caben.
+  ['el ancho del rótulo se estima de más y se callan cifras que sí caben',
+    `  const anchoTexto = (t) => String(t).length * 5.2;`,
+    `  const anchoTexto = (t) => String(t).length * 14;`],
 
-  // §6 · el ancho se mide con una constante en vez de con lo que la serie de
-  // verdad escribe, así que la de rótulo largo —la única con monto Y
+  // §6 · el ancho se mide con una constante en vez de con el texto que de
+  // verdad sale, así que la serie de rótulo largo —la única con monto Y
   // porcentaje— es justo la que se encima.
   ['el ancho del rótulo se mide con una constante y la serie de rótulo largo se encima',
-    `    const ancho = Math.max(1, ...semanas.map((m, i) => {
-      const v = s.valores[i];
-      return (v === null || v === undefined || v === 0) ? 0 : anchoTexto(f(v));
-    }));`,
-    `    const ancho = anchoTexto('$0.0M');`],
+    `  const anchoTexto = (t) => String(t).length * 5.2;`,
+    `  const anchoTexto = (t) => 26;`],
+
+  // §6 · la caja se calcula sin girar para un texto que SÍ se gira. Un rótulo
+  // inclinado se empina, y el alto es justo lo que lo manda contra la cifra de
+  // la serie de arriba: con la caja plana el reparto no ve ese choque.
+  ['la caja del rótulo se calcula sin girar aunque el texto se gire, y el solape no se ve',
+    `    const rad = grados * Math.PI / 180, co = Math.cos(rad), si = Math.sin(rad);`,
+    `    const rad = 0, co = Math.cos(rad), si = Math.sin(rad);`],
 
   // §6 · la frontera del margen: la tarjeta de la dependencia recibe la serie
   // del gasto del contratista. Compila, se ve bien, y publica en el tablero del

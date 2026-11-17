@@ -15245,32 +15245,139 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
   const hayNegativos = todos.some(v => v < 0);
   const rotar = semanas.length >= 12;
 
-  // ── CADA CUÁNTAS SEMANAS SE ESCRIBE LA CIFRA DE UNA SERIE ─────────────────
+  // ── QUÉ CIFRAS SE ESCRIBEN: LAS QUE NO SE ENCIMAN CON OTRA ────────────────
   //
   // Hasta el 2026-11-16 sólo una serie llevaba cifras y las llevaba en TODAS
   // las semanas; las otras dos eran una línea sin números. Ahora las llevan las
   // tres, y escribir tres cifras en cada semana de una ventana de 26 no es
   // informar: es tapar la gráfica con su propia leyenda.
   //
-  // El ancho se mide POR SERIE y a partir de lo que de verdad dice, no con una
-  // constante: «$22.1M · 57%» ocupa el doble que «$31.6M», y con una constante
-  // la serie de rótulo largo es justo la que se encima. Rotado −30° el texto
-  // proyecta cos30 de su largo sobre el eje, que es lo que compite por el sitio.
+  // EL PRIMER INTENTO FUE UN PASO POR SERIE, con el ancho de lo que esa serie
+  // escribe. No alcanza, y se vio midiendo la pantalla: un paso ordena a una
+  // serie CONSIGO MISMA y no hay nada que impida que el rótulo del ejecutado
+  // caiga sobre el del programado. Con tres series rotuladas eso dejó seis
+  // cifras encimadas en la ventana de doce, dos de ellas superpuestas casi por
+  // completo: la de la última semana ancla por el final y, rotada, se barre
+  // hacia ATRÁS, justo encima de su vecina, que ancla al revés.
   //
-  // Y el conteo arranca DESDE LA ÚLTIMA SEMANA, no desde la primera: la cifra
-  // que se busca primero es la de esta semana, y es la única que no se puede
-  // saltar. Contando desde el principio, un paso de 2 sobre 26 semanas dejaba
-  // la actual sin número la mitad de las veces.
-  const anchoTexto = (t) => String(t).length * 4.9;   // 8.5px, dígito ≈ 0.58em
-  const pasoDe = (s) => {
-    const f = s.fmt || fmt;
-    const ancho = Math.max(1, ...semanas.map((m, i) => {
-      const v = s.valores[i];
-      return (v === null || v === undefined || v === 0) ? 0 : anchoTexto(f(v));
-    }));
-    const ocupa = (rotar ? ancho * 0.87 : ancho) + 6;
-    return Math.max(1, Math.ceil(ocupa / sep));
+  // Lo que decide ahora es el dibujo entero: se arma la caja de cada rótulo
+  // candidato —rotación incluida— y se escribe el que no choca con ninguno ya
+  // puesto. El orden ES la prioridad, y la prioridad es el tiempo: primero la
+  // cifra de la última semana, y de ahí hacia atrás.
+  // 8.5px y dígito ≈ 0.61em. Medido en el navegador sobre los rótulos de
+  // verdad: «$17.7M · 46%» ocupa 58.5, «$15.1M» 30.4, «$186k» 27.1 —o sea 4.88,
+  // 5.07 y 5.42 por carácter—. Se toma el MAYOR a propósito: un estimador corto
+  // deja pasar astillas de solape, y una astilla de tres píxeles entre dos
+  // cifras rotadas se ve como una sola cifra sucia. Pasarse un pelo sólo cuesta
+  // una cifra de vez en cuando; quedarse corto cuesta la legibilidad.
+  const anchoTexto = (t) => String(t).length * 5.2;
+  const ALTO_TEXTO = 9;
+  const MARGEN = 1.5;
+
+  // LA CIFRA DE LA ÚLTIMA SEMANA NO SE INCLINA. El giro existe para que un
+  // texto ancho no invada la semana siguiente; la última no tiene semana
+  // siguiente —ancla por el final y por eso no se puede derramar—, así que
+  // inclinarla no compra nada y cuesta caro: girada, un rótulo largo anclado
+  // al final se barre treinta unidades HACIA ABAJO, cruzando la banda donde
+  // escribe la serie de arriba. Medido en la pantalla, así era imposible
+  // colocar la cifra del programado, que corre pegada al techo del lienzo.
+  const rotadoEn = (i) => rotar && i !== semanas.length - 1;
+
+  // LA CAJA QUE UN RÓTULO OCUPA DE VERDAD. Girado −30° un texto largo no sólo
+  // se angosta: también se EMPINA, y ese alto es el que lo manda a chocar con
+  // la cifra de la serie de arriba. Por eso no se escala el ancho por cos30 y
+  // ya: se giran las cuatro esquinas y se toma el rectángulo que las contiene.
+  const cajaRotulo = (x, y, w, anchor, grados) => {
+    const x0 = anchor === 'end' ? x - w : anchor === 'start' ? x : x - w / 2;
+    const rad = grados * Math.PI / 180, co = Math.cos(rad), si = Math.sin(rad);
+    const pts = [[x0, y - ALTO_TEXTO], [x0 + w, y - ALTO_TEXTO],
+                 [x0, y + 2], [x0 + w, y + 2]]
+      .map(([px, py]) => { const dx = px - x, dy = py - y;
+        return [x + dx * co - dy * si, y + dx * si + dy * co]; });
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return { x0: Math.min(...xs) - MARGEN, x1: Math.max(...xs) + MARGEN,
+             y0: Math.min(...ys) - MARGEN, y1: Math.max(...ys) + MARGEN };
   };
+  const chocan = (a, b) => a.x0 < b.x1 && b.x0 < a.x1
+                        && a.y0 < b.y1 && b.y0 < a.y1;
+
+  // La última semana ancla por el final SIEMPRE, rotada o no. Con `start` el
+  // texto arranca en el último punto y se sale del SVG por la derecha:
+  // «$22.1M · 57%» quedaba en «$22.1».
+  const anclaDe = (i) => i === semanas.length - 1 ? 'end'
+    : (rotar || i === 0) ? 'start' : 'middle';
+  // Abajo SI CABE ABAJO. Una serie que corre pegada al suelo del dibujo —el
+  // gasto de las primeras semanas de una obra— pondría su cifra encima de las
+  // etiquetas de semana, y ahí se lee como parte del eje. Cuando no cabe, se
+  // sube: el sitio es una preferencia, que el número se lea no lo es.
+  const yRotuloDe = (s, y) =>
+    (s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2) ? y + 13 : y - 8;
+
+  const candidatos = [];
+  vivos.forEach((s, orden) => {
+    if (!s.rotulada) return;
+    semanas.forEach((m, i) => {
+      const v = s.valores[i];
+      // El cero no es candidato: «$0» se lee como «no se gastó» cuando lo que
+      // dice es «todavía no hay dato».
+      if (v === null || v === undefined || v === 0) return;
+      const yl = yRotuloDe(s, yPos(v));
+      candidatos.push({ id: `${s.clave}|${i}`, orden, i, y: yl,
+        ultima: i === semanas.length - 1,
+        caja: cajaRotulo(xPos(i), yl, anchoTexto((s.fmt || fmt)(v)), anclaDe(i),
+                         rotadoEn(i) ? -30 : 0) });
+    });
+  });
+  // EL ORDEN ES LA PRIORIDAD, y se reparte POR SERIE, no por semana. Repartir
+  // por semana —las tres cifras de la última, luego las tres de la anterior—
+  // parece lo justo y mata de hambre a la serie que escribe largo: el rótulo
+  // del ejecutado lleva monto y porcentaje, ocupa dos huecos de semana, y
+  // medido en la pantalla se quedaba con DOS cifras de ocho mientras el
+  // programado escribía diez. Y el ejecutado es la serie que se viene a leer.
+  //
+  // Reparte primero la serie que la curva pone primero —ejecutado, programado,
+  // gasto, que es el orden en que se construyen— y dentro de cada una desde la
+  // última semana hacia atrás.
+  candidatos.sort((a, b) => (a.orden - b.orden) || (b.i - a.i));
+
+  // LA CIFRA DE LA ÚLTIMA SEMANA NO SE SALTA: es la que se busca al abrir la
+  // pantalla. Dejarla en blanco para no encimar dos textos cambia un problema
+  // de lectura por un hueco, y el hueco se lee como «no hay dato». Si choca, se
+  // corre a lo largo de la vertical hasta despegarse, y sólo se rinde si para
+  // despegarse tendría que irse sobre el eje de semanas o salirse por arriba.
+  // Los pasos son cortos y la escalera llega hasta donde llegue el lienzo. Lo
+  // corto es para que la cifra se quede lo más cerca posible de su punto: el
+  // primer sitio que no choca gana, así que mover de seis en seis la deja a la
+  // mínima distancia que hace falta. Lo largo es porque la distancia que hace
+  // falta no se puede acotar de antemano: cuando dos series terminan casi en el
+  // mismo valor —el programado y el ejecutado de una obra al corriente— sus dos
+  // cifras del final nacen una encima de la otra, y despegarlas cuesta el alto
+  // entero del rótulo de la otra. Una escalera que paraba en 18 dejaba al
+  // programado sin sitio y sin cifra. Salirse del lienzo lo siguen impidiendo
+  // las dos guardas de abajo; lo que ya no lo impide es quedarse sin peldaños.
+  //
+  // LAS DEMÁS SEMANAS TAMBIÉN SE CORREN, pero sólo un peldaño. Dos series que
+  // van casi juntas dejan sus cifras rozándose por un píxel, y sin margen para
+  // apartarse una de las dos se calla: en una ventana de cuatro semanas, donde
+  // sitio sobra por todos lados, eso se lee como que falta el dato. Un peldaño
+  // basta para despegarlas y no alcanza para alejar una cifra de su punto.
+  const CORRIDAS = [0];
+  for (let d = 6; d <= ch; d += 6) CORRIDAS.push(-d, d);
+  const puestas = [];
+  const escritas = new Map();
+  candidatos.forEach(c => {
+    for (const dy of (c.ultima ? CORRIDAS : [0, -6, 6])) {
+      const caja = { ...c.caja, y0: c.caja.y0 + dy, y1: c.caja.y1 + dy };
+      // Correrla no puede sacarla por arriba ni sentarla sobre el eje de
+      // semanas: el sitio de origen se acepta como esté —es el que la cuenta
+      // eligió— pero moverla no puede empeorarla.
+      if (dy !== 0 && (caja.y0 < 0 || c.y + dy > PT + ch - 2)) continue;
+      if (puestas.some(p => chocan(p, caja))) continue;
+      puestas.push(caja);
+      escritas.set(c.id, dy);
+      return;
+    }
+  });
 
   // Las áreas que de verdad se pueden sombrear: las dos series encendidas.
   const puntosDe = (clave) => {
@@ -15412,7 +15519,6 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
           const pts = semanas.map((m, i) => punto(i));
           const tramos = tramosDeSerie({ pts, medido: s.medido, idxFrontera: iF });
           const esPunteada = s.estilo === 'punteada';
-          const paso = pasoDe(s);
           return <g key={s.clave}>
             {tramos.map((t, k) => (
               <path key={k} d={caminoSuave(t.pts)} fill="none" stroke={s.color}
@@ -15437,8 +15543,9 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
                 y doce, la Bézier se ve igual. El punto es la medición; la
                 línea es la interpolación.
 
-                LA CIFRA, en cambio, va cada `paso` semanas, y el paso lo pone
-                el ancho de lo que esa serie escribe. Ver `pasoDe`.
+                LA CIFRA, en cambio, va donde CABE: el reparto se hizo arriba
+                sobre el dibujo entero, series cruzadas incluidas, y aquí sólo
+                se consulta. Ver `candidatos` y `escritas`.
 
                 ARRIBA O ABAJO DE LA LÍNEA, según lo pida la serie. El gasto
                 corre por debajo del ejecutado, así que sus cifras encima
@@ -15449,27 +15556,15 @@ function PanelSemanal({semanas, series, areas = [], ausentes = [], fmt, fmtEje,
               const v = s.valores[i];
               if (v === null || v === undefined) return null;
               const x = xPos(i), y = yPos(v);
-              // Abajo SI CABE ABAJO. Una serie que corre pegada al suelo del
-              // dibujo —el gasto de las primeras semanas de una obra— pondría
-              // su cifra encima de las etiquetas de semana, y ahí se lee como
-              // parte del eje. Cuando no cabe, se sube: el sitio es una
-              // preferencia, que el número se lea no lo es.
-              const abajo = s.ladoRotulo === 'abajo' && y + 13 <= PT + ch - 2;
-              const yLabel = abajo ? y + 13 : y - 8;
-              const escribe = s.rotulada && v !== 0
-                && (semanas.length - 1 - i) % paso === 0;
-              // La última semana ancla por el final SIEMPRE, rotada o no. Con
-              // `start` el texto arranca en el último punto y se sale del SVG
-              // por la derecha: «$22.1M · 57%» quedaba en «$22.1». Era un
-              // defecto de antes y con tres series rotuladas se triplicaba.
-              let anchor = "middle";
-              if (i === semanas.length - 1) anchor = "end";
-              else if (rotar || i === 0) anchor = "start";
+              const corrida = escritas.get(`${s.clave}|${i}`);
+              const escribe = corrida !== undefined;
+              const yLabel = yRotuloDe(s, y) + (corrida || 0);
+              const anchor = anclaDe(i);
               return <g key={m.key} opacity={hayViejo && i < iF ? 0.5 : 1}>
                 <circle cx={x} cy={y} r={2.5} fill={s.color} stroke="white" strokeWidth={1}/>
                 {escribe && <text x={x} y={yLabel} textAnchor={anchor}
                   fontSize="8.5" fill={v < 0 ? C.redDk : C.textPri} fontWeight="600"
-                  transform={rotar ? `rotate(-30 ${x} ${yLabel})` : undefined}>
+                  transform={rotadoEn(i) ? `rotate(-30 ${x} ${yLabel})` : undefined}>
                   {/* El rótulo de la serie manda sobre el del panel: el
                       ejecutado lleva monto Y porcentaje, y el eje sólo pesos. */}
                   {(s.fmt || fmt)(v)}
