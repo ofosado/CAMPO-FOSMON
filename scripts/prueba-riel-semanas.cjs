@@ -80,6 +80,9 @@ const NOMBRES = [
   'MARCA_CERRADA', 'MARCA_SIN_COMPARAR', 'MARCA_SOLO_FOTOS', 'MARCA_SIN_DATO',
   'rielDeSemanas', 'marcaInicialDelRiel', 'frasePanelSinCierre', 'fraseSinDelta',
   'marcaCerrada',
+  // `frasePanelSinCierre` pregunta por el estado del riel antes de afirmar que
+  // una semana no se cerró: sin estos cuatro no se puede ejecutar.
+  'HIST_SIN_LEER', 'HIST_LEIDO', 'HIST_NO_SE_PUDO', 'HIST_NO_VISIBLE',
 ];
 
 const src = fs.readFileSync(ARCH_APP, 'utf8');
@@ -113,6 +116,7 @@ const {
   rangoSemanaEnPalabras, leyendaSemanaSubida,
   MARCA_CERRADA, MARCA_SIN_COMPARAR, MARCA_SOLO_FOTOS, MARCA_SIN_DATO,
   NOTA_FALTA, NOTA_ESCRITA, NOTA_SIN_NOVEDAD,
+  HIST_LEIDO,
 } = app;
 
 console.log(`\nArchivo:   ${path.relative(raiz, ARCH_APP)}`);
@@ -214,8 +218,11 @@ const correr = () => {
   // ── 5. Donde no hay número, hay una frase que dice por qué ──────────────
   // El guion mudo es la forma más barata de mentir en un expediente.
   console.log('\n5. Nunca un guion: se dice POR QUÉ falta el número');
-  const fSoloFotos = frasePanelSinCierre(riel.find(m => m.clave === 'S39-2026'));
-  const fHueco     = frasePanelSinCierre(riel.find(m => m.clave === 'S38-2026'));
+  // Con el riel LEÍDO a propósito: «esta semana no se cerró» sólo se puede
+  // afirmar de un historial que llegó. Lo que dice cuando no llegó lo mide
+  // `prueba-el-expediente-pide-su-riel.cjs`.
+  const fSoloFotos = frasePanelSinCierre(riel.find(m => m.clave === 'S39-2026'), HIST_LEIDO);
+  const fHueco     = frasePanelSinCierre(riel.find(m => m.clave === 'S38-2026'), HIST_LEIDO);
   check(/no se cerr/i.test(fSoloFotos) && /2 fotos/.test(fSoloFotos)
     && /(avance|dinero)/i.test(fSoloFotos),
     `la semana con sólo fotos explica qué consta y qué no ("${fSoloFotos}")`);
@@ -227,7 +234,7 @@ const correr = () => {
     check(typeof f === 'string' && f.trim().length > 20 && !/^[—–-]+$/.test(f.trim()),
       `la explicación es una frase y no un guion ("${String(f).slice(0, 24)}…")`);
   }
-  check(frasePanelSinCierre(riel.find(m => m.clave === 'S37-2026')) === null,
+  check(frasePanelSinCierre(riel.find(m => m.clave === 'S37-2026'), HIST_LEIDO) === null,
     'una semana que SÍ se cerró no recibe la explicación de las que no');
 
   // Y las dos razones para no tener delta se dicen distinto.
@@ -393,8 +400,8 @@ const correr = () => {
   const dichos = [
     fraseSinDelta(marca('S36-2026')),          // cerrada, sin poder comparar
     fraseSinDelta(marca('S37-2026')),          // cerrada y comparable: no hay excusa que dar
-    frasePanelSinCierre(marca('S39-2026')),    // sólo fotos
-    frasePanelSinCierre(marca('S38-2026')),    // ni cierre ni fotos
+    frasePanelSinCierre(marca('S39-2026'), HIST_LEIDO),  // sólo fotos
+    frasePanelSinCierre(marca('S38-2026'), HIST_LEIDO),  // ni cierre ni fotos
   ];
   check(new Set(dichos.map(String)).size === 4,
     'las cuatro situaciones siguen teniendo cada una su propia frase en el panel');

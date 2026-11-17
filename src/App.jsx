@@ -2269,6 +2269,23 @@ const fsCollConEstado = async (path) => {
     return { ok: false, docs: [], error: e?.code || 'error-desconocido' };
   }
 };
+// Y lo mismo para UN documento. `fsGet` devuelve `null` tanto si el documento
+// no está como si las reglas negaron la lectura, y las dos cosas acaban en el
+// mismo cero en pantalla. Medido el 2026-11-16 contra el emulador: la lectura
+// de `avance/historial` de la obra OP-2026-001 devuelve PERMISSION_DENIED a un
+// `contratista` y 200 a `director_obras`. El documento tiene cuatro semanas
+// cerradas, y la galería anunciaba «0 semanas cerradas» con la misma confianza
+// con la que anunciaría un cero contado.
+const fsGetConEstado = async (path) => {
+  const r = conOrg(path);
+  try {
+    const d = await getDoc(doc(fbDb, ...r.split('/')));
+    return { ok: true, datos: d.exists() ? d.data() : null };
+  } catch (e) {
+    console.error('fsGetConEstado', r, e?.code || e?.message);
+    return { ok: false, datos: null, error: e?.code || 'error-desconocido' };
+  }
+};
 
 // ── Horas extra de una semana de nómina ──────────────────────────────────
 // Existe como función, y una sola, porque el snapshot guarda el importe con
@@ -4831,6 +4848,131 @@ const fraseOrigenEvidencia = (lista) => {
   return `${ver} ${ver === 1 ? 'verificada' : 'verificadas'} · ${leg} de archivo`;
 };
 
+// ── EL ENCABEZADO DEL EXPEDIENTE DICE QUÉ MIRÓ, NO SÓLO QUÉ ENCONTRÓ ───────
+//
+// «0 semanas cerradas · 0 fotos en 0 partidas» es la cabecera de la pantalla
+// que se le enseña al cliente, y esos cuatro ceros salían de dos listas que
+// pueden estar vacías por motivos distintos: no hay nada, no se pudo leer,
+// nadie lo pidió todavía, o **a este rol no se le enseña ese dato**. Los cuatro
+// se imprimían igual.
+//
+// El que costó encontrar fue el último, y no se dedujo: se midió. El historial
+// de avance se carga perezosamente, y los roles `cliente` y `contratista` no
+// tienen ninguna de las pestañas que lo piden —su menú son `avance_cliente`,
+// `fotos_cliente`, `estimaciones_cliente` y `plazos_cliente`—, así que para
+// ellos el riel no se pedía nunca y «0 semanas cerradas» era permanente sobre
+// una obra con cierres de verdad. Pero añadir su pestaña a la lista NO era el
+// arreglo: `firestore.rules` le niega `avance/historial` a esos dos roles a
+// propósito, y pedirlo ahí sería pedir un PERMISSION_DENIED en cada apertura de
+// obra. La pantalla no mentía por lenta ni por torpe — mentía por callada.
+//
+// Esta frase es la mitad de la reparación: que el renglón DIGA qué miró. La
+// otra mitad es pedir el dato donde sí se puede (`TABS_QUE_PIDEN_EL_RIEL`) y
+// declararlo no visible donde no.
+//
+// Por qué el estado de la evidencia entra como las tres palabras y no como un
+// `cargada` booleano: con un booleano, «cargando» y «falló» son el mismo
+// `false`, y el aviso de abajo acusaba —«no se pudo leer»— en el medio segundo
+// normal de toda carga. Acusar de una falla que no ocurrió gasta exactamente
+// la misma credibilidad que callar una que sí.
+const EVID_LEYENDO = 'leyendo';
+const EVID_LEIDA = 'leida';
+const EVID_NO_SE_PUDO = 'no_se_pudo';
+
+// ── LOS CUATRO ESTADOS DEL RIEL DE CIERRES ─────────────────────────────────
+//
+// Son cuatro y no dos porque son cuatro hechos distintos, y los cuatro se
+// imprimían «0 semanas cerradas»:
+//
+//   SIN_LEER    nadie ha pedido el dato todavía. Es el medio segundo de la
+//               carga, y es el valor por omisión a propósito.
+//   LEIDO       el dato llegó. Un cero aquí es un cero CONTADO y sí se dice.
+//   NO_SE_PUDO  se pidió y no llegó: reglas, red o un documento que no está.
+//   NO_VISIBLE  a este rol no se le enseña el cierre, por diseño. No es un
+//               hueco ni una falla: es que esa frase no es suya, y entonces la
+//               pantalla no dice nada de las semanas cerradas en vez de decir
+//               un número o prometer una lectura que no va a venir.
+//
+// El cuarto existe por lo MEDIDO el 2026-11-16 contra el emulador:
+// `firestore.rules` niega `avance/historial` a `esCliente()` del lado
+// constructora y a `esContratista()` del lado dependencia —las dos a
+// propósito, porque la nota del cierre explica el cierre—. Y resulta que
+// `cliente` y `contratista` son exactamente los dos únicos roles cuyo menú
+// lleva `fotos_cliente`. Así que pedir el historial en esa pestaña es pedir una
+// lectura que las reglas van a negar SIEMPRE, y `fsGet` convertía la negación
+// en `null` y la pantalla el `null` en un cero.
+const HIST_SIN_LEER = 'sin_leer';
+const HIST_LEIDO = 'leido';
+const HIST_NO_SE_PUDO = 'no_se_pudo';
+const HIST_NO_VISIBLE = 'no_visible';
+
+const encabezadoDelExpediente = ({
+  cerradas = 0, historialEstado = HIST_SIN_LEER,
+  fotos = 0, partidas = 0, origen = '',
+  semanasConCargas = 0, sinFecha = 0,
+  evidenciaEstado = EVID_LEYENDO,
+} = {}) => {
+  const partes = [];
+
+  // El riel. El estado es lo único que distingue un cero medido de un cero que
+  // nadie midió, y no se deduce de `cerradas === 0`: una obra nueva de verdad
+  // tiene cero cierres, y a ésa hay que decírselo.
+  if (historialEstado === HIST_LEIDO) {
+    partes.push(`${cerradas} semana${cerradas === 1 ? '' : 's'} cerrada${cerradas === 1 ? '' : 's'}`);
+  } else if (historialEstado === HIST_NO_SE_PUDO) {
+    partes.push('las semanas cerradas no se pudieron leer');
+  } else if (historialEstado !== HIST_NO_VISIBLE) {
+    partes.push('semanas cerradas: aún sin leer');
+  }
+
+  // Las fotos. Tres estados, tres frases.
+  if (evidenciaEstado === EVID_LEIDA) {
+    partes.push(`${fotos} foto${fotos === 1 ? '' : 's'} en `
+      + `${partidas} partida${partidas === 1 ? '' : 's'}`
+      // El total solo haría creer que son N fotos verificadas.
+      + (fotos > 0 && origen ? ` (${origen})` : ''));
+    if (semanasConCargas > 0) {
+      partes.push(`${semanasConCargas} semana${semanasConCargas === 1 ? '' : 's'} con cargas`);
+    }
+    if (sinFecha > 0) partes.push(`${sinFecha} sin fecha de subida`);
+  } else if (evidenciaEstado === EVID_NO_SE_PUDO) {
+    partes.push('las fotos no se pudieron leer');
+  } else {
+    partes.push('fotos: aún sin leer');
+  }
+
+  return partes.join(' · ');
+};
+
+// La pantalla sin un solo cierre y sin una sola foto. Decía «Aún no hay
+// cierres ni fotos de esta obra», que son DOS afirmaciones, y la primera no
+// tenía con qué: el historial podía no haberse pedido nunca. Una obra nueva y
+// una obra cuyo expediente no se ha leído se veían idénticas, y la frase le
+// daba la razón a la lectura equivocada.
+const fraseExpedienteVacio = ({ historialEstado = HIST_SIN_LEER,
+                                evidenciaEstado = EVID_LEYENDO } = {}) => {
+  // Lo que se puede afirmar del riel, por separado y en sus propias palabras.
+  // `null` quiere decir «de esto no se habla»: es el rol que no ve cierres.
+  const delRiel = historialEstado === HIST_LEIDO ? 'no hay cierres'
+    : historialEstado === HIST_NO_SE_PUDO ? 'los cierres no se pudieron leer'
+    : historialEstado === HIST_NO_VISIBLE ? null
+    : 'los cierres todavía no se leen';
+
+  if (evidenciaEstado === EVID_NO_SE_PUDO) {
+    if (!delRiel) return 'No se pudo leer la evidencia de esta obra.';
+    return historialEstado === HIST_LEIDO
+      ? 'No se pudo leer la evidencia, así que no se puede decir si hay fotos. '
+        + 'Cierres no hay.'
+      : `No se pudo leer la evidencia, y ${delRiel}: `
+        + 'esta pantalla no puede decir qué tiene esta obra.';
+  }
+  if (evidenciaEstado === EVID_LEYENDO) return 'Leyendo el expediente de esta obra…';
+  if (!delRiel) return 'Aún no hay fotos de esta obra.';
+  return historialEstado === HIST_LEIDO
+    ? 'Aún no hay cierres ni fotos de esta obra.'
+    : `Fotos no hay. Y ${delRiel}.`;
+};
+
 // El lunes de una clave "S38-2026", para poder fechar la semana en palabras.
 const lunesDeClaveSemana = (clave) => {
   const m = /^S(\d{2})-(\d{4})$/.exec(String(clave || ''));
@@ -5499,8 +5641,31 @@ const marcaInicialDelRiel = (marcas = []) => {
 // Lo que el panel dice de una semana cuando NO hay números que enseñar.
 // Nunca un guion mudo: un guion significa lo mismo «no pasó nada» que «nadie
 // capturó», y son hechos distintos.
-const frasePanelSinCierre = (marca) => {
+//
+// Y lleva el estado del riel porque «esta semana no se cerró» es una afirmación
+// sobre el cierre, no sobre la marca. Sin el estado, la frase sale de
+// `!marca.cierre`, que es la AUSENCIA DEL DATO: al rol a quien las reglas le
+// niegan `avance/historial` le anunciaba, semana por semana, que ninguna se
+// había cerrado. Es el mismo defecto que el «0 semanas cerradas» del
+// encabezado, una capa más abajo y con otras palabras. Por eso el valor por
+// omisión es el pesimista: quien no diga qué leyó no obtiene la afirmación.
+const frasePanelSinCierre = (marca, historialEstado = HIST_SIN_LEER) => {
   if (!marca || marca.cierre) return null;
+
+  // Sin el riel leído no se puede decir nada del cierre. Lo que sí consta —las
+  // fotos— se sigue diciendo: callar las dos cosas dejaría el panel mudo.
+  if (historialEstado !== HIST_LEIDO) {
+    const delCierre = historialEstado === HIST_NO_VISIBLE
+      ? 'El cierre de esta semana no se muestra en esta vista.'
+      : historialEstado === HIST_NO_SE_PUDO
+        ? 'No se pudo leer si esta semana se cerró.'
+        : 'Todavía no se ha leído si esta semana se cerró.';
+    if (marca.fotos > 0)
+      return `${delCierre} Lo que consta son ${marca.fotos} `
+        + `foto${marca.fotos === 1 ? '' : 's'} subida${marca.fotos === 1 ? '' : 's'}.`;
+    return `${delCierre} Y no se subió evidencia de ella.`;
+  }
+
   if (marca.fotos > 0)
     return `Esta semana no se cerró. Lo único que consta son ${marca.fotos} `
       + `foto${marca.fotos === 1 ? '' : 's'} subida${marca.fotos === 1 ? '' : 's'}: `
@@ -23691,7 +23856,33 @@ function AvanceCliente({obra, subs}){
 //
 // La leyenda de cada grupo dice SUBIDAS, nunca «así se veía»: ver el comentario
 // de `semanaDeEvidencia`.
-function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialAvance = [], notasSemana = {}, recorteHistorial = null}){
+//
+// LAS PESTAÑAS QUE PIDEN EL RIEL, en una sola lista. El historial de avance
+// —del que sale el riel entero— se carga perezosamente, y la condición que lo
+// dispara se tecleó cuando esta galería no lo usaba. Al empezar a usarlo nadie
+// volvió a esa condición, así que el riel se pintaba sobre un arreglo vacío
+// **que nunca se iba a llenar**.
+//
+// `fotos_cliente` NO está aquí, y no por olvido. Las reglas niegan
+// `avance/historial` a `cliente` y a `contratista`, que son los dos únicos
+// roles cuyo menú lleva esa pestaña: pedirlo ahí sería pedir una lectura que
+// siempre va a salir PERMISSION_DENIED. Ese montaje declara el riel
+// NO VISIBLE y la pantalla no dice nada de las semanas cerradas.
+//
+// Es una lista y no dos condiciones sueltas para que no puedan
+// desincronizarse: `prueba-el-expediente-pide-su-riel.cjs` saca de este archivo
+// los sitios que montan `<FotosCliente` y afirma que cada uno, o está en esta
+// lista, o declara el riel no visible. Las dos salidas son explícitas; lo que
+// no se puede es callar.
+const TABS_QUE_PIDEN_EL_RIEL = ['evidencia'];
+
+// Los valores por omisión son los PESIMISTAS a propósito: quien monte esta
+// pantalla sin decirle qué se leyó obtiene «aún sin leer», no una afirmación
+// en cero. Un defecto por omitir un parámetro se ve; una mentira, no.
+function FotosCliente({obra, evidencia = [], evidenciaEstado = EVID_LEYENDO,
+                       historialAvance = [], historialEstado = HIST_SIN_LEER,
+                       notasSemana = {}, recorteHistorial = null}){
+  const evidenciaCargada = evidenciaEstado === EVID_LEIDA;
   const[lightbox,setLightbox]=useState(null);
   const[vista,setVista]=useState("semana");     // "semana" | "partida"
   const[semanaSel,setSemanaSel]=useState(null); // clave "S38-2026" | "__sin__"
@@ -23845,21 +24036,26 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
       {/* El título dice «la obra» y no «las fotos» porque el panel enseña
           avance, dinero y la nota de quien cerró, no sólo evidencia. */}
       <Tit>La obra, semana por semana</Tit>
+      {/* Las cuatro cifras las decide `encabezadoDelExpediente`, fuera del JSX,
+          porque decidir aquí dentro es decidir donde nadie puede ejecutarlo. */}
       <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:10}}>
-        {cerradas} semana{cerradas===1?"":"s"} cerrada{cerradas===1?"":"s"}
-        {" · "}{todas.length} foto{todas.length===1?"":"s"} en {partidas.length} partida{partidas.length===1?"":"s"}
-        {/* El total solo haría creer que son N fotos verificadas. El desglose
-            por origen va pegado al total, no escondido abajo. */}
-        {todas.length>0 && ` (${fraseOrigenEvidencia(todas)})`}
-        {semanas.length>0 && ` · ${semanas.length} semana${semanas.length===1?"":"s"} con cargas`}
-        {sinSemana.length>0 && ` · ${sinSemana.length} sin fecha de subida`}
+        {encabezadoDelExpediente({
+          cerradas, historialEstado,
+          fotos: todas.length, partidas: partidas.length,
+          origen: fraseOrigenEvidencia(todas),
+          semanasConCargas: semanas.length, sinFecha: sinSemana.length,
+          evidenciaEstado,
+        })}
       </div>
 
       {/* NO SE PUDO LEER no es lo mismo que NO HAY. El lector de Firestore
           devuelve lista vacía cuando la regla niega o la red falla, así que sin
           este aviso la galería anunciaría «aún no hay fotos» de una obra que sí
-          las tiene — y nadie lo reportaría, porque se lee como una obra nueva. */}
-      {!evidenciaCargada && (
+          las tiene — y nadie lo reportaría, porque se lee como una obra nueva.
+          Y tampoco es lo mismo que TODAVÍA NO: este aviso acusaba una falla
+          durante el medio segundo normal de toda carga, porque «cargando» y
+          «falló» eran el mismo `false`. */}
+      {evidenciaEstado === EVID_NO_SE_PUDO && (
         <div style={{background:alfa(C.yellow,10),border:`0.5px solid ${C.yellow}`,
           borderRadius:7,padding:"8px 10px",marginBottom:10,fontSize:10,
           color:C.yellowDk,lineHeight:1.5}}>
@@ -23871,9 +24067,7 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
 
       {todas.length === 0 && marcas.length === 0 ? (
         <div style={{padding:30,textAlign:"center",color:C.textMut,fontSize:11}}>
-          {evidenciaCargada
-            ? "Aún no hay cierres ni fotos de esta obra."
-            : "No se pudo leer la evidencia, así que no se puede decir si hay fotos."}
+          {fraseExpedienteVacio({historialEstado, evidenciaEstado})}
         </div>
       ) : todas.length > 0 && (
         <div style={{display:"flex",gap:6,marginBottom:10}}>
@@ -24040,7 +24234,7 @@ function FotosCliente({obra, evidencia = [], evidenciaCargada = true, historialA
               </div>
             </> : (
               <div style={{fontSize:10,color:C.textSec,lineHeight:1.5,marginTop:6}}>
-                {frasePanelSinCierre(marcaActiva)}
+                {frasePanelSinCierre(marcaActiva, historialEstado)}
               </div>
             )}
           </div>
@@ -28306,13 +28500,13 @@ export default function App(){
     setHistorialAvance([]);
     setRecorteHistorial(null);
     setNotasSemana({});
-    setHistorialCargado(false);
+    setHistorialEstado(HIST_SIN_LEER);
     setOtrosGastos([]);
     setFechasModulos({});
     setNominaHistorial([]);
     setDocsEvidencia([]);
     setCfgEvidencia(null);
-    setEvidenciaCargada(false);
+    setEvidenciaEstado(EVID_LEYENDO);
 
     // Cargar datos reales de Firestore (si existen)
     fsGet(`obras/${obraId}/config/parametros`).then(d=>{
@@ -28385,12 +28579,12 @@ export default function App(){
     // está vacía y pedirla sólo gasta una lectura.
     fsGet(`obras/${obraId}/config/evidencia`).then(async cfg => {
       setCfgEvidencia(cfg || { migrada: false });
-      if (!evidenciaMigrada(cfg)) { setEvidenciaCargada(true); return; }
+      if (!evidenciaMigrada(cfg)) { setEvidenciaEstado(EVID_LEIDA); return; }
       const r = await fsCollConEstado(`obras/${obraId}/evidencia`);
       setDocsEvidencia(r.docs);
       // Si la lectura falló, `cargada` se queda en falso a propósito: la
       // galería tiene que poder decir «no se pudo leer» en vez de «no hay».
-      setEvidenciaCargada(r.ok);
+      setEvidenciaEstado(r.ok ? EVID_LEIDA : EVID_NO_SE_PUDO);
     });
     // Maquinaria, almacén y subcontratos son economía interna del contratista:
     // en una dependencia no se piden (P5, vía `seSuscribe`). Los estados quedan
@@ -28467,7 +28661,11 @@ export default function App(){
   const[cfgEvidencia,setCfgEvidencia]=useState(null);
   // `[]` es lo que devuelve `fsColl` cuando la lectura FALLA, así que sin esto
   // una galería vacía por permisos se presenta igual que una obra sin fotos.
-  const[evidenciaCargada,setEvidenciaCargada]=useState(false);
+  // Tres estados, no un booleano. `evidenciaCargada` se DERIVA de aquí y no se
+  // guarda aparte: dos banderas que pueden decir cosas distintas acaban
+  // diciéndolas. Ver `encabezadoDelExpediente`.
+  const[evidenciaEstado,setEvidenciaEstado]=useState(EVID_LEYENDO);
+  const evidenciaCargada = evidenciaEstado === EVID_LEIDA;
   const[maquinaria,setMaquinaria]=useState([]);
   const[materiales,setMateriales]=useState([]);
   const[estimaciones,setEstimaciones]=useState([]);
@@ -28488,27 +28686,50 @@ export default function App(){
   // Las notas de las semanas cerradas. Documento aparte porque sobreviven al
   // recorte de 52: una constancia que se borra sola no es constancia.
   const[notasSemana,setNotasSemana]=useState({});
-  const[historialCargado,setHistorialCargado]=useState(false);
+  // Cuatro estados, no un booleano. Un booleano sólo sabe decir «ya» y «todavía
+  // no», y las dos se pintaban igual que un cero contado. El cuarto estado,
+  // NO VISIBLE, existe porque hay roles a los que las reglas niegan este
+  // documento a propósito: ahí la pantalla no debe decir nada de las semanas
+  // cerradas, ni un cero ni un error.
+  const[historialEstado,setHistorialEstado]=useState(HIST_SIN_LEER);
   const[otrosGastos,setOtrosGastos]=useState([]);  // gastos manuales fuera de GP
   // Fechas de última actualización por módulo, para detectar pendientes de captura
   const[fechasModulos,setFechasModulos]=useState({});  // {maquinaria:isoDate, materiales:isoDate, nomina:isoDate}
   // Conteo de alertas no leídas en el panel de Configuración (badge)
   const[alertasNoLeidasCount,setAlertasNoLeidasCount]=useState(0);
 
-  // Lazy load de historial de avance: se carga al abrir Dashboard o Avance físico
-  // (Dashboard lo usa para tendencias mensuales; Avance lo usa para histórico semanal)
+  // Lazy load de historial de avance: se carga al abrir Dashboard, Avance
+  // físico o la galería interna (Dashboard lo usa para tendencias mensuales;
+  // Avance para el histórico semanal; la galería ES un riel de semanas
+  // cerradas).
+  //
+  // `fotos_cliente` NO dispara esta lectura, y el motivo se midió, no se
+  // supuso: el 2026-11-16, contra el emulador y con idToken de verdad,
+  // `obras/OP-2026-001/avance/historial` devolvió 403 PERMISSION_DENIED a un
+  // `contratista` y 200 a un `director_obras`. Las reglas se lo niegan a los
+  // dos únicos roles cuyo menú lleva esa pestaña (`!esContratista()` del lado
+  // dependencia, `!esCliente()` del lado constructora), y es deliberado. Pedirlo
+  // ahí sería pedir en cada apertura de obra una lectura que siempre va a
+  // rebotar; y como `fsGet` se tragaba el rebote devolviendo `null`, el riel
+  // declaraba «0 semanas cerradas» de una obra con cuatro cierres. Ese montaje
+  // declara el riel NO VISIBLE y la pantalla calla el dato que no tiene.
+  //
+  // Donde sí se pide, se pide con estado: un documento que las reglas negaron
+  // dice «no se pudieron leer», que es cierto, en lugar de un cero, que no.
   useEffect(() => {
-    if (!obraId || historialCargado) return;
-    const necesario = (tab === "dash") || (tab === "operacion" && subTabOper === "avance");
+    if (!obraId || historialEstado !== HIST_SIN_LEER) return;
+    const necesario = (tab === "dash") || (tab === "operacion" && subTabOper === "avance")
+      || TABS_QUE_PIDEN_EL_RIEL.includes(tab);
     if (necesario) {
-      fsGet(`obras/${obraId}/avance/historial`).then(d=>{
+      fsGetConEstado(`obras/${obraId}/avance/historial`).then(r=>{
+        const d = r.datos;
         if(d&&Array.isArray(d.semanas)) setHistorialAvance(d.semanas);
         setRecorteHistorial(d?.recorte || null);
-        setHistorialCargado(true);
+        setHistorialEstado(r.ok ? HIST_LEIDO : HIST_NO_SE_PUDO);
       });
       fsGet(`obras/${obraId}/avance/notas`).then(d=>setNotasSemana(d?.notas || {}));
     }
-  }, [obraId, tab, subTabOper, historialCargado]);
+  }, [obraId, tab, subTabOper, historialEstado]);
 
   // Escribir o corregir la nota de una semana. La pantalla sólo la enseña si
   // Firestore la aceptó: pintar el texto antes de saberlo dejaría a quien la
@@ -29356,7 +29577,7 @@ export default function App(){
 
       {/* EVIDENCIA: la misma galería que ve un cliente. La dependencia no sube
           fotos, las revisa — y lo que necesita es exactamente eso. */}
-      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaCargada={evidenciaCargada} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
+      {screen==="obra"&&tab==="evidencia"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaEstado={evidenciaEstado} historialAvance={historialAvance} historialEstado={historialEstado} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
 
       {screen==="obra"&&tab==="contrato"&&obra&&(
         <Planeacion
@@ -29379,7 +29600,11 @@ export default function App(){
 
       {/* Vistas para rol cliente */}
       {screen==="obra"&&tab==="avance_cliente"&&obra&&<AvanceCliente obra={obra} subs={subs}/>}
-      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaCargada={evidenciaCargada} historialAvance={historialAvance} notasSemana={notasSemana} recorteHistorial={recorteHistorial}/>}
+      {/* El riel va declarado NO VISIBLE: las reglas niegan `avance/historial` a
+          `cliente` y a `contratista`, que son los dos roles que llegan aquí. No
+          es que no se haya leído todavía — es que a este rol no se le enseña ese
+          dato, y la pantalla calla en lugar de inventar un cero. */}
+      {screen==="obra"&&tab==="fotos_cliente"&&obra&&<FotosCliente obra={obra} evidencia={evidencia} evidenciaEstado={evidenciaEstado} historialAvance={[]} historialEstado={HIST_NO_VISIBLE} notasSemana={notasSemana} recorteHistorial={null}/>}
       {screen==="obra"&&tab==="estimaciones_cliente"&&obra&&<EstimacionesCliente obra={obra} estimaciones={estimaciones}/>}
       {screen==="obra"&&tab==="plazos_cliente"&&obra&&<PlazosCliente obra={obra}/>}
     </div>
