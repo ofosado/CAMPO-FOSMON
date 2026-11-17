@@ -2,7 +2,8 @@
 // LA TABLA DEL RESUMEN SEMANAL VA DE MAYOR A MENOR AVANCE FÍSICO
 //
 // ── DE DÓNDE SALE ───────────────────────────────────────────────────────────
-// El correo de los viernes se leía revuelto. No le faltaba ningún dato: la
+// El resumen de los lunes —`7 9 * * 1`; el de los viernes es el recordatorio
+// de captura, que es otro trabajo— se leía revuelto. No le faltaba un dato: la
 // tabla iba ordenada por PRESUPUESTO descendente, y el presupuesto ya tiene su
 // propia columna. Entonces la columna de avance —que es la que el director
 // recorre— subía y bajaba sin patrón, y la tabla parecía no tener ninguno.
@@ -28,7 +29,7 @@
 // dos caminos —la obra que no arrancó y la que no tiene presupuesto con el que
 // dividir—, así que el empate en 0 es el caso normal. Sin segundo criterio esas
 // filas salen en el orden en que Firestore las devolvió, que no está garantizado
-// entre corridas: la tabla se reacomodaría de un viernes a otro sin que nada
+// entre corridas: la tabla se reacomodaría de un lunes a otro sin que nada
 // hubiera avanzado.
 //
 // Uso:
