@@ -3421,8 +3421,23 @@ async function generarYEnviarResumenSemanal(apiKey) {
       return null;
     }))
   );
+  // El ORDEN de la tabla afirma algo, se quiera o no: la primera fila se lee
+  // como «la obra que va más adelantada». Iba por presupuesto, que es una
+  // afirmación que nadie pidió —el presupuesto ya tiene su propia columna— y
+  // por eso la tabla se leía revuelta: la columna de avance subía y bajaba sin
+  // patrón mientras la de presupuesto, que es la que mandaba, se leía como un
+  // dato más. Ordena por avance físico, de mayor a menor.
+  //
+  // El desempate por presupuesto NO es decoración. `avanceFisicoPonderado`
+  // devuelve 0 por dos caminos distintos —la obra que no ha arrancado y la que
+  // no tiene presupuesto con el que dividir—, así que el empate en 0 es el caso
+  // normal, no el raro. Sin segundo criterio esas obras salen en el orden en
+  // que Firestore las devolvió, que no está garantizado entre corridas: el
+  // director vería la tabla reacomodarse de un viernes a otro sin que nada
+  // hubiera avanzado, y eso se lee como que el correo miente.
   const kpisValidos = kpisObras.filter(Boolean)
-    .sort((a, b) => (b.presupuesto || 0) - (a.presupuesto || 0));
+    .sort((a, b) => (b.avancePct || 0) - (a.avancePct || 0) ||
+                    (b.presupuesto || 0) - (a.presupuesto || 0));
 
   // 4) Destinatarios: activos, con rol del portafolio, Y DE LA ORGANIZACIÓN
   // DUEÑA DE LAS OBRAS QUE ACABAN DE LEERSE. El rol solo no basta: ver el
