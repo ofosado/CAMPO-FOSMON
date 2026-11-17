@@ -5124,6 +5124,83 @@ const estadoPorSemana = (historialAvance = []) => {
   });
 };
 
+// ── EL DELTA DE UN CIERRE NO ES EL AVANCE DE UNA SEMANA ────────────────────
+//
+// Dos cierres SEGUIDOS EN LA LISTA pueden estar a cuatro semanas de distancia
+// en el calendario. El recuadro restaba uno del otro y publicaba el resultado
+// bajo el rótulo «Esta semana», y eso esconde dos cosas distintas que la
+// pantalla tiene que decir por separado:
+//
+//   · CUÁNTAS SEMANAS ABARCA EL DELTA. Si el cierre anterior es de cuatro
+//     semanas atrás, la cifra es el avance de cuatro semanas y se lee como el
+//     de una: cuatro veces más rápido de lo que la obra fue.
+//   · CUÁNTAS LLEVA LA OBRA SIN CERRAR. El último cierre puede ser de hace
+//     tres semanas, y entonces «esta semana» no es ninguna semana.
+//
+// Y no es hipotético. Medido en producción el 2026-11-16, la 0112 (el malecón)
+// tiene su último cierre en la S44 y el anterior en la S40 —cuatro semanas—, y
+// la S44 se cerró el 30 de octubre, tres semanas antes de hoy. El recuadro
+// afirmaba «Esta semana +2.03pp» sobre un dato que no es de esta semana ni de
+// una sola semana. Es el pendiente #15 en una obra real: «la obra avanzó» y
+// «el residente se puso al corriente» se veían idénticos.
+//
+// LA CUENTA NO SE REPITE. Las semanas entre dos claves se restan por el
+// calendario —los lunes— y no por número de semana, porque un año ISO tiene 52
+// o 53 y restar números se equivoca una semana entera al cruzar 2026. Es la
+// misma razón que ya está escrita en `ritmoEntreCierres`, y ésta es la misma
+// resta; vive aquí sola para que las dos pantallas que la necesitan no la
+// tecleen cada una.
+const semanasEntreClaves = (claveA, claveB) => {
+  const a = lunesDeClaveSemana(claveA), b = lunesDeClaveSemana(claveB);
+  if (!a || !b) return null;
+  return Math.round((b - a) / (7 * 86400000));
+};
+
+// Qué se puede afirmar del último cierre de una obra: su delta, cuántas
+// semanas abarca, y hace cuántas que nadie cierra.
+//
+// `claveHoy` entra como parámetro. Una pantalla que pregunta la hora por su
+// cuenta no se puede probar sin esperar a que pase el tiempo, y esta cuenta
+// tiene que poder probarse con una obra rezagada sin rezagar el reloj.
+const lecturaDelUltimoCierre = (estados = [], claveHoy = null) => {
+  const ult = estados.length ? estados[estados.length - 1] : null;
+  if (!ult) {
+    return { delta: null, semanasDelDelta: null, semanasSinCerrar: null,
+      esDeLaSemanaEnCurso: false, clave: null };
+  }
+  return {
+    delta: ult.delta,
+    // `null` cuando no hay con qué comparar: el primer cierre no abarca tramo.
+    semanasDelDelta: ult.delta !== null && ult.deltaDe
+      ? semanasEntreClaves(ult.deltaDe, ult.clave) : null,
+    semanasSinCerrar: claveHoy ? semanasEntreClaves(ult.clave, claveHoy) : null,
+    esDeLaSemanaEnCurso: !!claveHoy && ult.clave === claveHoy,
+    clave: ult.clave,
+  };
+};
+
+// El rótulo y el renglón de abajo del recuadro del delta, en UN solo sitio.
+//
+// El rótulo cambia porque es lo que miente: «Esta semana» sobre un cierre de
+// hace tres semanas es falso, y ningún renglón de letra chica abajo lo corrige
+// —el ojo lee el rótulo y la cifra, no la explicación—. Cuando el cierre no es
+// de la semana en curso el recuadro dice qué es: el último cierre.
+const rotuloDelDelta = (lect) => lect.esDeLaSemanaEnCurso ? 'Esta semana' : 'Último cierre';
+
+const subDelDelta = (lect, etiquetaPrevia) => {
+  const partes = [`vs ${etiquetaPrevia}`];
+  // «4 semanas, no una» y no «4 semanas»: lo que hay que desmentir es la
+  // lectura que el rótulo induce, y decirlo en seco deja al lector haciendo
+  // la cuenta de si eso es mucho o poco para un número semanal.
+  if (lect.semanasDelDelta > 1) partes.push(`${lect.semanasDelDelta} semanas, no una`);
+  if (lect.semanasSinCerrar > 0) {
+    partes.push(lect.semanasSinCerrar === 1
+      ? 'sin cerrar la semana en curso'
+      : `${lect.semanasSinCerrar} semanas sin cerrar`);
+  }
+  return partes.join(' · ');
+};
+
 // ¿La serie de cierres cruza más de un año? De eso depende si la etiqueta de
 // una semana necesita decir el año. Una obra que vive dentro de un año no
 // necesita repetirlo en cada marca; una multianual sí, o "S10" y "S48" en el
@@ -5466,6 +5543,26 @@ const CIERRES_MINIMOS = 2;
 // otra cosa, y dos maneras de nombrar la misma falta pegadas en la misma fila
 // se leen como dos faltas distintas.
 const fraseCortesCerrados = (n) => `${Number(n) || 0} de ${CIERRES_MINIMOS} cortes cerrados`;
+
+// «los últimos 4 cierres (10 semanas)»: la ventana del ritmo, con su tramo.
+//
+// Decía sólo «los últimos 4 cierres», y `semanasBase` son CIERRES —el propio
+// comentario de `proyeccionDeAvance` avisa que el nombre engaña—. Cuatro
+// cierres repartidos en diez semanas de calendario se leen como cuatro
+// semanas, y entonces el lector divide mal el ritmo que tiene al lado. El
+// tramo ya lo contó `ritmoEntreCierres` y `proyeccionDeAvance` lo saca justo
+// para esto: para que la pantalla lo diga **sin volver a restar**.
+//
+// La dicen DOS recuadros de la misma fila —la velocidad y la proyección de
+// término—, y es la misma ventana: escrita dos veces, el día que una cambie
+// los dos recuadros estarían hablando de ventanas distintas con los números
+// de la misma.
+const frasePorCierres = (proy) => {
+  const n = Number(proy?.semanasBase) || 0;
+  const t = Number(proy?.tramos) || 0;
+  const cierres = `los últimos ${n} cierres`;
+  return t > 0 ? `${cierres} (${t} ${t === 1 ? 'semana' : 'semanas'})` : cierres;
+};
 
 // La pendiente de la recta que une el PRIMER cierre de una ventana con el
 // ÚLTIMO, en puntos de avance por semana.
@@ -17346,7 +17443,13 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
   // artificial que dispararía alertas falsas, así que el delta simplemente no
   // se calcula cuando los puntos no son comparables. Esa decisión vive dentro
   // de `estadoPorSemana`, que además dice POR QUÉ no hay delta.
-  const deltaSemana = ultimoEstado ? ultimoEstado.delta : null;
+  //
+  // Y cuántas semanas abarca ese delta, y cuántas lleva la obra sin cerrar: las
+  // dos cosas que el rótulo «Esta semana» daba por supuestas. Ver
+  // `lecturaDelUltimoCierre`.
+  const { semana: semHoy, año: añoHoy } = semanaISO(new Date());
+  const lectCierre = lecturaDelUltimoCierre(estados, snapshotId(semHoy, añoHoy));
+  const deltaSemana = lectCierre.delta;
 
   // Proyección de término: velocidad, fecha y desviación contra el plazo
   // VIGENTE, en una sola cuenta que también devuelve por qué no hay
@@ -17455,17 +17558,17 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
       <Kpi label="Avance actual" value={`${NUM(avanceActual,1)}%`}
         sub={ultimoEstado?`Última semana cerrada: ${etiquetaSemanaRiel(ultimoEstado, conAño)}`:"Sin cierres oficiales"}
         color={semA(avanceActual)} size={12}/>
-      <Kpi label="Esta semana" value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
-        sub={deltaSemana!==null?`vs ${etiquetaSemanaRiel(penultimoEstado, conAño)}`
+      <Kpi label={rotuloDelDelta(lectCierre)} value={deltaSemana!==null?`${deltaSemana>=0?"+":""}${NUM(deltaSemana,2)}pp`:"—"}
+        sub={deltaSemana!==null?subDelDelta(lectCierre, etiquetaSemanaRiel(penultimoEstado, conAño))
           : ultimoEstado?.sinDelta===SIN_DELTA_NO_COMPARABLES?"semanas no comparables"
           : fraseCortesCerrados(estados.length)}
         color={deltaSemana===null?C.textMut:deltaSemana>=0?C.greenDk:C.red} size={12}/>
       <Kpi label="Velocidad prom." value={velocidadProm!==null?`${NUM(velocidadProm,2)} pp/sem`:"—"}
-        sub={velocidadProm!==null?`últimos ${proy.semanasBase} cierres`:"sin velocidad medible"}
+        sub={velocidadProm!==null?frasePorCierres(proy):"sin velocidad medible"}
         color={velocidadProm===null?C.textMut:velocidadProm>0?C.blueDk:C.red} size={12}/>
       <Kpi label="Proyección fin" value={fechaProyFin?fechaProyFin.toLocaleDateString("es-MX",{day:"numeric",month:"short",year:"numeric"}):"—"}
         sub={fechaProyFin
-          ? `al ritmo de los últimos ${proy.semanasBase} cierres`
+          ? `al ritmo de ${frasePorCierres(proy)}`
           : frasePorQueSinDesviacion(proy)}
         color={fechaProyFin===null
           ? (proy.razon===SIN_PROY_SIN_AVANCE?C.red:C.textMut)
@@ -17540,7 +17643,15 @@ function MiniDashAvance({obra, subs, historialAvance=[], recorteHistorial=null, 
         {calientes.length > 0 && (
           <Card accent={C.green}>
             <Tit>Partidas con mayor avance</Tit>
-            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>esta semana vs anterior</div>
+            {/* Estos deltas salen de `ultimoOf` vs `penultimoOf`, que son
+                `estados[n].cierre` — los mismos dos puntos del KPI del delta.
+                Decían «esta semana» y pueden ser dos cierres separados por
+                semanas, el último de ellos viejo. Se nombran las semanas y el
+                rezago con la MISMA función que el KPI, para que la tarjeta y el
+                recuadro no puedan discrepar. */}
+            <div style={{fontSize:9,color:C.textMut,marginTop:-6,marginBottom:8}}>
+              {etiquetaSemanaRiel(ultimoEstado, conAño)} {subDelDelta(lectCierre, etiquetaSemanaRiel(penultimoEstado, conAño))}
+            </div>
             {calientes.map((s,i)=>(
               <div key={s.id || `${s.sec}-c${i}`} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
                 padding:"5px 8px",marginBottom:3,background:C.bg,borderRadius:5,fontSize:10}}>

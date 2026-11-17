@@ -5526,6 +5526,45 @@ el CORS va antes de que el nombre nuevo sirva.**
 
 ---
 
+## 15. «Esta semana» era una suposición, no una lectura — CERRADO 2026-11-16
+
+El recuadro del delta rotulaba **«Esta semana»** cualquier cosa que estuviera al
+final de la serie de cierres, y la tarjeta de al lado —«Partidas con mayor
+avance»— decía **«esta semana vs anterior»** sobre los mismos dos puntos. Las dos
+frases dan por supuestas dos cosas que nadie comprueba: que el último cierre es
+de la semana en curso, y que el anterior es el de la semana de antes.
+
+**Medido en producción (2026-11-16), y la medición cambió el arreglo.** Esperaba
+capturas tardías en lote; no hay ninguna: todos los cierres entran dentro de su
+plazo del sábado a las 2 p.m. Lo que sí hay son **huecos**. La 0112 salta de la
+S34 a la S39 y de la S40 a la S44; la 0114 salta de la S24 a la S37. Así que en
+la 0112 el delta publicado bajo «Esta semana» abarcaba **cuatro semanas**, y el
+cierre que lo producía tenía ya **tres semanas** de viejo. Un director que lee
++2.03pp «esta semana» concluye que la obra avanza a 2 pp por semana; la obra
+avanza a 0.5.
+
+**Lo que ahora dice la pantalla.** El rótulo se deriva: «Último cierre» si no es
+de la semana en curso, «Esta semana» si lo es. El subtítulo nombra el tramo
+cuando abarca más de una semana y el rezago cuando lo hay — «vs S40 · 4 semanas,
+no una · 3 semanas sin cerrar». La leyenda de las partidas sale de la **misma**
+`subDelDelta`, así que la tarjeta y el recuadro no pueden discrepar.
+
+**Y la ventana del ritmo deja de ser ambigua.** `proy.tramos` se expuso el
+2026-11-07 justamente para que las pantallas pudieran decir en cuántas semanas
+de calendario caben sus cierres, y **ninguna lo consumía**. «Velocidad prom.» y
+«Proyección fin» ahora publican los dos «los últimos 4 cierres (10 semanas)»
+desde una sola función: sin el tramo, el lector divide entre cuatro en vez de
+entre diez y se equivoca por dos y medio, hacia el lado cómodo.
+
+`semanasEntreClaves` cuenta por **lunes de calendario**, no restando números de
+semana: 2026 es un año ISO de 53 semanas y restar números se equivoca una entera
+al cruzarlo. El banco lo afirma con S52-2026 → S01-2027.
+
+Banco: `scripts/prueba-la-obra-avanzo-o-el-residente-se-puso-al-corriente.cjs`,
+33 comprobaciones, contraprueba de 5 mutaciones con 24 en rojo y ninguna muda.
+Verificado en el preview contra el emulador: «ÚLTIMO CIERRE +1.33pp · vs S44 ·
+2 semanas sin cerrar» y «S45 vs S44 · 2 semanas sin cerrar» en la tarjeta.
+
 ## Archivadas el 2026-11-16 — 124 filas cerradas que vivían en `PENDIENTES.md`
 
 La lista viva llegó a **312 KB, de los cuales 259 KB eran trabajo ya terminado**:
