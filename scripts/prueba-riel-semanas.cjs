@@ -80,6 +80,11 @@ const NOMBRES = [
   'MARCA_CERRADA', 'MARCA_SIN_COMPARAR', 'MARCA_SOLO_FOTOS', 'MARCA_SIN_DATO',
   'rielDeSemanas', 'marcaInicialDelRiel', 'frasePanelSinCierre', 'fraseSinDelta',
   'marcaCerrada',
+  // El quinto estado —«no se sabe si cerró»— y su regla de pintura. Este banco
+  // no lo ejercita: lo hace `prueba-el-estado-no-va-solo-en-color`. Están aquí
+  // porque la expresión que pinta la barra los nombra, y sin ellos lo que
+  // reventaría es el andamiaje de la aserción 10.
+  'MARCA_NO_LEIDO', 'marcaCierreNoLeido',
   // `frasePanelSinCierre` pregunta por el estado del riel antes de afirmar que
   // una semana no se cerró: sin estos cuatro no se puede ejecutar.
   'HIST_SIN_LEER', 'HIST_LEIDO', 'HIST_NO_SE_PUDO', 'HIST_NO_VISIBLE',
