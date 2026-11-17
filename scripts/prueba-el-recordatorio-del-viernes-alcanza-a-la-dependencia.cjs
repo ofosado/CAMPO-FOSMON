@@ -38,12 +38,13 @@
 // ID (`0112`) y nombres distintos. Si la ruta o el padrón se cruzaran, el
 // correo de un municipio nombraría una obra de la constructora, y eso se ve.
 //
-// ── LA CUARTA COPIA DE LA BASE DE MENTIRA ───────────────────────────────────
-// `baseFalsa` ya está copiada en tres bancos (`prueba-aislamiento-de-usuarios`,
-// `prueba-correo-no-cruza-organizaciones`, `prueba-correos-de-alta`). Ésta es
-// la cuarta y es la más chica de las cuatro: aquí no hace falta Auth ni claims.
-// Sacarla a un módulo compartido es un pendiente propio, no parte de este
-// cambio: toca tres bancos verdes y sus contrapruebas.
+// ── LOS ANDAMIOS YA NO VIVEN AQUÍ ───────────────────────────────────────────
+// `baseFalsa`, `montar` y `piezasDelExport` nacieron en este archivo y se
+// fueron a `montar-trabajo-de-funciones.cjs` el 2026-11-17, cuando apareció el
+// segundo consumidor de los tres juntos: el banco de la salud. No se movieron
+// antes porque un andamio con un solo usuario no es compartido, es copiado.
+// Los otros tres bancos conservan su copia de `baseFalsa`: ésos necesitan Auth
+// y claims, que el módulo no tiene, y moverlos se mide aparte.
 //
 // Uso:
 //   node scripts/prueba-el-recordatorio-del-viernes-alcanza-a-la-dependencia.cjs
@@ -148,151 +149,21 @@ if (process.argv[2] === '--contraprueba') {
   process.exit(malas > 0 ? 1 : 0);
 }
 
-const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
-const { FieldValue } = require(path.join(raiz, 'functions/node_modules/firebase-admin/lib/firestore'));
-const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
-const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
+const andamios = require('./montar-trabajo-de-funciones.cjs');
+const { baseFalsa } = andamios;
+const piezasDelExport = (archivo, nombre) => andamios.piezasDelExport(archivo, nombre);
+// Los bancos de abajo se escribieron cuando `montar` leía `ARCH_FUNCS` de su
+// propio alcance. El módulo lo recibe: la contraprueba muta una COPIA del
+// archivo y le pasa la ruta por el entorno, así que el archivo a montar tiene
+// que viajar en la llamada o las mutaciones medirían el original.
+const montar = (nombreExport, base, opciones) =>
+  andamios.montar(ARCH_FUNCS, nombreExport, base, opciones);
 
 let fallas = 0;
 const check = (ok, titulo, detalle = '') => {
   console.log(`${ok ? ' ok ' : 'FALLA'}  ${titulo}${detalle ? '  ·  ' + detalle : ''}`);
   if (!ok) fallas++;
 };
-
-// ── El manejador y su configuración, por AST ────────────────────────────────
-// La configuración se saca igual que el manejador porque también es conducta:
-// `schedule` es LA HORA A LA QUE CLOUD SCHEDULER DISPARA. No es un símbolo que
-// exista o no, es el plazo con el que el aviso cumple o no cumple.
-function piezasDelExport(archivo, nombre) {
-  const codigo = fs.readFileSync(archivo, 'utf8');
-  const ast = parse(codigo, { sourceType: 'module' });
-  let src = null, config = null;
-  traverse(ast, {
-    AssignmentExpression(p) {
-      const iz = p.node.left;
-      if (!(iz.type === 'MemberExpression' && iz.object.name === 'exports'
-            && iz.property.name === nombre)) return;
-      const de = p.node.right;
-      if (de.type !== 'CallExpression' || !de.arguments.length) return;
-      src = codigo.slice(de.arguments[de.arguments.length - 1].start,
-        de.arguments[de.arguments.length - 1].end);
-      if (de.arguments.length > 1) {
-        config = codigo.slice(de.arguments[0].start, de.arguments[0].end);
-      }
-    },
-  });
-  if (!src) noArranco([`exports.${nombre} = onSchedule(…)`], path.relative(raiz, archivo));
-  const sub = parse(`(${src})`, { sourceType: 'module' });
-  const libres = new Set();
-  traverse(sub, {
-    ReferencedIdentifier(p) {
-      if (p.scope.hasBinding(p.node.name, true)) return;
-      libres.add(p.node.name);
-    },
-  });
-  return { src, config, libres: [...libres] };
-}
-
-// ── El Firestore de mentira ────────────────────────────────────────────────
-// Lo mínimo para que el código real corra y se pueda mirar qué hizo. No simula
-// reglas: aquí se mide la LÓGICA del trabajo, que corre como administrador y a
-// la que ninguna regla protege.
-function baseFalsa(docsIniciales) {
-  const docs = new Map(Object.entries(docsIniciales));
-  const escrituras = [];
-  let seq = 0;
-
-  const refDoc = (ruta) => ({
-    id: ruta.split('/').pop(),
-    get: async () => ({
-      exists: docs.has(ruta), id: ruta.split('/').pop(),
-      data: () => docs.get(ruta), updateTime: null,
-    }),
-    set: async (d, opt) => {
-      escrituras.push({ ruta, d });
-      docs.set(ruta, opt && opt.merge ? { ...(docs.get(ruta) || {}), ...d } : d);
-    },
-    update: async (d) => { escrituras.push({ ruta, d }); docs.set(ruta, { ...(docs.get(ruta) || {}), ...d }); },
-    collection: (sub) => coleccion(`${ruta}/${sub}`),
-  });
-
-  const hijos = (col) => [...docs.entries()]
-    .filter(([r]) => r.startsWith(`${col}/`) && !r.slice(col.length + 1).includes('/'))
-    .map(([r, d]) => ({ id: r.slice(col.length + 1), data: () => d, updateTime: null, ref: refDoc(r) }));
-
-  const coleccion = (col, filtros = []) => ({
-    where: (campo, op, val) => {
-      if (!['==', '!=', 'in'].includes(op)) {
-        noArranco([`la base de mentira no sabe del operador '${op}'`], 'baseFalsa');
-      }
-      return coleccion(col, [...filtros, { campo, op, val }]);
-    },
-    get: async () => {
-      let filas = hijos(col);
-      for (const f of filtros) {
-        filas = filas.filter(x => {
-          const v = x.data()[f.campo];
-          // Firestore DESCARTA los documentos sin el campo en una desigualdad.
-          if (f.op === '!=') return v !== undefined && v !== f.val;
-          if (f.op === 'in') return f.val.includes(v);
-          return v === f.val;
-        });
-      }
-      return { docs: filas, size: filas.length, empty: filas.length === 0, forEach: cb => filas.forEach(cb) };
-    },
-    doc: (id) => refDoc(`${col}/${id}`),
-    add: async (d) => {
-      const ruta = `${col}/auto-${++seq}`;
-      escrituras.push({ ruta, d });
-      docs.set(ruta, d);
-      return refDoc(ruta);
-    },
-  });
-
-  return {
-    docs, escrituras,
-    admin: { firestore: () => ({ doc: refDoc, collection: coleccion }), initializeApp: () => {} },
-  };
-}
-
-// Monta la pieza real sobre la base de mentira. `rebota` es el buzón al que el
-// servidor de correo le dice no: hace falta para medir que un rebote no tumba
-// el aviso de los demás.
-function montar(nombreExport, base, { correos = [], rebota = null } = {}) {
-  const { src, libres } = piezasDelExport(ARCH_FUNCS, nombreExport);
-  let cuerpo;
-  try {
-    ({ cuerpo } = fuenteDe(ARCH_FUNCS, libres, { tolerante: true }));
-  } catch (e) {
-    if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
-    throw e;
-  }
-  const fetchFalso = async (url, opciones) => {
-    const sobre = { url, ...JSON.parse(opciones.body || '{}') };
-    if (rebota && (sobre.to || []).includes(rebota)) {
-      return { ok: false, status: 422, json: async () => ({ message: 'buzón inexistente' }) };
-    }
-    correos.push(sobre);
-    return { ok: true, status: 200, json: async () => ({ id: `re_${correos.length}` }) };
-  };
-  const inyectar = {
-    require: (modulo) => {
-      if (modulo === 'firebase-admin') return base.admin;
-      if (modulo === 'firebase-admin/firestore') return { FieldValue };
-      return require(modulo);
-    },
-    FieldValue,
-    fetch: fetchFalso,
-    defineSecret: () => ({ value: () => 'clave-de-mentira' }),
-  };
-  const nombres = Object.keys(inyectar);
-  try {
-    return new Function(...nombres,
-      `"use strict";\n${cuerpo}\nreturn (${src});`)(...nombres.map(n => inyectar[n]));
-  } catch (e) {
-    noArranco([`no se pudo montar \`${nombreExport}\`: ${e.message}`], path.relative(raiz, ARCH_FUNCS));
-  }
-}
 
 // ── La siembra ─────────────────────────────────────────────────────────────
 // Una constructora y un municipio. LAS DOS TIENEN UNA OBRA `0112`, con nombres
