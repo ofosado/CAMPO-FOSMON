@@ -5410,6 +5410,16 @@ const huecoDeArranque = (estados = [], obra, recorte = null) => {
     causa: perdidasRegistradas > 0 ? HUECO_POR_RECORTE : HUECO_SIN_CIERRES,
     perdidasRegistradas,
     recortadoEn: recorte?.en || null,
+    // POR CUÁL DE LOS DOS TOPES, y esto no es un detalle de sistemas: es la
+    // diferencia entre una frase cierta y una falsa en la pantalla. Desde que
+    // el historial se recorta también por BYTES, decir «al llegar al tope de 52
+    // semanas» es mentira en la obra de catálogo grande, que llena el documento
+    // en la semana 29 y nunca ve el 52.
+    //
+    // Los sellos VIEJOS no traen `motivo`, y ahí el año es la respuesta correcta
+    // y no un valor por omisión puesto a ojo: cuando se escribieron, el recorte
+    // por piezas era el único que existía.
+    motivoRecorte: recorte?.motivo || RECORTE_POR_AÑO,
   };
 };
 
@@ -5433,12 +5443,27 @@ const fraseHuecoDeArranque = (hueco) => {
   const sem = `${hueco.faltan} semana${hueco.faltan === 1 ? '' : 's'}`;
   const desde = fechaEnPalabras(fechaLocalDeISO(hueco.inicioObra));
   const empieza = `El expediente empieza en ${hueco.primera.replace('-', ' de ')}`;
-  return hueco.causa === HUECO_POR_RECORTE
+  if (hueco.causa !== HUECO_POR_RECORTE) {
+    return `${empieza}; no hay cierres anteriores. La obra arrancó el ${desde}, `
+         + `${sem} antes.`;
+  }
+  // DOS RECORTES, DOS FRASES, porque sólo una de las dos es cierta en cada obra.
+  // El historial se recorta por el año Y por el byte, y en la obra de catálogo
+  // grande el documento se llena mucho antes de las 52 semanas. Decirle a esa
+  // obra «al llegar al tope de 52 semanas» sería contarle algo que no pasó.
+  //
+  // Y la segunda además pide algo distinto. Recortar por el año es el expediente
+  // cumpliendo lo que promete; recortar por el byte es que esta obra ya no cabe,
+  // y quien lee tiene que saber que no es cuestión de esperar: va a seguir
+  // pasando, y cada vez con menos semanas.
+  return hueco.motivoRecorte === RECORTE_POR_TAMAÑO
     ? `${empieza}. La obra arrancó el ${desde}, ${sem} antes: esos cierres se `
+      + `borraron porque el historial de esta obra llena el documento antes de `
+      + `completar el año —su catálogo es grande—, así que ese periodo ya no se `
+      + `puede consultar aquí y el expediente seguirá acortándose.`
+    : `${empieza}. La obra arrancó el ${desde}, ${sem} antes: esos cierres se `
       + `borraron al llegar el historial al tope de 52 semanas, así que ese `
-      + `periodo ya no se puede consultar aquí.`
-    : `${empieza}; no hay cierres anteriores. La obra arrancó el ${desde}, `
-      + `${sem} antes.`;
+      + `periodo ya no se puede consultar aquí.`;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -6668,6 +6693,68 @@ const tamañoFirestore = v => {
   return 0;
 };
 
+// ── EL RECORTE DEL HISTORIAL, EN LA UNIDAD DEL LÍMITE QUE LO MOTIVA ────────
+//
+// 52 semanas es UN AÑO DE EXPEDIENTE, y esa decisión se respeta: es lo que el
+// expediente promete conservar. Lo que no es, es una medida de tamaño — y el
+// recorte existe por el límite de 1 MiB, que se cobra en bytes.
+//
+// Lo que pesa cada cierre es el catálogo de ESA obra, y eso varía nueve veces
+// entre obras. Medido en producción el 2026-11-17:
+//
+//     0128   46 partidas ·  3.4 KB/semana · caben 299 semanas en 1 MiB
+//     0126   51 partidas · 11.6 KB/semana · caben  88
+//     0114  335 partidas · 18.6 KB/semana · caben  55
+//     0125  461 partidas · 29.9 KB/semana · caben  34   ← revienta ANTES del 52
+//
+// En la 0125 el tope de 52 no llega nunca: el documento se llena en la semana
+// ~34 —faltan 25 cierres, medio año— y entonces lo que pasa NO es que se borre
+// el cierre viejo. Es que el cierre NUEVO no se puede escribir. Esa es
+// exactamente la avería que dejó a la 0114 siete semanas sin histórico
+// mientras la pantalla decía «Guardado» (ver `crearSnapshotAvance`).
+//
+// Un tope contado en piezas no puede proteger un documento que se mide en
+// bytes, porque la pieza no pesa lo mismo en todas las obras. Así que se
+// aplican LOS DOS: el año, que es la promesa, y el byte, que es el límite
+// físico. El que muerda primero manda.
+//
+// LA RESERVA NO ES UN PORCENTAJE TECLEADO. Caber hoy no sirve si la semana que
+// viene no cabe: se reserva el tamaño de ESTE snapshot, que es la mejor
+// estimación del siguiente porque son el mismo catálogo, más el del sello del
+// recorte. Sale del dato, no de un 0.9 elegido a ojo.
+const SEMANAS_DE_EXPEDIENTE = 52;
+const RECORTE_POR_AÑO    = 'año';
+const RECORTE_POR_TAMAÑO = 'tamaño';
+
+// El sello que deja el recorte, con los valores más largos que puede tomar, para
+// cobrarle su tamaño a la reserva. Se mide, no se estima.
+const SELLO_RECORTE_MUESTRA = {
+  perdidas: 9999, motivo: RECORTE_POR_TAMAÑO,
+  ultimaPerdida: 'S2026-52', primeraConservada: 'S2026-52',
+  en: '2026-11-17T00:00:00.000Z',
+};
+
+const recortarHistorialAvance = (semanasOrdenadas, snapNuevo) => {
+  // La promesa del expediente primero.
+  let lista = semanasOrdenadas.slice(-SEMANAS_DE_EXPEDIENTE);
+  const reserva = tamañoFirestore(snapNuevo)
+                + tamañoFirestore({ recorte: SELLO_RECORTE_MUESTRA });
+  // Y después el límite físico, quitando por el principio igual que el otro
+  // recorte: lo que se tira es lo más viejo.
+  //
+  // El piso es UNA semana, no cero: un historial vacío se lee como «a esta obra
+  // nadie le capturó nada», que es una afirmación falsa sobre el trabajo de
+  // alguien. Si ni una sola semana cabe con su reserva, no se recorta más y la
+  // escritura falla de cara — `ErrorSnapshot` ya sabe decir que el documento
+  // llegó al límite. Fallar es correcto ahí: el remedio no es tirar historia,
+  // es que esa obra deje de guardar sus cierres en un solo documento.
+  while (lista.length > 1
+         && tamañoFirestore({ semanas: lista }) + reserva > LIMITE_DOC_FIRESTORE) {
+    lista = lista.slice(1);
+  }
+  return lista;
+};
+
 // El mensaje que verá quien acaba de cerrar la semana. Tiene que decir qué
 // pasó, qué fue de su captura, y qué hacer. Un "Error al guardar" a secas
 // manda al residente a recapturar lo que ya está guardado.
@@ -7128,9 +7215,8 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     } else {
       semanas.push(snap);
     }
-    // Mantener máximo 52 semanas (1 año)
     semanas.sort((a, b) => (a.año - b.año) || (a.semana - b.semana));
-    const recortadas = semanas.slice(-52);
+    const recortadas = recortarHistorialAvance(semanas, snap);
 
     // El recorte quita por el PRINCIPIO, y antes lo hacía sin dejar rastro:
     // una vez borradas las semanas viejas no queda nada que diga que existieron,
@@ -7138,15 +7224,24 @@ const crearSnapshotAvance = async (obraId, subs, capturadoPor, tipo = "intermedi
     // arranque» de «a esta obra nadie le capturó el arranque». Son cosas
     // distintas y el expediente tiene que poder decir cuál.
     //
-    // Se acumula, porque se recorta de una en una: cada cierre nuevo por encima
-    // del tope tira el más viejo. `perdidas` es el total desde que esto se
-    // registra; las obras recortadas ANTES de esta línea no tienen el dato y la
-    // pantalla no se lo inventa.
+    // Se acumula. `perdidas` es el total desde que esto se registra; las obras
+    // recortadas ANTES de esta línea no tienen el dato y la pantalla no se lo
+    // inventa. Por el año se va de una en una; por el byte pueden irse varias
+    // de golpe, porque lo que sobra no se mide en semanas.
+    //
+    // Y SE DICE POR CUÁL DE LOS DOS. No significan lo mismo: recortar por el
+    // año es el expediente cumpliendo su promesa, y no hay nada que arreglar.
+    // Recortar por el byte es que esta obra ya no cabe en un documento, y eso
+    // es trabajo para sistemas antes de que el cierre empiece a fallar. Si los
+    // dos se anotaran igual, el segundo se leería como rutina hasta el día que
+    // se cayera la escritura.
     const cuantasSeFueron = semanas.length - recortadas.length;
+    const porElAño = Math.max(0, semanas.length - SEMANAS_DE_EXPEDIENTE);
     const recortePrevio = hist.recorte || null;
     const recorte = cuantasSeFueron > 0
       ? {
           perdidas: (Number(recortePrevio?.perdidas) || 0) + cuantasSeFueron,
+          motivo: cuantasSeFueron > porElAño ? RECORTE_POR_TAMAÑO : RECORTE_POR_AÑO,
           // La última que se tiró y la primera que sobrevive: entre las dos
           // queda dicha la frontera del expediente.
           ultimaPerdida: semanas[cuantasSeFueron - 1]?.id || null,
@@ -17360,13 +17455,33 @@ function GuardarAvanceBtn({obra, subs, maquinaria, materiales, onSaved, usuario,
     setFalloNota(false);
     quedo.captura = false;
     try {
-      // Guardar avance + datos completos de cada subsección incluyendo fotos
-      // (las fotos se guardan en s.fotos[s.sec] = [...])
       // El guardado es el sitio donde las dos mitades se vuelven a separar. Este
       // mapeo es una LISTA BLANCA —lo que no esté aquí no se escribe—, así que
       // una extraordinaria guardada por este camino llegaría a `avance/subs`
       // sin su `extra` y sin su autorización: dejaría de ser extraordinaria y
       // se duplicaría en la siguiente carga. Por eso se parte antes de mapear.
+      //
+      // ── POR QUÉ `fotos` SE SIGUE ESCRIBIENDO AUNQUE YA NADIE LO LEA ───────
+      //
+      // `evidenciaDeObra` ignora este mapa en cuanto la obra está migrada: lee
+      // la subcolección y nada más, para que no haya dos fuentes de la misma
+      // cuenta. Medido en producción el 2026-11-17, 668 de las 741 URLs de
+      // `avance/subs` están en obras ya migradas —el 90%— y en la 0112 son el
+      // 86% del documento. O sea: peso muerto, y además un token de acceso a
+      // Storage replicado donde lo lee todo el que puede leer la obra.
+      //
+      // La tentación es quitarlo de esta lista blanca. NO SE HACE, y la razón
+      // no es prudencia: `data` es un ARREGLO y `fsSetA` escribe con
+      // `merge: true`, que en un arreglo reemplaza entero. Omitir el campo aquí
+      // no deja de escribirlo — BORRA las 668 URLs de producción en la
+      // siguiente captura de cada obra, sin que nadie lo haya pedido y a una
+      // hora que decide el residente.
+      //
+      // Un borrado se pide, no se cuela dentro de un arreglo de peso. Y antes
+      // hay que demostrar que cada URL está en la subcolección: la 0114 tiene
+      // 284 aquí y 304 allá, y que los números cuadren no dice que sean las
+      // mismas. Eso lo verifica `verificar-las-fotos-de-subs-son-redundantes`
+      // foto por foto, no contándolas.
       const paraDisco = (s, idx) => ({
         id: s.id || `${s.sec || 'C'}__${idx}`,
         sec: s.sec, sub: s.sub || '', imp: s.imp || 0,
@@ -27113,13 +27228,20 @@ const puedeEditarMarca = (rol) =>
 // borrar por debajo dejando el `<img>` roto.
 //
 // Lo que eso impone es un TOPE, y de ahí salen estas dos medidas. Un documento
-// de Firestore no pasa de 1 048 487 bytes contando TODO lo demás que va en el
-// mismo documento, así que el logo se acota muy por debajo: lo que se pinta
-// mide 34 px de alto y 110 de ancho como máximo, y 220 px de lado cubre el
-// doble para una pantalla retina.
+// de Firestore no pasa de 1 MiB contando TODO lo demás que va en el mismo
+// documento, así que el logo se acota muy por debajo: lo que se pinta mide
+// 34 px de alto y 110 de ancho como máximo, y 220 px de lado cubre el doble
+// para una pantalla retina.
+//
+// EL TOPE SE LEE DE DONDE YA ESTABA. Esta línea declaraba `1048487`, ochenta y
+// nueve bytes por debajo de `LIMITE_DOC_FIRESTORE`, que es el mismo límite de
+// Firestore escrito en el mismo archivo con otro valor. Ninguno de los dos
+// números es revisable si hay dos: el que audite este sitio concluye 1 048 487
+// y el que audite el historial concluye 1 048 576, y los dos creen haber leído
+// el tope. Una cuenta por número.
 const LOGO_LADO_MAX = 220;
 const LOGO_TOPE_BYTES = 120 * 1024;
-const TOPE_DOCUMENTO_FIRESTORE = 1048487;
+const TOPE_DOCUMENTO_FIRESTORE = LIMITE_DOC_FIRESTORE;
 
 // La medida a la que se reduce, conservando la proporción y SIN AGRANDAR: un
 // escudo de 80 px estirado a 220 se ve peor que pequeño, y además pesaría más.

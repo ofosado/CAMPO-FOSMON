@@ -21,6 +21,7 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 const noArranco = require('./no-arranco.cjs');
+const { cierreDe } = require('./extraer-de-app.cjs');
 
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
@@ -81,15 +82,31 @@ const preludio = `
   };
   const semanaISO = () => ({ semana: 39, año: 2026 });
   const snapshotId = (s, a) => 'S' + s + '-' + a;
-  ${decl['ErrorSnapshot']}
-  const tamañoFirestore = ${decl['tamañoFirestore']};
-  const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
-  const mensajeFalloSnapshot = ${decl['mensajeFalloSnapshot']};
-  const importeEjecutadoPartida = ${decl['importeEjecutadoPartida']};
-  const importeCatalogoPartida = ${decl['importeCatalogoPartida']};
-  const desgloseEjecutado = ${decl['desgloseEjecutado']};
-  const avanceFisicoPonderado = ${decl['avanceFisicoPonderado']};
 `;
+
+// LO QUE EL CIERRE NECESITA NO SE TECLEA. Aquí había ocho renglones
+// enumerando a mano lo que `crearSnapshotAvance` usa del archivo, y la lista
+// era una copia del grafo de dependencias. Murió el 2026-11-17: el recorte del
+// historial pasó a contarse en bytes, el cierre empezó a llamar a
+// `recortarHistorialAvance`, y este banco salió en rojo con catorce aserciones
+// acusando al cierre de no avisar cuando falla —cosa que sigue haciendo
+// perfectamente—. Ahora el cierre de dependencias lo resuelve `cierreDe`
+// leyendo el archivo.
+//
+// Lo de `excluir` sí tiene que estar escrito, y no es lo mismo: son los
+// DOBLES. `setDoc` es el punto de fallo que este banco controla desde fuera, y
+// si la declaración de verdad entrara, el banco mediría la app en lugar de
+// medir con su doble.
+const DOBLES = [
+  'ESQUEMA_SNAPSHOT', 'fbDb', 'doc', 'setDoc', 'fsGet', 'fsSet',
+  'semanaISO', 'snapshotId', 'docObra',
+];
+// El cierre se le pide a una expresión que nombra TRES cosas: el cierre, y las
+// dos que este banco devuelve para mirarlas aparte —el error y la frase—, que
+// no son dependencias del cierre y nadie las traería por él.
+const delArchivo = cierreDe(
+  `[ ${decl['crearSnapshotAvance']}, mensajeFalloSnapshot, ErrorSnapshot ]`,
+  { archivo, excluir: DOBLES });
 
 // `conOrg` entra como parámetro y no como copia: es la función real de
 // src/rutas-org.js, la misma con la que la app decide bajo qué organización
@@ -103,6 +120,7 @@ const montar = () => new Function(
    const _inc = () => _e++;
    ${preludio.replace('escrituras++;', '_inc();')}
    const docObra = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
+   ${delArchivo}
    const crearSnapshotAvance = ${decl['crearSnapshotAvance']};
    return { crearSnapshotAvance, cuenta: () => _e, ErrorSnapshot,
             mensajeFalloSnapshot };`
@@ -121,9 +139,9 @@ const montar = () => new Function(
 const avisoDe = (mod, resultado, quedoLaCaptura = true, motivo = null) =>
   mod.mensajeFalloSnapshot(resultado.lanzo, quedoLaCaptura, motivo);
 
-const correr = async (modo, historial = []) => {
+const correr = async (modo, historial = [], subsPropias = null) => {
   const mod = montar()(0, modo, historial, null, conOrgReal);
-  const subs = [
+  const subs = subsPropias || [
     { sec: 'A-1', a: 100, imp: 1000000, cant: 10, pu: 100000, cantEjec: 10 },
     { sec: 'A-2', a: 50,  imp: 2000000, cant: 20, pu: 100000, cantEjec: 10 },
   ];
@@ -179,10 +197,28 @@ const correr = async (modo, historial = []) => {
     'no afirma un tamaño absurdo cuando su propia medición no lo respalda',
     /\d+ KB/.test(m) ? `dice "${m.match(/\d+ KB[^)]*/)?.[0]}"` : 'omite la cifra');
 
-  // El mismo caso pero con un historial que SÍ pesa: entonces la cifra sí sale.
-  const gordo = [{ id: 'S1', subs: Array.from({ length: 4000 },
-    (_, i) => ({ sec: 'P-' + i, sub: 'X'.repeat(240), a: 50, imp: 1000 })) }];
-  const pesado = await correr('lleno', gordo);
+  // El mismo caso pero con un documento que SÍ pesa: entonces la cifra sí sale.
+  //
+  // LO GORDO ES LA SEMANA QUE SE ESTÁ ESCRIBIENDO, y no una semana vieja. Hasta
+  // el 2026-11-17 el peso se le ponía al historial —una semana de 4000
+  // partidas—, y eso dejó de poder pasar: desde que el recorte se cuenta en
+  // bytes, una semana vieja que no cabe se tira antes de escribir, y el
+  // documento que el aviso mide vuelve a ser pequeño. Entonces la cifra se
+  // calla, y hace bien: es la aserción de arriba.
+  //
+  // El único peso que el recorte NO puede quitar es el del cierre que se está
+  // haciendo, porque el piso es una semana. Así que el catálogo monstruoso va
+  // en la captura, que además es el caso real: la obra cuyo catálogo ya no cabe
+  // en un documento.
+  // 16 000 partidas, no 4000. El snapshot NO guarda la descripción de la
+  // partida —sólo `sec` y cinco números—, así que el relleno de 240 caracteres
+  // que antes hacía el peso no llega al documento: 4000 partidas pesan 288 KB
+  // y el aviso calla la cifra por debajo de 943 KB, que es el 90% del tope.
+  // Con 16 000 el documento mide 1161 KB y la cifra tiene que salir. Medido
+  // ejecutando `tamañoFirestore` del archivo, no estimado.
+  const catalogoMonstruo = Array.from({ length: 16000 },
+    (_, i) => ({ sec: 'P-' + i, a: 50, imp: 1000, cant: 10, pu: 100, cantEjec: 5 }));
+  const pesado = await correr('lleno', [], catalogoMonstruo);
   const mPesado = avisoDe(pesado.mod, pesado, true);
   check(/\d{3,} KB de 1024 KB/.test(mPesado),
     'y cuando sí lo respalda, la cifra aparece',

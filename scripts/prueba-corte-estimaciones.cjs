@@ -45,6 +45,7 @@ const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
+const { cierreDe } = require('./extraer-de-app.cjs');
 const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
 
@@ -395,11 +396,25 @@ console.log('\n6 · LO QUE DE VERDAD QUEDA ESCRITO EN EL EXPEDIENTE');
 {
   // Lo escrito en el Firestore de mentira, para poder leerlo después.
   let escrito = null;
-  const cerrar = fuenteEscritor && new Function(
+
+  // LO QUE EL CIERRE NECESITA NO SE TECLEA. Esta lista estaba a mano y murió el
+  // 2026-11-17: el recorte del historial pasó a contarse en bytes, el cierre
+  // empezó a llamar a `recortarHistorialAvance`, y esta sección —la única que
+  // mira el DOCUMENTO— se cayó con un `is not defined` a media corrida. Las
+  // cinco aserciones salieron rojas acusando al corte de estimaciones, que no
+  // tenía nada que ver. Ahora el cierre de dependencias lo resuelve
+  // `cierreDe` leyendo el archivo; los nombres de abajo siguen siendo
+  // parámetros porque son DOBLES, y un doble tiene que quedar fuera del cuerpo
+  // o la declaración de verdad lo pisa.
+  const DOBLES = [
     'semanaISO', 'snapshotId', 'desgloseEjecutado', 'avanceFisicoPonderado',
     'ESQUEMA_SNAPSHOT', 'fsGet', 'setDoc', 'docObra', 'ErrorSnapshot',
     'mensajeFalloSnapshot', 'guardaLoEscrito',
-    `return (${fuenteEscritor});`)(
+  ];
+  const cerrar = fuenteEscritor && new Function(
+    ...DOBLES,
+    `${cierreDe(fuenteEscritor, { archivo: ARCH_APP, excluir: DOBLES })}
+     return (${fuenteEscritor});`)(
       app.semanaISO, app.snapshotId, app.desgloseEjecutado, app.avanceFisicoPonderado,
       ESQUEMA_SNAPSHOT,
       async () => ({ semanas: [] }),

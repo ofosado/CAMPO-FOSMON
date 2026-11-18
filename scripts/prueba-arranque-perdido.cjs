@@ -68,6 +68,7 @@ const RAIZ_NOMBRES = [
   'finVigenteDe', 'estadoPorSemana',
   'SIN_DELTA_PRIMER_CIERRE', 'SIN_DELTA_NO_COMPARABLES',
   'HUECO_POR_RECORTE', 'HUECO_SIN_CIERRES',
+  'RECORTE_POR_AÑO', 'RECORTE_POR_TAMAÑO',
   'huecoDeArranque', 'fraseHuecoDeArranque',
 ];
 
@@ -97,6 +98,7 @@ const app = new Function(`${trozos.join('\n')}\n;return {${[...vistos].join(',')
 const {
   huecoDeArranque, fraseHuecoDeArranque, estadoPorSemana, snapshotId,
   HUECO_POR_RECORTE, HUECO_SIN_CIERRES,
+  RECORTE_POR_AÑO, RECORTE_POR_TAMAÑO,
 } = app;
 
 console.log(`\nArchivo:   ${path.relative(raiz, ARCH_APP)}`);
@@ -143,6 +145,35 @@ if (hayCuenta) {
     'la frase dice en qué semana empieza lo que sí hay');
   check(!!f && /tope de 52 semanas/.test(f) && /ya no se puede consultar/.test(f),
     'cuando consta el recorte, la frase dice que esos cierres se borraron');
+
+  // ── 1b. La frase no le cuenta a la obra un recorte que no fue el suyo ───
+  // El historial se recorta por el año Y por el byte, y no es lo mismo. Una obra
+  // de catálogo grande llena el documento en la semana 29 y NUNCA llega al 52:
+  // decirle «al llegar el historial al tope de 52 semanas» le cuenta algo que no
+  // pasó, y además la tranquiliza —suena a que ya cumplió el año— cuando lo que
+  // le ocurre va a repetirse con menos semanas cada vez.
+  console.log('\n1b. A la obra que llenó el documento antes del año no se le dice que llegó al tope de 52');
+  const porTamaño = { ...recorte, perdidas: 9, motivo: RECORTE_POR_TAMAÑO,
+    ultimaPerdida: 'S20-2026', primeraConservada: 'S30-2026' };
+  const hT = huecoDeArranque(estadoPorSemana(sobrevivientes), obraLarga, porTamaño);
+  const fT = hT && fraseHuecoDeArranque(hT);
+  check(!!fT && !/tope de 52/.test(fT),
+    `no se le atribuye un tope de 52 semanas que no se alcanzó (dijo: "${fT}")`);
+  check(!!fT && /llena el documento antes de completar el año/.test(fT),
+    'se dice lo que de verdad pasó: el documento se llenó antes del año');
+  check(!!fT && /seguirá acortándose/.test(fT),
+    'y se dice que va a volver a pasar, que es lo que distingue este caso del otro');
+  check(fT !== f, 'los dos recortes no se cuentan con la misma frase');
+  // Los hechos no se pierden por cambiar el porqué.
+  check(!!fT && /37 semanas/.test(fT) && /3 de nov de 2025/.test(fT) && /S30/.test(fT),
+    'sigue diciendo cuántas semanas, desde cuándo y dónde empieza el expediente');
+  // Y un sello VIEJO, sin `motivo`, se cuenta por el año: cuando se escribió, el
+  // recorte por piezas era el único que existía. No es un valor a ojo.
+  const hViejo = huecoDeArranque(estadoPorSemana(sobrevivientes), obraLarga,
+    { perdidas: 17, ultimaPerdida: 'S29-2026', primeraConservada: 'S30-2026' });
+  check(hViejo && hViejo.motivoRecorte === RECORTE_POR_AÑO
+        && /tope de 52 semanas/.test(fraseHuecoDeArranque(hViejo)),
+    'un sello anterior a esta distinción se sigue contando por el año, que es lo que fue');
 
   // ── 2. Sin registro de recorte NO se afirma que hubo recorte ───────────
   // Los mismos datos, sin el registro. El hueco es igual de cierto —la obra
@@ -230,8 +261,15 @@ if (!mCrear) {
     const semanas = [];
     for (let s = 1; s <= 60; s++) semanas.push(cierre(s, 2026, s));
     const recortadas = semanas.slice(-52);
+    // El trozo necesita lo que nombra y no declara. Enumerarlo a mano aquí ya
+    // falló: el día que el recorte pasó a decir POR CUÁL de los dos topes
+    // recortó, adoptó `SEMANAS_DE_EXPEDIENTE` y `RECORTE_POR_TAMAÑO`, y esta
+    // prueba salió NO ARRANCÓ con un `is not defined` sin medir nada —por una
+    // causa ajena a todo lo que mide. `cierreDe` resuelve las dependencias
+    // leyendo el archivo, que es justo para lo que existe.
+    const { cierreDe } = require('./extraer-de-app.cjs');
     const calc = new Function('semanas', 'recortadas', 'hist',
-      `"use strict"; ${mRecorte[0]} return recorte;`);
+      `"use strict";\n${cierreDe(mRecorte[0], { archivo: ARCH_APP })}\n${mRecorte[0]} return recorte;`);
     const r1 = calc(semanas, recortadas, { semanas: [] });
     check(r1 && r1.perdidas === 8,
       `se registran las 8 semanas que se fueron (dijo ${r1 && r1.perdidas})`);

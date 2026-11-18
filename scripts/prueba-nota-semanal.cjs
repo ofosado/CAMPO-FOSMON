@@ -227,9 +227,16 @@ if (!mGuardar) {
     LIMITE_NOTA_SEMANAL || 1000,
   );
 
-  // Lo mismo para el recorte a 52, extraído de `crearSnapshotAvance`: hace
-  // falta para comprobar que los dos no escriben en el mismo sitio.
-  const mRecorte = src.match(/const recortadas = semanas\.slice\(-52\);[\s\S]*?: recortePrevio;/);
+  // Lo mismo para el recorte, extraído de `crearSnapshotAvance`: hace falta
+  // para comprobar que los dos no escriben en el mismo sitio.
+  //
+  // EL ANCLAJE YA NO CITA EL «52». Lo citaba —`semanas.slice(-52)`— y dejó de
+  // engancharse el día que el historial empezó a recortarse también por bytes:
+  // el tope se mudó a `recortarHistorialAvance` y el renglón de aquí ya no
+  // dice ninguna cifra. Se ancla a los dos trozos, porque el que decide qué se
+  // tira es la función y el que escribe el sello es el bloque.
+  const mRecorte = src.match(/const recortadas = recortarHistorialAvance\([\s\S]*?: recortePrevio;/);
+  const mTope = src.match(/const recortarHistorialAvance = \([\s\S]*?\n\};/);
 
   (async () => {
     // Primera escritura.
@@ -246,8 +253,8 @@ if (!mGuardar) {
       `la nota NO se escribe en el documento que el recorte reescribe (fue a "${rutas[0]}")`);
     check(/notas/.test(rutas[0] || ''),
       'va a un documento propio de notas');
-    check(!!mRecorte && !/notas/.test(mRecorte[0]),
-      'y el recorte a 52 semanas no toca nada que se llame notas');
+    check(!!mRecorte && !!mTope && !/notas/.test(mRecorte[0] + mTope[0]),
+      'y el recorte del historial no toca nada que se llame notas');
     check(n1?.escritaEn === n1?.editadaEn,
       'recién escrita, las dos marcas de tiempo coinciden');
 
