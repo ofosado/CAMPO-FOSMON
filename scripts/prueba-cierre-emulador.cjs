@@ -36,6 +36,7 @@ const { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc } =
   require('firebase/firestore');
 const { getAuth, connectAuthEmulator, signInWithCustomToken } = require('firebase/auth');
 const noArranco = require('./no-arranco.cjs');
+const { cierreDe } = require('./extraer-de-app.cjs');
 
 // Si este banco revienta, es NO ARRANCÓ (2) y no rojo (1). Ver `no-arranco`.
 noArranco.vigilarExcepciones();
@@ -234,21 +235,31 @@ if (faltan.length) noArranco(faltan);
   // verdad contra el emulador— dejaría de comprobar dónde quedó el snapshot.
   const { conOrg } = await require('./rutas-org-para-pruebas.cjs')();
 
+  // LO QUE EL CIERRE NECESITA NO SE TECLEA. Aquí había doce renglones
+  // enumerando a mano lo que `crearSnapshotAvance` usa del archivo, y la lista
+  // era una copia del grafo de dependencias. Murió el 2026-11-17: el recorte
+  // del historial pasó a contarse en bytes, el cierre empezó a llamar a
+  // `recortarHistorialAvance`, y este banco —el único que escribe de verdad
+  // contra el emulador— salió en rojo diciendo que el cierre no escribió nada,
+  // cuando lo que no había era una dependencia. `cierreDe` lo resuelve leyendo
+  // el archivo.
+  //
+  // `excluir` sí se escribe, y no es lo mismo: son los DOBLES con los que este
+  // banco habla con el emulador —el `setDoc` CONTADO, el `fsGet` que cuenta
+  // lecturas—, y si entrara la declaración de verdad el banco mediría la app
+  // en lugar de medir contra el emulador. La expresión nombra además las tres
+  // que el banco devuelve para mirarlas aparte.
+  const DOBLES = ['fbDb', 'doc', 'setDoc', 'fsGet', 'console', 'conOrg', 'docObra'];
+  const delArchivo = cierreDe(
+    `[ ${decl['crearSnapshotAvance']}, ESQUEMA_SNAPSHOT, tamañoFirestore,
+       LIMITE_DOC_FIRESTORE ]`,
+    { excluir: DOBLES });
+
   const montar = new Function(
-    'fbDb', 'doc', 'setDoc', 'fsGet', 'console', 'conOrg',
+    ...DOBLES.filter(n => n !== 'docObra'),
     `"use strict";
      const docObra = (...segs) => doc(fbDb, ...conOrg(['obras', ...segs].join('/')).split('/'));
-     ${decl['ErrorSnapshot']}
-     const ESQUEMA_SNAPSHOT = ${decl['ESQUEMA_SNAPSHOT']};
-     const LIMITE_DOC_FIRESTORE = ${decl['LIMITE_DOC_FIRESTORE']};
-     const tamañoFirestore = ${decl['tamañoFirestore']};
-     const mensajeFalloSnapshot = ${decl['mensajeFalloSnapshot']};
-     const importeEjecutadoPartida = ${decl['importeEjecutadoPartida']};
-     const importeCatalogoPartida = ${decl['importeCatalogoPartida']};
-     const desgloseEjecutado = ${decl['desgloseEjecutado']};
-     const avanceFisicoPonderado = ${decl['avanceFisicoPonderado']};
-     const semanaISO = ${decl['semanaISO']};
-     const snapshotId = ${decl['snapshotId']};
+     ${delArchivo}
      const crearSnapshotAvance = ${decl['crearSnapshotAvance']};
      return { crearSnapshotAvance, ESQUEMA_SNAPSHOT, tamañoFirestore, LIMITE_DOC_FIRESTORE };`
   )(fbDb, doc, setDocContado, fsGet, console, conOrg);
