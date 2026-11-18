@@ -249,7 +249,8 @@ definición del problema.**
 
 | # | Tema | Estado |
 |---|---|---|
-| 11 | Consolidar los bloques duplicados de KPIs. El de Estimaciones ya se fue —eran dos «Pagado» con cifras distintas—; queda Nómina. | PARCIAL |
+| 11 | Consolidar los bloques duplicados de KPIs. El de Estimaciones se fue —eran dos «Pagado» con cifras distintas— y el de Nómina se **borró** el 2026-11-18: `MiniDashNomina` llevaba dos meses fuera de la pantalla «por si hay que volver atrás», y código que no se renderiza no se audita. Antes de borrarla se midió qué aportaba: los dos conteos de personal con nombre propio y el color por proporción de horas extra ya estaban rescatados dentro de `Nomina()`, «Riesgo HE» (≥20 h) vive en `nom_001` y el umbral del 15% en `nom_002`. Con ella se fue también la excepción que la prueba de nómina le concedía, que era un agujero por donde cabía un lector suelto de `.totalHE`. | HECHO |
+| — | **Dos cuentas murieron con `MiniDashNomina`** y no están en ningún otro sitio: «Sin asistencia» —cuántos aparecen en el listado con cero días— y «Sueldos base» —la suma de `impDias`, que el snapshot no trae precalculada—. Las dos llevaban dos meses sin pintarse en ninguna pantalla, así que no desapareció ningún número que alguien estuviera leyendo. Quedan anotadas para que se pidan **a propósito** y se monten en el bloque que sí se audita, no para reenchufar una cuenta de dinero que nadie miraba. | ABIERTO |
 | — | `claude/minimalista` **se queda**: es el conmutador de vista por rol para probar la demo sin dar de alta usuarios. No se borra. | ABIERTO |
 | 16 | Sesión persistente: decidir la política. | ABIERTO |
 | — | La sonda de cámara en `/api/sonda/` es diagnóstico, no producto: mide si `getUserMedia` sirve en standalone en iOS, que es la precondición del #52. Se retira en cuanto haya veredicto. Vive bajo `/api/` porque es la única ruta que el service worker ya instalado no se traga. | ABIERTO |
