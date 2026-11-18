@@ -18322,46 +18322,27 @@ function MiniDashMaquinaria({obra, maquinaria}){
 // snapshot cargado. fix/kpis-en-cero (2026-09-17): antes leía de la constante
 // hardcoded vacía NOMINA_S18, siempre devolvía $0/0. Ahora recibe el historial
 // via prop desde App → Operacion.
-// DEPRECATED (#11, 2026-09-22) — ya no se renderiza. Iba encima del bloque de
-// KPIs de Nomina() preguntando lo mismo y contestando distinto: "141 activos"
-// arriba, "143 total personal" abajo. Las dos cifras eran correctas y medían
-// cosas distintas, pero nadie lo decía. Se conserva un ciclo por si hay que
-// volver atrás rápido; si al siguiente pase nadie la echó de menos, se borra.
-function MiniDashNomina({ historial = [] }){
-  const semanaActual = historial.length > 0 ? historial[historial.length - 1] : null;
-  if (!semanaActual) {
-    return <div style={{fontSize:11,color:C.textMut,padding:'8px 4px',fontStyle:'italic'}}>
-      Sin nómina cargada aún. Sube el Excel semanal desde abajo.
-    </div>;
-  }
-  const trabs = Array.isArray(semanaActual.trabajadores) ? semanaActual.trabajadores : [];
-  // Preferir campos precalculados del snapshot; si no existen, recalcular
-  // desde trabajadores. Nombres CORRECTOS (no importeHE — ese nombre no existe
-  // en los datos, ver bug 2026-09-17).
-  const totalNom = semanaActual.totalNomina ?? trabs.reduce((t,p)=>t+(p.total||0), 0);
-  const totalHE  = semanaActual.totalHEImp ?? semanaActual.totalHE ?? trabs.reduce((t,p)=>t+(p.impHE||0), 0);
-  const directos    = semanaActual.totalDir ?? trabs.filter(p=>p.tipo==='D').length;
-  const indirectos  = semanaActual.totalInd ?? trabs.filter(p=>p.tipo==='I').length;
-  const trabajadoresActivos = trabs.filter(p=>(p.total||0) > 0).length;
-  const inasistentes = trabs.filter(p=>(p.dias||0) === 0).length;
-  const altasHE     = trabs.filter(p=>(p.horasExtra||0) >= 20).length;
-  const pctHE       = totalNom > 0 ? totalHE/totalNom*100 : 0;
-  // Sueldos base: no hay total precalculado en el snapshot. Se suma p.impDias
-  // en runtime. Snapshots viejos podrían no tener el campo — en ese caso
-  // mostramos guion en vez de $0 (que sería engañoso).
-  const hayImpDias = trabs.some(p => (p.impDias || 0) > 0);
-  const totalSueldosBase = hayImpDias ? trabs.reduce((t,p)=>t+(p.impDias||0), 0) : null;
-  return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8}}>
-      <Kpi label="Total nómina" value={MXN(totalNom)} sub={semanaActual.semana || 'semana actual'} color={C.caliza} size={12}/>
-      <Kpi label="Activos" value={String(trabajadoresActivos)} sub={`${directos}D · ${indirectos}I`} color={C.green}/>
-      <Kpi label="Horas extra" value={MXN(totalHE)} sub={`${NUM(pctHE,1)}% del total`} color={pctHE > 15 ? C.yellowDk : C.blueDk} size={12}/>
-      <Kpi label="Sueldos base" value={hayImpDias ? MXN(totalSueldosBase) : '—'} sub="días trabajados" color={C.purpleDk} size={12}/>
-      {altasHE > 0 && <Kpi label="Riesgo HE" value={String(altasHE)} sub={`≥20h ext.`} color={C.yellow}/>}
-      {inasistentes > 0 && <Kpi label="Sin asistencia" value={String(inasistentes)} sub="esta semana" color={C.red}/>}
-    </div>
-  </div>;
-}
+// ── NÓMINA ──
+// Aquí vivía `MiniDashNomina`, retirada de la pantalla por el #11 (2026-09-22)
+// y conservada «un ciclo por si hay que volver atrás rápido». Pasaron dos
+// meses, nadie la echó de menos, y el mismo argumento que se escribió para
+// `MiniDashEstimaciones` vale aquí: código que no se renderiza no se audita.
+//
+// Lo que aportaba y YA ESTÁ VIVO en otro sitio, para que nadie lo busque:
+//
+//   · los dos conteos de personal con nombre —«en listado» y «con pago», que
+//     eran los «143» y «141» del descuadre que la retiró— y el color por
+//     proporción de horas extra, rescatados al bloque de `Nomina()`
+//   · «Riesgo HE», personal con ≥20 h extra, en el motor de riesgos (`nom_001`)
+//   · el umbral del 15% del total de nómina, en `nom_002`
+//
+// Lo que SE FUE con ella, y no está en ningún otro lado: «Sin asistencia»
+// —cuántos aparecen en el listado con cero días— y «Sueldos base» —la suma de
+// `impDias`, que no viene precalculada en el snapshot—. Las dos se quedaron
+// dos meses sin pintarse en ninguna pantalla, así que nadie las pierde hoy. Si
+// hacen falta, se piden y se montan en el bloque que sí se audita; quedan
+// anotadas en PENDIENTES para que se pidan a propósito y no se reenchufe una
+// cuenta de dinero que llevaba dos meses sin que nadie la mirara.
 
 // ── ESTIMACIONES ──
 // Aquí vivía `MiniDashEstimaciones`, retirada de la pantalla por el #11
@@ -23099,7 +23080,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const [formatoHist, setFormatoHist] = useState(FORMATO_HISTORIAL_DESCONOCIDO);
   // fix/kpis-en-cero (2026-09-17): Nomina mantiene su state local (para su
   // propia UI), pero notifica los cambios al App via onHistorialCambio para
-  // que Dashboard, MiniDashNomina y detectarRiesgos vean el snapshot fresco.
+  // que Dashboard y detectarRiesgos vean el snapshot fresco.
   // `historial` son las CARGAS tal como están en Firestore —es lo que se
   // escribe de vuelta— y `semanas` es el calendario que se enseña: ordenado y
   // con las partes de una misma semana sumadas (ver `semanasDeNomina`).
@@ -23356,7 +23337,7 @@ function Nomina({obra, rol, onHistorialCambio}) {
   const deltaHE = semanaActual && semanaAnterior
     ? heImporte(semanaActual) - heImporte(semanaAnterior) : 0;
 
-  // #11 — rescatado de MiniDashNomina, que ya no se renderiza.
+  // #11 — rescatado de MiniDashNomina antes de borrarla.
   //
   // Los dos conteos de personal se quedan, pero con nombre. `totalDir+totalInd`
   // es quién estaba en el listado al cerrar la semana; `con pago` es quién
@@ -28880,7 +28861,7 @@ export default function App(){
     // El resto de roles (directivos, equipo obra, auditor) sí lo pueden leer.
     // fix/kpis-en-cero (2026-09-17): además de setFechasModulos (comportamiento
     // previo), ahora POBLA setNominaHistorial para alimentar KPIs de Dashboard,
-    // MiniDashNomina, motor detectarRiesgos y PDF.
+    // motor detectarRiesgos y PDF.
     if (usuario?.rol !== 'cliente' && pideObra('nomina/historial')) {
       leerHistorialNomina(obraId).then(({registros})=>{
         // Calendario, no orden de carga: ver `semanasDeNomina`. De aquí comen
@@ -28943,7 +28924,7 @@ export default function App(){
   const[estCargadas,setEstCargadas]=useState(false);
   const[subcontratos,setSubcontratos]=useState([]);
   // fix/kpis-en-cero (2026-09-17): historial de nómina levantado al App para
-  // alimentar KPIs de Dashboard, MiniDashNomina, motor de riesgos y PDF ejecutivo.
+  // alimentar KPIs de Dashboard, motor de riesgos y PDF ejecutivo.
   // Antes esos sitios leían de la constante hardcoded vacía NOMINA_S18 y
   // siempre daban 0. La fuente de verdad ahora es este state, llenado por el
   // fetch condicional al rol en el useEffect(obraId) de abajo.

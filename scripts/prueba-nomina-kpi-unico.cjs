@@ -58,11 +58,15 @@ traverse(ast, {
   // suelto: exactamente lo que este cambio elimina.
   MemberExpression(p) {
     if (p.node.property?.name !== 'totalHE') return;
+    // Había una segunda excepción, `MiniDashNomina`, mientras la función
+    // deprecada seguía en el archivo sin renderizarse. Era un agujero: dentro
+    // de ella cabía un lector suelto de `.totalHE` y esta prueba lo perdonaba.
+    // La función se borró el 2026-11-18 y la excepción se fue con ella, así que
+    // ahora no hay más sitio exento que `heImporte`.
     let f = p.getFunctionParent();
     while (f) {
       const id = f.node.id?.name || f.parent?.id?.name;
       if (id === 'heImporte') return;
-      if (id === 'MiniDashNomina') return;   // deprecada, ya no se renderiza
       f = f.getFunctionParent();
     }
     leenAliasPelon.push(src.slice(0, p.node.start).split('\n').length);
