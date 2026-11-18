@@ -414,6 +414,127 @@ const legible = (f) => {
   return `…${archivo.slice(-38)}  partida ${partidaId} (${sec})  ${estado}`;
 };
 
+// ── RESCATE: LA OBRA YA ESTÁ MIGRADA Y EL MAPA TIENE FOTOS QUE NADIE VE ─────
+//
+// Pasó, y no es hipotético. La bandera de la 0114 subió el 2026-10-09 a la
+// 01:43 —la corrida accidental de la cabecera— y el front que escribe a la
+// subcolección no llegó al navegador hasta el 2026-10-14. Entre esas dos
+// fechas, catorce capturas cayeron en el mapa incrustado con la bandera ya
+// arriba. Una obra migrada no lee el mapa, así que esas catorce fotos
+// desaparecieron de la galería ese día y nadie lo notó en cinco semanas.
+//
+// Rescatarlas NO es volver a migrar la obra. Si se reescribieran los 284
+// documentos del mapa se machacaría lo que la app editó desde entonces: una
+// foto anulada por alguien con su nombre y su motivo volvería al expediente
+// como vigente, porque el mapa no sabe de esa anulación. Se escriben SÓLO las
+// que no tienen documento, y se comprueba que las demás quedaron intactas.
+const rutasDe = (c) => [c.rutaStorage, c.urlOriginal, c.url]
+  .map(x => rutaDeURL(x) || (x && !/^https?:\/\//.test(String(x)) ? String(x) : null))
+  .filter(Boolean);
+
+const leerSubcoleccion = async (o) => {
+  const docs = [];
+  let tok = null;
+  do {
+    const q = `?pageSize=300${tok ? `&pageToken=${encodeURIComponent(tok)}` : ''}`;
+    const r = await fs_('GET', `/${o.prefijo}obras/${o.id}/evidencia${q}`);
+    if (!r) break;
+    for (const d of (r.documents || []))
+      docs.push({ id: d.name.split('/').pop(), ...deCampos(d) });
+    tok = r.nextPageToken || null;
+  } while (tok);
+  return docs;
+};
+
+const rescatar = async (o, plan) => {
+  const ya = await leerSubcoleccion(o);
+  const porId = new Set(ya.map(d => d.id));
+  const porRuta = new Set(ya.flatMap(rutasDe));
+  // Se cruza por la RUTA del objeto además del id: un documento viejo que no
+  // guarde `rutaStorage` tiene el id correcto pero no se dejaría cruzar, y
+  // volver a escribirlo es justo lo que no queremos.
+  const faltan = plan.docs.filter(d => !porId.has(d.id) && !porRuta.has(d.datos.rutaStorage));
+
+  console.log(`Ya está migrada (bandera arriba${plan.cfg.migradaEn ? ` desde ${plan.cfg.migradaEn}` : ''}).`);
+  console.log(`${n(ya.length)} documento(s) en la subcolección · ${n(plan.docs.length)} foto(s) en el mapa.`);
+
+  if (!faltan.length) {
+    console.log('Ninguna foto del mapa le falta su documento. No hay nada que rescatar:');
+    console.log('el mapa es redundante y lo que queda es pedir su borrado.\n');
+    return { rescatadas: 0, problema: false };
+  }
+
+  console.log(`\n${n(faltan.length)} foto(s) del mapa NO tienen documento — la galería de esta`);
+  console.log('obra no las enseña, porque una obra migrada no lee el mapa:');
+  for (const d of faltan) {
+    const dia = app.fechaDeTimestamp({ seconds: Date.parse(d.datos.subidaEn.__ts) / 1000 });
+    console.log(`  ${d.datos.rutaStorage}`);
+    console.log(`     partida ${d.datos.partidaId} (${d.datos.partidaClave})  ·  servidor ${dia}` +
+                `  ·  declarada ${d.datos.fechaDeclarada || '—'}` +
+                (d.datos.anulada ? '  ·  venía anulada' : ''));
+  }
+
+  if (plan.errores.length) {
+    console.log(`\n${plan.errores.length} foto(s) del mapa con problemas. El rescate NO corre:`);
+    for (const e of plan.errores.slice(0, 10)) console.log('  ' + e);
+    return { rescatadas: 0, problema: true };
+  }
+
+  if (!ESCRIBIR) { console.log('\n(ensayo: no se escribió nada)\n'); return { rescatadas: 0, problema: false }; }
+
+  // La firma de lo que YA estaba, para probar después que no se tocó.
+  const antesFirma = ya.map(d => `${d.id}\u0000${firma(app.evidenciaNormalizada(d))}`).sort().join('\n');
+
+  console.log('\nEscribiendo sólo las que faltan…');
+  for (const d of faltan)
+    await fs_('PATCH', `/${o.prefijo}obras/${o.id}/evidencia/${d.id}`, { fields: aCampos(d.datos) });
+
+  const ahora = await leerSubcoleccion(o);
+  const fallas = [];
+  if (ahora.length !== ya.length + faltan.length)
+    fallas.push(`había ${ya.length} documento(s), se escribieron ${faltan.length} y ahora hay ${ahora.length}`);
+
+  const sigueFirma = ahora.filter(d => porId.has(d.id))
+    .map(d => `${d.id}\u0000${firma(app.evidenciaNormalizada(d))}`).sort().join('\n');
+  if (sigueFirma !== antesFirma)
+    fallas.push('los documentos que YA estaban cambiaron — el rescate tenía que no tocarlos');
+
+  // El criterio del verificador, aplicado aquí: ninguna ruta del mapa queda sin
+  // documento. Es lo que desbloquea el borrado.
+  const rutasAhora = new Set(ahora.flatMap(rutasDe));
+  const huerfanas = plan.docs.filter(d => !rutasAhora.has(d.datos.rutaStorage));
+  if (huerfanas.length)
+    fallas.push(`${huerfanas.length} ruta(s) del mapa siguen sin documento`);
+
+  const nuevos = ahora.filter(d => !porId.has(d.id)).map(app.evidenciaNormalizada);
+  const sinRuta = nuevos.filter(e => !e.rutaStorage).length;
+  if (sinRuta) fallas.push(`${sinRuta} rescatada(s) sin \`rutaStorage\` — el #30 sigue abierto para ellas`);
+  const sinServidor = nuevos.filter(e => !e.fechaServidor).length;
+  if (sinServidor) fallas.push(`${sinServidor} rescatada(s) sin hora de servidor en \`subidaEn\``);
+  const presumidas = nuevos.filter(e => e.verificada);
+  if (presumidas.length)
+    fallas.push(`${presumidas.length} rescatada(s) saldrían con el sello de VERIFICADA`);
+
+  if (fallas.length) {
+    console.log(`\n${fallas.length} problema(s):`);
+    for (const f of fallas) console.log('  ' + f);
+    console.log('\nNada quedó a medias de forma peligrosa: la bandera ya estaba arriba y');
+    console.log('el id es determinista, así que repetir reescribe y no duplica.');
+    return { rescatadas: 0, problema: true };
+  }
+
+  console.log(`  ${n(faltan.length)} rescatada(s); las ${n(ya.length)} que ya estaban, intactas.`);
+  const semanas = new Map();
+  for (const e of app.evidenciaVigente(nuevos)) {
+    const w = app.semanaDeEvidencia(e) || 'sin semana';
+    semanas.set(w, (semanas.get(w) || 0) + 1);
+  }
+  console.log('  Aparecen en la galería en estas semanas, que es donde alguien lo va a notar:');
+  for (const [w, c] of semanas) console.log(`    ${w}: +${c}`);
+  console.log('');
+  return { rescatadas: faltan.length, problema: false };
+};
+
 // ── 4. Releer y comparar contra lo que la pantalla veía ─────────────────────
 const verificar = async (o, plan) => {
   const fallas = [];
@@ -477,7 +598,7 @@ const verificar = async (o, plan) => {
   const aMigrar = SOLO ? obras.filter(o => o.id === SOLO) : obras;
   if (!aMigrar.length) { console.error(`No hay obra «${SOLO}».`); process.exit(1); }
 
-  let problemas = 0, migradas = 0, fotos = 0;
+  let problemas = 0, migradas = 0, fotos = 0, rescatadas = 0;
 
   for (const o of aMigrar) {
     const nombre = o.prefijo + o.id;
@@ -488,9 +609,13 @@ const verificar = async (o, plan) => {
     const plan = await planDe(o, objetos);
 
     if (app.evidenciaMigrada(plan.cfg)) {
-      console.log('Ya está migrada (config/evidencia.migrada = true). Se salta.');
-      console.log('Volver a correrla reescribiría los mismos documentos —el id es');
-      console.log('determinista— pero no hay por qué.\n');
+      // Antes esto decía «se salta» y se iba. Saltarse una obra migrada era
+      // dejar de mirar justo donde se puede perder una foto: el mapa puede
+      // tener fotos SIN documento, y en una obra migrada ésas no se ven en
+      // ninguna pantalla. Ver `rescatar`.
+      const r = await rescatar(o, plan);
+      if (r.problema) problemas++;
+      rescatadas += r.rescatadas;
       continue;
     }
     if (!plan.antes.length) {
@@ -591,7 +716,8 @@ const verificar = async (o, plan) => {
     process.exit(1);
   }
   console.log(ESCRIBIR
-    ? `${migradas} obra(s) migradas · ${n(fotos)} foto(s) con documento propio.\n` +
+    ? `${migradas} obra(s) migradas · ${n(fotos)} foto(s) con documento propio` +
+      (rescatadas ? ` · ${n(rescatadas)} rescatada(s) de obras ya migradas` : '') + '.\n' +
       'Siguiente paso, cuando lleve días sin incidencias: vaciar `fotos` de\n' +
       '`avance/subs`, que es lo que libera el peso del documento.'
     : 'Ensayo limpio. Con --escribir hace lo de arriba de verdad.');
