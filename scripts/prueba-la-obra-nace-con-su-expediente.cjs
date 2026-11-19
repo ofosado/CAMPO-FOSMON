@@ -98,7 +98,7 @@ const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
 const PIEZAS_MODULO = ['evidenciaMigrada', 'evidenciaDeObra', 'evidenciaNormalizada',
   'evidenciaVigente', 'selloDeEvidencia', 'SELLO_LEGADO', 'SELLO_VERIFICADA',
   'fraseOrigenEvidencia', 'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'nuevoIdEvidencia',
-  'idDePartida'];
+  'idDePartida', 'fotosAtrapadasEnElMapa'];
 // `hoyLocalISO` se deja FUERA del cuerpo a propósito: el banco lo inyecta para
 // fijar el día. Si se declarara dentro, la declaración de verdad pisaría al
 // doble y la fecha quedaría a merced del reloj de la máquina.
@@ -202,7 +202,8 @@ return (${dentro['PantallaObras.agregarObra']});`)(
 // El otro extremo del cable: el `evid` y el `addFoto` de verdad, alimentados
 // con el `cfgEvidencia` que salga del alta. No se teclea `{migrada:true}`: se
 // lee lo que la pantalla escribió.
-const ARGS_EVID = ['useMemo', 'cfgEvidencia', 'obra', 'evidencia', 'evidenciaCargada',
+const ARGS_EVID = ['useMemo', 'cfgEvidencia', 'docsEvidencia', 'subs', 'obra',
+  'evidencia', 'evidenciaCargada',
   'usuario', 'fsSetAEstricto', 'fsGet', 'serverTimestamp', 'setDocsEvidencia',
   'setSubs', 'setCambiosPendientes', 'hoyLocalISO'];
 const ARGS_CAPTURA = ['obra', 'evid', 'setSubs', 'uploadFoto', 'borrarFotoHuerfana',
@@ -215,7 +216,8 @@ const galeria = (w, cfg, obra) => {
   const evid = new Function(...ARGS_EVID, `"use strict";
 ${cuerpoModulo}
 return (${desenvolverMemo(dentro['App.evid'])})();`)(
-    (fn) => fn(), cfg, obra, evidencia, true, USUARIO, w.fsSetAEstricto, w.fsGet,
+    (fn) => fn(), cfg, w.docsEvidencia, w.subs, obra, evidencia, true,
+    USUARIO, w.fsSetAEstricto, w.fsGet,
     w.serverTimestamp, w.setDocsEvidencia, w.setSubs, w.setCambiosPendientes, hoyLocalISO);
   const { addFoto } = new Function(...ARGS_CAPTURA, `"use strict";
 ${cuerpoModulo}

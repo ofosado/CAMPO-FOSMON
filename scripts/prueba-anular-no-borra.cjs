@@ -32,6 +32,19 @@
 //   · `agregar` deja de guardar `rutaStorage`                        → rojo
 //   · el motivo se acepta vacío (`.length >= 0`)                     → rojo
 //   · si la escritura rebota, el objeto de Storage no se rescata     → rojo
+//
+// Y las de las secciones 8 y 9, corridas el 2026-11-18 — las cinco en ROJO (1),
+// ninguna en NO ARRANCÓ:
+//
+//   · se quita el candado de `addFoto` y vuelve a escribir sin saber
+//     la bandera                                                     → rojo
+//   · `banderaConocida` se declara `true` siempre                     → rojo
+//   · el cruce se hace por la URL COMPLETA y no por la ruta de
+//     Storage, que es el error que daría «no está» para una foto que
+//     sí está — el token cambió al migrar                            → rojo
+//   · `fotosAtrapadasEnElMapa` devuelve siempre `[]`                  → rojo
+//   · se acusa también a la obra SIN migrar, donde el mapa es la
+//     fuente y se lee entero                                         → rojo
 
 const path = require('path');
 const fs = require('fs');
@@ -95,6 +108,7 @@ const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
 const PIEZAS_MODULO = ['fechaLocalDeISO', 'semanaISO', 'snapshotId',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
+  'fotosAtrapadasEnElMapa',
   'evidenciaDePartida', 'semanaDeEvidencia',
   'MOTIVO_ANULACION_MIN', 'motivoDeAnulacionValido', 'nuevoIdEvidencia',
   'SELLO_VERIFICADA', 'SELLO_LEGADO', 'selloDeEvidencia'];
@@ -157,15 +171,21 @@ const mundo = () => {
   w.setSubs = (f) => { w.subs = typeof f === 'function' ? f(w.subs) : f; };
   w.setCambiosPendientes = (v) => { w.cambiosPendientes = v; };
   w.borrarFotoHuerfana = async (ref) => { w.huerfanasBorradas.push(ref && ref.fullPath); };
-  w.uploadFoto = async (obraId, carpeta, id) => ({
-    url: `https://storage/${obraId}/${carpeta}/${id}?token=abc`,
-    ref: { fullPath: `obras/${obraId}/fotos/${carpeta}/${id}` },
-  });
+  w.subidas = [];           // lo que de verdad se subió a Storage
+  w.uploadFoto = async (obraId, carpeta, id) => {
+    w.subidas.push(`obras/${obraId}/fotos/${carpeta}/${id}`);
+    return {
+      url: `https://storage/v0/b/campo.appspot.com/o/` +
+           encodeURIComponent(`obras/${obraId}/fotos/${carpeta}/${id}`) + `?alt=media&token=abc`,
+      ref: { fullPath: `obras/${obraId}/fotos/${carpeta}/${id}` },
+    };
+  };
   w.alert = (m) => w.alertas.push(String(m));
   return w;
 };
 
-const ARGS_EVID = ['useMemo', 'cfgEvidencia', 'obra', 'evidencia', 'evidenciaCargada',
+const ARGS_EVID = ['useMemo', 'cfgEvidencia', 'docsEvidencia', 'subs', 'obra',
+  'evidencia', 'evidenciaCargada',
   'usuario', 'fsSetAEstricto', 'fsGet', 'serverTimestamp', 'setDocsEvidencia',
   'setSubs', 'setCambiosPendientes', 'hoyLocalISO'];
 
@@ -188,16 +208,24 @@ const USUARIO = { uid: 'u-super', correo: 'super@minatitlan.gob.mx', nombre: 'Su
 
 // Monta el camino entero: `subs`/`docsEvidencia` crudos → `evidencia` → `evid`
 // → `addFoto`/`anularFoto`. Es el mismo orden que en la app.
+// `migrada` tiene TRES valores, no dos, y antes aquí había dos: `false` se
+// montaba como `cfgEvidencia = null`, que no es «sin migrar» sino «todavía no
+// se sabe». La app nunca deja la bandera en `null` después de leerla —si el
+// documento no existe pone `{migrada:false}`—, así que modelarla así confundía
+// el estado que de verdad existe durante unos milisegundos con el estado
+// normal de una obra sin migrar. `null` es ese tercer estado y ahora se pide a
+// propósito.
 const montar = ({ migrada, subs = [], docsEvidencia = [] }) => {
   const w = mundo();
   w.subs = subs;
   w.docsEvidencia = docsEvidencia;
-  const cfg = migrada ? { migrada: true } : null;
+  const cfg = migrada === null ? null : { migrada: migrada === true };
   const rehacer = () => {
     const evidencia = new Function('subs', 'docsEvidencia', 'cfgEvidencia', `"use strict";
 ${cuerpoModulo}
 return evidenciaDeObra({ cfgEvidencia, docsEvidencia, subs });`)(w.subs, w.docsEvidencia, cfg);
-    const evid = hacerEvid((fn) => fn(), cfg, OBRA, evidencia, true, USUARIO,
+    const evid = hacerEvid((fn) => fn(), cfg, w.docsEvidencia, w.subs, OBRA,
+      evidencia, true, USUARIO,
       w.fsSetAEstricto, w.fsGet, w.serverTimestamp, w.setDocsEvidencia,
       w.setSubs, w.setCambiosPendientes, hoyLocalISO);
     const cap = hacerCaptura(OBRA, evid, w.setSubs, w.uploadFoto, w.borrarFotoHuerfana,
@@ -454,6 +482,96 @@ console.log('\n7. El sello no presume de lo que no se puede demostrar');
   check(new Set(ev.map(e => sello(e).texto)).size === 2,
     'y los dos sellos se distinguen por TEXTO, no sólo por color (#36)',
     [...new Set(ev.map(e => sello(e).texto))].join(' | '));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n8. Una obra migrada no se traga las fotos que quedaron en el mapa');
+// Pasó de verdad: la bandera de la 0114 subió el 2026-10-09 y el front que
+// escribe a la subcolección llegó al navegador el 14. Catorce capturas de esos
+// cinco días cayeron en el mapa, y una obra migrada no lo lee: desaparecieron
+// de la galería, del PDF y del tablero. Cinco semanas sin que nada lo dijera.
+{
+  const RUTA_A = 'obras/0126/fotos/avance_p1/a';
+  const RUTA_B = 'obras/0126/fotos/avance_p1/b';
+  const urlDe = (r, tok) => `https://storage/v0/b/campo.appspot.com/o/` +
+    encodeURIComponent(r) + `?alt=media&token=${tok}`;
+  // El documento guarda la ruta; el mapa guarda una URL con OTRO token. Es el
+  // caso real: la migración no tenía por qué conservar el token, así que cruzar
+  // por la URL completa diría «no está» de una foto que sí está.
+  const doc = { id: 'e1', urlOriginal: urlDe(RUTA_A, 'nuevo'), rutaStorage: RUTA_A,
+                partidaId: 'p1', partidaClave: '1.1', origen: 'legado',
+                fechaDeclarada: '2026-09-22' };
+  const subs = [{ id: 'p1', sec: '1.1', sub: 'Terracerías', fotos: { p1: [
+    { id: 'f1', url: urlDe(RUTA_A, 'viejo'), fecha: '2026-09-22' },
+    { id: 'f2', url: urlDe(RUTA_B, 'viejo'), fecha: '2026-10-09' },
+  ] } }];
+
+  const m = montar({ migrada: true, subs, docsEvidencia: [doc] }).rehacer();
+  check(m.evid.atrapadas.length === 1,
+    'la foto del mapa que NO tiene documento se nombra',
+    `${m.evid.atrapadas.length} atrapada(s)`);
+  check(m.evid.atrapadas[0] && m.evid.atrapadas[0].ruta === RUTA_B,
+    'y es la que falta, no la otra', m.evid.atrapadas[0] && m.evid.atrapadas[0].ruta);
+  check(m.evid.atrapadas[0] && m.evid.atrapadas[0].sec === '1.1',
+    'con su partida, que es lo que hace falta para pedir el rescate',
+    m.evid.atrapadas[0] && m.evid.atrapadas[0].sec);
+  // La aserción que delata el cruce por URL completa: el token difiere.
+  check(!m.evid.atrapadas.some(f => f.ruta === RUTA_A),
+    'la que sí tiene documento NO se cuenta, aunque su URL traiga otro token',
+    `tokens distintos: ${urlDe(RUTA_A, 'viejo') !== doc.urlOriginal}`);
+  check(m.evidencia.length === 1,
+    'la galería sigue enseñando sólo lo que está en el expediente — el aviso no las monta',
+    `${m.evidencia.length} en la galería`);
+
+  // Sin migrar el mapa ES la fuente y se lee entero: ahí no hay nada atrapado.
+  const sinMigrar = montar({ migrada: false, subs, docsEvidencia: [] }).rehacer();
+  check(sinMigrar.evid.atrapadas.length === 0,
+    'en una obra SIN migrar no hay nada atrapado: el mapa es la fuente y se lee',
+    `${sinMigrar.evid.atrapadas.length}`);
+  check(vigente(sinMigrar.evidencia).length === 2,
+    'y ahí sí se ven las dos fotos del mapa');
+
+  // Y mientras la bandera no se sabe, no se afirma nada.
+  const sinSaber = montar({ migrada: null, subs, docsEvidencia: [] }).rehacer();
+  check(sinSaber.evid.atrapadas.length === 0,
+    'y con la bandera sin leer tampoco se acusa: no se sabe de qué lado está la obra',
+    `${sinSaber.evid.atrapadas.length}`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n9. Mientras no se sepa la bandera, la foto no se guarda en ningún lado');
+// `evidenciaMigrada(null)` es falso, así que una captura ocurrida antes de que
+// llegue la bandera se iba al mapa incrustado de una obra que puede estar
+// migrada — donde ninguna pantalla la lee. La ventana es de milisegundos y el
+// precio es una foto invisible, así que se para y se dice.
+{
+  const partida = { id: 'p7', sec: '3.4', sub: 'Carpeta asfáltica' };
+  const { w, rehacer } = montar({ migrada: null, docsEvidencia: [] });
+  const m = rehacer();
+  await m.addFoto(partida, { id: 'nueva1', url: 'data:image/jpeg;base64,AAAA' });
+
+  check(w.subidas.length === 0,
+    'ni siquiera sube el objeto a Storage: pararse después dejaría un huérfano',
+    w.subidas.length ? w.subidas.join(', ') : 'ninguna subida');
+  check(w.escrituras.length === 0, 'no escribe a la subcolección',
+    `${w.escrituras.length} escritura(s)`);
+  check(w.subs.length === 0,
+    'y NO la mete en el mapa incrustado, que es donde se volvía invisible',
+    JSON.stringify(w.subs).slice(0, 60));
+  check(w.alertas.length === 1,
+    'y se le dice al supervisor que lo intente otra vez — no se pierde en silencio',
+    w.alertas[0] || 'NO DIJO NADA');
+
+  // Y la simétrica, que es la que impide que esto sea «no guardar nunca»: con
+  // la bandera YA leída y la obra sin migrar, la misma captura sí entra al mapa.
+  const b = montar({ migrada: false, subs: [{ id: 'p7', sec: '3.4', fotos: {} }] });
+  const m2 = b.rehacer();
+  await m2.addFoto(partida, { id: 'nueva1', url: 'data:image/jpeg;base64,AAAA' });
+  check(b.w.subidas.length === 1,
+    'con la bandera leída la foto sí se sube', `${b.w.subidas.length} subida(s)`);
+  check(((b.w.subs[0] || {}).fotos || {}).p7?.length === 1,
+    'y entra al mapa, que en una obra sin migrar es su sitio',
+    JSON.stringify((b.w.subs[0] || {}).fotos || {}).slice(0, 80));
 }
 
 console.log(fallas === 0
