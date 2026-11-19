@@ -4516,6 +4516,57 @@ const evidenciaDeObra = ({ cfgEvidencia, docsEvidencia, subs }) => {
   return out;
 };
 
+// La ruta del objeto dentro del bucket, sacada de una URL de descarga. Es lo
+// que identifica al archivo: el `?alt=media&token=…` puede cambiar y cambió al
+// migrar, así que cruzar por la URL completa daría «no está» para fotos que sí
+// están. Si lo que llega ya es una ruta y no una URL, se devuelve tal cual.
+const rutaDeFoto = (s) => {
+  const t = String(s || '');
+  const m = t.match(/\/o\/([^?]+)/);
+  if (m) { try { return decodeURIComponent(m[1]); } catch { return m[1]; } }
+  return /^https?:\/\//.test(t) ? '' : t;
+};
+
+// ── LAS FOTOS QUE EL MAPA SE TRAGA ─────────────────────────────────────────
+//
+// En una obra migrada, `evidenciaDeObra` devuelve la subcolección y punto: lo
+// que quede en el mapa incrustado no se enseña en ninguna pantalla, ni en el
+// PDF, ni cuenta en el tablero. Eso pasó de verdad y costó cinco semanas: la
+// bandera de la 0114 subió el 2026-10-09 y el front que escribe a la
+// subcolección llegó al navegador el 14, así que catorce capturas de esos cinco
+// días cayeron en el mapa y desaparecieron. Nada lo dijo. Las encontró un guion
+// que se corría para otra cosa.
+//
+// Y no es un hueco que se cierre solo vaciando el mapa: un navegador con el
+// paquete viejo en caché sigue escribiendo ahí, y ningún código nuevo puede
+// evitarlo. Lo que sí puede es que la pantalla de quien tenga el paquete nuevo
+// lo diga, en vez de contar una galería incompleta como si estuviera completa.
+//
+// Devuelve [] cuando la obra no está migrada —ahí el mapa ES la fuente y se lee
+// entero— y cuando la bandera todavía no se sabe.
+const fotosAtrapadasEnElMapa = ({ cfgEvidencia, docsEvidencia, subs }) => {
+  if (!evidenciaMigrada(cfgEvidencia)) return [];
+  const conDocumento = new Set();
+  for (const d of (docsEvidencia || []))
+    for (const cand of [d.rutaStorage, d.urlOriginal, d.url]) {
+      const r = rutaDeFoto(cand);
+      if (r) conDocumento.add(r);
+    }
+  const out = [];
+  (subs || []).forEach((s, is) => {
+    const lista = (Array.isArray(s.fotos) ? s.fotos : Object.values(s.fotos || {}).flat())
+      .filter(Boolean);
+    lista.forEach(foto => {
+      const url = typeof foto === 'string' ? foto : (foto.url || foto.src || '');
+      const r = rutaDeFoto(url);
+      if (!r || conDocumento.has(r)) return;
+      out.push({ url, ruta: r, partidaId: idDePartida(s, is), sec: s.sec || '',
+                 fechaDeclarada: (typeof foto === 'object' && foto.fecha) || null });
+    });
+  });
+  return out;
+};
+
 // Lo que una pantalla puede pintar: sin anuladas. La anulada no se borra —el
 // §7.7 del alcance municipal lo prohíbe y el expediente la necesita— pero no
 // cuenta como evidencia ni suma en ninguna insignia.
@@ -18577,6 +18628,16 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   // desde el id obligaría a buscar la partida de vuelta en `subs`.
   const addFoto = async (partida, foto) => {
     if (!obra?.id) return;
+    // La bandera de corte decide A DÓNDE se escribe, y hasta que llega no se
+    // sabe. Antes se escribía igual, y `evidenciaMigrada(null)` es falso: la
+    // foto se iba al mapa incrustado de una obra que a lo mejor está migrada,
+    // donde ninguna pantalla la lee. Se para ANTES de subir el objeto a
+    // Storage, que si no quedaría un huérfano que nadie referencia.
+    if (evid && !evid.banderaConocida) {
+      alert('Un segundo: todavía estoy leyendo el expediente de esta obra. ' +
+            'Vuelve a intentarlo — así la foto no se guarda en el lugar equivocado.');
+      return;
+    }
     const subId = partida.id || partida.sec;
     let subidoRef = null;   // ref al objeto en Storage — para rescate si el commit falla
     try {
@@ -18635,6 +18696,24 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
       borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
        Vista de solo lectura — tu rol no tiene permiso para editar este módulo.
     </div>}
+    {/* Una galería incompleta que se presenta como completa es la forma más
+        barata de perder evidencia: estas fotos existen, están pagadas y no
+        aparecen en ningún lado. El aviso dice cuántas y en qué partidas, que es
+        lo que se necesita para pedir el rescate. */}
+    {!!(evid && evid.atrapadas && evid.atrapadas.length) && (
+      <div style={{background:"rgba(202,138,4,0.1)",border:`0.5px solid rgba(202,138,4,0.3)`,
+        borderRadius:8,padding:"8px 12px",fontSize:11,color:C.yellow}}>
+        {evid.atrapadas.length === 1
+          ? '1 foto de esta obra quedó guardada en el formato anterior'
+          : `${evid.atrapadas.length} fotos de esta obra quedaron guardadas en el formato anterior`}
+        {' '}y <strong>no están en el expediente</strong>: no se ven en la galería, no salen
+        en el PDF y no cuentan en el avance. No se perdieron — hay que moverlas, y eso lo
+        hace soporte. Partidas: {[...new Set(evid.atrapadas.map(f => f.sec || f.partidaId))]
+          .slice(0, 6).join(', ')}
+        {new Set(evid.atrapadas.map(f => f.sec || f.partidaId)).size > 6 ? ' …' : ''}.
+      </div>
+    )}
+
     {!ocultarTabs && <div className="noscroll" style={{display:"flex",gap:4,overflowX:"auto",flexShrink:0,paddingBottom:1}}>
       {[["volumenes","Volúmenes"],["maquinaria","Maquinaria"],["materiales","Almacén"],["nomina","Nómina"]].map(([id,lbl])=>
         <button key={id} onClick={()=>setTab(id)} style={{flex:"0 0 auto",padding:"7px 14px",fontSize:11,borderRadius:8,
@@ -29344,8 +29423,19 @@ export default function App(){
                   obraId: obra?.id, obraNombre: obra?.contrato || obra?.nombre || "" };
     return {
       migrada,
+      // `migrada` es un booleano y no puede distinguir «no está migrada» de
+      // «todavía no sé»: `cfgEvidencia` arranca en `null` y la bandera llega en
+      // una lectura aparte. Mientras no llegue, `evidenciaMigrada(null)` es
+      // falso, o sea que una captura escribiría en el mapa incrustado de una
+      // obra que sí está migrada — y ahí la foto no se ve en ninguna pantalla.
+      // La ventana es de milisegundos y ya costó catorce fotos por otro camino,
+      // así que se nombra y se espera en vez de adivinar.
+      banderaConocida: cfgEvidencia !== null,
       lista: evidencia,
       cargada: evidenciaCargada,
+      // Fotos que quedaron en el mapa de una obra migrada: invisibles en la
+      // galería, en el PDF y en el tablero. Ver `fotosAtrapadasEnElMapa`.
+      atrapadas: fotosAtrapadasEnElMapa({ cfgEvidencia, docsEvidencia, subs }),
 
       // Una foto, un documento. `rutaStorage` se guarda porque es el único dato
       // que permite volver al objeto: la ruta vieja se reconstruía como
@@ -29411,7 +29501,8 @@ export default function App(){
         setCambiosPendientes(true);
       },
     };
-  }, [cfgEvidencia, evidencia, evidenciaCargada, obra?.id, obra?.contrato, obra?.nombre, usuario]);
+  }, [cfgEvidencia, docsEvidencia, subs, evidencia, evidenciaCargada,
+      obra?.id, obra?.contrato, obra?.nombre, usuario]);
 
   // ── CUANDO LA SESIÓN SE CAE SOLA ──────────────────────────────────────────
   // Todo lo que esta sesión dejó en memoria, en un solo sitio. `logout` ya lo
