@@ -48,6 +48,8 @@ const check = (ok, titulo, detalle = '') => {
 const $ = n => (n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const cerca = (a, b) => Math.abs(a - b) < 0.005;
 
+const { deArchivo, cierreDe } = require('./extraer-de-app.cjs');
+
 // ── Extracción ────────────────────────────────────────────────────────────
 const global = {};
 const rango = {};          // dónde vive cada uno, para poder mutarlo
@@ -147,9 +149,18 @@ if (process.argv.includes('--contraprueba')) {
   process.exit(rojas > 0 ? 0 : 1);
 }
 
-const api = new Function(`"use strict";
-  ${necesarios.map(n => `const ${n} = ${global[n]};`).join('\n  ')}
-  return { ${necesarios.join(', ')} };`)();
+// POR `deArchivo`, QUE RESUELVE EL GRAFO, y no pegando `global[n]` uno por uno:
+// así armado, el cuerpo traía EXACTAMENTE los símbolos de la lista de arriba y
+// ninguno de los que ésos usan. El 2026-11-19 `personalDeSemana` adoptó
+// `procedenciaDI` —para dejar de publicar un desglose D/I que nadie había
+// dicho— y este banco salió NO ARRANCÓ con `procedenciaDI is not defined`, sin
+// medir nada y por una causa ajena a todo lo que mide. Es el defecto que
+// `PENDIENTES` ya tenía apuntado para cuando se tocara esta zona.
+//
+// `necesarios` se queda, pero cambia de oficio: ya no es el grafo, es la lista
+// de lo que este banco INYECTA en los trozos de abajo. Las dependencias las
+// pone el módulo.
+const api = deArchivo(archivo, necesarios);
 const { semanasDeNomina, añoSemanaNomina, fechaCargaNomina,
         personalDeSemana, resolverNombreCortoObra } = api;
 
@@ -161,7 +172,8 @@ const consolidarPersonal = (kpisPorObra) => new Function(
   "use strict";
   ${src.slice(tramos.obrasSinDesglose[0], tramos.personalAgg[1])}
   ${src.slice(tramos.personalPrev[0], tramos.deltaPersonal[1])}
-  return { obrasSinDesglose, personalAgg, personalPrev, obrasSinPrevNom, deltaPersonal };
+  return { obrasSinDesglose, obrasSinColumnaDI, personalAgg, personalPrev,
+    obrasSinPrevNom, deltaPersonal };
 `)(kpisPorObra, personalDeSemana);
 
 // Ejecuta el oyente real con un documento falso, le pasa lo que lee al `patch`
@@ -308,8 +320,8 @@ const datosPorObra = Object.fromEntries(OBRAS.map(id =>
 
 const kpisPorObra = OBRAS.map(id =>
   ({ obra: { id, nombre: `${id} OBRA-${id}` }, d: datosPorObra[id] }));
-const { personalAgg, personalPrev, obrasSinPrevNom, obrasSinDesglose, deltaPersonal } =
-  consolidarPersonal(kpisPorObra);
+const { personalAgg, personalPrev, obrasSinPrevNom, obrasSinDesglose,
+        obrasSinColumnaDI, deltaPersonal } = consolidarPersonal(kpisPorObra);
 
 const esbuild = require(path.join(raiz, 'node_modules/esbuild'));
 const React = require(path.join(raiz, 'node_modules/react'));
@@ -324,23 +336,44 @@ const _KpiConDelta = ({label, valor, valorSub, deltaValor, deltaSub, nota}) =>
     ` ${label}: ${valor} | ${valorSub} | ${deltaValor === null ? '·' : deltaValor} ${deltaSub} `
     + (nota ? `[tooltip: ${nota}] ` : ''));
 const js = esbuild.transformSync(`(${kpiPersonal})`, { loader: 'jsx' }).code.trim().replace(/;$/, '');
+// Lo que el KPI necesita se parte en dos, y sólo una mitad se teclea:
+//
+//   · LOS LOCALES del tablero —las cuentas del consolidado y el doble de la
+//     paleta— se inyectan, porque este banco es quien los calcula. Ésos sí van
+//     por nombre: son su andamiaje, no el grafo del archivo.
+//   · TODO LO DEMÁS lo pone `cierreDe`, que lee los nombres libres del propio
+//     trozo y trae sus declaraciones de nivel superior. Antes estaba tecleado
+//     —`resolverNombreCortoObra` en la lista— y eso quería decir que el día que
+//     el KPI usara un helper más, este banco salía NO ARRANCÓ sin medir nada.
 const ARGS = ['personalAgg', 'deltaPersonal', 'obrasSinPrevNom', 'obrasSinDesglose',
-  'resolverNombreCortoObra', 'gpData'];
+  'obrasSinColumnaDI', 'gpData'];
+const CUERPO_KPI = cierreDe(js, { archivo, excluir: [...ARGS, 'React', '_KpiConDelta', 'C'] });
 const pintarKPI = (ctx) => renderToStaticMarkup(new Function(
-  'React', '_KpiConDelta', 'C', ...ARGS, `"use strict"; return ${js};`)(
+  'React', '_KpiConDelta', 'C', ...ARGS,
+  `"use strict";\n${CUERPO_KPI}\nreturn ${js};`)(
   React, _KpiConDelta, C, ...ARGS.map(n => ctx[n])))
   .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
 const ctx = { personalAgg, deltaPersonal, obrasSinPrevNom, obrasSinDesglose,
-  resolverNombreCortoObra, gpData: null };
+  obrasSinColumnaDI, gpData: null };
 const txt = pintarKPI(ctx);
 console.log('\n   « ' + txt + ' »\n');
 
 check(/Personal: 449 \|/.test(txt),
   'el consolidado son 449 trabajadores, no 350',
   txt.match(/Personal: (\d+)/)?.[1] || '?');
-check(/303 directos · 146 indirectos/.test(txt),
-  'con su desglose, 303 directos y 146 indirectos');
+// EL DESGLOSE D/I YA NO SALE DE ESTOS DATOS, Y ESO ES LO CORRECTO. Este
+// fixture es la nómina real de producción leída el 2026-09-22, o sea de antes
+// de que el importador anotara de dónde salía el tipo de cada trabajador. Así
+// que ninguna de sus cargas lo declara, y el KPI —que publicaba «303 directos ·
+// 146 indirectos» como un hecho— ahora dice qué le falta. La cifra no era
+// falsa: era indistinguible de la que sale de aplicarle doce palabras al puesto,
+// y eso no se imprime como dato (medido el 2026-11-19, 27 de 67 semanas).
+check(/sin desglose: falta la columna Tipo \(D\/I\) en los archivos/.test(txt),
+  'sin procedencia, el KPI dice que falta la columna en vez de publicar el desglose',
+  txt.match(/449 \| ([^|]+)\|/)?.[1]?.trim() || '?');
+check(!/303 directos/.test(txt) && !/146 indirectos/.test(txt),
+  'y NO publica el desglose que antes daba por bueno — 303D · 146I no aparece');
 check(/−11 trab\. vs semana previa/.test(txt),
   'y una caída de 11 trabajadores, no de 71',
   txt.match(/(−|\+)\d+ trab\./)?.[0] || '?');
@@ -349,9 +382,60 @@ check(/−11 trab\. vs semana previa/.test(txt),
 // y 350— pero vive en el tooltip. El renglón visible es sólo el desglose.
 check(/\[tooltip: 1 obra rayó su semana en varios archivos/.test(txt),
   'el KPI sigue declarando que una obra rayó su semana en varios archivos');
-check(/449 \| 303 directos · 146 indirectos \|/.test(txt),
-  'y el renglón visible es sólo el desglose: ni una palabra más',
-  txt.match(/449 \| ([^|]+)\|/)?.[1]?.trim() || '?');
+// Y nombra a las obras cuya gente SÍ entra al total pero no al desglose: son
+// dos huecos distintos —no tener conteo y no tener columna— y el usuario va a
+// arreglarlos pidiendo dos cosas distintas.
+check(/su gente entra al total, pero el archivo no trae la columna Tipo \(D\/I\)/.test(txt),
+  'el tooltip explica que esa gente sí cuenta para el total, sólo no para el desglose');
+
+// ── EL MISMO CONSOLIDADO, CON LA PROCEDENCIA PUESTA ───────────────────────
+// La otra mitad de la conducta, y la que atrapa el defecto que este cambio
+// estuvo a punto de meter: `personalAgg` sumaba `t.dir + p.dir`, y con `p.dir`
+// nulo eso da el número de antes —la obra entraba al desglose como si no
+// tuviera un solo indirecto—. Así que se siembran las cinco obras declarando
+// que su última semana SÍ salió de la columna, y entonces el desglose vuelve.
+console.log('\n9b. Con la procedencia puesta, el desglose vuelve a salir');
+const conColumna = Object.fromEntries(Object.entries(datosPorObra).map(([id, d]) => {
+  const sem = (d.nominaSemanas || []).map((s, i, a) => i < a.length - 1 ? s : {
+    ...s,
+    partes: (s.partes || [s]).map(p => ({ ...p,
+      tipoDeColumna: (p.trabajadores || []).length, tipoDePuesto: 0 })),
+  });
+  return [id, { nominaSemanas: sem }];
+}));
+const cc = consolidarPersonal(OBRAS.map(id =>
+  ({ obra: { id, nombre: `${id} OBRA-${id}` }, d: conColumna[id] })));
+const txtCC = pintarKPI({ ...cc, gpData: null });
+console.log('\n   « ' + txtCC + ' »\n');
+check(/Personal: 449 \|/.test(txtCC),
+  'el total sigue siendo 449: la procedencia no cambia cuánta gente hubo',
+  txtCC.match(/Personal: (\d+)/)?.[1] || '?');
+check(/303 directos · 146 indirectos/.test(txtCC),
+  'y ahora SÍ publica el desglose, porque lo dijo el Excel',
+  txtCC.match(/449 \| ([^|]+)\|/)?.[1]?.trim() || '?');
+check(cc.personalAgg.dir + cc.personalAgg.ind === cc.personalAgg.total,
+  'el desglose cuadra con el total — no quedó ninguna obra sumando medio renglón',
+  `${cc.personalAgg.dir} + ${cc.personalAgg.ind} = ${cc.personalAgg.total}`);
+check(cc.obrasSinColumnaDI.length === 0,
+  'y ninguna obra se aparta: las cinco declararon su procedencia');
+// Y una sola obra que adivinó basta para que su gente salga del desglose, sin
+// salir del total. Media semana contada y media adivinada no es un desglose.
+const unaAdivina = { ...conColumna };
+unaAdivina['0114'] = { nominaSemanas: conColumna['0114'].nominaSemanas.map((s, i, a) =>
+  i < a.length - 1 ? s
+    : { ...s, partes: s.partes.map(p => ({ ...p, tipoDePuesto: 1 })) }) };
+const ca = consolidarPersonal(OBRAS.map(id =>
+  ({ obra: { id, nombre: `${id} OBRA-${id}` }, d: unaAdivina[id] })));
+check(ca.personalAgg.total === 449,
+  'con una obra adivinando, el total NO baja: su gente son personas contadas',
+  String(ca.personalAgg.total));
+check(ca.personalAgg.dir + ca.personalAgg.ind < 449 && ca.obrasSinColumnaDI.length === 1,
+  'pero su desglose se aparta, y el KPI dice de cuántas obras habla',
+  `${ca.personalAgg.dir + ca.personalAgg.ind} de ${ca.personalAgg.total}, ` +
+  `${ca.obrasSinColumnaDI.length} obra apartada`);
+check(ca.personalAgg.obrasConDI === 4,
+  'cuatro obras entran al desglose, no cinco con una en cero',
+  String(ca.personalAgg.obrasConDI));
 
 const act = personalAgg.total, ant = personalPrev;
 check(act === 449 && act - ant === -11,

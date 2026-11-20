@@ -135,39 +135,6 @@ const val = v => {
 const campos = d => Object.fromEntries(
   Object.entries((d && d.fields) || {}).map(([k, v]) => [k, val(v)]));
 
-// ── LAS PALABRAS DEL IMPORTADOR, COPIADAS DE `src/App.jsx:22949` ────────────
-// Se copian a propósito y se COMPRUEBA que siguen siendo las mismas: si
-// alguien las cambia allá y aquí no, esta medición mediría otra cosa y seguiría
-// saliendo en verde. La comprobación está abajo, antes de medir.
-const TAGS_IND = ['GERENTE', 'ADMINISTRAT', 'CONTROL', 'HSE', 'COORDINADOR',
-  'SUPERINT', 'SUPERVISOR', 'INGENIERO', 'AUX', 'ESTIMACION', 'JEFE', 'ADMIN'];
-
-const APP = fs.readFileSync(require('path').join(__dirname, '..', 'src/App.jsx'), 'utf8');
-{
-  const m = APP.match(/const tagsInd = \[([^\]]+)\]/);
-  if (!m) {
-    console.error('NO ARRANCÓ: no se encontró `tagsInd` en src/App.jsx.');
-    console.error('Esta medición reconstruye la inferencia del importador; sin esa');
-    console.error('lista no puede saber qué habría adivinado.');
-    process.exit(2);
-  }
-  const deAlla = (m[1].match(/'([^']+)'/g) || []).map(s => s.slice(1, -1));
-  const igual = deAlla.length === TAGS_IND.length && deAlla.every((t, i) => t === TAGS_IND[i]);
-  if (!igual) {
-    console.error('NO ARRANCÓ: la lista de palabras de `src/App.jsx` ya no es la de aquí.');
-    console.error(`  allá: ${JSON.stringify(deAlla)}`);
-    console.error(`  aquí: ${JSON.stringify(TAGS_IND)}`);
-    console.error('Medir con la lista vieja daría un número que no describe nada.');
-    process.exit(2);
-  }
-}
-
-// Lo que el importador habría inferido para este trabajador SIN columna D/I.
-const adivinariaIndirecto = (t) => {
-  const catUp = String((t.categoria || '') + ' ' + (t.clasif || '')).toUpperCase();
-  return TAGS_IND.some(x => catUp.includes(x));
-};
-
 // ── LA SEMANA LA AGRUPA LA APP, NO ESTE GUION ───────────────────────────────
 //
 // La primera versión de esta medición contaba una semana por DOCUMENTO de
@@ -197,7 +164,23 @@ const adivinariaIndirecto = (t) => {
 const { deApp } = require('./extraer-de-app.cjs');
 const DEL_APP = deApp('semanaISO', 'heImporte', 'numSemanaNomina',
   'fechaCargaNomina', 'añoSemanaNomina', 'claveSemanaNomina', 'semanasDeNomina',
-  'formatoHistorial', 'FORMATO_HISTORIAL_SUBCOLECCION');
+  'formatoHistorial', 'FORMATO_HISTORIAL_SUBCOLECCION',
+  'TAGS_INDIRECTO', 'tipoDeTrabajador', 'procedenciaDI');
+
+// Lo que el importador habría inferido para este trabajador SIN columna D/I.
+//
+// La regla NO se copia aquí. Antes sí: estaban las doce palabras tecleadas y un
+// portón que comprobaba que siguieran siendo las de `src/App.jsx`. Se volvió
+// innecesario el 2026-11-19, cuando la regla salió de dentro del importador a
+// `tipoDeTrabajador`, de nivel superior: ahora se extrae y se EJECUTA, que es
+// lo que el portón intentaba aproximar. Una lista menos que pueda separarse.
+//
+// Se le pasa `''` como tipo crudo A PROPÓSITO: es la pregunta «qué habría dicho
+// la regla si la columna no estuviera», que es justo la reconstrucción. Pasarle
+// el tipo guardado devolvería el tipo guardado y la medición se comprobaría
+// contra sí misma.
+const adivinariaIndirecto = (t) =>
+  DEL_APP.tipoDeTrabajador('', t.categoria, t.clasif).tipo === 'I';
 
 // ── Obras ───────────────────────────────────────────────────────────────────
 const todasLasObras = async () => {

@@ -164,7 +164,16 @@ const pintaMargen = (kpis) => {
 // La nómina real de la 0126 (Cangrejera), leída de producción el 2026-09-22:
 // la semana 38 llegó en dos archivos, 99 personas en uno y 35 en el otro.
 const P0126 = require(path.join(__dirname, 'nomina-produccion-2026-09-22.cjs'))['0126'];
-const H = semanasDeNomina(P0126);
+// LAS CARGAS SE SIEMBRAN DECLARANDO SU PROCEDENCIA, porque lo que este banco
+// mide es si las piezas de la tarjeta borrada sobreviven —el desglose D/I entre
+// ellas—, y desde el 2026-11-19 ese desglose sólo sale cuando consta que lo dijo
+// la columna «Tipo (D/I)» del Excel. El volcado de producción es de septiembre,
+// de cuando el importador no lo anotaba, así que sin esto el banco mediría la
+// ausencia del desglose en vez de su supervivencia. Que la ausencia se publique
+// bien lo afirma la sección 2b, con el mismo dato sin declarar.
+const conProcedencia = (rs) => rs.map(r => ({ ...r,
+  tipoDeColumna: (r.trabajadores || []).length, tipoDePuesto: 0 }));
+const H = semanasDeNomina(conProcedencia(P0126));
 
 // ══════════════════════════════════════════════════════════════════════════
 console.log('1. Sin nómina cargada el KPI no publica un cero\n');
@@ -195,12 +204,32 @@ check(/2 partes/.test(lleno.texto),
   'y que esa semana vino rayada en 2 archivos sumados');
 // Una obra al día y una con la plantilla de hace tres semanas publicaban el
 // mismo rótulo. Seis de las siete obras vivas van en la 45 y la 0114 en la 44.
-const atrasada = pintaPersonal(semanasDeNomina(P0126.slice(0, 2)));
+const atrasada = pintaPersonal(semanasDeNomina(conProcedencia(P0126.slice(0, 2))));
 check(/Semana 37/.test(atrasada.texto) && !/Semana 38/.test(atrasada.texto),
   'otra obra con la nómina más vieja dice su propia semana, no la de hoy',
   atrasada.texto.match(/\|[^|]*(Semana \d+)/)?.[1] || '?');
 check(!/partes/.test(atrasada.texto),
   'y una semana que vino en un solo archivo no habla de partes');
+
+// ── 2b. LA MISMA SEMANA SIN DECLARAR PROCEDENCIA ──────────────────────────
+// El mismo dato, sin los dos conteos que dicen de dónde salió el tipo: así
+// están las 67 semanas que ya estaban cargadas el 2026-11-19. El KPI no puede
+// publicar «51D · 83I» —en 27 de esas 67 semanas ese desglose lo habrían dicho
+// doce palabras del puesto y no una persona—, pero la plantilla sí se publica:
+// cuánta gente hubo es un conteo y no depende de la columna que falta.
+console.log('\n2b. Sin saber de dónde salió el tipo, el desglose se calla\n');
+const sinDecl = pintaPersonal(semanasDeNomina(P0126));
+console.log('       « ' + sinDecl.texto + ' »');
+check(/\|134\|/.test(sinDecl.texto),
+  'el total sigue siendo 134: la plantilla no depende de la columna D/I',
+  sinDecl.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+check(!/51D/.test(sinDecl.texto) && !/83I/.test(sinDecl.texto),
+  'pero «51D · 83I» NO aparece: eso ya no se afirma sin saber quién lo dijo');
+check(/no dice si el archivo traía la columna Tipo \(D\/I\)/.test(sinDecl.texto),
+  'y en su lugar dice qué falta, que es por donde se va a arreglar',
+  sinDecl.texto.match(/\|[^|]*\|([^|]*)\|/)?.[1]?.trim() || '?');
+check(/Semana 38/.test(sinDecl.texto) && /2 partes/.test(sinDecl.texto),
+  'lo demás que el KPI sabía sigue en pantalla: la semana y sus partes');
 
 // La semana se dice con el número que `semanasDeNomina` parseó, no con el
 // campo crudo. En el emulador llega como `38` a secas y el KPI publicaba

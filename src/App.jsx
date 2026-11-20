@@ -6399,17 +6399,90 @@ const semanasDeNomina = (registros) => {
 // LISTADO de trabajadores, que es la misma cuenta con la que el importador los
 // escribe, así que no es una estimación: es el mismo dato por el otro lado. Y
 // sin listado no hay cifra, y eso se dice —`total: null`, `fuente: null`—.
+// ── DE DÓNDE SALE QUE UN TRABAJADOR ES DIRECTO O INDIRECTO ───────────────────
+//
+// Hay DOS caminos, y durante meses los dos acabaron en el mismo campo `tipo`
+// sin dejar rastro de cuál fue:
+//
+//   la columna «Tipo (D/I)» del Excel  →  es un DATO: alguien lo escribió.
+//   doce palabras del puesto           →  es una INFERENCIA, y la caída a 'D'
+//                                         por omisión también lo es.
+//
+// Medido en producción el 2026-11-19 (`scripts/medir-si-directo-o-indirecto-
+// es-dato-o-adivinanza.cjs`): de 67 semanas con listado, 21 son semanas donde
+// las doce palabras predicen el tipo de TODOS siendo muchos —143 de 143 no es
+// coincidencia de una columna escrita a mano— y 6 más no se pueden distinguir.
+// La pantalla las publicaba todas como «N directos · M indirectos», sin decir
+// que en buena parte de ellas eso no lo dijo nadie: lo dedujo esta lista.
+//
+// Y no hay frontera en el tiempo que sirva de regla: las sospechosas arrancan
+// en la S36 de 2026 en cinco obras, pero después de la S36 todavía hay 22
+// semanas CON columna —la 0114 tiene la S37 con ella entre la S36 y la S38 sin
+// ella—. La columna va y viene por archivo, así que no se puede escribir «desde
+// tal fecha se infiere»: hay que saberlo CARGA POR CARGA, y para eso el
+// importador tiene que anotarlo al leer el Excel. Es lo que hace ahora.
+//
+// La lista vive AQUÍ y no dentro del importador, donde estaba suelta, porque
+// ahora la leen dos: el importador para inferir, y la medición para
+// reconstruir la procedencia de lo ya cargado. Dos copias de estas doce
+// palabras son dos reglas que pueden separarse sin que nadie se entere.
+const TAGS_INDIRECTO = ['GERENTE', 'ADMINISTRAT', 'CONTROL', 'HSE', 'COORDINADOR',
+  'SUPERINT', 'SUPERVISOR', 'INGENIERO', 'AUX', 'ESTIMACION', 'JEFE', 'ADMIN'];
+
+// El tipo de UN trabajador y de dónde salió. `de` es la mitad que faltaba.
+const tipoDeTrabajador = (tipoRaw, categoria, clasif) => {
+  const raw = String(tipoRaw || '').trim().toUpperCase();
+  // La columna dijo algo: eso es el dato, diga 'I' o diga cualquier otra cosa
+  // —que se lee como directo, igual que antes—.
+  if (raw) return { tipo: (raw === 'I' || raw.includes('IND')) ? 'I' : 'D', de: 'columna' };
+  const catUp = String((categoria || '') + ' ' + (clasif || '')).toUpperCase();
+  return { tipo: TAGS_INDIRECTO.some(t => catUp.includes(t)) ? 'I' : 'D', de: 'puesto' };
+};
+
+// ¿El desglose D/I de esta semana lo dijo el Excel, o lo dedujo la lista?
+//
+//   'columna'  todas las cargas de la semana declaran que el tipo salió de la
+//              columna, y ninguna fila se infirió. Es dato: se imprime.
+//   'puesto'   alguna fila se infirió. No es dato, y no se enseña a medias:
+//              media semana contada y media adivinada no es un desglose.
+//   null       las cargas no declaran nada. Son las 67 semanas que ya estaban
+//              cargadas el 2026-11-19, de cuando el importador no lo anotaba.
+//              No se sabe, y «no se sabe» no se publica como sí.
+//
+// Se exige que TODAS las partes declaren, no que alguna lo haga: una semana que
+// llegó en dos archivos y sólo uno lo anota tiene el desglose describiendo a
+// toda la gente y la procedencia describiendo a la mitad. Sirve igual para una
+// semana unida que para una carga suelta, que es cómo la llaman los dos.
+const procedenciaDI = (sem) => {
+  if (!sem) return null;
+  const partes = Array.isArray(sem.partes) ? sem.partes : [sem];
+  if (!partes.length) return null;
+  if (!partes.every(p => typeof p?.tipoDeColumna === 'number'
+                      && typeof p?.tipoDePuesto === 'number')) return null;
+  return partes.some(p => p.tipoDePuesto > 0) ? 'puesto' : 'columna';
+};
+
 const personalDeSemana = (sem) => {
-  const nada = { dir: null, ind: null, total: null, fuente: null };
+  const nada = { dir: null, ind: null, total: null, fuente: null, diDe: null };
   if (!sem) return nada;
+  // LA PLANTILLA Y SU DESGLOSE NO TIENEN LA MISMA PROCEDENCIA, y por eso se
+  // contestan por separado. Cuántas personas hubo es un conteo: vale igual que
+  // antes. Cuántas de ellas son directas depende de si el Excel traía la
+  // columna, y donde no la traía `dir` e `ind` salen NULOS — no se devuelven
+  // para que un lector distraído no pueda imprimir la adivinanza. Los cinco
+  // sitios que publican el desglose ya sabían pintar el nulo desde el #116,
+  // así que lo que cambia no es su forma, es qué tanto afirman.
+  const diDe = procedenciaDI(sem);
+  const conDI = (dir, ind, fuente) => diDe === 'columna'
+    ? { dir, ind, total: dir + ind, fuente, diDe }
+    : { dir: null, ind: null, total: dir + ind, fuente, diDe };
   if (typeof sem.totalDir === 'number' && typeof sem.totalInd === 'number')
-    return { dir: sem.totalDir, ind: sem.totalInd,
-             total: sem.totalDir + sem.totalInd, fuente: 'desglose' };
+    return conDI(sem.totalDir, sem.totalInd, 'desglose');
   const trabs = Array.isArray(sem.trabajadores) ? sem.trabajadores : [];
   if (trabs.length === 0) return nada;
   const dir = trabs.filter(p => p?.tipo === 'D').length;
   const ind = trabs.filter(p => p?.tipo === 'I').length;
-  return { dir, ind, total: dir + ind, fuente: 'listado' };
+  return conDI(dir, ind, 'listado');
 };
 
 // ── CUÁNTA GENTE DECIR QUE TRAJO UNA CARGA ───────────────────────────────────
@@ -6476,18 +6549,29 @@ const plantillaDeObra = (nominaHistorial = []) => {
   // La semana EXISTE —`hayNomina` sigue en verdadero: se cargó nómina—, lo que
   // falta es el conteo. Decir «sin nómina» aquí sería cambiar un número
   // inventado por una frase falsa.
-  const { dir, ind, total, fuente } = personalDeSemana(ult);
+  const { dir, ind, total, fuente, diDe } = personalDeSemana(ult);
   const deSemana = `${semana || 'semana sin número'}`
     + (partes > 1 ? ` · ${partes} partes` : '');
   if (total === null) {
     return { hayNomina: true, total: null, dir: null, ind: null, semana, partes,
-      fuente: null, valor: 'sin desglose',
+      fuente: null, diDe: null, valor: 'sin desglose',
       sub: `la nómina de ${deSemana} no trae el conteo de personal` };
   }
+  // «NDÍ · MI» SÓLO SI LO DIJO EL EXCEL. El KPI publicaba ese desglose siempre,
+  // y en 27 de 67 semanas medidas no lo había dicho nadie: lo dedujeron doce
+  // palabras del puesto. La plantilla sigue saliendo —es un conteo, y vale— y
+  // en lugar del desglose va lo que falta, que es el archivo con su columna.
+  // Las dos razones se dicen distinto a propósito: una pide un Excel que nadie
+  // subió con la columna, la otra es una carga vieja de cuando no se anotaba, y
+  // ninguna de las dos se arregla pidiendo lo que la otra pide.
+  const faltaColumna = diDe === null
+    ? 'sin desglose D/I: la carga no dice si el archivo traía la columna Tipo (D/I)'
+    : 'sin desglose D/I: el archivo no trae la columna Tipo (D/I)';
   return {
-    hayNomina: true, total, dir, ind, semana, partes, fuente,
+    hayNomina: true, total, dir, ind, semana, partes, fuente, diDe,
     valor: String(total),
-    sub: `${dir}D · ${ind}I · ${deSemana}`
+    sub: (dir === null ? `${deSemana} · ${faltaColumna}`
+                       : `${dir}D · ${ind}I · ${deSemana}`)
       + (fuente === 'listado' ? ' · contado del listado' : ''),
   };
 };
@@ -13177,6 +13261,16 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     const sem = d.nominaSemanas || [];
     return sem.length > 0 && personalDeSemana(sem[sem.length - 1]).total === null;
   });
+  // Obras cuya última nómina SÍ trae conteo pero cuyo desglose D/I no es dato:
+  // el Excel no traía la columna «Tipo (D/I)», o es una de las cargas viejas
+  // que no anotaban de dónde salía. Su gente entra al total —son personas
+  // contadas— pero NO al desglose, y el desglose dice de cuántas obras habla.
+  const obrasSinColumnaDI = kpisPorObra.filter(({ d }) => {
+    const ult = (d.nominaSemanas || []).slice(-1)[0];
+    if (!ult) return false;
+    const p = personalDeSemana(ult);
+    return p.total !== null && p.dir === null;
+  });
   const personalAgg = kpisPorObra.reduce((t, { d }) => {
     const ult = (d.nominaSemanas || []).slice(-1)[0];
     if (!ult) return t;
@@ -13184,15 +13278,20 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     if (p.total === null) return t;
     return {
       total: t.total + p.total,
-      dir:   t.dir   + p.dir,
-      ind:   t.ind   + p.ind,
+      // `p.dir` es NULO cuando el tipo se adivinó por el puesto, y `t.dir +
+      // null` da el número de antes: la obra entraría al desglose como si no
+      // tuviera un solo indirecto. Ése es el mismo defecto del #116 una capa
+      // más abajo, así que la obra se salta y se declara aparte.
+      dir:   t.dir   + (p.dir === null ? 0 : p.dir),
+      ind:   t.ind   + (p.ind === null ? 0 : p.ind),
+      obrasConDI:  t.obrasConDI + (p.dir === null ? 0 : 1),
       obrasConNom: t.obrasConNom + 1,
       // Obras que rayaron su semana en más de un archivo: lo que entra al
       // total es la SUMA de todos, no el último que subieron. Se declara en
       // pantalla para que la cifra no parezca salida de la nada.
       enPartes: t.enPartes + ((ult.partes || []).length > 1 ? 1 : 0),
     };
-  }, { total: 0, dir: 0, ind: 0, obrasConNom: 0, enPartes: 0 });
+  }, { total: 0, dir: 0, ind: 0, obrasConDI: 0, obrasConNom: 0, enPartes: 0 });
 
   // ── DELTAS vs semana previa (snapshots históricos) ──
   // Ejecutado: suma de montoEjecutado del último snapshot de avance con
@@ -13652,16 +13751,30 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
             al total le FALTA gente, igual que a «Gastado» le falta dinero. La
             cifra no se ajusta —no se sabe cuánta— y la obra no entra sumando
             cero, que es lo que hacía: se declara con nombre. */}
+        {/* Y EL DESGLOSE D/I SÓLO SALE SI LO DIJO EL EXCEL. Cuando ninguna obra
+            trae la columna «Tipo (D/I)» no hay desglose que publicar, y en su
+            lugar va la frase que pide el archivo: el hueco se dice, no se llena
+            con la suma de lo que se adivinó. Cuando lo traen algunas, el
+            desglose dice de cuántas obras habla, porque si no, se lee como el
+            desglose del total que tiene al lado y no lo es. */}
         <_KpiConDelta
           label="Personal"
           valor={`${personalAgg.total}`}
-          valorSub={`${personalAgg.dir} directos · ${personalAgg.ind} indirectos`}
+          valorSub={personalAgg.obrasConDI === 0
+            ? 'sin desglose: falta la columna Tipo (D/I) en los archivos'
+            : `${personalAgg.dir} directos · ${personalAgg.ind} indirectos`
+              + (obrasSinColumnaDI.length > 0
+                  ? ` · de ${personalAgg.obrasConDI} de ${personalAgg.obrasConNom} obras`
+                  : '')}
           nota={[
             personalAgg.enPartes > 0
               ? `${personalAgg.enPartes} obra${personalAgg.enPartes > 1 ? 's' : ''} rayó su semana en varios archivos; el total los suma, no se queda con el último.`
               : null,
             obrasSinDesglose.length > 0
               ? `${obrasSinDesglose.map(x => resolverNombreCortoObra(x.obra, gpData)).join(', ')}: su última nómina no trae el conteo de personal, así que no entra a este total.`
+              : null,
+            obrasSinColumnaDI.length > 0
+              ? `${obrasSinColumnaDI.map(x => resolverNombreCortoObra(x.obra, gpData)).join(', ')}: su gente entra al total, pero el archivo no trae la columna Tipo (D/I), así que no entra al desglose de directos e indirectos.`
               : null,
           ].filter(Boolean).join(' ') || null}
           deltaValor={deltaPersonal}
@@ -22932,6 +23045,10 @@ function parsearNomina(data, nombreArchivo = '') {
 
   // Parsear trabajadores
   const trabajadores = [];
+  // De cuántos lo dijo la columna del Excel y de cuántos lo dedujeron las doce
+  // palabras del puesto. Lo que se guarda con la carga, para que la semana
+  // sepa mañana si su desglose es dato (ver `procedenciaDI`).
+  let nDeColumna = 0, nDePuesto = 0;
   dataRows.forEach((row, ri) => {
     const nombre = colNombre >= 0 ? String(row[colNombre]||'').trim() : '';
     if (!nombre || nombre.length < 3) return;
@@ -22941,14 +23058,9 @@ function parsearNomina(data, nombreArchivo = '') {
     const categoria  = colCategoria  >= 0 ? String(row[colCategoria] ||'').trim() : '';
     const clasif     = colClasif     >= 0 ? String(row[colClasif]    ||'').trim() : '';
     const tipoRaw    = colTipo       >= 0 ? String(row[colTipo]      ||'').trim().toUpperCase() : '';
-    // Tipo D/I: 'I' explícito, o Indirecto, o categoría/clasif contiene keywords admin
-    let tipo = 'D';
-    if (tipoRaw === 'I' || tipoRaw.includes('IND')) tipo = 'I';
-    else if (!tipoRaw) {
-      const catUp = (categoria + ' ' + clasif).toUpperCase();
-      const tagsInd = ['GERENTE','ADMINISTRAT','CONTROL','HSE','COORDINADOR','SUPERINT','SUPERVISOR','INGENIERO','AUX','ESTIMACION','JEFE','ADMIN'];
-      if (tagsInd.some(t => catUp.includes(t))) tipo = 'I';
-    }
+    // Tipo D/I por la regla única, que además dice de dónde salió. La lista de
+    // palabras ya no se teclea aquí: ver `tipoDeTrabajador`.
+    const { tipo, de: tipoDe } = tipoDeTrabajador(tipoRaw, categoria, clasif);
 
     // Leer todos los campos numéricos (fórmulas devuelven 0)
     const viatico    = colViatico    >= 0 ? numCell(row[colViatico])   : 0;
@@ -22992,6 +23104,13 @@ function parsearNomina(data, nombreArchivo = '') {
     // Filtro final
     if (total === 0 && salSem === 0 && dias === 0) return;
 
+    // Se cuenta AQUÍ, junto al push, y no arriba donde se calcula el tipo:
+    // entre las dos cosas hay un filtro (`total === 0 && salSem === 0 && dias
+    // === 0`) que descarta filas. Contando antes, la procedencia describiría
+    // gente que no quedó en la carga y «todas de columna» podría ser falso por
+    // una fila tirada.
+    if (tipoDe === 'columna') nDeColumna++; else nDePuesto++;
+
     trabajadores.push({
       id: `${ri}-${nombre.slice(0,10)}`,
       nombre, categoria, clasif, tipo, salDia, salSem, dias,
@@ -23000,7 +23119,15 @@ function parsearNomina(data, nombreArchivo = '') {
     });
   });
 
-  return {trabajadores, semana, semanaInfo, colsDetectadas:{colNombre,colCategoria,colTipo,colHE,colTotal}};
+  // La procedencia del desglose, en DOS NÚMEROS y no en una bandera. Una
+  // bandera «traía columna» no distingue el archivo que la trae completa del
+  // que la trae a medias —columna presente con celdas vacías, que es el caso
+  // real: el tipo se infiere fila por fila, no archivo por archivo— y con ella
+  // una semana medio adivinada se publicaría como dato. Con los dos conteos,
+  // «cuántos se adivinaron» es una pregunta que se puede contestar.
+  return {trabajadores, semana, semanaInfo,
+    tipoDeColumna: nDeColumna, tipoDePuesto: nDePuesto,
+    colsDetectadas:{colNombre,colCategoria,colTipo,colHE,colTotal}};
 }
 
 // ── VALIDACIÓN de nómina — detecta duplicidades, sumas raras y anomalías
@@ -23315,6 +23442,13 @@ function Nomina({obra, rol, onHistorialCambio}) {
           totalDias: resultado.trabajadores.reduce((t,p)=>t+(p.dias||0),0),
           totalDir: resultado.trabajadores.filter(p=>p.tipo==='D').length,
           totalInd: resultado.trabajadores.filter(p=>p.tipo==='I').length,
+          // Y DE DÓNDE SALIÓ ESE DESGLOSE, que es lo que faltaba. Sin estos dos
+          // números la semana queda como las 67 que ya estaban cargadas: con el
+          // desglose escrito y sin forma de saber si lo dijo el Excel o lo
+          // dedujeron doce palabras. `procedenciaDI` los lee para decidir si se
+          // imprime.
+          tipoDeColumna: resultado.tipoDeColumna,
+          tipoDePuesto: resultado.tipoDePuesto,
         };
         // Comparar contra la última semana del calendario ANTERIOR a la que se
         // está cargando. No sirve "la última que haya": si esta raya es la
@@ -23687,10 +23821,25 @@ function Nomina({obra, rol, onHistorialCambio}) {
                 `${conPago === null ? '' : ' · con pago'}`}
             color={enListado === null ? C.textMut
               : deltaPersonal>0?C.yellow:deltaPersonal<0?C.red:C.caliza} size={12}/>
+          {/* El guion ya no significa sólo «esta semana no trae conteo»: ahora
+              también significa «el tipo se adivinó por el puesto, así que no
+              hay desglose que enseñar». Dos huecos distintos con la misma cara
+              es lo que este archivo lleva meses desarmando, así que el rótulo
+              dice cuál de los dos es y qué pedir para cerrarlo. */}
           <Kpi label="Directo" value={persActual.dir === null ? '—' : persActual.dir}
-            sub="mano de obra" color={persActual.dir === null ? C.textMut : C.blue}/>
+            sub={persActual.dir === null
+              ? (persActual.total === null ? 'sin conteo'
+                 : persActual.diDe === null ? 'la carga no dice si hubo columna D/I'
+                 : 'el archivo no trae columna D/I')
+              : 'mano de obra'}
+            color={persActual.dir === null ? C.textMut : C.blue}/>
           <Kpi label="Indirecto" value={persActual.ind === null ? '—' : persActual.ind}
-            sub="administración" color={persActual.ind === null ? C.textMut : C.purple}/>
+            sub={persActual.ind === null
+              ? (persActual.total === null ? 'sin conteo'
+                 : persActual.diDe === null ? 'la carga no dice si hubo columna D/I'
+                 : 'el archivo no trae columna D/I')
+              : 'administración'}
+            color={persActual.ind === null ? C.textMut : C.purple}/>
           <Kpi label="Total nómina"
             value={nominaActual === null ? 'sin dato' : MXN(nominaActual)}
             sub={nominaActual === null ? 'el archivo no trae el total'
@@ -24033,9 +24182,15 @@ function Nomina({obra, rol, onHistorialCambio}) {
                         deltaP!==0?`${deltaP>0?'+':''}${deltaP}`
                           : pSem.fuente === 'listado' ? 'del listado' : '',
                         pSem.total === null ? C.textMut : C.caliza],
-                      ['Directo',pSem.dir === null ? '—' : pSem.dir,'',
+                      // El renglón angosto no aguanta la frase entera, así que
+                      // aquí va corta; la de arriba, en los KPIs, la dice
+                      // completa. Lo que no se hace es dejar el guion pelón:
+                      // una semana sin columna y una sin conteo se verían igual.
+                      ['Directo',pSem.dir === null ? '—' : pSem.dir,
+                        pSem.dir === null && pSem.total !== null ? 'sin columna D/I' : '',
                         pSem.dir === null ? C.textMut : C.blue],
-                      ['Indirecto',pSem.ind === null ? '—' : pSem.ind,'',
+                      ['Indirecto',pSem.ind === null ? '—' : pSem.ind,
+                        pSem.ind === null && pSem.total !== null ? 'sin columna D/I' : '',
                         pSem.ind === null ? C.textMut : C.purple],
                       ['Total nómina',
                         typeof sem.totalNomina === 'number' ? MXN(sem.totalNomina) : 'sin dato',
