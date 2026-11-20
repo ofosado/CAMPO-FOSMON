@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const noArranco = require('./no-arranco.cjs');
+const { deArchivo } = require('./extraer-de-app.cjs');
 const path = require('path');
 const raiz = path.resolve(__dirname, '..');
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
@@ -150,9 +151,13 @@ if (process.argv.includes('--contraprueba')) {
   process.exit(rojas > 0 ? 0 : 1);
 }
 
-const api = new Function(`"use strict";
-  ${NECESARIOS.map(n => `const ${n} = ${global[n]};`).join('\n  ')}
-  return { ${NECESARIOS.join(', ')} };`)();
+// POR `deArchivo`, QUE RESUELVE EL GRAFO. Armado a mano, el cuerpo traía los
+// nombres de `NECESARIOS` y ninguno de los que ésos usan: el 2026-11-19
+// `personalDeSemana` adoptó `procedenciaDI` —para dejar de publicar un desglose
+// D/I que nadie había dicho— y este banco salió NO ARRANCÓ con `procedenciaDI
+// is not defined`, sin medir nada. `NECESARIOS` sigue siendo lo que el banco
+// PIDE; las dependencias las pone el módulo.
+const api = deArchivo(archivo, NECESARIOS);
 const { heImporte, plantillaDeObra } = api;
 
 const MXN = n => '$' + (n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

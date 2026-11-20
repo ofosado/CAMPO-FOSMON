@@ -24,6 +24,7 @@ const noArranco = require('./no-arranco.cjs');
 noArranco.vigilarExcepciones();
 
 const archivo = process.argv[2] || path.join(raiz, 'src/App.jsx');
+const { deArchivo } = require('./extraer-de-app.cjs');
 const src = fs.readFileSync(archivo, 'utf8');
 const ast = parse(src, { sourceType: 'module', plugins: ['jsx'] });
 
@@ -75,7 +76,10 @@ traverse(ast, {
 
 if (!global['heImporte']) noArranco(['heImporte']);
 
-const heImporte = new Function(`"use strict"; return ${global['heImporte']};`)();
+// Por `deArchivo`, que trae las dependencias de lo pedido. Pegar
+// `global['X']` suelto extrae X y nada de lo que X usa, y entonces el banco
+// revienta —NO ARRANCÓ, sin medir— el día que X adopte un helper.
+const { heImporte } = deArchivo(archivo, 'heImporte');
 
 // ── 1. Un solo bloque ─────────────────────────────────────────────────────
 console.log('1. Queda un solo bloque de KPIs en Nómina');
@@ -120,8 +124,7 @@ for (const n of PEDIDOS)
 if (fallas) { console.log(`\n${fallas} comprobación(es) en rojo.`); process.exit(1); }
 if (!global['personalDeSemana']) noArranco(['personalDeSemana']);
 
-const personalDeSemana = new Function(
-  `"use strict"; return ${global['personalDeSemana']};`)();
+const { personalDeSemana } = deArchivo(archivo, 'personalDeSemana');
 
 const calcular = semanaActual => new Function(
   'semanaActual', 'heImporte', 'personalDeSemana', `

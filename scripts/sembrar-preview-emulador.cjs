@@ -715,11 +715,42 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     // tablero salía «0D · 0I · 38» —cero personas donde la siembra quería 34, y
     // un «38» que no se lee como semana— y el preview, que es donde se verifica
     // antes de mezclar, enseñaba un defecto que producción no tiene.
+    // Y LA PROCEDENCIA DEL DESGLOSE D/I, que es lo que decide si sale a
+    // pantalla. Desde el 2026-11-19 el importador anota en cada carga de
+    // cuántas filas lo dijo la columna «Tipo (D/I)» del Excel y de cuántas lo
+    // dedujeron doce palabras del puesto, y el desglose sólo se publica cuando
+    // consta que lo dijo la columna. Se siembran LOS TRES ESTADOS, porque los
+    // tres existen en producción y los tres se ven distinto:
+    //
+    //   S36  sin los dos conteos        → carga vieja: «no consta». Así están
+    //                                     las 67 semanas que ya había el
+    //                                     2026-11-19.
+    //   S37  con filas adivinadas       → el archivo no traía la columna
+    //                                     completa. Tampoco se publica.
+    //   S38  todas de columna           → es dato: se publica «26D · 8I».
+    //
+    // La 0121 se queda SIN declarar a propósito: así el KPI del portafolio
+    // tiene una obra que entra al total y no al desglose, que es el caso donde
+    // sumar su cero al desglose lo volvía una cifra de la mitad de la gente
+    // presentada como la de todas.
+    const declara = id !== '0121';
     await escribir(`${prefijo}obras/${id}/nomina/historial`, {
-      semanas: [{ id: 'S38-2026', semana: 'Semana 38', año: 2026, fecha: '21/9/2026',
-                  archivo: 'NOMINA-S38.xlsx', totalNomina: 486000,
-                  totalHEImp: 41000, totalHE: 41000,
-                  totalDir: 26, totalInd: 8, totalDias: 198 }],
+      semanas: [
+        { id: 'S36-2026', semana: 'Semana 36', año: 2026, fecha: '7/9/2026',
+          archivo: 'NOMINA-S36.xlsx', totalNomina: 455000,
+          totalHEImp: 33000, totalHE: 33000,
+          totalDir: 24, totalInd: 8, totalDias: 186 },
+        { id: 'S37-2026', semana: 'Semana 37', año: 2026, fecha: '14/9/2026',
+          archivo: 'NOMINA-S37.xlsx', totalNomina: 470000,
+          totalHEImp: 37000, totalHE: 37000,
+          totalDir: 25, totalInd: 8, totalDias: 192,
+          ...(declara ? { tipoDeColumna: 29, tipoDePuesto: 4 } : {}) },
+        { id: 'S38-2026', semana: 'Semana 38', año: 2026, fecha: '21/9/2026',
+          archivo: 'NOMINA-S38.xlsx', totalNomina: 486000,
+          totalHEImp: 41000, totalHE: 41000,
+          totalDir: 26, totalInd: 8, totalDias: 198,
+          ...(declara ? { tipoDeColumna: 34, tipoDePuesto: 0 } : {}) },
+      ],
     });
   }
 

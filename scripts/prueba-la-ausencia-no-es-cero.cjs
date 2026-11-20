@@ -288,6 +288,7 @@ console.log('\n6. #116 · Sin desglose, el conteo sale del listado de trabajador
 // Si falta el desglose pero está el listado, contarlo no es estimar — es la
 // misma cuenta por el otro lado. Lo que no se hace es publicar 0.
 const conListado = semanasDeNomina([{ ...SEM, archivo: 'A.xlsx', totalNomina: 300_000,
+  tipoDeColumna: 3, tipoDePuesto: 0,
   trabajadores: [{ tipo: 'D' }, { tipo: 'D' }, { tipo: 'I' }] }])[0];
 const p = personalDeSemana(conListado);
 check(p.total === 3 && p.dir === 2 && p.ind === 1,
@@ -299,6 +300,45 @@ check(personalDeSemana({ totalDir: 51, totalInd: 83 }).fuente === 'desglose',
   'mientras que con desglose la fuente es el desglose');
 check(personalDeSemana(undefined).total === null && personalDeSemana(null).total === null,
   'y sin semana no hay conteo, sin reventar');
+
+// ── LA AUSENCIA QUE SE DESCUBRIÓ DESPUÉS: NO SABER DE DÓNDE SALIÓ EL TIPO ──
+// Este banco existe porque un campo que nadie midió se publicaba como cero.
+// El desglose D/I tenía la versión cara del mismo defecto: se publicaba como
+// MEDIDO algo que en 27 de 67 semanas de producción había salido de aplicarle
+// doce palabras al puesto (medido el 2026-11-19). Así que ahora la plantilla y
+// su desglose se contestan por separado, y el desglose se calla cuando no
+// consta que lo dijera el Excel. Callarse no es decir cero: el total sigue.
+const sinProcedencia = semanasDeNomina([{ ...SEM, archivo: 'A.xlsx', totalNomina: 300_000,
+  trabajadores: [{ tipo: 'D' }, { tipo: 'D' }, { tipo: 'I' }] }])[0];
+const sp = personalDeSemana(sinProcedencia);
+check(sp.total === 3, 'sin procedencia, las tres personas siguen contadas', String(sp.total));
+check(sp.dir === null && sp.ind === null,
+  'pero el desglose NO se publica: no consta que el Excel lo dijera',
+  `${sp.dir}D · ${sp.ind}I`);
+check(sp.diDe === null,
+  'y se distingue de «el archivo no la traía»: aquí la carga no dice nada',
+  String(sp.diDe));
+// Media semana contada y media adivinada tampoco es un desglose: una sola fila
+// inferida basta para callarlo. Si en vez de esto se publicara la parte
+// contada, el número saldría más chico que el total y nadie sabría por qué.
+const medioAdivinada = semanasDeNomina([{ ...SEM, archivo: 'A.xlsx', totalNomina: 300_000,
+  tipoDeColumna: 2, tipoDePuesto: 1,
+  trabajadores: [{ tipo: 'D' }, { tipo: 'D' }, { tipo: 'I' }] }])[0];
+const ma = personalDeSemana(medioAdivinada);
+check(ma.total === 3 && ma.dir === null && ma.diDe === 'puesto',
+  'con una sola fila adivinada el desglose se calla, y dice que fue por el puesto',
+  `${ma.total} · ${ma.dir}D · ${ma.diDe}`);
+// Y una semana que llegó en dos archivos exige que los DOS lo declaren: con uno
+// solo, la procedencia describe la mitad de la gente que el desglose cuenta.
+const mitadDeclara = semanasDeNomina([
+  { ...SEM, archivo: 'A.xlsx', tipoDeColumna: 2, tipoDePuesto: 0,
+    trabajadores: [{ tipo: 'D' }, { tipo: 'D' }] },
+  { ...SEM, archivo: 'B.xlsx', trabajadores: [{ tipo: 'I' }] },
+])[0];
+check(personalDeSemana(mitadDeclara).total === 3
+   && personalDeSemana(mitadDeclara).dir === null,
+  'si sólo una de las dos partes declara su procedencia, no hay desglose',
+  `${personalDeSemana(mitadDeclara).total} · ${personalDeSemana(mitadDeclara).dir}D`);
 
 console.log('\n7. #116 · El renglón del listado no cuenta un listado que no vino');
 // Tres renglones de la pestaña de Nómina publicaban `trabajadores.length`, y ese
