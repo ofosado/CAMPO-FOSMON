@@ -163,9 +163,16 @@ if (process.argv.includes('--contraprueba')) {
       ['Se invocó con ARCH_FUNCIONES o ARCH_APP puesto. Eso mutaría lo mutado.']);
 
   const MUTACIONES = [
+    // REANCLADA el 2026-11-20. El encabezado del lunes dejó de ser una franja
+    // negra con la palabra «cotea» en texto y pasó a llevar el LOGO, así que el
+    // anclaje viejo —`>cotea${firma…}</div>`— se quedó sin aplicar. El portón
+    // de anclajes rancios lo dijo el mismo día, que es para lo que está. El
+    // anclaje nuevo va pegado al título «Resumen semanal» porque el renglón de
+    // la firma, él solo, ahora aparece DOS veces en el archivo —este sobre y el
+    // de los avisos— y `replace` con una cadena toca nada más la primera.
     ['FN', 'el encabezado del lunes vuelve a teclear la marca',
-      (t) => t.replace('>cotea${firma ? ` · ${firma}` : ""}</div>',
-        '>CAMPO · FOSMON CONSTRUCCIONES</div>')],
+      (t) => t.replace('${firma ? `<div style="font-size:10px;color:${MARCA_GRIS};letter-spacing:0.1em;text-transform:uppercase;margin-top:11px;">${firma}</div>` : ""}\n          <div style="font-size:23px;',
+        '<div style="font-size:10px;">CAMPO · FOSMON CONSTRUCCIONES</div>\n          <div style="font-size:23px;')],
     // REANCLADA el 2026-11-07. El pie imprimía el host de `APP_URL` y el
     // anclaje lo llevaba dentro; al partir la dirección en dos —`APP_URL` para
     // la app y `SITIO_PUBLICO` para la cara pública— el pie pasó a imprimir el

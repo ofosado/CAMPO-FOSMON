@@ -2428,6 +2428,44 @@ exports.refrescarCatalogoGP = onCall({
 // parece a una suplantación.
 const APP_URL = "https://app.cotea.com.mx";
 const SITIO_PUBLICO = "https://cotea.com.mx";
+
+// ── LOS COLORES SON LOS DE LA MARCA, NO LOS DE LA INTERFAZ ──────────────────
+//
+// El correo iba en `#0D1619`, que se ve negro y no es cotea: es la paleta vieja
+// de la interfaz, la que `src/styles/tokens.css` dice que todavía no cruzó el
+// puente. Los colores de cotea son los dos que trae su logo —pizarra y
+// naranja—, los mismos que `src/App.jsx:293-294` usa para el PDF. Medido el
+// 2026-11-17 sobre el HTML que salió de verdad, interceptado antes de Resend:
+// los dos aparecían CERO veces en los cuatro correos del producto.
+const MARCA_PIZARRA = "#4A5560";
+const MARCA_NARANJA = "#FF6B35";
+const MARCA_TINTA = "#14181C";
+const MARCA_GRIS = "#6B7480";
+const MARCA_BORDE = "#E8EAF0";
+
+// ── EL LOGO VIAJA POR URL ABSOLUTA, Y SE SABE CUÁL ──────────────────────────
+//
+// Un `<img>` de correo lo pide el cliente de correo SIN SESIÓN, así que no
+// puede salir de Storage —cuyas reglas exigen `request.auth` en todas sus
+// rutas— ni ser el data URI con que el cliente guarda su marca en
+// `orgs/{oid}/config/branding`: Gmail y Outlook no pintan data URIs. Tiene que
+// ser una URL pública, y ésa es la razón de fondo por la que el logo DEL
+// CLIENTE no entra al correo aunque ya esté cargado.
+//
+// `public/cotea-horizontal.png` es el logo rasterizado a 480×136 —3× para
+// retina— porque ningún cliente de correo pinta un SVG remoto. Vite copia
+// `public/` a `dist/`, así que sale con cada despliegue del front. Medido el
+// 2026-11-20: `app.cotea.com.mx` y `cotea.com.mx` lo sirven los dos con 200 y
+// los 11,968 bytes del archivo del repo —cuando se escribió
+// `correo-cotea-se-presenta.cjs` el primero daba 404, y por eso aquel guion
+// lleva un respaldo por `cid:`—. Va por `APP_URL` y no por el sitio público
+// porque es el mismo origen al que apunta el botón: un dominio menos que un
+// filtro de spam tenga que resolver.
+//
+// Y EL CORREO SE LEE CON LAS IMÁGENES APAGADAS, que es como llega la primera
+// vez a un buzón que no conoce al remitente: el `alt` dice «cotea», el título
+// dice qué pasó, y ningún dato del aviso vive dentro de la imagen.
+const LOGO_URL = `${APP_URL}/cotea-horizontal.png`;
 const FROM_EMAIL = "cotea <no-reply@cotea.com.mx>";
 const ROLES_RESUMEN_SEMANAL = ["director_general", "director_operaciones", "gerente_construccion"];
 
@@ -2799,12 +2837,12 @@ async function calcularKpisObra(obraId, gpData) {
  */
 function bloqueCaptura(dias) {
   if (dias === null || dias === undefined) {
-    return `<span style="color:#9AA0AC;font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;
+    return `<span style="color:${MARCA_GRIS};font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;
   }
   if (dias > 7) {
     return `<span style="background:#FCEBEB;color:#A32D2D;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;">Sin captura ${dias}d</span>`;
   }
-  return `<span style="color:#9AA0AC;font-size:11px;">Captura: ${dias}d</span>`;
+  return `<span style="color:${MARCA_GRIS};font-size:11px;">Captura: ${dias}d</span>`;
 }
 
 /**
@@ -2855,7 +2893,7 @@ function bloqueDenegaciones(den) {
   }
   if (!den.total) {
     return `
-          <div style="margin-top:14px;font-size:11px;color:#9AA0AC;">
+          <div style="margin-top:14px;font-size:11px;color:${MARCA_GRIS};">
             Sin denegaciones de permiso inexplicadas en los últimos 7 días.
           </div>`;
   }
@@ -2956,29 +2994,29 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
     // porcentaje sale bajísimo justamente porque le falta el gasto— se pintaba
     // de verde tranquilizador. Sin medición no hay semáforo: gris.
     const sinMedir = k.gastoGPMedido === false;
-    const colorGasto = sinMedir ? "#9AA0AC" : semaforoColor(k.pctGasto, "gasto");
+    const colorGasto = sinMedir ? MARCA_GRIS : semaforoColor(k.pctGasto, "gasto");
     const linkObra = `${APP_URL}/?obra=${encodeURIComponent(k.obraId)}`;
     const alertaCaptura = bloqueCaptura(k.diasDesdeCaptura);
     return `
     <tr>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;vertical-align:top;">
-        <div style="font-weight:600;color:#0D1619;font-size:14px;line-height:1.3;">
+        <div style="font-weight:600;color:${MARCA_TINTA};font-size:14px;line-height:1.3;">
           <a href="${linkObra}" style="color:#185FA5;text-decoration:none;">${k.nombre}</a>
         </div>
-        <div style="color:#9AA0AC;font-size:11px;margin-top:2px;">${k.contrato || "—"} · ${k.cliente || ""}</div>
+        <div style="color:${MARCA_GRIS};font-size:11px;margin-top:2px;">${k.contrato || "—"} · ${k.cliente || ""}</div>
         <div style="margin-top:6px;">${alertaCaptura}</div>
       </td>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
         <div style="font-size:18px;font-weight:700;color:${colorAvance};">${PCT_FMT(k.avancePct, 1)}</div>
-        <div style="font-size:10px;color:#9AA0AC;">avance</div>
+        <div style="font-size:10px;color:${MARCA_GRIS};">avance</div>
       </td>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
         <div style="font-size:14px;font-weight:600;color:${colorGasto};${sinMedir ? "font-style:italic;" : ""}">${sinMedir ? "sin medir" : MXN_FMT(k.totGasto)}</div>
-        <div style="font-size:10px;color:#9AA0AC;">${sinMedir ? motivoSinMedir(k.gastoGPMotivo) : `${PCT_FMT(k.pctGasto, 0)} de ${MXN_FMT(k.presupuesto)}`}</div>
+        <div style="font-size:10px;color:${MARCA_GRIS};">${sinMedir ? motivoSinMedir(k.gastoGPMotivo) : `${PCT_FMT(k.pctGasto, 0)} de ${MXN_FMT(k.presupuesto)}`}</div>
       </td>
       <td style="padding:14px 12px;border-bottom:1px solid #E8EAF0;text-align:right;vertical-align:top;">
-        <div style="font-size:13px;color:#0D1619;">${MXN_FMT(k.cobrado)}</div>
-        <div style="font-size:10px;color:#9AA0AC;">cobrado</div>
+        <div style="font-size:13px;color:${MARCA_TINTA};">${MXN_FMT(k.cobrado)}</div>
+        <div style="font-size:10px;color:${MARCA_GRIS};">cobrado</div>
       </td>
     </tr>`;
   }).join("");
@@ -3036,24 +3074,33 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
 
   const html = `<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8"><title>Resumen semanal · cotea</title></head>
-<body style="margin:0;padding:0;background:#F0F2F5;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#0D1619;">
-  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F0F2F5;padding:24px 12px;">
+<body style="margin:0;padding:0;background:#F4F5F7;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:${MARCA_TINTA};">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F4F5F7;padding:24px 12px;">
     <tr><td align="center">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="max-width:640px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
         <!-- Header -->
-        <tr><td style="background:#0D1619;color:#fff;padding:24px 28px;">
-          <div style="font-size:11px;letter-spacing:0.12em;opacity:0.7;">cotea${firma ? ` · ${firma}` : ""}</div>
-          <div style="font-size:24px;font-weight:700;margin-top:6px;">Resumen semanal</div>
-          <div style="font-size:12px;opacity:0.8;margin-top:4px;">Corte del ${fechaCorte}</div>
+        <!-- ESTE CORREO NO USA sobreCorreo, Y NO ES UN DESCUIDO: lleva una
+             tabla de obras a 640 px que no cabe en el sobre de 560 de los
+             avisos. Lo que sí comparte es la MARCA, y por eso el encabezado se
+             pinta con las mismas constantes y el mismo logo. PENDIENTES decía
+             que los cuatro correos compartían molde; medido el 2026-11-20, son
+             dos moldes. Lo que tiene que ser uno es la marca, no la
+             plantilla. -->
+        <tr><td style="height:4px;background:${MARCA_NARANJA};font-size:0;line-height:0;">&nbsp;</td></tr>
+        <tr><td style="background:#FFFFFF;padding:24px 28px 18px 28px;">
+          <img src="${LOGO_URL}" width="160" height="46" alt="cotea" style="display:block;border:0;">
+          ${firma ? `<div style="font-size:10px;color:${MARCA_GRIS};letter-spacing:0.1em;text-transform:uppercase;margin-top:11px;">${firma}</div>` : ""}
+          <div style="font-size:23px;font-weight:700;margin-top:14px;color:${MARCA_TINTA};">Resumen semanal</div>
+          <div style="font-size:12px;color:${MARCA_PIZARRA};margin-top:4px;">Corte del ${fechaCorte}</div>
         </td></tr>
         <!-- Resumen ejecutivo -->
         <tr><td style="padding:20px 28px;background:#F8F9FB;border-bottom:1px solid #E8EAF0;">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
             <tr>
-              <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:#0D1619;">${totalObras}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div>${avisoNoLeidas ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoNoLeidas}</div>` : ""}</td>
-              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#185FA5;">${MXN_FMT(presupuestoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Presupuesto</div></td>
-              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div>${avisoGastoCorto ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoGastoCorto}</div>` : ""}</td>
-              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:22px;font-weight:700;color:${MARCA_TINTA};">${totalObras}</div><div style="font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;">Obras activas</div>${avisoNoLeidas ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoNoLeidas}</div>` : ""}</td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#185FA5;">${MXN_FMT(presupuestoTotal)}</div><div style="font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;">Presupuesto</div></td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#A32D2D;">${MXN_FMT(gastoTotal)}</div><div style="font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;">Gasto acumulado</div>${avisoGastoCorto ? `<div style="font-size:10px;color:#854F0B;margin-top:3px;">${avisoGastoCorto}</div>` : ""}</td>
+              <td style="text-align:center;padding:6px;"><div style="font-size:18px;font-weight:700;color:#3B6D11;">${MXN_FMT(cobradoTotal)}</div><div style="font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;">Cobrado</div></td>
             </tr>
           </table>
           ${avisoDeCaptura(obrasSinCaptura, obrasSinUnCierre)}${bloqueDenegaciones(denegaciones)}${bloqueFueraDeAlcance(reparto)}${bloqueObrasNoLeidas(noLeidas)}
@@ -3062,20 +3109,20 @@ function correoResumenSemanal(kpisObras, fechaCorte, denegaciones, reparto, marc
         <tr><td style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
             <thead><tr style="background:#fff;border-bottom:2px solid #E8EAF0;">
-              <th style="padding:10px 12px;text-align:left;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Obra</th>
-              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Avance</th>
-              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Gasto</th>
-              <th style="padding:10px 12px;text-align:right;font-size:10px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Cobrado</th>
+              <th style="padding:10px 12px;text-align:left;font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Obra</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Avance</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Gasto</th>
+              <th style="padding:10px 12px;text-align:right;font-size:10px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">Cobrado</th>
             </tr></thead>
             <tbody>${filasObras}</tbody>
           </table>
         </td></tr>
         <!-- CTA -->
         <tr><td style="padding:24px 28px;text-align:center;border-top:1px solid #E8EAF0;">
-          <a href="${APP_URL}" style="display:inline-block;background:#0D1619;color:#fff;padding:11px 24px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">Abrir cotea</a>
+          <a href="${APP_URL}" style="display:inline-block;background:${MARCA_PIZARRA};color:#fff;padding:11px 24px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">Abrir cotea</a>
         </td></tr>
         <!-- Footer -->
-        <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
+        <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:${MARCA_GRIS};text-align:center;border-top:1px solid #E8EAF0;">
           Este resumen se envía automáticamente cada lunes a las 9 a.m. (CDMX) a Dirección y Gerencia.<br>
           cotea${casa ? ` — ${casa}` : ""} · ${SITIO_PUBLICO.replace(/^https?:\/\//, "")}
         </td></tr>
@@ -3149,29 +3196,46 @@ const ESC_HTML = (s) => String(s ?? "")
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-// El sobre común de los tres correos. Lo único que cambia entre uno y otro es
+// El sobre común de los cuatro correos. Lo único que cambia entre uno y otro es
 // el cuerpo; el encabezado, el pie y la marca son los mismos para que un
 // usuario reconozca de dónde viene el correo antes de leerlo.
+//
+// QUIÉN FIRMA EL ENCABEZADO: COTEA, Y EL CLIENTE VA DEBAJO. La pregunta estaba
+// abierta y se decide aquí. El correo sale de `no-reply@cotea.com.mx` —el
+// único `from` del archivo— y lo manda el sistema, no la organización: un
+// encabezado firmado por el ayuntamiento sobre un dominio de cotea dice que
+// escribió el ayuntamiento, y no escribió. Además el acto que pide el aviso es
+// «entra a cotea y captura», así que lo que el destinatario tiene que
+// reconocer en tres segundos es el producto. La organización sigue nombrada
+// —`marcaDeOrg` la resuelve y va bajo el logo—, que es lo que contesta «¿de
+// cuál de mis dos clientes es este aviso?» sin fingir remitente.
+//
+// Por eso tampoco entra aquí el LOGO del cliente, y no es sólo que falte la
+// ruta pública: un logo ajeno en la cabecera de un correo de cotea es una
+// atribución falsa, no un adorno. Donde el logo del cliente sí va es en la
+// PORTADA DEL PDF, que es un documento suyo y donde el data URI pinta sin
+// pedirle permiso a nadie.
 function sobreCorreo({ marca, titulo, entradilla, cuerpoHTML, pie }) {
   const firma = marca?.empresa ? ESC_HTML(marca.empresa) : "";
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#F8F9FB;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F8F9FB;padding:24px 12px;">
+<body style="margin:0;padding:0;background:#F4F5F7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F4F5F7;padding:24px 12px;">
     <tr><td align="center">
-      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border-radius:10px;overflow:hidden;border:1px solid #E8EAF0;">
-        <tr><td style="padding:20px 28px;background:#0D1619;">
-          <div style="font-size:17px;font-weight:700;color:#FFFFFF;letter-spacing:0.06em;">cotea</div>
-          ${firma ? `<div style="font-size:10px;color:#9AA0AC;letter-spacing:0.08em;text-transform:uppercase;margin-top:3px;">${firma}</div>` : ""}
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;border-radius:12px;overflow:hidden;border:1px solid ${MARCA_BORDE};">
+        <tr><td style="height:4px;background:${MARCA_NARANJA};font-size:0;line-height:0;">&nbsp;</td></tr>
+        <tr><td style="padding:24px 28px 18px 28px;background:#FFFFFF;">
+          <img src="${LOGO_URL}" width="160" height="46" alt="cotea" style="display:block;border:0;">
+          ${firma ? `<div style="font-size:10px;color:${MARCA_GRIS};letter-spacing:0.1em;text-transform:uppercase;margin-top:11px;">${firma}</div>` : ""}
         </td></tr>
-        <tr><td style="padding:26px 28px 8px 28px;">
-          <div style="font-size:18px;font-weight:700;color:#0D1619;line-height:1.35;">${ESC_HTML(titulo)}</div>
-          ${entradilla ? `<div style="font-size:13px;color:#4A5160;line-height:1.6;margin-top:10px;">${entradilla}</div>` : ""}
+        <tr><td style="padding:0 28px 6px 28px;">
+          <div style="font-size:19px;font-weight:700;color:${MARCA_TINTA};line-height:1.35;">${ESC_HTML(titulo)}</div>
+          ${entradilla ? `<div style="font-size:13px;color:${MARCA_PIZARRA};line-height:1.6;margin-top:10px;">${entradilla}</div>` : ""}
         </td></tr>
         <tr><td style="padding:8px 28px 26px 28px;">${cuerpoHTML}</td></tr>
-        <tr><td style="padding:16px 28px;background:#F8F9FB;font-size:10px;color:#9AA0AC;text-align:center;border-top:1px solid #E8EAF0;">
+        <tr><td style="padding:16px 28px;background:#FAFBFC;font-size:10px;color:${MARCA_GRIS};text-align:center;border-top:1px solid ${MARCA_BORDE};">
           ${ESC_HTML(pie || "Este aviso lo manda cotea automáticamente.")}<br>
-          <a href="${SITIO_PUBLICO}" style="color:#9AA0AC;">${SITIO_PUBLICO.replace(/^https?:\/\//, "")}</a>
+          <a href="${SITIO_PUBLICO}" style="color:${MARCA_NARANJA};text-decoration:none;font-weight:600;">${SITIO_PUBLICO.replace(/^https?:\/\//, "")}</a>
         </td></tr>
       </table>
     </td></tr>
@@ -3180,7 +3244,7 @@ function sobreCorreo({ marca, titulo, entradilla, cuerpoHTML, pie }) {
 }
 
 const botonHTML = (texto, url) =>
-  `<a href="${url}" style="display:inline-block;background:#0D1619;color:#FFFFFF;text-decoration:none;` +
+  `<a href="${url}" style="display:inline-block;background:${MARCA_PIZARRA};color:#FFFFFF;text-decoration:none;` +
   `font-size:13px;font-weight:700;padding:11px 20px;border-radius:7px;">${ESC_HTML(texto)}</a>`;
 
 // Una tabla de dos columnas para los datos. Los renglones se arman de pares
@@ -3191,20 +3255,20 @@ const tablaDatos = (pares) => {
   if (!filas.length) return "";
   return `<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:4px 0 18px 0;">` +
     filas.map(([k, v]) => `<tr>
-      <td style="padding:7px 10px 7px 0;font-size:11px;color:#9AA0AC;text-transform:uppercase;letter-spacing:0.04em;white-space:nowrap;vertical-align:top;">${ESC_HTML(k)}</td>
-      <td style="padding:7px 0;font-size:13px;color:#0D1619;font-weight:600;">${ESC_HTML(v)}</td>
+      <td style="padding:7px 10px 7px 0;font-size:11px;color:${MARCA_GRIS};text-transform:uppercase;letter-spacing:0.04em;white-space:nowrap;vertical-align:top;">${ESC_HTML(k)}</td>
+      <td style="padding:7px 0;font-size:13px;color:${MARCA_TINTA};font-weight:600;">${ESC_HTML(v)}</td>
     </tr>`).join("") + `</table>`;
 };
 
 // Un bloque de pasos numerados. Los pasos son texto ya escapado por quien los
 // arma, porque algunos llevan un <b> dentro.
 const pasosHTML = (titulo, pasos) =>
-  `<div style="font-size:12px;font-weight:700;color:#0D1619;margin:18px 0 8px 0;">${ESC_HTML(titulo)}</div>` +
-  `<ol style="margin:0;padding-left:20px;font-size:13px;color:#4A5160;line-height:1.75;">` +
+  `<div style="font-size:12px;font-weight:700;color:${MARCA_TINTA};margin:18px 0 8px 0;">${ESC_HTML(titulo)}</div>` +
+  `<ol style="margin:0;padding-left:20px;font-size:13px;color:${MARCA_PIZARRA};line-height:1.75;">` +
   pasos.map(p => `<li>${p}</li>`).join("") + `</ol>`;
 
 const parrafoHTML = (txt) =>
-  `<div style="font-size:13px;color:#4A5160;line-height:1.65;margin:14px 0;">${txt}</div>`;
+  `<div style="font-size:13px;color:${MARCA_PIZARRA};line-height:1.65;margin:14px 0;">${txt}</div>`;
 
 const avisoHTML = (txt) =>
   `<div style="font-size:12px;color:#8A5A00;background:#FFF8E6;border:1px solid #FFE9B0;` +
@@ -4267,10 +4331,10 @@ function correoCierrePendiente({ marca, nombre, idSem, obras }) {
   const nombres = [...new Set(obras)];
   const nombrePila = String(nombre || "").trim().split(/\s+/)[0] || "";
   const lista = `<ul style="margin:4px 0 18px 0;padding-left:20px;font-size:13px;` +
-    `color:#0D1619;line-height:1.8;font-weight:600;">` +
+    `color:${MARCA_TINTA};line-height:1.8;font-weight:600;">` +
     nombres.map(n => `<li>${ESC_HTML(n)}</li>`).join("") + `</ul>`;
   const cuerpoHTML =
-    `<div style="font-size:12px;font-weight:700;color:#0D1619;margin:0 0 4px 0;">` +
+    `<div style="font-size:12px;font-weight:700;color:${MARCA_TINTA};margin:0 0 4px 0;">` +
     `${nombres.length === 1 ? "Obra sin cerrar" : `Obras sin cerrar (${nombres.length})`}</div>` +
     lista +
     botonHTML("Capturar el avance", APP_URL) +

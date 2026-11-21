@@ -56,6 +56,7 @@ const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
 
 const noArranco = require('./no-arranco.cjs');
+const { cierreDe } = require('./extraer-de-app.cjs');
 // El `FieldValue` de verdad, el mismo que la función usa en producción.
 const { FieldValue } = require(path.join(raiz, 'functions/node_modules/firebase-admin/lib/firestore'));
 noArranco.vigilarExcepciones();
@@ -516,30 +517,29 @@ class HttpsErrorFalso extends Error {
   // ═══ §3: las cinco funciones de gestión, ejecutadas ══════════════════════
   console.log('\n§3 · las cinco funciones de gestión miran la organización');
   const modF = astDe(ARCH_FUNCS);
-  const fuenteF = declaraciones(modF, [
-    'ROLES_POR_TIPO', 'ROLES_CROSS', 'ROLES_VALIDOS', 'ROLES_ADMIN', 'ROLES_TODAS_OBRAS',
-    'emailAId', 'requireAdmin', 'ambitoDe', 'exigirMismaOrg', 'validarRolEnOrg',
-    'exigirPuedeOtorgarRol', 'leerOrg',
-    // Desde el 2026-11-03 el alta manda el correo de bienvenida con la
-    // contraseña temporal, y la edición el de obra asignada. Aquí no se mide
-    // el correo —eso es `prueba-correos-de-alta.cjs`— pero sin estos símbolos
-    // las funciones no corren, y lo que este banco mide es la frontera entre
-    // organizaciones. Que la lista esté tecleada es el defecto conocido de
-    // este banco: ver el preámbulo de `extraer-de-app.cjs`.
-    // `SITIO_PUBLICO` entró el 2026-11-04 con el #89 (la mudanza al
-    // subdominio): el pie de `sobreCorreo` dejó de usar `APP_URL`. Es
-    // exactamente el defecto que el comentario de arriba anuncia — se cayó con
-    // un `is not defined` a media suite, no en silencio, que es lo único bueno
-    // de tener la lista tecleada.
-    'APP_URL', 'SITIO_PUBLICO', 'FROM_EMAIL', 'ESC_HTML', 'sobreCorreo', 'botonHTML', 'tablaDatos',
-    'pasosHTML', 'parrafoHTML', 'avisoHTML', 'marcaDeOrg', 'ALFABETO_PASS',
-    'generarPasswordTemporal', 'rolVisible', 'rutaObrasDeOrg', 'nombresDeObras',
-    'PASOS_CAMBIO_PASS', 'PASOS_INSTALAR', 'correoBienvenida', 'correoObraAsignada',
-    'enviarEmailResend', 'mandarCorreoDeAlta',
-  ]);
   const NOMBRES_FN = ['crearUsuario', 'actualizarUsuario', 'eliminarUsuario',
                       'cambiarPassword', 'listarUsuarios'];
   const fuentesFn = NOMBRES_FN.map(n => `${n}: (${manejador(modF, n)})`).join(',\n');
+
+  // EL ANDAMIAJE SE DEDUCE DE LOS CINCO MANEJADORES, NO SE TECLEA.
+  //
+  // Aquí vivía una lista de 30 nombres escrita a mano, y su propio comentario
+  // anunciaba el defecto: «que la lista esté tecleada es el defecto conocido de
+  // este banco». Ya había cobrado dos veces —`SITIO_PUBLICO` el 2026-11-04 con
+  // la mudanza al subdominio, y `MARCA_GRIS` el 2026-11-20 cuando el correo
+  // pasó a la paleta de la marca—, las dos con un `is not defined` a media
+  // suite, sin medir nada y por una causa ajena a la frontera entre
+  // organizaciones, que es lo único que este banco vino a mirar.
+  //
+  // `cierreDe` lee los nombres libres de los manejadores y trae sus
+  // declaraciones de nivel superior, transitivamente. Se le pasan como objeto
+  // literal porque eso es lo que `fuentesFn` es, y se EXCLUYE lo que el banco
+  // inyecta como parámetro: si se declarara dentro, la declaración de verdad
+  // pisaría al doble y el banco mediría contra el Firestore real en vez de
+  // contra su base falsa.
+  const INYECTADOS = ['admin', 'HttpsError', 'FieldValue', 'RESEND_API_KEY', 'fetch'];
+  const fuenteF = cierreDe(`({${fuentesFn}})`,
+    { archivo: ARCH_FUNCS, excluir: INYECTADOS });
 
   // §3 corre en memoria, no contra el emulador: aquí los identificadores sí son
   // los legibles, y TIENEN que serlo — las funciones reales calculan la clave
