@@ -80,6 +80,7 @@ const HOST = process.env.EMU_HOST || '127.0.0.1';
 const PUERTO = Number(process.env.EMU_PORT || 8080);
 const EMU = `${HOST}:${PUERTO}`;
 const ARCH_FNS = process.env.ARCH_FNS || path.join(raiz, 'functions/index.js');
+const { fuenteDe } = require('./extraer-de-app.cjs');
 
 // ── La contraprueba ────────────────────────────────────────────────────────
 // Se corre primero, antes de abrir nada, porque relanza este mismo archivo.
@@ -304,8 +305,17 @@ const TIPO_DENEGACION = new Function(`return ${decl.TIPO_DENEGACION};`)();
 
 // Fábricas: cada pieza se arma con sus variables libres inyectadas. Los dobles
 // son SÓLO donde hace falta provocar el fallo; lo demás es la pieza de verdad.
+// CON SU CIERRE, NO SÓLO SU DECLARACIÓN. Pegaba `decl[nombre]` a secas, o sea
+// la pieza y nada de lo que la pieza usa. El 2026-11-20 `bloqueDenegaciones`
+// pasó a pintar con `MARCA_GRIS` —el correo cambió a la paleta de la marca— y
+// este banco salió NO ARRANCÓ con `MARCA_GRIS is not defined`: sin medir nada y
+// por una causa ajena a todo lo que vigila. `fuenteDe` trae las dependencias de
+// nivel superior; `libres` se EXCLUYEN porque son los dobles que el banco
+// inyecta, y declararlos dentro haría que la pieza de verdad pisara al doble.
 const haz = (nombre, libres, valores) =>
-  new Function(...libres, `${decl[nombre]}; return ${nombre};`)(...valores);
+  new Function(...libres,
+    `${fuenteDe(ARCH_FNS, [nombre], { tolerante: true, excluir: libres }).cuerpo}\nreturn ${nombre};`
+  )(...valores);
 
 const coleccionesDeBitacora = haz('coleccionesDeBitacora', [], []);
 const textoDenegaciones = haz('textoDenegaciones', [], []);
@@ -604,9 +614,13 @@ const dbQueRevienta = (porQue) => ({
   // captura no se publica como un número— lo mide
   // `prueba-un-numero-que-nadie-midio.cjs`. Poner marcas aquí no taparía nada,
   // pero sí haría que este banco armara un correo que no es el que se manda.
-  const email = new Function('semaforoColor', 'APP_URL', 'SITIO_PUBLICO', 'PCT_FMT',
-    'MXN_FMT', 'bloqueDenegaciones', 'bloqueFueraDeAlcance', 'bloqueObrasNoLeidas',
-    `${decl.bloqueCaptura}; ${decl.avisoDeCaptura}; ${decl.correoResumenSemanal}; return correoResumenSemanal;`)(
+  // Las tres piezas van con su CIERRE, por lo mismo que `haz` de arriba: pegadas
+  // a secas se quedaban sin lo que usan, y `MARCA_GRIS` las tumbó el 2026-11-20.
+  const INYECTADOS_EMAIL = ['semaforoColor', 'APP_URL', 'SITIO_PUBLICO', 'PCT_FMT',
+    'MXN_FMT', 'bloqueDenegaciones', 'bloqueFueraDeAlcance', 'bloqueObrasNoLeidas'];
+  const email = new Function(...INYECTADOS_EMAIL,
+    `${fuenteDe(ARCH_FNS, ['bloqueCaptura', 'avisoDeCaptura', 'correoResumenSemanal'],
+      { tolerante: true, excluir: INYECTADOS_EMAIL }).cuerpo}\nreturn correoResumenSemanal;`)(
     () => '#000', 'https://ejemplo-app', 'https://ejemplo-publico',
     n => `${n}%`, n => `$${n}`,
     d => `<!--MARCA:${d?.error ? 'fallo' : d?.total}-->`,

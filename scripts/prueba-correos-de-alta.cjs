@@ -167,7 +167,29 @@ if (process.argv[2] === '--contraprueba') {
   process.exit(malas > 0 ? 1 : 0);
 }
 
-const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
+const { fuenteDe, deArchivo, SimboloPerdido } = require('./extraer-de-app.cjs');
+
+// ── CON QUÉ ESTILO ENVUELVE `sobreCorreo` SU TÍTULO ─────────────────────────
+// Se pinta el sobre REAL con un título centinela y se mira qué `<div>` lo
+// rodea. Antes el selector estaba tecleado —`font-size:18px`— y el 2026-11-20,
+// al pasar el correo a la paleta de la marca, el título quedó en 19 px y este
+// banco salió en rojo con «SIN TÍTULO»: acusaba al correo de no titularse
+// cuando lo único que había cambiado era la tipografía. Deducido, lo que
+// afirma es que el título del aviso ES el título del sobre.
+const ESTILO_TITULO = (() => {
+  const CENTINELA = 'TITULO-CENTINELA-DEL-BANCO';
+  let html;
+  try {
+    const { sobreCorreo } = deArchivo(ARCH_FUNCS, 'sobreCorreo');
+    html = sobreCorreo({ marca: {}, titulo: CENTINELA, entradilla: '', cuerpoHTML: '', pie: '' });
+  } catch (e) {
+    if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
+    throw e;
+  }
+  const m = html.match(new RegExp('<div style="([^"]*)">' + CENTINELA + '<'));
+  if (!m) noArranco(['el `<div>` del título dentro de `sobreCorreo`'], 'functions/index.js');
+  return new RegExp('<div style="' + m[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '">([^<]*)<');
+})();
 const { FieldValue } = require(path.join(raiz, 'functions/node_modules/firebase-admin/lib/firestore'));
 const { parse } = require(path.join(raiz, 'node_modules/@babel/parser'));
 const traverse = require(path.join(raiz, 'node_modules/@babel/traverse')).default;
@@ -849,7 +871,14 @@ const mensajesCampana = (base) => base.escrituras
       const c = correos[0] || {};
       const html = c.html || '';
       // El título es el `<div>` grande de `sobreCorreo`, no cualquier texto.
-      const titulo = (html.match(/font-size:18px;font-weight:700;[^"]*">([^<]*)</) || [])[1] || '';
+      // EL SELECTOR SE DEDUCE, NO SE TECLEA. Estaba escrito `font-size:18px` y
+      // el 2026-11-20 el sobre pasó a la paleta de la marca con el título a
+      // 19 px: el banco salió en rojo diciendo «SIN TÍTULO» por un cambio
+      // cosmético que no rompió nada. `ESTILO_TITULO` se saca una sola vez
+      // pintando el sobre real con un título centinela y viendo con qué estilo
+      // lo envuelve, así que ahora el banco afirma que el título ES el del
+      // sobre, que es lo que quería decir.
+      const titulo = (html.match(ESTILO_TITULO) || [])[1] || '';
       check(titulo.includes(obra.nombre),
         `la ${id} se titula con su nombre`, titulo || 'SIN TÍTULO');
       check(!new RegExp(`${obra.contrato.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`).test(titulo),

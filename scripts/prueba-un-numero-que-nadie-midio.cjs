@@ -177,10 +177,10 @@ if (process.argv.includes('--contraprueba')) {
         + '  const diasDesdeCaptura = _f ? Math.floor((Date.now() - new Date(_f).getTime()) / 86400000) : null;')],
     ['fn', 'la marca de captura pinta el hueco de rojo como si fuera atraso',
       (t) => t.replace(
-        '  if (dias === null || dias === undefined) {\n    return `<span style="color:#9AA0AC;font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;\n  }',
+        '  if (dias === null || dias === undefined) {\n    return `<span style="color:${MARCA_GRIS};font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;\n  }',
         '  if (dias === null || dias === undefined) { dias = 999; }')],
     ['fn', 'la marca de captura imprime el hueco como un número de días',
-      (t) => t.replace('return `<span style="color:#9AA0AC;font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;',
+      (t) => t.replace('return `<span style="color:${MARCA_GRIS};font-size:11px;font-style:italic;">Sin cierre semanal aún</span>`;',
         'return `<span style="color:#9AA0AC;font-size:11px;">Captura: ${dias}d</span>`;')],
 
     // ── El resumen vuelve a mezclar o a callar ──────────────────────────────

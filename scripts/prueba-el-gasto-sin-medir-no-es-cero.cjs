@@ -92,7 +92,7 @@ if (process.argv.includes('--contraprueba')) {
       (t) => t.replace('${sinMedir ? motivoSinMedir(k.gastoGPMotivo) : `',
         '${false ? motivoSinMedir(k.gastoGPMotivo) : `')],
     ['el semáforo del gasto vuelve a premiar el hueco con verde',
-      (t) => t.replace('    const colorGasto = sinMedir ? "#9AA0AC" : semaforoColor(k.pctGasto, "gasto");',
+      (t) => t.replace('    const colorGasto = sinMedir ? MARCA_GRIS : semaforoColor(k.pctGasto, "gasto");',
         '    const colorGasto = semaforoColor(k.pctGasto, "gasto");')],
     ['un motivo que nadie previó se traduce a nada',
       (t) => t.replace('    default: return "el gasto de GP no se pudo medir";',
@@ -171,16 +171,16 @@ console.warn = (...a) => { avisos.push(a.map(String).join(' ')); };
 const { deApp, fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
 
 let APP_estado;
-let FN_estado; let FN_motivo; let FN_correo; let FN_kpis;
+let FN_estado; let FN_motivo; let FN_correo; let FN_kpis; let FN_APAGADO;
 try {
   ({ estadoGastoGP: APP_estado } = deApp('estadoGastoGP'));
 
   const piezas = fuenteDe(ARCH_FN,
-    ['estadoGastoGP', 'motivoSinMedir', 'correoResumenSemanal']);
+    ['estadoGastoGP', 'motivoSinMedir', 'correoResumenSemanal', 'MARCA_GRIS']);
   if (piezas.faltan.length) noArranco(piezas.faltan, 'functions/index.js');
   ({ estadoGastoGP: FN_estado, motivoSinMedir: FN_motivo,
-    correoResumenSemanal: FN_correo } = new Function(
-    `"use strict";\n${piezas.cuerpo}\nreturn { estadoGastoGP, motivoSinMedir, correoResumenSemanal };`)());
+    correoResumenSemanal: FN_correo, MARCA_GRIS: FN_APAGADO } = new Function(
+    `"use strict";\n${piezas.cuerpo}\nreturn { estadoGastoGP, motivoSinMedir, correoResumenSemanal, MARCA_GRIS };`)());
 } catch (e) {
   if (e instanceof SimboloPerdido) noArranco(e.faltantes, e.archivo);
   throw e;
@@ -411,7 +411,13 @@ const kpisDe = async (obraId, info) => { sembrar(obraId, info); return FN_kpis(o
   // sea que el semáforo la premiaba por el hueco. Mismo defecto que el #88
   // (la tarjeta con el margen inflado) cerró en la pantalla.
   const VERDE = '#3B6D11';
-  const APAGADO = '#9AA0AC';
+  // EL APAGADO SE EXTRAE, NO SE TECLEA. Estaba escrito `'#9AA0AC'`, que era el
+  // gris de la paleta vieja de la interfaz; el 2026-11-20 el correo pasó a la
+  // paleta de la marca y ese gris cambió de valor. Un banco que teclea el color
+  // afirma el hex, no la conducta —«la celda sale apagada»— y sale en rojo por
+  // un cambio de marca que no rompió nada. Ahora lee la misma constante que
+  // pinta la celda, así que lo que afirma es que el semáforo NO la premia.
+  const APAGADO = FN_APAGADO;
   exigir(tSin && tSin.color !== VERDE,
     'la celda de una obra sin medir NO sale en verde',
     [`color=${tSin && tSin.color}`]);
