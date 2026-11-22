@@ -330,11 +330,22 @@ ok(textos.some(t => /Lo que esta gr.fica NO dibuja/.test(t)),
 // que se exige es que NADIE más lleve el 5 —un 5 repetido es la misma mentira
 // que el hueco tapado, nomás al revés.
 ok(textos.some(t => encabezadoDeSeccion(3).test(t)), 'la gráfica única sale como sección 3');
-ok(textos.some(t => encabezadoDeSeccion(7).test(t)), 'la de la dependencia sale como sección 7');
-const cincos = textos.filter(t => encabezadoDeSeccion(5).test(t));
-ok(cincos.length === 1 && /^5\s+RESUMEN FOTOGR/.test(cincos[0]),
-  'y el número 5 lo lleva UNA sola sección, la del resumen fotográfico'
-  + (cincos.length === 1 ? '' : ` — lo llevan ${cincos.length}`));
+// NINGÚN NÚMERO SE REPITE, que es el invariante y no «el 5 lo lleva tal».
+// Antes se vigilaba sólo el 5, y por eso el papel llevaba MESES con dos
+// secciones numeradas «4» —el margen semanal y el gasto por rubro— sin que
+// nadie lo viera: se descubrió a ojo el 2026-11-21. Exigir que la lista de
+// números no tenga duplicados lo habría dicho el primer día.
+const numerados = textos.filter(t => /^\d+\s{2,}[A-ZÁÉÍÓÚÑ]/.test(t))
+  .map(t => Number(t.match(/^(\d+)/)[1]));
+const repetidos = numerados.filter((n, i) => numerados.indexOf(n) !== i);
+ok(repetidos.length === 0,
+  'ningún número de sección se repite en el documento',
+  repetidos.length ? `repetidos: ${[...new Set(repetidos)].join(', ')}` : `${numerados.length} secciones`);
+// Y van consecutivos desde 1: una sección que se retira tiene que dejar la
+// numeración cerrada, no un hueco que mande a buscar al número equivocado.
+const ordenados = [...numerados].sort((a, b) => a - b);
+ok(ordenados.every((n, i) => n === i + 1),
+  'y van de 1 en adelante sin huecos', ordenados.join('·'));
 
 // ══════════════════════════════════════════════════════════════════════════
 // E · LA FRONTERA DE LA SECCIÓN 7
@@ -378,56 +389,36 @@ ok(control.length > 0,
 // páginas de la sección 7. Las PALABRAS sí pueden salir —el preludio dice «NO
 // LLEVA GASTO NI MARGEN», y decirlo es parte de la frontera—; lo que no puede
 // salir es un NÚMERO de la economía del contratista.
-const pagS7 = hoja.filter(x => encabezadoDeSeccion(7).test(x.texto)).map(x => x.pagina);
-ok(pagS7.length === 1, 'la sección 7 arranca en una página identificable');
-const ultima = Math.max(...hoja.map(x => x.pagina));
-const paginasS7 = [];
-for (let p = pagS7[0]; p <= ultima; p++) paginasS7.push(p);
-const textoS7 = hoja.filter(x => paginasS7.includes(x.pagina)).map(x => x.texto);
-ok(textoS7.length > 10,
-  `la sección 7 dibuja ${textoS7.length} textos: no se cumple por vacío`);
-
+// LA SECCIÓN 7 DEL INTERNO SE RETIRÓ EL 2026-11-21, y lo que este bloque
+// afirma cambió con ella —a algo más fuerte—.
+//
+// Antes: «la curva de la dependencia vive dentro del papel de la constructora
+// y ahí no se cuela ni una cifra de su economía». Era una frontera DENTRO del
+// documento, y había que acertar en cada sección nueva.
+//
+// Ahora: esa curva NO ESTÁ en el papel de la constructora. La frontera dejó de
+// ser un recorte y pasó a ser una ausencia, que es la forma que no se puede
+// equivocar. Quien quiera ver lo que ve el municipio genera el papel del
+// municipio, donde `prueba-la-marca-se-lee-no-se-teclea` y este mismo banco
+// siguen vigilando que no entre la economía del contratista.
+const TITULO_GOB = /LA MISMA OBRA, COMO LA VE LA DEPENDENCIA/;
+ok(!textos.some(t => TITULO_GOB.test(t)),
+  'el papel de la constructora ya NO lleva la curva de la dependencia',
+  textos.find(t => TITULO_GOB.test(t)) || 'ninguna sección la pinta');
+// Y la prueba de que la ausencia es de la SECCIÓN y no del dato: las cifras de
+// la economía del contratista siguen imprimiéndose en el resto del papel. Es
+// el control positivo — sin él, un papel que dejara de imprimir el gasto por
+// completo pasaría esta sección en verde.
 const gastoTotal = CURVA.gasto.filter(v => typeof v === 'number').pop();
 const margenFinal = CURVA.margen.filter(v => typeof v === 'number').pop();
 const cifrasProhibidas = [MXN(gastoTotal), fmtDineroCorto(gastoTotal),
                           MXN(margenFinal), fmtDineroCorto(margenFinal)];
-const coladas = cifrasProhibidas.filter(c => textoS7.some(t => t.includes(c)));
 ok(Number.isFinite(gastoTotal) && Number.isFinite(margenFinal),
   `el caso tiene gasto (${fmtDineroCorto(gastoTotal)}) y margen `
-  + `(${fmtDineroCorto(margenFinal)}) de verdad que esconder`);
-ok(coladas.length === 0,
-  'y ninguna de las dos cifras aparece en las páginas de la sección 7'
-  + (coladas.length ? ` — coladas: ${coladas.join(', ')}` : ''));
-
-// (3) LOS NOMBRES DE LAS SERIES. Mirar sólo las CIFRAS deja pasar el defecto
-// gordo: una gráfica casi no imprime números —la rejilla y nada más—, así que
-// alimentar la sección 7 con la curva de la constructora colaba el gasto y el
-// margen enteros sin tocar una sola cifra de las de arriba. Lo delató la
-// contraprueba. Lo que se compara son los nombres de las series que EXISTEN en
-// una curva y no en la otra, sacados de las dos curvas y no tecleados: así el
-// día que se agregue una serie a la de la constructora, ésta la cubre sola.
-const nombresDe = (c) => [...(c.lineas || []), ...(c.areas || []), ...(c.ausentes || [])]
-  .map(x => x.nombre).filter(Boolean);
-const soloDeLaConstructora = nombresDe(CURVA)
-  .filter(n => !nombresDe(CURVA_GOB).includes(n));
-ok(soloDeLaConstructora.length > 0,
-  `la curva de la constructora tiene ${soloDeLaConstructora.length} serie(s) que `
-  + `la de la dependencia no: ${soloDeLaConstructora.join(' · ')}`);
-const nombresColados = soloDeLaConstructora.filter(n => textoS7.some(t => t.includes(n)));
-ok(nombresColados.length === 0,
-  'y ninguna de ellas se nombra en la sección 7, ni en la leyenda ni en el pie'
-  + (nombresColados.length ? ` — colada(s): ${nombresColados.join(' · ')}` : ''));
-
-// El control positivo de lo mismo: esas cifras SÍ están en el resto del papel.
-const textoAntes = hoja.filter(x => x.pagina < pagS7[0]).map(x => x.texto);
-ok(cifrasProhibidas.some(c => textoAntes.some(t => t.includes(c))),
-  'las mismas cifras sí se imprimen antes de la sección 7: el documento interno '
-  + 'no se las calla, la frontera es de la sección y no del papel');
-
-// Y la frontera dicha con palabras, que es lo que un lector necesita para no
-// pedir «la gráfica completa» a quien no puede dársela.
-ok(textoS7.some(t => /NO LLEVA GASTO NI MARGEN/.test(t)),
-  'la sección declara por escrito que no lleva gasto ni margen');
+  + `(${fmtDineroCorto(margenFinal)}) de verdad que vigilar`);
+ok(cifrasProhibidas.some(c => textos.some(t => t.includes(c))),
+  'y las cifras del contratista siguen en el papel: lo que se fue es la vista '
+  + 'de la dependencia, no su propia economía');
 
 // ══════════════════════════════════════════════════════════════════════════
 // F · LOS COLORES SON LOS DE `tokens.css`, LEÍDOS DEL ARCHIVO
@@ -582,8 +573,17 @@ const curvaNueva = curvaUnicaDeObra({ semanas: SEMS, obra: OBRA_NUEVA,
   programa: null });
 ok(curvaNueva.lineas.length === 0,
   'la obra recién dada de alta no produce ninguna serie, que es lo que esta sección necesita');
+// SE BUSCA SOBRE EL TEXTO UNIDO, no renglón por renglón. `nota()` parte la
+// frase con `splitTextToSize`, así que cada renglón es un texto suelto y una
+// frase larga vive repartida entre varios. Buscarla en uno solo funcionaba por
+// casualidad —cabía—, y el 2026-11-21, al subir la escala tipográfica para que
+// el papel se pueda proyectar, dejó de caber: el banco salió en rojo diciendo
+// que el papel ya no explicaba el hueco cuando lo explicaba igual, una línea
+// más abajo. Un banco que se cae al cambiar el cuerpo de letra está midiendo
+// la maquetación, no la conducta.
 const txtVacia = hojaVacia.map(x => x.texto);
-ok(txtVacia.some(t => /se lee como una obra en ceros/.test(t)),
+const unidoVacia = txtVacia.join(' ').replace(/\s+/g, ' ');
+ok(/se lee como una obra en ceros/.test(unidoVacia),
   'y el papel escribe por qué no hay dibujo, en vez de dejar el hueco');
 const sinNombrarNueva = curvaNueva.ausentes.filter(a => !txtVacia.includes(a.motivo));
 ok(curvaNueva.ausentes.length > 0 && sinNombrarNueva.length === 0,
@@ -723,16 +723,29 @@ if (process.argv.includes('--contraprueba')) {
       hacer: () => src.replace(
         "        T(t.nombre || '', cx+9, cy);",
         '        T(\'\', cx+9, cy);') },
-    { nombre: 'la de la dependencia se renumera a 5 y dos secciones llevan el mismo número',
+    // REESCRITA el 2026-11-21. Mutaba el número de la sección 7 del interno,
+    // que ya no existe: la mutación dejó de aplicar y el portón de anclajes
+    // rancios lo dijo. Lo que hoy hay que proteger es el invariante nuevo —que
+    // ningún número se repita—, y el caso real con el que se descubrió: el
+    // papel llevaba meses con DOS secciones numeradas «4».
+    { nombre: 'dos secciones vuelven a llevar el mismo número',
       hacer: () => src.replace(
-        "  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,",
-        "  y = bloqueDeCurva('5  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,") },
+        "  y = secHead('5  GASTOS POR RUBRO', y);",
+        "  y = secHead('4  GASTOS POR RUBRO', y);") },
 
     // ── E · la frontera ────────────────────────────────────────────────────
-    { nombre: 'la sección 7 se alimenta de la curva de la constructora',
+    // REESCRITA el 2026-11-21, y ahora muerde más fuerte. Antes mutaba QUÉ
+    // curva alimentaba a la sección 7 del interno; hoy esa sección no existe y
+    // lo que se protege es su AUSENCIA, que es la forma de frontera que no se
+    // puede equivocar. La mutación la devuelve al papel.
+    { nombre: 'la curva de la dependencia vuelve a colarse en el papel de la constructora',
       hacer: () => src.replace(
-        "  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,",
-        "  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curva,") },
+        "  // ── AQUÍ VIVÍA «7 · LA MISMA OBRA, COMO LA VE LA DEPENDENCIA», Y SE FUE ───",
+        "  const curvaGob = curvaDeGobierno({ semanas, obra, historialAvance, subs,\n"
+        + "                                     programa, estimaciones, estCargadas });\n"
+        + "  y = bloqueDeCurva('8  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,\n"
+        + "    'NO LLEVA GASTO NI MARGEN.');\n"
+        + "  // ── AQUÍ VIVÍA «7 · LA MISMA OBRA, COMO LA VE LA DEPENDENCIA», Y SE FUE ───") },
     // La curva de la dependencia empieza a DEVOLVER el gasto del contratista.
     // Es el defecto que no se ve en la hoja: el dato viaja en el objeto, a una
     // línea de que alguien lo dibuje. Por eso la §E mira las dos cosas.
@@ -743,12 +756,12 @@ if (process.argv.includes('--contraprueba')) {
         '  return {\n    semanas, lineas, areas, ausentes, notas,\n'
         + '    gasto: ejecutado.map(v => (typeof v === \'number\' ? v * 0.8 : null)),\n'
         + '    avance, programadoPct, programado, ejecutado, pagado, porPagar,') },
-    { nombre: 'la sección 7 deja de declarar que no lleva gasto ni margen',
-      hacer: () => src.replace(
-        "    + 'ver: lo construido, lo programado y lo pagado al contratista. NO LLEVA '\n"
-        + "    + 'GASTO NI MARGEN, y no es un recorte de presentación: la economía del '",
-        "    + 'ver: lo construido, lo programado y lo pagado al contratista. '\n"
-        + "    + 'No es un recorte de presentación: la economía del '") },
+    // RETIRADA el 2026-11-21: vigilaba que la sección 7 del interno declarara
+    // por escrito «NO LLEVA GASTO NI MARGEN». Esa sección se fue, así que no
+    // queda aserción a la que esta mutación pueda hacer caer, y una mutación
+    // sin aserción que la vea no protege nada. Lo que la reemplaza es la de
+    // arriba: que la sección no VUELVA.
+
 
     // ── F · los colores ────────────────────────────────────────────────────
     { nombre: 'una terna de la tabla se desincroniza del CSS',

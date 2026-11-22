@@ -374,9 +374,32 @@ function correr() {
   // Y QUE DE VERDAD VIVA EN LOS PDF, no que se haya perdido. Se afirma sobre
   // la fuente de los dos generadores: si alguien saca esa columna, el detalle
   // deja de existir en el producto y esta nota corta pasa a ser una pérdida.
-  for (const gen of ['generarPDFInterno', 'generarPDFArt73']) {
+  // DESDE EL 2026-11-21 SÓLO LO LLEVA EL INFORME DEL ART. 73, y el cambio es
+  // de producto, no un descuido. El papel de la constructora cambió su tabla
+  // de no evaluables por dos números —«3 sin poder medir», «19 evaluados sin
+  // hallazgo»— porque la columna «por qué no se pudo medir» citaba al MOTOR
+  // («falta `historialAvance` en esta lectura») y eso le habla a quien escribió
+  // la regla, no a quien lee el expediente de su obra.
+  //
+  // PERO EL DETALLE TIENE QUE SEGUIR EXISTIENDO EN ALGÚN SITIO, y ésa es la
+  // razón de esta aserción: la pantalla deja su nota corta A CAMBIO de que los
+  // PDF lo lleven. El día que también se vaya del Art. 73, el producto entero
+  // deja de poder decir qué dato falta, y entonces la nota de la pantalla pasa
+  // de ser un resumen a ser una pérdida — y hay que venir aquí a decidirlo, no
+  // a descubrirlo. Por eso el interno se afirma POR LA NEGATIVA: que ya no lo
+  // lleva, a propósito, y no que se le olvidó.
+  const trozoDe = (gen) => {
     const i = src.indexOf(`function ${gen}(`);
-    const trozo = i >= 0 ? src.slice(i, i + 40000) : '';
+    return i >= 0 ? src.slice(i, i + 40000) : '';
+  };
+  const tInterno = trozoDe('generarPDFInterno');
+  ok(!/Por qué no se pudo medir/.test(tInterno),
+    'generarPDFInterno ya NO publica el motivo por dato: lo cambió por dos números',
+    'la tabla de no evaluables se retiró el 2026-11-21');
+  ok(/sin poder medir/.test(tInterno) && /evaluados sin hallazgo/.test(tInterno),
+    'pero sí publica los dos conteos: el lector sabe que el motor corrió');
+  for (const gen of ['generarPDFArt73']) {
+    const trozo = trozoDe(gen);
     ok(/Por qué no se pudo medir/.test(trozo) && /f\.porQue/.test(trozo),
       `${gen} sigue publicando el motivo por dato: el detalle no se perdió, se movió`,
       'si esto cae, la nota corta de la pantalla dejó al producto sin el detalle');

@@ -332,7 +332,40 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
   const CW=PW-ML-MR;
   const CY0=HDR+MT;
 
-  const FS_SEC=10, FS_TH=8, FS_TD=8.5, FS_SM=7.5, FS_KL=7, FS_KV=15;
+  // ── LA ESCALA TIPOGRÁFICA, SUBIDA PARA PROYECTAR ─────────────────────────
+  //
+  // Estos papeles se leen en una junta, en pantalla y a distancia, no en la
+  // mano. A 8 pt sobre una hoja apaisada de 279 mm proyectada, el cuerpo de
+  // las tablas no se lee desde la tercera fila: lo dijo quien los presenta.
+  //
+  // Se sube la ESCALA ENTERA y de forma proporcional, no un rótulo suelto: los
+  // tamaños guardan una jerarquía —sección > valor de KPI > cuerpo > etiqueta—
+  // y tocar uno solo la rompe. Y vive aquí, en el andamio, porque los dos
+  // papeles lo comparten: dos escalas serían dos documentos que no parecen de
+  // la misma casa.
+  //
+  // EL PRECIO SE PAGA EN ALTO, y por eso esto se verifica mirando el PDF y no
+  // sólo corriendo la suite: con letra más grande cada tabla ocupa más y lo que
+  // antes cabía en una hoja puede pasar a dos. `autoTable` reflueye solo; el
+  // texto que se dibuja a mano —la portada, las cajas de KPI— no, así que es
+  // ahí donde hay que ir a ver.
+  const FS_SEC=12, FS_TH=9.5, FS_TD=10, FS_SM=9, FS_KL=8.5, FS_KV=17;
+
+  // LA PORTADA TAMBIÉN TIENE ESCALA, Y ANTES NO LA TENÍA. Los dos papeles
+  // dibujan su portada a mano, y los tamaños estaban TECLEADOS ahí: `fs(7)`
+  // para las etiquetas, `fs(6)` para el pie. Al subir la escala de arriba el
+  // 2026-11-21 la portada se quedó chica —se vio mirando el PDF, no corriendo
+  // la suite— y era justo la hoja que primero se proyecta. Ahora tiene nombres,
+  // y los nombres viven aquí para que la próxima subida la alcance.
+  //
+  // `FS_PORT_PASO` es el INTERLINEADO de la lista de identificación, y va con
+  // la escala y no aparte: una letra más grande con el mismo salto se encima
+  // sola, que es el modo en que esto falla sin avisar.
+  const FS_PORT_SEC=11, FS_PORT_LBL=8.5, FS_PORT_VAL=8.5, FS_PORT_PASO=6;
+  // La banda de cabecera mide 14 mm y su texto se asienta en y=9.8: sube
+  // poco a propósito, porque ahí lo que falla es que el rótulo se salga de
+  // la banda, no que no se lea.
+  const FS_CAB=8, FS_PIE=7.5;
 
   const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));
   const PCT = (n,d=1) => `${(n||0).toFixed(d)}%`;
@@ -369,9 +402,9 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
     sf(Q.piz); R(0,0,PW,HDR);
     sf(Q.nar); R(0,0,3,HDR);
     st(Q.wh); fs(9); fw('bold'); T('cotea', ML, 5.5);
-    fs(6.5); fw('normal'); T(rotulo, ML, 9.8);
+    fs(FS_CAB); fw('normal'); T(rotulo, ML, 9.8);
     fs(8); fw('bold'); T(nombreCorto, PW-MR, 5.5, {align:'right'});
-    fs(6.5); fw('normal'); T(fecha, PW-MR, 9.8, {align:'right'});
+    fs(FS_CAB); fw('normal'); T(fecha, PW-MR, 9.8, {align:'right'});
     if (banda) {
       sf(Q.nar); R(0,HDR,PW,4);
       st(Q.wh); fs(6); fw('bold');
@@ -379,7 +412,7 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
     }
     sf(Q.bg); R(0,PH-FTR,PW,FTR);
     sf(Q.piz); R(0,PH-FTR,PW,0.6);
-    st(Q.mu); fs(6); fw('normal');
+    st(Q.mu); fs(FS_PIE); fw('normal');
     T(pieIzq, ML, PH-3.5);
     T(`Página ${pagNum}`, PW/2, PH-3.5, {align:'center'});
     T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
@@ -550,6 +583,7 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
   return { doc, Q, colorSev, labelSev, disparoCon,
            PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
            FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+           FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
            sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
            pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva };
 };
@@ -660,6 +694,7 @@ async function generarPDFInterno({
   const { doc, Q, colorSev, labelSev, disparoCon,
           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+          FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
 
@@ -719,34 +754,29 @@ async function generarPDFInterno({
   // primero que se lee es qué clase de papel es éste.
   sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 19.5);
   st(Q.wh); fs(11); fw('bold'); T('DOCUMENTO INTERNO', ML+4, 55);
-  fs(6.5); fw('normal');
+  fs(8); fw('normal');
   T('Uso de cotea · no es el reporte que se entrega al cliente', ML+4, 60.5);
   // El segundo renglón, que es el que la banda no puede llevar: aquí sí cabe
   // el nombre legal. Medido contra la caja —desde ML+4 hasta donde termina, 85
   // mm— el renglón más largo de los dos ocupa 65.
   T('Lo que se entrega es el informe de avance (Art. 73)', ML+4, 64.2);
 
-  st(Q.wh); fs(7.5); fw('normal'); T('OBRA', ML, 76);
+  st(Q.wh); fs(FS_PORT_LBL); fw('normal'); T('OBRA', ML, 76);
   fs(14); fw('bold');
   T(doc.splitTextToSize(nombreCorto, PW*0.38), ML, 83);
 
   // El renglón del corte, también en la mitad oscura: la hora es parte de la
   // identificación y `sello.corte` ya declara de dónde salió.
-  st(Q.mu); fs(7); fw('normal');
+  st(Q.mu); fs(FS_PORT_LBL); fw('normal');
   T('CORTE', ML, PH-34);
-  st(Q.wh); fs(7.5);
+  st(Q.wh); fs(FS_PORT_VAL);
   T(doc.splitTextToSize(sello.corte, PW*0.38), ML, PH-29);
 
   const xR=PW*0.44, yR0=24;
-  st(Q.ng); fs(9); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
+  st(Q.ng); fs(FS_PORT_SEC); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
   sd(Q.bd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
   let yR=yR0+8;
   const contr = contratoCapturado(obra?.contrato);
-  // `semanas` puede venir vacío —obra sin fecha de inicio—, y entonces la
-  // ventana medida NO se declara con un rango inventado: se dice que no hay.
-  const ventanaTxt = semanas.length
-    ? `${semanas[0].label}–${semanas[semanas.length-1].label} (${semanas.length} semanas)`
-    : 'sin semanas en la ventana: la obra no trae fecha de inicio capturada';
   const filasID = [
     ['Obra:', comoSeImprime(obra?.nombre)],
     ['Clave:', comoSeImprime(obra?.id)],
@@ -757,21 +787,25 @@ async function generarPDFInterno({
     ['Inicio de obra:', comoSeImprime(obra?.inicio)],
     ['Fin programado:', comoSeImprime(obra?.fin)],
     ['Contratado:', MXN(PPTO)],
-    ['Ventana medida:', ventanaTxt],
+    // «Ventana medida» se fue el 2026-11-21: decía «S36–S47 (12 semanas)» en la
+    // portada, que es una explicación de cómo trabaja el motor y no un dato de
+    // la obra. Quien lee la portada quiere saber de qué obra es el papel, no
+    // con cuántas semanas se dibujó la gráfica. La gráfica ya rotula su propio
+    // eje, que es donde esa información sí significa algo.
     ['Corte del documento:', sello.corte],
     ['Generado por:', comoSeImprime(generadoPor)],
   ];
   filasID.forEach(([lbl,val])=>{
-    st(Q.ng); fs(7); fw('bold'); T(lbl, xR, yR);
-    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fw('normal');
-    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-34);
-    T(lineas, xR+34, yR);
-    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
+    st(Q.ng); fs(FS_PORT_LBL); fw('bold'); T(lbl, xR, yR);
+    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fs(FS_PORT_VAL); fw('normal');
+    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-42);
+    T(lineas, xR+42, yR);
+    yR += FS_PORT_PASO * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
   });
 
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
-  st(Q.mu); fs(6); fw('normal');
+  st(Q.mu); fs(FS_PIE); fw('normal');
   T('cotea · documento interno', PW*0.44, PH-3.5);
   T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
 
@@ -831,9 +865,7 @@ async function generarPDFInterno({
     y += 7;
     for (const h of huecos) y = nota(h, y);
   } else {
-    y = nota('Los cuatro indicadores de arriba están medidos: el gasto de GP de esta obra '
-      + 'entró en la última corrida y hay cortes de avance en la ventana.', y);
-  }
+    }
 
   // ═══ 3 · LA GRÁFICA ÚNICA ═════════════════════════════════════════════════
   // La MISMA `curva` que ya se calculó para la sección 4: no se vuelve a pedir.
@@ -855,7 +887,7 @@ async function generarPDFInterno({
   // sección.
   doc.addPage(); pageFrame();
   y = CY0 + 4;
-  y = secHead('4  CÓMO VAMOS EN DINERO · EL MARGEN SEMANA A SEMANA', y);
+  y = secHead('4  EL MARGEN, SEMANA A SEMANA', y);
 
   const cm = comportamientoMargen;
   if (cm.renglones.length) {
@@ -916,7 +948,7 @@ async function generarPDFInterno({
   // ── Composición del gasto por rubro ──────────────────────────────────────
   doc.addPage(); pageFrame();
   y = CY0 + 4;
-  y = secHead('4  CÓMO VAMOS EN DINERO · COMPOSICIÓN DEL GASTO POR RUBRO', y);
+  y = secHead('5  GASTOS POR RUBRO', y);
 
   const rubros = Object.values(gpDetalle?.rubros || {})
     .map(r => ({ nombre: r.nombreCorto || r.nombre || r.id, monto: r.grandTotal || 0 }))
@@ -925,14 +957,14 @@ async function generarPDFInterno({
   if (rubros.length) {
     const totRub = rubros.reduce((t,r)=>t+r.monto, 0);
     y = autoT(
-      ['Rubro', 'Monto', '% del gasto GP', '% del contratado'],
+      ['Rubro', 'Monto', '% del gasto', '% del contratado'],
       [
         ...rubros.map(r => [
           String(r.nombre).slice(0,60), MXN(r.monto),
           PCT(r.monto/totRub*100),
           PPTO>0 ? PCT(r.monto/PPTO*100) : '—',
         ]),
-        [{content:'TOTAL GP', styles:{fontStyle:'bold'}},
+        [{content:'TOTAL', styles:{fontStyle:'bold'}},
          {content:MXN(totRub), styles:{fontStyle:'bold', halign:'right'}},
          {content:'100.0%', styles:{fontStyle:'bold', halign:'right'}},
          {content:PPTO>0 ? PCT(totRub/PPTO*100) : '—', styles:{fontStyle:'bold', halign:'right'}}],
@@ -997,7 +1029,7 @@ async function generarPDFInterno({
   // diría de un expediente un número que el expediente no dice de sí mismo.
   doc.addPage(); pageFrame();
   y = CY0 + 4;
-  y = secHead('5  RESUMEN FOTOGRÁFICO · QUÉ RESPALDA ESTE EXPEDIENTE', y);
+  y = secHead('6  RESUMEN FOTOGRÁFICO', y);
 
   const selFoto = seleccionFotografica({ subs, evidencia, evidenciaCargada,
                                          tope: TOPE_FOTOS });
@@ -1010,6 +1042,13 @@ async function generarPDFInterno({
   // con el mismo `tope` y publica la cobertura con `frasesDeCobertura`, las
   // dos funciones que se usan aquí. Si algún día aquel papel reparte por su
   // cuenta, esta nota se vuelve mentira y hay que venir a borrarla.
+  // ESTA LEYENDA SE VA CON EL BLOQUE C, NO ANTES. Se quitó el 2026-11-21 por
+  // ser meta-comentario —le habla al otro documento en vez de al lector de
+  // éste— y se devolvió el mismo día: mientras esta sección no imprima fotos,
+  // la frase es lo ÚNICO que le dice al lector dónde están. Quitarla ahora
+  // dejaba un resumen fotográfico sin fotos y sin explicación, que se lee como
+  // un álbum que no cargó. Se borra cuando el bloque C meta las fotos aquí y
+  // la vuelva falsa, que es la condición que la hace borrable.
   y = nota('Aquí no van las fotos: van en el informe de avance. Lo que va aquí '
     + 'es el juicio sobre ellas, que ese informe no puede llevar. El criterio es el mismo de allá '
     + `—las partidas que acumulan el ${COBERTURA_TECHO}% del importe contratado, de mayor a menor, `
@@ -1123,7 +1162,7 @@ async function generarPDFInterno({
   // ═══ 6 · INDICADORES DE RIESGO, EN TRES ESTADOS ═══════════════════════════
   doc.addPage(); pageFrame();
   y = CY0 + 4;
-  y = secHead('6  INDICADORES DE RIESGO, EN TRES ESTADOS', y);
+  y = secHead('7  INDICADORES DE RIESGO', y);
 
   const { detectados, sinHallazgo, noEvaluables, reventaron } = veredicto;
 
@@ -1164,23 +1203,31 @@ async function generarPDFInterno({
       + 'sobre la obra: mira la lista de no evaluables de abajo antes de leerlo como tal.', y);
   }
 
+  // ── LOS DOS NÚMEROS QUE DICEN QUE EL MOTOR CORRIÓ ────────────────────────
+  //
+  // Aquí había DOS TABLAS: los no evaluables con una columna «por qué no se
+  // pudo medir», y los sin hallazgo nombrados uno por uno. Se fueron el
+  // 2026-11-21 y quedan dos renglones con el número a secas.
+  //
+  // No es ahorro de espacio. La columna del porqué citaba al MOTOR —«falta
+  // `historialAvance` en esta lectura»— y eso le habla al que escribió la
+  // regla, no al que lee el expediente de su obra; y la lista de los sin
+  // hallazgo era una fila de nombres de reglas que nadie va a leer. Lo que el
+  // lector necesita de estas dos listas es una sola cosa, y es un número: que
+  // el motor CORRIÓ y cuántas reglas no pudieron pronunciarse. Eso, y no la
+  // lista, es lo que impide leer «ningún riesgo detectado» como «obra sana».
+  //
+  // Los dos números se quedan JUNTOS y no se funden en uno: «3 sin poder
+  // medir» y «19 evaluados sin hallazgo» dicen cosas distintas, y sumarlos
+  // borraría justo la distinción que esta sección existe para hacer.
   if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
-  st(Q.ng); fs(FS_SEC); fw('bold'); T('No evaluables · qué dato falta', ML, y+4);
+  st(Q.ng); fs(FS_SEC); fw('bold'); T('Lo que no disparó', ML, y+4);
   y += 7;
-  if (noEvaluables.length) {
-    y = autoT(
-      ['Riesgo', 'Dato que falta', 'Por qué no se pudo medir'],
-      noEvaluables.map(r => [
-        r.titulo || r.id,
-        r.faltan.map(f => f.nombre || f.dato).join(' · '),
-        r.faltan.map(f => f.porQue).filter(Boolean).join(' · ')
-          || 'el dato no está en esta lectura',
-      ]),
-      [56, 60, CW-116], ML, y
-    );
-  } else {
-    y = nota('Ninguna regla se quedó sin dato: todas las que aplican a esta obra pudieron medir.', y);
-  }
+  st(Q.tx); fs(FS_TD); fw('normal');
+  T(`${noEvaluables.length} sin poder medir: les faltó un dato.`, ML, y+3);
+  y += 6;
+  T(`${sinHallazgo.length} evaluados sin hallazgo.`, ML, y+3);
+  y += 8;
 
   if (reventaron.length) {
     if (y > 150) { doc.addPage(); pageFrame(); y = CY0 + 4; }
@@ -1194,45 +1241,33 @@ async function generarPDFInterno({
     );
   }
 
-  if (y > 160) { doc.addPage(); pageFrame(); y = CY0 + 4; }
-  st(Q.ng); fs(FS_SEC); fw('bold'); T('Sin hallazgo · midieron y no encontraron nada', ML, y+4);
-  y += 6;
-  st(Q.tx); fs(FS_SM); fw('normal');
-  // Se NOMBRAN, no se cuentan. «22 reglas sin hallazgo» no dice cuáles, y la que
-  // falta de la lista es la que nadie va a notar.
-  T(doc.splitTextToSize(
-      sinHallazgo.length
-        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')
-        : 'Ninguna: todas las reglas que aplican a esta obra o dispararon o se quedaron sin dato.',
-      CW), ML, y+3);
+  // El bloque «Sin hallazgo · midieron y no encontraron nada», que nombraba una
+  // por una las reglas que no encontraron nada, se fue con la tabla de no
+  // evaluables: es el segundo de los dos números de arriba.
 
-  // ═══ 7 · LA MISMA OBRA, COMO LA VE LA DEPENDENCIA ═════════════════════════
+  // ── AQUÍ VIVÍA «7 · LA MISMA OBRA, COMO LA VE LA DEPENDENCIA», Y SE FUE ───
   //
-  // `curvaDeGobierno` y no un filtro sobre la curva de arriba. La frontera no
-  // es qué series se esconden: es que esta curva NO CALCULA gasto ni margen.
-  // Un filtro deja la economía del contratista viva en el objeto, a una línea
-  // de distancia de reaparecer; y quien la escondiera tendría que acertar cada
-  // vez que se agregue una serie. Medido contra producción: lo que devuelve
-  // `curvaDeGobierno` no trae ninguna clave de la economía del contratista a
-  // ninguna profundidad, y el banco lo vuelve a comprobar en cada corrida.
+  // Pintaba `curvaDeGobierno` —la curva sin gasto ni margen— dentro del papel
+  // de la constructora, con el argumento de que quien firma necesita saber qué
+  // ve el municipio antes de la junta.
   //
-  // Va en el documento INTERNO porque es lo que el municipio ve de esta obra, y
-  // quien firma necesita saberlo antes de la junta. Este papel no se entrega.
-  const curvaGob = curvaDeGobierno({ semanas, obra, historialAvance, subs,
-                                     programa, estimaciones, estCargadas });
-  y = bloqueDeCurva('7  LA MISMA OBRA, COMO LA VE LA DEPENDENCIA', curvaGob,
-    'Las mismas semanas y el mismo eje, con lo único que la dependencia puede '
-    + 'ver: lo construido, lo programado y lo pagado al contratista. NO LLEVA '
-    + 'GASTO NI MARGEN, y no es un recorte de presentación: la economía del '
-    + 'contratista no es de la dependencia. Aquí el sombreado es lo construido y '
-    + 'todavía no pagado, que sí es asunto suyo.');
+  // Se retiró el 2026-11-21 por decisión del producto, y la razón es de fondo:
+  // la frontera gobierno/empresa NO son dos documentos, es UN documento que se
+  // genera distinto según quién entró. La vista de la dependencia es el papel
+  // de la dependencia; meterla como apéndice del otro convierte una frontera
+  // en una sección, y entonces hay que acordarse de recortarla cada vez. Quien
+  // quiera ver lo que ve el municipio, genera el informe del municipio.
+  //
+  // `curvaDeGobierno` NO se borra: sigue siendo la curva del informe del
+  // Art. 73, y el banco que afirma que no trae ninguna clave de la economía
+  // del contratista a ninguna profundidad sigue corriendo sobre ella.
 
   // ── PIE CON TOTAL DE PÁGINAS ──────────────────────────────────────────────
   const totalPaginas = doc.internal.getNumberOfPages();
   for (let i = 1; i <= totalPaginas; i++) {
     doc.setPage(i);
     sf(Q.bg); R(PW/2-25, PH-6, 50, 4, 'F');
-    st(Q.mu); fs(6); fw('normal');
+    st(Q.mu); fs(FS_PIE); fw('normal');
     T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
   }
 
@@ -1313,11 +1348,12 @@ async function generarPDFArt73({
   // no existe de este lado, y pasarle el volcado para sacar un nombre más
   // bonito sería meter la economía del contratista por la puerta de atrás.
   const A = andamioDeCotea({ jsPDF, nombreCorto, fecha: hoy,
-    rotulo: 'Informe de avance · Art. 73', banda: null,
+    rotulo: 'Informe semanal de avance · Art. 73', banda: null,
     pieIzq: 'cotea · informe de avance' });
   const { doc, Q, colorSev, labelSev, disparoCon,
           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
+          FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
 
@@ -1354,22 +1390,28 @@ async function generarPDFArt73({
   // Lo primero que se lee es qué papel es éste y para qué sirve. Sin caja
   // naranja de advertencia: no hay nada de qué advertir, este documento se
   // entrega.
+  // EL NOMBRE ES EL QUE LA LEY SIGNIFICA, Y LA LEY VA DE SUBTÍTULO. «Informe
+  // de avance de obra» no es una figura de la Ley 233: lo que el Art. 73 nombra
+  // es un informe SEMANAL de avance físico y financiero, y así se titula. El
+  // artículo va debajo, citado, porque este papel sí tiene peso legal y debe
+  // nombrar la ley de la que sale. El de la constructora no lo tiene y por eso
+  // no la nombra: fingir ley es peor que no citarla.
   st(Q.wh); fs(13); fw('bold');
-  T(doc.splitTextToSize('INFORME DE AVANCE DE OBRA', PW*0.38), ML, 52);
-  st(Q.nar); fs(8); fw('bold');
-  T('Artículo 73 · avance físico y financiero', ML, 62);
+  T(doc.splitTextToSize('INFORME SEMANAL DE AVANCE FÍSICO Y FINANCIERO', PW*0.38), ML, 52);
+  st(Q.nar); fs(FS_SM); fw('bold');
+  T('Ley 233 de Veracruz · Artículo 73', ML, 68);
 
-  st(Q.wh); fs(7.5); fw('normal'); T('OBRA', ML, 78);
+  st(Q.wh); fs(FS_PORT_LBL); fw('normal'); T('OBRA', ML, 78);
   fs(14); fw('bold');
   T(doc.splitTextToSize(nombreCorto, PW*0.38), ML, 85);
 
-  st(Q.mu); fs(7); fw('normal');
+  st(Q.mu); fs(FS_PORT_LBL); fw('normal');
   T('CORTE', ML, PH-34);
-  st(Q.wh); fs(7.5);
+  st(Q.wh); fs(FS_PORT_VAL);
   T(doc.splitTextToSize(sello.corte, PW*0.38), ML, PH-29);
 
   const xR=PW*0.44, yR0=24;
-  st(Q.ng); fs(9); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
+  st(Q.ng); fs(FS_PORT_SEC); fw('bold'); T('1  IDENTIFICACIÓN', xR, yR0);
   sd(Q.bd); lw(0.3); L(xR, yR0+2, PW-MR, yR0+2);
   let yR=yR0+8;
   const contr = contratoCapturado(obra?.contrato);
@@ -1414,11 +1456,11 @@ async function generarPDFArt73({
     ['Generado por:', comoSeImprime(generadoPor)],
   ];
   filasID.forEach(([lbl,val])=>{
-    st(Q.ng); fs(7); fw('bold'); T(lbl, xR, yR);
-    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fw('normal');
-    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-38);
-    T(lineas, xR+38, yR);
-    yR += 5 * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
+    st(Q.ng); fs(FS_PORT_LBL); fw('bold'); T(lbl, xR, yR);
+    st(val===NO_CAPTURADO ? Q.mu : Q.tx); fs(FS_PORT_VAL); fw('normal');
+    const lineas = doc.splitTextToSize(String(val), PW-xR-MR-42);
+    T(lineas, xR+42, yR);
+    yR += FS_PORT_PASO * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
   });
 
   // POR QUÉ ESTOS DOS NOMBRES ESTÁN AQUÍ, dicho en el papel y no sólo en el
@@ -1427,7 +1469,7 @@ async function generarPDFArt73({
   // cumpliendo y de dónde sale. No se usa `nota()` a propósito: esa caja mide
   // el ancho de la columna izquierda y aquí desbordaría sobre el panel pizarra.
   yR += 2;
-  st(Q.mu); fs(6); fw('normal');
+  st(Q.mu); fs(FS_PIE); fw('normal');
   T(doc.splitTextToSize(
     'Art. 73: el residente de obra designado por el Ente Público y el '
     + 'superintendente de construcción o de servicios son corresponsables de la '
@@ -1436,7 +1478,7 @@ async function generarPDFArt73({
 
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
-  st(Q.mu); fs(6); fw('normal');
+  st(Q.mu); fs(FS_PIE); fw('normal');
   T('cotea · informe de avance', PW*0.44, PH-3.5);
   T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
 
@@ -1916,7 +1958,7 @@ async function generarPDFArt73({
                          fx, fy, FW, FH, '', 'FAST');
           } catch(e) {
             console.warn('Art. 73: addImage falló para', foto.sec, e?.message || e);
-            st(Q.mu); fs(6); fw('normal');
+            st(Q.mu); fs(FS_PIE); fw('normal');
             T('La fotografía no se pudo incorporar', fx+FW/2, fy+FH/2, {align:'center'});
           }
         } else {
@@ -1972,7 +2014,7 @@ async function generarPDFArt73({
   for (let i = 1; i <= totalPaginas; i++) {
     doc.setPage(i);
     sf(Q.bg); R(PW/2-25, PH-6, 50, 4, 'F');
-    st(Q.mu); fs(6); fw('normal');
+    st(Q.mu); fs(FS_PIE); fw('normal');
     T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
   }
 

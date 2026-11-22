@@ -855,8 +855,8 @@ if (process.argv.includes('--contraprueba')) {
     // ── E · se entrega ─────────────────────────────────────────────────────
     { nombre: 'el informe que se entrega se sella como documento interno',
       hacer: () => src.replace(
-        "    rotulo: 'Informe de avance · Art. 73', banda: null,",
-        "    rotulo: 'Informe de avance · Art. 73', banda: 'DOCUMENTO INTERNO',") },
+        "    rotulo: 'Informe semanal de avance · Art. 73', banda: null,",
+        "    rotulo: 'Informe semanal de avance · Art. 73', banda: 'DOCUMENTO INTERNO',") },
     { nombre: 'el cierre inventa renglones de firma con cargos que el sistema no conoce',
       hacer: () => src.replace(
         "  y = nota('Este informe no lleva renglones de firma porque el sistema no conoce los cargos '\n"

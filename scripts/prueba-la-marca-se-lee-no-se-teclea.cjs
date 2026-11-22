@@ -413,7 +413,14 @@ for (const [cual, generar] of PAPELES) {
     .map(d => String(d.texto));
   const declara = (ts) => ts.filter(t => t.includes('(no capturado)')).length;
   const delta = declara(sin) - declara(con);
-  const nombres = sin.filter(t => /FOSMON|Veracruz/i.test(t));
+  // «Veracruz» se usa aquí como señuelo del nombre del CLIENTE —el estado o el
+  // municipio—, no como palabra prohibida. El 2026-11-21 la portada del Art. 73
+  // pasó a citar «Ley 233 de Veracruz · Artículo 73» de subtítulo, que es el
+  // nombre de la LEY y es texto fijo de la plantilla: no sale de ningún dato y
+  // no puede traer la marca de nadie. Sin esta excepción el banco acusaba de
+  // filtración a la cita legal que el papel debe llevar.
+  const CITA_LEGAL = /Ley\s*233/i;
+  const nombres = sin.filter(t => /FOSMON|Veracruz/i.test(t) && !CITA_LEGAL.test(t));
   if (delta === 1 && !nombres.length)
     ok(`${cual} sin organización declara el hueco (${declara(con)} → ${declara(sin)}) `
       + 'y no lo rellena con nadie');

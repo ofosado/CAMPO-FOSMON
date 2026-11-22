@@ -148,8 +148,15 @@ const base = (subs, evidencia, evidenciaCargada) => ({
 // importa. El corte de arriba es su encabezado y el de abajo el de la sección
 // 6, que siempre va después.
 function seccion5(hoja) {
-  const i = hoja.findIndex(d => String(d.texto).startsWith('5  RESUMEN FOTOGRÁFICO'));
-  const j = hoja.findIndex(d => String(d.texto).startsWith('6  INDICADORES DE RIESGO'));
+  // SE BUSCA POR TÍTULO, NO POR NÚMERO. Estaba anclado a «5  RESUMEN
+  // FOTOGRÁFICO» y «6  INDICADORES DE RIESGO», y el 2026-11-21 el papel se
+  // renumeró —se fue la sección 7 y se resolvió una duplicación de «4»—: el
+  // banco salió NO ARRANCÓ sin medir nada, por un número que no es la conducta
+  // que vigila. El número de sección es ordenación; el título es la sección.
+  const esSec = (t) => (d) => /^\d+\s+/.test(String(d.texto))
+    && String(d.texto).replace(/^\d+\s+/, '').startsWith(t);
+  const i = hoja.findIndex(esSec('RESUMEN FOTOGRÁFICO'));
+  const j = hoja.findIndex(esSec('INDICADORES DE RIESGO'));
   if (i < 0 || j < 0 || j <= i) return null;
   return hoja.slice(i, j);
 }

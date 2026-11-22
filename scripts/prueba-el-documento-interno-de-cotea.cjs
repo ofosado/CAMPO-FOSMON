@@ -368,8 +368,18 @@ ok(todos.includes(eLimpia.pres.margenAbsTxt),
 // El corte, con su origen declarado. Un instante de marzo con la suite
 // corriendo cualquier otro día: un sitio que leyera el reloj se vería.
 const corte = selloDeTiempo(SELLO).corte;
-ok(todos.filter(t => t === corte).length >= 2,
-  `el corte del documento sale del sello y declara su origen: «${corte}»`);
+// SE CUENTA SOBRE EL TEXTO UNIDO, no sobre renglones iguales al corte entero.
+// El corte sale DOS veces —en la franja oscura de la portada y en la lista de
+// identificación— y en la lista va dentro de una columna que `splitTextToSize`
+// parte. Mientras cupo, el renglón era idéntico a la cadena y la comparación
+// `t === corte` funcionaba por casualidad; el 2026-11-21, al ensanchar la
+// columna de etiquetas para la letra nueva, dejó de caber y el banco acusó al
+// papel de no declarar su origen cuando lo declaraba partido en dos líneas.
+const unido = todos.join(' ').replace(/\s+/g, ' ');
+const vecesCorte = unido.split(corte.replace(/\s+/g, ' ')).length - 1;
+ok(vecesCorte >= 2,
+  `el corte del documento sale del sello y declara su origen: «${corte}»`,
+  `${vecesCorte} vez(ces)`);
 const hoyLarga = new Date().toLocaleDateString('es-MX',
   { timeZone: 'America/Mexico_City', day: '2-digit', month: 'long', year: 'numeric' });
 if (hoyLarga === selloDeTiempo(SELLO).fecha) {
@@ -605,25 +615,37 @@ const detRecien = eRecien.veredicto.detectados;
 ok(detRecien.every(r => hojaRecien.some(t => t === comoDebeSalir(r))),
   `los ${detRecien.length} detectados de esa obra publican todos con qué disparó`);
 
-const faltanNoEv = v.noEvaluables.filter(r => !todos.some(t => t === (r.titulo || r.id)));
-ok(faltanNoEv.length === 0,
-  `los ${v.noEvaluables.length} no evaluables salen por su nombre`
-  + (faltanNoEv.length ? ` — faltan ${faltanNoEv.map(r => r.id).join(', ')}` : ''));
+// ── LAS DOS LISTAS SE FUERON, Y QUEDAN DOS NÚMEROS ────────────────────────
+//
+// Aquí se afirmaba que los no evaluables salían UNO POR UNO con el dato que
+// les faltó, y que los sin hallazgo se nombraban en fila. Las dos listas se
+// retiraron del papel de la constructora el 2026-11-21: la columna «por qué no
+// se pudo medir» citaba al MOTOR —«falta `historialAvance` en esta lectura»— y
+// eso le habla a quien escribió la regla, no a quien lee el expediente de su
+// obra; y la fila de nombres de reglas no la lee nadie.
+//
+// LO QUE NO SE PUEDE PERDER es la razón por la que esas listas existían: que
+// «ningún riesgo detectado» NO se lea como «obra sana». Eso lo sostiene un
+// número, no una lista, y es lo que se afirma ahora. El detalle por dato sigue
+// vivo en el informe del Art. 73 —lo comprueba `prueba-el-hueco-de-riesgo-se-ve`—,
+// así que no desapareció del producto: se quedó donde es accionable.
+const diceConteo = (frase) => todos.some(t => t.includes(frase));
+ok(diceConteo(`${v.noEvaluables.length} sin poder medir`),
+  `el papel publica «${v.noEvaluables.length} sin poder medir» en vez de la tabla`,
+  todos.find(t => /sin poder medir/.test(t)) || 'no sale');
+ok(diceConteo(`${v.sinHallazgo.length} evaluados sin hallazgo`),
+  `y «${v.sinHallazgo.length} evaluados sin hallazgo» en vez de la fila de nombres`,
+  todos.find(t => /evaluados sin hallazgo/.test(t)) || 'no sale');
 
-// Y NOMBRAN EL DATO QUE FALTA, que es lo único que vuelve el hueco accionable.
-const sinNombrarDato = v.noEvaluables.filter(r =>
-  !todos.some(t => r.faltan.every(f => t.includes(f.nombre || f.dato))));
-ok(sinNombrarDato.length === 0,
-  `los ${v.noEvaluables.length} no evaluables nombran el dato que les faltó`
-  + (sinNombrarDato.length ? ` — sin nombrarlo: ${sinNombrarDato.map(r => r.id).join(', ')}` : ''));
-
-// Los sin hallazgo se NOMBRAN, no se cuentan: la regla que falte de la lista es
-// la que nadie va a notar.
-const faltanSin = v.sinHallazgo.filter(r =>
-  !todos.some(t => t.includes(r.titulo || r.id)));
-ok(faltanSin.length === 0,
-  `los ${v.sinHallazgo.length} sin hallazgo se nombran uno por uno`
-  + (faltanSin.length ? ` — faltan ${faltanSin.map(r => r.id).join(', ')}` : ''));
+// Y QUE DE VERDAD YA NO SALGAN LOS NOMBRES. Sin esto, el banco diría que los
+// conteos están y no se enteraría de que las listas siguen debajo.
+const nombresNoEv = v.noEvaluables.filter(r => todos.some(t => t === (r.titulo || r.id)));
+ok(nombresNoEv.length === 0,
+  'y ningún no evaluable sale por su nombre',
+  nombresNoEv.length ? `siguen ${nombresNoEv.map(r => r.id).join(', ')}` : 'ninguno');
+const porQueSuelto = todos.filter(t => /Por qué no se pudo medir/.test(t));
+ok(porQueSuelto.length === 0,
+  'ni la columna del porqué, que era la que citaba al motor');
 
 // Los cuatro conteos, impresos y correctos.
 const cuentas = [

@@ -319,9 +319,19 @@ async function correr(fuente) {
   // `prueba-tres-estados-del-riesgo` y `prueba-el-semaforo-mide-contra-el-anexo`
   // —ellos mutan `requiere` y el guardia del detector—; aquí se afirma sólo que
   // eso LLEGA AL PAPEL, sin duplicarles la mutación.
-  check(dice(art73Sin, /el programa de obra contractual/)
-     && dice(intSin, /el programa de obra contractual/),
-    'en su lugar la revisión sale como hueco declarado, nombrando el anexo que falta');
+  // LOS DOS PAPELES LO DICEN, PERO YA NO IGUAL. El informe del Art. 73 sigue
+  // NOMBRANDO el anexo que falta —ahí «qué dato falta» es accionable: el ente
+  // público puede ir a pedirlo—. El papel de la constructora cambió esa tabla
+  // por dos conteos el 2026-11-21, así que de él sólo se puede afirmar que el
+  // hueco entró en la cuenta y no se esfumó. Se afirman las dos cosas por
+  // separado en vez de rebajar la del Art. 73 para que encaje con la otra.
+  check(dice(art73Sin, /el programa de obra contractual/),
+    'el informe del Art. 73 declara el hueco NOMBRANDO el anexo que falta');
+  const lineaInt = intSin.find(t => /sin poder medir/.test(t)) || '';
+  const nInt = Number((lineaInt.match(/^(\d+)/) || [])[1]);
+  check(Number.isFinite(nInt) && nInt > 0,
+    'y el papel de la constructora lo cuenta, aunque ya no lo nombre',
+    lineaInt || '(no sale el conteo)');
 
   // (d) LA RECTA, SOBRE EL PAPEL.
   // El documento interno no la nombra nunca. El informe del Art. 73 sí, UNA
