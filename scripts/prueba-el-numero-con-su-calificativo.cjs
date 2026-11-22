@@ -502,14 +502,24 @@ async function correr(codigo) {
     'ni el margen ni la brecha entran en los riesgos DETECTADOS: sin el gasto '
     + 'no hay número con el que disparar',
     detectados.join(' | ') || '(tabla vacía)');
-  // Y no se callan: pasan a «No evaluables» con el dato que falta. El orden
-  // importa, porque es lo que distingue un riesgo descartado de uno pendiente.
-  const iNoEval = pdfHueco.textos.indexOf('No evaluables · qué dato falta');
-  const iMargen = pdfHueco.textos.indexOf('Margen bruto en zona crítica');
-  check(iNoEval !== -1 && iMargen > iNoEval
-     && dice(pdfHueco, 'la corrida del gasto todavía no incluye esta obra'),
-    'el margen aparece bajo «No evaluables», con el dato que le falta',
-    `No evaluables en ${iNoEval} · Margen en ${iMargen}`);
+  // Y NO SE CALLAN. Hasta el 2026-11-21 esto se afirmaba fuerte: que el margen
+  // salía NOMBRADO bajo «No evaluables · qué dato falta», con el dato que le
+  // faltó. Ese bloque se retiró del papel de la constructora por decisión de
+  // producto —la columna del porqué citaba al motor— y quedan dos conteos.
+  //
+  // Lo que se puede seguir afirmando aquí es lo que el papel sostiene hoy: que
+  // el riesgo NO desapareció. Entró en la cuenta de los que no se pudieron
+  // medir, y esa cuenta se imprime. Es menos de lo que se afirmaba antes, y se
+  // dice en vez de disimularlo con un anclaje parecido: QUÉ riesgo fue y QUÉ
+  // dato le faltó ya sólo lo publica el informe del Art. 73, y eso lo vigila
+  // `prueba-el-hueco-de-riesgo-se-ve`.
+  const lineaNoEval = pdfHueco.textos.find(t => /sin poder medir/.test(t)) || '';
+  const nNoEval = Number((lineaNoEval.match(/^(\d+)/) || [])[1]);
+  check(Number.isFinite(nNoEval) && nNoEval > 0,
+    'el papel publica cuántos riesgos no se pudieron medir: el margen no se esfuma',
+    lineaNoEval || '(no sale el conteo)');
+  check(!dice(pdfHueco, 'Margen bruto en zona crítica'),
+    'y no lo nombra, que es lo que se decidió: el detalle vive en el Art. 73');
 
   check(dice(pdfMedido, '19,900,000'),
     'canario: el documento de la 0121 SÍ publica su gasto medido');
