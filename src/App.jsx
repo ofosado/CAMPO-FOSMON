@@ -580,12 +580,178 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
     return yy;
   }
 
+
+  // ── LA REJILLA DE FOTOS, UNA SOLA PARA LOS DOS PAPELES ───────────────────
+  //
+  // Vivía entera dentro de `generarPDFArt73`, y por eso el papel de la
+  // constructora no llevaba NI UNA FOTO: su sección de resumen fotográfico
+  // publicaba el juicio sobre la evidencia —cuánta cobertura, qué partidas sin
+  // respaldo— y mandaba a buscar las fotos al otro documento. Medido el
+  // 2026-11-21: `generarPDFInterno` no tenía una sola llamada a `addImage`.
+  //
+  // La rejilla sube al andamio en vez de copiarse. Dos rejillas serían dos
+  // criterios sobre la misma obra —cuántas por hoja, qué dice el pie, qué se
+  // escribe cuando no hay ninguna— y el día que una cambie, el mismo expediente
+  // enseña dos cosas. El reparto ya era común (`seleccionFotografica`); lo que
+  // faltaba era que el DIBUJO también lo fuera.
+  //
+  // TRES HOJAS COMO MÁXIMO, y no es un número suelto: `TOPE_FOTOS` son 15 y
+  // caben 6 por hoja, así que el tope de hojas sale de dividir y no de teclear
+  // un 3 que mañana no cuadre con el otro número.
+  async function bloqueDeFotos({ titulo, subs, evidencia, evidenciaCargada,
+                                 advertenciaDeFecha = false,
+                                 bandaDeCobertura = false,
+                                 tablaSinEvidencia = false }) {
+    const sel = seleccionFotografica({ subs, evidencia, evidenciaCargada,
+                                       tope: TOPE_FOTOS });
+    const cob = sel.cobertura;
+    const fotos = [];
+    for (const p of [...sel.partidas, ...sel.fuera]) {
+      for (const f of p.fotos) fotos.push({
+        sec: p.s?.sec || '—',
+        conc: f.sub || p.s?.sub || '',
+        pct: Number.isFinite(parseFloat(p.s?.a)) ? parseFloat(p.s.a) : null,
+        // LA FECHA DE SUBIDA, Y DE CUÁL DE LAS DOS SE TRATA. `fechaServidor` la
+        // puso el servidor al llegar el archivo; `fechaDeclarada` la dijo el
+        // teléfono y no está verificada. Ninguna de las dos es la fecha de
+        // ejecución, y por eso el pie dice «subida».
+        fecha: f.fechaServidor || f.fechaDeclarada || null,
+        fechaEs: f.fechaServidor ? 'servidor' : (f.fechaDeclarada ? 'declarada' : null),
+        sello: selloDeEvidencia(f).texto,
+        url: f.url || null,
+      });
+    }
+    await precargarFotosDelPDF(fotos);
+
+    const FOTOS_POR_HOJA = 6;
+    const hojas = fotos.length ? Math.ceil(fotos.length / FOTOS_POR_HOJA) : 1;
+    const FW = (CW-8)/3, FH = FW*0.64;
+
+    for (let h = 0; h < hojas; h++) {
+      doc.addPage(); pageFrame();
+      let yf = CY0 + 4;
+      yf = secHead(`${titulo}${hojas > 1 ? ` (${h+1} de ${hojas})` : ''}`, yf);
+
+      if (h === 0 && advertenciaDeFecha) {
+        yf = nota('LA FECHA DE CADA FOTO ES LA FECHA EN QUE SE SUBIÓ AL SISTEMA, no la fecha '
+          + 'en que se ejecutó el trabajo ni la fecha en que se tomó la foto. El sistema no lee '
+          + 'la fecha de la cámara. Una foto de un trabajo de agosto subida en septiembre '
+          + 'aparece con fecha de septiembre, y por eso el pie de cada una dice «subida». Este '
+          + 'respaldo acredita QUÉ partida tiene evidencia, no CUÁNDO se ejecutó.', yf);
+      }
+
+      if (h === 0 && bandaDeCobertura) {
+        // LA COBERTURA, con el mismo criterio y las mismas palabras que el
+        // expediente del contratista: `frasesDeCobertura`. Si no se pudo medir
+        // no se publica ningún porcentaje — un 0% impreso aquí es
+        // indistinguible de una obra sin fotos, y los dos casos se arreglan en
+        // sitios opuestos.
+        //
+        // SE PERDIÓ UNA VEZ, el 2026-11-21, al sacar la rejilla de dentro de
+        // `generarPDFArt73` para compartirla: la banda se quedó atrás y el
+        // informe salió sin su veredicto. Lo dijo
+        // `prueba-la-cobertura-se-mide-en-dinero` el mismo día, que es
+        // exactamente para lo que existe.
+        const fc = frasesDeCobertura(cob);
+        const [bordeC, fondoC] = !cob.medible ? [colorSev('medio'), Q.lt]
+          : cob.pct >= COBERTURA_TECHO ? [colorSev('bajo'), Q.lt]
+          : cob.pct >= COBERTURA_PISO ? [Q.piz, Q.lt]
+          : [colorSev('alto'), Q.lt];
+        const lsC = doc.splitTextToSize(fc.detalle, CW - 8);
+        const hC = 9 + lsC.length * 4.2;
+        sf(fondoC); sd(bordeC); lw(0.4); R(ML, yf, CW, hC, 'FD');
+        sf(bordeC); R(ML, yf, 1.5, hC);
+        st(Q.ng); fs(FS_SEC); fw('bold'); T(fc.titulo, ML + 5, yf + 6);
+        st(Q.tx); fs(FS_SM); fw('normal');
+        T(lsC, ML + 5, yf + 10.5);
+        yf += hC + 3;
+      }
+
+      if (h === 0 && tablaSinEvidencia && sel.sinEvidencia.length) {
+        st(colorSev('alto')); fs(FS_SEC); fw('bold');
+        T(`Partidas del ${COBERTURA_TECHO}% del contrato SIN evidencia fotográfica: `
+          + `${sel.sinEvidencia.length} de ${sel.partidas.length}`, ML, yf + 4);
+        yf += 7;
+        yf = autoT(['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
+          sel.sinEvidencia.map(p => [
+            p.s?.sec || '—',
+            String(p.s?.sub || '').slice(0, 64),
+            MXN(p.imp),
+            PCT(p.pesoPct),
+            Number.isFinite(parseFloat(p.s?.a)) ? PCT(parseFloat(p.s.a), 0) : 'sin avance',
+          ]),
+          [24, 125, 44, 28, 30], ML, yf,
+          { bodyStyles: { fontSize: FS_SM },
+            columnStyles: { 2:{halign:'right'}, 3:{halign:'right'}, 4:{halign:'right'} } });
+      }
+
+      const lote = fotos.slice(h * FOTOS_POR_HOJA, (h+1) * FOTOS_POR_HOJA);
+      if (!lote.length) {
+        // SIN FOTOS NO SE DIBUJA LA REJILLA, y no se pide disculpas. Seis
+        // recuadros grises se leen como un fallo de impresión; que no haya
+        // respaldo es un HECHO de la obra y se escribe con palabras. Y se
+        // distingue de «no se pudo leer», que se arregla en el sitio opuesto:
+        // uno pide ir a fotografiar, el otro pide volver a generar.
+        yf = nota(evidenciaCargada
+          ? 'ESTE REPORTE NO LLEVA NI UNA FOTOGRAFÍA porque la obra no tiene evidencia '
+            + 'vigente al corte. No es un problema del documento: es que nadie ha subido '
+            + 'fotos de esta obra. Mientras siga así, ningún avance de este expediente '
+            + 'tiene respaldo visual que enseñar a nadie.'
+          : 'LA EVIDENCIA DE ESTA OBRA NO SE PUDO LEER al generar el documento. NO quiere '
+            + 'decir que no haya fotografías: quiere decir que no se sabe. Se arregla '
+            + 'volviendo a abrir la obra y generando el reporte otra vez.', yf);
+        break;
+      }
+
+      for (let fila = 0; fila < 2; fila++) {
+        const rf = lote.slice(fila*3, (fila+1)*3);
+        rf.forEach((foto, col) => {
+          const fx = ML + col*(FW+4), fy = yf;
+          sf(Q.bg); sd(Q.bd); lw(0.2); R(fx, fy, FW, FH, 'FD');
+          if (foto.url) {
+            try {
+              const fmt = /^data:image\/(png|jpeg|jpg)/i.exec(foto.url);
+              doc.addImage(foto.url, fmt && /png/i.test(fmt[1]) ? 'PNG' : 'JPEG',
+                           fx, fy, FW, FH, '', 'FAST');
+            } catch(e) {
+              console.warn('addImage falló para', foto.sec, e?.message || e);
+              st(Q.mu); fs(FS_PIE); fw('normal');
+              T('La fotografía no se pudo incorporar', fx+FW/2, fy+FH/2, {align:'center'});
+            }
+          } else {
+            // LA FOTO QUE NO BAJÓ NO ES UNA FOTO QUE NO EXISTE. `precargarFotos`
+            // deja la url en null cuando la descarga falla o vence el plazo, y un
+            // «sin foto» ahí acusaría de falta de captura a quien sí capturó.
+            st(Q.mu); fs(FS_PORT_LBL); fw('bold');
+            T(foto.sec, fx+FW/2, fy+FH/2-3, {align:'center'});
+            fs(FS_PIE); fw('normal');
+            T('La fotografía existe y no se pudo descargar', fx+FW/2, fy+FH/2+4, {align:'center'});
+          }
+          sf(Q.ng); R(fx, fy+FH, FW, 8, 'F');
+          st(Q.wh); fs(FS_PORT_LBL); fw('bold');
+          T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`, fx+2, fy+FH+4.5);
+          st(Q.mu); fs(FS_PIE); fw('normal');
+          T(foto.sello || '', fx+FW-1, fy+FH+4.5, {align:'right'});
+          fs(FS_PIE);
+          T(String(foto.conc || '').slice(0,30), fx+2, fy+FH+7);
+          T(foto.fecha
+              ? `subida ${foto.fecha}${foto.fechaEs === 'declarada' ? ' (declarada)' : ''}`
+              : 'sin fecha de subida',
+            fx+FW-1, fy+FH+7, {align:'right'});
+        });
+        yf += FH + 8 + 4;
+      }
+    }
+    return { sel, cob, nFotos: fotos.length, hojas };
+  }
+
   return { doc, Q, colorSev, labelSev, disparoCon,
            PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
            FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
            FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
            sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
-           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva };
+           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
+           bloqueDeFotos };
 };
 
 // ── EL DOCUMENTO INTERNO DE COTEA · EL PAPEL DE LA CONSTRUCTORA ────────────
@@ -696,7 +862,8 @@ async function generarPDFInterno({
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
           FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
-          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
+          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
+          bloqueDeFotos } = A;
 
   // ── LA ECONOMÍA, CALCULADA DONDE SE CALCULA PARA LA PANTALLA ──────────────
   const kpis = calcularKPIsObra(obra, subs, maquinaria, materiales, estimaciones,
@@ -1042,18 +1209,12 @@ async function generarPDFInterno({
   // con el mismo `tope` y publica la cobertura con `frasesDeCobertura`, las
   // dos funciones que se usan aquí. Si algún día aquel papel reparte por su
   // cuenta, esta nota se vuelve mentira y hay que venir a borrarla.
-  // ESTA LEYENDA SE VA CON EL BLOQUE C, NO ANTES. Se quitó el 2026-11-21 por
-  // ser meta-comentario —le habla al otro documento en vez de al lector de
-  // éste— y se devolvió el mismo día: mientras esta sección no imprima fotos,
-  // la frase es lo ÚNICO que le dice al lector dónde están. Quitarla ahora
-  // dejaba un resumen fotográfico sin fotos y sin explicación, que se lee como
-  // un álbum que no cargó. Se borra cuando el bloque C meta las fotos aquí y
-  // la vuelva falsa, que es la condición que la hace borrable.
-  y = nota('Aquí no van las fotos: van en el informe de avance. Lo que va aquí '
-    + 'es el juicio sobre ellas, que ese informe no puede llevar. El criterio es el mismo de allá '
-    + `—las partidas que acumulan el ${COBERTURA_TECHO}% del importe contratado, de mayor a menor, `
-    + 'y las fotos repartidas en proporción a lo que pesa cada una—, así que lo que se cuenta aquí '
-    + 'es exactamente lo que aquel documento imprime.', y);
+  // AQUÍ VIVÍA «Aquí no van las fotos: van en el informe de avance», y la
+  // condición que la hacía borrable se cumplió el 2026-11-22: las fotos SÍ van
+  // aquí ahora. Se quitó un día antes, se devolvió el mismo día —sin fotos
+  // todavía, era lo único que le decía al lector dónde estaban— y se va ahora
+  // que es falsa. Lo que sigue abajo es el juicio sobre la evidencia; las
+  // fotografías van después, en la rejilla del andamio.
 
   if (!cob.medible) {
     // NO SE PUBLICA NINGÚN NÚMERO. Sin lectura no hay cobertura, y un 0%
@@ -1159,7 +1320,30 @@ async function generarPDFInterno({
     }
   }
 
-  // ═══ 6 · INDICADORES DE RIESGO, EN TRES ESTADOS ═══════════════════════════
+  // ── Y AQUÍ VAN LAS FOTOS, QUE ES LO QUE FALTABA ──────────────────────────
+  //
+  // Este papel publicaba el JUICIO sobre la evidencia —cuánta cobertura, qué
+  // partidas sin respaldo— y mandaba a buscar las fotos al otro documento.
+  // Medido el 2026-11-21: ni una sola llamada a `addImage`. Un «resumen
+  // fotográfico» sin una fotografía no es un resumen de nada, y quien abría el
+  // reporte de su obra no veía la obra.
+  //
+  // El dibujo es el del andamio, el mismo que usa el informe de gobierno, así
+  // que son las mismas fotos repartidas igual. Lo que este papel NO pide son
+  // las dos piezas del otro: la advertencia larga de la fecha —va en el papel
+  // que se archiva por años, no en el de la junta del lunes— y la tabla de
+  // partidas sin evidencia, que aquí ya salió arriba con su propio juicio y
+  // repetirla sería imprimir la misma lista dos veces en seis páginas.
+  await bloqueDeFotos({
+    // EL MISMO TÍTULO que el encabezado de arriba, y a propósito: estas hojas
+    // son la CONTINUACIÓN de la sección 6, no una sección nueva. Con un título
+    // propio salían dos secciones numeradas «6», que es el defecto que el
+    // banco acababa de empezar a vigilar — y lo cazó el mismo día.
+    titulo: '6  RESUMEN FOTOGRÁFICO',
+    subs, evidencia, evidenciaCargada,
+  });
+
+  // ═══ 7 · INDICADORES DE RIESGO ════════════════════════════════════════════
   doc.addPage(); pageFrame();
   y = CY0 + 4;
   y = secHead('7  INDICADORES DE RIESGO', y);
@@ -1355,7 +1539,8 @@ async function generarPDFArt73({
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
           FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
-          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva } = A;
+          pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
+          bloqueDeFotos } = A;
 
   // ── LA ECONOMÍA, DE DONDE LA SACA EL TABLERO DEL MUNICIPIO ────────────────
   const eco = economiaDeDependencia({ obra, subs, estimaciones, estCargadas });
@@ -1843,150 +2028,20 @@ async function generarPDFArt73({
 
   // ═══ 7 · RESPALDO FOTOGRÁFICO ═════════════════════════════════════════════
   //
-  // EL MISMO REPARTO QUE EL EXPEDIENTE, no uno propio: `seleccionFotografica`
-  // decide quiénes entran —las partidas que acumulan el 80% del importe, de
-  // mayor a menor— y cuántas le tocan a cada una. Si este papel repartiera por
-  // su cuenta, enseñaría fotos distintas de las que el tablero dice que
-  // respaldan la misma obra.
-  const sel = seleccionFotografica({ subs, evidencia, evidenciaCargada,
-                                     tope: TOPE_FOTOS });
-  const cob = sel.cobertura;
-  const fotos = [];
-  for (const p of [...sel.partidas, ...sel.fuera]) {
-    for (const f of p.fotos) fotos.push({
-      sec: p.s?.sec || '—',
-      conc: f.sub || p.s?.sub || '',
-      pct: Number.isFinite(parseFloat(p.s?.a)) ? parseFloat(p.s.a) : null,
-      // LA FECHA DE SUBIDA, Y DE CUÁL DE LAS DOS SE TRATA. `fechaServidor` la
-      // puso el servidor al llegar el archivo; `fechaDeclarada` la dijo el
-      // teléfono y no está verificada —medidas las 656 del legado, 48 están
-      // corridas un día—. En un papel que se archiva la diferencia importa, y
-      // ninguna de las dos es la fecha de ejecución.
-      fecha: f.fechaServidor || f.fechaDeclarada || null,
-      fechaEs: f.fechaServidor ? 'servidor' : (f.fechaDeclarada ? 'declarada' : null),
-      sello: selloDeEvidencia(f).texto,
-      url: f.url || null,
-    });
-  }
-  await precargarFotosDelPDF(fotos);
-
-  const FOTOS_POR_HOJA = 6;
-  const hojas = fotos.length ? Math.ceil(fotos.length / FOTOS_POR_HOJA) : 1;
-  const FW = (CW-8)/3, FH = FW*0.64;
-
-  for (let h = 0; h < hojas; h++) {
-    doc.addPage(); pageFrame();
-    let yf = CY0 + 4;
-    yf = secHead(`7  RESPALDO FOTOGRÁFICO${hojas > 1 ? ` (${h+1} de ${hojas})` : ''}`, yf);
-
-    if (h === 0) {
-      // LA ADVERTENCIA DE LA FECHA VA EN LA PRIMERA HOJA Y COMPLETA. Es la
-      // trampa de este papel: un expediente que archiva una foto bajo «avance
-      // de la semana N» afirma por años algo que nadie capturó.
-      yf = nota('LA FECHA DE CADA FOTO ES LA FECHA EN QUE SE SUBIÓ AL SISTEMA, no la fecha '
-        + 'en que se ejecutó el trabajo ni la fecha en que se tomó la foto. El sistema no lee '
-        + 'la fecha de la cámara. Una foto de un trabajo de agosto subida en septiembre '
-        + 'aparece con fecha de septiembre, y por eso el pie de cada una dice «subida». Este '
-        + 'respaldo acredita QUÉ partida tiene evidencia, no CUÁNDO se ejecutó.', yf);
-
-      // LA COBERTURA, con el mismo criterio y las mismas palabras que el
-      // expediente del contratista: `frasesDeCobertura`. Si no se pudo medir
-      // no se publica ningún porcentaje — un 0% impreso aquí es indistinguible
-      // de una obra sin fotos, y los dos casos se arreglan en sitios opuestos.
-      const fc = frasesDeCobertura(cob);
-      const [bordeC, fondoC] = !cob.medible ? [colorSev('medio'), Q.lt]
-        : cob.pct >= COBERTURA_TECHO ? [colorSev('bajo'), Q.lt]
-        : cob.pct >= COBERTURA_PISO ? [Q.piz, Q.lt]
-        : [colorSev('alto'), Q.lt];
-      const lsC = doc.splitTextToSize(fc.detalle, CW - 8);
-      const hC = 9 + lsC.length * 3.6;
-      sf(fondoC); sd(bordeC); lw(0.4); R(ML, yf, CW, hC, 'FD');
-      sf(bordeC); R(ML, yf, 1.5, hC);
-      st(Q.ng); fs(8.5); fw('bold'); T(fc.titulo, ML + 5, yf + 5.5);
-      st(Q.tx); fs(7); fw('normal');
-      T(lsC, ML + 5, yf + 9.5);
-      yf += hC + 3;
-
-      // LAS PARTIDAS GRANDES SIN UNA SOLA FOTO. En tabla y con importe: tres
-      // obras de producción tienen el corte entero en huecos, y media docena de
-      // páginas de recuadros vacíos se hojean sin leerse. Y es lo que la
-      // dependencia puede pedir, que es para lo que sirve este papel.
-      if (sel.sinEvidencia.length) {
-        st(colorSev('alto')); fs(FS_SEC); fw('bold');
-        T(`Partidas del ${COBERTURA_TECHO}% del contrato SIN evidencia fotográfica: `
-          + `${sel.sinEvidencia.length} de ${sel.partidas.length}`, ML, yf + 4);
-        yf += 7;
-        yf = autoT(['Clave', 'Partida', 'Importe', '% contrato', '% avance'],
-          sel.sinEvidencia.map(p => [
-            p.s?.sec || '—',
-            String(p.s?.sub || '').slice(0, 64),
-            MXN(p.imp),
-            PCT(p.pesoPct),
-            Number.isFinite(parseFloat(p.s?.a)) ? PCT(parseFloat(p.s.a), 0) : 'sin avance',
-          ]),
-          [24, 125, 44, 28, 30], ML, yf,
-          { bodyStyles: { fontSize: FS_SM },
-            columnStyles: { 2:{halign:'right'}, 3:{halign:'right'}, 4:{halign:'right'} } });
-      }
-    }
-
-    const lote = fotos.slice(h * FOTOS_POR_HOJA, (h+1) * FOTOS_POR_HOJA);
-    if (!lote.length) {
-      // SIN FOTOS NO SE DIBUJA LA REJILLA. Seis recuadros grises en un
-      // documento oficial se leen como un defecto de impresión; que no haya
-      // respaldo fotográfico es un hecho y se escribe con palabras.
-      yf = nota('ESTE INFORME NO LLEVA RESPALDO FOTOGRÁFICO porque '
-        + (evidenciaCargada
-            ? 'la obra no tiene fotografías vigentes al corte. No se dibuja una rejilla de '
-              + 'recuadros vacíos: en un documento que se archiva eso se lee como un fallo de '
-              + 'impresión y no como lo que es.'
-            : 'la evidencia de la obra no se pudo leer al generarlo. NO quiere decir que no '
-              + 'haya fotografías: quiere decir que no se sabe. Se arregla volviendo a abrir '
-              + 'la obra y generando el informe otra vez.'), yf);
-      break;
-    }
-
-    for (let fila = 0; fila < 2; fila++) {
-      const rf = lote.slice(fila*3, (fila+1)*3);
-      rf.forEach((foto, col) => {
-        const fx = ML + col*(FW+4), fy = yf;
-        sf(Q.bg); sd(Q.bd); lw(0.2); R(fx, fy, FW, FH, 'FD');
-        if (foto.url) {
-          try {
-            const fmt = /^data:image\/(png|jpeg|jpg)/i.exec(foto.url);
-            doc.addImage(foto.url, fmt && /png/i.test(fmt[1]) ? 'PNG' : 'JPEG',
-                         fx, fy, FW, FH, '', 'FAST');
-          } catch(e) {
-            console.warn('Art. 73: addImage falló para', foto.sec, e?.message || e);
-            st(Q.mu); fs(FS_PIE); fw('normal');
-            T('La fotografía no se pudo incorporar', fx+FW/2, fy+FH/2, {align:'center'});
-          }
-        } else {
-          // LA FOTO QUE NO BAJÓ NO ES UNA FOTO QUE NO EXISTE. `precargarFotos`
-          // deja la url en null cuando la descarga falla o vence el plazo, y un
-          // «sin foto» ahí acusaría de falta de captura a quien sí capturó.
-          st(Q.mu); fs(7); fw('bold'); T(foto.sec, fx+FW/2, fy+FH/2-3, {align:'center'});
-          fs(6); fw('normal');
-          T('La fotografía existe y no se pudo descargar', fx+FW/2, fy+FH/2+4, {align:'center'});
-        }
-        sf(Q.ng); R(fx, fy+FH, FW, 7, 'F');
-        st(Q.wh); fs(7); fw('bold');
-        T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`, fx+2, fy+FH+4.5);
-        st(Q.mu); fs(5.5); fw('normal');
-        T(foto.sello || '', fx+FW-1, fy+FH+4.5, {align:'right'});
-        fs(6);
-        T(String(foto.conc || '').slice(0,30), fx+2, fy+FH+6.5);
-        // «SUBIDA EN», el rótulo explícito, y de cuál de las dos fechas se
-        // trata. Sin fecha se dice que no la tiene: rellenarla con la de hoy es
-        // inventar un dato de campo en un documento que se archiva.
-        T(foto.fecha
-            ? `subida ${foto.fecha}${foto.fechaEs === 'declarada' ? ' (declarada)' : ''}`
-            : 'sin fecha de subida',
-          fx+FW-1, fy+FH+6.5, {align:'right'});
-      });
-      yf += FH + 7 + 4;
-    }
-  }
+  // LA REJILLA LA DIBUJA EL ANDAMIO, no este papel. Vivía aquí entera, y por
+  // eso el documento de la constructora no llevaba ni una foto: la rejilla
+  // estaba dentro del informe de gobierno. Con el dibujo compartido los dos
+  // enseñan las mismas fotos, repartidas igual y rotuladas igual.
+  //
+  // Este papel SÍ pide las dos piezas que son suyas: la advertencia de la
+  // fecha —es un documento que se archiva por años, y una foto bajo «avance de
+  // la semana N» afirma algo que nadie capturó— y la tabla de partidas sin
+  // evidencia, que es lo que la dependencia puede ir a pedir.
+  const { sel, cob } = await bloqueDeFotos({
+    titulo: '7  RESPALDO FOTOGRÁFICO',
+    subs, evidencia, evidenciaCargada,
+    advertenciaDeFecha: true, bandaDeCobertura: true, tablaSinEvidencia: true,
+  });
 
   // ── EL CIERRE: DE DÓNDE SALIÓ ESTE PAPEL ─────────────────────────────────
   //

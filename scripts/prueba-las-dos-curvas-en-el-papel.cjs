@@ -335,15 +335,29 @@ ok(textos.some(t => encabezadoDeSeccion(3).test(t)), 'la gráfica única sale co
 // secciones numeradas «4» —el margen semanal y el gasto por rubro— sin que
 // nadie lo viera: se descubrió a ojo el 2026-11-21. Exigir que la lista de
 // números no tenga duplicados lo habría dicho el primer día.
-const numerados = textos.filter(t => /^\d+\s{2,}[A-ZÁÉÍÓÚÑ]/.test(t))
-  .map(t => Number(t.match(/^(\d+)/)[1]));
-const repetidos = numerados.filter((n, i) => numerados.indexOf(n) !== i);
-ok(repetidos.length === 0,
-  'ningún número de sección se repite en el documento',
-  repetidos.length ? `repetidos: ${[...new Set(repetidos)].join(', ')}` : `${numerados.length} secciones`);
+// UN NÚMERO, UN TÍTULO. Lo que no puede pasar es que DOS SECCIONES DISTINTAS
+// lleven el mismo número; que una sección ocupe varias hojas y repita su
+// encabezado es correcto y es como se pagina el respaldo fotográfico, que
+// rotula «(1 de 3)». La primera versión de esta comprobación no distinguía las
+// dos cosas y salió en rojo el 2026-11-21 contra una paginación legítima — y
+// el mismo día cazó el defecto de verdad, dos secciones «6» con títulos
+// distintos, así que se afina en vez de aflojarse.
+const SUFIJO_HOJA = /\s*\(\d+ de \d+\)\s*$/;
+const porNumero = new Map();
+for (const t of textos.filter(t => /^\d+\s{2,}[A-ZÁÉÍÓÚÑ]/.test(t))) {
+  const n = Number(t.match(/^(\d+)/)[1]);
+  if (!porNumero.has(n)) porNumero.set(n, new Set());
+  porNumero.get(n).add(t.replace(SUFIJO_HOJA, '').trim());
+}
+const conDosTitulos = [...porNumero.entries()].filter(([, ts]) => ts.size > 1);
+ok(conDosTitulos.length === 0,
+  'ningún número de sección lo llevan dos secciones distintas',
+  conDosTitulos.length
+    ? conDosTitulos.map(([n, ts]) => `${n}: ${[...ts].join(' / ')}`).join(' · ')
+    : `${porNumero.size} secciones`);
 // Y van consecutivos desde 1: una sección que se retira tiene que dejar la
 // numeración cerrada, no un hueco que mande a buscar al número equivocado.
-const ordenados = [...numerados].sort((a, b) => a - b);
+const ordenados = [...porNumero.keys()].sort((a, b) => a - b);
 ok(ordenados.every((n, i) => n === i + 1),
   'y van de 1 en adelante sin huecos', ordenados.join('·'));
 
