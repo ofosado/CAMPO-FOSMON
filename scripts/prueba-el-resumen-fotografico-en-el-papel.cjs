@@ -510,13 +510,16 @@ ok(dice(NV.trozo, 'generando el reporte otra vez'),
 // sola deja a quien la lee sin salida: con dos papeles en pantalla era un
 // aviso, con uno solo de cada lado hay que nombrar el que sí se entrega. Se
 // exigen las dos mitades, porque quedarse con la primera es como estaba.
+// LA BANDA SE RETIRÓ EL 2026-11-23 y lo que se afirma cambió con ella. Decía
+// «DOCUMENTO INTERNO · EL QUE SE ENTREGA ES EL INFORME DE AVANCE», y esa
+// segunda mitad mandaba a buscar un papel que una sesión de constructora no
+// puede generar. Lo que seguía protegiendo —que una hoja suelta de esta
+// sección diga de dónde salió— lo sostiene el rótulo de la cabecera.
 const pagsDe5 = [...new Set(B.trozo.map(d => d.pagina))];
-const selloEn = (p) => B.hoja.filter(d => d.pagina === p).map(d => String(d.texto));
+const textosEn = (p) => B.hoja.filter(d => d.pagina === p).map(d => String(d.texto));
 ok(pagsDe5.length > 0 && pagsDe5.every(p =>
-      selloEn(p).some(t => /DOCUMENTO INTERNO/.test(t)
-                        && /EL QUE SE ENTREGA ES EL INFORME DE AVANCE/.test(t))),
-  `las ${pagsDe5.length} página(s) de la sección llevan el sello de documento `
-  + 'interno, y el sello nombra el papel que sí se entrega');
+      textosEn(p).some(t => /Reporte de avance de obra/i.test(t))),
+  `las ${pagsDe5.length} página(s) de la sección se identifican por su nombre`);
 
 // ══════════════════════════════════════════════════════════════════════════
 console.log(`\n${verdes} en verde · ${fallas} en rojo`);

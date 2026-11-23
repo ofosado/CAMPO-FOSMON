@@ -880,10 +880,25 @@ async function generarPDFInterno({
   // le da una dependencia, y el cliente de una obra no siempre es una
   // dependencia. La banda tiene que ser verdad en cada hoja de cada obra; el
   // nombre con su artículo va en la portada, donde cabe el paréntesis.
-  const SELLO_INTERNO ='DOCUMENTO INTERNO · USO DE COTEA · EL QUE SE ENTREGA ES EL INFORME DE AVANCE';
+  // LA BANDA SE FUE EL 2026-11-23, Y NO ES UNA SUAVIZACIÓN.
+  //
+  // Decía «DOCUMENTO INTERNO · EL QUE SE ENTREGA ES EL INFORME DE AVANCE», y
+  // esa segunda mitad apuntaba a un papel que ESTA USUARIA NO PUEDE GENERAR:
+  // el informe del Art. 73 sólo sale con una sesión de dependencia. La banda
+  // mandaba a buscar algo que no existe de su lado.
+  //
+  // Lo que había debajo era la suposición de que hay dos papeles. No los hay:
+  // cotea produce UN reporte de avance de obra por obra, y lo que cambia entre
+  // una empresa y una dependencia son sus particularidades —la de gobierno no
+  // lleva margen ni gasto porque esa información no existe de ese lado—. Un
+  // papel único no necesita una banda que lo distinga del otro.
+  //
+  // ESTE PAPEL SIGUE LLEVANDO LA ECONOMÍA DE LA EMPRESA: margen, gasto por
+  // rubro y nómina. Que ya no lleve banda no cambia qué publica; quien lo
+  // mande fuera manda eso con él.
   const A = andamioDeCotea({ jsPDF, nombreCorto, fecha: hoy,
-    rotulo: 'Documento interno', banda: SELLO_INTERNO,
-    pieIzq: 'cotea · documento interno' });
+    rotulo: 'Reporte de avance de obra', banda: null,
+    pieIzq: 'cotea · reporte de avance de obra' });
   const { doc, Q, colorSev, labelSev, disparoCon,
           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
@@ -959,16 +974,15 @@ async function generarPDFInterno({
     console.warn('el logo de cotea no se pudo pintar en la portada:', e?.message || e);
     st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
   }
-  // El sello de la portada, en caja naranja y antes del nombre de la obra: lo
-  // primero que se lee es qué clase de papel es éste.
-  sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 19.5);
-  st(Q.wh); fs(11); fw('bold'); T('DOCUMENTO INTERNO', ML+4, 55);
-  fs(8); fw('normal');
-  T('Uso de cotea · no es el reporte que se entrega al cliente', ML+4, 60.5);
-  // El segundo renglón, que es el que la banda no puede llevar: aquí sí cabe
-  // el nombre legal. Medido contra la caja —desde ML+4 hasta donde termina, 85
-  // mm— el renglón más largo de los dos ocupa 65.
-  T('Lo que se entrega es el informe de avance (Art. 73)', ML+4, 64.2);
+  // EL NOMBRE DEL REPORTE, lo primero que se lee después de la marca. Aquí iba
+  // una caja naranja de advertencia —«DOCUMENTO INTERNO · no es el reporte que
+  // se entrega al cliente»— que existía para distinguir este papel de otro. Ya
+  // no hay otro: es el reporte de avance de obra, y la variante de gobierno es
+  // el mismo con sus particularidades.
+  st(Q.wh); fs(13); fw('bold');
+  T(doc.splitTextToSize('REPORTE DE AVANCE DE OBRA', PW*0.38), ML, 54);
+  st(Q.nar); fs(FS_SM); fw('bold');
+  T('Avance físico, financiero y gasto', ML, 64);
 
   st(Q.wh); fs(FS_PORT_LBL); fw('normal'); T('OBRA', ML, 76);
   fs(14); fw('bold');
@@ -1061,7 +1075,7 @@ async function generarPDFInterno({
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
   st(Q.mu); fs(FS_PIE); fw('normal');
-  T('cotea · documento interno', PW*0.44, PH-3.5);
+  T('cotea · reporte de avance de obra', PW*0.44, PH-3.5);
   T('cotea.com.mx', PW-MR, PH-3.5, {align:'right'});
 
   // ═══ 2 · INDICADORES ══════════════════════════════════════════════════════
@@ -1612,11 +1626,11 @@ async function generarPDFInterno({
     T(`Página ${i} de ${totalPaginas}`, PW/2, PH-3.5, {align:'center'});
   }
 
-  doc.save(`Interno_cotea_${String(nombreCorto).replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`);
+  doc.save(`Reporte_de_avance_${String(nombreCorto).replace(/\s+/g,'_')}_${hoy.replace(/\s+/g,'_')}.pdf`);
 
   } catch(e) {
-    console.error('Error generando el documento interno:',e);
-    alert(`Error al generar el documento interno:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
+    console.error('Error generando el reporte de avance:',e);
+    alert(`Error al generar el reporte de avance:\n${e.message}\n\nRevisa la consola (F12) para más detalle.`);
   }
 }
 
@@ -27566,7 +27580,7 @@ const PASOS_BIENVENIDA = {
     { t:"Auditor Interno", d:"Tienes acceso completo a las obras asignadas pero en solo lectura. Puedes ver todo sin poder modificar nada." },
     { t:"Dashboard", d:"Al entrar a una obra verás los KPIs clave, tendencias semanales y semáforo de riesgos." },
     { t:"Operación y Gastos", d:"Consulta avance físico, fotos, estimaciones, subcontratos y todos los gastos de la obra." },
-    { t:"Documento interno", d:"En cada obra puedes descargar el documento interno de cotea en PDF desde el botón arriba a la derecha." },
+    { t:"Reporte de avance de obra", d:"En cada obra puedes descargar el reporte de avance de obra en PDF desde el botón arriba a la derecha." },
   ],
   cliente: [
     { t:"Tu obra", d:"Aquí ves el avance físico, fotos, estimaciones y plazos de tu obra en tiempo real." },
@@ -30334,7 +30348,7 @@ export default function App(){
             generadoPor: usuario?.nombre || usuario?.email || null,
           });
         }}
-        title="Descargar el documento interno de cotea (no se entrega al cliente)"
+        title="Descargar el reporte de avance de obra en PDF"
         style={{background:C.caliza,border:"none",borderRadius:6,
           margin:"4px 12px",padding:"6px 14px",fontSize:11,fontWeight:600,color:"white",cursor:"pointer",
           display:"flex",alignItems:"center",gap:6,letterSpacing:"0.02em"}}>
