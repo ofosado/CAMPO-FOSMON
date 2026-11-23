@@ -77,7 +77,8 @@ function piezasDelExport(archivo, nombre) {
 // importa en un trabajo del servidor no es que reviente: es que una lectura
 // suelta se caiga, el `catch` de arriba la absorba, y el trabajo siga y se
 // anote como bueno. Sin poder tirar UNA ruta, esa conducta no se puede medir.
-function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null } = {}) {
+function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
+                                    cuentasIniciales = {} } = {}) {
   const docs = new Map(Object.entries(docsIniciales));
   const escrituras = [];
   let seq = 0;
@@ -107,6 +108,17 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null }
       docs.set(ruta, { ...(docs.get(ruta) || {}), ...d });
     },
     collection: (sub) => coleccion(`${ruta}/${sub}`),
+    // BORRAR TAMBIÉN SE REGISTRA. La base no sabía borrar, así que un trabajo
+    // que borra un documento reventaba con `delete is not a function` y ningún
+    // banco podía afirmar nada sobre un borrado. Se anota en `escrituras` como
+    // cualquier otra, con `borrado: true`, para que el orden de los actos se
+    // pueda leer: en más de un trabajo lo que importa no es qué quedó, es QUÉ
+    // PASÓ ANTES DE QUÉ.
+    delete: async () => {
+      tropieza(fallaEscritura, ruta);
+      escrituras.push({ ruta, borrado: true });
+      docs.delete(ruta);
+    },
   });
 
   const hijos = (col) => [...docs.entries()]
@@ -148,9 +160,41 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null }
     },
   });
 
+  // ── AUTH DE MENTIRA ───────────────────────────────────────────────────────
+  // Lo mínimo para los trabajos que mueven cuentas: buscar por correo, mover
+  // el correo y desactivar. Se lleva su propio registro de actos, por lo mismo
+  // que las escrituras: hay trabajos donde el orden entre Firestore y Auth es
+  // la conducta, no un detalle.
+  //
+  // `getUserByEmail` LANZA cuando no encuentra, como el de verdad: devolver
+  // null haría pasar un `catch(() => null)` que en producción sí se ejecuta, y
+  // el banco mediría un camino que nadie recorre.
+  const cuentas = new Map(Object.entries(cuentasIniciales));
+  const actosAuth = [];
+  const auth = () => ({
+    getUserByEmail: async (correo) => {
+      const uid = cuentas.get(correo);
+      if (!uid) { const e = new Error('user-not-found'); e.code = 'auth/user-not-found'; throw e; }
+      return { uid, email: correo };
+    },
+    updateUser: async (uid, cambios) => {
+      actosAuth.push({ uid, ...cambios });
+      if (cambios.email) {
+        for (const [c, u] of [...cuentas.entries()]) if (u === uid) cuentas.delete(c);
+        cuentas.set(cambios.email, uid);
+      }
+    },
+    setCustomUserClaims: async (uid, claims) => { actosAuth.push({ uid, claims }); },
+    deleteUser: async (uid) => {
+      actosAuth.push({ uid, borrado: true });
+      for (const [c, u] of [...cuentas.entries()]) if (u === uid) cuentas.delete(c);
+    },
+  });
+
   return {
-    docs, escrituras,
-    admin: { firestore: () => ({ doc: refDoc, collection: coleccion }), initializeApp: () => {} },
+    docs, escrituras, cuentas, actosAuth,
+    admin: { firestore: () => ({ doc: refDoc, collection: coleccion }),
+             auth, initializeApp: () => {} },
   };
 }
 
@@ -177,7 +221,21 @@ function montar(archivo, nombreExport, base, { correos = [], rebota = null, inye
     correos.push(sobre);
     return { ok: true, status: 200, json: async () => ({ id: `re_${correos.length}` }) };
   };
+  // `HttpsError` SE INYECTA AQUÍ, no en cada banco. Toda callable lo usa para
+  // negarse, así que sin él montada la pieza corre el camino bueno y revienta
+  // con `HttpsError is not defined` en cuanto toca una negativa: el banco mide
+  // sólo la mitad que pasa y las negativas salen como fallas que no lo son.
+  // Lleva `code` y `message` como el de verdad, porque los bancos afirman
+  // sobre el código —`already-exists`, `failed-precondition`— y no sobre el
+  // texto, que cambia.
+  class HttpsErrorFalso extends Error {
+    constructor(code, message, details) {
+      super(message); this.code = code; this.details = details;
+      this.name = 'HttpsError';
+    }
+  }
   const inyectar = {
+    HttpsError: HttpsErrorFalso,
     require: (modulo) => {
       if (modulo === 'firebase-admin') return base.admin;
       if (modulo === 'firebase-admin/firestore') return { FieldValue };
