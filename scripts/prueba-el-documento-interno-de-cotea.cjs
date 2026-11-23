@@ -727,6 +727,53 @@ ok(!textosSinFecha.some(t => /semanas seguidas/.test(t)),
   'el papel no afirma una sola semana de tendencia sobre esa serie');
 
 console.log('');
+// ══════════════════════════════════════════════════════════════════════════
+// EL BOTÓN DE LA PANTALLA LLAMA AL PAPEL POR SU NOMBRE
+// ══════════════════════════════════════════════════════════════════════════
+//
+// POR QUÉ ESTO EXISTE. El 2026-11-23 el papel pasó a llamarse «Reporte de
+// avance de obra» —en la portada, en la cabecera de cada hoja, en el nombre
+// del archivo y en el `title` del botón— y el RÓTULO del botón se quedó
+// diciendo «Documento interno». La suite siguió en verde: ningún banco miraba
+// el botón, sólo el papel. Lo vio el usuario.
+//
+// Lo que se afirma no es un texto concreto, que cambiaría con el próximo
+// nombre: es que lo que la pantalla OFRECE y lo que el papel SE LLAMA sean lo
+// mismo. Por eso el rótulo se compara contra el título que el propio papel
+// imprime en su portada, no contra una cadena escrita aquí.
+{
+  const srcApp = fs.readFileSync(archivo, 'utf8');
+  // El botón se localiza por su `title`, que es lo que describe el acto, y de
+  // ahí se lee el texto suelto que queda entre las etiquetas.
+  const botonDe = (title) => {
+    const i = srcApp.indexOf(`title="${title}"`);
+    if (i < 0) return null;
+    const fin = srcApp.indexOf('</button>', i);
+    if (fin < 0) return null;
+    const trozo = srcApp.slice(i, fin);
+    // Fuera comentarios JSX y etiquetas; queda el texto que el usuario lee.
+    return trozo.replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ')
+      .replace(/<[^>]*>/g, ' ').replace(/title="[^"]*"/g, ' ')
+      .replace(/\s+/g, ' ').trim().split(' ').slice(-3).join(' ');
+  };
+  const normal = (t) => String(t).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const rotuloInterno = botonDe('Descargar el reporte de avance de obra en PDF');
+  ok(!!rotuloInterno, 'se localizó el botón que descarga el papel de la constructora',
+    rotuloInterno || '(no está)');
+  // La portada imprime el nombre del papel en mayúsculas; el botón lleva el
+  // corto, así que se exige que el corto esté CONTENIDO en el nombre largo.
+  const tituloEnLaPortada = textosDe(1).find(t => /REPORTE DE AVANCE/i.test(t)) || '';
+  ok(rotuloInterno && tituloEnLaPortada
+     && normal(tituloEnLaPortada).includes(normal(rotuloInterno)),
+    'y su rótulo es el nombre del papel, no otro',
+    `botón «${rotuloInterno}» · portada «${tituloEnLaPortada}»`);
+  ok(rotuloInterno && !/documento interno/i.test(rotuloInterno),
+    'en particular ya no ofrece un «documento interno», que es un papel que '
+    + 'dejó de existir con ese nombre');
+}
+
 if (fallas) {
   console.log(`${verdes} en verde · ${fallas} en rojo.`);
   process.exit(1);
