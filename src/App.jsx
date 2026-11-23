@@ -1091,6 +1091,28 @@ async function generarPDFInterno({
     ['Por cobrar', MXN(kpis.estPorCob), 'aprobado, facturado y en proceso', Q.nar],
   ], y);
 
+  // ── LA PLANTILLA, CON LA MISMA CUENTA QUE LA PANTALLA ────────────────────
+  //
+  // `plantillaDeObra` es la función que arma el KPI «Personal campo» del
+  // tablero: el valor, el pie y la procedencia. Se llama a ELLA y no se arma
+  // aquí un `${dir}D · ${ind}I`, por lo mismo que la tabla del margen se
+  // cuelga de `PanelSemanal`: una cuenta por número. Si este papel escribiera
+  // la suya, el día que la pantalla cambie de criterio el reporte de la misma
+  // obra diría otra cosa que la pantalla desde la que se descargó.
+  //
+  // Y POR ESO IMPRIME EL DESGLOSE SÓLO CUANDO ES DATO. Lo decidió la medición
+  // del 2026-11-19: de 67 semanas de producción, 27 traían un «N directos · M
+  // indirectos» que no lo había dicho nadie —lo dedujeron doce palabras del
+  // puesto—. `plantillaDeObra` ya resuelve los tres casos y dice cuál es en su
+  // pie; aquí no se vuelve a decidir, se imprime lo que contesta. Donde es
+  // dato sale el desglose; donde no, sale la plantilla y la frase que pide el
+  // archivo con su columna.
+  const plantilla = plantillaDeObra(nominaHistorial);
+  y = kpiRow([
+    ['Personal en campo', plantilla.valor, plantilla.sub,
+      plantilla.total === null ? Q.mu : Q.piz],
+  ], y);
+
   // LO QUE ESTE DOCUMENTO NO PUEDE AFIRMAR, dicho en una caja y no deducible de
   // un guión en una celda.
   //
