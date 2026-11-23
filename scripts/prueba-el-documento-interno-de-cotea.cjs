@@ -754,9 +754,13 @@ if (process.argv.includes('--contraprueba')) {
         + '  // ── EL ANDAMIO, CON EL SELLO DE INTERNO EN LA BANDA ──') },
 
     // ── C · el margen semana a semana ──────────────────────────────────────
+    // REANCLADA el 2026-11-23: la ventana dejó de estar clavada en 12 y la
+    // elige `ventanaDeLaObra` por la EDAD de la obra —8, 12 o 24—, que es la
+    // misma regla con la que abre el tablero. La mutación sigue diciendo lo
+    // mismo: que el papel use una ventana propia en vez de la compartida.
     { nombre: 'la ventana del papel se despega de la del tablero',
       hacer: () => src.replace(
-        '  const VENTANA = 12;',
+        '  const VENTANA = ventanaDeLaObra(obra);',
         '  const VENTANA = 6;') },
     { nombre: 'la columna del cambio se rotula en por ciento y no en puntos porcentuales',
       hacer: () => src.replace(

@@ -494,9 +494,27 @@ async function correr(codigo) {
   check(dice(MXNS(kpis.diff)) || dice(MXN(kpis.diff)),
     'el margen del PDF es el MISMO que el del tablero',
     `${MXNS(kpis.diff)} (tablero) · el PDF filtrado publicaba ${MXNS(kpis.diff + MAQ_SIN_DESCRIBIR)}`);
-  check(!dice(MXNS(kpis.diff + MAQ_SIN_DESCRIBIR)),
+  // DÓNDE sale la cifra importa. El 2026-11-23 el papel ganó la tabla semanal,
+  // y su columna «Margen» publica el margen de CADA semana: una de ellas puede
+  // coincidir con el inflado sin que el defecto exista —son dos cuentas
+  // distintas sobre semanas distintas—. Buscar la cadena en todo el documento
+  // dejó de distinguir «el papel publica el margen inflado de la obra» de
+  // «una semana vale eso». Lo que no puede pasar sigue siendo lo primero, y
+  // eso vive en la TEJA del margen, que es donde el papel afirma sobre la obra.
+  // La teja es TRES TEXTOS SEGUIDOS —rótulo en mayúsculas, valor, pie—, que es
+  // como `kpiBox` los manda al papel. Se lee el valor de ESA teja y de ninguna
+  // otra cadena del documento.
+  const iTeja = papel.textos.findIndex(t => /^MARGEN BRUTO$/i.test(String(t).trim()));
+  const valorTeja = iTeja >= 0 ? String(papel.textos[iTeja + 1] || '') : '(no hay teja)';
+  // COMPROBADO EL 2026-11-23, para que no se vuelva a litigar: esa cifra SÍ
+  // aparece tres veces en el papel, en la columna «Margen» de las semanas S46,
+  // S47 y S48 de la tabla nueva. No es el defecto. El margen semanal es
+  // `ejecutado − gasto` de ESA semana —$15.48M − $14M— y coincide con
+  // `kpis.diff + MAQ_SIN_DESCRIBIR` por los números redondos del fixture. La
+  // cuenta de la obra y la de una semana son distintas y pueden valer igual.
+  check(valorTeja !== MXNS(kpis.diff + MAQ_SIN_DESCRIBIR),
     'y no publica el margen inflado que salía de tirar el renglón sin describir',
-    MXNS(kpis.diff + MAQ_SIN_DESCRIBIR));
+    `la teja dice ${valorTeja}`);
 
   // ── 8 · CANARIO DEL PDF: CON TODO DESCRITO TAMBIÉN CUADRA ────────────────
   // Si el documento sólo cuadrara con renglones sin describir, lo que se

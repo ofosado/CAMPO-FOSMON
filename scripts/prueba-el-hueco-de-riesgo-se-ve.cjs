@@ -388,9 +388,18 @@ function correr() {
   // de ser un resumen a ser una pérdida — y hay que venir aquí a decidirlo, no
   // a descubrirlo. Por eso el interno se afirma POR LA NEGATIVA: que ya no lo
   // lleva, a propósito, y no que se le olvidó.
+  // EL TROZO LLEGA HASTA LA SIGUIENTE FUNCIÓN, no hasta un número de
+  // caracteres. Cortaba en 40000 y el 2026-11-23 `generarPDFInterno` pasó de
+  // 45000 al ganar la tabla semanal: el corte se quedó a medias y el banco
+  // acusó al papel de no publicar unos conteos que publicaba 5000 caracteres
+  // más abajo. Un corte por tamaño fijo caduca solo y no avisa.
+  const ARRANQUES = [...src.matchAll(/^(?:async )?function ([A-Za-z0-9_]+)\(/gm)]
+    .map(m => ({ nombre: m[1], i: m.index }));
   const trozoDe = (gen) => {
-    const i = src.indexOf(`function ${gen}(`);
-    return i >= 0 ? src.slice(i, i + 40000) : '';
+    const k = ARRANQUES.findIndex(a => a.nombre === gen);
+    if (k < 0) return '';
+    const fin = k + 1 < ARRANQUES.length ? ARRANQUES[k + 1].i : src.length;
+    return src.slice(ARRANQUES[k].i, fin);
   };
   const tInterno = trozoDe('generarPDFInterno');
   ok(!/Por qué no se pudo medir/.test(tInterno),

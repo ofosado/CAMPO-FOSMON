@@ -105,7 +105,14 @@ const preludioPara = (src) =>
 // `resolverGastoGP` NO se dobla aquí: es justo una de las tres respuestas que
 // se están comparando. Doblarla convertiría la medición en un examen del doble.
 const STUBS = () => ({
-  useState: (v) => [v, () => {}],
+  // EL INICIALIZADOR PEREZOSO SE EJECUTA, como lo hace React. El doble
+    // devolvía el argumento tal cual, así que un `useState(() => f())`
+    // dejaba la FUNCIÓN como estado. Pasó el 2026-11-23: la ventana de la
+    // gráfica pasó a `useState(() => ventanaDeLaObra(obra))` y el banco
+    // midió un eje de 106 semanas creyendo que medía 24 — el componente
+    // está bien, el doble perdonaba. Un doble que no se comporta como el
+    // original no mide al original.
+    useState: (v) => [typeof v === 'function' ? v() : v, () => {}],
   useRef: () => ({ current: null }),
   useEffect: () => {},
   useMemo: (f) => (typeof f === 'function' ? f() : f),
