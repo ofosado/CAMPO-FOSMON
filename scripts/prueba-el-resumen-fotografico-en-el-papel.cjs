@@ -193,6 +193,17 @@ for (const [nombre, subs, ev, cargada] of [
   // pudo leer» de «no hay fotos». Con la lista vacía las dos se verían igual, y
   // ésa es exactamente la confusión que la sección existe para no cometer.
   ['NOLEIDA', CAT_BAJO, EV_BAJO, false],
+  // SIN UNA SOLA FOTO, y la evidencia SÍ leída: es el caso que el bloque C
+  // vino a atender. Con la lista vacía y la bandera en `true`, «no hay fotos»
+  // es un hecho medido de la obra, no una lectura que falló.
+  ['SINFOTOS', CAT_BAJO, [], true],
+  // Y LA FORMA QUE ESTO TIENE EN PRODUCCIÓN cuando la lectura falla: la lista
+  // llega VACÍA y la bandera en `false`. El caso NOLEIDA de arriba la manda
+  // llena a propósito, para separar la cobertura; pero con lista llena la
+  // rejilla nunca entra a su rama del cero, y sin este caso la frase que
+  // distingue «no se sabe» de «no hay» no la vigilaba nadie — lo dijo la
+  // contraprueba, que no pudo ponerla en rojo.
+  ['NOLEIDA_VACIA', CAT_BAJO, [], false],
 ]) {
   const hoja = await dibujarPDFInterno(generarPDFInterno, base(subs, ev, cargada));
   if (hoja.reventones.length) {
@@ -417,10 +428,80 @@ ok(!dice(NL.trozo, 'SIN una sola fotograf'),
 // ══════════════════════════════════════════════════════════════════════════
 console.log('\n── F · ni álbum, ni papel del cliente ───────────────────────');
 
-// Que el lector sepa que las fotos no están porque no van, no porque falten.
-ok(dice(B.trozo, 'Aquí no van las fotos'),
-  'el papel avisa que el álbum no está aquí y dónde sí está: un resumen sin esa '
-  + 'frase se lee como un álbum que no cargó');
+// EL PAPEL LLEVA LAS FOTOS. Hasta el 2026-11-22 esta sección publicaba el
+// JUICIO sobre la evidencia y mandaba a buscar las fotografías al informe de
+// gobierno: `generarPDFInterno` no tenía una sola llamada a `addImage`, y
+// quien abría el reporte de su obra no veía su obra. Aquí se afirmaba aquella
+// frase —«Aquí no van las fotos»—; ahora se afirma que es falsa.
+ok(!dice(B.trozo, 'Aquí no van las fotos'),
+  'el papel ya NO manda a buscar las fotos a otro documento');
+// SE CUENTAN LOS RECUADROS, NO LOS BYTES. Este banco no tiene red —a
+// propósito: un banco que descarga mide la red—, así que `precargarFotosDelPDF`
+// deja las url en null y `addImage` no llega a llamarse. Lo que sí se puede
+// afirmar, y es la conducta que el bloque C trajo, es que el papel MAQUETA un
+// recuadro por cada foto del reparto, con su pie. Que los bytes lleguen es
+// cosa del navegador, y cuando no llegan el recuadro lo dice en vez de callar.
+const recuadros = (c) => c.hoja.filter(d =>
+  /^subida /.test(String(d.texto)) || String(d.texto) === 'sin fecha de subida'
+  || /no se pudo descargar$/.test(String(d.texto)));
+const nFotosSel = B.sel.partidas.concat(B.sel.fuera)
+  .reduce((t, p) => t + (p.fotos || []).length, 0);
+ok(recuadros(B).length > 0,
+  'y maqueta un recuadro por fotografía del reparto',
+  `${recuadros(B).length} recuadro(s) para ${nFotosSel} foto(s)`);
+ok(nFotosSel <= TOPE_FOTOS,
+  `el reparto nunca pasa de ${TOPE_FOTOS}, que es su tope`, String(nFotosSel));
+const hojasDeFoto = (c) => [...new Set(recuadros(c).map(d => d.pagina))];
+ok(hojasDeFoto(B).length <= 3,
+  'y nunca más de tres hojas de fotos: 15 fotos a 6 por hoja no dan para más',
+  `${hojasDeFoto(B).length} hoja(s)`);
+
+// CADA FOTO ROTULADA CON SU PARTIDA. Una rejilla sin rótulo es un collage: lo
+// que vuelve a la foto evidencia es saber de qué partida es.
+// SE MIRA SÓLO EN LAS HOJAS DE FOTOS. Mirando toda la hoja, la aserción pasaba
+// por las claves que la tabla de cobertura ya imprime unas páginas antes: la
+// contraprueba que vacía el rótulo del recuadro no la movía. Acotada a las
+// páginas donde hay recuadros, lo que afirma es que el ROTULO DEL RECUADRO
+// existe, que es la diferencia entre evidencia y un collage.
+const clavesEnCorte = B.sel.partidas.concat(B.sel.fuera)
+  .filter(p => (p.fotos || []).length).map(p => String(p.s?.sec || '—'));
+const pagsFoto = new Set(recuadros(B).map(d => d.pagina));
+const rotulos = B.hoja.filter(d => pagsFoto.has(d.pagina)).map(d => String(d.texto));
+ok(clavesEnCorte.length > 0 && clavesEnCorte.every(c =>
+     rotulos.some(t => t === c || t.startsWith(`${c} ·`))),
+  `las ${clavesEnCorte.length} partidas con foto salen rotuladas con su clave`,
+  `en ${pagsFoto.size} hoja(s) de fotos`);
+
+// ── SIN UNA SOLA FOTO: SE DICE FUERTE Y NO SE PIDE DISCULPAS ──────────────
+const SF = casos.SINFOTOS;
+ok(SF.hoja.imagenes.length === 0,
+  'el caso sin fotos no dibuja ninguna imagen', String(SF.hoja.imagenes.length));
+ok(dice(SF.trozo, 'NO LLEVA NI UNA FOTOGRAFÍA'),
+  'y el papel lo dice con todas sus letras, en mayúsculas');
+ok(dice(SF.trozo, 'nadie ha subido fotos de esta obra'),
+  'nombrando la causa: es un problema de captura, no del documento');
+ok(!dice(SF.trozo, 'no se pudo leer'),
+  'y NO lo confunde con una lectura fallida, que se arregla en el sitio opuesto');
+// Y la rejilla vacía NO se dibuja: seis recuadros grises se leen como un fallo
+// de impresión y no como lo que son.
+ok(!SF.hoja.some(d => /La fotografía existe y no se pudo descargar/.test(String(d.texto))),
+  'ni dibuja recuadros de «no se pudo descargar» donde no hay nada que descargar');
+// EL REVERSO, que es lo que distingue este caso del otro. Con la evidencia sin
+// leer el papel NO acusa de falta de captura: ésa es la frase que manda a
+// alguien a fotografiar de balde cuando lo que falló fue la lectura.
+ok(!dice(casos.NOLEIDA.trozo, 'nadie ha subido fotos'),
+  'con la evidencia sin leer NO se acusa a nadie de no haber subido fotos');
+ok(dice(casos.NOLEIDA.trozo, 'NO SE PUDO MEDIR'),
+  'y se dice que no se pudo medir, que es lo que de verdad pasó');
+// Con la lista vacía Y la lectura fallida —la forma de producción— la rejilla
+// entra a su rama del cero, y ahí es donde las dos frases se pueden confundir.
+const NV = casos.NOLEIDA_VACIA;
+ok(dice(NV.trozo, 'NO SE PUDO LEER'),
+  'sin fotos y sin lectura, el papel dice que NO SE SABE');
+ok(!dice(NV.trozo, 'nadie ha subido fotos'),
+  'y no acusa de falta de captura: mandaría a fotografiar de balde');
+ok(dice(NV.trozo, 'generando el reporte otra vez'),
+  'y dice qué sí lo arregla, que es lo contrario de ir a campo');
 
 // EL SELLO DE INTERNO EN LA PÁGINA DE LA SECCIÓN. Es la sección que publica lo
 // que el cliente no ve; una hoja suelta de ésta sobre un escritorio tiene que
@@ -449,6 +530,43 @@ if (process.argv.includes('--contraprueba')) {
   const src = fs.readFileSync(archivo, 'utf8');
 
   const MUTANTES = [
+    // F · LAS FOTOS, que es lo que el bloque C trajo el 2026-11-22
+    { nombre: 'el papel de la constructora se queda otra vez sin una sola foto',
+      hacer: () => src.replace(
+        "  await bloqueDeFotos({\n    // EL MISMO TÍTULO",
+        "  if (false) await bloqueDeFotos({\n    // EL MISMO TÍTULO") },
+    { nombre: 'con cero fotos se dibuja la rejilla vacía en vez de decirlo',
+      hacer: () => src.replace(
+        "      if (!lote.length) {",
+        "      if (false) {") },
+    { nombre: 'con cero fotos se pide disculpas en vez de nombrar la causa',
+      hacer: () => src.replace(
+        "            + 'fotos de esta obra. Mientras siga así, ningún avance de este expediente '\n"
+        + "            + 'tiene respaldo visual que enseñar a nadie.'",
+        "            + 'fotos todavía. Disculpa las molestias.'") },
+    { nombre: 'una lectura fallida se acusa como falta de captura',
+      hacer: () => src.replace(
+        "        yf = nota(evidenciaCargada\n",
+        "        yf = nota(true\n") },
+    // LA CLAVE SE IMPRIME EN DOS SITIOS DEL RECUADRO: en el pie negro, y dentro
+    // del marco cuando la foto no se pudo descargar. La primera versión de esta
+    // mutación sólo borraba el pie y NO ponía nada en rojo — este banco corre
+    // sin red, así que todos los recuadros toman la segunda rama y la clave
+    // seguía saliendo por ahí. Se borran los dos: lo que se vigila es que el
+    // recuadro diga de qué partida es, por el camino que sea.
+    { nombre: 'los recuadros dejan de rotular la partida de cada foto',
+      hacer: () => src
+        .replace(
+          "          T(foto.pct == null ? foto.sec : `${foto.sec} · ${NUM(foto.pct,0)}%`, fx+2, fy+FH+4.5);",
+          "          T('', fx+2, fy+FH+4.5);")
+        .replace(
+          "            T(foto.sec, fx+FW/2, fy+FH/2-3, {align:'center'});",
+          "            T('', fx+FW/2, fy+FH/2-3, {align:'center'});") },
+    { nombre: 'caben nueve fotos por hoja y el tope de tres hojas se rompe',
+      hacer: () => src.replace(
+        "    const FOTOS_POR_HOJA = 6;",
+        "    const FOTOS_POR_HOJA = 2;") },
+
     // A · el porcentaje y la frontera entre los dos documentos
     // REANCLADAS EL 2026-11-12: el papel que se entrega dejó de ser «el
     // reporte del cliente» —ése se retiró— y es el informe de avance del Art.
@@ -539,10 +657,11 @@ if (process.argv.includes('--contraprueba')) {
         '      + (false') },
 
     // F · lo que la sección no es
-    { nombre: 'no se avisa que el álbum va en el otro documento',
-      hacer: () => src.replace(
-        "  y = nota('Aquí no van las fotos: van en el informe de avance.",
-        "  y = nota('Lo que sigue.  ") },
+    // RETIRADA el 2026-11-22. Vigilaba la leyenda «Aquí no van las fotos: van
+    // en el informe de avance», que desapareció porque dejó de ser verdad: el
+    // bloque C metió las fotos EN este papel. La aserción que la cuidaba se
+    // dio la vuelta —ahora exige que esa frase NO esté— y las seis mutaciones
+    // de la sección F vigilan lo que la reemplaza.
   ];
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'resumen-foto-'));

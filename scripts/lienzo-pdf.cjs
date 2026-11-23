@@ -29,6 +29,7 @@ function lienzo() {
   // importa: si el trecho salió punteado, de qué color, y si el punto suelto
   // de una serie sin línea se marcó—.
   const trazos = [];
+  const imagenes = [];
   let pagina = 1;
   let tablas = 0;
   let parrafos = 0;
@@ -96,7 +97,15 @@ function lienzo() {
     getNumberOfPages: () => 1,
     output: () => 'blob',
     save: () => {},
-    addImage: () => {},
+    // LAS IMÁGENES SE REGISTRAN, no se tragan. Hasta el 2026-11-22 esto era
+    // `() => {}` y por eso NINGÚN banco podía afirmar nada sobre fotografías:
+    // el papel de la constructora llevaba meses sin imprimir una sola y la
+    // suite no tenía con qué verlo. Se guarda lo mínimo que una aserción
+    // necesita —en qué página, dónde y de qué tipo—, sin los bytes.
+    addImage: (datos, fmt, x, y, w, h) => {
+      imagenes.push({ pagina, fmt, x, y, w, h,
+                      bytes: typeof datos === 'string' ? datos.length : null });
+    },
     lastAutoTable: { finalY: 50 },
     // `GState` es un CONSTRUCTOR en jsPDF, y el generador lo usa con `new` para
     // sombrear las áreas con transparencia. El Proxy contestaba una función
@@ -189,7 +198,7 @@ function lienzo() {
       };
     },
   });
-  return { doc, dibujos, trazos };
+  return { doc, dibujos, trazos, imagenes };
 }
 
 // Mueve el PDF de verdad y devuelve lo dibujado. El `window` y el `document` se
@@ -215,7 +224,7 @@ function lienzo() {
 // propiedades no enumerables: los bancos que ya existen recorren el arreglo y
 // no tienen por qué enterarse.
 async function conJsPDFFalso(correr) {
-  const { doc, dibujos, trazos } = lienzo();
+  const { doc, dibujos, trazos, imagenes } = lienzo();
   const reventones = [];
   const guardados = { window: global.window, document: global.document, alert: global.alert };
   global.window = { jspdf: { jsPDF: function () { return doc; } }, _atLoaded: true };
@@ -229,6 +238,7 @@ async function conJsPDFFalso(correr) {
     global.alert = guardados.alert;
   }
   Object.defineProperty(dibujos, 'trazos', { value: trazos, enumerable: false });
+  Object.defineProperty(dibujos, 'imagenes', { value: imagenes, enumerable: false });
   Object.defineProperty(dibujos, 'reventones', { value: reventones, enumerable: false });
   return dibujos;
 }
