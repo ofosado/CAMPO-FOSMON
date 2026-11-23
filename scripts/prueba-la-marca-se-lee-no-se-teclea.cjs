@@ -198,8 +198,11 @@ if (process.argv.includes('--contraprueba')) {
     // firma del pie de cada papel: es el único sitio donde el documento dice de
     // quién es, y es el sitio donde la empresa estaba tecleada antes. Un anclaje
     // por papel, una copia cada uno —medido—, así que sin `/g` a propósito.
-    ['APP', 'el pie del documento interno vuelve a firmar con la empresa',
-      (t) => t.replace("pieIzq: 'cotea · documento interno' });",
+    // REANCLADA el 2026-11-23: el papel dejó de llamarse «documento interno» y
+    // es el reporte de avance de obra. Lo que la mutación niega no cambió —que
+    // el pie firme con una empresa tecleada en vez de con el papel—.
+    ['APP', 'el pie del reporte de avance vuelve a firmar con la empresa',
+      (t) => t.replace("pieIzq: 'cotea · reporte de avance de obra' });",
         "pieIzq: 'cotea · FOSMON Construcciones' });")],
     ['APP', 'el pie del informe del Art. 73 vuelve a firmar con la empresa',
       (t) => t.replace("pieIzq: 'cotea · informe de avance' });",

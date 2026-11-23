@@ -309,19 +309,36 @@ const textosDe = (p) => hojaLimpia.filter(x => x.pagina === p).map(x => x.texto)
 ok(paginas.length >= 4,
   `el documento sale de ${paginas.length} páginas`);
 
-// El sello, en TODAS las páginas interiores. La portada lleva el suyo propio
-// —en caja, con el nombre de la obra debajo—, así que se mira aparte.
+// ── UNA HOJA SUELTA SIGUE DICIENDO QUÉ PAPEL ES ──────────────────────────
+//
+// Aquí se exigía la banda «DOCUMENTO INTERNO · EL QUE SE ENTREGA ES EL INFORME
+// DE AVANCE» en todas las páginas interiores. La banda se retiró el 2026-11-23
+// por decisión de producto: cotea produce UN reporte de avance de obra por
+// obra —la variante de gobierno es el mismo con sus particularidades— y la
+// banda existía para distinguirlo de otro papel que ya no hay. Peor: su
+// segunda mitad mandaba a buscar el informe del Art. 73, que una sesión de
+// constructora NO PUEDE generar.
+//
+// Lo que esa banda protegía de verdad sigue vigilado: que una hoja arrancada y
+// dejada sobre un escritorio diga de qué documento salió. Eso lo sostiene
+// ahora el rótulo de la cabecera, que el andamio pinta en cada página.
 const interiores = paginas.filter(p => p > 1);
-const sinSello = interiores.filter(p =>
-  !textosDe(p).some(t => /DOCUMENTO INTERNO/.test(t)));
-ok(interiores.length > 0 && sinSello.length === 0,
-  `las ${interiores.length} páginas interiores llevan el sello de documento interno`
-  + (sinSello.length ? ` — sin sello: ${sinSello.join(', ')}` : ''));
+const sinRotulo = interiores.filter(p =>
+  !textosDe(p).some(t => /Reporte de avance de obra/i.test(t)));
+ok(interiores.length > 0 && sinRotulo.length === 0,
+  `las ${interiores.length} páginas interiores se identifican por su nombre`
+  + (sinRotulo.length ? ` — sin rótulo: ${sinRotulo.join(', ')}` : ''));
+// Y QUE LA BANDA NO VUELVA SOLA: si alguien la repone, este papel vuelve a
+// prometer un informe que su lector no puede generar.
+ok(!interiores.some(p => textosDe(p).some(t => /EL QUE SE ENTREGA ES EL INFORME/.test(t))),
+  'y ninguna manda a buscar un informe que esta sesión no puede generar');
 
 const portada = textosDe(1);
-ok(portada.some(t => t === 'DOCUMENTO INTERNO')
-   && portada.some(t => /no es el reporte que se entrega al cliente/i.test(t)),
-  'la portada declara que no es el reporte que se entrega al cliente');
+ok(portada.some(t => /REPORTE DE AVANCE DE OBRA/i.test(t)),
+  'la portada nombra el reporte',
+  portada.find(t => /REPORTE DE AVANCE/i.test(t)) || '(no sale)');
+ok(!portada.some(t => /no es el reporte que se entrega/i.test(t)),
+  'y ya no se declara un papel que no se entrega: no hay otro con el que compararse');
 
 // La marca del papel es cotea, en todas las páginas.
 const sinCotea = paginas.filter(p => !textosDe(p).some(t => /cotea/.test(t)));
@@ -671,8 +688,20 @@ const eSinGP = esperadoDe(dSinGP);
 ok(eSinGP.pres.gastoSinMedir === true,
   'el caso sin GP tiene el gasto sin medir, que es lo que esta frontera necesita');
 const hojaSinGP = (await dibujar(dSinGP)).map(x => x.texto);
-ok(hojaSinGP.filter(t => t === 'sin medir').length >= 1,
-  'el gasto se imprime «sin medir» y no como un cero');
+// SE MIRA LA TEJA, no todo el documento. Contaba los textos iguales a «sin
+// medir» en la hoja entera, y el 2026-11-23 el papel ganó la tabla semanal,
+// donde «sin medir» es el TEXTO DE UNA CELDA VACÍA —la semana que no trae
+// avance o gasto—. Con esas celdas presentes, la cuenta pasaba de uno siempre
+// y la aserción dejó de afirmar nada: la contraprueba que formatea el gasto a
+// mano y publica la cifra cruda ya no la hacía caer.
+//
+// La teja son TRES TEXTOS SEGUIDOS —rótulo en mayúsculas, valor, pie—, que es
+// como `kpiBox` los manda al papel.
+const iGasto = hojaSinGP.findIndex(t => /^GASTO TOTAL$/i.test(String(t).trim()));
+const valorGasto = iGasto >= 0 ? String(hojaSinGP[iGasto + 1] || '') : '(no hay teja)';
+ok(valorGasto === 'sin medir',
+  'el gasto se imprime «sin medir» y no como un cero',
+  `la teja dice «${valorGasto}»`);
 ok(hojaSinGP.some(t => /no está medido/.test(t) || /no se pudo medir/.test(t)),
   'y el documento dice por qué, en vez de dejar el hueco a la vista');
 // El margen de ese caso saldría en 100% si se calculara con el gasto en cero.
@@ -725,15 +754,27 @@ if (process.argv.includes('--contraprueba')) {
     // ESTE PAPEL deje de pedirla. La segunda es la que la extracción hizo
     // posible —el andamio queda intacto y correcto, y la hoja sale limpia—, y
     // es justo la que no existía cuando el marco era un cierre de aquí.
-    { nombre: 'la banda del sello sale del marco y sobrevive sólo en la portada',
+    // RETIRADA el 2026-11-23. Mutaba el dibujo de la banda dentro del marco
+    // del andamio para comprobar que el sello llegaba a todas las páginas. Este
+    // papel YA NO PIDE BANDA —se retiró por decisión de producto—, así que
+    // borrar su dibujo no cambia nada de lo que este banco mira y la mutación
+    // pasaba sin que nadie la viera. El andamio sigue sabiendo pintarla y el
+    // informe del Art. 73 tampoco la usa; el día que algún papel vuelva a
+    // pedirla, es su banco el que tiene que vigilarla.
+    //
+    // Lo que aquí protegía —que una hoja suelta diga de qué documento salió—
+    // lo afirma ahora el rótulo de la cabecera, arriba, y la mutación que
+    // devuelve la banda al papel.
+    // DADA LA VUELTA el 2026-11-23. Vigilaba que el papel PIDIERA la banda de
+    // documento interno; la banda se retiró por decisión de producto —cotea
+    // produce un solo reporte de avance de obra— así que lo que hay que
+    // proteger es lo contrario: que no vuelva sola, con su promesa de un
+    // informe que una sesión de constructora no puede generar.
+    { nombre: 'la banda de documento interno vuelve al papel',
       hacer: () => src.replace(
-        "      sf(Q.nar); R(0,HDR,PW,4);\n      st(Q.wh); fs(6); fw('bold');\n"
-        + "      T(banda, PW/2, HDR+2.8, {align:'center'});",
-        '      sf(Q.nar); R(0,HDR,PW,4);') },
-    { nombre: 'el papel interno deja de pedirle la banda al andamio',
-      hacer: () => src.replace(
-        "    rotulo: 'Documento interno', banda: SELLO_INTERNO,",
-        "    rotulo: 'Documento interno', banda: null,") },
+        "    rotulo: 'Reporte de avance de obra', banda: null,",
+        "    rotulo: 'Reporte de avance de obra',\n"
+        + "    banda: 'DOCUMENTO INTERNO · USO DE COTEA · EL QUE SE ENTREGA ES EL INFORME DE AVANCE',") },
     { nombre: 'la organización se rellena con una constructora teclada cuando no viene',
       hacer: () => src.replace(
         "    ['Organización:', comoSeImprime(organizacion)],",
@@ -788,25 +829,25 @@ if (process.argv.includes('--contraprueba')) {
         + "      ? 'sin cifra: lo que disparó es la ausencia de una captura'\n"
         + '      : s;',
         '    return s;') },
-    { nombre: 'la tabla de no evaluables se calla y el papel publica sólo los detectados',
-      hacer: () => src.replace(
-        "  if (noEvaluables.length) {\n    y = autoT(\n"
-        + "      ['Riesgo', 'Dato que falta', 'Por qué no se pudo medir'],",
-        "  if (false) {\n    y = autoT(\n"
-        + "      ['Riesgo', 'Dato que falta', 'Por qué no se pudo medir'],") },
-    { nombre: 'el no evaluable deja de nombrar el dato que le faltó',
-      hacer: () => src.replace(
-        "        r.faltan.map(f => f.nombre || f.dato).join(' · '),",
-        "        '',") },
+    // ── TRES MUTACIONES RETIRADAS EL 2026-11-23 ───────────────────────────
+    //
+    // Vigilaban la TABLA de no evaluables y la fila de nombres de los sin
+    // hallazgo: que la tabla no se callara, que nombrara el dato que faltó, y
+    // que los sin hallazgo salieran uno por uno. Las dos listas se retiraron
+    // del papel de la constructora el 2026-11-21 por decisión de producto —la
+    // columna del porqué citaba al MOTOR, y eso le habla a quien escribió la
+    // regla— y quedaron dos conteos.
+    //
+    // Sus anclajes dejaron de existir y el corredor lo dijo con un NO ARRANCÓ.
+    // Lo que protegían no se perdió: que «ningún riesgo detectado» no se lea
+    // como «obra sana» lo sostienen ahora los dos números, con sus propias
+    // aserciones arriba, y el DETALLE por dato sigue vigilado en el informe
+    // del Art. 73 por `prueba-el-hueco-de-riesgo-se-ve`.
     { nombre: 'la frase de que una lista vacía no significa que no hay riesgo se borra',
       hacer: () => src.replace(
         "  y = nota('UNA LISTA VACÍA NO SIGNIFICA QUE NO HAY RIESGO. Una regla puede callarse porque midió '",
         "  y = nota('Riesgos de la obra. Una regla puede callarse porque midió '") },
-    { nombre: 'los sin hallazgo se cuentan en vez de nombrarse',
-      hacer: () => src.replace(
-        "        ? sinHallazgo.map(r => r.titulo || r.id).join(' · ')",
-        '        ? `${sinHallazgo.length} reglas midieron y no encontraron nada`') },
-    { nombre: 'el conteo impreso de no evaluables deja de ser el del motor',
+{ nombre: 'el conteo impreso de no evaluables deja de ser el del motor',
       hacer: () => src.replace(
         "    ['No evaluables', String(noEvaluables.length), 'les faltó un dato', Q.mu],",
         "    ['No evaluables', String(noEvaluables.length + 1), 'les faltó un dato', Q.mu],") },
