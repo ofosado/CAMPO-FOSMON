@@ -17,6 +17,14 @@ import { subscribeToPWAUpdates } from "./pwa-update.js";
 import coteaHorizontal from "./assets/brand/cotea-horizontal.svg";
 import coteaIcono from "./assets/brand/cotea-icono.svg";
 import coteaIconoSolido from "./assets/brand/cotea-icono-solido.svg";
+// EL LOGO DEL PAPEL, INCRUSTADO Y NO ENLAZADO. `?inline` hace que Vite lo meta
+// al bundle como data URI en vez de emitir un archivo con URL: `jsPDF.addImage`
+// no hace fetch —si se le pasa una URL http falla en silencio— y además la app
+// es una PWA que genera reportes sin red. Un logo que depende de la red es un
+// logo que falta justo en la obra, que es donde no hay señal.
+// Lo produce `scripts/rasterizar-el-logo-para-el-papel.cjs` desde el SVG de una
+// tinta en blanco, porque el panel de la portada es pizarra oscura.
+import coteaBlancoPNG from "./assets/brand/cotea-horizontal-blanco.png?inline";
 
 // fix/actualizacion-pwa (2026-09-16): versión del build inyectada por Vite
 // (ver vite.config.js `define`). Formato mostrado al usuario: "v2026-09-16 · 34f4c3f".
@@ -366,6 +374,17 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
   // poco a propósito, porque ahí lo que falla es que el rótulo se salga de
   // la banda, no que no se lea.
   const FS_CAB=8, FS_PIE=7.5;
+
+  // EL LOGO DE LA PORTADA, EN MILÍMETROS. 42 mm de ancho sobre un panel de 117
+  // (PW*0.42) deja la marca clara sin comerse la caja del sello que va debajo.
+  // La proporción NO se teclea: es la del PNG que produce
+  // `scripts/rasterizar-el-logo-para-el-papel.cjs` —480×136—, y escribir aquí
+  // un alto a ojo deformaría la marca el día que el logo cambie de caja.
+  const LOGO_ANCHO_MM = 42, LOGO_PROPORCION = 136 / 480;
+  // El del cliente es cuadrado por construcción: `PantallaMarca` lo reduce a
+  // 220 px de lado como máximo conservando su proporción. Se le da una CAJA y
+  // se encaja dentro sin estirarlo.
+  const LOGO_ORG_CAJA_MM = 20;
 
   const doc = blindarTextoDelPDF(new jsPDF({orientation:'landscape',unit:'mm',format:'letter'}));
   const PCT = (n,d=1) => `${(n||0).toFixed(d)}%`;
@@ -749,6 +768,7 @@ const andamioDeCotea = ({ jsPDF, nombreCorto, fecha, rotulo, banda = null,
            PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
            FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
            FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
+           LOGO_ANCHO_MM, LOGO_PROPORCION, LOGO_ORG_CAJA_MM,
            sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
            pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
            bloqueDeFotos };
@@ -803,6 +823,13 @@ async function generarPDFInterno({
   subcontratos = [], historialAvance = [], gpData = null, gpDetalle = null,
   otrosGastos = [], nominaHistorial = [], programa = null,
   instante = null, organizacion = null, generadoPor = null,
+  // EL LOGO DE QUIEN USA LA APP, tal como lo guardó Configuración → Marca:
+  // `orgs/{oid}/config/branding.logoBlanco`, un data URI. Entra como DATO y
+  // no se lee aquí dentro, por lo mismo que `organizacion`: el generador no
+  // habla con Firestore, y si lo hiciera el papel dependería de una lectura
+  // más que puede fallar a mitad de un PDF. Sin logo no se pinta uno de
+  // muestra: el hueco se queda vacío, que es la verdad.
+  logoOrganizacion = null,
   // La evidencia, para la sección 5. `evidenciaCargada` entra como dato por la
   // misma razón que `estCargadas`: `fsColl` devuelve `[]` cuando la regla niega
   // o la red falla, así que una lectura fallida y una obra sin fotos llegan
@@ -861,6 +888,7 @@ async function generarPDFInterno({
           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
           FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
+          LOGO_ANCHO_MM, LOGO_PROPORCION, LOGO_ORG_CAJA_MM,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
           bloqueDeFotos } = A;
@@ -916,7 +944,21 @@ async function generarPDFInterno({
   sf(Q.bg);  R(PW*0.42,0,PW*0.58,PH);
   sf(Q.nar); R(0,0,PW*0.42,5);
 
-  st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  // LA MARCA, EN LOGO Y NO EN TEXTO. Aquí iba `T('cotea', …)` a 30 pt en
+  // Helvetica bold, que no es la tipografía de cotea: era la palabra, no la
+  // marca. El PNG está incrustado en el bundle (ver `coteaBlancoPNG`), así que
+  // no hay red de por medio y el papel sale igual desde la obra.
+  //
+  // Si el logo no se pudiera pintar NO se deja el hueco: vuelve la palabra. Un
+  // papel sin nada arriba a la izquierda no se lee como «falló una imagen», se
+  // lee como un documento de nadie.
+  try {
+    doc.addImage(coteaBlancoPNG, 'PNG', ML, 26, LOGO_ANCHO_MM,
+                 LOGO_ANCHO_MM * LOGO_PROPORCION, '', 'FAST');
+  } catch (e) {
+    console.warn('el logo de cotea no se pudo pintar en la portada:', e?.message || e);
+    st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  }
   // El sello de la portada, en caja naranja y antes del nombre de la obra: lo
   // primero que se lee es qué clase de papel es éste.
   sf(Q.nar); R(ML, 48, PW*0.42-ML*2, 19.5);
@@ -969,6 +1011,52 @@ async function generarPDFInterno({
     T(lineas, xR+42, yR);
     yR += FS_PORT_PASO * Math.max(1, Array.isArray(lineas) ? lineas.length : 1);
   });
+
+  // ── EL LOGO DE QUIEN USA LA APP, EN EL PANEL CLARO ──────────────────────
+  //
+  // AQUÍ Y NO EN EL PANEL OSCURO, aunque el campo se llame `logoBlanco`. Ese
+  // nombre significa «el del fondo BLANCO», no «el logo en blanco»: es el que
+  // la app pinta en su cabecera clara (`PantallaMarca`, y el encabezado de la
+  // pantalla). Puesto sobre el pizarra de la izquierda sería un logo oscuro
+  // sobre fondo oscuro — invisible, y además la marca de alguien maltratada
+  // por nosotros. Se eligió el panel oscuro primero y el comentario del
+  // código lo desmintió antes de llegar al PDF.
+  //
+  // DEBAJO DE LA IDENTIFICACIÓN y en chico, no arriba: este papel lo produce
+  // cotea para esa organización, y la cabecera dice quién lo produce.
+  // Invertirlo lo haría parecer emitido por el cliente, que es la misma
+  // atribución falsa que se evitó en el correo.
+  //
+  // SIN LOGO NO SE PINTA NADA: ni recuadro ni «sin logo». La organización ya
+  // va NOMBRADA en la lista de arriba, así que el lector no se queda sin saber
+  // de quién es.
+  if (logoOrganizacion) {
+    // EL FORMATO SE DECLARA, no se deja adivinar. `addImage` lo lleva como
+    // SEGUNDO argumento, y omitirlo corre todos los demás una posición: la
+    // primera versión de esto pasaba la `x` donde va el formato y el alto se
+    // quedaba en vacío. Salió en el papel por buena voluntad de jsPDF, y lo
+    // delató el banco al medir la caja —«20×»— no el ojo.
+    //
+    // Y SI NO ES PNG NI JPEG, NO SE PINTA. Hay marcas viejas guardadas como
+    // SVG, y `addImage` no pinta SVG: intentarlo tira una excepción a media
+    // portada. Se calla igual que si no hubiera logo, que es la conducta que
+    // ya está decidida para el hueco.
+    const fmtLogo = /^data:image\/(png|jpe?g)/i.exec(String(logoOrganizacion || ''));
+    if (fmtLogo) {
+      try {
+        // La caja es CUADRADA porque `PantallaMarca` reduce el archivo dentro
+        // de un cuadrado de 220 px conservando su proporción: lo que llega ya
+        // viene encajado, y darle alto y ancho iguales no lo estira.
+        doc.addImage(logoOrganizacion, /png/i.test(fmtLogo[1]) ? 'PNG' : 'JPEG',
+                     xR, PH-FTR-LOGO_ORG_CAJA_MM-8,
+                     LOGO_ORG_CAJA_MM, LOGO_ORG_CAJA_MM, '', 'FAST');
+      } catch (e) {
+        console.warn('el logo de la organización no se pudo pintar:', e?.message || e);
+      }
+    } else if (logoOrganizacion) {
+      console.warn('el logo de la organización no es PNG ni JPEG; no se pinta en el papel.');
+    }
+  }
 
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
@@ -1501,6 +1589,13 @@ async function generarPDFInterno({
 async function generarPDFArt73({
   obra, subs = [], estimaciones = [], historialAvance = [], programa = null,
   instante = null, organizacion = null, generadoPor = null,
+  // EL LOGO DE QUIEN USA LA APP, tal como lo guardó Configuración → Marca:
+  // `orgs/{oid}/config/branding.logoBlanco`, un data URI. Entra como DATO y
+  // no se lee aquí dentro, por lo mismo que `organizacion`: el generador no
+  // habla con Firestore, y si lo hiciera el papel dependería de una lectura
+  // más que puede fallar a mitad de un PDF. Sin logo no se pinta uno de
+  // muestra: el hueco se queda vacío, que es la verdad.
+  logoOrganizacion = null,
   // Las dos banderas de «ya llegó la lista» entran como dato por la misma
   // razón que en el tablero y en el informe interno: `fsColl` devuelve `[]`
   // mientras la lectura viaja o cuando la regla niega, así que una obra sin
@@ -1538,6 +1633,7 @@ async function generarPDFArt73({
           PW, PH, ML, MR, MT, MB, HDR, FTR, CW, CY0,
           FS_SEC, FS_TH, FS_TD, FS_SM, FS_KL, FS_KV, PCT, PP,
           FS_PORT_SEC, FS_PORT_LBL, FS_PORT_VAL, FS_PORT_PASO, FS_PIE,
+          LOGO_ANCHO_MM, LOGO_PROPORCION, LOGO_ORG_CAJA_MM,
           sf, sd, st, fs, fw, lw, R, L, T, fijarPagina,
           pageFrame, secHead, kpiBox, kpiRow, autoT, nota, bloqueDeCurva,
           bloqueDeFotos } = A;
@@ -1571,7 +1667,21 @@ async function generarPDFArt73({
   sf(Q.bg);  R(PW*0.42,0,PW*0.58,PH);
   sf(Q.nar); R(0,0,PW*0.42,5);
 
-  st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  // LA MARCA, EN LOGO Y NO EN TEXTO. Aquí iba `T('cotea', …)` a 30 pt en
+  // Helvetica bold, que no es la tipografía de cotea: era la palabra, no la
+  // marca. El PNG está incrustado en el bundle (ver `coteaBlancoPNG`), así que
+  // no hay red de por medio y el papel sale igual desde la obra.
+  //
+  // Si el logo no se pudiera pintar NO se deja el hueco: vuelve la palabra. Un
+  // papel sin nada arriba a la izquierda no se lee como «falló una imagen», se
+  // lee como un documento de nadie.
+  try {
+    doc.addImage(coteaBlancoPNG, 'PNG', ML, 26, LOGO_ANCHO_MM,
+                 LOGO_ANCHO_MM * LOGO_PROPORCION, '', 'FAST');
+  } catch (e) {
+    console.warn('el logo de cotea no se pudo pintar en la portada:', e?.message || e);
+    st(Q.wh); fs(30); fw('bold'); T('cotea', ML, 40);
+  }
   // Lo primero que se lee es qué papel es éste y para qué sirve. Sin caja
   // naranja de advertencia: no hay nada de qué advertir, este documento se
   // entrega.
@@ -1660,6 +1770,52 @@ async function generarPDFArt73({
     + 'superintendente de construcción o de servicios son corresponsables de la '
     + 'calidad y debida ejecución de los trabajos. La designación del residente '
     + 'debe constar por escrito (art. 62).', PW-xR-MR), xR, yR);
+
+  // ── EL LOGO DE QUIEN USA LA APP, EN EL PANEL CLARO ──────────────────────
+  //
+  // AQUÍ Y NO EN EL PANEL OSCURO, aunque el campo se llame `logoBlanco`. Ese
+  // nombre significa «el del fondo BLANCO», no «el logo en blanco»: es el que
+  // la app pinta en su cabecera clara (`PantallaMarca`, y el encabezado de la
+  // pantalla). Puesto sobre el pizarra de la izquierda sería un logo oscuro
+  // sobre fondo oscuro — invisible, y además la marca de alguien maltratada
+  // por nosotros. Se eligió el panel oscuro primero y el comentario del
+  // código lo desmintió antes de llegar al PDF.
+  //
+  // DEBAJO DE LA IDENTIFICACIÓN y en chico, no arriba: este papel lo produce
+  // cotea para esa organización, y la cabecera dice quién lo produce.
+  // Invertirlo lo haría parecer emitido por el cliente, que es la misma
+  // atribución falsa que se evitó en el correo.
+  //
+  // SIN LOGO NO SE PINTA NADA: ni recuadro ni «sin logo». La organización ya
+  // va NOMBRADA en la lista de arriba, así que el lector no se queda sin saber
+  // de quién es.
+  if (logoOrganizacion) {
+    // EL FORMATO SE DECLARA, no se deja adivinar. `addImage` lo lleva como
+    // SEGUNDO argumento, y omitirlo corre todos los demás una posición: la
+    // primera versión de esto pasaba la `x` donde va el formato y el alto se
+    // quedaba en vacío. Salió en el papel por buena voluntad de jsPDF, y lo
+    // delató el banco al medir la caja —«20×»— no el ojo.
+    //
+    // Y SI NO ES PNG NI JPEG, NO SE PINTA. Hay marcas viejas guardadas como
+    // SVG, y `addImage` no pinta SVG: intentarlo tira una excepción a media
+    // portada. Se calla igual que si no hubiera logo, que es la conducta que
+    // ya está decidida para el hueco.
+    const fmtLogo = /^data:image\/(png|jpe?g)/i.exec(String(logoOrganizacion || ''));
+    if (fmtLogo) {
+      try {
+        // La caja es CUADRADA porque `PantallaMarca` reduce el archivo dentro
+        // de un cuadrado de 220 px conservando su proporción: lo que llega ya
+        // viene encajado, y darle alto y ancho iguales no lo estira.
+        doc.addImage(logoOrganizacion, /png/i.test(fmtLogo[1]) ? 'PNG' : 'JPEG',
+                     xR, PH-FTR-LOGO_ORG_CAJA_MM-8,
+                     LOGO_ORG_CAJA_MM, LOGO_ORG_CAJA_MM, '', 'FAST');
+      } catch (e) {
+        console.warn('el logo de la organización no se pudo pintar:', e?.message || e);
+      }
+    } else if (logoOrganizacion) {
+      console.warn('el logo de la organización no es PNG ni JPEG; no se pinta en el papel.');
+    }
+  }
 
   sf(Q.bg); R(0,PH-FTR,PW,FTR);
   sf(Q.piz); R(0,PH-FTR,PW,0.6);
@@ -30027,6 +30183,10 @@ export default function App(){
             nominaHistorial, programa: programaObra, instante,
             evidencia, evidenciaCargada,
             organizacion: nombreOrg(marca, usuario),
+            // LA MISMA PREFERENCIA QUE LA PANTALLA, no una propia: el
+            // encabezado pinta `logoBlanco || logoNegro`, y si el papel
+            // eligiera distinto un mismo cliente vería dos logos suyos.
+            logoOrganizacion: marca?.logoBlanco || marca?.logoNegro || null,
             generadoPor: usuario?.nombre || usuario?.email || null,
           });
         }}
@@ -30060,6 +30220,10 @@ export default function App(){
             programa: programaObra, instante,
             evidencia, evidenciaCargada,
             organizacion: nombreOrg(marca, usuario),
+            // LA MISMA PREFERENCIA QUE LA PANTALLA, no una propia: el
+            // encabezado pinta `logoBlanco || logoNegro`, y si el papel
+            // eligiera distinto un mismo cliente vería dos logos suyos.
+            logoOrganizacion: marca?.logoBlanco || marca?.logoNegro || null,
             generadoPor: usuario?.nombre || usuario?.email || null,
           });
         }}
