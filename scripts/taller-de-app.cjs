@@ -136,6 +136,15 @@ function taller(codigo) {
     C: new Proxy({}, { get: () => '#000000' }),
     Card: () => null, Tit: () => null, Btn: () => null, Chip: () => null,
     React: {},
+    // LOS ASSETS QUE LA APP IMPORTA. Vite los convierte en un data URI al
+    // compilar; aquí no hay Vite, así que el identificador llegaría en
+    // `undefined` y el generador reventaría a media corrida. Se doblan con un
+    // PNG de verdad —un píxel transparente— y no con una cadena cualquiera: el
+    // generador se lo pasa a `addImage`, y un doble que no es una imagen
+    // haría fallar lo que el original soporta, que es inventarle un defecto.
+    coteaBlancoPNG: 'data:image/png;base64,'
+      + 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk'
+      + 'YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   });
 
   function correr(nombre, props, omitir = []) {

@@ -103,8 +103,16 @@ function lienzo() {
     // suite no tenía con qué verlo. Se guarda lo mínimo que una aserción
     // necesita —en qué página, dónde y de qué tipo—, sin los bytes.
     addImage: (datos, fmt, x, y, w, h) => {
+      // SE NIEGA A PINTAR LO QUE NO ES UNA IMAGEN, igual que el jsPDF de
+      // verdad. Antes aceptaba cualquier cosa, y eso hacía INVISIBLE el camino
+      // del respaldo: un banco que le pasara un logo roto veía el dibujo salir
+      // bien y daba por buena una portada que en el navegador habría quedado
+      // sin marca. Un doble que no falla donde el original falla no mide al
+      // original: perdona.
+      if (typeof datos !== 'string' || !/^data:image\//i.test(datos))
+        throw new Error('addImage: lo que llegó no es una imagen');
       imagenes.push({ pagina, fmt, x, y, w, h,
-                      bytes: typeof datos === 'string' ? datos.length : null });
+                      bytes: datos.length });
     },
     lastAutoTable: { finalY: 50 },
     // `GState` es un CONSTRUCTOR en jsPDF, y el generador lo usa con `new` para
