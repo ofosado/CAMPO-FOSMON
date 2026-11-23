@@ -12408,6 +12408,7 @@ function GestionUsuarios({usuario, obras, onClose}){
   const[modalEditar,setModalEditar]=useState(null);
   const[modalEliminar,setModalEliminar]=useState(null);
   const[modalPassword,setModalPassword]=useState(null);
+  const[modalCorreo,setModalCorreo]=useState(null);
   const[busy,setBusy]=useState(false);
 
   const recargar = async () => {
@@ -12483,6 +12484,15 @@ function GestionUsuarios({usuario, obras, onClose}){
                 <button onClick={()=>setModalPassword(u)} title="Resetear contraseña"
                   style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:4,
                     padding:"3px 8px",fontSize:9,color:C.textSec,cursor:"pointer"}}>Pass</button>
+                {/* EL CORREO SÓLO SE LE CAMBIA A OTRO. La función se niega a
+                    mover el propio —la sesión en curso quedaría apuntando a un
+                    perfil que ya no existe— y el botón no se ofrece, para que
+                    la negativa no llegue después de teclear el correo nuevo. */}
+                {u.email !== usuario.correo && (
+                  <button onClick={()=>setModalCorreo(u)} title="Cambiar el correo de esta cuenta"
+                    style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:4,
+                      padding:"3px 8px",fontSize:9,color:C.textSec,cursor:"pointer"}}>Correo</button>
+                )}
                 {u.email !== usuario.correo && (
                   <button onClick={()=>setModalEliminar(u)} title="Eliminar"
                     style={{background:"none",border:`0.5px solid ${alfa(C.red, 26.67)}`,borderRadius:4,
@@ -12596,6 +12606,24 @@ function GestionUsuarios({usuario, obras, onClose}){
         if(!r.ok){ alert("Error: "+r.error); return; }
         setModalPassword(null);
         alert(`Contraseña actualizada para ${modalPassword.email}`);
+      }} busy={busy}/>}
+
+    {/* MODAL CAMBIAR CORREO */}
+    {modalCorreo && <ModalCorreo usuario={modalCorreo}
+      onCancel={()=>setModalCorreo(null)}
+      onConfirm={async (emailNuevo)=>{
+        setBusy(true);
+        const r = await callFn("cambiarCorreoDeUsuario",
+          { email: modalCorreo.email, emailNuevo });
+        setBusy(false);
+        if(!r.ok){ alert("No se cambió: "+r.error); return; }
+        setModalCorreo(null);
+        // SE DICE CON QUÉ CORREO ENTRA AHORA, que es lo único que la persona
+        // necesita para volver a entrar. Y que la contraseña NO cambia: callarlo
+        // manda a resetearla sin falta.
+        alert(`Listo. ${modalCorreo.nombre || modalCorreo.email} entra ahora con `
+          + `${emailNuevo}. Su contraseña es la misma de antes.`);
+        recargar();
       }} busy={busy}/>}
 
     {/* MODAL ELIMINAR */}
@@ -12809,6 +12837,55 @@ function ModalUsuario({titulo, usuario, obras, onCancel, onConfirm, busy, esAlta
 }
 
 // ── MODAL RESETEAR CONTRASEÑA ──
+// EL MODAL DE CAMBIO DE CORREO — PENDIENTES #146
+//
+// Lo que esta pantalla tiene que dejar claro antes de que alguien teclee: que
+// el correo ES la llave con la que esa persona entra, porque el login deriva
+// el perfil del correo tecleado. Sin esa frase, «cambiar el correo» se lee
+// como editar un dato de contacto.
+function ModalCorreo({usuario, onCancel, onConfirm, busy}){
+  const [nuevo, setNuevo] = useState("");
+  const limpio = nuevo.trim().toLowerCase();
+  const formaOk = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(limpio);
+  const esElMismo = limpio === String(usuario.email || "").toLowerCase();
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:440}}>
+      <div style={{fontSize:13,fontWeight:600,color:C.textPri,marginBottom:4}}>
+        Cambiar el correo de {usuario.nombre || usuario.email}
+      </div>
+      <div style={{fontSize:11,color:C.textSec,marginBottom:12,lineHeight:1.5}}>
+        Entra hoy con <b>{usuario.email}</b>. El correo es la llave con la que
+        esta persona entra a cotea, así que a partir del cambio tiene que usar
+        el nuevo. <b>Su contraseña no cambia.</b>
+      </div>
+      <input type="email" value={nuevo} autoFocus
+        onChange={e=>setNuevo(e.target.value)}
+        placeholder="correo nuevo"
+        style={{width:"100%",padding:"8px 10px",fontSize:12,borderRadius:6,
+          border:`0.5px solid ${C.border}`,marginBottom:6}}/>
+      {/* El aviso sale mientras se teclea y no al confirmar: una negativa que
+          llega después de escribir el correo entero se lee como un fallo. */}
+      {limpio && !formaOk && <div style={{fontSize:10,color:C.red,marginBottom:8}}>
+        Eso no tiene forma de correo.
+      </div>}
+      {esElMismo && <div style={{fontSize:10,color:C.red,marginBottom:8}}>
+        Es el mismo correo que ya tiene.
+      </div>}
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
+        <button onClick={onCancel} disabled={busy}
+          style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
+            padding:"7px 14px",fontSize:11,color:C.textSec,cursor:"pointer"}}>Cancelar</button>
+        <button onClick={()=>onConfirm(limpio)} disabled={busy || !formaOk || esElMismo}
+          style={{background:(busy||!formaOk||esElMismo)?C.border:C.caliza,border:"none",
+            borderRadius:6,padding:"7px 14px",fontSize:11,fontWeight:600,color:"white",
+            cursor:(busy||!formaOk||esElMismo)?"default":"pointer"}}>
+          {busy?"Cambiando…":"Cambiar correo"}</button>
+      </div>
+    </div>
+  </div>;
+}
+
 function ModalPassword({usuario, onCancel, onConfirm, busy}){
   const[pass,setPass]=useState("");
   return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,

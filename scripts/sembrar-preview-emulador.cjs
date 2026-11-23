@@ -1041,7 +1041,15 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
       todas: c.orgId !== null && asignadas.length === 0, obras: asignadas,
     });
     await escribir(`usuarios/${idDeCorreo(c.correo)}`, {
-      nombre: c.nombre, correo: c.correo, rol: c.rol, activo: true,
+      // EL CAMPO SE LLAMA `email`, NO `correo`. Medido en producción el
+      // 2026-11-23: los 18 perfiles traen `email` y ninguno trae `correo`.
+      // Sembrado con el nombre equivocado, la columna Email de la gestión de
+      // usuarios salía VACÍA en el preview y —peor— la comparación que
+      // protege la propia fila (`u.email !== usuario.correo`) daba verdadero
+      // para todos, así que los botones de borrar y de cambiar correo se
+      // ofrecían sobre uno mismo. Un defecto fabricado por el dato de prueba,
+      // que en producción no existe.
+      nombre: c.nombre, email: c.correo, rol: c.rol, activo: true,
       orgId: c.orgId, obras_asignadas: asignadas, bienvenidaVista: true, uid,
     });
     console.log(`  ${c.correo}  ${c.rol}  tipo=${c.tipo}  org=${c.orgId}` +
@@ -1070,7 +1078,7 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
   ];
   for (const p of PERFILES_HUERFANOS) {
     await escribir(`usuarios/${idDeCorreo(p.correo)}`, {
-      nombre: p.nombre, correo: p.correo, rol: p.rol, activo: true,
+      nombre: p.nombre, email: p.correo, rol: p.rol, activo: true,
       orgId: 'fosmon', obras_asignadas: [], bienvenidaVista: true,
     });
     console.log(`  ${p.correo}  rol=${p.rol || '(vacío)'}  org=fosmon  (sin identidad en Auth)`);

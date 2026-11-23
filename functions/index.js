@@ -723,6 +723,123 @@ exports.eliminarUsuario = onCall(async (request) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// CAMBIAR EL CORREO DE UN USUARIO
+// ──────────────────────────────────────────────────────────────────────────
+//
+// POR QUÉ HACE FALTA UNA FUNCIÓN Y NO BASTA TOCAR AUTH. El login NO busca el
+// perfil por cuenta: lo DERIVA del correo tecleado (`emailAId`), así que el id
+// del documento ES el correo. Cambiarlo sólo en Firebase Auth deja el perfil
+// bajo el id viejo, el login no lo encuentra, y la app contesta «Tu cuenta no
+// tiene perfil en el sistema» y CIERRA LA SESIÓN —con los claims intactos y la
+// cuenta perfectamente válida en Auth—. El síntoma no apunta al correo, que es
+// lo que vuelve caro el arreglo a mano.
+//
+// EL ORDEN DE LOS TRES ACTOS NO ES INTERCAMBIABLE, y ésta es la razón:
+//
+//   1. Se escribe el perfil NUEVO.   2. Se mueve Auth.   3. Se borra el viejo.
+//
+// Si algo revienta entre 1 y 2, hay dos perfiles y Auth sigue en el correo
+// viejo: la cuenta ENTRA IGUAL que antes y lo que sobra es un documento
+// huérfano. Si revienta entre 2 y 3, Auth ya está en el nuevo y el perfil
+// nuevo existe: la cuenta ENTRA con el correo nuevo y lo que sobra es el
+// viejo. En ningún punto intermedio el usuario se queda fuera, que es la única
+// propiedad que no se puede negociar aquí.
+//
+// Al revés —borrar primero— la ventana entre el borrado y la escritura es
+// exactamente el defecto que esta función existe para no volver a causar.
+//
+// Y EL BORRADO DEL VIEJO LE QUITA LOS CLAIMS AL USUARIO SI NO SE CUIDA.
+// `sincronizarClaims` reacciona al borrado buscando la cuenta por
+// `before.email` y limpiándole los claims. Después del paso 2 esa búsqueda ya
+// no encuentra nada —Auth se movió— así que hoy saldría bien por accidente; y
+// dejaría de salir bien el día que alguien reciclara el correo viejo para otra
+// cuenta. Por eso el perfil viejo se vacía de `email` ANTES de borrarse: con
+// `before.email` vacío el sincronizador se va por su salida temprana y no
+// busca a nadie. Deja de depender del estado de Auth, que es lo que lo vuelve
+// una garantía en vez de una coincidencia.
+exports.cambiarCorreoDeUsuario = onCall(async (request) => {
+  const { email: emailLlamador, perfil: perfilLlamador } = await requireAdmin(request.auth);
+  const ambito = ambitoDe(perfilLlamador);
+
+  const { email, emailNuevo } = request.data || {};
+  if (!email || !emailNuevo) {
+    throw new HttpsError("invalid-argument", "Faltan datos: email y emailNuevo.");
+  }
+  const viejo = String(email).toLowerCase().trim();
+  const nuevo = String(emailNuevo).toLowerCase().trim();
+
+  if (viejo === nuevo) {
+    throw new HttpsError("invalid-argument", "El correo nuevo es el mismo que el actual.");
+  }
+  // La forma se valida aquí y no sólo en la pantalla: un correo mal formado se
+  // vuelve un id de documento igual de válido, y el perfil quedaría enterrado
+  // bajo una clave a la que nadie va a llegar nunca.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(nuevo)) {
+    throw new HttpsError("invalid-argument", `El correo «${nuevo}» no tiene forma de correo.`);
+  }
+
+  // NADIE SE CAMBIA EL SUYO POR AQUÍ. Esta función es de administración: el
+  // llamador tiene que poder administrar a OTRO. Cambiarse el propio correo
+  // mueve la cuenta con la que se está autenticando en ese momento, y el token
+  // en vuelo se queda apuntando a un perfil que ya no existe.
+  if (viejo === emailLlamador) {
+    throw new HttpsError("failed-precondition",
+      "No puedes cambiar tu propio correo desde aquí: la sesión en curso quedaría "
+      + "apuntando a un perfil que ya no existe. Pídeselo a otro administrador.");
+  }
+
+  const db = admin.firestore();
+  const refViejo = db.doc(`usuarios/${emailAId(viejo)}`);
+  const refNuevo = db.doc(`usuarios/${emailAId(nuevo)}`);
+
+  const snapViejo = await refViejo.get();
+  if (!snapViejo.exists) {
+    throw new HttpsError("not-found", `No hay perfil para «${viejo}».`);
+  }
+  const perfil = snapViejo.data() || {};
+  exigirMismaOrg(ambito, perfil, viejo);
+
+  // EL DESTINO TIENE QUE ESTAR LIBRE EN LOS DOS SITIOS. El padrón es plano y
+  // el correo es único en TODA la plataforma, así que un correo ocupado por
+  // otra organización también choca — y se dice sin revelar de quién es.
+  if ((await refNuevo.get()).exists) {
+    throw new HttpsError("already-exists",
+      `Ya hay un usuario con el correo «${nuevo}».`);
+  }
+  const yaEnAuth = await admin.auth().getUserByEmail(nuevo).catch(() => null);
+  if (yaEnAuth) {
+    throw new HttpsError("already-exists",
+      `El correo «${nuevo}» ya está tomado por otra cuenta.`);
+  }
+
+  const cuenta = await admin.auth().getUserByEmail(viejo).catch(() => null);
+
+  // ── 1 · EL PERFIL NUEVO ──────────────────────────────────────────────────
+  // Se copia ENTERO y se le corrige el correo. Copiar campo por campo dejaría
+  // fuera lo que se agregue mañana al perfil, y esa pérdida es silenciosa.
+  await refNuevo.set({
+    ...perfil,
+    email: nuevo,
+    correoAnterior: viejo,
+    correoCambiadoEn: FieldValue.serverTimestamp(),
+    correoCambiadoPor: emailLlamador,
+  });
+
+  // ── 2 · AUTH ─────────────────────────────────────────────────────────────
+  if (cuenta) {
+    await admin.auth().updateUser(cuenta.uid, { email: nuevo });
+  }
+
+  // ── 3 · EL PERFIL VIEJO ──────────────────────────────────────────────────
+  // Vaciado de `email` antes de borrarse, para que el sincronizador de claims
+  // no vaya a buscar a nadie. Ver el preámbulo.
+  await refViejo.set({ email: "" }, { merge: true });
+  await refViejo.delete();
+
+  return { ok: true, de: viejo, a: nuevo, movioAuth: !!cuenta };
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // CAMBIAR CONTRASEÑA (admin resetea la de otro usuario)
 // ──────────────────────────────────────────────────────────────────────────
 exports.cambiarPassword = onCall(async (request) => {
