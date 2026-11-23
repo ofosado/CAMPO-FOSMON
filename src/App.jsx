@@ -30433,7 +30433,13 @@ export default function App(){
           <rect x="3" y="3" width="18" height="18" rx="2"/>
           <path d="M7 8h10M7 12h10M7 16h6"/>
         </svg>
-        Documento interno
+        {/* EL TEXTO QUE SE LEE, no sólo el `title`. El 2026-11-23 el papel
+            pasó a llamarse «Reporte de avance de obra» —dentro, en la portada,
+            en la cabecera de cada hoja y en el nombre del archivo— y este
+            rótulo se quedó diciendo «Documento interno»: la pantalla seguía
+            ofreciendo un papel que ya no se llama así. Lo vio el usuario, no
+            la suite, porque ningún banco miraba el botón. */}
+        Reporte de avance
       </button>}
       {/* EL PAPEL DEL MUNICIPIO — el informe de avance del Art. 73.
           LO QUE NO SE LE PASA ES LA MITAD DE LA DECISIÓN: ni `maquinaria`, ni
@@ -30472,7 +30478,11 @@ export default function App(){
           <line x1="12" y1="18" x2="12" y2="12"/>
           <polyline points="9 15 12 12 15 15"/>
         </svg>
-        Informe de avance
+        {/* El papel de la dependencia se titula «Informe semanal de avance
+            físico y financiero» desde el 2026-11-21; el botón decía «Informe
+            de avance», que no es su nombre. En el botón cabe el corto, pero el
+            corto tiene que ser EL SUYO. */}
+        Informe semanal
       </button>}
     </div>}
 
