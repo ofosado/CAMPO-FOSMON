@@ -90,7 +90,7 @@ traverse(parse(src, { sourceType: 'module', plugins: ['jsx'] }), {
 });
 
 const PEDIDOS = ['serieAvanceDeSemanas', 'semanasDeVentana', 'semanasDeNomina',
-  'personalDeSemana', 'trabsDeCarga', 'TablaSemanas'];
+  'personalDeSemana', 'trabsDeCarga', 'TablaSemanas', 'columnasSemanales'];
 const faltan = [];
 if (columnasSrc.length < 2)
   faltan.push(`los dos <TablaSemanas columnas={…}> de los tableros (hay ${columnasSrc.length})`);
@@ -106,7 +106,7 @@ try {
 if (faltan.length) noArranco(faltan, path.basename(archivo));
 
 const { serieAvanceDeSemanas, semanasDeVentana, semanasDeNomina,
-        personalDeSemana, trabsDeCarga, TablaSemanas } = api;
+        personalDeSemana, trabsDeCarga, TablaSemanas, columnasSemanales } = api;
 
 // La celda de la columna Avance, tal como la imprime la tabla real. Las otras
 // columnas de la misma tabla necesitan datos que este banco no mide, y se les
@@ -115,14 +115,21 @@ const columnaAvance = (tablero, semanas, avance) => {
   const vacias = semanas.map(() => null);
   const g = { avance, programadoPct: vacias, programado: vacias, ejecutado: vacias,
     gasto: vacias, margen: vacias };
-  const cols = new Function('g', 'avanceDelta', 'desviacion', 'gastoDelta',
-    'pp', 'colorDelta', 'NUM', 'MXN', 'MXNS', 'C',
-    `"use strict"; return ${columnasSrc[tablero]};`)(
-    g, vacias, vacias, vacias,
-    v => `${v}pp`, () => '#000',
-    (n, d = 1) => Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: d }),
-    n => `$${n}`, n => `$${n}`, new Proxy({}, { get: () => '#888' }));
-  const col = cols.find(c => c.titulo === 'Avance');
+  // LAS COLUMNAS SE PIDEN A `columnasSemanales`, que es donde viven desde el
+  // 2026-11-23: antes se extraía el literal `columnas={[…]}` del JSX y se
+  // ejecutaba con los deltas inyectados a mano. Ese literal pasó a ser
+  // `COLS.map(…)` cuando la tabla se compartió con el PDF, y el banco salió NO
+  // ARRANCÓ con `COLS is not defined` — sin medir nada, y por un cambio que no
+  // tocó la conducta que vigila. Pedírselas a la función es además lo que el
+  // banco quería decir: que la columna Avance de LA TABLA no publique ceros.
+  const cols = columnasSemanales(
+    { ...g, fronteraAvance: { hay: false, idx: -1 }, gastoPorSem: {},
+      gastoMedido: false, gastoSinFechar: false },
+    semanas);
+  const colCruda = cols.find(c => c.titulo === 'Avance');
+  // El formato lo pone el consumidor; aquí se pinta como la pantalla.
+  const col = colCruda && { ...colCruda,
+    fmt: (v) => Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 1 }) + '%' };
   if (!col) noArranco(['la columna «Avance» de la tabla de semanas'], path.basename(archivo));
   const html = renderToStaticMarkup(
     React.createElement(TablaSemanas, { semanas, columnas: [col] }));

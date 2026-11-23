@@ -170,7 +170,14 @@ function taller(codigo) {
   // ahora que GP sí contestó y contestó cero, que es la misma cifra pero
   // afirmada, y la cuenta real la saca el archivo.
   const STUBS = () => ({
-    useState: (v) => [v, () => {}],
+    // EL INICIALIZADOR PEREZOSO SE EJECUTA, como lo hace React. El doble
+    // devolvía el argumento tal cual, así que un `useState(() => f())`
+    // dejaba la FUNCIÓN como estado. Pasó el 2026-11-23: la ventana de la
+    // gráfica pasó a `useState(() => ventanaDeLaObra(obra))` y el banco
+    // midió un eje de 106 semanas creyendo que medía 24 — el componente
+    // está bien, el doble perdonaba. Un doble que no se comporta como el
+    // original no mide al original.
+    useState: (v) => [typeof v === 'function' ? v() : v, () => {}],
     useRef: () => ({ current: null }),
     useEffect: () => {},
     useMemo: (f) => (typeof f === 'function' ? f() : f),
@@ -582,15 +589,30 @@ function correr(codigo) {
   // usa es el MISMO que el componente usa para callar el delta, así que si la
   // cuenta dejara de verla la aserción de abajo pasaría por la razón
   // equivocada: por eso se exige `> 0` antes de usarlo.
+  // LAS COLUMNAS DEL TABLERO DE LA CONSTRUCTORA SE LEEN POR TÍTULO. Sus nueve
+  // columnas y sus tres deltas los arma `columnasSemanales` desde el
+  // 2026-11-23 —la misma función que usa el PDF—, así que ya no hay variables
+  // sueltas que mirar. Buscar por título es además lo que el banco quiere
+  // decir: que la columna que el usuario ve no publique el número prohibido.
+  const colValores = (tab, titulo) =>
+    ((tab.COLS || []).find(c => c.titulo === titulo) || {}).valores || [];
+
   const idxF = gd.fronteraAvance?.idx;
   check(idxF > 0 && gd.fronteraAvance?.hay,
     'la frontera del avance cae dentro de la ventana', `idx ${idxF}`);
   check(dep.avanceDelta?.[idxF] === null,
     'el municipio no publica el delta de la semana que cruza',
     `idx ${idxF}: ${dep.avanceDelta?.[idxF]}`);
-  check(con.avanceDelta?.[idxF] === null,
+  // EL TABLERO DE LA CONSTRUCTORA YA NO TIENE EL DELTA SUELTO: desde el
+  // 2026-11-23 sus nueve columnas las arma `columnasSemanales`, la misma
+  // función que usa el PDF, y el delta vive dentro de la columna «Δ semana».
+  // Se lee de ahí y no se vuelve a calcular: lo que esta sección afirma es que
+  // el TABLERO no publica el delta que cruza, no que exista una variable.
+  const colDelta = (con.COLS || []).find(c => c.titulo === 'Δ semana');
+  check(!!colDelta, 'la tabla de la constructora trae su columna «Δ semana»');
+  check(colDelta?.valores?.[idxF] === null,
     'y la constructora tampoco',
-    `idx ${idxF}: ${con.avanceDelta?.[idxF]}`);
+    `idx ${idxF}: ${colDelta?.valores?.[idxF]}`);
   // La frontera no CORTA la serie: del primer cierre en adelante todas las
   // semanas traen número, incluidas las del esquema viejo. Esto se afirmaba
   // sobre las 10 semanas de la ventana, y las dos que están ANTES del primer
@@ -644,7 +666,8 @@ function correr(codigo) {
   // semanales SUMAN el acumulado. Un relleno —promedio, interpolación, lo que
   // sea— mete pesos que el acumulado no tiene y rompe la suma.
   sec('7. Los gastos de la semana suman el acumulado, sin pesos de relleno');
-  const deltas = con.gastoDelta || [];
+  // Igual que el delta de avance: el gasto de la semana vive en su columna.
+  const deltas = colValores(con, 'Gasto de la semana');
   const suma = deltas.reduce((t, v) => t + (typeof v === 'number' ? v : 0), 0);
   // El tramo que las deltas cubren: de la primera semana a la última que SÍ
   // publica delta. La última queda fuera cuando el ancla movió el acumulado
@@ -677,11 +700,11 @@ function correr(codigo) {
   check(gc.gastoSinFechar === true,
     'el fixture tiene gasto sin fechar, que es cuando el ancla mueve el número',
     `por semana ${porSemana} vs KPI ${ga}`);
-  check(con.gastoDelta?.[u] === null,
+  check(colValores(con, 'Gasto de la semana')?.[u] === null,
     'y la última semana no afirma ningún gasto medido',
-    `${con.gastoDelta?.[u]}`);
+    `${colValores(con, 'Gasto de la semana')?.[u]}`);
   const salto = ga - (gc.gasto?.[u - 1] ?? 0);
-  check(Math.abs(salto) > 1 && con.gastoDelta?.[u] !== salto,
+  check(Math.abs(salto) > 1 && colValores(con, 'Gasto de la semana')?.[u] !== salto,
     'y mucho menos afirma que el salto entero se gastó en esos siete días',
     `el salto es ${salto}`);
 
@@ -737,6 +760,11 @@ function correr(codigo) {
                          inicio: `${CERRADO - 1}-02-02`, fin: `${AÑO + 1}-06-30` };
 
     const semanasDeVentana = cuenta('semanasDeVentana');
+    // LA VENTANA SE PIDE A LA MISMA REGLA QUE EL COMPONENTE. Estaba tecleada
+    // en 12, y el 2026-11-23 el tablero pasó a elegirla por la EDAD de la obra
+    // —8, 12 o 24—: el eje del banco y el del componente dejaron de ser el
+    // mismo y la sección midió dos ventanas distintas creyendo que era una.
+    const ventanaDeLaObra = cuenta('ventanaDeLaObra');
     const jueveDeSemanaISO = cuenta('jueveDeSemanaISO');
     const snapDe = (s, { av, me }) => ({
       semana: s.sem, año: s.año, fechaCaptura: jueveDeSemanaISO(s.año, s.sem).toISOString(),
@@ -744,7 +772,7 @@ function correr(codigo) {
     });
 
     conElRelojEn(EN_FEBRERO, () => {
-      const SEMS = semanasDeVentana(OBRA_LARGA, 12);
+      const SEMS = semanasDeVentana(OBRA_LARGA, ventanaDeLaObra(OBRA_LARGA));
       const deCerrado = SEMS.filter(s => s.año === CERRADO);
       const delAño = SEMS.filter(s => s.año === AÑO);
 
@@ -829,15 +857,15 @@ function correr(codigo) {
       const iCruce = t9.semanas.findIndex(s => s.año === AÑO);
       const cerradasConCifra = t9.semanas
         .map((s, i) => [s, i])
-        .filter(([s, i]) => s.año === CERRADO && i > 0 && t9.gastoDelta?.[i] !== null);
+        .filter(([s, i]) => s.año === CERRADO && i > 0 && colValores(t9, 'Gasto de la semana')?.[i] !== null);
       check(cerradasConCifra.length === 0,
         `la columna «Gasto de la semana» va en «—» en las semanas de ${CERRADO}`,
         cerradasConCifra.length
-          ? cerradasConCifra.map(([s, i]) => `${s.key}=${t9.gastoDelta[i]}`).join(' ')
+          ? cerradasConCifra.map(([s, i]) => `${s.key}=${colValores(t9, 'Gasto de la semana')[i]}`).join(' ')
           : `${deCerrado.length - 1} renglones revisados`);
-      check(iCruce > 0 && t9.gastoDelta?.[iCruce] === null,
+      check(iCruce > 0 && colValores(t9, 'Gasto de la semana')?.[iCruce] === null,
         'y el renglón que cruza el año tampoco afirma un gasto de esos siete días',
-        `idx ${iCruce}: ${t9.gastoDelta?.[iCruce]}`);
+        `idx ${iCruce}: ${colValores(t9, 'Gasto de la semana')?.[iCruce]}`);
 
       // (f) EL CANARIO DEL ARREGLO. La misma obra, la misma época, sin años
       //     cerrados: ahí el cero SÍ está medido —GP contestó y no hay un peso

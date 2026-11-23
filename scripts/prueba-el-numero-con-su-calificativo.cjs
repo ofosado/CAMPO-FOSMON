@@ -286,9 +286,13 @@ async function correr(codigo) {
   check(todoNulo(tendHueco.g?.gasto),
     'la serie de «Gasto acumulado» queda VACÍA, no plana en cero',
     JSON.stringify(tendHueco.g?.gasto?.slice(-3)));
-  check(todoNulo(tendHueco.gastoDelta),
+  // La columna se lee de `COLS`, que es donde viven las nueve desde el
+  // 2026-11-23: las arma `columnasSemanales`, la misma función que usa el PDF.
+  const colDe = (tab, titulo) =>
+    ((tab.COLS || []).find(c => c.titulo === titulo) || {}).valores || [];
+  check(todoNulo(colDe(tendHueco, 'Gasto de la semana')),
     'la columna «Gasto de la semana» tampoco afirma un cero por semana',
-    JSON.stringify(tendHueco.gastoDelta?.slice(-3)));
+    JSON.stringify(colDe(tendHueco, 'Gasto de la semana').slice(-3)));
   check(todoNulo(tendHueco.g?.margen),
     'y el margen no publica el ejecutado entero como ganancia',
     JSON.stringify(tendHueco.g?.margen?.slice(-3)));
@@ -394,8 +398,15 @@ async function correr(codigo) {
   // afirma es que la serie llega VACÍA; esto es lo único que falta para que el
   // renglón diga «sin medir» y no el `—` por omisión de `TablaSemanas`, que ahí
   // significaría «no hubo movimiento».
-  check(compacto.includes(
-      "{titulo:'Gastoacumulado',valores:g.gasto,fmt:MXN,vacio:'sinmedir'}"),
+  // SE AFIRMA SOBRE LA CUENTA, no sobre el literal del JSX. Estaba escrito
+  // como una subcadena del componente —`{titulo:'Gastoacumulado',valores:…}`—
+  // y el 2026-11-23 las columnas se mudaron a `columnasSemanales` para que el
+  // PDF usara las mismas: el literal desapareció del componente y el banco
+  // acusó de perder un rótulo que no se había perdido, sólo mudado.
+  const colsDecl = compacto.includes("titulo:'Gastoacumulado'")
+    || sinComentarios(fs.readFileSync(archivo, 'utf8'))
+         .replace(/\s+/g, '').includes("titulo:'Gastoacumulado',valores:g.gasto,formato:'mxn',vacio:'sinmedir'");
+  check(colsDecl,
     'la columna «Gasto acumulado» declara qué dice cuando la serie viene vacía');
 
   // ── 8 · EL PAPEL QUE SE DESCARGA ─────────────────────────────────────────
@@ -553,9 +564,17 @@ async function correr(codigo) {
     'canario: con el gasto medido el margen SÍ se clasifica, y en «Crítico»',
     filaCritica ? `${filaCritica.texto} · ${JSON.stringify(filaCritica.estilos)}`
                 : '(no hay renglón)');
-  check(!dice(pdfMedido, 'sin medir'),
-    'canario: y el documento medido no dice «sin medir» en ninguna parte',
-    pdfMedido.textos.filter(t => t.includes('sin medir')).join(' | ') || 'cero veces');
+  // SE ACOTA A LAS TEJAS, no a todo el documento. Decía «en ninguna parte», y
+  // el 2026-11-23 el papel ganó la tabla semanal, donde «sin medir» es el
+  // TEXTO DE UNA CELDA VACÍA —la semana que no trae gasto— y no una afirmación
+  // sobre la obra. El canario acusaba al documento de declararse sin medir por
+  // una celda de una semana. Lo que tiene que seguir siendo cierto es que las
+  // TEJAS del gasto y del margen publiquen su cifra.
+  const tejasSinMedir = ['GASTO TOTAL', 'MARGEN BRUTO']
+    .filter(t => /sin medir/i.test(JSON.stringify(tejaDe(pdfMedido, t) || {})));
+  check(tejasSinMedir.length === 0,
+    'canario: y en el documento medido ninguna teja dice «sin medir»',
+    tejasSinMedir.join(', ') || 'ninguna');
 
   return fallos;
 }

@@ -914,7 +914,7 @@ async function generarPDFInterno({
   // sección de dinero y el riesgo de la sección de riesgos saldrían de dos
   // series distintas en el mismo documento, y el riesgo acusaría con una cifra
   // que no se puede encontrar tres páginas antes.
-  const VENTANA = 12;
+  const VENTANA = ventanaDeLaObra(obra);
   const semanas = semanasDeVentana(obra, VENTANA);
   const curva = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
                                    otrosGastos, maquinaria, programa });
@@ -1141,20 +1141,67 @@ async function generarPDFInterno({
     st(Q.ng); fs(FS_SEC); fw('bold'); T('Lo que este documento NO puede afirmar', ML, y+4);
     y += 7;
     for (const h of huecos) y = nota(h, y);
-  } else {
-    }
+  }
 
   // ═══ 3 · LA GRÁFICA ÚNICA ═════════════════════════════════════════════════
   // La MISMA `curva` que ya se calculó para la sección 4: no se vuelve a pedir.
   // Recalculada aquí, el día que alguien cambiara una ventana el dibujo y la
   // tabla del margen contarían la misma semana con dos cuentas.
-  y = bloqueDeCurva('3  LA GRÁFICA ÚNICA · LA OBRA EN PESOS, SEMANA A SEMANA', curva,
-    `Lo ejecutado, lo programado y el gasto sobre las mismas ${VENTANA} semanas, `
+  y = bloqueDeCurva('3  CURVA S · AVANCE FÍSICO, FINANCIERO Y GASTO', curva,
+    `Lo ejecutado, lo programado y el gasto sobre las mismas ${semanas.length} semanas, `
     + 'en pesos acumulados. El sombreado entre lo ejecutado y el gasto es el '
     + 'margen bruto: verde donde se gana, rojo donde se pierde. El eje arranca '
     + 'en cero aunque aplaste las curvas, porque cortarlo por abajo agranda a la '
     + 'vista el hueco entre dos líneas, que es justo lo que esta gráfica mide. '
     + 'Un trecho punteado es un salto sobre semanas sin captura, no una medición.');
+
+  // ── LA TABLA SEMANAL, LA MISMA QUE LA PANTALLA, DEBAJO DE SU CURVA ───────
+  //
+  // Las columnas salen de `columnasSemanales`, que es de donde las saca el
+  // tablero: una cuenta por número. Tres de las nueve son deltas con trampas
+  // finas —la frontera de criterio que no se cruza, el nulo que no es cero, el
+  // ancla de gasto sin fechar— y escribirlas aquí otra vez habría sido la
+  // segunda copia de las tres.
+  //
+  // LA CURVA DIBUJA LA VENTANA ENTERA Y LA TABLA LAS QUE QUEPAN, CONTANDO
+  // HACIA ATRÁS. Con 24 semanas la tabla no cabe en una hoja apaisada —son
+  // nueve columnas— y partirla en dos deja la mitad vieja en una página que
+  // nadie mira. Se publican las últimas, que son las que se revisan en la
+  // junta, y se DICE cuántas se dejaron fuera: un recorte callado se lee como
+  // que la obra empezó ahí.
+  const CABEN = 12;
+  const desdeIdx = Math.max(0, semanas.length - CABEN);
+  const semTabla = semanas.slice(desdeIdx);
+  if (semTabla.length) {
+    const cols = columnasSemanales(curva, semanas);
+    const pinta = (c, i) => {
+      const v = c.valores[i];
+      if (v === null || v === undefined || (typeof v === 'number' && !Number.isFinite(v)))
+        return c.vacio;
+      if (c.formato === 'pct') return PCT(v);
+      if (c.formato === 'pp') return PP(v);
+      return c.signo ? MXNS(v) : MXN(v);
+    };
+    if (y > 120) { doc.addPage(); pageFrame(); y = CY0 + 4; }
+    st(Q.ng); fs(FS_SEC); fw('bold');
+    T('Curva S · avance físico, financiero y gasto, semana a semana', ML, y + 4);
+    y += 7;
+    y = autoT(
+      ['Semana', ...cols.map(c => c.titulo)],
+      semTabla.map((sm, k) => {
+        const i = desdeIdx + k;
+        return [sm.label || '—', ...cols.map(c => pinta(c, i))];
+      }),
+      [16, ...cols.map(() => (CW - 16) / cols.length)], ML, y,
+      { bodyStyles: { fontSize: FS_SM },
+        columnStyles: Object.fromEntries(
+          cols.map((_, j) => [j + 1, { halign: 'right' }])) }
+    );
+    if (desdeIdx > 0)
+      y = nota(`La gráfica de arriba dibuja ${semanas.length} semanas; esta tabla publica `
+        + `las ${semTabla.length} últimas, que son las que caben en la hoja. Las otras `
+        + `${desdeIdx} están en la curva y no en el renglonado.`, y);
+  }
 
   // ═══ 4 · CÓMO VAMOS EN DINERO ═════════════════════════════════════════════
   // El número de sección es el 4 del mandato. La 5 —el resumen fotográfico—
@@ -1665,7 +1712,7 @@ async function generarPDFArt73({
   const pres = presentacionDependencia(eco);
 
   // ── LA VENTANA, LA MISMA DEL TABLERO ─────────────────────────────────────
-  const VENTANA = 12;
+  const VENTANA = ventanaDeLaObra(obra);
   const semanas = semanasDeVentana(obra, VENTANA);
 
   // ── EL PLAZO Y LAS INCIDENCIAS ───────────────────────────────────────────
@@ -16010,6 +16057,129 @@ const curvaUnicaDeObra = ({ semanas = [], obra = null, historialAvance = [],
 // En producción, el 2026-11-09, ninguna de las siete obras traía la bandera
 // puesta —por eso ninguna prueba lo vio y por eso el umbral se calibró sobre
 // series limpias—, pero la bandera existe porque el caso ocurre.
+// ── CUÁNTAS SEMANAS SE MIRAN, SEGÚN LA EDAD DE LA OBRA ──────────────────────
+//
+// La ventana estaba CLAVADA en 12 en los dos papeles, y 12 es la respuesta
+// equivocada en los dos extremos: una obra de seis semanas sale con media
+// gráfica vacía —y el hueco se lee como meses sin capturar—, y una de año y
+// medio se publica sin los tres trimestres que explican dónde se torció.
+//
+// Los tres cortes son los que pidió el producto el 2026-11-19:
+//
+//   hasta 8 semanas de vida   →   8   la obra entera, sin relleno
+//   de 9 a 12                 →  12   el trimestre, que es como se revisa
+//   más de 12                 →  24   medio año, que es donde se ve la curva
+//
+// LA EDAD SE MIDE DESDE `obra.inicio`, no desde la primera captura: una obra
+// que arrancó en marzo y empezó a capturar en junio tiene seis meses de vida,
+// y lo que falta es captura. Medirla desde la primera semana con dato la
+// premiaría por no haber capturado.
+//
+// Sin fecha de arranque NO se adivina la edad: se cae a 12, que es la ventana
+// que este producto llevaba. Inventar 24 sobre una obra sin fecha dibujaría
+// medio año de semanas vacías.
+const VENTANA_CORTA = 8, VENTANA_MEDIA = 12, VENTANA_LARGA = 24;
+const ventanaDeLaObra = (obra) => {
+  const inicio = fechaLocalDeISO(obra?.inicio);
+  if (!inicio || isNaN(inicio)) return VENTANA_MEDIA;
+  const semanas = Math.floor((Date.now() - inicio.getTime()) / (7 * 86400000)) + 1;
+  if (!Number.isFinite(semanas) || semanas <= 0) return VENTANA_MEDIA;
+  if (semanas <= VENTANA_CORTA) return VENTANA_CORTA;
+  if (semanas <= VENTANA_MEDIA) return VENTANA_MEDIA;
+  return VENTANA_LARGA;
+};
+
+// ── LA TABLA SEMANAL, UNA SOLA PARA LA PANTALLA Y PARA EL PAPEL ─────────────
+//
+// Las nueve columnas vivían DENTRO de `TarjetaGraficaUnica`, y con ellas los
+// tres deltas que no salen de la curva —el avance de la semana, la desviación
+// contra el programa y el gasto de la semana—. El papel no tenía esa tabla, y
+// ponerla copiando los deltas habría sido escribir por segunda vez tres
+// cuentas con trampas finas: la frontera de criterio que no se cruza, el nulo
+// que no es cero, y el ancla de gasto sin fechar que convierte un salto de
+// $13.4M en «lo que se gastó en siete días».
+//
+// Devuelve VALORES y un FORMATO nombrado, no cadenas ni colores: la pantalla
+// pinta con los suyos y el papel con ternas RGB, y meter aquí un color de CSS
+// obligaría al PDF a traducirlo. Lo que tiene que ser uno es la cuenta.
+// ── LOS DELTAS QUE LOS DOS TABLEROS COMPARTEN ──────────────────────────────
+//
+// `avanceDelta` y `desviacion` estaban escritos DOS VECES —una en el tablero de
+// la constructora y otra en el de la dependencia—, con sus mismas trampas
+// copiadas. No es una copia que se vea: las dos decían lo mismo, y por eso
+// podían separarse sin que nadie lo notara hasta que una publicara un número
+// que la otra no.
+//
+// SE PARTEN DE LA TABLA, y no se comparte la tabla entera, porque las dos
+// tablas NO son la misma: la de la dependencia lleva «Pagado» y «Falta pagar»
+// donde la otra lleva «Gasto» y «Margen». Compartir la lista de columnas le
+// pondría al municipio la economía del contratista en las manos, que es la
+// frontera que este producto sostiene por construcción. Lo que se comparte es
+// la CUENTA; las columnas las arma cada lector.
+const deltaDeAvance = (g, semanas) =>
+  // NINGÚN DELTA CRUZA LA FRONTERA: restar un avance compensado de uno topado
+  // mide el cambio de criterio, no lo que la obra hizo esa semana, y en la
+  // tabla ese número se leería como «avanzó 12 puntos en una semana».
+  semanas.map((s, i) => {
+    if (i === 0) return null;
+    if (g.fronteraAvance?.hay && i === g.fronteraAvance.idx) return null;
+    const a = g.avance[i], b = g.avance[i - 1];
+    if (typeof a !== 'number' || typeof b !== 'number') return null;
+    return a - b;
+  });
+
+// La desviación contra el programa, en puntos. Si no hay programado para esa
+// semana queda null: un cero diría «está justo en programa», que es una
+// afirmación distinta de «no se sabe».
+const deltaContraPrograma = (g, semanas) =>
+  semanas.map((s, i) => {
+    const p = g.programadoPct[i];
+    if (p === null || p === undefined) return null;
+    if (typeof g.avance[i] !== 'number') return null;
+    return g.avance[i] - p;
+  });
+
+const columnasSemanales = (curva, semanas) => {
+  const g = curva;
+  const avanceDelta = deltaDeAvance(g, semanas);
+  const desviacion = deltaContraPrograma(g, semanas);
+  // El gasto DE LA SEMANA, medido. Va el delta real y «—» donde no hubo
+  // movimiento que medir: rellenar con el promedio de la ventana está bien
+  // para la forma de una curva y en una tabla se lee como una cifra medida.
+  //
+  // Y la última semana queda en «—» cuando el ancla movió el acumulado. Medido
+  // en el preview sobre Oaxaca Parque Lineal: el renglón decía acumulado
+  // $21,918,000 con $8,518,000 la semana antes y «gasto de la semana $0». El
+  // salto de $13.4M no es lo que se gastó en siete días: es un total que nunca
+  // estuvo fechado alcanzando a su serie.
+  let gastoRef = g.gastoPorSem[semanas[0]?.key] || 0;
+  const gastoDelta = semanas.map((s, i) => {
+    if (i === 0) return null;
+    if (!g.gastoMedido) return null;
+    if (i === semanas.length - 1 && g.gastoSinFechar) return null;
+    // Y «—» también donde el acumulado no se conoce: las semanas de un año ya
+    // cerrado, de las que GP publica el total y no el reparto.
+    if (g.gastoPorSem[s.key] === null ||
+        g.gastoPorSem[semanas[i - 1].key] === null) return null;
+    const act = g.gastoPorSem[s.key] || gastoRef;
+    const prev = g.gastoPorSem[semanas[i - 1].key] || gastoRef;
+    if (act >= prev) gastoRef = act;
+    return Math.max(0, act - prev);
+  });
+
+  return [
+    { titulo: 'Avance',             valores: g.avance,        formato: 'pct',  vacio: 'sin medir' },
+    { titulo: 'Δ semana',           valores: avanceDelta,     formato: 'pp',   vacio: '—',       signo: true },
+    { titulo: 'Programa',           valores: g.programadoPct, formato: 'pct',  vacio: 'sin dato' },
+    { titulo: 'Contra el programa', valores: desviacion,      formato: 'pp',   vacio: 'sin dato', signo: true },
+    { titulo: 'Ejecutado',          valores: g.ejecutado,     formato: 'mxn',  vacio: 'no disponible' },
+    { titulo: 'Programado $',       valores: g.programado,    formato: 'mxn',  vacio: 'sin dato' },
+    { titulo: 'Gasto acumulado',    valores: g.gasto,         formato: 'mxn',  vacio: 'sin medir' },
+    { titulo: 'Gasto de la semana', valores: gastoDelta,      formato: 'mxns', vacio: '—' },
+    { titulo: 'Margen',             valores: g.margen,        formato: 'mxns', vacio: 'no disponible', signo: true },
+  ];
+};
+
 const comportamientoDelMargen = (curva, { minimo = 4 } = {}) => {
   const semanas = curva?.semanas || [];
   const margen = curva?.margen || [];
@@ -16563,7 +16733,11 @@ function TablaSemanas({semanas, columnas, maxAlto = 230}) {
 // `estadoGastoGP`, igual que el KPI. Ver `serieGastoDeSemanas`.
 function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
                               maquinaria, subs, programa}) {
-  const [rango, setRango] = useState(12);          // últimas N semanas
+  // LA VENTANA DE ARRANQUE SIGUE LA EDAD DE LA OBRA, igual que el papel: una
+  // obra de seis semanas abría con medio tablero vacío y una de año y medio sin
+  // los trimestres que explican dónde se torció. El selector sigue ahí y manda
+  // en cuanto el usuario lo toca; lo que cambia es con qué abre.
+  const [rango, setRango] = useState(() => ventanaDeLaObra(obra));
   const semanas = semanasDeVentana(obra, rango);
   const g = curvaUnicaDeObra({ semanas, obra, historialAvance, subs, gpData,
                                otrosGastos, maquinaria, programa });
@@ -16573,56 +16747,12 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
   // Lo que se calcula aquí abajo son los tres deltas, que sólo existen en la
   // tabla: la gráfica dibuja acumulados.
 
-  // El avance SEMANAL, en puntos porcentuales. NINGÚN DELTA CRUZA LA FRONTERA:
-  // restar un avance compensado de uno topado mide el cambio de criterio, no lo
-  // que la obra hizo esa semana, y en la tabla ese número se leería como
-  // «avanzó 12 puntos en una semana».
-  const avanceDelta = semanas.map((s, i) => {
-    if (i === 0) return null;
-    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;
-    const a = g.avance[i], b = g.avance[i - 1];
-    if (typeof a !== 'number' || typeof b !== 'number') return null;
-    return a - b;
-  });
-
-  // La desviación contra el programa, en puntos. Si no hay programado para esa
-  // semana queda null: un cero diría «está justo en programa», que es una
-  // afirmación distinta de «no se sabe».
-  const desviacion = semanas.map((s, i) => {
-    const p = g.programadoPct[i];
-    if (p === null || p === undefined) return null;
-    if (typeof g.avance[i] !== 'number') return null;
-    return g.avance[i] - p;
-  });
-
-  // El gasto DE LA SEMANA, medido. Va el delta real y «—» donde no hubo
-  // movimiento que medir: rellenar con el promedio de la ventana —como hacía la
-  // serie que alimentaba la gráfica vieja— está bien para la forma de una curva
-  // y en una tabla se lee como una cifra medida.
-  //
-  // Y la última semana queda en «—» cuando el ancla movió el acumulado. Medido
-  // en el preview sobre Oaxaca Parque Lineal: el renglón decía acumulado
-  // $21,918,000 con $8,518,000 la semana antes y «gasto de la semana $0». El
-  // salto de $13.4M no es lo que se gastó en siete días: es un total que nunca
-  // estuvo fechado alcanzando a su serie. Las otras dos salidas mienten peor —
-  // poner el salto afirma un gasto de $13.4M en una semana, y dejar el $0
-  // afirma que no se gastó nada mientras el acumulado de al lado se triplica.
-  let gastoRef = g.gastoPorSem[semanas[0]?.key] || 0;
-  const gastoDelta = semanas.map((s, i) => {
-    if (i === 0) return null;
-    if (!g.gastoMedido) return null;
-    if (i === semanas.length - 1 && g.gastoSinFechar) return null;
-    // Y «—» también donde el acumulado no se conoce: las semanas de un año ya
-    // cerrado, de las que GP publica el total y no el reparto. Sin los dos
-    // extremos no hay resta que publicar, y un «$0» ahí se lee como que no se
-    // gastó nada esa semana.
-    if (g.gastoPorSem[s.key] === null ||
-        g.gastoPorSem[semanas[i - 1].key] === null) return null;
-    const act = g.gastoPorSem[s.key] || gastoRef;
-    const prev = g.gastoPorSem[semanas[i - 1].key] || gastoRef;
-    if (act >= prev) gastoRef = act;
-    return Math.max(0, act - prev);
-  });
+  // LAS NUEVE COLUMNAS Y SUS TRES DELTAS VIVEN EN `columnasSemanales`, que es
+  // la misma función que usa el PDF. Estaban aquí dentro, y el papel no tenía
+  // esta tabla: ponérsela copiando los deltas habría sido escribir por segunda
+  // vez tres cuentas con trampas finas —la frontera de criterio que no se
+  // cruza, el nulo que no es cero, el ancla de gasto sin fechar—.
+  const COLS = columnasSemanales(g, semanas);
 
   const colorDelta = (v) => v > 0 ? C.greenDk : v < 0 ? C.redDk : C.textSec;
   const pp = (v) => `${v >= 0 ? '+' : '−'}${NUM(Math.abs(v), 2)}pp`;
@@ -16667,23 +16797,21 @@ function TarjetaGraficaUnica({obra, historialAvance, gpData, otrosGastos,
             ausentes={g.ausentes}
             pie={g.notas.join(' · ')}/>
 
-          <TablaSemanas semanas={semanas} columnas={[
-            {titulo:'Avance', valores:g.avance, fmt:(v)=>`${NUM(v,1)}%`,
-             vacio:'sin medir'},
-            {titulo:'Δ semana', valores:avanceDelta, fmt:pp, color:colorDelta,
-             vacio:'—'},
-            {titulo:'Programa',
-             valores:g.programadoPct, fmt:(v)=>`${NUM(v,1)}%`, vacio:'sin dato'},
-            {titulo:'Contra el programa', valores:desviacion, fmt:pp,
-             color:colorDelta, vacio:'sin dato'},
-            {titulo:'Ejecutado', valores:g.ejecutado, fmt:MXN, vacio:'no disponible'},
-            {titulo:'Programado $', valores:g.programado, fmt:MXN, vacio:'sin dato'},
-            {titulo:'Gasto acumulado', valores:g.gasto, fmt:MXN,
-             vacio:'sin medir'},
-            {titulo:'Gasto de la semana', valores:gastoDelta, fmt:MXNS, vacio:'—'},
-            {titulo:'Margen', valores:g.margen, fmt:MXNS,
-             color:(v)=>v>=0?C.greenDk:C.redDk, vacio:'no disponible'},
-          ]}/>
+          {/* EL FORMATO SE RESUELVE AQUÍ, los VALORES vienen de la cuenta
+              compartida. `columnasSemanales` entrega un `formato` nombrado
+              —pct, pp, mxn, mxns— y cada consumidor pinta con lo suyo: la
+              pantalla con colores de CSS, el papel con ternas RGB. Poner el
+              color en la cuenta habría obligado al PDF a traducir CSS. */}
+          <TablaSemanas semanas={semanas} columnas={COLS.map(c => ({
+            titulo: c.titulo,
+            valores: c.valores,
+            vacio: c.vacio,
+            fmt: c.formato === 'pct' ? (v) => `${NUM(v,1)}%`
+               : c.formato === 'pp' ? pp
+               : c.formato === 'mxns' ? MXNS : MXN,
+            color: c.titulo === 'Margen' ? (v) => (v >= 0 ? C.greenDk : C.redDk)
+                 : c.signo ? colorDelta : undefined,
+          }))}/>
         </div>}
   </Card>;
 }
@@ -16891,22 +17019,16 @@ function GraficaDelContrato({obra, historialAvance = [], subs = [], programa,
   const g = curvaDeGobierno({ semanas, obra, historialAvance, subs, programa,
                               estimaciones, estCargadas });
 
-  // Los deltas sólo existen en la tabla: la gráfica dibuja acumulados. NINGÚN
-  // DELTA CRUZA LA FRONTERA — restar un avance compensado de uno topado mide el
-  // cambio de criterio, no lo que la obra hizo esa semana.
-  const avanceDelta = semanas.map((s, i) => {
-    if (i === 0) return null;
-    if (g.fronteraAvance.hay && i === g.fronteraAvance.idx) return null;
-    const a = g.avance[i], b = g.avance[i - 1];
-    if (typeof a !== 'number' || typeof b !== 'number') return null;
-    return a - b;
-  });
-  const desviacion = semanas.map((s, i) => {
-    const p = g.programadoPct[i];
-    if (p === null || p === undefined) return null;
-    if (typeof g.avance[i] !== 'number') return null;
-    return g.avance[i] - p;
-  });
+  // LOS DOS DELTAS SON LOS MISMOS QUE LOS DEL OTRO TABLERO, y por eso se piden
+  // en vez de escribirse: estaban copiados aquí con sus mismas trampas —la
+  // frontera de criterio que no se cruza, el nulo que no es cero— y dos copias
+  // que dicen lo mismo pueden separarse sin que nadie lo note.
+  //
+  // Lo que NO se comparte es la tabla: la de allá lleva «Gasto» y «Margen»
+  // donde ésta lleva «Pagado» y «Falta pagar». Traerse la lista de columnas
+  // pondría la economía del contratista en el tablero del municipio.
+  const avanceDelta = deltaDeAvance(g, semanas);
+  const desviacion = deltaContraPrograma(g, semanas);
 
   const colorDelta = (v) => v > 0 ? C.greenDk : v < 0 ? C.redDk : C.textSec;
   const pp = (v) => `${v >= 0 ? '+' : '−'}${NUM(Math.abs(v), 2)}pp`;
