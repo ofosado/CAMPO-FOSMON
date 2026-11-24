@@ -220,8 +220,16 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
 
   return {
     docs, escrituras, cuentas, actosAuth,
+    // `app()` existe porque el respaldo pide la credencial por ahí
+    // (`admin.app().options.credential.getAccessToken()`) para hablar con la
+    // REST API de Firestore. Sin esto, montar ese trabajo revienta con
+    // «admin.app is not a function» — un NO ARRANCÓ que se confundiría con
+    // una regresión del trabajo.
     admin: { firestore: () => ({ doc: refDoc, collection: coleccion }),
-             auth, initializeApp: () => {} },
+             auth, initializeApp: () => {},
+             app: () => ({ options: { credential: {
+               getAccessToken: async () => ({ access_token: "token-de-mentira" }),
+             } } }) },
   };
 }
 

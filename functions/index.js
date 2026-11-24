@@ -4283,6 +4283,104 @@ function mensajeDeRespaldo(destino, r) {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// UN RESPALDO QUE SE CAE Y NO SE LO DICE A NADIE
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hasta hoy, un respaldo fallido dejaba exactamente dos rastros: un renglón en
+// `global/health` y un `console.error` en Cloud Logging. Los dos son PASIVOS —
+// hay que ir a mirarlos—, y la pantalla de salud existe desde septiembre sin
+// que nadie la abra. Así que la copia de toda la base podía llevar semanas sin
+// escribirse y el primero en enterarse habría sido quien la necesitara.
+//
+// Esto no sustituye a la pantalla: la empuja. El correo es el único canal que
+// llega sin que a nadie se le ocurra ir a ver.
+//
+// A QUIÉN. Al rol `soporte`, que es el único de ámbito plataforma
+// (`ROLES_CROSS`): el respaldo es de la base ENTERA, no de una organización, y
+// un director de obra no puede hacer nada con esta noticia salvo preocuparse.
+// Medido en producción el 2026-11-23: hay exactamente una cuenta `soporte`
+// activa.
+//
+// LO QUE ESTE AVISO **NO** CUBRE, y hay que decirlo porque es fácil leerlo al
+// revés: avisa de un respaldo que FALLÓ o que no se pudo VERIFICAR. No dice
+// nada de un respaldo que se escribió entero y no se puede restaurar — eso es
+// el #5, no se ha probado nunca, y ningún correo lo va a descubrir.
+const ROLES_PLATAFORMA = ROLES_CROSS;
+
+// La última corrida BUENA, sacada del historial que `registrarSalud` ya
+// guarda. Es el dato que convierte «falló el respaldo» en «llevas N días sin
+// copia», que es la frase que mueve a alguien. Si no hay ninguna buena en el
+// historial se dice eso y no se inventa una fecha.
+function ultimoRespaldoBueno(historial) {
+  const filas = Array.isArray(historial) ? historial : [];
+  const buena = filas.find((f) => f && f.ok === true && f.ultimaEjecucion);
+  if (!buena) return null;
+  const t = Date.parse(buena.ultimaEjecucion);
+  if (!Number.isFinite(t)) return null;
+  return { iso: buena.ultimaEjecucion, dias: Math.floor((Date.now() - t) / 86400000) };
+}
+
+function correoRespaldoCaido({ mensaje, destino, verificado, bueno }) {
+  const titulo = verificado ? "El respaldo semanal FALLÓ"
+    : "El respaldo semanal no se pudo verificar";
+  const cuerpo =
+    tablaDatos([
+      ["Qué pasó", mensaje],
+      ["Destino", destino || ""],
+      ["Último respaldo bueno", bueno
+        ? `${new Date(bueno.iso).toLocaleString("es-MX")} · hace ${bueno.dias} día${bueno.dias === 1 ? "" : "s"}`
+        : "no hay ninguno registrado"],
+    ]) +
+    (verificado
+      ? avisoHTML("La copia de esta semana <b>no se escribió</b>. Hasta que " +
+        "vuelva a correr, lo único que hay es la copia anterior.")
+      : avisoHTML("El export arrancó y no había terminado cuando se agotó la " +
+        "espera. <b>Puede que haya quedado completo</b>: hay que mirar el " +
+        "destino a mano antes de concluir nada.")) +
+    parrafoHTML("El respaldo vuelve a correr solo el domingo a las 3:00. " +
+      "Si esto se repite dos domingos seguidos, deja de ser un tropiezo.") +
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Ver la salud del sistema", `${APP_URL}/?pantalla=salud`)}</div>`;
+
+  return {
+    subject: `cotea · ${titulo}`,
+    html: sobreCorreo({
+      titulo,
+      entradilla: "Este aviso lo manda cotea sola cuando la copia de la base " +
+        "no queda hecha. Nadie tuvo que ir a mirarlo.",
+      cuerpoHTML: cuerpo,
+      pie: "Este correo sale sólo cuando el respaldo falla. Si no llega, el respaldo salió.",
+    }),
+  };
+}
+
+// Devuelve SIEMPRE un resultado, nunca lanza: el aviso es lo segundo que pasa
+// en una corrida que ya salió mal, y tumbarla aquí borraría el renglón de
+// salud del fallo original — cambiaría un diagnóstico por otro, que es el
+// defecto que `registrarFalloDeSalud` vino a cerrar.
+async function avisarRespaldoCaido(apiKey, datos) {
+  try {
+    const snap = await admin.firestore().collection("usuarios").get();
+    const destinos = [...new Set(snap.docs.map((d) => d.data())
+      .filter((u) => u && u.activo !== false && ROLES_PLATAFORMA.includes(u.rol))
+      .map((u) => String(u.email || "").trim().toLowerCase())
+      .filter(Boolean))];
+    if (!destinos.length) {
+      console.error("[respaldo] FALLÓ y NO SE PUDO AVISAR: no hay ninguna cuenta " +
+        `de plataforma activa (${ROLES_PLATAFORMA.join(", ")}).`);
+      return { ok: false, motivo: "sin-destinatarios", enviados: 0, destinos: [] };
+    }
+    const { subject, html } = correoRespaldoCaido(datos);
+    const r = await mandarCorreoDeAlta(apiKey, {
+      to: destinos, subject, html, concepto: "respaldo-caido",
+    });
+    return { ...r, destinos };
+  } catch (e) {
+    console.error("[respaldo] no se pudo avisar:", e);
+    return { ok: false, motivo: e?.message || String(e), enviados: 0, destinos: [] };
+  }
+}
+
 // SCHEDULED: domingo 3:00 a.m. hora México (baja actividad)
 //
 // `timeoutSeconds` sube a 540 porque ahora la corrida ESPERA al export. El
@@ -4294,15 +4392,43 @@ exports.backupSemanalFirestore = onSchedule({
   timeZone: "America/Mexico_City",
   region: "us-central1",
   timeoutSeconds: 540,
+  // La llave entra porque esta corrida ahora AVISA cuando se cae. Sin ella el
+  // aviso no sale y la corrida se anotaría como «falló» a secas, que es el
+  // silencio de siempre con otro nombre.
+  secrets: [RESEND_API_KEY],
 }, async () => {
   const t0 = Date.now();
   console.log("Iniciando backup semanal de Firestore…");
+
+  // El historial se lee ANTES de escribir el renglón de esta corrida: después,
+  // la de hoy ya sería la primera de la lista y «el último bueno» podría ser
+  // ella misma. Es el mismo error de contar que arregló el #116, un renglón
+  // más arriba.
+  let historialPrevio = [];
+  try {
+    const salud = await admin.firestore().doc("global/health").get();
+    const h = salud.exists ? salud.data()?.backup_historial : null;
+    historialPrevio = Array.isArray(h) ? h : [];
+  } catch (e) {
+    console.warn("no se pudo leer el historial de respaldos:", e?.message || e);
+  }
+
   try {
     const res = await ejecutarBackupFirestore();
     console.log(`Export lanzado. Destino: ${res.destino}, Op: ${res.operationName}`);
     const fin = await esperarFinDelExport(res.operationName, { plazoMs: 420 * 1000 });
     const mensaje = mensajeDeRespaldo(res.destino, fin);
     console.log(`Backup: ${mensaje}`);
+
+    // Se avisa tanto del fallo COMO del «no se pudo verificar». Los dos
+    // significan lo mismo para quien tiene que reaccionar: a esta hora no
+    // consta que haya copia de esta semana. Callar el segundo sería el verde
+    // falso que este proyecto persigue.
+    const aviso = fin.ok ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {
+      mensaje, destino: res.destino, verificado: !!fin.verificado,
+      bueno: ultimoRespaldoBueno(historialPrevio),
+    });
+
     await registrarSalud("backup", fin.ok, mensaje, {
       duracionMs: Date.now() - t0,
       destino: res.destino,
@@ -4310,10 +4436,24 @@ exports.backupSemanalFirestore = onSchedule({
       estadoExport: fin.estado,
       verificado: fin.verificado,
       consultas: fin.intentos,
+      // «Falló» y «falló y además nadie se enteró» son dos averías distintas,
+      // y la segunda es la que deja a alguien tranquilo sin derecho. El
+      // renglón las separa en vez de dejarlas en el mismo rojo.
+      aviso: aviso ? (aviso.ok ? "enviado" : `NO SE AVISÓ: ${aviso.motivo}`) : "no hacía falta",
+      avisadosA: aviso ? aviso.destinos : [],
     });
   } catch (e) {
     console.error("Error en backup semanal:", e);
-    await registrarFalloDeSalud("backup", e, { duracionMs: Date.now() - t0 });
+    // Aquí ni siquiera hubo export: el aviso importa MÁS, no menos.
+    const aviso = await avisarRespaldoCaido(RESEND_API_KEY.value(), {
+      mensaje: `La corrida reventó antes de terminar: ${e?.message || String(e)}`,
+      destino: "", verificado: true, bueno: ultimoRespaldoBueno(historialPrevio),
+    });
+    await registrarFalloDeSalud("backup", e, {
+      duracionMs: Date.now() - t0,
+      aviso: aviso.ok ? "enviado" : `NO SE AVISÓ: ${aviso.motivo}`,
+      avisadosA: aviso.destinos,
+    });
     throw e;
   }
 });
