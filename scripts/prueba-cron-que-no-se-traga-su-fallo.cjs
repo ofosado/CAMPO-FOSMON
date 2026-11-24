@@ -262,7 +262,18 @@ async function correr(trabajo) {
         path.relative(raiz, ARCH_FNS));
     }
 
-    const unFallo = r.anotados.fallos.length === 1 ? r.anotados.fallos[0] : null;
+    // Los tipos que ESTE manejador declara vigilar, leídos de su propio
+    // fuente en vez de contados. `fallos.length === 1` servía mientras cada
+    // trabajo vigilaba una sola cosa, y dejó de servir el 2026-11-23, cuando
+    // `vigilarDenegaciones` empezó a vigilar también la entrega del correo:
+    // dejaba DOS constancias, las dos correctas, y el banco salía en rojo por
+    // el conteo. Lo que se afirma —y lo que el encabezado de este banco ya
+    // decía, «su propio tipo»— es que ningún tipo que el trabajo vigila se
+    // queda sin constancia. Un trabajo que vigile tres tendrá que dejar tres.
+    const tiposQueVigila = [...new Set(
+      [...trabajo.fuente.matchAll(/registrarFalloDeSalud\("([^"]+)"/g)].map((m) => m[1]))];
+    const conConstancia = new Set(r.anotados.fallos.map((f) => f.tipo));
+    const sinConstancia = tiposQueVigila.filter((t) => !conConstancia.has(t));
     const verdesEscritos = r.anotados.verdes.filter((v) => v.ok === true);
 
     check(r.lanzo === true,
@@ -270,10 +281,13 @@ async function correr(trabajo) {
       r.lanzo ? `${(r.error?.message || '').slice(0, 48)}` :
         'resolvió — Scheduler contaría esta corrida como exitosa');
 
-    check(unFallo !== null,
-      `${trabajo.nombre}: deja constancia del fallo antes de lanzar`,
-      unFallo ? `registrarFalloDeSalud("${unFallo.tipo}")`
-        : `se anotaron ${r.anotados.fallos.length} fallos, se esperaba 1`);
+    check(tiposQueVigila.length > 0 && sinConstancia.length === 0,
+      `${trabajo.nombre}: deja constancia del fallo en cada tipo que vigila`,
+      tiposQueVigila.length === 0
+        ? 'no declara ni un `registrarFalloDeSalud`: no hay constancia que exigir'
+        : sinConstancia.length
+          ? `SIN CONSTANCIA: ${sinConstancia.join(', ')}`
+          : tiposQueVigila.map((t) => `registrarFalloDeSalud("${t}")`).join(' · '));
 
     check(verdesEscritos.length === 0,
       `${trabajo.nombre}: no deja ningún verde escrito de una corrida que reventó`,

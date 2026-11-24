@@ -71,7 +71,25 @@ const fnSrc = (() => { try { return fs.readFileSync(path.join(raiz, 'functions/i
 const ESPERADOS = [...fnSrc.matchAll(/^exports\.([A-Za-z]+) = onSchedule/gm)].map(m => m[1]);
 console.log('1. La tabla corresponde a las funciones que existen');
 check(ESPERADOS.length > 0, `se leyeron ${ESPERADOS.length} crons de functions/index.js`);
-check(JOBS.length === ESPERADOS.length, `hay ${JOBS.length} jobs declarados`, `esperados ${ESPERADOS.length}`);
+// El conteo de renglones ya NO tiene por qué igualar el de crons. Un cron
+// puede vigilar más de una cosa: desde el 2026-11-23 `vigilarDenegaciones`
+// vigila las denegaciones Y la entrega del correo, y la tabla lleva un renglón
+// por COSA VIGILADA —que es lo que el usuario lee— y no por función. La
+// igualdad salía en rojo con los ocho renglones correctos.
+//
+// Lo invariante está abajo, en las dos direcciones: cada cron tiene renglón
+// (`cubre X`) y cada renglón tiene cron (`X existe en functions/index.js`), y
+// más abajo todavía, que los ids son exactamente los que se escriben. Lo único
+// que el conteo vigilaba y nadie más era que no hubiera dos renglones con el
+// mismo id — ahí la pantalla pintaría el mismo registro dos veces y la segunda
+// mentiría sobre a qué trabajo pertenece. Eso se afirma aparte.
+check(JOBS.length >= ESPERADOS.length,
+  `hay ${JOBS.length} renglones para ${ESPERADOS.length} crons`,
+  JOBS.length >= ESPERADOS.length ? '' : 'hay crons sin un solo renglón');
+check(new Set(JOBS.map(j => j.id)).size === JOBS.length,
+  'ningún id repetido: la pantalla no pinta dos veces el mismo registro',
+  new Set(JOBS.map(j => j.id)).size === JOBS.length ? 'todos distintos'
+    : JOBS.map(j => j.id).filter((id, i, a) => a.indexOf(id) !== i).join(', '));
 for (const f of ESPERADOS)
   check(JOBS.some(j => j.funcion === f), `cubre \`${f}\``);
 // Y al revés: ningún job de la tabla puede apuntar a una función que ya no se

@@ -781,6 +781,51 @@ async function sembrarObra(prefijo, id, obra, opciones = {}) {
     process.exit(1);
   }
 
+  // ── La pantalla de salud ──────────────────────────────────────────────────
+  //
+  // No se sembraba, así que en el preview la pantalla salía con los ocho
+  // renglones en «sin datos» y NO SE PODÍA MIRAR ninguna de sus tres
+  // conductas. Se siembran los tres estados a la vez, cada uno en el renglón
+  // al que le toca, para que el recorrido vea los tres colores de una pasada:
+  //
+  //   · `entrega_correo`    — las dos patas en pie, corrida de hace una hora
+  //   · `backup`            — ROJO con su motivo (el respaldo que falló)
+  //   · `gp_catalogo`       — callado cuatro días: rojo del VIGILANTE, que es
+  //                           otro diagnóstico y se lee distinto
+  //   · los demás           — al día, que es el fondo contra el que se ven
+  //
+  // Las fechas son relativas a la siembra: un ISO tecleado envejecería y en
+  // tres días los renglones verdes saldrían todos en rojo por viejos.
+  {
+    const haceHoras = (h) => new Date(Date.now() - h * 3600000).toISOString();
+    const renglon = (ok, mensaje, horas, extra = {}) => ({
+      ultimaEjecucion: haceHoras(horas), ok, mensaje, ...extra,
+    });
+    await escribir('global/health', {
+      entrega_correo: renglon(true,
+        'dos patas: firma DKIM y ruta de retorno send.cotea.com.mx con SPF y MX · ' +
+        'DMARC p=quarantine · el SPF de la raíz no incluye a Resend, y no hace falta: ' +
+        'el sobre sale de send.', 1,
+        { dominio: 'cotea.com.mx', patas: 2, firma: true, rutaDeRetorno: true,
+          dmarc: 'quarantine', duracionMs: 412 }),
+      backup: renglon(false,
+        'el respaldo no se pudo escribir: PERMISSION_DENIED en gs://campo-fosmon-backups', 30,
+        { duracionMs: 1870 }),
+      // 11 días: cruza su propio límite de diez. Verde en su último mensaje y
+      // ROJO de todas formas, que es el estado que la pantalla llama «sin
+      // correr» y se lee distinto de «falló» — uno manda a revisar el cron, el
+      // otro a revisar lo que el cron midió.
+      gp_catalogo: renglon(true, '42 obras en el catálogo', 11 * 24, { obras: 42 }),
+      gp_sync: renglon(true, '6 obras sincronizadas, ninguna con error', 5, { obras: 6 }),
+      permisos_denegados: renglon(true, 'Ninguna denegación inexplicada.', 6,
+        { denegaciones: 0 }),
+      email_semanal: renglon(true, 'resumen enviado a 3 directivos', 20, { enviados: 3 }),
+      recordatorio_lunes: renglon(true, '4 avisos, 4 campanas', 20,
+        { notifsEnviadas: 4 }),
+      recordatorio_obra: renglon(true, '2 correos, ninguno rebotado', 60, { correos: 2 }),
+    });
+  }
+
   // ── Organizaciones ────────────────────────────────────────────────────────
   await escribir('orgs/fosmon', { nombre: 'FOSMON Construcciones', tipo: 'constructora', activa: true });
   await escribir('orgs/coatzacoalcos', {
