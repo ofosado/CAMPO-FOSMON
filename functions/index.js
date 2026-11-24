@@ -35,6 +35,9 @@ const admin = require("firebase-admin");
 // contra el emulador. Con la ruta modular el código corre igual en los dos
 // lados, que es la única manera de que una verificación local valga.
 const { FieldValue } = require("firebase-admin/firestore");
+// Para medir en el DNS las dos patas de la entrega del correo. Ver
+// `medirLaEntregaDelCorreo`.
+const dnsDelSistema = require("dns").promises;
 
 // Secret de Resend para mandar correos transaccionales (resumen semanal, etc.)
 // Se carga en Cloud Functions con:  firebase functions:secrets:set RESEND_API_KEY
@@ -2267,6 +2270,42 @@ exports.vigilarDenegaciones = onSchedule({
   region: "us-central1",
 }, async () => {
   const t0 = Date.now();
+
+  // ── PRIMERO, LA ENTREGA DEL CORREO ──────────────────────────────────────
+  //
+  // Vive montada en este cron y no en una función propia porque lo que hace
+  // falta es que alguien mire el DNS TODOS LOS DÍAS, y éste es el trabajo
+  // diario que ya existe — además corre a las 8:30, media hora antes del
+  // correo del lunes, así que una pata caída sale en el registro antes de que
+  // salga el primer mensaje de la semana.
+  //
+  // Su try/catch es APARTE del de las denegaciones, a propósito: un fallo
+  // midiendo el DNS no puede dejar `permisos_denegados` en rojo —son dos
+  // diagnósticos con dos reacciones distintas, y confundirlos es el defecto
+  // que `registrarSalud` vino a cerrar—, y al revés, que no haya podido
+  // contar denegaciones no puede dejar el correo sin vigilar.
+  //
+  // Y no relanza: un DNS en mal estado es un RESULTADO medido, no una avería
+  // del vigilante. Relanzarlo haría que Scheduler reintentara y escribiera el
+  // mismo rojo cuatro veces. El rojo del registro es el canal; la pantalla de
+  // salud es quien lo grita.
+  const tCorreo = Date.now();
+  try {
+    const m = await medirLaEntregaDelCorreo(dnsDelSistema, FROM_EMAIL);
+    console.log(`entregaDelCorreo: ${m.mensaje}`);
+    await registrarSalud("entrega_correo", m.ok, m.mensaje, {
+      duracionMs: Date.now() - tCorreo,
+      dominio: m.dominio,
+      patas: m.patas,
+      firma: !!m.firma,
+      rutaDeRetorno: !!m.rutaEntera,
+      dmarc: m.dmarc || "",
+    });
+  } catch (e) {
+    console.error("entregaDelCorreo falló:", e);
+    await registrarFalloDeSalud("entrega_correo", e, { duracionMs: Date.now() - tCorreo });
+  }
+
   try {
     // `admin.firestore()` vive DENTRO del try, y no es colocación casual: lo
     // encontró `prueba-cron-que-no-se-traga-su-fallo.cjs` el 2026-10-26 con
@@ -2585,6 +2624,138 @@ const MARCA_BORDE = "#E8EAF0";
 const LOGO_URL = `${APP_URL}/cotea-horizontal.png`;
 const FROM_EMAIL = "cotea <no-reply@cotea.com.mx>";
 const ROLES_RESUMEN_SEMANAL = ["director_general", "director_operaciones", "gerente_construccion"];
+
+// ════════════════════════════════════════════════════════════════════════════
+// LAS DOS PATAS DE LA ENTREGA, Y QUIÉN SE ENTERA CUANDO SE CAE UNA
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El 200 de Resend no es una entrega. Resend acepta el mensaje y contesta 200
+// aunque el buzón de destino lo vaya a mandar a spam, de modo que
+// `registrarSalud("email_semanal", salio, ...)` puede quedar en VERDE mientras
+// ningún residente recibe nada. Ése es el modo de falla exacto contra el que
+// existe el recordatorio del viernes: el residente no captura porque nunca
+// supo, la fecha de término se corre sola, y el vigilante del silencio se
+// apagó en silencio.
+//
+// Lo que decide si entra o no al buzón es la autenticación del dominio, y vive
+// en el DNS — fuera del repo, fuera de la consola de Firebase, en GoDaddy.
+// Son dos patas:
+//
+//   1. LA FIRMA (DKIM) — `resend._domainkey.<dominio>` publica la llave con la
+//      que Resend firma. Alinea con el dominio del `From`, así que basta por
+//      sí sola para pasar DMARC.
+//   2. LA RUTA DE RETORNO — `send.<dominio>`, con su propio SPF y su MX. Es el
+//      Return-Path que Resend pone en cada mensaje; su documentación lo dice
+//      así: «By default, Resend uses the send subdomain for the Return-Path
+//      address», y «This return path is set in the email headers of every
+//      email you send through Resend». El SPF se evalúa contra el dominio del
+//      sobre, que es ése, y alinea con la raíz por organización.
+//
+// CORRECCIÓN A LO QUE DECÍA EL #150, medido el 2026-11-23 con `dig`: el
+// renglón afirmaba que no había subdominio de retorno y que la entrega iba en
+// UNA sola pata. `send.cotea.com.mx` SÍ existe —CNAME a `send.forge.rmta.net`,
+// SPF propio con tres `ip4:` y MX a `feedback.forge.rmta.net`—, así que las dos
+// patas están puestas. Y de ahí se sigue lo otro que el renglón tenía al
+// revés: el SPF de la raíz —`v=spf1 include:secureserver.net -all`, el de
+// GoDaddy— NO necesita incluir a Resend, porque el sobre no sale de la raíz.
+// Editarlo no tumba el correo del producto. Lo que lo tumbaría es borrar el
+// DKIM o borrar los registros de `send.`, y eso es lo que esto mide.
+//
+// Por qué se mide el DNS y no la entrega: medir la entrega de verdad exige
+// mandar un mensaje y leer sus cabeceras en un buzón, y eso ni se puede hacer
+// desde un cron ni se debe hacer cuatro veces al día contra buzones reales. El
+// DNS es la causa, no el síntoma, y es justo lo que un dedo ajeno puede mover
+// sin avisarnos.
+
+// El dominio sale del remitente y no de una constante aparte: si `FROM_EMAIL`
+// cambia de dominio y esto se queda con el viejo, el vigilante estaría
+// midiendo un dominio por el que ya no sale nada y seguiría en verde.
+const dominioDelRemitente = (from) => {
+  const m = /<([^>]+)>/.exec(String(from || ""));
+  const dir = m ? m[1] : String(from || "");
+  const arroba = dir.lastIndexOf("@");
+  return arroba < 0 ? "" : dir.slice(arroba + 1).trim().toLowerCase().replace(/>$/, "");
+};
+
+// Un TXT largo —una llave DKIM lo es— viaja partido en trozos de 255
+// caracteres, y `resolveTxt` los devuelve como arreglo. Sin unirlos, el `p=`
+// de la llave se parte a la mitad y la firma se leería como ausente: un rojo
+// falso en el único vigilante del correo.
+const unirTxt = (filas) => (Array.isArray(filas) ? filas : [])
+  .map((f) => (Array.isArray(f) ? f.join("") : String(f || "")));
+
+/**
+ * Mide en el DNS las dos patas de la entrega. `dns` se recibe por parámetro
+ * para poder correrla contra un DNS armado, sin red.
+ *
+ * Nunca lanza por un nombre que no resuelve: un NXDOMAIN es un dato —esa pata
+ * no está— y no una avería del vigilante.
+ */
+async function medirLaEntregaDelCorreo(dns, from) {
+  const dominio = dominioDelRemitente(from);
+  if (!dominio) {
+    return { ok: false, dominio: "", patas: 0,
+      mensaje: "no se pudo leer el dominio del remitente: no hay nada que medir" };
+  }
+
+  // «El registro no está» y «no pude preguntar» NO son lo mismo, y tragarse
+  // los dos por igual convierte una caída del resolvedor en la afirmación
+  // «SIN PATAS — falta la firma», que manda a alguien a GoDaddy a buscar unos
+  // registros que están puestos. Sólo las dos respuestas que significan
+  // ausencia son un dato; cualquier otra —tiempo agotado, SERVFAIL, red
+  // caída— relanza, y arriba se anota en ROJO como lo que es: no se pudo
+  // medir. Que es la misma regla que ya rige los respaldos.
+  const AUSENTE = new Set(["ENOTFOUND", "ENODATA"]);
+  const ausenciaOReventar = (e) => {
+    if (AUSENTE.has(e?.code)) return [];
+    throw e;
+  };
+  const txt = async (n) => {
+    try { return unirTxt(await dns.resolveTxt(n)); } catch (e) { return ausenciaOReventar(e); }
+  };
+  const mx = async (n) => {
+    try { return (await dns.resolveMx(n)).map((r) => String(r?.exchange || "")).filter(Boolean); }
+    catch (e) { return ausenciaOReventar(e); }
+  };
+
+  const retorno = `send.${dominio}`;
+  const firma = (await txt(`resend._domainkey.${dominio}`))
+    .some((r) => /p=[A-Za-z0-9+/]{40,}/.test(r));
+  const spfRetorno = (await txt(retorno)).find((r) => /^v=spf1\b/i.test(r)) || "";
+  const retornoAutoriza = /(^|\s)(ip4:|ip6:|include:|a[:\s]|mx[:\s])/i.test(spfRetorno);
+  const mxRetorno = await mx(retorno);
+  const spfRaiz = (await txt(dominio)).find((r) => /^v=spf1\b/i.test(r)) || "";
+  const dmarc = (await txt(`_dmarc.${dominio}`)).find((r) => /^v=DMARC1\b/i.test(r)) || "";
+
+  const rutaEntera = retornoAutoriza && mxRetorno.length > 0;
+  const patas = (firma ? 1 : 0) + (rutaEntera ? 1 : 0);
+
+  const faltan = [];
+  if (!firma) faltan.push(`la firma: resend._domainkey.${dominio} ya no publica llave`);
+  if (!retornoAutoriza) faltan.push(`el SPF de la ruta de retorno ${retorno}`);
+  else if (!mxRetorno.length) faltan.push(`el MX de la ruta de retorno ${retorno}`);
+
+  const politica = /p=\s*([a-z]+)/i.exec(dmarc)?.[1]?.toLowerCase() || "";
+  const notas = [
+    dmarc ? `DMARC p=${politica || "?"}` : "SIN DMARC: nadie exige la autenticación",
+    spfRaiz
+      ? (/resend|forge\.rmta/i.test(spfRaiz)
+        ? "el SPF de la raíz incluye a Resend"
+        : "el SPF de la raíz no incluye a Resend, y no hace falta: el sobre sale de send.")
+      : "la raíz no publica SPF",
+  ];
+
+  const mensaje = patas === 2
+    ? `dos patas: firma DKIM y ruta de retorno ${retorno} con SPF y MX · ${notas.join(" · ")}`
+    : patas === 1
+      ? `UNA SOLA PATA — falta ${faltan.join(" y ")} · si se cae la que queda, ` +
+        `todo el correo del producto se va a spam sin error · ${notas.join(" · ")}`
+      : `SIN PATAS — falta ${faltan.join(" y ")} · el correo del producto no está ` +
+        `autenticado y ${politica === "none" || !dmarc ? "depende del humor del buzón" : `DMARC dice ${politica}`} · ${notas.join(" · ")}`;
+
+  return { ok: patas === 2, dominio, patas, firma, rutaEntera,
+    mxRetorno: mxRetorno.length, dmarc: politica, mensaje };
+}
 
 const MXN_FMT = (n) => `$${Math.abs(Number(n) || 0).toLocaleString("es-MX", {
   minimumFractionDigits: 0, maximumFractionDigits: 0,

@@ -28460,6 +28460,19 @@ const JOBS_PROGRAMADOS = [
   // alimentaba. Si se quedara, la pantalla de salud lo enseñaría para siempre
   // como "nunca ejecutado" — que es justo la mentira que esta pantalla existe
   // para no contar. Ver PENDIENTES #31.
+  // Éste tampoco vigila una tarea: vigila el CAMINO por el que salen los
+  // cuatro correos de arriba. Resend contesta 200 aunque el mensaje acabe en
+  // spam, así que los tres renglones anteriores pueden estar los tres en verde
+  // mientras nadie recibe nada. Lo que decide si entra al buzón es la
+  // autenticación del dominio, y ésa vive en el DNS —en GoDaddy, fuera de
+  // Firebase y fuera del repo—, donde un dedo ajeno la puede mover sin
+  // avisarnos. Son dos patas: la firma (DKIM) y la ruta de retorno
+  // (`send.cotea.com.mx`, con su SPF y su MX). Con las dos puestas, se cae una
+  // y el correo sigue entregando; con una sola, el día que se caiga todo el
+  // correo del producto se va a spam SIN ERROR. 36 h, como las diarias.
+  { id:"entrega_correo",    funcion:"vigilarDenegaciones",    nombre:"Entrega del correo · autenticación del dominio",
+    que:"Mide en el DNS que la firma y la ruta de retorno sigan en pie.",
+    cuando:"diario 8:30",    limiteHoras: 36 },
   { id:"gp_sync",           funcion:"actualizarGPSheet",      nombre:"Sincronización de gastos (GP)",
     que:"Baja la hoja de gastos y la deja lista para el dashboard.",
     cuando:"diario 8:00",    limiteHoras: 36 },
@@ -28591,10 +28604,14 @@ function PantallaSalud(){
         <div>
           <Tit>Salud del sistema</Tit>
           <div style={{fontSize:10,color:C.textMut,lineHeight:1.5}}>
-            Las seis funciones programadas dejan rastro al terminar. Esta pantalla
-            lo lee directo de la base, así que sigue funcionando aunque el backend
-            no. Un renglón en rojo puede ser un fallo registrado o un silencio:
-            llevar más tiempo del que debería sin dar señales.
+            {/* La cuenta sale de la tabla, no tecleada. Decía «las seis» y
+                llevaba ocho renglones: una cifra en pantalla que se quedó
+                vieja sin que nada la midiera. */}
+            Los {JOBS_PROGRAMADOS.length} vigilantes del sistema dejan rastro al
+            terminar. Esta pantalla lo lee directo de la base, así que sigue
+            funcionando aunque el backend no. Un renglón en rojo puede ser un
+            fallo registrado o un silencio: llevar más tiempo del que debería
+            sin dar señales.
           </div>
         </div>
         <SecBtn onClick={recargar}>Recargar</SecBtn>

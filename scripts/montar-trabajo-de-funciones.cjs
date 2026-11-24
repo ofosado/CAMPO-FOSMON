@@ -97,10 +97,37 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
         data: () => docs.get(ruta), updateTime: null,
       };
     },
+    // `mergeFields` NO estaba, y este doble perdonaba lo que Firestore no
+    // perdona: un `set(d, {mergeFields:[...]})` caía en la rama de reemplazo y
+    // MACHACABA el documento entero. Encontrado el 2026-11-23 al montar el
+    // vigilante de la entrega del correo: el cron escribía `entrega_correo` y
+    // el siguiente `registrarSalud` —el de las denegaciones, con sus propios
+    // `mergeFields`— se lo llevaba. El renglón «no se escribió» que salía era
+    // del doble, no del código.
+    //
+    // Y es justo lo que `registrarSalud` usa `mergeFields` para evitar desde
+    // el 2026-10-23: que reescribir el documento entero machaque lo que otro
+    // cron anotó entre la lectura y la escritura. O sea que el doble borraba
+    // la conducta que el arreglo introdujo, y cualquier banco que la midiera
+    // habría salido verde con el defecto puesto.
+    //
+    // Semántica de verdad, las dos mitades: de los campos listados se escribe
+    // el que viene en los datos, y el que NO viene se BORRA del documento.
+    // Lo que no está en la lista no se toca.
     set: async (d, opt) => {
       tropieza(fallaEscritura, ruta);
       escrituras.push({ ruta, d });
-      docs.set(ruta, opt && opt.merge ? { ...(docs.get(ruta) || {}), ...d } : d);
+      const previo = docs.get(ruta) || {};
+      if (opt && Array.isArray(opt.mergeFields)) {
+        const nuevo = { ...previo };
+        for (const campo of opt.mergeFields) {
+          if (Object.prototype.hasOwnProperty.call(d, campo)) nuevo[campo] = d[campo];
+          else delete nuevo[campo];
+        }
+        docs.set(ruta, nuevo);
+      } else {
+        docs.set(ruta, opt && opt.merge ? { ...previo, ...d } : d);
+      }
     },
     update: async (d) => {
       tropieza(fallaEscritura, ruta);
@@ -203,7 +230,14 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
 // `rebota` es el buzón al que el servidor de correo le dice no: hace falta
 // para medir qué hace el trabajo cuando un correo no sale. Acepta una cadena
 // o una lista.
-function montar(archivo, nombreExport, base, { correos = [], rebota = null, inyecciones = {} } = {}) {
+// `modulos` sustituye un módulo de Node por un doble —`{ dns: {...} }`— y es la
+// única forma de hacerlo cuando la pieza real lo guarda en una constante de
+// módulo: inyectar un nombre que el cierre extraído ya DECLARA revienta con
+// `Identifier has already been declared`, porque la inyección es un parámetro
+// de la función y la declaración es léxica. Sustituir el módulo deja que la
+// constante de verdad se evalúe, con el doble dentro.
+function montar(archivo, nombreExport, base,
+  { correos = [], rebota = null, inyecciones = {}, modulos = {} } = {}) {
   const { src, libres } = piezasDelExport(archivo, nombreExport);
   let cuerpo;
   try {
@@ -234,9 +268,25 @@ function montar(archivo, nombreExport, base, { correos = [], rebota = null, inye
       this.name = 'HttpsError';
     }
   }
+  // El DNS se sustituye POR OMISIÓN, igual que `fetch`. Un banco que monta
+  // `vigilarDenegaciones` sin pasar doble consultaría el DNS DE VERDAD —la
+  // medición de la entrega del correo lo consulta—, y entonces el veredicto
+  // de la suite dependería de que GoDaddy conteste y de lo que conteste hoy.
+  // Así que la omisión no es la red: es un doble que se niega, en voz alta y
+  // siempre igual. Quien necesite medir el DNS pasa su zona en `modulos`.
+  const dnsQueSeNiega = () => {
+    throw new Error('un banco no habla con el DNS de verdad: pásale una zona ' +
+      'armada con `modulos: { dns: { promises: … } }`');
+  };
+  const modulosConDns = {
+    dns: { promises: { resolveTxt: dnsQueSeNiega, resolveMx: dnsQueSeNiega,
+      resolve: dnsQueSeNiega, resolveCname: dnsQueSeNiega } },
+    ...modulos,
+  };
   const inyectar = {
     HttpsError: HttpsErrorFalso,
     require: (modulo) => {
+      if (Object.prototype.hasOwnProperty.call(modulosConDns, modulo)) return modulosConDns[modulo];
       if (modulo === 'firebase-admin') return base.admin;
       if (modulo === 'firebase-admin/firestore') return { FieldValue };
       return require(modulo);
