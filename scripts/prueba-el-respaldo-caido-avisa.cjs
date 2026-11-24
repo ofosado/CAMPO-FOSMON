@@ -48,11 +48,11 @@ const CP = require('./contraprueba.cjs');
 
 const MUTANTES = [
   { nombre: 'un respaldo caído vuelve a no avisarle a nadie',
-    de: `    const aviso = fin.ok ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {`,
-    a:  `    const aviso = true ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {` },
+    de: `    const aviso = fin.ok ? null : await intentarAvisar(historialPrevio, {`,
+    a:  `    const aviso = true ? null : await intentarAvisar(historialPrevio, {` },
   { nombre: 'el «no se pudo verificar» se vuelve a callar: sólo avisa el fallo duro',
-    de: `    const aviso = fin.ok ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {`,
-    a:  `    const aviso = (fin.ok || !fin.verificado) ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {` },
+    de: `    const aviso = fin.ok ? null : await intentarAvisar(historialPrevio, {`,
+    a:  `    const aviso = (fin.ok || !fin.verificado) ? null : await intentarAvisar(historialPrevio, {` },
   { nombre: 'el renglón vuelve a decir «enviado» sin mirar si se envió',
     de: `      aviso: aviso ? (aviso.ok ? "enviado" : \`NO SE AVISÓ: \${aviso.motivo}\`) : "no hacía falta",`,
     a:  `      aviso: aviso ? "enviado" : "no hacía falta",` },
@@ -69,8 +69,18 @@ const MUTANTES = [
     de: `  let historialPrevio = [];\n  try {\n    const salud = await admin.firestore().doc("global/health").get();`,
     a:  `  let historialPrevio = [];\n  if (false) try {\n    const salud = await admin.firestore().doc("global/health").get();` },
   { nombre: 'la corrida que revienta antes del export vuelve a no avisar',
-    de: `    const aviso = await avisarRespaldoCaido(RESEND_API_KEY.value(), {\n      mensaje: \`La corrida reventó antes de terminar`,
-    a:  `    const aviso = { ok: false, motivo: "no se intentó", destinos: [] } || await avisarRespaldoCaido(RESEND_API_KEY.value(), {\n      mensaje: \`La corrida reventó antes de terminar` },
+    de: `      aviso = await intentarAvisar(historialPrevio, {\n        mensaje: \`La corrida reventó antes de terminar`,
+    a:  `      if (false) aviso = await intentarAvisar(historialPrevio, {\n        mensaje: \`La corrida reventó antes de terminar` },
+  // NO va aquí la mutación «si el aviso revienta, la constancia se va con
+  // él», aunque sea la conducta que más trabajo costó. Los dobles de este
+  // banco no pueden hacer reventar `intentarAvisar` —está envuelto por
+  // dentro y por fuera—, así que la mutación salía en verde: una contraprueba
+  // que no muerde no vigila nada y dejarla sería peor que no tenerla.
+  //
+  // Vive donde sí muerde: `prueba-cron-que-no-se-traga-su-fallo.cjs`, que
+  // mina TODO lo que el manejador toca y exige la constancia igual. Ahí la
+  // propiedad no es de este respaldo sino de CUALQUIER cron, que es su
+  // altura correcta.
 ];
 
 if (!process.env.SIN_CONTRAPRUEBA) {

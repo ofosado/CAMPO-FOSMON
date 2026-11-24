@@ -113,6 +113,38 @@ const compilarJSX = (f) => esbuild.transformSync(`(${f})`, { loader: 'jsx' }).co
 // entera lo ataría a un archivo que no mide.
 const PALETA = new Proxy({}, { get: () => '#808080' });
 
+// Lo que el componente usa y nadie le puso delante.
+//
+// Esta lista estaba TECLEADA (`C, alfa, kb, LOGO_LADO_MAX, …`), que es la
+// clase de defecto que este repositorio ya tiene fichada: el día que el
+// componente empieza a usar algo nuevo, el banco no dice «me falta X», dice
+// «X is not defined» al pintarse —NO ARRANCÓ, que se lee como andamiaje roto
+// y no como lo que es—. Pasó el 2026-11-24 con `ROLES_VEN_SALUD`.
+//
+// Ahora las libres se leen del propio componente y lo que no esté puesto a
+// mano se trae de `App.jsx`. Lo que no se pueda resolver se nombra, que es la
+// diferencia entre «falta esto» y «algo se cayó».
+// Los del navegador van en la lista aunque Node no los tenga: `document` no
+// se puede «sacar de App.jsx», y pedírselo al extractor convierte una pieza
+// que simplemente no hace falta en un NO ARRANCÓ. No se tocan porque los
+// efectos están apagados —`useEffect` es un no-op—, así que el componente se
+// pinta sin mirarlos; si algún día uno se usara al pintar, saldría aquí.
+const DEL_NAVEGADOR = ['document', 'window', 'navigator', 'localStorage',
+  'sessionStorage', 'fetch', 'alert', 'confirm', 'location', 'FileReader',
+  'Image', 'Blob', 'URL', 'FormData'];
+const DEL_MOTOR = new Set(Object.getOwnPropertyNames(globalThis).concat(
+  ['console', 'Math', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
+   'Date', 'Promise', 'Set', 'Map', 'Error', 'RegExp', 'undefined', 'NaN'],
+  DEL_NAVEGADOR));
+
+function libresDelComponente(fuente) {
+  const envoltura = parse(`const __c = (${fuente});`,
+    { sourceType: 'module', plugins: ['jsx'] });
+  let globales = [];
+  traverse(envoltura, { Program(p) { globales = Object.keys(p.scope.globals); p.stop(); } });
+  return globales.filter(n => !DEL_MOTOR.has(n));
+}
+
 // `abierto` arranca en `true` para que el desplegable esté desplegado: lo que
 // se afirma es QUÉ OPCIONES ofrece, y cerrado no ofrece ninguna.
 const montar = (nombre, extra = {}) => {
@@ -132,6 +164,27 @@ const montar = (nombre, extra = {}) => {
     setDoc: async () => {}, doc: () => ({}), fbDb: {},
     ...extra,
   };
+
+  // Lo que el componente pide y no está puesto arriba se trae de `App.jsx`.
+  const pendientes = libresDelComponente(f).filter(n => !(n in entorno));
+  if (pendientes.length) {
+    let traidos, cuerpoExtra;
+    try { ({ cuerpo: cuerpoExtra } = fuenteDe(ARCH_APP, pendientes, { tolerante: false })); }
+    catch (e) {
+      muere(`\`${nombre}\` usa ${pendientes.map(n => `\`${n}\``).join(', ')} y no se ` +
+        `pudieron sacar de ${path.basename(ARCH_APP)}: ${e.message.split('\n')[0]}`,
+        'No es el andamiaje: es que el componente creció y hay que decidir qué',
+        'se le pone delante. Mirar si la pieza nueva merece su propia aserción.');
+    }
+    try {
+      traidos = new Function(
+        `"use strict";\n${cuerpoExtra}\nreturn { ${pendientes.join(', ')} };`)();
+    } catch (e) {
+      muere(`lo que \`${nombre}\` necesita no se pudo ejecutar: ${e.message.split('\n')[0]}`);
+    }
+    Object.assign(entorno, traidos);
+  }
+
   const nombres = Object.keys(entorno);
   try {
     return new Function(...nombres, `return ${compilarJSX(f)}`)(...nombres.map(n => entorno[n]));

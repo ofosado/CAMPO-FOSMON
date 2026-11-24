@@ -4358,6 +4358,56 @@ function correoRespaldoCaido({ mensaje, destino, verificado, bueno }) {
 // en una corrida que ya salió mal, y tumbarla aquí borraría el renglón de
 // salud del fallo original — cambiaría un diagnóstico por otro, que es el
 // defecto que `registrarFalloDeSalud` vino a cerrar.
+// La llave se lee a prueba de reventones, y no por prudencia genérica.
+//
+// `RESEND_API_KEY.value()` puede lanzar —secreto no enlazado, permiso
+// retirado— y el aviso se pide DENTRO del `catch` del respaldo, donde el
+// argumento se evalúa ANTES de entrar a la función. Un reventón ahí se lleva
+// por delante el `registrarFalloDeSalud` que viene después: la corrida se
+// cae, Scheduler se entera, y `global/health` no recibe nada — la pantalla
+// diría «sin correr», que es falso, sí corrió. Es exactamente el defecto que
+// se cerró el 2026-10-23, reabierto por una línea nueva.
+//
+// Lo encontró `prueba-cron-que-no-se-traga-su-fallo.cjs`, que mina todo lo
+// que el manejador toca: «SIN CONSTANCIA: backup».
+//
+// Una llave vacía no es un silencio: `mandarCorreoDeAlta` la trata como
+// `sin-llave`, eso viaja al registro y el renglón lo dice.
+function llaveDeCorreo() {
+  try { return RESEND_API_KEY.value(); } catch (e) {
+    console.error("no se pudo leer RESEND_API_KEY:", e?.message || e);
+    return "";
+  }
+}
+
+// NADA del camino del aviso puede impedir que se escriba la constancia.
+//
+// `avisarRespaldoCaido` ya no lanza por dentro, pero se la llama desde el
+// `catch` del respaldo y los ARGUMENTOS se evalúan antes de entrar: un
+// reventón leyendo la llave, o en cualquier pieza que mañana se añada aquí,
+// se llevaría por delante el `registrarFalloDeSalud` que viene después. La
+// corrida se caería, Scheduler lo vería, y la pantalla diría «sin correr» —
+// que es falso: sí corrió.
+//
+// Lo señaló `prueba-cron-que-no-se-traga-su-fallo.cjs`, que mina TODO lo que
+// el manejador toca justamente para encontrar esto. Su exigencia es la
+// correcta y no se le baja: el aviso entero, llave incluida, va envuelto.
+//
+// Un reventón aquí no se traga: viaja como motivo al registro, y el renglón
+// dirá «NO SE AVISÓ: …».
+// `historial` entra crudo y la fecha del último bueno se calcula DENTRO del
+// try, no en el objeto del llamador: calcularla fuera la deja otra vez en la
+// zona donde un reventón se come la constancia.
+async function intentarAvisar(historial, datos) {
+  try {
+    return await avisarRespaldoCaido(llaveDeCorreo(),
+      { ...datos, bueno: ultimoRespaldoBueno(historial) });
+  } catch (e) {
+    console.error("[respaldo] el aviso reventó:", e);
+    return { ok: false, motivo: e?.message || String(e), enviados: 0, destinos: [] };
+  }
+}
+
 async function avisarRespaldoCaido(apiKey, datos) {
   try {
     const snap = await admin.firestore().collection("usuarios").get();
@@ -4424,9 +4474,8 @@ exports.backupSemanalFirestore = onSchedule({
     // significan lo mismo para quien tiene que reaccionar: a esta hora no
     // consta que haya copia de esta semana. Callar el segundo sería el verde
     // falso que este proyecto persigue.
-    const aviso = fin.ok ? null : await avisarRespaldoCaido(RESEND_API_KEY.value(), {
+    const aviso = fin.ok ? null : await intentarAvisar(historialPrevio, {
       mensaje, destino: res.destino, verificado: !!fin.verificado,
-      bueno: ultimoRespaldoBueno(historialPrevio),
     });
 
     await registrarSalud("backup", fin.ok, mensaje, {
@@ -4445,10 +4494,29 @@ exports.backupSemanalFirestore = onSchedule({
   } catch (e) {
     console.error("Error en backup semanal:", e);
     // Aquí ni siquiera hubo export: el aviso importa MÁS, no menos.
-    const aviso = await avisarRespaldoCaido(RESEND_API_KEY.value(), {
-      mensaje: `La corrida reventó antes de terminar: ${e?.message || String(e)}`,
-      destino: "", verificado: true, bueno: ultimoRespaldoBueno(historialPrevio),
-    });
+    // El aviso va envuelto OTRA VEZ, aquí, en su sitio de llamada. No es
+    // redundante con el `try` de dentro de `intentarAvisar`: la llamada misma
+    // puede reventar —el símbolo no existe tras un refactor a medias, una
+    // dependencia no cargó— y eso ocurre ANTES de entrar a la función, donde
+    // su try no alcanza. Lo que no puede pasar, pase lo que pase, es que la
+    // constancia del fallo no se escriba: una corrida que reventó y no dejó
+    // rastro se lee en la pantalla como «sin correr», que es falso.
+    //
+    // La exigencia viene de `prueba-cron-que-no-se-traga-su-fallo.cjs`, que
+    // mina TODO lo que el manejador toca. Tres intentos hicieron falta para
+    // satisfacerla, y los tres fallos eran el mismo defecto un paso más
+    // afuera: la llave, luego el cálculo del último respaldo bueno, luego la
+    // llamada entera.
+    let aviso = { ok: false, motivo: "no se intentó", destinos: [] };
+    try {
+      aviso = await intentarAvisar(historialPrevio, {
+        mensaje: `La corrida reventó antes de terminar: ${e?.message || String(e)}`,
+        destino: "", verificado: true,
+      });
+    } catch (e2) {
+      console.error("[respaldo] no se pudo ni intentar el aviso:", e2);
+      aviso = { ok: false, motivo: e2?.message || String(e2), destinos: [] };
+    }
     await registrarFalloDeSalud("backup", e, {
       duracionMs: Date.now() - t0,
       aviso: aviso.ok ? "enviado" : `NO SE AVISÓ: ${aviso.motivo}`,

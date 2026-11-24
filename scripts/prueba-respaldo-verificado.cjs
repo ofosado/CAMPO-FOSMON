@@ -223,8 +223,52 @@ const PROJECT_ID = ev('PROJECT_ID');
 
 const haz = (nombre, libres, valores) =>
   new Function(...libres, `${decl[nombre]}; return ${nombre};`)(...valores);
-const hazFuente = (fuente, libres, valores) =>
-  new Function(...libres, `return (${fuente});`)(...valores);
+
+// ── LO QUE EL MANEJADOR PIDE, LEÍDO DE ÉL Y NO TECLEADO ────────────────────
+//
+// `hazFuente` recibía la lista de libres ESCRITA A MANO. El 2026-11-24 el
+// manejador del respaldo empezó a usar `avisarRespaldoCaido`,
+// `ultimoRespaldoBueno`, `admin` y `RESEND_API_KEY` para avisar cuando la
+// copia no queda hecha, y este banco salió con ocho rojos y un
+// «avisarRespaldoCaido is not defined». Eso NO es una regresión del
+// respaldo —la conducta que el banco mide seguía entera— pero se lee igual
+// que una, que es lo peor que puede hacer un banco.
+//
+// Ahora las libres se leen del propio manejador. Lo que el caso quiera
+// sustituir se pasa en `dobles`; lo que no, se trae del módulo. Y lo que no
+// se pueda resolver se NOMBRA, para que «me falta una pieza» no se disfrace
+// de «la conducta cambió».
+const DEL_MOTOR_FNS = new Set(Object.getOwnPropertyNames(globalThis).concat(
+  ['console', 'Math', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
+   'Date', 'Promise', 'Set', 'Map', 'Error', 'RegExp', 'undefined', 'NaN',
+   'fetch', 'setTimeout', 'clearTimeout']));
+
+function libresDeFuente(fuente) {
+  const envoltura = parse(`const __h = (${fuente});`, { sourceType: 'script' });
+  let globales = [];
+  traverse(envoltura, { Program(p) { globales = Object.keys(p.scope.globals); p.stop(); } });
+  return globales.filter(n => !DEL_MOTOR_FNS.has(n));
+}
+
+const hazFuente = (fuente, dobles = {}) => {
+  const pendientes = libresDeFuente(fuente).filter(n => !(n in dobles));
+  const entorno = { ...dobles };
+  const sinResolver = [];
+  for (const n of pendientes) {
+    if (!decl[n]) { sinResolver.push(n); continue; }
+    try { entorno[n] = new Function(`${decl[n]}; return ${n};`)(); }
+    catch { try { entorno[n] = new Function(`return ${decl[n]};`)(); }
+      catch { sinResolver.push(n); } }
+  }
+  if (sinResolver.length) {
+    noArranco([`el manejador usa ${sinResolver.map(n => `\`${n}\``).join(', ')} y este ` +
+      'banco no sabe qué ponerle delante. No es una regresión: es que el ' +
+      'manejador creció y hay que decidir si esa pieza merece su propia ' +
+      'aserción o un doble.'], path.relative(raiz, ARCH_FNS));
+  }
+  const nombres = Object.keys(entorno);
+  return new Function(...nombres, `return (${fuente});`)(...nombres.map(n => entorno[n]));
+};
 
 const clasificarExport = haz('clasificarExport',
   ['EXPORT_TERMINAL_OK', 'EXPORT_TERMINAL_MAL'], [EXPORT_TERMINAL_OK, EXPORT_TERMINAL_MAL]);
@@ -438,17 +482,27 @@ const cancelado = { name: OP, metadata: { operationState: 'CANCELLED' } };
   // verdad, armada con reloj falso.
   const correrCron = async (leer, { arranque } = {}) => {
     const anotado = [];
-    const h = hazFuente(FUENTE_CRON,
-      ['ejecutarBackupFirestore', 'esperarFinDelExport', 'mensajeDeRespaldo',
-       'registrarSalud', 'registrarFalloDeSalud'],
-      [arranque || (async () => ({ destino: dst, operationName: OP })),
-       conReloj(leer),
-       mensajeDeRespaldo,
-       async (tipo, ok, mensaje, meta) => { anotado.push({ via: 'salud', tipo, ok, mensaje, meta }); },
-       async (tipo, error, meta) => { anotado.push({ via: 'fallo', tipo, error: error?.message || String(error), meta }); }]);
+    const avisos = [];
+    const h = hazFuente(FUENTE_CRON, {
+      ejecutarBackupFirestore: arranque || (async () => ({ destino: dst, operationName: OP })),
+      esperarFinDelExport: conReloj(leer),
+      mensajeDeRespaldo,
+      registrarSalud: async (tipo, ok, mensaje, meta) => { anotado.push({ via: 'salud', tipo, ok, mensaje, meta }); },
+      registrarFalloDeSalud: async (tipo, error, meta) => { anotado.push({ via: 'fallo', tipo, error: error?.message || String(error), meta }); },
+      // El aviso por correo lo mide `prueba-el-respaldo-caido-avisa.cjs`.
+      // Aquí se sustituye por un doble que sólo cuenta, para que este banco
+      // siga midiendo lo suyo —el registro y la verificación— sin que un
+      // cambio en el correo lo mueva. Lo que sí se afirma abajo es que el
+      // registro guarda si el aviso salió.
+      avisarRespaldoCaido: async (_clave, datos) => {
+        avisos.push(datos); return { ok: true, enviados: 1, destinos: ['soporte@cotea.com.mx'] };
+      },
+      RESEND_API_KEY: { value: () => 'clave-de-mentira' },
+      admin: { firestore: () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }) }) },
+    });
     let lanzo = null;
     try { await h({}); } catch (e) { lanzo = e?.message || String(e); }
-    return { anotado, lanzo };
+    return { anotado, lanzo, avisos };
   };
 
   {
@@ -467,7 +521,7 @@ const cancelado = { name: OP, metadata: { operationState: 'CANCELLED' } };
   }
 
   {
-    const { anotado } = await correrCron(async () => fallido);
+    const { anotado, avisos } = await correrCron(async () => fallido);
     const a = anotado[0];
     check(a?.via === 'salud' && a.ok === false,
       'un export que acaba mal deja el panel en ROJO', JSON.stringify(a && { via: a.via, ok: a.ok }));
@@ -475,6 +529,15 @@ const cancelado = { name: OP, metadata: { operationState: 'CANCELLED' } };
       'y deja escrito que sí se verificó, y en qué acabó', JSON.stringify(a?.meta));
     check(/permission/i.test(a?.mensaje || ''),
       'con el error de la API en el mensaje', a?.mensaje);
+    // El correo lo mide `prueba-el-respaldo-caido-avisa.cjs`; lo que se afirma
+    // aquí es el CABLE: que esta corrida lo intenta y que el registro guarda
+    // el resultado. Sin esto, el aviso podría dejar de pedirse y el otro banco
+    // —que llama al avisador directamente— seguiría en verde.
+    check(avisos.length === 1,
+      'la corrida PIDE el aviso: el cable existe', `${avisos.length} intento(s)`);
+    check(a?.meta.aviso === 'enviado',
+      'y el registro guarda que salió, para distinguirlo de «falló y nadie se enteró»',
+      `aviso=${a?.meta.aviso}`);
   }
 
   {
@@ -550,10 +613,14 @@ const cancelado = { name: OP, metadata: { operationState: 'CANCELLED' } };
         doc: (ruta) => { leido.ruta = ruta; return { get: async () => ({ exists: !!rol, data: () => ({ rol }) }) }; },
       }),
     };
-    const h = hazFuente(FUENTE_CALLABLE,
-      ['HttpsError', 'admin', 'emailAId', 'ejecutarBackupFirestore', 'esperarFinDelExport', 'mensajeDeRespaldo'],
-      [HttpsErrorFalso, adminConPerfil, emailAId,
-       async () => ({ destino: dst, operationName: OP }), conReloj(leer), mensajeDeRespaldo]);
+    const h = hazFuente(FUENTE_CALLABLE, {
+      HttpsError: HttpsErrorFalso,
+      admin: adminConPerfil,
+      emailAId,
+      ejecutarBackupFirestore: async () => ({ destino: dst, operationName: OP }),
+      esperarFinDelExport: conReloj(leer),
+      mensajeDeRespaldo,
+    });
     return { h, leido };
   };
 

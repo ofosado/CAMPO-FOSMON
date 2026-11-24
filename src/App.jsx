@@ -27815,6 +27815,25 @@ function fmtFechaBit(iso){
 // error de permisos.
 const ROLES_CONFIG_C = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
 const ROLES_CONFIG_D = ["director_obras","subdirector"];
+
+// Quién puede LEER `global/health`. Son los mismos de `firestore.rules`
+// (`esDirectivoC() || esAdminSistemaC()`), y viven en UNA constante y no
+// tecleados en dos sitios: el menú decide con esto a quién le enseña la
+// entrada, y la cabecera decide con esto a quién le pide el documento. Si se
+// separaran, un rol vería la entrada del menú con una lectura que le rebota,
+// o pediríamos en cada sesión un documento que no puede leer.
+//
+// NO es `ROLES_CONFIG_C` aunque hoy liste los mismos cuatro nombres: aquélla
+// dice «ve el menú de Configuración» y ésta «la regla le deja leer la salud».
+// Son dos preguntas distintas que hoy coinciden, y fundirlas haría que
+// separarlas mañana exigiera descubrir primero que estaban fundidas.
+//
+// Vive AQUÍ, antes de `MenuConfiguracion`, y no junto a la pantalla de salud,
+// que es donde la escribí primero: un `const` no se iza, y dos bancos que
+// montan este menú salieron NO ARRANCÓ con «ROLES_VEN_SALUD is not defined».
+// En la app corría igual —el menú se pinta mucho después de evaluar el
+// módulo—, que es justo lo que hace que esto se cuele sin que nadie lo vea.
+const ROLES_VEN_SALUD = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
 const veConfiguracion = (rol) => ROLES_CONFIG_C.includes(rol) || ROLES_CONFIG_D.includes(rol);
 function MenuConfiguracion({screen, setScreen, alertasNoLeidas, saludRojos, rol}){
   const [abierto, setAbierto] = useState(false);
@@ -28553,14 +28572,6 @@ function frescuraDeGP(iso, ahora) {
     texto: h.texto,
   };
 }
-
-// Quién puede LEER `global/health`. Son los mismos de `firestore.rules`
-// (`esDirectivoC() || esAdminSistemaC()`), y viven aquí en una constante y no
-// tecleados en dos sitios: el menú decide con esto a quién le enseña la
-// pantalla, y la cabecera decide con esto a quién le pide el documento. Si se
-// separaran, un rol vería la entrada del menú y la lectura le rebotaría, o
-// peor: pediríamos en cada sesión una lectura que siempre va a rebotar.
-const ROLES_VEN_SALUD = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
 
 // Clasifica un job a partir de lo que dejó escrito. Vive fuera del componente
 // para poder correrla contra casos concretos sin montar React.
