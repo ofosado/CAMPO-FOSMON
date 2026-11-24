@@ -494,10 +494,9 @@ const cancelado = { name: OP, metadata: { operationState: 'CANCELLED' } };
       // siga midiendo lo suyo —el registro y la verificación— sin que un
       // cambio en el correo lo mueva. Lo que sí se afirma abajo es que el
       // registro guarda si el aviso salió.
-      avisarRespaldoCaido: async (_clave, datos) => {
+      intentarAvisar: async (_historial, datos) => {
         avisos.push(datos); return { ok: true, enviados: 1, destinos: ['soporte@cotea.com.mx'] };
       },
-      RESEND_API_KEY: { value: () => 'clave-de-mentira' },
       admin: { firestore: () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => ({}) }) }) }) },
     });
     let lanzo = null;

@@ -352,26 +352,59 @@ check(menus.SUBTABS_OPERACION_DEPENDENCIA.length > 0 && menus.SUBTABS_PLANEACION
 // lee `auditoria/` y Salud lee `global/`, que son colecciones raíz de la
 // constructora: enseñarlas sería P5, y además la regla las niega, así que la
 // pantalla saldría con error de permisos.
+// El prefacio del arreglo NO se teclea: se lee de lo que el arreglo usa.
+//
+// Estaba escrito a mano —seis constantes— y el 2026-11-24, cuando la entrada
+// de Salud pasó a llevar insignia, el banco salió NO ARRANCÓ con «saludRojos
+// is not defined». Eso no se lee como «al banco le falta una pieza», se lee
+// como andamiaje roto, y manda a buscar una regresión que no existe.
+//
+// Las tres entradas del arreglo —el rol y los dos contadores— son parámetros;
+// todo lo demás se trae de `App.jsx`. Lo que no se pueda resolver se NOMBRA.
+const PARAMS_CFG = ['rol', 'alertasNoLeidas', 'saludRojos'];
+const DEL_MOTOR_CFG = new Set(Object.getOwnPropertyNames(globalThis).concat(
+  ['console', 'Math', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
+   'Date', 'Promise', 'Set', 'Map', 'Error', 'RegExp', 'undefined', 'NaN']));
+
+const libresDelArreglo = (() => {
+  const env = parse(`const __a = (rol, alertasNoLeidas, saludRojos) => (${opcionesConfig});`,
+    { sourceType: 'module', plugins: ['jsx'] });
+  let g = [];
+  traverse(env, { Program(p) { g = Object.keys(p.scope.globals); p.stop(); } });
+  return g.filter(n => !DEL_MOTOR_CFG.has(n) && !PARAMS_CFG.includes(n));
+})();
+
+// `veConfiguracion` no sale del arreglo —se usa fuera, en las aserciones— así
+// que se pide aparte y a propósito.
+const NECESITA_CFG = [...new Set([...libresDelArreglo, 'veConfiguracion'])];
+
+// El cierre es TRANSITIVO y por eso lo calcula `fuenteDe` y no un bucle
+// propio: `veConfiguracion` no aparece en el arreglo pero arrastra
+// `ROLES_CONFIG_C`, que tampoco aparece. Resolver un solo nivel dejaba
+// «ROLES_CONFIG_C is not defined», que es el mismo NO ARRANCÓ con otro
+// nombre — y la lección de hoy es justamente que un andamiaje a medias se
+// disfraza de regresión.
+let preludioCfg;
+try {
+  ({ cuerpo: preludioCfg } =
+    require('./extraer-de-app.cjs').fuenteDe(archivo, NECESITA_CFG));
+} catch (e) {
+  noArranco([`el menú de Configuración usa piezas que no se pudieron sacar de ` +
+    `App.jsx: ${e.message.split('\n')[0]}. No es una regresión del menú: es ` +
+    'que creció y hay que decidir qué se le pone delante.'],
+    path.relative(raiz, archivo));
+}
+
 const cfg = new Function(`"use strict";
-  const ROLES_CONFIG_C = ${decl['ROLES_CONFIG_C']};
-  const ROLES_CONFIG_D = ${decl['ROLES_CONFIG_D']};
-  const veConfiguracion = ${decl['veConfiguracion']};
-  // La opción «Marca» cuelga de esto y no de las dos listas de arriba: los
-  // roles que la regla deja escribir \`config/branding\` no son los mismos que
-  // alcanzan el menú. Quién la ve y quién no lo mide
-  // \`prueba-el-logo-entra-por-la-app\`; aquí hace falta para que el arreglo
-  // real se pueda evaluar.
-  const ROLES_MARCA_C = ${decl['ROLES_MARCA_C']};
-  const ROLES_MARCA_D = ${decl['ROLES_MARCA_D']};
-  const puedeEditarMarca = ${decl['puedeEditarMarca']};
-  // El arreglo real, con sus dos datos de entrada atados: el rol y el contador
-  // de alertas. Trae ya aplicado su propio \`.filter(o => o.visible)\`.
-  const opcionesDe = (rol, alertasNoLeidas) => ${opcionesConfig};
+  ${preludioCfg}
+  // El arreglo real, con sus tres datos de entrada atados: el rol y los dos
+  // contadores de insignia. Trae ya aplicado su propio \`.filter(o => o.visible)\`.
+  const opcionesDe = (${PARAMS_CFG.join(', ')}) => ${opcionesConfig};
   return { veConfiguracion, opcionesDe };`)();
 
 seccion('El menú de Configuración');
 
-const etiquetasCfg = (rol) => cfg.opcionesDe(rol, 0).map(o => o.label);
+const etiquetasCfg = (rol) => cfg.opcionesDe(rol, 0, 0).map(o => o.label);
 
 for (const rol of ['director_obras', 'subdirector']) {
   check(cfg.veConfiguracion(rol) === true,
