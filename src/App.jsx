@@ -4,7 +4,8 @@ import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult,
          onAuthStateChanged,
-         updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
+         updatePassword, reauthenticateWithCredential, EmailAuthProvider,
+         sendPasswordResetEmail } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -11130,11 +11131,78 @@ const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purp
 // hecho sobre la sesión anterior, así que va en ámbar y no en rojo. Sin él, a
 // quien le revocan el acceso la app le aparece de pronto en la pantalla de
 // entrada, sin decir nada, y lo que parece es que se rompió.
+// ════════════════════════════════════════════════════════════════════════════
+// LA CONTRASEÑA OLVIDADA
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hasta el 2026-11-24 no existía: medido, ni en el front ni en las funciones
+// había una sola línea de recuperación. Una contraseña olvidada se resolvía
+// pidiéndosela a Oscar, lo que significa que fuera de horario nadie entra.
+//
+// VA EN LA PANTALLA DE ENTRAR porque es el único sitio al que alcanza quien
+// no puede entrar. Decirlo parece obvio y no lo es: la tentación es ponerlo
+// en Configuración, donde sólo llega quien ya entró.
+//
+// LO QUE NO PUEDE HACER: decir si la cuenta existe. `sendPasswordResetEmail`
+// lanza `auth/user-not-found` cuando no existe, y enseñar eso convierte la
+// pantalla en un comprobador de correos — cualquiera averigua quién tiene
+// cuenta probando direcciones. Así que esa negativa se trata como un éxito.
+// No es cosmética: es la diferencia entre un formulario y un padrón público.
+//
+// Esta función decide QUÉ SE LE CONTESTA al usuario y vive fuera del
+// componente a propósito, para poder ejecutarla contra cada código de error
+// en vez de mirar el texto del archivo.
+function respuestaDeRecuperacion(codigo) {
+  switch (codigo) {
+    case null:
+    case undefined:
+    case "":
+    // No existe la cuenta. Se contesta EXACTAMENTE lo mismo que si existiera.
+    case "auth/user-not-found":
+      return { tono: "ok", texto:
+        "Si esa dirección tiene cuenta, va en camino un correo con el enlace " +
+        "para elegir una contraseña nueva. Revisa también la bandeja de no deseados." };
+    // Éstos sí se pueden decir: hablan de lo que el usuario tecleó o del
+    // estado del servicio, no de quién tiene cuenta.
+    case "auth/invalid-email":
+      return { tono: "error", texto: "Esa dirección no tiene forma de correo." };
+    case "auth/missing-email":
+      return { tono: "error", texto: "Escribe tu correo arriba y vuelve a darle." };
+    case "auth/too-many-requests":
+      return { tono: "error", texto:
+        "Demasiados intentos seguidos. Espera unos minutos y vuelve a intentarlo." };
+    case "auth/network-request-failed":
+      return { tono: "error", texto: "No hay conexión. Revisa la red y vuelve a intentarlo." };
+    default:
+      // Un código que no conocemos NO se presenta como éxito: eso dejaría a
+      // alguien esperando un correo que nunca se mandó. Se dice que falló y
+      // se nombra el código, que es lo que sirve para reportarlo.
+      return { tono: "error", texto:
+        `No se pudo mandar el correo (${codigo}). Avísale a soporte con ese código.` };
+  }
+}
+
 function Login({onLogin, aviso = ''}){
   const[correo,setCorreo]=useState("");
   const[pass,setPass]=useState("");
   const[error,setError]=useState("");
   const[loading,setLoading]=useState(false);
+  const[recuperando,setRecuperando]=useState(false);
+  const[recup,setRecup]=useState(null);   // {tono, texto} | null
+
+  async function pedirNuevaContrasena(){
+    const dir = correo.trim();
+    if (!dir) { setRecup(respuestaDeRecuperacion("auth/missing-email")); return; }
+    setRecuperando(true); setRecup(null); setError("");
+    try {
+      await sendPasswordResetEmail(fbAuth, dir);
+      setRecup(respuestaDeRecuperacion(null));
+    } catch (e) {
+      setRecup(respuestaDeRecuperacion(e?.code || "desconocido"));
+    } finally {
+      setRecuperando(false);
+    }
+  }
 
   async function handleLogin(e){
     e.preventDefault();
@@ -11303,7 +11371,21 @@ function Login({onLogin, aviso = ''}){
             placeholder="••••••••"
             style={{background:C.surface,border:`0.5px solid ${C.borderM}`,borderRadius:8,
               padding:"12px 14px",color:C.textPri,fontSize:13,width:"100%",outline:"none"}}/>
+          {/* `type="button"` y no un enlace: dentro de un <form>, un botón sin
+              tipo envía el formulario, o sea que pedir la contraseña nueva
+              habría intentado entrar con la que no recuerdas. */}
+          <button type="button" onClick={pedirNuevaContrasena} disabled={recuperando}
+            style={{background:"none",border:"none",padding:"7px 0 0 0",margin:0,
+              color:C.textMut,fontSize:11,textDecoration:"underline",
+              cursor:recuperando?"wait":"pointer"}}>
+            {recuperando?"Mandando…":"¿Olvidaste tu contraseña?"}
+          </button>
         </div>
+        {recup&&<div style={{
+          background:recup.tono==="ok"?C.greenBg:"rgba(220,38,38,0.12)",
+          border:`0.5px solid ${recup.tono==="ok"?C.green:"rgba(220,38,38,0.3)"}`,
+          borderRadius:7,padding:"9px 12px",fontSize:12,
+          color:recup.tono==="ok"?C.greenDk:C.red}}>{recup.texto}</div>}
         {aviso&&!error&&<div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,
           borderRadius:7,padding:"9px 12px",fontSize:12,color:C.yellowDk}}>{aviso}</div>}
         {error&&<div style={{background:"rgba(220,38,38,0.12)",border:"0.5px solid rgba(220,38,38,0.3)",
