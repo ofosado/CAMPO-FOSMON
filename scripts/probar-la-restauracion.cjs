@@ -226,6 +226,16 @@ async function leerDoc(base, ruta) {
 
   if (tiene('crear')) await crear(base);
 
+  // Borrar pasa por el MISMO candado que escribir, y por el candado nº4: el
+  // recurso que se borra es el que devolvió el servidor, no uno armado aquí.
+  // Un borrado mal apuntado es peor que una escritura mal apuntada.
+  if (tiene('borrar')) {
+    const recurso = await recursoDeLaBase(base);
+    console.log(`borrando ${recurso} …`);
+    const r = await api(`https://firestore.googleapis.com/v1/${recurso}`, { metodo: 'DELETE' });
+    console.log('  operación:', r.name || JSON.stringify(r).slice(0, 160));
+  }
+
   if (tiene('importar')) {
     const desde = val('desde');
     const op = await importar(base, desde);
