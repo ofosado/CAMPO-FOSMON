@@ -27816,7 +27816,7 @@ function fmtFechaBit(iso){
 const ROLES_CONFIG_C = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
 const ROLES_CONFIG_D = ["director_obras","subdirector"];
 const veConfiguracion = (rol) => ROLES_CONFIG_C.includes(rol) || ROLES_CONFIG_D.includes(rol);
-function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
+function MenuConfiguracion({screen, setScreen, alertasNoLeidas, saludRojos, rol}){
   const [abierto, setAbierto] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -27844,11 +27844,17 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
     // Los mismos roles que `esDirectivoC() || esAdminSistemaC()` en
     // firestore.rules. Si se abre aquí a un rol que la regla no deja leer, la
     // pantalla se ve pero sale con el error de permisos.
-    { id: "salud", label: "Salud del sistema",
-      visible: ["director_general","director_operaciones","gerente_construccion","admin_sistema"].includes(rol) },
+    { id: "salud", label: "Salud del sistema", badge: saludRojos,
+      visible: ROLES_VEN_SALUD.includes(rol) },
   ].filter(o => o.visible);
 
   const enConfig = ["usuarios","marca","bitacora","alertas","salud"].includes(screen);
+
+  // La insignia del botón suma las dos cosas del menú que piden ir a mirar.
+  // Antes contaba sólo las alertas, y el respaldo podía llevar tres domingos
+  // caído con el botón limpio: el #26 entero es eso, un rojo que sólo se ve
+  // si ya fuiste a verlo.
+  const pendientes = (alertasNoLeidas || 0) + (saludRojos || 0);
 
   return <div ref={ref} style={{position:"relative"}}>
     <button onClick={()=>setAbierto(v=>!v)}
@@ -27858,11 +27864,11 @@ function MenuConfiguracion({screen, setScreen, alertasNoLeidas, rol}){
         color:enConfig?C.bg:C.textMut,cursor:"pointer",whiteSpace:"nowrap",
         display:"flex",alignItems:"center",gap:5}}>
       <span>Configuración</span>
-      {alertasNoLeidas > 0 && (
+      {pendientes > 0 && (
         <span style={{background:C.red,color:"#fff",fontSize:9,fontWeight:700,
           borderRadius:99,minWidth:14,height:14,padding:"0 4px",
           display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
-          {alertasNoLeidas}
+          {pendientes}
         </span>
       )}
       <span style={{fontSize:8,opacity:0.7}}>▾</span>
@@ -28548,6 +28554,14 @@ function frescuraDeGP(iso, ahora) {
   };
 }
 
+// Quién puede LEER `global/health`. Son los mismos de `firestore.rules`
+// (`esDirectivoC() || esAdminSistemaC()`), y viven aquí en una constante y no
+// tecleados en dos sitios: el menú decide con esto a quién le enseña la
+// pantalla, y la cabecera decide con esto a quién le pide el documento. Si se
+// separaran, un rol vería la entrada del menú y la lectura le rebotaría, o
+// peor: pediríamos en cada sesión una lectura que siempre va a rebotar.
+const ROLES_VEN_SALUD = ["director_general","director_operaciones","gerente_construccion","admin_sistema"];
+
 // Clasifica un job a partir de lo que dejó escrito. Vive fuera del componente
 // para poder correrla contra casos concretos sin montar React.
 //
@@ -28561,6 +28575,43 @@ function estadoDeJob(job, registro, ahora){
   return { e:registro, h, tarde,
     estado: !registro.ok ? "falló" : tarde ? "sin correr" : "al día",
     color:  !registro.ok ? C.red   : tarde ? C.red       : C.green };
+}
+
+// ── UNA CUENTA POR NÚMERO, Y AQUÍ SON DOS LOS QUE LA ENSEÑAN ───────────────
+//
+// La pantalla de salud dice «N requieren atención» y la insignia del menú
+// tiene que decir lo mismo. Si cada una hiciera su suma, el día que una
+// cambiara de criterio enseñarían cifras distintas del mismo documento — y el
+// usuario no tendría forma de saber cuál creer. Así que la suma vive aquí y
+// las dos la llaman.
+//
+// `medible:false` no es cero. Un documento que no se pudo leer —sin permiso,
+// sin red, nunca escrito— no significa «todo bien»: significa que no se sabe,
+// y quien llama decide qué enseñar. Devolver 0 aquí sería apagar la insignia
+// justo cuando no se puede afirmar nada, que es el verde falso de siempre.
+// Lo que la cabecera le pasa a la insignia. Vive aparte y con nombre porque
+// es UNA decisión —qué se enseña cuando no se pudo leer— y tiene que ser la
+// misma por el camino bueno y por el `catch`. Escrita dos veces dentro del
+// efecto, el día que una dijera `0` nadie lo vería: el banco no puede
+// ejecutar un `useEffect`, y una insignia apagada por error se ve igual que
+// una apagada con razón.
+//
+// `null` es «no se sabe» y `0` es «no hay rojos». Son distintos y no se
+// pueden confundir, que es justo de lo que trata todo este renglón.
+const rojosParaLaInsignia = (datos, ahora) => {
+  const r = saludEnRojo(datos, ahora);
+  return r.medible ? r.enRojo : null;
+};
+
+function saludEnRojo(datos, ahora) {
+  if (!datos) return { medible: false, enRojo: 0, sinDatos: 0, filas: [] };
+  const filas = JOBS_PROGRAMADOS.map(job => ({ job, ...estadoDeJob(job, datos[job.id], ahora) }));
+  return {
+    medible: true,
+    enRojo:   filas.filter(f => f.color === C.red).length,
+    sinDatos: filas.filter(f => f.estado === "sin datos").length,
+    filas,
+  };
 }
 
 function PantallaSalud(){
@@ -28589,12 +28640,12 @@ function PantallaSalud(){
   };
   useEffect(() => { recargar(); }, []);
 
-  const filas = JOBS_PROGRAMADOS.map(job => datos
-    ? { job, ...estadoDeJob(job, datos[job.id], ahora) }
-    : { job, estado:"ilegible", color:C.textMut });
-
-  const enRojo   = filas.filter(f => f.color === C.red).length;
-  const sinDatos = filas.filter(f => f.estado === "sin datos").length;
+  // La misma suma que alimenta la insignia del menú. Ver `saludEnRojo`.
+  const resumen = saludEnRojo(datos, ahora);
+  const filas = resumen.medible ? resumen.filas
+    : JOBS_PROGRAMADOS.map(job => ({ job, estado:"ilegible", color:C.textMut }));
+  const enRojo   = resumen.enRojo;
+  const sinDatos = resumen.sinDatos;
 
   return <div style={{display:"flex",flexDirection:"column",gap:10}}>
     {error && <div style={{background:C.redBg,border:`1px solid ${C.red}`,borderRadius:8,
@@ -29689,6 +29740,35 @@ export default function App(){
   // Conteo de alertas no leídas en el panel de Configuración (badge)
   const[alertasNoLeidasCount,setAlertasNoLeidasCount]=useState(0);
 
+  // ── LOS ROJOS DE SALUD, SIN QUE NADIE ABRA LA PANTALLA ───────────────────
+  //
+  // Éste es el #26. La pantalla de salud existe desde septiembre y hace lo que
+  // promete; lo que faltaba es que alguien la abriera. Un vigilante que hay
+  // que ir a consultar no vigila: avisa a quien ya sospechaba.
+  //
+  // Es UNA lectura de UN documento por sesión, y sólo para los roles a los que
+  // la regla se la permite. No se refresca sola: encender un `onSnapshot` para
+  // esto costaría una conexión viva en cada sesión para un documento que
+  // cambia ocho veces al día. Quien abra la pantalla ve el dato fresco, que es
+  // donde se actúa.
+  //
+  // `null` mientras no se sabe —y si la lectura falla se queda en `null`, no
+  // en 0—: una insignia apagada tiene que significar «no hay rojos», nunca «no
+  // pude mirar».
+  const[saludRojos,setSaludRojos]=useState(null);
+  useEffect(()=>{
+    if(!usuario||!ROLES_VEN_SALUD.includes(usuario.rol)){setSaludRojos(null);return;}
+    let cancelado=false;
+    (async()=>{
+      try{
+        const d=await fsGet("global/health");
+        if(cancelado)return;
+        setSaludRojos(rojosParaLaInsignia(d,Date.now()));
+      }catch{ if(!cancelado) setSaludRojos(rojosParaLaInsignia(null,Date.now())); }
+    })();
+    return()=>{cancelado=true;};
+  },[usuario?.email,usuario?.rol]);
+
   // Lazy load de historial de avance: se carga al abrir Dashboard, Avance
   // físico o la galería interna (Dashboard lo usa para tendencias mensuales;
   // Avance para el histórico semanal; la galería ES un riel de semanas
@@ -30392,7 +30472,7 @@ export default function App(){
           onNavTab={(t,st)=>{ setScreen("obra"); navTab(t,st); }}
           onSelectObra={(id)=>{ if(id && id!==obraId) entrar(id); }}/>
         {veConfiguracion(usuario.rol) && (
-          <MenuConfiguracion screen={screen} setScreen={setScreen} alertasNoLeidas={alertasNoLeidasCount} rol={usuario.rol}/>
+          <MenuConfiguracion screen={screen} setScreen={setScreen} alertasNoLeidas={alertasNoLeidasCount} saludRojos={saludRojos} rol={usuario.rol}/>
         )}
         <button onClick={logout} style={{background:"none",border:`0.5px solid ${C.border}`,borderRadius:6,
           padding:"4px 8px",fontSize:10,color:C.textMut,cursor:"pointer"}}>Salir</button>
