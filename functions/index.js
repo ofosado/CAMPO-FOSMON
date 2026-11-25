@@ -5631,3 +5631,203 @@ exports.rendirCierreSemanal = onCall({ region: "us-central1" }, async (request) 
 
   return { ok: true, roles, destinatarios, constancia };
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// LA CONTRASEÑA OLVIDADA, EN EL CORREO DE COTEA Y NO EN EL DE GOOGLE
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ── POR QUÉ EXISTE ESTA FUNCIÓN Y NO BASTA `sendPasswordResetEmail` ─────────
+//
+// El 2026-11-24 se midió que Google tiene BLOQUEADA la edición de las
+// plantillas de correo de este proyecto: la API contesta
+// `EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` y la consola dice «Email template
+// updates are currently unavailable for this project». El mismo candado tapa
+// `callbackUri`, que es el campo que decide a qué host apunta el enlace.
+// El dominio propio de Auth tampoco: ese PATCH contesta 200 y no guarda nada.
+//
+// O sea que mientras el correo lo mande Firebase, dos cosas no se pueden
+// arreglar desde ningún ajuste:
+//
+//   1. El enlace apunta a `campo-fosmon.firebaseapp.com`. FOSMON es un cliente
+//      de cotea, y ese enlace es lo ÚNICO que recibe alguien que ya está
+//      bloqueado fuera y desconfiando.
+//   2. El texto es el de Google, con su «El equipo de %APP_NAME%».
+//
+// Las dos se cierran de un golpe mandando el correo nosotros: el Admin SDK
+// genera el enlace, le cambiamos el host al de cotea —`public/_redirects` ya
+// sirve esa ruta, medido contra el host vivo— y sale por Resend en el sobre de
+// cotea. El candado de Google deja de importar.
+//
+// ── LO QUE ESTA FUNCIÓN NO PUEDE HACER: DECIR QUIÉN TIENE CUENTA ────────────
+//
+// Es el único `onCall` del archivo SIN sesión, porque quien la llama no puede
+// entrar. Eso la vuelve un comprobador de correos si contesta distinto según
+// exista la cuenta o no. Así que contesta lo MISMO siempre —exista, no exista,
+// esté frenada por el tope o haya reventado el envío— y lo que de verdad pasó
+// queda en el registro, no en la respuesta.
+//
+// Que el fallo de envío también se conteste como éxito no es tragárselo: un
+// envío sólo puede fallar para una cuenta que SÍ existe, así que distinguirlo
+// delataría exactamente lo que se vino a tapar. Sale por `console.error` con
+// el prefijo de los demás correos y queda contado en el documento del tope.
+
+// ── EL HOST SE CAMBIA; LA RUTA Y LA QUERY NO SE TOCAN ───────────────────────
+// El `oobCode` viaja en la query —medido contra el emulador— así que basta
+// mover el host. La ruta se deja TAL CUAL la dio el SDK y se COMPRUEBA que sea
+// una que cotea sirve: si Google cambiara la ruta, cambiarle el host a ciegas
+// produciría un enlace muerto, y un enlace muerto en este correo es peor que
+// no mandarlo. Devuelve `null` en ese caso, y el que llama no manda nada.
+const RUTA_QUE_COTEA_SIRVE = "/__/auth/";
+
+function enlaceEnCotea(enlace) {
+  let u;
+  try { u = new URL(String(enlace || "")); } catch (e) { return null; }
+  if (!u.pathname.startsWith(RUTA_QUE_COTEA_SIRVE)) return null;
+  if (!u.searchParams.get("oobCode")) return null;
+  const propio = new URL(APP_URL);
+  u.protocol = propio.protocol;
+  u.host = propio.host;
+  return u.toString();
+}
+
+// ── EL TOPE: UNA DIRECCIÓN NO SE PUEDE INUNDAR DESDE UN FORMULARIO ──────────
+// El `onCall` no pide sesión, así que cualquiera puede darle. Lo que acota el
+// daño es que el Admin SDK sólo genera enlace para una cuenta que EXISTE: no
+// se puede usar para mandarle correo a un desconocido. Lo que sí se podría es
+// llenarle la bandeja a uno de los nuestros, y para eso es esto.
+//
+// No es un cortafuegos: es un tope por dirección. Decirlo importa para que
+// nadie lo confunda con protección general.
+// ── SON DOS TOPES Y NO UNO, Y LA DIFERENCIA IMPORTA ────────────────────────
+//
+// La espera corta cuenta INTENTOS; el tope diario cuenta ENVÍOS. Medido en el
+// preview: si los dos contaran envíos, darle al botón contra una dirección que
+// no existe no cuenta para nada y el buzón de llamadas queda sin tope ninguno.
+// Y si los dos contaran intentos, cualquiera podría quemarle a una persona
+// real sus cinco del día y dejarla sin poder recuperar su contraseña hasta
+// mañana — se arregla un abuso inventando otro.
+//
+// Así: la espera de un minuto frena el martilleo, y el tope del día protege el
+// buzón de quien sí existe sin que nadie se lo pueda agotar desde fuera.
+const ESPERA_ENTRE_INTENTOS_MS = 60 * 1000;
+const TOPE_POR_DIA = 5;
+const DIA_MS = 24 * 60 * 60 * 1000;
+
+function puedeMandarOtro(previo, ahoraMs) {
+  const ultimo = Number(previo?.ultimoIntentoMs || 0);
+  const delDia = Array.isArray(previo?.enviosMs) ? previo.enviosMs.map(Number) : [];
+  if (ultimo && ahoraMs - ultimo < ESPERA_ENTRE_INTENTOS_MS)
+    return { puede: false, motivo: "demasiado-seguido" };
+  const recientes = delDia.filter(t => ahoraMs - t < DIA_MS);
+  if (recientes.length >= TOPE_POR_DIA)
+    return { puede: false, motivo: "tope-diario" };
+  return { puede: true, recientes };
+}
+
+function correoDeRecuperacion({ correo, enlace }) {
+  // El saludo y la estructura son los de la plantilla que Google traía, que es
+  // la que Oscar prefirió: «Hola:», la frase, el enlace, y el aviso de
+  // ignorarlo. Lo que cambia es de quién es el correo.
+  const cuerpo =
+    parrafoHTML("Haz clic en el botón para elegir una contraseña nueva " +
+      `para tu cuenta <b>${ESC_HTML(correo)}</b>.`) +
+    `<div style="margin:18px 0 4px 0;">${botonHTML("Elegir contraseña nueva", enlace)}</div>` +
+    parrafoHTML("Si no pediste este cambio, ignora este correo: tu contraseña " +
+      "sigue siendo la de antes.");
+
+  return {
+    subject: "cotea · elige una contraseña nueva",
+    html: sobreCorreo({
+      titulo: "Hola:",
+      entradilla: "Pediste cambiar la contraseña con la que entras a cotea.",
+      cuerpoHTML: cuerpo,
+      pie: "Si no fuiste tú, no tienes que hacer nada.",
+    }),
+  };
+}
+
+const FORMA_DE_CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// Los dos códigos que significan «esa dirección no tiene cuenta». El Admin SDK
+// usa `auth/email-not-found`; `auth/user-not-found` es el del SDK del cliente y
+// está aquí porque es el que devuelven algunas versiones. Ninguno se contesta.
+const CUENTA_QUE_NO_ESTA = new Set(["auth/email-not-found", "auth/user-not-found"]);
+
+// Lo mismo SIEMPRE. Está en una constante para que no haya dos redacciones
+// que alguien pueda comparar.
+const MISMA_RESPUESTA = { ok: true };
+
+exports.mandarRecuperacion = onCall(
+  { region: "us-central1", secrets: [RESEND_API_KEY] },
+  async (request) => {
+    const crudo = String(request.data?.correo || "").trim().toLowerCase();
+
+    // Lo único que se contesta distinto es lo que habla de lo que el usuario
+    // TECLEÓ, no de quién tiene cuenta.
+    if (!crudo) throw new HttpsError("invalid-argument", "falta-correo");
+    if (!FORMA_DE_CORREO.test(crudo)) throw new HttpsError("invalid-argument", "forma-de-correo");
+
+    const db = admin.firestore();
+    const ref = db.collection("recuperaciones").doc(emailAId(crudo));
+    const ahora = Date.now();
+
+    let previo = null;
+    try { previo = (await ref.get()).data() || null; } catch (e) {
+      // Sin el documento no se puede aplicar el tope. Se sigue —el usuario
+      // legítimo no paga por una lectura que falló— y queda dicho.
+      console.error(`[correo:recuperacion] no se pudo leer el tope de ${crudo}: ${e.message}`);
+    }
+
+    const tope = puedeMandarOtro(previo, ahora);
+    if (!tope.puede) {
+      console.warn(`[correo:recuperacion] frenado (${tope.motivo}) para ${crudo}` +
+        ` desde ${request.rawRequest?.ip || "ip desconocida"}`);
+      return MISMA_RESPUESTA;
+    }
+
+    // El intento se anota ANTES de hablar con Auth, y por eso la espera corta
+    // frena también a quien prueba direcciones que no existen: si se anotara
+    // después, ese camino se va por el `return` de abajo y no deja rastro.
+    try { await ref.set({ ultimoIntentoMs: ahora }, { merge: true }); } catch (e) {
+      console.error(`[correo:recuperacion] no se pudo anotar el intento: ${e.message}`);
+    }
+
+    let enlace = null;
+    try {
+      enlace = enlaceEnCotea(await admin.auth().generatePasswordResetLink(crudo));
+    } catch (e) {
+      // El Admin SDK lanza `auth/email-not-found` —NO `auth/user-not-found`,
+      // que es el del SDK del cliente—. Medido contra el emulador el
+      // 2026-11-25: con el código equivocado, cada dirección probada salía por
+      // `console.error` como si fuera una avería del sistema.
+      if (!CUENTA_QUE_NO_ESTA.has(e?.code))
+        console.error(`[correo:recuperacion] no se pudo generar el enlace: ${e.code || e.message}`);
+      return MISMA_RESPUESTA;
+    }
+
+    if (!enlace) {
+      // La ruta que devolvió el SDK no es una que cotea sirva. Mandar el
+      // enlace con el host cambiado sería mandar un enlace muerto.
+      console.error("[correo:recuperacion] NO SE MANDÓ: el enlace del SDK no " +
+        `tiene la ruta ${RUTA_QUE_COTEA_SIRVE}. Revisar public/_redirects.`);
+      return MISMA_RESPUESTA;
+    }
+
+    const { subject, html } = correoDeRecuperacion({ correo: crudo, enlace });
+    const salida = await mandarCorreoDeAlta(llaveDeCorreo(),
+      { to: crudo, subject, html, concepto: "recuperacion" });
+
+    try {
+      await ref.set({
+        ultimoEnvioMs: salida.ok ? ahora : Number(previo?.ultimoEnvioMs || 0),
+        enviosMs: salida.ok ? [...(tope.recientes || []), ahora] : (tope.recientes || []),
+        fallos: salida.ok ? (Number(previo?.fallos) || 0) : (Number(previo?.fallos) || 0) + 1,
+        ultimoMotivo: salida.ok ? "" : String(salida.motivo || "sin motivo"),
+      }, { merge: true });
+    } catch (e) {
+      console.error(`[correo:recuperacion] el correo ${salida.ok ? "SALIÓ" : "no salió"} ` +
+        `pero no se pudo anotar el tope: ${e.message}`);
+    }
+
+    return MISMA_RESPUESTA;
+  });

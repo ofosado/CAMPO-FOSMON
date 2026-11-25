@@ -78,7 +78,8 @@ function piezasDelExport(archivo, nombre) {
 // suelta se caiga, el `catch` de arriba la absorba, y el trabajo siga y se
 // anote como bueno. Sin poder tirar UNA ruta, esa conducta no se puede medir.
 function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
-                                    cuentasIniciales = {} } = {}) {
+                                    cuentasIniciales = {},
+                                    enlaceDeAuth = null } = {}) {
   const docs = new Map(Object.entries(docsIniciales));
   const escrituras = [];
   let seq = 0;
@@ -203,6 +204,25 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
       const uid = cuentas.get(correo);
       if (!uid) { const e = new Error('user-not-found'); e.code = 'auth/user-not-found'; throw e; }
       return { uid, email: correo };
+    },
+    // El doble devuelve el enlace CON EL HOST DE FIREBASE, que es lo que
+    // devuelve el de verdad: el host del proyecto es lo único que el Admin SDK
+    // sabe poner. Un doble que ya devolviera el host de cotea mediría el
+    // andamio en vez del código.
+    //
+    // Y lanza `auth/email-not-found`, que es el código del ADMIN SDK. No es un
+    // detalle: el 2026-11-25 este doble lanzaba `auth/user-not-found` —el del
+    // SDK del cliente— y el banco salía verde contra un código que en
+    // producción no llega nunca. Lo vio el emulador, no el banco. Un doble que
+    // miente de este modo no mide: coincide con la equivocación de quien lo
+    // escribió.
+    generatePasswordResetLink: async (correo) => {
+      if (!cuentas.get(correo)) {
+        const e = new Error('email-not-found'); e.code = 'auth/email-not-found'; throw e;
+      }
+      actosAuth.push({ correo, enlaceGenerado: true });
+      return enlaceDeAuth || 'https://campo-fosmon.firebaseapp.com/__/auth/action' +
+        `?mode=resetPassword&oobCode=CODIGO-${cuentas.get(correo)}&apiKey=llave-falsa&lang=es`;
     },
     updateUser: async (uid, cambios) => {
       actosAuth.push({ uid, ...cambios });

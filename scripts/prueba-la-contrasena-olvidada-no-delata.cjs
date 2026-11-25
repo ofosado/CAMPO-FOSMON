@@ -112,8 +112,17 @@ const check = (ok, titulo, detalle = '') => {
   // Un correo mal escrito o un servicio caído hablan de lo que el usuario
   // tecleó o del estado de la red, no de quién tiene cuenta. Callarlos sería
   // dejar a alguien esperando sin motivo.
+  // Desde el 2026-11-25 el correo lo manda `mandarRecuperacion`, no Firebase,
+  // así que los códigos que de verdad llegan son los del `onCall`. Los
+  // `auth/*` se quedan de piso —ver el comentario de la función— y por eso se
+  // siguen midiendo los dos juegos: el que llega hoy y el que llegaría si
+  // alguien volviera a hablarle a Auth desde la pantalla.
   console.log('\n§2 · lo que sí se puede decir sin delatar a nadie');
   for (const [codigo, debeDecir] of [
+    ['functions/invalid-argument',     /forma de correo/i],
+    ['functions/resource-exhausted',   /demasiados intentos/i],
+    ['functions/unavailable',          /conexión/i],
+    ['functions/deadline-exceeded',    /conexión/i],
     ['auth/invalid-email',           /forma de correo/i],
     ['auth/missing-email',           /escribe tu correo/i],
     ['auth/too-many-requests',       /demasiados intentos/i],
