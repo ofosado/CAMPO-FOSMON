@@ -5724,10 +5724,29 @@ function puedeMandarOtro(previo, ahoraMs) {
   return { puede: true, recientes };
 }
 
-function correoDeRecuperacion({ correo, enlace }) {
-  // El saludo y la estructura son los de la plantilla que Google traía, que es
-  // la que Oscar prefirió: «Hola:», la frase, el enlace, y el aviso de
-  // ignorarlo. Lo que cambia es de quién es el correo.
+// ── EL NOMBRE CON EL QUE SE SALUDA ─────────────────────────────────────────
+//
+// La misma regla que usa la app al entrar, y por eso está escrita como una
+// función y no a mano: el correo y la pantalla no se pueden saludar distinto a
+// la misma persona. Hay una copia en `src/App.jsx` porque son dos tiempos de
+// ejecución y las funciones no pueden importar del front —al desplegar sólo
+// sube `functions/`—. Lo que impide que se separen es que
+// `prueba-la-recuperacion-la-manda-cotea.cjs` EJECUTA las dos contra la misma
+// lista de nombres y exige que coincidan.
+//
+// Las dos reglas que no son obvias: una inicial con punto («J. Alberto») no es
+// el nombre de pila, y un «nombre» que en realidad es un correo —lo que queda
+// cuando el perfil no se pudo leer— se corta en la arroba en vez de saludar
+// con la dirección entera.
+function nombreDePila(nombre) {
+  const n = String(nombre || "").trim();
+  if (!n) return "";
+  if (n.includes("@")) return n.split("@")[0];
+  return n.split(/\s+/).find(p => p.length > 2 && !p.endsWith(".")) || n;
+}
+
+function correoDeRecuperacion({ nombre, correo, enlace }) {
+  const pila = nombreDePila(nombre);
   const cuerpo =
     parrafoHTML("Haz clic en el botón para elegir una contraseña nueva " +
       `para tu cuenta <b>${ESC_HTML(correo)}</b>.`) +
@@ -5738,10 +5757,14 @@ function correoDeRecuperacion({ correo, enlace }) {
   return {
     subject: "cotea · elige una contraseña nueva",
     html: sobreCorreo({
-      titulo: "Hola:",
+      // Sin nombre se saluda sin nombre. Un perfil sin `nombre` o que no se
+      // pudo leer no se rellena con la dirección ni con un «Usuario».
+      titulo: pila ? `¡Hola, ${pila}!` : "¡Hola!",
       entradilla: "Pediste cambiar la contraseña con la que entras a cotea.",
       cuerpoHTML: cuerpo,
-      pie: "Si no fuiste tú, no tienes que hacer nada.",
+      // El pie NO repite «si no fuiste tú, ignóralo»: eso ya está dos renglones
+      // arriba, y un correo que dice dos veces lo mismo se lee como plantilla.
+      pie: "El enlace sirve una sola vez.",
     }),
   };
 }
@@ -5813,7 +5836,17 @@ exports.mandarRecuperacion = onCall(
       return MISMA_RESPUESTA;
     }
 
-    const { subject, html } = correoDeRecuperacion({ correo: crudo, enlace });
+    // El nombre se lee del perfil, y si no se puede leer se saluda sin nombre.
+    // Un correo que no sale por no saber cómo saludar sería cambiar un defecto
+    // de cortesía por uno de verdad: el que lo pidió está bloqueado fuera.
+    let nombre = "";
+    try {
+      nombre = ((await db.doc(`usuarios/${emailAId(crudo)}`).get()).data() || {}).nombre || "";
+    } catch (e) {
+      console.warn(`[correo:recuperacion] no se pudo leer el nombre de ${crudo}: ${e.message}`);
+    }
+
+    const { subject, html } = correoDeRecuperacion({ nombre, correo: crudo, enlace });
     const salida = await mandarCorreoDeAlta(llaveDeCorreo(),
       { to: crudo, subject, html, concepto: "recuperacion" });
 

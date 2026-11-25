@@ -77,6 +77,18 @@ const MUTANTES = [
   { nombre: 'el tope del día cuenta intentos: cualquiera le quema el día a una persona real',
     de: `  const delDia = Array.isArray(previo?.enviosMs) ? previo.enviosMs.map(Number) : [];`,
     a:  `  const delDia = previo?.ultimoIntentoMs ? [Number(previo.ultimoIntentoMs)] : [];` },
+  { nombre: 'vuelve el «Hola:» de plantilla y el correo deja de decir a quién va',
+    de: `      titulo: pila ? \`¡Hola, \${pila}!\` : "¡Hola!",`,
+    a:  `      titulo: "Hola:",` },
+  { nombre: 'sin nombre se saluda con la dirección entera en vez de sin nombre',
+    de: `      titulo: pila ? \`¡Hola, \${pila}!\` : "¡Hola!",`,
+    a:  `      titulo: \`¡Hola, \${pila || correo}!\`,` },
+  { nombre: 'el nombre deja de leerse del perfil: todos vuelven a ser anónimos',
+    de: `      nombre = ((await db.doc(\`usuarios/\${emailAId(crudo)}\`).get()).data() || {}).nombre || "";`,
+    a:  `      nombre = "";` },
+  { nombre: 'la regla del nombre se separa de la del front: «J. Alberto» saluda «J.»',
+    de: `  return n.split(/\\s+/).find(p => p.length > 2 && !p.endsWith(".")) || n;`,
+    a:  `  return n.split(/\\s+/)[0] || n;` },
   { nombre: 'el tope de seguidos se va: un botón basta para inundar un buzón',
     de: `  if (ultimo && ahoraMs - ultimo < ESPERA_ENTRE_INTENTOS_MS)\n    return { puede: false, motivo: "demasiado-seguido" };`,
     a:  `  if (false) return { puede: false, motivo: "demasiado-seguido" };` },
@@ -205,6 +217,14 @@ const correr = async (opciones = {}) => {
   console.log('\n§3 · la misma respuesta exista o no la cuenta, y correo sólo si existe');
   const existe = await correr({ cuentas: { 'quien@fosmon.com.mx': 'uid-1' } });
   const noExiste = await correr({ cuentas: {} });
+  // El mismo caso con perfil, que es el que trae nombre con el que saludar.
+  // Se corre aparte para que §3 siga comparando una cuenta SIN perfil contra
+  // una que no existe: son los dos casos en que el correo no sabe cómo llamar
+  // a nadie, y tienen que seguir contestando igual.
+  const conNombre = await correr({
+    cuentas: { 'quien@fosmon.com.mx': 'uid-1' },
+    docs: { 'usuarios/quien_fosmon_com_mx': { nombre: 'J. Alberto Ruiz Pérez' } },
+  });
   check(!existe.lanzo && !noExiste.lanzo, 'ninguno de los dos casos lanza',
     [existe.lanzo && `existe: ${existe.lanzo.message}`,
      noExiste.lanzo && `no existe: ${noExiste.lanzo.message}`].filter(Boolean).join('; '));
@@ -218,7 +238,7 @@ const correr = async (opciones = {}) => {
     `${noExiste.correos.length}`);
 
   console.log('\n§4 · lo que ese correo lleva dentro');
-  const sobre = existe.correos[0] || {};
+  const sobre = conNombre.correos[0] || {};
   const html = String(sobre.html || '');
   check(!/campo-fosmon/i.test(html + String(sobre.subject || '')),
     'ni el asunto ni el cuerpo dicen `campo-fosmon`',
@@ -231,6 +251,56 @@ const correr = async (opciones = {}) => {
   check(String(sobre.to || '') === 'quien@fosmon.com.mx' ||
         (Array.isArray(sobre.to) && sobre.to[0] === 'quien@fosmon.com.mx'),
     'va sólo a quien lo pidió', JSON.stringify(sobre.to));
+
+  // ── EL SALUDO ─────────────────────────────────────────────────────────────
+  // «Hola:» a secas es de plantilla de sistema. El nombre sale del perfil, y
+  // la regla para cortarlo es la MISMA que usa la app al entrar: la persona no
+  // puede llamarse distinto en la pantalla y en el correo.
+  console.log('\n§4b · saluda por su nombre, con la regla de la app');
+  check(/¡Hola, Alberto!/.test(html),
+    'saluda «¡Hola, Alberto!» — nombre de pila, no la inicial ni el nombre entero',
+    (/¡Hola[^<]*/.exec(html) || ['no saluda'])[0]);
+  check(!/Hola:/.test(html) && !/¡Hola!/.test(html),
+    'y ya no queda el «Hola:» de plantilla cuando sí hay nombre');
+  const sinPerfil = existe.correos[0] || {};
+  check(/¡Hola!/.test(String(sinPerfil.html || '')),
+    'sin perfil saluda sin nombre, en vez de inventarse uno o pegar la dirección',
+    (/¡Hola[^<]*/.exec(String(sinPerfil.html || '')) || ['no saluda'])[0]);
+  check(!/undefined|null|\[object/.test(String(sinPerfil.html || '')),
+    'y no se le cuela un `undefined` al cuerpo por no tener nombre');
+
+  console.log('\n§4c · la regla del nombre es UNA, aunque esté escrita dos veces');
+  // Dos tiempos de ejecución, sin build compartido: la copia del front y la de
+  // las funciones no se pueden fundir. Lo que sí se puede es correrlas a las
+  // dos y exigir que contesten igual, que es lo que impide que se separen.
+  const { deApp, deArchivo } = require('./extraer-de-app.cjs');
+  let delFront, deLasFunciones;
+  try {
+    ({ nombreDePila: delFront } = deApp('nombreDePila'));
+    ({ nombreDePila: deLasFunciones } = deArchivo(ARCH_FUNCS, 'nombreDePila'));
+  } catch (e) {
+    noArranco([`no se pudieron extraer las dos copias de \`nombreDePila\`: ${e.message}`],
+      'src/App.jsx + functions/index.js');
+  }
+  const NOMBRES = [
+    ['Oscar Fosado Galland', 'Oscar',   'tres palabras, la de siempre'],
+    ['J. Alberto Ruiz',      'Alberto', 'inicial con punto: no es el nombre de pila'],
+    ['Ma. Luz Hernández',    'Luz',     'la abreviatura tampoco'],
+    ['Ana',                  'Ana',     'una sola palabra'],
+    ['Ed',                   'Ed',      'dos letras: no hay nada mejor, se usa tal cual'],
+    ['  Luis  Ramos  ',      'Luis',    'con espacios de sobra'],
+    ['pepe@fosmon.com.mx',   'pepe',    'cuando el «nombre» es la dirección, se corta en la arroba'],
+    ['',                     '',        'vacío'],
+    [null,                   '',        'null'],
+    [undefined,              '',        'undefined'],
+  ];
+  for (const [entrada, esperado, porque] of NOMBRES) {
+    const a = delFront(entrada), b = deLasFunciones(entrada);
+    check(a === b && a === esperado,
+      `«${String(entrada)}» → «${esperado}» — ${porque}`,
+      a === b ? (a === esperado ? '' : `las dos dicen «${a}»`)
+              : `DISCREPAN: front «${a}» · funciones «${b}»`);
+  }
 
   // Son DOS topes con cuentas distintas, y el banco mide las dos: la espera
   // corta se apoya en INTENTOS —para que probar direcciones también cueste— y

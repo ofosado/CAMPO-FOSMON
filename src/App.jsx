@@ -11131,6 +11131,30 @@ const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purp
 // hecho sobre la sesión anterior, así que va en ámbar y no en rojo. Sin él, a
 // quien le revocan el acceso la app le aparece de pronto en la pantalla de
 // entrada, sin decir nada, y lo que parece es que se rompió.
+
+// ── EL NOMBRE CON EL QUE SE SALUDA, UNA SOLA VEZ ───────────────────────────
+//
+// Había DOS reglas para la misma pregunta: el saludo de la pantalla de obras
+// se quedaba con la primera palabra de más de dos letras que no acabara en
+// punto, y el de la hoja de cierre con `split(" ")[0]`. Para «Oscar Fosado
+// Galland» dan lo mismo y por eso nadie lo vio; para «J. Alberto Ruiz» una
+// saluda «Alberto» y la otra «J.».
+//
+// Se unifican aquí porque el correo de recuperar también saluda por nombre, y
+// tres reglas para una pregunta es una discrepancia esperando. La copia que
+// vive en `functions/index.js` no se puede evitar —son dos tiempos de
+// ejecución— pero sí se puede exigir que coincidan: el banco las ejecuta a las
+// dos contra la misma lista y compara.
+function nombreDePila(nombre) {
+  const n = String(nombre || '').trim();
+  if (!n) return '';
+  // Si el «nombre» es en realidad un correo —lo que queda cuando no hay perfil
+  // o su lectura falló por reglas— se corta en la arroba, para no saludar a
+  // nadie con su dirección entera.
+  if (n.includes('@')) return n.split('@')[0];
+  return n.split(/\s+/).find(p => p.length > 2 && !p.endsWith('.')) || n;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // LA CONTRASEÑA OLVIDADA
 // ════════════════════════════════════════════════════════════════════════════
@@ -11163,16 +11187,33 @@ const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purp
 // Esta función decide QUÉ SE LE CONTESTA al usuario y vive fuera del
 // componente a propósito, para poder ejecutarla contra cada código de error
 // en vez de mirar el texto del archivo.
-function respuestaDeRecuperacion(codigo) {
+// ── POR QUÉ EL ÉXITO SE PARTE EN DOS RENGLONES Y NOMBRA LA DIRECCIÓN ───────
+//
+// La redacción de OWASP —«si esa dirección está en nuestra base, te mandaremos
+// un correo»— es correcta y era la que estaba, pero puesta como una sola
+// frase arranca disculpándose: las primeras cuatro palabras son una condición,
+// y eso se lee como que el sistema no sabe lo que hizo.
+//
+// Lo que cambia NO es el condicional, que es lo que impide que la pantalla sea
+// un padrón: cambia el orden. Primero la instrucción —qué hacer ahora—, y la
+// condición de subordinada. Y se repite la dirección TECLEADA, que no delata
+// nada —es lo que el usuario acaba de escribir— y hace dos trabajos: se nota
+// que el sistema actuó, y quien se equivocó al teclear lo ve ahí mismo.
+//
+// El éxito recibe la dirección; los errores no la necesitan.
+function respuestaDeRecuperacion(codigo, direccion = "") {
   switch (codigo) {
     case null:
     case undefined:
     case "":
     // No existe la cuenta. Se contesta EXACTAMENTE lo mismo que si existiera.
     case "auth/user-not-found":
-      return { tono: "ok", texto:
-        "Si esa dirección tiene cuenta, va en camino un correo con el enlace " +
-        "para elegir una contraseña nueva. Revisa también la bandeja de no deseados." };
+      return { tono: "ok",
+        titulo: direccion ? `Revisa ${direccion}` : "Revisa tu correo",
+        texto:
+          `Si esa dirección tiene cuenta en cotea, ahí llega el enlace para ` +
+          "elegir una contraseña nueva. Puede tardar un par de minutos; mira " +
+          "también el correo no deseado." };
     // Éstos sí se pueden decir: hablan de lo que el usuario tecleó o del
     // estado del servicio, no de quién tiene cuenta.
     case "functions/invalid-argument":
@@ -11214,7 +11255,7 @@ function Login({onLogin, aviso = ''}){
       // puede llegar aquí como error habla del correo que se tecleó o de que
       // no se pudo hablar con el servidor.
       await httpsCallable(fbFn, "mandarRecuperacion")({ correo: dir });
-      setRecup(respuestaDeRecuperacion(null));
+      setRecup(respuestaDeRecuperacion(null, dir));
     } catch (e) {
       setRecup(respuestaDeRecuperacion(e?.code || "desconocido"));
     } finally {
@@ -11403,7 +11444,10 @@ function Login({onLogin, aviso = ''}){
           background:recup.tono==="ok"?C.greenBg:"rgba(220,38,38,0.12)",
           border:`0.5px solid ${recup.tono==="ok"?C.green:"rgba(220,38,38,0.3)"}`,
           borderRadius:7,padding:"9px 12px",fontSize:12,
-          color:recup.tono==="ok"?C.greenDk:C.red}}>{recup.texto}</div>}
+          color:recup.tono==="ok"?C.greenDk:C.red}}>
+          {recup.titulo&&<div style={{fontWeight:700,marginBottom:3,
+            overflowWrap:"anywhere"}}>{recup.titulo}</div>}
+          {recup.texto}</div>}
         {aviso&&!error&&<div style={{background:C.yellowBg,border:`0.5px solid ${C.yellow}`,
           borderRadius:7,padding:"9px 12px",fontSize:12,color:C.yellowDk}}>{aviso}</div>}
         {error&&<div style={{background:"rgba(220,38,38,0.12)",border:"0.5px solid rgba(220,38,38,0.3)",
@@ -15290,14 +15334,7 @@ function PantallaObras({onSelect,usuario,obras,setObras,gpData,gpEstado='listo',
       )}
       <div style={{minWidth:0}}>
         <div style={{fontSize:15,fontWeight:700,color:C.textPri,marginBottom:3}}>
-          Hola, {(() => {
-            const n = usuario.nombre || '';
-            // Si el "nombre" es en realidad un email (fallback cuando no hay
-            // perfil o el read del perfil falla por reglas), extraer la parte
-            // antes de la @ para no saludar con dirección completa.
-            if (n.includes('@')) return n.split('@')[0];
-            return n.split(' ').find(p => p.length > 2 && !p.endsWith('.')) || n || '';
-          })()}!
+          Hola, {nombreDePila(usuario.nombre)}!
         </div>
         <div style={{fontSize:11,color:C.textMut}}>
           {/* El nombre de la organización lo resuelve `nombreOrg`, el mismo
@@ -27824,7 +27861,7 @@ const pasosDe = usuario =>
 function WelcomeBanner({usuario, onCerrar}){
   const pasos = pasosDe(usuario);
   const rolLabel = ROL_LABEL[usuario.rol] || "Usuario";
-  const primerNombre = (usuario.nombre || "").split(" ")[0] || usuario.nombre || "";
+  const primerNombre = nombreDePila(usuario.nombre);
   const [guardando, setGuardando] = useState(false);
 
   async function cerrar(){
