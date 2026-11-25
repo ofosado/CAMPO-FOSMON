@@ -1,0 +1,44 @@
+# REGLAS DE RUTEO DE NETLIFY
+#
+# Vite copia `public/` entero a `dist/`, y Netlify lee este archivo desde el
+# directorio que publica. No hay `netlify.toml` en el repo y no se agrega uno:
+# un `netlify.toml` manda también sobre el comando y el directorio de la
+# compilación, que hoy viven en la consola de Netlify. Un archivo que sólo
+# puede decir rutas no puede romper la compilación por accidente.
+#
+# ── POR QUÉ EXISTE LA PRIMERA REGLA ────────────────────────────────────────
+#
+# El correo de «elegir contraseña nueva» lo manda Firebase Auth, y el enlace
+# que lleva adentro apunta al manejador de acciones de Google. Por omisión ese
+# manejador vive en `campo-fosmon.firebaseapp.com`, que es el id del proyecto
+# de GCP. El id es permanente: no se puede renombrar.
+#
+# Y ese enlace es lo único que recibe alguien que está bloqueado fuera de la
+# app. Mandarlo a una dirección que dice el nombre de un cliente —FOSMON es un
+# cliente de cotea, no su dueño— lo dice en el peor momento posible.
+#
+# Entonces no se renombra nada: se deja de exponer. Esta regla hace que
+# `app.cotea.com.mx/__/auth/…` sirva el manejador de Google sin que el
+# navegador salga de cotea, y el ajuste `callbackUri` de Auth apunta aquí.
+#
+# Tres cosas de esta regla son portantes, y las tres se miden en
+# `scripts/prueba-el-enlace-de-recuperar-no-sale-de-cotea.cjs`:
+#
+#   · `:splat` — el manejador pide `action.js` y `experiments.js` por ruta
+#     relativa. Sin `:splat` la página carga y se queda muerta, sin un solo
+#     error visible.
+#   · `200` y no `301` — un 301 manda el navegador al otro host, y entonces la
+#     barra de direcciones vuelve a decir `campo-fosmon`. Es exactamente lo
+#     que esta regla existe para evitar: el ruteo seguiría funcionando y el
+#     defecto sería invisible desde el lado de «¿sirve el enlace?».
+#   · el host del destino — tiene que ser el del proyecto de verdad; el
+#     manejador es el único que sabe canjear el `oobCode`.
+#
+# `app.cotea.com.mx` ya está en los dominios autorizados de Auth, que es lo
+# que le permite al manejador hablar con la API desde aquí.
+#
+# No hay regla de rebote de SPA a propósito: hoy una ruta que no existe
+# devuelve 404 y la app no usa rutas de servidor. Agregar un comodín aquí
+# convertiría cualquier dedazo en la pantalla de entrada.
+
+/__/auth/*  https://campo-fosmon.firebaseapp.com/__/auth/:splat  200

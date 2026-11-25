@@ -75,7 +75,19 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         // Excluir Firebase y CDNs externos del precache
-        navigateFallbackDenylist: [/^\/api/],
+        //
+        // `/__/` NO es decorativo. El rebote de navegación del service worker
+        // contesta CUALQUIER navegación con el `index.html` de la caché, y el
+        // enlace del correo de «elegir contraseña nueva» es una navegación a
+        // `/__/auth/action`, que `public/_redirects` manda al manejador de
+        // Google. Sin esta exclusión el service worker se le adelanta a la
+        // reescritura y abre la app en lugar del manejador.
+        //
+        // Lo que lo hace peligroso es a quién le pasa: en un navegador sin
+        // service worker —el mío al verificar— funciona. Falla sólo para quien
+        // YA tiene la app instalada, que son todos los usuarios de verdad. Se
+        // mide en `scripts/prueba-el-enlace-de-recuperar-no-sale-de-cotea.cjs`.
+        navigateFallbackDenylist: [/^\/api/, /^\/__\//],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/.*/i,
