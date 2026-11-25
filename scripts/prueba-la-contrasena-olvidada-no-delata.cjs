@@ -44,14 +44,20 @@ const CP = require('./contraprueba.cjs');
 
 const MUTANTES = [
   { nombre: 'la pantalla vuelve a delatar que la cuenta no existe',
-    de: `    case "auth/user-not-found":\n      return { tono: "ok", texto:`,
-    a:  `    case "auth/user-not-found":\n      return { tono: "error", texto: "Esa cuenta no existe." };\n    case "__nunca__":\n      return { tono: "ok", texto:` },
+    de: `    case "auth/user-not-found":\n      return { tono: "ok",`,
+    a:  `    case "auth/user-not-found":\n      return { tono: "error", texto: "Esa cuenta no existe." };\n    case "__nunca__":\n      return { tono: "ok",` },
   { nombre: 'un fallo desconocido se contesta como si el correo hubiera salido',
     de: `      return { tono: "error", texto:\n        \`No se pudo mandar el correo (\${codigo}). Avísale a soporte con ese código.\` };`,
     a:  `      return { tono: "ok", texto: "Va en camino un correo." };` },
-  { nombre: 'el éxito deja de decir «si esa dirección tiene cuenta» y afirma que existe',
-    de: `        "Si esa dirección tiene cuenta, va en camino un correo con el enlace " +`,
-    a:  `        "Va en camino un correo a tu cuenta con el enlace " +` },
+  { nombre: 'el éxito deja de ser condicional y afirma que la cuenta existe',
+    de: `          \`Si esa dirección tiene cuenta en cotea, ahí llega el enlace para \` +`,
+    a:  `          \`Tu cuenta de cotea recibió el enlace para \` +` },
+  { nombre: 'el renglón grueso afirma que el correo salió, aunque el fino sea condicional',
+    de: `        titulo: direccion ? \`Revisa \${direccion}\` : "Revisa tu correo",`,
+    a:  `        titulo: direccion ? \`Correo enviado a \${direccion}\` : "Correo enviado",` },
+  { nombre: 'la dirección tecleada deja de aparecer y el aviso vuelve a ser genérico',
+    de: `        titulo: direccion ? \`Revisa \${direccion}\` : "Revisa tu correo",`,
+    a:  `        titulo: "Revisa tu correo",` },
   // NO está la mutación «se va el corte del correo vacío». Se midió: quitarlo
   // no cambia nada de lo que el usuario ve, porque Firebase devuelve
   // `auth/missing-email` por su cuenta y el mensaje acaba siendo el mismo. El
@@ -106,6 +112,38 @@ const check = (ok, titulo, detalle = '') => {
   check(!/no existe|no está registrad|no encontr|sin cuenta/i.test(noExiste.texto),
     'y en ninguna parte dice que la cuenta no exista',
     noExiste.texto);
+
+  // ═══ §1b · EL AVISO NOMBRA LA DIRECCIÓN, Y AUN ASÍ NO AFIRMA NADA ═════════
+  //
+  // El renglón grueso es el que se lee primero y el que más fácil se
+  // descuida: basta un «Correo enviado a …» para que la pantalla afirme que
+  // la cuenta existe, con el condicional intacto dos líneas abajo. Por eso el
+  // título se mide aparte del texto.
+  console.log('\n§1b · el renglón grueso dice qué hacer, no lo que pasó');
+  const DIR = 'quien.sea@fosmon.com.mx';
+  const conDir = respuestaDeRecuperacion(null, DIR);
+
+  check(String(conDir.titulo || '').includes(DIR),
+    'repite la dirección TECLEADA, que no delata nada y deja ver un dedazo',
+    conDir.titulo || '(sin título)');
+
+  check(!/enviad|mandamos|te mandé|salió|recibió|recibirás/i.test(conDir.titulo || ''),
+    'y NO afirma que el correo salió: eso lo diría sólo de una cuenta que existe',
+    conDir.titulo || '');
+
+  check(/si esa dirección tiene cuenta/i.test(conDir.texto),
+    'el condicional sigue completo en el renglón fino, que es donde protege',
+    conDir.texto.slice(0, 60) + '…');
+
+  check(respuestaDeRecuperacion(null, '').titulo === 'Revisa tu correo',
+    'y sin dirección se cae a un título genérico en vez de a «Revisa undefined»',
+    respuestaDeRecuperacion(null, '').titulo);
+
+  check(['auth/invalid-email', 'auth/too-many-requests', 'desconocido']
+      .every(c => !respuestaDeRecuperacion(c, DIR).titulo),
+    'los errores no llevan renglón grueso: no hay nada que ir a revisar',
+    ['auth/invalid-email', 'desconocido']
+      .map(c => String(respuestaDeRecuperacion(c, DIR).titulo || '—')).join(' / '));
 
   // ═══ §2 · LO QUE SÍ SE PUEDE DECIR ════════════════════════════════════════
   //
