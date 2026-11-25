@@ -650,6 +650,33 @@ if (faltaElReloj) {
   console.log('verde. Si de verdad se quiere sin barrido, se pide: BARRIDO=no.');
 }
 
-process.exit(rojas.length + mudas.length + colgadas.length + caducas.length
-  + exclusionesFantasma.length + sinDeclarar.length
-  + (faltaElReloj ? 1 : 0) > 0 ? 1 : 0);
+// ── LA PUERTA, EN UNA FUNCIÓN QUE SE PUEDE EJECUTAR ────────────────────────
+//
+// Estaba escrita como una expresión dentro del `process.exit`, y ahí nadie la
+// podía correr sin correr la suite entera. En esa expresión faltaba
+// `sinEmulador`, y lo que eso significa se vio el 2026-11-25: con los
+// emuladores caídos la suite imprimió «137 en verde · 0 en rojo · 16 sin
+// emulador» y **salió con 0**. Dieciséis bancos que no se comprobaron pasaron
+// por puerta abierta, y quien mira el código de salida —o un CI— lee verde.
+//
+// El informe de abajo ya lo decía con todas sus letras; la puerta no. Decirlo
+// y no hacerlo cumplir es peor que callarlo, porque invita a confiar en el
+// número.
+//
+// Rojo gana sobre no-medido: un fallo conocido es más accionable que una
+// medición que no ocurrió, y las dos cierran la puerta igual.
+function codigoDeSalida({ rojas = 0, mudas = 0, colgadas = 0, caducas = 0,
+                          exclusionesFantasma = 0, sinDeclarar = 0,
+                          faltaElReloj = false, sinEmulador = 0 } = {}) {
+  const enRojo = rojas + mudas + colgadas + caducas
+    + exclusionesFantasma + sinDeclarar + (faltaElReloj ? 1 : 0);
+  if (enRojo > 0) return 1;
+  if (sinEmulador > 0) return NO_ARRANCO;   // 2: no se pudo medir, no es verde
+  return 0;
+}
+
+process.exit(codigoDeSalida({
+  rojas: rojas.length, mudas: mudas.length, colgadas: colgadas.length,
+  caducas: caducas.length, exclusionesFantasma: exclusionesFantasma.length,
+  sinDeclarar: sinDeclarar.length, faltaElReloj, sinEmulador: sinEmulador.length,
+}));

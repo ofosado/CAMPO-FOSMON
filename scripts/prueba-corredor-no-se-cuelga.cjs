@@ -33,7 +33,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { vigilarExcepciones, sinPrecondicion } = require('./no-arranco.cjs');
+const { vigilarExcepciones, sinPrecondicion, NO_ARRANCO } = require('./no-arranco.cjs');
 
 vigilarExcepciones('el corredor de la suite');
 
@@ -184,8 +184,12 @@ if (process.argv.includes('--contraprueba')) {
       '[path.join(dir, f)]'],
     ['ver la caduca y no contarla',
       /caducas\.push\(\[f, causa, salida\]\);/, ''],
+    // Ancla movida el 2026-11-25: la decisión de la puerta dejó de ser una
+    // expresión dentro del `process.exit` y pasó a `codigoDeSalida`, para que
+    // se pueda ejecutar sin correr la suite entera. La contraprueba lo cantó
+    // como RANCIA, que es exactamente para lo que está.
     ['no contar las caducas al salir',
-      /colgadas\.length \+ caducas\.length/, 'colgadas.length'],
+      /colgadas \+ caducas\n/, 'colgadas\n'],
     ['borrar las caducas del resumen',
       /`\$\{caducas\.length\} que caduca\(n\) ` \+\n            /, ''],
     // La tabla de exclusiones, por sus dos lados: no mirarla, y no publicarla.
@@ -869,15 +873,31 @@ else
     'el informe pide `exigirPuertos` y la suite sale con 1',
     `salida ${rSinPedir.status} · ${rSinPedir.salida.trim().split('\n').slice(-1)[0]}`);
 
+// ── POR QUÉ AQUÍ SE ESPERA 2 Y NO 0 ────────────────────────────────────────
+//
+// `correrTaller3` corre el corredor con `EMU_PORT: '1'` y compañía: los
+// emuladores están apagados A PROPÓSITO, porque lo que este taller mide es la
+// DISCREPANCIA entre lo que un banco declara y lo que dice la tabla, no si
+// los bancos pasan.
+//
+// Hasta el 2026-11-25 esto se comprobaba con `status === 0`, usando el código
+// de salida como sinónimo de «no se denunció nada». Dejó de serlo el día que
+// la puerta empezó a cerrar con 2 sobre bancos que no se pudieron comprobar
+// —que es justo lo que pasa aquí, y es cierto—. La aserción se vuelve a
+// escribir sobre lo que de verdad afirma: no hay denuncia, y no hay ROJO.
+//
+// Y se exige el 2 exacto, no un «cualquier cosa menos 1»: con los emuladores
+// caídos no hay otro código correcto, y aflojarlo a «no es rojo» taparía que
+// la puerta volviera a abrirse con 0.
 console.log('\n── Un banco que declara lo mismo que la tabla ──');
 const rCuadra = bancoQueDeclara(
   `require('./no-arranco.cjs').exigirPuertos({ firestore: 1, auth: 1 }, '127.0.0.1');\n`);
-if (rCuadra.status === 0 && !/no dicen lo mismo/.test(rCuadra.salida))
-  ok('no se denuncia nada: es el caso bueno y no puede salir en rojo',
+if (rCuadra.status === NO_ARRANCO && !/no dicen lo mismo/.test(rCuadra.salida))
+  ok('no se denuncia nada: es el caso bueno y no puede salir en ROJO',
     (rCuadra.salida.match(/^\d+ en verde .*/m) || [''])[0].trim());
 else
-  falla('no se denuncia nada: es el caso bueno y no puede salir en rojo',
-    'salida 0 y ni una denuncia',
+  falla('no se denuncia nada: es el caso bueno y no puede salir en ROJO',
+    `ni una denuncia, y salida ${NO_ARRANCO} —sin emuladores, nada se comprobó—`,
     `salida ${rCuadra.status} · ${(rCuadra.salida.match(/.*no dicen lo mismo.*/) || ['(sin denuncia)'])[0].trim()}`);
 
 console.log('\n── Un banco que declara MENOS emuladores que la tabla ──');
@@ -1006,12 +1026,15 @@ const rRepo = spawnSync(process.execPath,
            EMU_PORT: '1', EMU_AUTH_PORT: '1', EMU_STOR_PORT: '1' },
   });
 const salidaRepo = (rRepo.stdout || '') + (rRepo.stderr || '');
-if (!/no dicen lo mismo/.test(salidaRepo) && rRepo.status === 0)
+// Mismo caso que arriba, y por el mismo motivo: esta corrida también lleva los
+// puertos apagados, así que `reglas-evidencia` no se puede comprobar y 2 es el
+// veredicto correcto. Lo que se mide es que no haya denuncia, no que pase.
+if (!/no dicen lo mismo/.test(salidaRepo) && rRepo.status === NO_ARRANCO)
   ok('ningún banco del repositorio discrepa de la tabla',
     (salidaRepo.match(/^\d+ en verde .*/m) || ['(sin resumen)'])[0].trim());
 else
   falla('ningún banco del repositorio discrepa de la tabla',
-    'salida 0 y ni una denuncia sobre el repositorio real',
+    `ni una denuncia sobre el repositorio real, y salida ${NO_ARRANCO}`,
     `salida ${rRepo.status} · ` +
     (salidaRepo.match(/^ {2}\S+:.*/m) || ['(sin renglón)'])[0].trim());
 try { fs.rmSync(tallerRepo, { recursive: true, force: true }); } catch {}
