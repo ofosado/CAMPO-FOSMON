@@ -1041,8 +1041,15 @@ const MUTANTES_FUNCS = [
   { titulo: 'la constancia se guarda dentro del snapshot, que se recorta a 52 semanas',
     cambios: [['await db.doc(`${rutaObra}/avance/rendiciones`).set({',
                'await db.doc(`${rutaObra}/avance/historial`).set({']] },
+  // Anclaje alargado el 2026-11-25: `}, { merge: true });` dejó de ser único en
+  // `functions/index.js` cuando entró `mandarRecuperacion`, que también escribe
+  // con `merge`. El corredor lo paró por AMBIGUA, que es su trabajo. Se alarga
+  // hasta incluir el campo que sólo esta escritura tiene, en vez de declarar
+  // `veces: 2`: las dos escrituras no tienen nada que ver y mutarlas juntas
+  // mediría dos conductas con una sola contraprueba.
   { titulo: 'la constancia pisa la de la semana anterior',
-    cambios: [['    }, { merge: true });', '    });']] },
+    cambios: [['          rol: perfil.rol,\n        },\n      },\n    }, { merge: true });',
+               '          rol: perfil.rol,\n        },\n      },\n    });']] },
   { titulo: 'la constancia no dice a quién, sólo que hubo',
     cambios: [['          a: destinatarios,', '          a: [],']] },
   { titulo: 'la constancia no dice cuándo',

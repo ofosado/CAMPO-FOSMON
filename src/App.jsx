@@ -4,8 +4,8 @@ import { CASO, conReintentoDePermiso, construirRastro, encolarRastro, drenarCola
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenResult,
          onAuthStateChanged,
-         updatePassword, reauthenticateWithCredential, EmailAuthProvider,
-         sendPasswordResetEmail } from "firebase/auth";
+         updatePassword, reauthenticateWithCredential, EmailAuthProvider
+       } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -11143,11 +11143,22 @@ const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purp
 // no puede entrar. Decirlo parece obvio y no lo es: la tentación es ponerlo
 // en Configuración, donde sólo llega quien ya entró.
 //
-// LO QUE NO PUEDE HACER: decir si la cuenta existe. `sendPasswordResetEmail`
-// lanza `auth/user-not-found` cuando no existe, y enseñar eso convierte la
-// pantalla en un comprobador de correos — cualquiera averigua quién tiene
-// cuenta probando direcciones. Así que esa negativa se trata como un éxito.
-// No es cosmética: es la diferencia entre un formulario y un padrón público.
+// LO QUE NO PUEDE HACER: decir si la cuenta existe. Enseñar la negativa
+// convierte la pantalla en un comprobador de correos — cualquiera averigua
+// quién tiene cuenta probando direcciones. En un padrón de 18 personas eso es
+// la lista del personal. Así que esa negativa se trata como un éxito. No es
+// cosmética: es la diferencia entre un formulario y un padrón público.
+//
+// DESDE EL 2026-11-25 el correo NO lo manda Firebase: lo manda la función
+// `mandarRecuperacion`, porque Google tiene bloqueada la plantilla de este
+// proyecto y el enlace apuntaba a `campo-fosmon.firebaseapp.com`. Eso mejora
+// esta pantalla sin que se note: la decisión de no delatar ya no es de aquí
+// —la función contesta lo mismo exista o no la cuenta—, así que el front ya no
+// puede equivocarse ni teniendo el código enfrente.
+//
+// Los casos `auth/*` se quedan a propósito, de piso: el día que alguien vuelva
+// a llamar a `sendPasswordResetEmail` desde aquí, la pantalla sigue sin
+// delatar. Hoy no los alcanza nada.
 //
 // Esta función decide QUÉ SE LE CONTESTA al usuario y vive fuera del
 // componente a propósito, para poder ejecutarla contra cada código de error
@@ -11164,13 +11175,17 @@ function respuestaDeRecuperacion(codigo) {
         "para elegir una contraseña nueva. Revisa también la bandeja de no deseados." };
     // Éstos sí se pueden decir: hablan de lo que el usuario tecleó o del
     // estado del servicio, no de quién tiene cuenta.
+    case "functions/invalid-argument":
     case "auth/invalid-email":
       return { tono: "error", texto: "Esa dirección no tiene forma de correo." };
     case "auth/missing-email":
       return { tono: "error", texto: "Escribe tu correo arriba y vuelve a darle." };
+    case "functions/resource-exhausted":
     case "auth/too-many-requests":
       return { tono: "error", texto:
         "Demasiados intentos seguidos. Espera unos minutos y vuelve a intentarlo." };
+    case "functions/unavailable":
+    case "functions/deadline-exceeded":
     case "auth/network-request-failed":
       return { tono: "error", texto: "No hay conexión. Revisa la red y vuelve a intentarlo." };
     default:
@@ -11195,7 +11210,10 @@ function Login({onLogin, aviso = ''}){
     if (!dir) { setRecup(respuestaDeRecuperacion("auth/missing-email")); return; }
     setRecuperando(true); setRecup(null); setError("");
     try {
-      await sendPasswordResetEmail(fbAuth, dir);
+      // La función contesta lo mismo exista o no la cuenta. Lo único que
+      // puede llegar aquí como error habla del correo que se tecleó o de que
+      // no se pudo hablar con el servidor.
+      await httpsCallable(fbFn, "mandarRecuperacion")({ correo: dir });
       setRecup(respuestaDeRecuperacion(null));
     } catch (e) {
       setRecup(respuestaDeRecuperacion(e?.code || "desconocido"));
