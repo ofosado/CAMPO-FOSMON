@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Prueba: al quitar del tablero de la obra las tarjetas «Personal en campo —
+// Prueba: al quitar del tablero de la obra las tarjetas «Personal —
 // Semana N» y «Margen bruto de obra», lo que esas tarjetas decían Y LOS KPIS
 // NO siguió saliendo a pantalla.
 //
@@ -7,7 +7,7 @@
 // personal, el mismo margen— y por eso se fueron. Pero ninguna era 100%
 // repetición: la de personal era el único sitio que decía DE QUÉ SEMANA son
 // las cifras y si esa semana vino rayada en varios archivos, y la de margen el
-// único que decía CÓMO se cuenta («Ejecutado + almacén − Gasto total»).
+// único que decía CÓMO se cuenta («Ejecutado − Gasto total»).
 // Borrarlas de golpe se habría llevado ese 20% sin que nada se pusiera rojo:
 // la pantalla seguiría enseñando un número correcto, sólo que sin decir de
 // cuándo es ni de qué sale.
@@ -70,7 +70,7 @@ traverse(ast, {
   JSXElement(p) {
     if (p.node.openingElement.name.name !== 'Kpi') return;
     const txt = src.slice(p.node.start, p.node.end);
-    const m = txt.match(/label="(Personal campo|Margen bruto)"/);
+    const m = txt.match(/label="(Personal|Margen)"/);
     if (!m || kpiDe[m[1]]) return;
     kpiDe[m[1]] = txt;
   },
@@ -80,8 +80,8 @@ const PEDIDOS = ['semanasDeNomina', 'plantillaDeObra', 'presentacionEconomiaObra
   'nivelMargen', 'C', 'MXN'];
 const { cuerpo, faltan } = fuenteDe(archivo, PEDIDOS, { tolerante: true });
 const ausentes = [...faltan];
-if (!kpiDe['Personal campo']) ausentes.push('el <Kpi> «Personal campo» del tablero');
-if (!kpiDe['Margen bruto'])   ausentes.push('el <Kpi> «Margen bruto» del tablero');
+if (!kpiDe['Personal']) ausentes.push('el <Kpi> «Personal» del tablero');
+if (!kpiDe['Margen'])   ausentes.push('el <Kpi> «Margen» del tablero');
 if (!fuenteDashboard)         ausentes.push('el componente Dashboard');
 if (!rangoPlantilla)          ausentes.push('`plantillaDeObra` como const de módulo');
 if (ausentes.length) noArranco(ausentes, path.relative(raiz, archivo));
@@ -153,11 +153,11 @@ const pinta = (jsx, ambito) => {
 };
 
 const pintaPersonal = (historial) =>
-  pinta(kpiDe['Personal campo'], { plantilla: plantillaDeObra(historial), C });
+  pinta(kpiDe['Personal'], { plantilla: plantillaDeObra(historial), C });
 
 const pintaMargen = (kpis) => {
   const pres = presentacionEconomiaObra(kpis);
-  return { pres, ...pinta(kpiDe['Margen bruto'],
+  return { pres, ...pinta(kpiDe['Margen'],
     { pres, me: kpis.me, mNiv: nivelMargen(kpis.mpct), C }) };
 };
 
@@ -184,7 +184,7 @@ const vacio = pintaPersonal([]);
 console.log('       « ' + vacio.texto + ' »');
 check(/\|sin nómina\|/.test(vacio.texto),
   'el valor dice «sin nómina», no una cifra',
-  vacio.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+  vacio.texto.match(/Personal\|([^|]*)\|/)?.[1] || '?');
 check(!/\|0\|/.test(vacio.texto), 'y en particular NO dice 0');
 check(/no se ha cargado nómina/.test(vacio.texto),
   'y debajo dice por qué no hay cifra');
@@ -195,7 +195,7 @@ console.log('\n2. Con nómina, el KPI dice de qué semana son las cifras\n');
 const lleno = pintaPersonal(H);
 console.log('       « ' + lleno.texto + ' »');
 check(/\|134\|/.test(lleno.texto), 'el total en pantalla es 134',
-  lleno.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+  lleno.texto.match(/Personal\|([^|]*)\|/)?.[1] || '?');
 check(/51D · 83I/.test(lleno.texto),
   'con el desglose en directos e indirectos que decía la tarjeta borrada');
 check(/Semana 38/.test(lleno.texto),
@@ -222,7 +222,7 @@ const sinDecl = pintaPersonal(semanasDeNomina(P0126));
 console.log('       « ' + sinDecl.texto + ' »');
 check(/\|134\|/.test(sinDecl.texto),
   'el total sigue siendo 134: la plantilla no depende de la columna D/I',
-  sinDecl.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+  sinDecl.texto.match(/Personal\|([^|]*)\|/)?.[1] || '?');
 check(!/51D/.test(sinDecl.texto) && !/83I/.test(sinDecl.texto),
   'pero «51D · 83I» NO aparece: eso ya no se afirma sin saber quién lo dijo');
 check(/no dice si el archivo traía la columna Tipo \(D\/I\)/.test(sinDecl.texto),
@@ -254,7 +254,7 @@ const ceroMedido = pintaPersonal(semanasDeNomina([{ semana: 'Semana 38',
 console.log('       « ' + ceroMedido.texto + ' »');
 check(/\|0\|/.test(ceroMedido.texto),
   'una semana que midió cero directos y cero indirectos sí publica 0',
-  ceroMedido.texto.match(/Personal campo\|([^|]*)\|/)?.[1] || '?');
+  ceroMedido.texto.match(/Personal\|([^|]*)\|/)?.[1] || '?');
 check(ceroMedido.texto.includes(C.green),
   'y ése sí va en verde: es una medición, no un hueco');
 check(/Semana 38/.test(ceroMedido.texto),

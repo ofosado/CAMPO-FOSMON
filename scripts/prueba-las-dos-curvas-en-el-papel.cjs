@@ -503,7 +503,7 @@ const CRUZA = {
     { clave: 'gasto', nombre: 'Gasto acumulado', color: COLOR_CURVA.gasto,
       valores: [7000000, 8000000, 9000000, 9500000, 10000000, 10500000] },
   ],
-  areas: [{ clave: 'margen', nombre: 'Margen bruto acumulado, en pesos',
+  areas: [{ clave: 'margen', nombre: 'Margen acumulado, en pesos',
             arriba: 'ejec', abajo: 'gasto',
             valores: [-3000000, -2000000, -1000000, 500000, 2000000, 3500000],
             colorPos: C.greenDk, colorNeg: C.redDk }],

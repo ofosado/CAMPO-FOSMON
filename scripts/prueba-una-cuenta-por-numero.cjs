@@ -101,6 +101,9 @@ const DE_MODULO = [
   'semanaISO', 'snapshotId', 'estadoPorSemana', 'proyeccionDeAvance',
   'frasePorQueSinDesviacion', 'kpiDesviacionPlazo',
   'fechaUltimaCapturaDe', 'diasSinCapturaDe', 'atrasoProyectado',
+  // Desde el 2026-11-25: el panel pregunta `obraSeCaptura` antes de contar
+  // días, y el tablero de obra arma su KPI de plazo con `kpiPlazoDeObra`.
+  'obraSeCaptura', 'kpiPlazoDeObra',
 ];
 // Sin éstas no hay nada que medir: son las cuentas únicas cuya existencia da
 // sentido a la pregunta. Que falten es renombre, no regresión.
@@ -198,15 +201,22 @@ const restandoInstantes = (fecha, ahora) =>
 // todo el método de esta prueba.
 const entornoDe = (inyecta) => ({
   DashboardPrincipal: {
+    // `o` y `obraSeCaptura` desde el 2026-11-25: las cuentas del panel
+    // preguntan primero si la obra se sigue capturando, porque una cerrada no
+    // acumula días de atraso. La obra del fixture está ACTIVA a propósito —si
+    // entrara cerrada, las tres cuentas darían `null` y la prueba saldría
+    // verde por vacío, que es justo lo que no vale.
     ...inyecta, avSemanas: HISTORIAL, HOY: AHORA,
+    o: OBRA, obraSeCaptura: mod.obraSeCaptura,
   },
   PortafolioDependencia: {
     ...inyecta, avSemanas: HISTORIAL, HOY: AHORA,
-    o: OBRA, info: INFO, af: 24,
+    o: OBRA, info: INFO, af: 24, obraSeCaptura: mod.obraSeCaptura,
   },
   DashboardDependencia: {
     ...inyecta, historialAvance: HISTORIAL, obra: { ...OBRA, ...INFO },
     avance: 24, estadosSemana: mod.estadoPorSemana(HISTORIAL),
+    obraSeCaptura: mod.obraSeCaptura, kpiPlazoDeObra: mod.kpiPlazoDeObra,
   },
   MiniDashAvance: {
     ...inyecta, historialAvance: HISTORIAL, obra: { ...OBRA, ...INFO },
@@ -221,6 +231,8 @@ const REALES = {
   proyeccionDeAvance: mod.proyeccionDeAvance,
   estadoPorSemana: mod.estadoPorSemana,
   kpiDesviacionPlazo: mod.kpiDesviacionPlazo,
+  kpiPlazoDeObra: mod.kpiPlazoDeObra,
+  obraSeCaptura: mod.obraSeCaptura,
   finVigenteDe: mod.finVigenteDe,
   frasePorQueSinDesviacion: mod.frasePorQueSinDesviacion,
 };

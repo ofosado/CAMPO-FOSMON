@@ -697,7 +697,7 @@ const hojaSinGP = (await dibujar(dSinGP)).map(x => x.texto);
 //
 // La teja son TRES TEXTOS SEGUIDOS —rótulo en mayúsculas, valor, pie—, que es
 // como `kpiBox` los manda al papel.
-const iGasto = hojaSinGP.findIndex(t => /^GASTO TOTAL$/i.test(String(t).trim()));
+const iGasto = hojaSinGP.findIndex(t => /^GASTO ACUMULADO$/i.test(String(t).trim()));
 const valorGasto = iGasto >= 0 ? String(hojaSinGP[iGasto + 1] || '') : '(no hay teja)';
 ok(valorGasto === 'sin medir',
   'el gasto se imprime «sin medir» y no como un cero',
@@ -902,12 +902,12 @@ if (process.argv.includes('--contraprueba')) {
     // ── E · la frontera ────────────────────────────────────────────────────
     { nombre: 'el gasto se formatea aquí y el sin medir vuelve a salir como cifra',
       hacer: () => src.replace(
-        "    ['Gasto total', pres.gastoTxt,",
-        "    ['Gasto total', MXN(kpis.gt),") },
+        "    ['Gasto acumulado', pres.gastoTxt,",
+        "    ['Gasto acumulado', MXN(kpis.gt),") },
     { nombre: 'el margen se formatea aquí y el inflado se publica',
       hacer: () => src.replace(
-        "    ['Margen bruto', pres.margenTxt, pres.margenAbsTxt, colorMargen],",
-        "    ['Margen bruto', PCT(kpis.mpct), pres.margenAbsTxt, colorMargen],") },
+        "    ['Margen', pres.margenTxt, pres.margenAbsTxt, colorMargen],",
+        "    ['Margen', PCT(kpis.mpct), pres.margenAbsTxt, colorMargen],") },
     { nombre: 'la tabla del margen se dibuja aunque no haya tramo que publicar',
       hacer: () => src.replace(
         '  if (cm.renglones.length) {',

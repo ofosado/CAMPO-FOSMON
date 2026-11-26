@@ -63,7 +63,11 @@ const raiz = path.resolve(__dirname, '..');
 const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
 let app;
 try {
-  app = deApp('evidenciaDeObra', 'evidenciaVigente', 'fraseOrigenEvidencia');
+  // `evidenciaNormalizada` —que `evidenciaDeObra` arrastra— reescribe la URL
+  // de la foto con `archivoEnCotea`, de su propio módulo. El extractor no
+  // sigue imports; se pide aquí, a la vista.
+  app = deApp('evidenciaDeObra', 'evidenciaVigente', 'fraseOrigenEvidencia',
+    { modulos: ['src/archivo-en-cotea.js'] });
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);

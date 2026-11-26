@@ -104,7 +104,7 @@ traverse(ast, {
 // escribir la contraprueba de `prueba-la-obra-nace-con-su-expediente`: dos
 // mutaciones de nivel de módulo salieron «PASÓ · NADIE la detectó» y la causa
 // era ésta. Arreglado en los cuatro bancos que toman el fuente por argumento.
-const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
+const { fuenteDe, SimboloPerdido, fuenteDeModulo } = require('./extraer-de-app.cjs');
 const PIEZAS_MODULO = ['fechaLocalDeISO', 'semanaISO', 'snapshotId',
   'ORIGEN_LEGADO', 'ORIGEN_EN_VIVO', 'fechaDeTimestamp', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'evidenciaDeObra', 'evidenciaVigente',
@@ -116,7 +116,13 @@ const PIEZAS_DENTRO = ['App.evid', 'Captura.addFoto', 'Captura.anularFoto'];
 
 let cuerpoModulo;
 try {
-  cuerpoModulo = fuenteDe(archivo, PIEZAS_MODULO).cuerpo;
+  // `App.jsx` importa `archivoEnCotea` de su propio módulo y el extractor NO
+  // sigue imports —se intentó el 2026-11-25 y no se puede hacer bien: módulos
+  // como `rutas-org` tienen estado mutable de nivel superior y re-emitirlo
+  // como `const` rompe su semántica—. El banco lo pide a la vista. Fuente de
+  // verdad, no doble: lo que se mide es lo que corre en producción.
+  cuerpoModulo = fuenteDeModulo('src/archivo-en-cotea.js') + '\n'
+    + fuenteDe(archivo, PIEZAS_MODULO).cuerpo;
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);

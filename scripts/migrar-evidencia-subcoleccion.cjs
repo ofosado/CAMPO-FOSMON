@@ -236,7 +236,10 @@ const PIEZAS = ['evidenciaDeObra', 'evidenciaVigente', 'evidenciaNormalizada',
   'idDePartida', 'evidenciaMigrada', 'semanaDeEvidencia', 'fechaDeTimestamp'];
 let app;
 try {
-  app = deApp(PIEZAS);
+  // `evidenciaNormalizada` reescribe la URL de la foto con `archivoEnCotea`,
+  // que vive en su propio módulo para que `App.jsx` y `ot.jsx` compartan UNA
+  // copia. El extractor no sigue imports, así que se pide aquí.
+  app = deApp(PIEZAS, { modulos: ['src/archivo-en-cotea.js'] });
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);

@@ -119,7 +119,11 @@ const aCampos = (o) => Object.fromEntries(
 const { deApp, SimboloPerdido } = require('./extraer-de-app.cjs');
 let app;
 try {
-  app = deApp('evidenciaDeObra', 'evidenciaDePartida', 'idDePartida', 'evidenciaMigrada');
+  // `evidenciaNormalizada` —que `evidenciaDeObra` arrastra— reescribe la URL
+  // de la foto con `archivoEnCotea`, que vive en su propio módulo. El
+  // extractor no sigue imports, así que se pide aquí a la vista.
+  app = deApp('evidenciaDeObra', 'evidenciaDePartida', 'idDePartida', 'evidenciaMigrada',
+    { modulos: ['src/archivo-en-cotea.js'] });
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);

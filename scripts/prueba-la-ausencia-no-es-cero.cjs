@@ -84,6 +84,18 @@ traverse(parse(src, { sourceType: 'module', plugins: ['jsx'] }), {
     const lbl = p.node.attributes.find(a => a.name?.name === 'label');
     if (lbl?.value?.value !== 'Personal') return;
     const sub = p.node.attributes.find(a => a.name?.name === 'sub');
+    // DESDE EL 2026-11-25 HAY DOS `<Kpi label="Personal"/>`: el de la pestaña
+    // de Nómina —que es el de esta prueba— y el del tablero de obra, que se
+    // llamaba «Personal» y se acortó al fijar la lista de seis
+    // indicadores. El rótulo dejó de bastar para distinguirlos.
+    //
+    // Se distinguen por lo que el `sub` LEE, que es lo que cada uno afirma:
+    // el de Nómina habla de la carga de la semana (`fuente`, `trabs`…) y el
+    // del tablero se cuelga de `plantilla`. Atarlo a la posición —«el
+    // primero»— volvería a romperse el día que alguien mueva una pantalla.
+    const fuenteSub = sub?.value?.expression
+      ? src.slice(sub.value.expression.start, sub.value.expression.end) : '';
+    if (/\bplantilla\b/.test(fuenteSub)) return;   // ése es el del tablero de obra
     if (sub?.value?.expression)
       subPersonalSrc = src.slice(sub.value.expression.start, sub.value.expression.end);
   },

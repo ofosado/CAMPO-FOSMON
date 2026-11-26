@@ -88,7 +88,7 @@ const QUITAR = ['totalDir', 'totalInd', 'trabajadores'];
   console.log(`         le queda su total de $${total.toLocaleString('es-MX')}: ` +
     'la semana existe y costó dinero, lo que falta es cuánta gente hubo');
   console.log('\nDónde mirarlo:');
-  console.log('  1. obra 0121 → tablero → KPI «Personal campo» → debe decir «sin desglose», en gris');
+  console.log('  1. obra 0121 → tablero → KPI «Personal» → debe decir «sin desglose», en gris');
   console.log('  2. obra 0121 → pestaña Nómina → los KPIs de personal, en «sin conteo»');
   console.log('  3. Tablero principal → KPI «Personal» → el total NO cuenta a la 0121,');
   console.log('     el renglón del delta dice «incompleto: 1 obra sin conteo de personal»');

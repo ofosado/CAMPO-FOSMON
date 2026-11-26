@@ -8,6 +8,7 @@ import { getAuth, signInWithEmailAndPassword, signOut, getIdToken, getIdTokenRes
        } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadString, getDownloadURL, deleteObject } from "firebase/storage";
+import { archivoEnCotea } from "./archivo-en-cotea";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { CargarOT, HistoricoOT } from "./ot.jsx";
 import { subscribeToPWAUpdates } from "./pwa-update.js";
@@ -919,6 +920,11 @@ async function generarPDFInterno({
   // decidió, nunca de un umbral teclado otra vez.
   const pres = presentacionEconomiaObra(kpis);
   const PPTO = kpis.presupuesto;
+  // El KPI de plazo sale de `kpiPlazoDeObra`, la MISMA función que llama el
+  // tablero: el papel y la pantalla desde la que se descargó no pueden decir
+  // atrasos distintos de la misma obra el mismo día.
+  const desvPlazo = kpiPlazoDeObra(obra, historialAvance, kpis.af);
+
   const colorMargen = pres.gastoSinMedir ? Q.mu
     : pres.margenIndefinido ? colorSev('critico')
     : kpis.mpct < 10 ? colorSev('alto')
@@ -1087,23 +1093,54 @@ async function generarPDFInterno({
   // Las cadenas salen de `pres`, no de un ternario escrito aquí. Donde `pres`
   // dice «sin medir» este papel imprime «sin medir», y el color se apaga: un
   // margen que no se pudo medir no es verde ni rojo.
+  // ── LOS MISMOS SEIS QUE EL TABLERO, EN EL MISMO ORDEN ───────────────────
+  //
+  // La lista la fijó Oscar el 2026-11-25 y aplica a las dos superficies. Que
+  // el papel publique otros indicadores que la pantalla de la que se descarga
+  // es la misma clase de defecto que dos cuentas para un número: quien
+  // compara no sabe cuál de los dos leer.
+  //
+  // Se fue de aquí «Avance físico» —el porcentaje de Ejecutado dice lo mismo
+  // sobre el contrato— y «Contratado», que es «Presupuesto total» con otro
+  // nombre.
+  //
+  // LA COBRANZA SE QUEDA, EN SU PROPIA FILA. Al fijar la lista la quité y
+  // escribí aquí que «las estimaciones siguen en su propia sección del
+  // documento». Era falso: este papel NO tiene sección de estimaciones, así
+  // que borrarla sacaba el dinero cobrado de un documento que se archiva. Lo
+  // cazó `prueba-un-numero-que-nadie-midio`, que exige que el monto de una
+  // estimación sin número siga contando en el total.
+  //
+  // La lista de seis es la de los INDICADORES de la obra; que sean seis no
+  // quiere decir que el informe entero se reduzca a seis cifras. Van abajo y
+  // separadas, que es lo contrario de competir con ellas.
   y = kpiRow([
-    ['Avance físico', PCT(kpis.af), 'ponderado del contrato',
-      kpis.af>=75 ? colorSev('bajo') : kpis.af>=40 ? colorSev('medio') : colorSev('alto')],
+    ['Presupuesto total', MXN(PPTO), 'contrato base', Q.piz],
     ['Ejecutado', MXN(kpis.me),
-      PPTO>0 ? `${PCT(kpis.me/PPTO*100)} del contrato` : 'sin contratado capturado', Q.piz],
-    ['Gasto total', pres.gastoTxt,
+      PPTO>0 ? `${PCT(kpis.me/PPTO*100)} del contrato · incluye almacén`
+             : 'sin contratado capturado', Q.piz],
+    ['Gasto acumulado', pres.gastoTxt,
       pres.pctGastoTxt || pres.gastoMotivoTxt || '—',
       pres.gastoSinMedir ? Q.mu : Q.nar],
-    ['Margen bruto', pres.margenTxt, pres.margenAbsTxt, colorMargen],
   ], y);
 
+  // EL MARGEN SE QUEDA COMO ESTABA: porcentaje arriba, importe de pie.
+  //
+  // Lo invertí al fijar la lista —«las otras cinco publican un monto»— y con
+  // el intercambio se fue el CALIFICATIVO, que es lo que ese pie llevaba
+  // además del importe: «Crítico», «Sano». Lo cazó
+  // `prueba-el-numero-con-su-calificativo`, que existe justo para eso: un
+  // −38% sin la palabra al lado es un número que el lector tiene que
+  // calificar solo, y el papel se archiva.
+  //
+  // Los dos —monto y porcentaje— siguen publicándose, que es lo que se pidió.
+  // El orden no era el punto.
   y = kpiRow([
-    ['Contratado', MXN(PPTO), 'presupuesto de la obra', Q.piz],
-    ['Estimado', MXN(kpis.estTotal), 'suma de estimaciones', Q.piz],
-    ['Cobrado', MXN(kpis.estPag),
-      kpis.estTotal>0 ? `${PCT(kpis.estPag/kpis.estTotal*100)} de lo estimado` : 'sin estimaciones', Q.piz],
-    ['Por cobrar', MXN(kpis.estPorCob), 'aprobado, facturado y en proceso', Q.nar],
+    ['Margen', pres.margenTxt, pres.margenAbsTxt, colorMargen],
+    ['Días de atraso', desvPlazo.valor, desvPlazo.sub,
+      desvPlazo.dias === null ? Q.mu
+        : desvPlazo.dias > 15 ? colorSev('alto')
+        : desvPlazo.dias > 0 ? colorSev('medio') : colorSev('bajo')],
   ], y);
 
   // ── LA PLANTILLA, CON LA MISMA CUENTA QUE LA PANTALLA ────────────────────
@@ -1124,8 +1161,18 @@ async function generarPDFInterno({
   // archivo con su columna.
   const plantilla = plantillaDeObra(nominaHistorial);
   y = kpiRow([
-    ['Personal en campo', plantilla.valor, plantilla.sub,
+    ['Personal', plantilla.valor, plantilla.sub,
       plantilla.total === null ? Q.mu : Q.piz],
+  ], y);
+
+  // ── LA COBRANZA, APARTE DE LOS SEIS ──────────────────────────────────────
+  // No son indicadores de la obra: son el estado del cobro, y este documento
+  // es el único que los lleva. Ver el porqué en el bloque de arriba.
+  y = kpiRow([
+    ['Estimado', MXN(kpis.estTotal), 'suma de estimaciones', Q.piz],
+    ['Cobrado', MXN(kpis.estPag),
+      kpis.estTotal>0 ? `${PCT(kpis.estPag/kpis.estTotal*100)} de lo estimado` : 'sin estimaciones', Q.piz],
+    ['Por cobrar', MXN(kpis.estPorCob), 'aprobado, facturado y en proceso', Q.nar],
   ], y);
 
   // LO QUE ESTE DOCUMENTO NO PUEDE AFIRMAR, dicho en una caja y no deducible de
@@ -2222,8 +2269,14 @@ async function generarPDFArt73({
       + `${hueco.faltan === 1 ? 'semana' : 'semanas'} de la obra: el primero que hay es `
       + 'posterior al arranque. Lo construido en ese tramo está dentro del avance acumulado, '
       + 'pero no hay corte semanal que lo documente.');
-  const sinCaptura = diasSinCapturaDe(historialAvance, msCorte);
-  if (sinCaptura === null)
+  // En una obra cerrada estas dos observaciones mienten las dos: la segunda
+  // avisa de «lo que se haya construido después», y después del cierre no se
+  // construyó nada. El estado de la obra ya se dice en su propio sello, que
+  // es donde corresponde.
+  const sinCaptura = obraSeCaptura(obra)
+    ? diasSinCapturaDe(historialAvance, msCorte) : undefined;
+  if (sinCaptura === undefined) { /* obra cerrada: no hay atraso de captura */ }
+  else if (sinCaptura === null)
     obs.push('El expediente no tiene ningún corte de avance fechado, así que no se puede '
       + 'decir de cuándo es el último dato de obra de este informe. Las cifras de avance '
       + 'salen de lo que haya capturado el catálogo, sin fecha que las respalde.');
@@ -4739,7 +4792,7 @@ const ORIGEN_EN_VIVO = 'captura_en_vivo';
 // galería del cliente anunció fotos sobre una rejilla vacía (#32).
 const evidenciaNormalizada = (e) => ({
   id: e.id,
-  url: e.urlOriginal || e.url || '',
+  url: archivoEnCotea(e.urlOriginal || e.url || ''),
   rutaStorage: e.rutaStorage || null,
   partidaId: e.partidaId || '',
   sec: e.partidaClave || e.sec || '',
@@ -6474,6 +6527,31 @@ const diasSinCapturaDe = (historialAvance = [], ahora = Date.now()) => {
 const atrasoProyectado = (obra, info, historialAvance = [], avanceActual, ahora = Date.now()) =>
   proyeccionDeAvance(estadoPorSemana(historialAvance), avanceActual,
     { ...(obra || {}), ...(info || {}) }, ahora);
+
+// ── EL KPI DE PLAZO, ENTERO Y EN UN SITIO ──────────────────────────────────
+//
+// Los días de atraso y la fecha probable de término son la MISMA proyección:
+// los días salen de `desviacionDias` y la fecha de `fechaFin`, del mismo
+// objeto. Pedirla dos veces —que es como lo escribí primero— abre la puerta a
+// que el tablero publique «+12 d» junto a una fecha que no corresponde a esos
+// doce días el día que una de las dos llamadas reciba otro avance.
+//
+// Y está aquí arriba, como función, y no como tres `const` dentro del tablero
+// y otras tres dentro del PDF: así la llaman las dos superficies y el
+// andamiaje de los bancos puede extraerla. Diecinueve bancos dejaron de
+// arrancar cuando esto eran variables sueltas dentro de otra función.
+const kpiPlazoDeObra = (obra, historialAvance = [], avanceActual = 0, ahora = Date.now()) => {
+  const proy = atrasoProyectado(obra, null, historialAvance, avanceActual, ahora);
+  const kpi = kpiDesviacionPlazo(proy);
+  const finTxt = proy.fechaFin
+    ? new Date(proy.fechaFin).toLocaleDateString('es-MX',
+        { day: '2-digit', month: 'short', year: 'numeric' })
+    : null;
+  // El pie lleva la fecha SÓLO cuando hay días que explicar. Con «—» por no
+  // poder proyectar, una fecha al lado sería la contradicción de siempre.
+  const sub = (kpi.dias !== null && finTxt) ? `${kpi.sub} · termina ~${finTxt}` : kpi.sub;
+  return { ...kpi, finTxt, sub };
+};
 
 // ── EL BLOQUE DE PROYECCIÓN AL TÉRMINO, ENTERO ─────────────────────────────
 //
@@ -9470,6 +9548,160 @@ const resolverGastoGP = (obra, gpData) => estadoGastoGP(obra, gpData).valor;
 // `anclada` dice si el último punto se sobrescribió con `gtActual`. Quien
 // compare contra esa serie —el margen, el aviso de gasto sin fechar— tiene que
 // usar la MISMA respuesta, no volver a decidirlo.
+// ── LA SEMANA DEL SHEET, LEÍDA ENTERA ──────────────────────────────────────
+//
+// Las claves del Sheet son `S2025-49`: año y semana. Hasta el 2026-11-25 se
+// leían con `/S?(\d{1,2})/`, que de `S2025-49` saca **20** —los dos primeros
+// dígitos del AÑO—. Las 53 semanas de la 0112 caían todas en la misma, así
+// que la curva de gasto no era una curva: era un punto, y el último punto lo
+// sobrescribe el ancla del KPI. De ahí la línea plana con un salto al final.
+//
+// El año también se perdía: todas las semanas se sellaban con el año en
+// curso, así que una semana de 2025 se dibujaba en 2026.
+//
+// Devuelve `null` cuando la clave no tiene esa forma, y quien la llama la
+// descarta. Inventar un número de semana a partir de una clave que no se
+// entiende es exactamente lo que hacía el regex viejo.
+const semanaDeClaveGP = (clave, añoPorOmision = new Date().getFullYear()) => {
+  const t = String(clave ?? '').trim();
+  // DOS FORMAS, Y LAS DOS EXISTEN. El Sheet de producción escribe
+  // `S2025-49` —año primero— y el sembrador del preview `S36-2026` —semana
+  // primero—. No se adivina por la posición: el grupo de CUATRO dígitos es el
+  // año y el de uno o dos es la semana, que es la única lectura que no se
+  // puede confundir. Medido el 2026-11-25: con sólo la primera forma, la
+  // mitad de los fixtures caían a `null` y la curva volvía a no existir.
+  const dos = /^S?(\d{1,4})-(\d{1,4})$/.exec(t);
+  if (dos) {
+    const a = parseInt(dos[1], 10), b = parseInt(dos[2], 10);
+    const año = dos[1].length === 4 ? a : (dos[2].length === 4 ? b : null);
+    const sem = dos[1].length === 4 ? b : (dos[2].length === 4 ? a : null);
+    // Sin grupo de cuatro dígitos —«12-34»— `año` y `sem` quedan en `null` y
+    // los dos rangos de abajo lo rechazan: no se adivina cuál es cuál. No
+    // lleva guarda propia porque sería un renglón que ninguna mutación puede
+    // hacer caer, y una guarda que no se puede romper enseña a no mirar.
+    if (!(año >= 2000 && año <= 2100)) return null;
+    if (!(sem >= 1 && sem <= 53)) return null;
+    return { año, sem, key: claveSemanaISO(sem, año) };
+  }
+  // Y la forma vieja, sin año: `S47`. Es lo que el código anterior suponía
+  // siempre —y de ahí su defecto— pero para una clave que de verdad no trae
+  // año, el año en curso es lo único que hay. Entra por un parámetro para que
+  // un banco pueda fijarlo en vez de depender del reloj.
+  const sola = /^S?(\d{1,2})$/.exec(t);
+  if (sola) {
+    const sem = parseInt(sola[1], 10);
+    if (!(sem >= 1 && sem <= 53)) return null;
+    return { año: añoPorOmision, sem, key: claveSemanaISO(sem, añoPorOmision) };
+  }
+  return null;
+};
+
+// ── EL ACUMULADO DE GP, SIN ADIVINAR LA BASE ───────────────────────────────
+//
+// El Sheet publica dos cosas: el total de cada AÑO, que es la verdad completa,
+// y una ventana de semanas que es la COLA. Medido el 2026-11-25 en las siete
+// obras de producción: las semanas del año en curso suman exacto su total,
+// y las del año anterior son sólo las últimas (la 0112 trae 157,564 de los
+// 2,022,589 de 2025).
+//
+// Por eso el acumulado no se arma sumando deltas sobre una base adivinada,
+// sino restando por el otro lado:
+//
+//     acumulado(k) = total de todos los años − Σ deltas POSTERIORES a k
+//
+// Es exacto sin suponer dónde empieza la ventana, y cuadra por construcción
+// con el total que publica el KPI en la última semana.
+//
+// Antes de la primera semana de la ventana NO se puede afirmar: de ese tramo
+// sólo hay un total y repartirlo sería inventar la cifra. Se devuelve `null`,
+// salvo cuando no hay nada que repartir —ahí el cero sí está medido—.
+const acumuladoGPPorSemana = (obraGP) => {
+  const totalAños = Object.values(obraGP?.años || {})
+    .reduce((t, v) => t + (parseFloat(v) || 0), 0);
+  const deltas = Object.entries(obraGP?.semanas || {})
+    .map(([k, v]) => {
+      const s = semanaDeClaveGP(k);
+      return s ? { key: s.key, delta: parseFloat(v) || 0 } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+  const sumaVentana = deltas.reduce((t, d) => t + d.delta, 0);
+  // Cuánto de cada año cae DENTRO de la ventana. Hace falta antes de poder
+  // decir qué quedó fuera.
+  const ventanaPorAño = {};
+  for (const d of deltas) {
+    const y = parseInt(d.key.slice(0, 4), 10);
+    ventanaPorAño[y] = (ventanaPorAño[y] || 0) + d.delta;
+  }
+  const porAño = {};
+  for (const [k, v] of Object.entries(obraGP?.años || {})) {
+    const y = parseInt(String(k).replace(/^Y/, ''), 10);
+    if (!isNaN(y)) porAño[y] = (porAño[y] || 0) + (parseFloat(v) || 0);
+  }
+  // Lo que ocurrió ANTES de la primera semana de la ventana. Se deduce, no se
+  // adivina: es el total de los años menos lo que la ventana ya detalla.
+  //
+  // AÑO POR AÑO, no `total − ventana` de golpe. La resta global supone que
+  // `años` y `semanas` hablan del mismo conjunto, y no siempre: hay hojas
+  // donde `años` trae SÓLO los años cerrados y la ventana detalla el año en
+  // curso. Ahí la resta global daba negativo —se topaba a cero— y la curva
+  // perdía los $9,000,000 de los años cerrados, arrancando en el primer
+  // delta. Medido el 2026-11-25 contra `las-dos-curvas-en-el-papel`.
+  //
+  // De cada año queda fuera de la ventana lo que la ventana no detalla, y
+  // nunca menos de cero.
+  const antesDeLaVentana = Object.keys(porAño).reduce(
+    (t, y) => t + Math.max(0, porAño[y] - (ventanaPorAño[y] || 0)), 0);
+
+  // Suma corrida desde ahí. Equivale a restar por el otro lado cuando los
+  // totales cuadran, y no se rompe cuando no cuadran.
+  const acum = {};
+  let corrido = antesDeLaVentana;
+  for (const d of deltas) {
+    corrido += d.delta;
+    acum[d.key] = corrido;
+  }
+  return { acum, claves: deltas.map(d => d.key), antesDeLaVentana, totalAños,
+           porAño, ventanaPorAño };
+};
+
+// El acumulado afirmable hasta una semana ISO dada, o `null` si no se sabe.
+const gpAcumuladoHasta = (cuenta, semKey) => {
+  let ult = null;
+  for (const k of cuenta.claves) { if (k <= semKey) ult = cuenta.acum[k]; else break; }
+  if (ult !== null) return ult;
+
+  // ── ANTES DE LA VENTANA: LO QUE SÍ SE SABE, Y SÓLO ESO ──────────────────
+  //
+  // De los años ANTERIORES al de la semana pedida se sabe todo: su gasto
+  // entero ocurrió antes de ella. Devolver `null` aquí —que es lo que hice
+  // primero— tira una cifra que sí es afirmable, y la curva se queda sin
+  // enero y febrero cada año.
+  //
+  // De SU PROPIO año no se sabe nada: el Sheet publica un total y repartirlo
+  // entre las semanas sería inventarlo. Salvo que no haya nada que repartir,
+  // y entonces el cero está medido.
+  const añoK = parseInt(String(semKey).slice(0, 4), 10);
+  if (!Number.isFinite(añoK)) return null;
+  let previos = 0;
+  for (const [y, v] of Object.entries(cuenta.porAño || {}))
+    if (Number(y) < añoK) previos += v;
+  // De su propio año sólo queda sin saber lo que la ventana NO cubre. Si la
+  // ventana trae el año entero —el caso normal del año en curso— entonces
+  // antes de su primera semana no había nada de ese año, y el cero está
+  // medido.
+  // Lo que de SU año queda sin saber es la parte que la ventana NO cubre, y
+  // nunca menos de cero: hay hojas donde la ventana detalla más de lo que
+  // `años` declara —el año en curso suele no estar en `años`— y ahí no queda
+  // nada por repartir, no una deuda negativa. Medido: sin el tope, enero
+  // entero salía en «no se sabe» teniendo el año cerrado a la vista.
+  const suAño = (cuenta.porAño || {})[añoK] || 0;
+  const enVentana = (cuenta.ventanaPorAño || {})[añoK] || 0;
+  const sinRepartir = Math.max(0, suAño - enVentana);
+  return sinRepartir < 1 ? previos : null;
+};
+
 const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
                                otrosGastos = [], maquinaria = [] }) => {
   const _gpEstado = estadoGastoGP(obra, gpData);
@@ -9479,33 +9711,10 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   // El Sheet guarda el gasto DE cada semana (delta) y sólo del año en curso;
   // los años cerrados vienen en `años`. El acumulado se arma sumando los
   // deltas sobre esa base.
-  const gpAcumPorSem = {};
-  // Lo gastado en los años ya CERRADOS. Es un total, y no trae reparto por
-  // semana: hace falta fuera del bloque porque es la única cifra afirmable
-  // sobre cualquier semana anterior a la primera que el Sheet detalla.
-  let gpBase = 0;
-  const añoDelSheet = new Date().getFullYear();
-  if (obraGP?.semanas) {
-    const añoActual = añoDelSheet;
-    if (obraGP.años) {
-      Object.entries(obraGP.años).forEach(([kAño, v]) => {
-        const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
-        if (!isNaN(y) && y < añoActual) gpBase += (parseFloat(v) || 0);
-      });
-    }
-    const deltas = Object.entries(obraGP.semanas)
-      .map(([k, v]) => {
-        const m = String(k).match(/S?(\d{1,2})/);
-        return m ? { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 } : null;
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.sem - b.sem);
-    let acum = gpBase;
-    deltas.forEach(({ sem, delta }) => {
-      acum += delta;
-      gpAcumPorSem[claveSemanaISO(sem, añoActual)] = acum;
-    });
-  }
+  // El acumulado sale de `acumuladoGPPorSemana`, que lee la clave entera
+  // —año y semana— y resta por el lado de los totales en vez de adivinar una
+  // base. Ver su preámbulo.
+  const cuentaGP = acumuladoGPPorSemana(obraGP);
 
   // Manuales (maquinaria y otros gastos) por semana ISO de su fecha, estos sí
   // incrementales. Almacén NO: ese gasto ya viene en el GP y suma al Ejecutado.
@@ -9521,36 +9730,26 @@ const serieGastoDeSemanas = ({ semanas = [], obra = null, gpData = null,
   (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura,
     parseFloat(m.imp) || 0));
 
-  const gpKeys = Object.keys(gpAcumPorSem).sort();
-  // ── LO QUE SE PUEDE AFIRMAR ANTES DE LA PRIMERA SEMANA DETALLADA ──────────
+  // ── LO QUE SE PUEDE AFIRMAR ANTES DE LA PRIMERA SEMANA DE LA VENTANA ─────
   //
-  // El Sheet detalla por semana SÓLO el año en curso; de los años cerrados
-  // publica un total. Hasta el 2026-11-12 esta cuenta devolvía 0 cuando no
-  // había ninguna semana de GP hasta la pedida, y eso se dibujaba como gasto.
+  // El Sheet publica el total de cada AÑO y una VENTANA de semanas que es la
+  // cola. Hasta el 2026-11-12 esta cuenta devolvía 0 cuando no había ninguna
+  // semana de GP hasta la pedida, y eso se dibujaba como gasto.
   //
-  // Nueve meses al año no se nota, porque la ventana de doce semanas cae
-  // entera dentro del año en curso. De enero a marzo sí: medido con el reloj
-  // puesto en el 2027-02-15 sobre una obra con $30 M en el año cerrado, la
-  // curva dibujaba $0 en las cinco semanas de diciembre y SALTABA a $30.4 M en
-  // la primera de enero. Las dos mitades mienten: el $0 dice «no se gastó
-  // nada» de un trimestre que sí se gastó, y el salto dice que $30 M se
-  // gastaron en una semana. Y el margen —ejecutado menos gasto— publicaba el
-  // ejecutado entero como ganancia justo en esas semanas.
+  // Nueve meses al año no se nota, porque la ventana cae entera dentro del
+  // año en curso. De enero a marzo sí: medido con el reloj puesto en el
+  // 2027-02-15 sobre una obra con $30 M en el año cerrado, la curva dibujaba
+  // $0 en las cinco semanas de diciembre y SALTABA a $30.4 M en la primera de
+  // enero. Las dos mitades mienten: el $0 dice «no se gastó nada» de un
+  // trimestre que sí se gastó, y el salto dice que $30 M se gastaron en una
+  // semana. Y el margen —ejecutado menos gasto— publicaba el ejecutado entero
+  // como ganancia justo en esas semanas.
   //
-  // Lo afirmable:
-  //   · semana del año en curso sin delta todavía → lo de los años cerrados
-  //   · semana de un año ya cerrado → NO SE SABE, porque de ese año sólo hay
-  //     un total y repartirlo sería inventar la cifra. Salvo que no haya nada
-  //     que repartir: sin años cerrados, antes del primer gasto hay cero, y
-  //     ése sí está medido.
-  const PRIMERA_DEL_AÑO_EN_CURSO = claveSemanaISO(1, añoDelSheet);
-  const ultimoGPHasta = (semKey) => {
-    let ult = null;
-    for (const k of gpKeys) { if (k <= semKey) ult = gpAcumPorSem[k]; else break; }
-    if (ult !== null) return ult;
-    if (semKey >= PRIMERA_DEL_AÑO_EN_CURSO) return gpBase;
-    return gpBase > 0 ? null : 0;
-  };
+  // `gpAcumuladoHasta` contesta las dos cosas de una vez: dentro de la ventana
+  // el acumulado EXACTO, y antes de ella `null` salvo que no quedara nada
+  // fuera. La regla vieja —«semana del año en curso sin delta → la base»— ya
+  // no hace falta: la ventana no se ata al año, se lee de las claves.
+  const ultimoGPHasta = (semKey) => gpAcumuladoHasta(cuentaGP, semKey);
 
   const porSem = {};
   let acumManual = 0;
@@ -10949,7 +11148,50 @@ function loadObras() {
 // y así la prueba EJECUTA que los dos documentos reciben el estado en vez de
 // leer el código y creerle. También `ahoraISO`: un `new Date()` por dentro
 // haría que el sello no se pudiera afirmar.
+// ── BUSCAR UN CONCEPTO EN EL CATÁLOGO ──────────────────────────────────────
+//
+// Un catálogo de obra trae cientos de conceptos y la clave es lo que la gente
+// tiene a mano («el 5.3.2»), pero la descripción es lo que recuerda cuando no
+// la tiene. Se busca en las dos.
+//
+// Tres decisiones que no son obvias:
+//   · SIN ACENTOS y sin mayúsculas: nadie teclea «excavación» con tilde
+//     buscando a toda prisa, y el catálogo sí la trae.
+//   · POR PALABRAS Y TODAS: «concreto 250» encuentra «Concreto f'c=250», y no
+//     todo lo que lleve «concreto» o cualquier cosa con «250». Un buscador
+//     que devuelve de más no sirve en un catálogo de cuatrocientos renglones.
+//   · El término VACÍO lo deja pasar todo. Si devolviera nada, la pantalla
+//     aparecería vacía antes de que nadie buscara.
+const sinAcentos = (s) => String(s ?? '')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+const conceptoCasa = (s, termino) => {
+  const t = sinAcentos(termino).trim();
+  if (!t) return true;
+  const heno = sinAcentos(`${s?.sec ?? ''} ${s?.sub ?? ''} ${s?.unidad ?? ''}`);
+  return t.split(/\s+/).every(p => heno.includes(p));
+};
+
 const ESTADOS_DE_OBRA = ['activa', 'pausada', 'cerrada', 'archivada'];
+
+// ── UNA OBRA QUE YA NO SE CAPTURA NO LLEVA DÍAS DE ATRASO ──────────────────
+//
+// El malecón (0112) se cerró y el tablero seguía diciendo «N días sin captura
+// de avance», con N creciendo solo. Es un reproche a nadie: en una obra
+// cerrada no hay nada que capturar, y el contador mide el tiempo desde que
+// dejó de haberlo. Cada semana que pasa la cifra es más grande y más falsa,
+// y empuja a mirar la obra que menos lo necesita.
+//
+// `pausada` cuenta igual: una obra en pausa tampoco se captura, y el día que
+// se reanude el contador vuelve solo.
+//
+// Es un predicado y no un `=== 'cerrada'` suelto porque son CUATRO sitios los
+// que pintan ese número en el tablero. Con la comparación escrita a mano, el
+// día que alguien añada un estado nuevo tres sitios lo aprenden y uno no.
+const obraSeCaptura = (obra) => {
+  const estado = obra?.estado || 'activa';
+  return estado !== 'cerrada' && estado !== 'archivada' && estado !== 'pausada';
+};
 
 const guardarEstadoDeObra = async (obra, estado, usuario, ahoraISO, escribir) => {
   if (!obra?.id || !ESTADOS_DE_OBRA.includes(estado)) return null;
@@ -11145,7 +11387,7 @@ const EST_COL_DEP={"Recibida":C.yellow,"En revisión":C.blue,"Autorizada":C.purp
 // vive en `functions/index.js` no se puede evitar —son dos tiempos de
 // ejecución— pero sí se puede exigir que coincidan: el banco las ejecuta a las
 // dos contra la misma lista y compara.
-function nombreDePila(nombre) {
+const nombreDePila = (nombre) => {
   const n = String(nombre || '').trim();
   if (!n) return '';
   // Si el «nombre» es en realidad un correo —lo que queda cuando no hay perfil
@@ -11153,7 +11395,7 @@ function nombreDePila(nombre) {
   // nadie con su dirección entera.
   if (n.includes('@')) return n.split('@')[0];
   return n.split(/\s+/).find(p => p.length > 2 && !p.endsWith('.')) || n;
-}
+};
 
 // ════════════════════════════════════════════════════════════════════════════
 // LA CONTRASEÑA OLVIDADA
@@ -13498,72 +13740,51 @@ const _semISOKey = (fecha) => {
 //   · otros_gastos agrupados por su fecha individual (previo + año en curso)
 // EXCLUYE maquinaria (no tiene fecha por movimiento hoy).
 // Devuelve un mapa {key: gastoAcumulado} y también valorEnKey(k) helper.
-const _serieGastoAcumulado = (obra, gpData, otrosGastos = []) => {
-  // La obra del GP con el MISMO match que el KPI. Era `o.id === obra.id`: una
-  // cuarta respuesta a «¿qué obra del GP es ésta?» que no mira `gpId` ni el
-  // prefijo, así que la columna de Δ margen se quedaba en «—» en cuanto el id
-  // de CAMPO no era literalmente la clave del Sheet, sin decir por qué.
+// ── LA MISMA CUENTA DEL GASTO, NO UNA SEGUNDA ──────────────────────────────
+//
+// Esta serie alimenta la columna Δ margen del panel. Hasta el 2026-11-25
+// traía DOS defectos propios, los dos por estar escrita aparte:
+//
+//   1. No recibía `maquinaria`. El KPI suma GP + maquinaria + otros, y esta
+//      cuenta sumaba GP + otros: dos respuestas a «cuánto se gastó», y la de
+//      aquí siempre la más baja, o sea siempre el margen más optimista.
+//   2. Leía la semana con el mismo regex roto —`/S?(\d{1,2})/` sobre
+//      `S2025-49` da 20—, así que todas las semanas caían en una.
+//
+// Ahora delega en `acumuladoGPPorSemana` y suma los MISMOS tres sumandos.
+const _serieGastoAcumulado = (obra, gpData, otrosGastos = [], maquinaria = []) => {
+  // La obra del GP con el MISMO match que el KPI.
   const gpObra = estadoGastoGP(obra, gpData).obraGP;
-  const añoActual = new Date().getFullYear();
-  // Base = años previos al actual (suma de Y2024, Y2025, ...)
-  let base = 0;
-  if (gpObra?.años) {
-    Object.entries(gpObra.años).forEach(([kAño, v]) => {
-      const y = parseInt(String(kAño).replace(/^Y/, ''), 10);
-      if (!isNaN(y) && y < añoActual) base += (parseFloat(v) || 0);
-    });
-  }
-  // GP semanal del año actual, ordenado y acumulado
-  const gpAcum = {};   // {"Y2026-S37": acumulado}
-  if (gpObra?.semanas) {
-    const semanas = Object.entries(gpObra.semanas)
-      .map(([k, v]) => {
-        const m = String(k).match(/S?(\d{1,2})/);
-        if (!m) return null;
-        return { sem: parseInt(m[1], 10), delta: parseFloat(v) || 0 };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.sem - b.sem);
-    let acum = base;
-    semanas.forEach(({ sem, delta }) => {
-      acum += delta;
-      gpAcum[`Y${añoActual}-S${String(sem).padStart(2,'0')}`] = acum;
-    });
-  }
-  // Otros gastos por semana (incremental) — se acumulan al integrar
-  const otrosIncrem = {};
-  (otrosGastos || []).forEach(og => {
-    const iso = _semISOKey(og.fecha);
-    if (!iso) return;   // sin fecha → no cuenta en la serie
-    const imp = parseFloat(og.importe) || 0;
-    if (!imp) return;
-    otrosIncrem[iso.key] = (otrosIncrem[iso.key] || 0) + imp;
-  });
-  // Total acumulado por semana = GP acumulado (última ≤ key) + otros acumulado ≤ key
-  const allKeys = new Set([...Object.keys(gpAcum), ...Object.keys(otrosIncrem)]);
-  const keysOrdenadas = [...allKeys].sort();
-  const gpKeys = Object.keys(gpAcum).sort();
-  const ultimoGPHasta = (k) => {
-    let ult = base;   // si no hay GP hasta esa semana, la base sigue siendo años previos
-    for (const gk of gpKeys) {
-      if (gk <= k) ult = gpAcum[gk];
-      else break;
-    }
-    return ult;
+  const cuenta = acumuladoGPPorSemana(gpObra);
+
+  // Los gastos manuales —otros Y maquinaria— por semana ISO de su fecha.
+  const manualIncrem = {};
+  const sumarManual = (fecha, monto) => {
+    const iso = _semISOKey(fecha);
+    if (!iso || !monto) return;   // sin fecha → no cuenta en la serie
+    manualIncrem[iso.key] = (manualIncrem[iso.key] || 0) + monto;
   };
+  (otrosGastos || []).forEach(og => sumarManual(og.fecha, parseFloat(og.importe) || 0));
+  (maquinaria || []).forEach(m => sumarManual(m.fecha || m.fechaCaptura,
+    parseFloat(m.imp) || 0));
+
+  const keysOrdenadas = [...new Set([...cuenta.claves, ...Object.keys(manualIncrem)])].sort();
+
   const gastoAcum = {};
-  let acumOtros = 0;
-  const otrosKeysOrd = Object.keys(otrosIncrem).sort();
-  let idxOtros = 0;
+  let acumManual = 0;
+  const manualOrd = Object.keys(manualIncrem).sort();
+  let idx = 0;
   for (const k of keysOrdenadas) {
-    // avanzar acumOtros hasta k inclusive
-    while (idxOtros < otrosKeysOrd.length && otrosKeysOrd[idxOtros] <= k) {
-      acumOtros += otrosIncrem[otrosKeysOrd[idxOtros]];
-      idxOtros++;
+    while (idx < manualOrd.length && manualOrd[idx] <= k) {
+      acumManual += manualIncrem[manualOrd[idx]];
+      idx++;
     }
-    gastoAcum[k] = ultimoGPHasta(k) + acumOtros;
+    const gp = gpAcumuladoHasta(cuenta, k);
+    // Con el GP de esa semana sin saber, el acumulado tampoco: publicar sólo
+    // los manuales es la cifra incompleta con cara de medida.
+    gastoAcum[k] = gp === null ? null : gp + acumManual;
   }
-  return { gastoAcum, keysOrdenadas, base };
+  return { gastoAcum, keysOrdenadas, base: cuenta.antesDeLaVentana };
 };
 
 // Devuelve la key ISO de la semana N atrás (0 = semana actual)
@@ -13938,7 +14159,11 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     // días» de la fila. Si la excepción dice 8 y la fila dice 7, no hay forma
     // de saber cuál es la obra que lleva una semana muda.
     const avSemanas = d.historialAvanceSemanas || [];
-    const dias = diasSinCapturaDe(avSemanas, HOY);
+    // `null` cuando la obra ya no se captura. No es un caso aparte: `null` es
+    // lo que esta cuenta ya devuelve para «no se puede decir», y todas las
+    // pantallas lo pintan con una raya. Una obra cerrada no tiene atraso de
+    // captura, tiene final.
+    const dias = obraSeCaptura(o) ? diasSinCapturaDe(avSemanas, HOY) : null;
     if (dias !== null) {
       if (dias >= 7) {
         excepciones.push({
@@ -14057,7 +14282,8 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     // Delta de margen (pp) contra semana anterior
     let deltaMargen = null;
     if (ultAv && preAv && sonComparables(ultAv, preAv, 'dinero')) {
-      const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(o, gpData, d.otrosGastos || []);
+      const { gastoAcum, keysOrdenadas } = _serieGastoAcumulado(
+        o, gpData, d.otrosGastos || [], d.maquinaria || []);
       const kU = _semISOKey(ultAv.fechaCaptura)?.key;
       const kP = _semISOKey(preAv.fechaCaptura)?.key;
       const getG = (k) => {
@@ -14077,7 +14303,7 @@ function DashboardPrincipal({ obras, datosPorObra, gpData, gpDisponible = true, 
     // `diasSinCaptura` de esta misma fila, de la misma cuenta: eran dos
     // expresiones idénticas escritas por separado, y la columna ordena por una
     // mientras la celda enseña la otra.
-    const diasCap = diasSinCapturaDe(avSemanas, HOY);
+    const diasCap = obraSeCaptura(o) ? diasSinCapturaDe(avSemanas, HOY) : null;
     const ultimaCapturaTxt = diasCap === null ? '—'
       : diasCap === 0 ? 'hoy' : (diasCap === 1 ? 'ayer' : `hace ${diasCap} días`);
     // Cómo se dice el margen —y el gasto— lo decide `presentacionEconomiaObra`,
@@ -14693,7 +14919,7 @@ function PortafolioDependencia({ obras, datosPorObra, onSelectObra }) {
     const porEjercer = Math.max(contratado - pagado, 0);
 
     const avSemanas = d.historialAvanceSemanas || [];
-    const diasSinCaptura = diasSinCapturaDe(avSemanas, HOY);
+    const diasSinCaptura = obraSeCaptura(o) ? diasSinCapturaDe(avSemanas, HOY) : null;
 
     // El atraso proyectado, con la MISMA cuenta que el detalle de la obra —y
     // «la misma» quiere decir la misma función, no una copia que coincida.
@@ -17410,11 +17636,25 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
         Margen Bruto + Personal. */}
     {(() => {
       const pctEjec  = obra.presupuesto > 0 ? (me / obra.presupuesto) * 100 : 0;
-      // Trío que sustituye al excedente: Contratado · Ejecutado · Por ejecutar.
-      // No puede ser negativo — si se ejecutó de más, lo que falta es cero. El
-      // excedente sobre contrato se enseña en la proyección, junto al contrato
-      // y sin color de alarma.
-      const porEjecutar = Math.max((obra.presupuesto || 0) - me, 0);
+      // ── LOS SEIS QUE SE PUBLICAN, Y POR QUÉ ESTOS ─────────────────────────
+      //
+      // La lista la fijó Oscar el 2026-11-25 y el tablero tenía otra. Lo que
+      // se fue: «Por ejecutar», que es el contrato menos lo ejecutado —una
+      // resta que el lector hace solo y que ocupaba el sitio del dato que
+      // faltaba—.
+      //
+      // Lo que entró: los días de atraso o adelanto con su fecha probable de
+      // término. Es la única de las seis que contesta «¿llegamos?», y vivía
+      // enterrada en un bloque más abajo.
+      //
+      // Las tres cifras de dinero llevan su porcentaje al lado, y cada una
+      // dice SOBRE QUÉ: ejecutado y gasto sobre el contrato, margen sobre lo
+      // ejecutado. Son denominadores distintos a propósito y por eso se
+      // nombran; sin nombrarlos, tres porcentajes en fila se leen como la
+      // misma escala.
+      // Días de atraso y fecha probable de término: `kpiPlazoDeObra` las saca
+      // de UNA proyección, y es la misma función que imprime el PDF.
+      const desvPlazo = kpiPlazoDeObra(obra, historialAvance, af);
       return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
         <div>
           <Kpi label="Presupuesto total" value={MXN(obra.presupuesto)}
@@ -17434,18 +17674,17 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
               lo decía únicamente cuando no había presupuesto, o sea casi
               nunca, y entonces este KPI y la tarjeta de estimaciones enseñaban
               dos cifras distintas llamadas igual. */}
-          <Kpi label="Ejecutado + almacén" value={MXN(me)}
-            sub={obra.presupuesto>0 ? `${NUM(pctEjec,1)}% del contrato · ver avance ›` : "avance + almacén"}
+          {/* El rótulo dice «Ejecutado» y el subtítulo dice que incluye el
+              almacén. El número SIEMPRE fue ejecutado + almacén: ponerle de
+              nombre sólo «Ejecutado» sin decir lo otro haría que el rótulo
+              afirmara menos de lo que la cifra contiene, y ésa es la clase de
+              desajuste por la que este KPI y el de estimaciones llegaron a
+              enseñar dos cifras distintas llamadas igual. */}
+          <Kpi label="Ejecutado" value={MXN(me)}
+            sub={obra.presupuesto>0
+              ? `${NUM(pctEjec,1)}% del contrato · incluye almacén · ver ›`
+              : "avance + almacén"}
             color={C.blueDk} size={12}/>
-        </div>
-        <div {...clickableCard("operacion","avance")}>
-          {/* Lo ejecutado por encima del catálogo en una partida ya no se
-              muestra aquí: es obra ejecutada como cualquier otra y se compensa
-              con las partidas que quedaron cortas. El detalle por partida sigue
-              marcando cuál se pasó. */}
-          <Kpi label="Por ejecutar" value={MXN(porEjecutar)}
-            sub={obra.presupuesto>0 ? `${NUM(100-Math.min(pctEjec,100),1)}% del contrato` : "contrato − ejecutado"}
-            color={C.textSec} size={12}/>
         </div>
         <div>
           {/* El margen se calcula con el gasto: si al gasto le falta un
@@ -17454,7 +17693,7 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
               porcentaje se divide entre lo ejecutado, no entre el contrato.
               Ahora el denominador va en el rótulo y la fórmula completa en el
               title, que es lo que decía la tarjeta que se quitó. */}
-          <Kpi label="Margen bruto" value={pres.margenAbsTxt}
+          <Kpi label="Margen" value={pres.margenAbsTxt}
             sub={pres.gastoSinMedir ? 'no se puede afirmar sin el gasto'
               : (me>0 ? `${pres.margenTxt} de ejec.+almacén — ${mNiv.nivel}` : 'sin avance ejecutado')}
             color={pres.margenColor} size={12} title={pres.margenTooltip}/>
@@ -17467,9 +17706,27 @@ function Dashboard({obra,subs,maquinaria,materiales,estimaciones,subcontratos=[]
               El color va por el NÚMERO, no por que haya nómina: una semana
               cargada sin conteo de personal es un dato que falta, y en verde se
               lee como una plantilla sana. */}
-          <Kpi label="Personal campo" value={plantilla.valor}
-            sub={plantilla.sub}
+          {/* EL PIE ES `plantilla.sub` TAL CUAL, y aquí no se arma uno.
+              Medido el 2026-11-25: ese pie YA publica «26D · 8I · Semana 38»
+              cuando el desglose es dato, y cuando no lo es dice qué archivo
+              falta. Al fijar la lista de seis indicadores escribí aquí un
+              `${dir} directos · ${ind} indirectos` propio y perdí dos cosas
+              que ese pie sí traía —de qué semana son las cifras, y si la
+              semana vino rayada en varios archivos— además de abrir una
+              segunda regla para decidir cuándo el desglose es publicable.
+              Lo encontraron dos bancos. Una cuenta por número, también
+              cuando el número es una frase. */}
+          <Kpi label="Personal" value={plantilla.valor} sub={plantilla.sub}
             color={plantilla.total === null ? C.textMut : C.green}/>
+        </div>
+        <div {...clickableCard("riesgo")}>
+          {/* «¿Llegamos?» es la pregunta que este tablero no contestaba
+              arriba: estaba en un bloque más abajo, y el que mira seis
+              tarjetas no baja. El signo es la mitad del dato —`+12 d` es
+              atraso y `−8 d` es adelanto—, y la fecha probable de término
+              sale de la misma proyección que los días. */}
+          <Kpi label="Días de atraso" value={desvPlazo.valor} sub={desvPlazo.sub}
+            color={desvPlazo.color} size={12}/>
         </div>
       </div>;
     })()}
@@ -17858,7 +18115,7 @@ function DashboardDependencia({obra, subs = [], estimaciones = [], estCargadas =
   // la misma que el concentrado, para que el tablero de una obra y el renglón de
   // esa obra en la lista no puedan discrepar.
   const fechaUltima = fechaUltimaCapturaDe(historialAvance);
-  const diasSinCaptura = diasSinCapturaDe(historialAvance);
+  const diasSinCaptura = obraSeCaptura(obra) ? diasSinCapturaDe(historialAvance) : null;
 
   // Plazo. Sale de `plazoDeObra`, que es la MISMA función que usa la proyección
   // del tablero del contratista. Derivarlo aquí de la lista de ampliaciones
@@ -19331,8 +19588,12 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
   // aunque el item recién agregado aún no tenga descripción
   const[agregandoMaq, setAgregandoMaq] = useState(false);
   const[agregandoMat, setAgregandoMat] = useState(false);
+  // El filtro del catálogo. Se limpia al cambiar de obra junto con lo demás:
+  // un término que sobrevive al cambio deja la pantalla de la obra nueva
+  // medio vacía sin que se vea por qué.
+  const[busquedaConcepto, setBusquedaConcepto] = useState("");
   // Reset al cambiar de obra
-  useEffect(() => { setAgregandoMaq(false); setAgregandoMat(false); }, [obra?.id]);
+  useEffect(() => { setAgregandoMaq(false); setAgregandoMat(false); setBusquedaConcepto(""); }, [obra?.id]);
   // Tienen datos reales? (descartando placeholders vacíos)
   const maqReal = maquinaria.filter(m => m.desc && m.desc.trim()).length > 0;
   const matReal = materiales.filter(m => m.desc && m.desc.trim()).length > 0;
@@ -19481,6 +19742,26 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
     {tab==="volumenes" && (soloCatalogo(subs).filter(s => (s.imp||0) > 0).length > 0
                            || soloExtraordinarias(subs).length > 0) && <Card>
       <Tit>Avance por concepto</Tit>
+      {/* ── BUSCAR UN CONCEPTO ──────────────────────────────────────────────
+          Un catálogo de obra trae cientos de conceptos repartidos en un árbol
+          de categorías, y hasta hoy el único modo de llegar a uno era
+          desplegar y mirar. El buscador filtra las HOJAS y el árbol se vuelve
+          a armar con las que quedan, así que las categorías vacías
+          desaparecen solas en vez de quedarse como títulos huecos. */}
+      <div style={{display:"flex",alignItems:"center",gap:8,margin:"2px 0 10px"}}>
+        <Inp value={busquedaConcepto}
+          onChange={e=>setBusquedaConcepto(e.target.value)}
+          placeholder="Buscar concepto por clave o descripción…"
+          aria-label="Buscar concepto en el catálogo"
+          style={{flex:1,minWidth:0}}/>
+        {busquedaConcepto && (
+          <button type="button" onClick={()=>setBusquedaConcepto("")}
+            style={{background:"none",border:`1px solid ${C.border}`,borderRadius:7,
+              padding:"5px 9px",color:C.textSec,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+            Quitar filtro
+          </button>
+        )}
+      </div>
       {(() => {
         // ── Construir ÁRBOL JERÁRQUICO desde la ruta de ancestros de cada concepto
         // Cada nodo: { tipo:"categoria", clave, desc, nivel, hijos:[] } o
@@ -19490,7 +19771,8 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
         // entrara aquí caería como hoja suelta en la raíz, indistinguible de
         // una partida contratada. Eso es justo lo que no puede pasar: lo que
         // se hizo fuera de contrato tiene que verse fuera de contrato.
-        const subsConImp = soloCatalogo(subs).filter(s => (s.imp||0) > 0);
+        const todosLosConceptos = soloCatalogo(subs).filter(s => (s.imp||0) > 0);
+        const subsConImp = todosLosConceptos.filter(s => conceptoCasa(s, busquedaConcepto));
         const raiz = { tipo: 'categoria', clave: '__root__', desc: '', nivel: 0, hijos: [] };
         const nodoPorClave = new Map();  // clave categoría → nodo
         nodoPorClave.set('__root__', raiz);
@@ -19830,7 +20112,26 @@ function Captura({subs,setSubs,maquinaria,setMaquinaria,materiales,setMateriales
           </button>}
         </div>;
 
-        return <>{raiz.hijos.map(h => renderNodo(h, 0))}{bloqueExtras}</>;
+        // Un filtro que no encuentra nada tiene que DECIRLO. Sin este
+        // renglón la pantalla se queda en blanco y parece que el catálogo se
+        // borró, que es la lectura más cara posible. Y dice contra cuántos
+        // buscó, para que se vea que el catálogo sigue entero.
+        const nadaQueMostrar = subsConImp.length === 0 && todosLosConceptos.length > 0;
+        return <>
+          {nadaQueMostrar
+            ? <div style={{padding:"14px 12px",textAlign:"center",color:C.textSec,fontSize:12}}>
+                Ningún concepto de los {todosLosConceptos.length} del catálogo dice
+                «{busquedaConcepto.trim()}». El catálogo está completo: lo que no
+                coincide es la búsqueda.
+              </div>
+            : raiz.hijos.map(h => renderNodo(h, 0))}
+          {busquedaConcepto.trim() && !nadaQueMostrar && (
+            <div style={{padding:"4px 2px 8px",color:C.textMut,fontSize:10}}>
+              {subsConImp.length} de {todosLosConceptos.length} conceptos
+            </div>
+          )}
+          {bloqueExtras}
+        </>;
       })()}
     </Card>}
 
@@ -21699,7 +22000,7 @@ function EstimacionesDependencia({obra, estimaciones, setEstimaciones, estCargad
                     {adjuntos.map(a =>
                       <span key={a.id} style={{display:"inline-flex",alignItems:"center",gap:4,
                         background:C.surface,border:`1px solid ${C.border}`,borderRadius:99,padding:"1px 7px"}}>
-                        <a href={a.url} target="_blank" rel="noreferrer"
+                        <a href={archivoEnCotea(a.url)} target="_blank" rel="noreferrer"
                           style={{fontSize:9,color:C.blueDk,textDecoration:"none"}}>
                           {a.clase === 'caratula' ? 'Carátula' : a.clase === 'factura' ? 'Factura' : 'Archivo'}
                         </a>

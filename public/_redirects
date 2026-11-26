@@ -42,3 +42,22 @@
 # convertiría cualquier dedazo en la pantalla de entrada.
 
 /__/auth/*  https://campo-fosmon.firebaseapp.com/__/auth/:splat  200
+
+# ── LOS ARCHIVOS DE STORAGE, POR UNA RUTA DE COTEA ─────────────────────────
+#
+# Una URL de descarga de Firebase es
+# `firebasestorage.googleapis.com/v0/b/<bucket>/o/<objeto>`. El host es
+# neutro; el que dice el nombre de un cliente es el BUCKET, y va en la ruta.
+# Esa dirección se ve al compartir una foto, al abrir un PDF de OT en otra
+# pestaña y al copiar la dirección de una imagen.
+#
+# El bucket no se renombra —se llama como el proyecto de GCP— así que se deja
+# de exponer. `src/archivo-en-cotea.js` reescribe la URL al pintarla y esta
+# regla la trae de vuelta al objeto correcto.
+#
+# Lo portante, y medido contra Netlify el 2026-11-25: el nombre del objeto
+# viaja PERCENT-ENCODED (`obras%2F0112%2F…`) y Netlify respeta el `%2F` —sí
+# normaliza `%2E`, pero no la barra—. Storage rechaza la forma con barras de
+# verdad: devuelve 400. Si algún día Netlify empezara a decodificarlas, las
+# fotos dejarían de verse de golpe y aquí está escrito por qué.
+/archivo/*  https://firebasestorage.googleapis.com/v0/b/campo-fosmon.firebasestorage.app/o/:splat  200

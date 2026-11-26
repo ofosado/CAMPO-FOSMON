@@ -234,13 +234,39 @@ function cierreDe(fuente, { archivo = ARCHIVO, excluir = [] } = {}) {
   return fuenteDe(archivo, [...libres], { tolerante: true, excluir }).cuerpo;
 }
 
+// El fuente de un módulo ESM del proyecto, listo para pegar dentro de la caja
+// de un banco: sin los `export`, que es lo único que estorba.
+//
+// Existe desde el 2026-11-25, cuando `archivoEnCotea` salió a su propio módulo
+// para que `App.jsx` y `ot.jsx` compartieran UNA copia. El extractor no sigue
+// imports —se intentó, y traer de más cambió la caja de bancos que no habían
+// pedido nada—, así que el banco que necesita lo importado lo pide aquí, a la
+// vista, en vez de que el andamiaje lo decida por él.
+//
+// Se pega el fuente DE VERDAD, no un doble: lo que se mide es la función que
+// corre en producción.
+function fuenteDeModulo(rutaRelativa) {
+  const f = path.resolve(RAIZ, rutaRelativa);
+  if (!fs.existsSync(f)) throw new SimboloPerdido([rutaRelativa], 'el repositorio');
+  return fs.readFileSync(f, 'utf8').replace(/^export\s+/gm, '');
+}
+
 // Pide símbolos de un archivo del repo y devuelve un objeto con ellos, ya
 // ejecutables, con sus dependencias de nivel superior resueltas.
+// El último argumento puede ser `{ modulos: ['src/archivo-en-cotea.js'] }`:
+// módulos ESM del repo que el fuente extraído IMPORTA y que hay que pegar
+// delante. Se pide a la vista y no se deduce, porque seguir imports solo no
+// se puede hacer bien —hay módulos con estado mutable de nivel superior— y un
+// índice que trae de más cambia la caja de quien no pidió nada.
 function deArchivo(archivo, ...nombres) {
+  const ultimo = nombres[nombres.length - 1];
+  const opciones = (ultimo && !Array.isArray(ultimo) && typeof ultimo === 'object')
+    ? nombres.pop() : {};
   const pedidos = nombres.flat();
+  const delante = (opciones.modulos || []).map(fuenteDeModulo).join('\n');
   const { cuerpo } = fuenteDe(archivo, pedidos);
   const devuelve = `return { ${pedidos.join(', ')} };`;
-  return new Function(`"use strict";\n${cuerpo}\n${devuelve}`)();
+  return new Function(`"use strict";\n${delante}\n${cuerpo}\n${devuelve}`)();
 }
 
 // De `src/App.jsx`. Es la llamada que `prueba-herramientas-de-medicion-viven`
@@ -257,6 +283,6 @@ const deFunciones = (...nombres) => deArchivo(ARCHIVO_FUNCIONES, ...nombres);
 const fuenteDeApp = (nombres, opciones) => fuenteDe(ARCHIVO, nombres, opciones);
 
 module.exports = {
-  deApp, deFunciones, deArchivo, fuenteDe, fuenteDeApp, cierreDe,
+  deApp, deFunciones, deArchivo, fuenteDe, fuenteDeApp, cierreDe, fuenteDeModulo,
   SimboloPerdido, ARCHIVO, ARCHIVO_FUNCIONES,
 };
