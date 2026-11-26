@@ -103,37 +103,10 @@ if (process.argv.includes('--contraprueba') && !process.env.SIN_CONTRAPRUEBA) {
   process.exit(CP.veredicto(sobrevivieron, total));
 }
 
-// ── EL RUTEO DE NETLIFY, COMO LO HACE NETLIFY ───────────────────────────────
-// Reglas en orden, primera que casa gana; `*` al final del origen captura el
-// resto y se sustituye en `:splat`. Es la parte de la especificación que esta
-// regla usa, y no se finge soportar más.
-function reglasDe(texto) {
-  return texto.split('\n')
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith('#'))
-    .map((l, i) => {
-      const campos = l.split(/\s+/);
-      if (campos.length < 2) return { renglon: i + 1, malformada: l };
-      const [origen, destino, estado] = campos;
-      return { renglon: i + 1, origen, destino, estado: Number(estado || 301) };
-    });
-}
-
-function rutear(reglas, pedido) {
-  for (const r of reglas) {
-    if (r.malformada) continue;
-    if (r.origen.endsWith('/*')) {
-      const raizDeLaRegla = r.origen.slice(0, -1);        // «/__/auth/»
-      if (pedido.startsWith(raizDeLaRegla))
-        return { ...r, destinoFinal: r.destino.replace(':splat', pedido.slice(raizDeLaRegla.length)) };
-    } else if (r.origen === pedido) {
-      return { ...r, destinoFinal: r.destino };
-    }
-  }
-  return null;
-}
-
-const hostDe = (url) => { try { return new URL(url).host; } catch { return ''; } };
+// El ruteo de Netlify vive en un módulo porque lo miden DOS bancos —éste y el
+// de los archivos de Storage— y dos parsers serían dos respuestas a «¿a dónde
+// va esta ruta?».
+const { reglasDe, rutear, hostDe } = require('./ruteo-de-netlify.cjs');
 
 // El host esperado NO se teclea: se lee de la configuración del SDK, que es
 // quien declara cuál es el dominio de Auth de este proyecto.

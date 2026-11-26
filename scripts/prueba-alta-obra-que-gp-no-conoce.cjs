@@ -684,11 +684,27 @@ const CASOS_CLAVE = [
   // ganarle al de «sin ejecución», porque aquél matiza un total correcto y éste
   // avisa de un total incompleto.
   {
+    // DENTRO DE `DashboardPrincipal`, y no «la más pequeña del archivo».
+    //
+    // El 2026-11-25 el tablero de UNA obra estrenó su propia tarjeta
+    // `label="Margen"` —antes se llamaba «Margen bruto»— y pasó a ser la más
+    // pequeña: el banco empezó a medir la tarjeta equivocada y a acusar al
+    // consolidado de un defecto que no tenía. El rótulo dejó de bastar para
+    // identificarla, así que se busca en el componente que la publica.
     let bloqueMargen = null;
+    const enQuienVive = (p) => {
+      let q = p;
+      while (q) {
+        if (q.node.type === 'FunctionDeclaration' && q.node.id) return q.node.id.name;
+        q = q.parentPath;
+      }
+      return '';
+    };
     traverse(astApp, {
       JSXElement(p) {
         const s = srcApp.slice(p.node.start, p.node.end);
         if (!/label="Margen"/.test(s)) return;
+        if (enQuienVive(p) !== 'DashboardPrincipal') return;
         if (!bloqueMargen || s.length < bloqueMargen.length) bloqueMargen = s;
       },
     });

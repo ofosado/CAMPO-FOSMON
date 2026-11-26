@@ -191,13 +191,13 @@ if (process.argv.includes('--contraprueba')) {
     { titulo: 'el papel deja de publicar la plantilla',
       cambios: [["  const plantilla = plantillaDeObra(nominaHistorial);\n"
                  + "  y = kpiRow([\n"
-                 + "    ['Personal en campo', plantilla.valor, plantilla.sub,\n"
+                 + "    ['Personal', plantilla.valor, plantilla.sub,\n"
                  + "      plantilla.total === null ? Q.mu : Q.piz],\n"
                  + "  ], y);",
                  "  const plantilla = plantillaDeObra(nominaHistorial);", 1]] },
     { titulo: 'el papel arma su propio desglose en vez de usar la cuenta',
-      cambios: [["    ['Personal en campo', plantilla.valor, plantilla.sub,",
-                 "    ['Personal en campo', plantilla.valor, "
+      cambios: [["    ['Personal', plantilla.valor, plantilla.sub,",
+                 "    ['Personal', plantilla.valor, "
                  + "`${plantilla.dir}D · ${plantilla.ind}I`,", 1]] },
     { titulo: 'el desglose se publica aunque el tipo se haya adivinado',
       cambios: [["  const conDI = (dir, ind, fuente) => diDe === 'columna'",

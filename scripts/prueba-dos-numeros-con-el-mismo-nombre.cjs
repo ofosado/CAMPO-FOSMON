@@ -454,12 +454,22 @@ async function correr(codigo) {
   // derecha. Importa porque `am` —obra ejecutada DE VERDAD, sin bodega— sigue
   // existiendo a pocos renglones: un rótulo que no distinga presenta material
   // comprado y no instalado como obra construida.
-  const rotuloDeMe = (cuerpoTablero0 =>
-    (cuerpoTablero0.match(/<Kpi\s+label="([^"]+)"\s+value=\{MXN\(me\)\}/) || [])[1]
-  )(sinComentarios(cuerpoDe('Dashboard')));
-  check(!!rotuloDeMe && /almac[eé]n/i.test(rotuloDeMe),
-    'y el rótulo de `me` dice que incluye el almacén, en vez de llamarse sólo «ejecutado»',
-    rotuloDeMe ? `«${rotuloDeMe}»` : 'no se halló el KPI de `me` en el tablero');
+  // SE MIRA LA TARJETA ENTERA, no sólo el rótulo. Lo que esta prueba defiende
+  // es que la pantalla DIGA que el número trae almacén dentro; dónde lo diga
+  // —rótulo o pie— es presentación. El 2026-11-25 el rótulo se acortó a
+  // «Ejecutado» al fijar la lista de seis indicadores y la advertencia se
+  // mudó al pie: la tarjeta sigue sin presentar material comprado como obra
+  // construida, que es el defecto que esto vino a cerrar.
+  //
+  // Exigir el rótulo sería exigir una decisión de maquetación; exigir que la
+  // tarjeta lo diga es exigir la conducta.
+  const tarjetaDeMe = (cuerpoTablero0 => {
+    const i = cuerpoTablero0.search(/<Kpi\s+label="[^"]+"\s+value=\{MXN\(me\)\}/);
+    return i < 0 ? null : cuerpoTablero0.slice(i, i + 400);
+  })(sinComentarios(cuerpoDe('Dashboard')));
+  check(!!tarjetaDeMe && /almac[eé]n/i.test(tarjetaDeMe),
+    'y la tarjeta de `me` dice que incluye el almacén, en vez de llamarse sólo «ejecutado»',
+    tarjetaDeMe ? `«${(tarjetaDeMe.match(/label="([^"]+)"/)||[])[1]}» + pie` : 'no se halló el KPI de `me` en el tablero');
 
   // ── 7 · EL PDF NO PUBLICA UN GASTO MÁS CHICO QUE LA PANTALLA ─────────────
   sec('7. El papel que se descarga suma el mismo gasto que el tablero');
@@ -664,7 +674,7 @@ const MUTACIONES = [
     + '                                gpData, otrosGastos);'],
 
   ['el KPI de `me` vuelve a llamarse sólo «obra ejecutada», sin el almacén',
-    '<Kpi label="Ejecutado + almacén" value={MXN(me)}',
+    '<Kpi label="Ejecutado" value={MXN(me)}',
     '<Kpi label="Obra ejecutada" value={MXN(me)}'],
 
   // SE FUE LA MUTACIÓN DE LA TARJETA DEL MARGEN, y no por conveniencia: la

@@ -89,7 +89,7 @@ traverse(ast, {
 // contraprueba la primera vez: las dos mutaciones del corte por obra
 // —`evidenciaMigrada` y la rama de `evidenciaDeObra`— SOBREVIVIERON, porque el
 // banco seguía ejecutando el código bueno del archivo de verdad.
-const { fuenteDe, SimboloPerdido } = require('./extraer-de-app.cjs');
+const { fuenteDe, SimboloPerdido, fuenteDeModulo } = require('./extraer-de-app.cjs');
 
 // Lo de nivel de módulo se pide por nombre y el cierre transitivo lo resuelve
 // `fuenteDe`: tener la lista de dependencias tecleada aquí sería una segunda
@@ -107,7 +107,11 @@ const PIEZAS_DENTRO = ['PantallaObras.agregarObra', 'App.evid', 'Captura.addFoto
 
 let cuerpoModulo;
 try {
-  cuerpoModulo = fuenteDe(archivo, PIEZAS_MODULO, { excluir: EXCLUIR }).cuerpo;
+  // `App.jsx` importa `archivoEnCotea` y el extractor no sigue imports —no se
+  // puede hacer bien: hay módulos con estado mutable de nivel superior—. Se
+  // pide a la vista, con el fuente de verdad.
+  cuerpoModulo = fuenteDeModulo('src/archivo-en-cotea.js') + '\n'
+    + fuenteDe(archivo, PIEZAS_MODULO, { excluir: EXCLUIR }).cuerpo;
 } catch (e) {
   if (!(e instanceof SimboloPerdido)) throw e;
   console.error(e.message);

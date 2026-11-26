@@ -447,8 +447,11 @@ const MUTACIONES = [
       'const avanceFisicoPonderadoReal = (subs = []')],
   ['la extraordinaria se cuela en el árbol del catálogo',
     'app', s => s.replace(
-      /const subsConImp = soloCatalogo\(subs\)\.filter/,
-      'const subsConImp = subs.filter')],
+      // El 2026-11-25 el árbol pasó a armarse en dos pasos —primero todos los
+      // conceptos del catálogo, luego el filtro del buscador—, así que el
+      // anclaje se mueve al primero, que es donde se decide QUÉ entra.
+      /const todosLosConceptos = soloCatalogo\(subs\)\.filter/,
+      'const todosLosConceptos = subs.filter')],
   ['la pantalla ya no agrupa ni rotula el bloque fuera de catálogo',
     'app', s => s.replace(
       /const bloqueExtras = \(extras\.length > 0 \|\| editar\)/,

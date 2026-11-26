@@ -42,6 +42,7 @@
 //   · en la captura, la foto sin fecha va con las viejas → 2 rojas (§6)
 
 const path = require('path');
+const { fuenteDeModulo } = require('./extraer-de-app.cjs');
 const fs = require('fs');
 
 const raiz = path.resolve(__dirname, '..');
@@ -101,7 +102,13 @@ const PIEZAS_MODULO = ['semanaISO', 'snapshotId', 'fechaLocalDeISO',
   // El panel del riel y esta leyenda fechan la semana con la misma cuenta, así
   // que `leyendaSemanaSubida` ya no se sostiene sola.
   'rangoSemanaEnPalabras', 'leyendaSemanaSubida'];
-const cuerpoModulo = PIEZAS_MODULO.map(n => `const ${n} = ${M(n)};`).join('\n');
+// `App.jsx` importa `archivoEnCotea` de su propio módulo, y este banco arma
+// su caja rebanando declaraciones de `App.jsx`: sin pegar ese módulo delante,
+// `evidenciaNormalizada` revienta con «archivoEnCotea is not defined». Se pega
+// el fuente DE VERDAD, no un doble: la URL que la pantalla pinta es la que
+// esa función devuelve.
+const cuerpoModulo = fuenteDeModulo('src/archivo-en-cotea.js') + '\n'
+  + PIEZAS_MODULO.map(n => `const ${n} = ${M(n)};`).join('\n');
 
 // `todas`, `semanas` y `partidas` son `useMemo(() => …, [deps])`: lo que hace
 // el trabajo es el primer argumento. Se desenvuelve para poder llamarlo.

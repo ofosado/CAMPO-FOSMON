@@ -4,7 +4,7 @@
 //
 // Cubre el camino del front de obra, que se alimenta del state
 // `nominaHistorial`: el PDF ejecutivo, los tres avisos de nómina y el KPI
-// "Personal en campo" del tablero. (El camino del portafolio va por el
+// "Personal" del tablero. (El camino del portafolio va por el
 // `onSnapshot` y lo cubre `prueba-semana-actual-nomina.cjs`.)
 //
 // El defecto era real y estaba en producción el 2026-09-22. La 0126 rayó su
@@ -54,7 +54,7 @@ const cerca = (a, b) => Math.abs(a - b) < 0.005;
 const global = {};
 const rango = {};       // dónde vive cada uno, para poder mutarlo
 let cargador = null;    // el .then() del fsGet de obras/{id}/nomina/historial
-let tarjetaKPI = null;  // el <Kpi> de "Personal campo" del tablero
+let tarjetaKPI = null;  // el <Kpi> de "Personal" del tablero
 const avisos = {};      // los `detect` de nom_001..003, por id
 
 traverse(ast, {
@@ -93,7 +93,7 @@ traverse(ast, {
   },
   // El sitio del tablero se busca por lo que DICE, no por dónde está.
   //
-  // Era un `<Card>` titulado «Personal en campo — Semana N» con tres Kpis
+  // Era un `<Card>` titulado «Personal — Semana N» con tres Kpis
   // dentro. Esa tarjeta se quitó: sus tres cifras eran las del KPI de arriba.
   // La conducta que este banco afirma —que la pantalla diga DE QUÉ SEMANA son
   // las cifras y si vino rayada— no se fue con ella: subió al KPI, que ahora
@@ -104,7 +104,7 @@ traverse(ast, {
     if (tarjetaKPI) return;
     if (p.node.openingElement.name.name !== 'Kpi') return;
     const txt = src.slice(p.node.start, p.node.end);
-    if (!/label="Personal campo"/.test(txt)) return;
+    if (!/label="Personal"/.test(txt)) return;
     tarjetaKPI = txt;
   },
 });
@@ -122,7 +122,7 @@ const faltan = NECESARIOS.filter(n => !global[n]);
 // renombre: es que el sitio dejó de existir. Se reportan igual, porque el
 // efecto es el mismo: la conducta se quedó sin mirar.
 if (!cargador)   faltan.push('el cargador que puebla setNominaHistorial');
-if (!tarjetaKPI) faltan.push('el KPI «Personal campo» del tablero');
+if (!tarjetaKPI) faltan.push('el KPI «Personal» del tablero');
 for (const id of ['nom_001', 'nom_002', 'nom_003'])
   if (!avisos[id]) faltan.push(`el aviso ${id}`);
 if (faltan.length) noArranco(faltan, path.basename(archivo));
@@ -210,7 +210,7 @@ check(act.trabajadores.length === 134,
   'la plantilla trae a los 134, no a 35', String(act.trabajadores.length));
 check(H.length === 3, 'cuatro cargas son tres semanas', `${P0126.length} → ${H.length}`);
 
-console.log('\n2. El KPI «Personal campo» del tablero dice de qué semana habla\n');
+console.log('\n2. El KPI «Personal» del tablero dice de qué semana habla\n');
 // Se renderiza el KPI de verdad y se afirma sobre el texto que produce. La
 // cifra y la procedencia salen de `plantillaDeObra`, ejecutada con el historial
 // que esta misma prueba acaba de armar — no de una segunda cuenta de aquí.
@@ -233,7 +233,7 @@ check(/Semana 38/.test(texto), 'el KPI dice que las cifras son de la «Semana 38
 check(!/Semana 39/.test(texto),
   'y no la semana del calendario de hoy, que es otra cosa');
 check(/\|134\|/.test(texto), 'el total en pantalla es 134',
-  texto.match(/Personal campo\|(\S+)\|/)?.[1] || '?');
+  texto.match(/Personal\|(\S+)\|/)?.[1] || '?');
 check(/2 partes/.test(texto),
   'y avisa que esa semana vino en 2 partes sumadas');
 

@@ -38,6 +38,7 @@
 //   · la lista a pintar admite entradas sin url                     → 3 rojas
 
 const path = require('path');
+const { fuenteDeModulo } = require('./extraer-de-app.cjs');
 const fs = require('fs');
 
 const raiz = path.resolve(__dirname, '..');
@@ -106,7 +107,11 @@ if (falta.length) {
   process.exit(1);
 }
 
-const cuerpoModulo = PIEZAS_MODULO.map(n => `const ${n} = ${modulo[n]};`).join('\n');
+// Igual que en `prueba-evidencia-por-semana`: `App.jsx` importa
+// `archivoEnCotea` y esta caja se arma rebanando declaraciones, así que el
+// módulo se pega delante. Fuente de verdad, no doble.
+const cuerpoModulo = fuenteDeModulo('src/archivo-en-cotea.js') + '\n'
+  + PIEZAS_MODULO.map(n => `const ${n} = ${modulo[n]};`).join('\n');
 const desenvolverMemo = (código) => {
   const m = /^useMemo\s*\(([\s\S]*),\s*\[[^\]]*\]\s*\)$/.exec(código.trim());
   return m ? m[1].trim() : código;

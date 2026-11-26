@@ -466,7 +466,7 @@ async function correr(codigo) {
   // SITIO 1 · las tejas de la sección 2. Es el resumen de la obra en cuatro
   // renglones, y lo primero que alguien lee después de la portada. El pie no
   // es decoración: es el único lugar del papel donde el hueco lleva su motivo.
-  const tGasto = tejaDe(pdfHueco, 'GASTO TOTAL');
+  const tGasto = tejaDe(pdfHueco, 'GASTO ACUMULADO');
   check(tGasto.valor === 'sin medir'
      && tGasto.pie === 'la corrida del gasto todavía no la incluye',
     'la teja «Gasto total» dice «sin medir» Y por qué, no `$0`',
@@ -474,10 +474,10 @@ async function correr(codigo) {
   // Al margen no se le pide una cadena concreta: se le pide que NO publique un
   // porcentaje ni un importe. Un hueco se delata como `0.0%` o como `$0`, y
   // cualquiera de los dos afirma un margen que nadie midió.
-  const tMargen = tejaDe(pdfHueco, 'MARGEN BRUTO');
+  const tMargen = tejaDe(pdfHueco, 'MARGEN');
   check(!tMargen.valor.includes('%') && !tMargen.pie.includes('$')
      && /sin medir/.test(tMargen.pie),
-    'y la de «Margen bruto» no publica ni porcentaje ni importe, y nombra el hueco',
+    'y la de «Margen» no publica ni porcentaje ni importe, y nombra el hueco',
     `${tMargen.valor} / ${tMargen.pie}`);
 
   // SITIO 2 · la caja de lo que no se puede afirmar. Sin ella las dos tejas de
@@ -534,10 +534,10 @@ async function correr(codigo) {
 
   check(dice(pdfMedido, '19,900,000'),
     'canario: el documento de la 0121 SÍ publica su gasto medido');
-  check(tejaDe(pdfMedido, 'GASTO TOTAL').valor === '$19,900,000'
-     && tejaDe(pdfMedido, 'GASTO TOTAL').pie === '204.1% del contrato',
+  check(tejaDe(pdfMedido, 'GASTO ACUMULADO').valor === '$19,900,000'
+     && tejaDe(pdfMedido, 'GASTO ACUMULADO').pie === '204.1% del contrato',
     'canario: con el gasto medido la teja publica la cifra y su proporción',
-    `${tejaDe(pdfMedido, 'GASTO TOTAL').valor} / ${tejaDe(pdfMedido, 'GASTO TOTAL').pie}`);
+    `${tejaDe(pdfMedido, 'GASTO ACUMULADO').valor} / ${tejaDe(pdfMedido, 'GASTO ACUMULADO').pie}`);
   // En el PAPEL el menos no es el mismo carácter que en la pantalla, y eso es
   // correcto: las fuentes estándar del PDF no saben escribir U+2212, así que
   // `textoImprimible` lo cambia por el guion antes de llegar a la hoja. Lo que
@@ -546,7 +546,7 @@ async function correr(codigo) {
   // propio portón del generador en vez de teclear `'-'` aquí: si mañana el
   // sustituto cambia, esto sigue midiendo el signo y no una cadena copiada.
   const MENOS_EN_HOJA = textoImprimible(MENOS);
-  const tMargenM = tejaDe(pdfMedido, 'MARGEN BRUTO');
+  const tMargenM = tejaDe(pdfMedido, 'MARGEN');
   check(tMargenM.valor.startsWith(MENOS_EN_HOJA)
      && tMargenM.pie.startsWith(MENOS_EN_HOJA),
     'canario y #101 en el papel: el margen negativo de la 0121 se entrega CON '
@@ -570,7 +570,7 @@ async function correr(codigo) {
   // sobre la obra. El canario acusaba al documento de declararse sin medir por
   // una celda de una semana. Lo que tiene que seguir siendo cierto es que las
   // TEJAS del gasto y del margen publiquen su cifra.
-  const tejasSinMedir = ['GASTO TOTAL', 'MARGEN BRUTO']
+  const tejasSinMedir = ['GASTO ACUMULADO', 'MARGEN']
     .filter(t => /sin medir/i.test(JSON.stringify(tejaDe(pdfMedido, t) || {})));
   check(tejasSinMedir.length === 0,
     'canario: y en el documento medido ninguna teja dice «sin medir»',
@@ -632,8 +632,8 @@ const MUTACIONES = [
     "    declarar('gasto', 'Gasto acumulado',\n      'el gasto de esta obra no está medido: GP no la conoce con esta clave');",
     "    void 'la leyenda no dice nada';"],
   ['el margen ausente se calla: sin la línea de gasto el hueco no se dibuja ni se explica',
-    "    declarar('margen', 'Margen bruto acumulado, en pesos',\n      !dibuja('gasto')",
-    "    if (0) declarar('margen', 'Margen bruto acumulado, en pesos',\n      !dibuja('gasto')"],
+    "    declarar('margen', 'Margen acumulado, en pesos',\n      !dibuja('gasto')",
+    "    if (0) declarar('margen', 'Margen acumulado, en pesos',\n      !dibuja('gasto')"],
   ['el área del margen se sombrea contra un borde que no se midió',
     "  if (dibuja('ejec') && dibuja('gasto') && hayDato(margen)) {",
     "  if (dibuja('ejec') && hayDato(ejecutado)) {"],
@@ -698,8 +698,8 @@ const MUTACIONES = [
     "    ['Gasto total', pres.gastoTxt,\n      pres.pctGastoTxt || pres.gastoMotivoTxt || '—',\n      pres.gastoSinMedir ? Q.mu : Q.nar],",
     "    ['Gasto total', MXN(kpis.gt),\n      `${PCT(kpis.pctGasto)} del contrato`,\n      Q.nar],"],
   ['la teja del margen vuelve a afirmar un porcentaje y un importe sobre el hueco',
-    "    ['Margen bruto', pres.margenTxt, pres.margenAbsTxt, colorMargen],",
-    "    ['Margen bruto', PCT(kpis.mpct), MXNS(kpis.diff), colorMargen],"],
+    "    ['Margen', pres.margenTxt, pres.margenAbsTxt, colorMargen],",
+    "    ['Margen', PCT(kpis.mpct), MXNS(kpis.diff), colorMargen],"],
   ['la caja de lo que no se puede afirmar se calla sobre el gasto sin medir',
     '  const huecos = [];\n  if (pres.gastoSinMedir)\n    huecos.push(',
     '  const huecos = [];\n  if (false)\n    huecos.push('],

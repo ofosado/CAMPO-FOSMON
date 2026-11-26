@@ -87,6 +87,9 @@ const NECESARIOS = [
   // llaman a `atrasoProyectado` en vez de repetir `estadoPorSemana` más la
   // mezcla del plazo vigente. Sin él, la sección 4 revienta en vez de medir.
   'atrasoProyectado',
+  // Añadida el 2026-11-25: junta los días de atraso y la fecha de término en
+  // una sola proyección, y es lo que llaman el tablero y el PDF.
+  'kpiPlazoDeObra',
 ];
 
 // `tolerante`: un nombre ausente no revienta aquí, se junta con los anclajes de
@@ -281,7 +284,7 @@ if (process.argv.includes('--contraprueba')) {
 
 const app = new Function(`"use strict";\n${cuerpo}\n;return {${presentes.join(',')}};`)();
 const { C, kpiDesviacionPlazo, proyeccionDeAvance, estadoPorSemana, snapshotId,
-  atrasoProyectado, tendenciaDeRitmo,
+  atrasoProyectado, kpiPlazoDeObra, tendenciaDeRitmo,
   ESQUEMA_AVANCE, SIN_PROY_SIN_AVANCE, SIN_PROY_NO_COMPARABLES,
   SIN_PROY_POCOS_CIERRES } = app;
 
@@ -438,19 +441,55 @@ console.log('\n4. Las dos pantallas, una sola cuenta\n');
 // de depender de esta inyección y se vería aquí.
 const correrCuenta = (fuente) => new Function(
   'kpiDesviacionPlazo', 'proyeccionDeAvance', 'estadoPorSemana', 'atrasoProyectado',
+  'kpiPlazoDeObra',
   'estados', 'estadosSemana', 'historialAvance', 'avanceActual', 'avance', 'obra', 'proy',
+  'af', 'kpis',
   `"use strict"; return ${fuente};`)(
   kpiDesviacionPlazo, (e, a, o) => proyeccionDeAvance(e, a, o, AHORA), estadoPorSemana,
   (o, info, h, av) => atrasoProyectado(o, info, h, av, AHORA),
+  // `kpiPlazoDeObra` junta los días y la fecha de término en UNA proyección, y
+  // es lo que llaman hoy el tablero y el PDF. Se inyecta con el reloj fijo,
+  // igual que las otras dos: así su `fechaFin` es la de este instante y no la
+  // del día en que se corra el banco.
+  (o, h, av) => kpiPlazoDeObra(o, h, av, AHORA),
   estados, estados, historial, 56, 56, obraTarde,
-  proyeccionDeAvance(estados, 56, obraTarde, AHORA));
+  proyeccionDeAvance(estados, 56, obraTarde, AHORA),
+  56, { af: 56 });
 
 const resultados = cuentas.map(c => ({ donde: c.donde, k: correrCuenta(c.fuente) }));
 for (const r of resultados) console.log(`       ${r.donde}: ${r.k.valor} · ${r.k.sub}`);
-const distintos = new Set(resultados.map(r => `${r.k.valor}|${r.k.sub}|${r.k.color}`));
-check(distintos.size === 1,
-  `las ${resultados.length} pantallas que lo dicen dicen lo mismo, hasta el color`,
-  distintos.size === 1 ? resultados[0].k.valor : [...distintos].join('  ≠  '));
+// ── EL VEREDICTO ES IDÉNTICO; EL PIE PUEDE LLEVAR MÁS ─────────────────────
+//
+// Hasta el 2026-11-25 se comparaba `valor|sub|color` entero. Ese día el
+// tablero de obra y el PDF empezaron a añadir la fecha probable de término
+// —«· termina ~22 dic 2026»— porque son las dos superficies donde se pidió,
+// y las otras dos no la llevan.
+//
+// Eso NO es la discrepancia que esta prueba vino a cazar. Lo que no puede
+// variar es el VEREDICTO: los días, el signo y el color. Si una pantalla
+// dijera «+22 d» y otra «+21 d», o una en rojo y otra en ámbar, el lector no
+// sabría a cuál creerle. Que una añada la fecha que SALE DE LA MISMA
+// proyección no le quita razón a ninguna.
+//
+// Así que se parte en dos, y la segunda mitad es la que impide que esto se
+// vuelva una excusa: el pie de todas tiene que EMPEZAR por la misma frase.
+// Una pantalla que cambie «de atraso» por otra cosa sigue saliendo en rojo.
+const veredictos = new Set(resultados.map(r => `${r.k.valor}|${r.k.dias}|${r.k.color}`));
+check(veredictos.size === 1,
+  `las ${resultados.length} pantallas dan el MISMO veredicto: días, signo y color`,
+  veredictos.size === 1 ? resultados[0].k.valor : [...veredictos].join('  ≠  '));
+
+const base = resultados[0].k.sub.split(' · ')[0];
+const piesDistintos = resultados.filter(r => !r.k.sub.startsWith(base));
+check(piesDistintos.length === 0,
+  'y el pie de todas empieza por la misma frase: lo que puede variar es lo que se AÑADE',
+  piesDistintos.length ? piesDistintos.map(r => `${r.donde}: «${r.k.sub}»`).join(' · ')
+                       : `«${base}»`);
+
+const conFecha = resultados.filter(r => / · termina ~/.test(r.k.sub));
+check(conFecha.length === 0 || conFecha.every(r => /~\d{2} \w+ \d{4}/.test(r.k.sub)),
+  'y donde se añade la fecha de término, es una fecha y no un hueco',
+  conFecha.map(r => r.donde).join(', ') || '(ninguna la añade)');
 check(resultados.every(r => r.k.valor === kTarde.valor),
   'y es la cuenta de verdad, no una copia que se quedó atrás', kTarde.valor);
 

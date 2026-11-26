@@ -119,6 +119,11 @@ const HELPERS = ['importeEjecutadoPartida', 'importeCatalogoPartida', 'desgloseE
                  // resolvían la obra del GP por su lado, sin la guarda contra el
                  // match difuso, y la tarjeta le colgaba a una obra el dinero de
                  // otra. Un doble que devolviera la serie «correcta» taparía eso.
+                 // La cuenta del acumulado de GP salió a estas tres piezas el
+                 // 2026-11-25, cuando se arregló la lectura de la semana
+                 // (`S2025-49` daba 20 con el regex viejo). Tienen que estar en
+                 // el preludio o `serieGastoDeSemanas` revienta a media corrida.
+                 'semanaDeClaveGP', 'acumuladoGPPorSemana', 'gpAcumuladoHasta',
                  'serieGastoDeSemanas', 'estadoGastoGP', 'resolverGastoGP',
                  'extraerGastoTotalGP',
                  // El programado y su rótulo: `serieProgramadaDeSemanas` llama

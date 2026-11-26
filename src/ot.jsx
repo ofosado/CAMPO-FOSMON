@@ -13,6 +13,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { conOrg } from "./rutas-org";
+import { archivoEnCotea } from "./archivo-en-cotea";
 
 // Las rutas de arriba son LÓGICAS. Quien decide dónde viven de verdad es
 // `conOrg` (src/rutas-org.js): raíz para una constructora, `orgs/{oid}/` para
@@ -743,7 +744,7 @@ export function HistoricoOT({ obra, subs, setSubs, fbDb }) {
               })}
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 {ot.pdfUrl && (
-                  <a href={ot.pdfUrl} target="_blank" rel="noreferrer" style={{ ...S.btnSec, textDecoration: "none", display: "inline-block" }}>
+                  <a href={archivoEnCotea(ot.pdfUrl)} target="_blank" rel="noreferrer" style={{ ...S.btnSec, textDecoration: "none", display: "inline-block" }}>
                     Ver PDF
                   </a>
                 )}
