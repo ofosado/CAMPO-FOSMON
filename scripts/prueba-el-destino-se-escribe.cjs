@@ -314,7 +314,19 @@ const rastroDelCLI = (RAIZ) => {
 
 console.log('\n── Qué despliega `firebase` cuando nadie le dice a dónde ──');
 {
-  const RAIZ = path.join(DIR, '..');
+  // ── DÓNDE TRABAJA EL DIAGNÓSTICO ────────────────────────────────────────
+  //
+  // Por omisión, la raíz del repositorio. Pero `firebase --debug` escribe su
+  // `firebase-debug.log` en el cwd, y eso convierte un archivo del repo en
+  // ESTADO COMPARTIDO: la suite corre los bancos en paralelo y hay dos que
+  // pasan por aquí —éste y `el-cli-que-no-contesta-deja-rastro`—, así que uno
+  // podía borrar el log que el otro acababa de escribir.
+  //
+  // Eso es lo que hacía parpadear al segundo: verde casi siempre, rojo una de
+  // cada catorce corridas completas, y nunca a solas. `RAIZ_DIAGNOSTICO` deja
+  // que un banco lo mande a su propio directorio y el archivo deje de ser de
+  // todos.
+  const RAIZ = process.env.RAIZ_DIAGNOSTICO || path.join(DIR, '..');
   // POR `spawnSync` Y NO POR `hijoConPlazo`: este sitio ya resuelve el plazo, y
   // mejor. Un CLI al que se lleva el plazo deja `status: null`, o sea `!== 0` y
   // sin «No project active», así que cae en el `sinPrecondicion` de abajo —2,

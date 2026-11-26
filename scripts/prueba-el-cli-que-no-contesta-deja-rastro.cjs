@@ -62,19 +62,40 @@ const postizo = (nombre, cuerpo) => {
 // plazo de 180 s venció mientras dormía, el hijo volvió con `status: null` y
 // las siete comprobaciones de abajo —que comparan contra 2 y contra 0— salieron
 // todas falsas: ROJO publicado sobre una medición que no ocurrió.
+// ── CADA CORRIDA EN SU PROPIO DIRECTORIO ───────────────────────────────────
+//
+// El postizo escribe `firebase-debug.log` en el cwd, igual que el CLI de
+// verdad. Mientras ese cwd fue la raíz del repositorio, el archivo era ESTADO
+// COMPARTIDO: la suite corre los bancos en paralelo, y por ese mismo archivo
+// pasan éste y `prueba-el-destino-se-escribe`. Uno borraba —`limpiar()`— el
+// log que el otro acababa de escribir.
+//
+// Así es como este banco parpadeaba: verde a solas siempre, verde bajo carga,
+// verde con el reloj del barrido, verde con seis copias concurrentes de sí
+// mismo… y rojo una de cada catorce corridas COMPLETAS, que es la única
+// condición donde el otro banco corre a la vez. Medido el 2026-11-26: no se
+// reprodujo en ninguna de las otras cuatro condiciones.
+//
+// Ahora el diagnóstico trabaja en un directorio propio, pasado por
+// `RAIZ_DIAGNOSTICO`. El archivo deja de ser de todos y la carrera no existe.
+const cuarto = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-sin-contestar-'));
+
 const correr = (dir) => {
   const r = noArranco.hijoConPlazo(process.execPath, [BANCO], {
     encoding: 'utf8', cwd: raiz, timeout: 180000,
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`,
+           RAIZ_DIAGNOSTICO: cuarto },
   });
   return { salida: r.status, texto: (r.stdout || '') + (r.stderr || '') };
 };
 
-// El postizo que escribe el log lo deja en el cwd, igual que el CLI de verdad,
-// o sea dentro del repositorio. Está en `.gitignore`, pero dejarlo tirado es
-// ensuciar el árbol con basura de una prueba.
-const LOG_EN_RAIZ = path.join(raiz, 'firebase-debug.log');
+const LOG_EN_RAIZ = path.join(cuarto, 'firebase-debug.log');
+// Y la raíz de verdad no se toca: si el diagnóstico volviera a escribir ahí,
+// este banco lo dice en vez de dejar basura en el árbol.
+const LOG_DEL_REPO = path.join(raiz, 'firebase-debug.log');
 const limpiar = () => { try { fs.unlinkSync(LOG_EN_RAIZ); } catch { /* no estaba */ } };
+// Ojo: `limpiar` borra el log DEL CUARTO, nunca el de la raíz. Borrar el de la
+// raíz es justo lo que pisaba al otro banco.
 process.on('exit', limpiar);
 
 // ── 1. No contesta ninguna de las dos veces, y `--debug` deja log ──────────
@@ -159,8 +180,23 @@ exit 1`);
   check(!/Se volvió a preguntar/.test(texto),
     'y no gasta una segunda llamada al CLI en el camino bueno');
   check(!fs.existsSync(LOG_EN_RAIZ),
-    'ni deja un `firebase-debug.log` tirado en la raíz del repositorio');
+    'ni deja un `firebase-debug.log` tirado en su directorio de trabajo');
 }
+
+// ── 3b · EL DIAGNÓSTICO NO ESCRIBE EN LA RAÍZ DEL REPOSITORIO ──────────────
+//
+// Es la aserción que impide que el arreglo del parpadeo se deshaga sin que
+// nadie se entere. Mientras el diagnóstico trabajaba en la raíz, su
+// `firebase-debug.log` era de todos: la suite corre en paralelo y otro banco
+// pasa por la misma función. El día que `RAIZ_DIAGNOSTICO` deje de honrarse,
+// esto sale en rojo en vez de volver el parpadeo.
+//
+// Se mide DESPUÉS de las tres secciones que de verdad escriben log, que es
+// cuando el archivo existiría si fuera a existir.
+console.log('\n3b. Y nada de esto toca el árbol del repositorio');
+check(!fs.existsSync(LOG_DEL_REPO),
+  'el diagnóstico escribió su log en su propio cuarto, no en la raíz',
+  fs.existsSync(LOG_DEL_REPO) ? 'HAY firebase-debug.log en la raíz' : `cuarto: ${cuarto}`);
 
 // ── 4. El CLI no está ──────────────────────────────────────────────────────
 //
