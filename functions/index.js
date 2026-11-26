@@ -457,6 +457,185 @@ exports.crearOrganizacion = onCall(async (request) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// MODIFICAR UNA ORGANIZACIÓN QUE YA EXISTE
+//
+// De dónde sale: «¿cómo ves si agregáramos un botón de modificar a las que ya
+// fueron creadas? Por si hay que corregir algún cambio de ortografía o
+// similar» (2026-11-26, después de entrar por primera vez a la pantalla). Hoy
+// un acento mal puesto en el nombre de un ayuntamiento se le queda al cliente
+// en el encabezado, o cuesta una sesión de consola — que es exactamente lo que
+// `PantallaPlataforma` existe para evitar.
+//
+// ── POR QUÉ NO BASTA LA REGLA, QUE YA LO PERMITE ──
+// `firestore.rules` deja a `soporte` escribir `orgs/{oid}` y su marca, y sabe
+// exigir que `tipo` no cambie. Lo que una regla NO puede exigir es lo que más
+// duele aquí: que un formulario que **no pudo leer** la marca no la escriba en
+// blanco. Para la regla, «no traigo el campo» y «el campo viene vacío» son dos
+// escrituras legales, y la segunda borra la razón social del cliente sin que
+// nadie lo note hasta la siguiente demo. Esa distinción vive aquí:
+// `branding === undefined` deja la marca intacta; un objeto la toca.
+//
+// ── LO QUE NO SE CAMBIA, Y POR QUÉ REVIENTA EN VEZ DE IGNORARSE ──
+// `orgId` es la ruta de TODOS los datos del cliente y `tipo` decide qué roles
+// existen. Si `tipo` llega distinto del guardado, esto falla con el tipo real
+// en el mensaje: ignorarlo en silencio deja a quien lo mandó creyendo que se
+// aplicó, y es el modo de fallo que `ModalUsuario` ya tuvo una vez.
+//
+// ── LA COMPARACIÓN NO PASA POR `JSON.stringify` ──
+// Medido el 2026-11-24 en la prueba del respaldo: comparar dos marcas con
+// `JSON.stringify` las declaró distintas por el ORDEN de las llaves, con el
+// mismo contenido. Aquí se comparan llave por llave.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Dos marcas son la misma si coinciden en todas sus llaves, en cualquier
+// orden, tratando «ausente» y «vacío» como lo mismo: así un campo que el
+// formulario mandó vacío porque nunca existió no cuenta como un cambio.
+function mismaMarca(a, b) {
+  const llaves = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of llaves) {
+    if (String((a || {})[k] || "") !== String((b || {})[k] || "")) return false;
+  }
+  return true;
+}
+
+exports.actualizarOrganizacion = onCall(async (request) => {
+  const { perfil: perfilLlamador } = await requireAdmin(request.auth);
+  if (!ambitoDe(perfilLlamador).cross) {
+    throw new HttpsError(
+      "permission-denied",
+      "Modificar una organización es un acto de plataforma: lo hace el rol de soporte."
+    );
+  }
+
+  const { orgId, nombre, tipo, branding } = request.data || {};
+  const id = String(orgId || "").trim();
+  if (!id || !RE_ORG_ID.test(id)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `El identificador «${id}» no sirve como id de organización. No se escribió nada.`
+    );
+  }
+
+  const db = admin.firestore();
+  const orgRef = db.doc(`orgs/${id}`);
+  const snap = await orgRef.get();
+  if (!snap.exists) {
+    throw new HttpsError(
+      "not-found",
+      `No existe la organización «${id}». No se escribió nada.`
+    );
+  }
+  const antes = snap.data() || {};
+
+  // El `tipo` viaja desde el formulario para que ESTO pueda comprobar que
+  // quien edita está mirando la organización que cree. No para cambiarlo.
+  if (tipo !== undefined && String(tipo) !== String(antes.tipo || "")) {
+    throw new HttpsError(
+      "failed-precondition",
+      `«${id}» es de tipo ${antes.tipo || "(sin tipo)"} y el tipo no se puede cambiar: ` +
+      "decide qué roles existen y qué ve la app. No se escribió nada."
+    );
+  }
+
+  const nom = nombre === undefined ? undefined : String(nombre).trim();
+  if (nom !== undefined && !nom) {
+    throw new HttpsError(
+      "invalid-argument",
+      "El nombre no puede quedar vacío: es lo que el cliente ve en su encabezado. " +
+      "No se escribió nada."
+    );
+  }
+
+  const cambios = {};
+  if (nom !== undefined && nom !== String(antes.nombre || "")) cambios.nombre = nom;
+
+  // ── `null` ES «NO TRAIGO LA MARCA», IGUAL QUE AUSENTE ─────────────────────
+  //
+  // Encontrado en el preview el 2026-11-26, y ningún banco podía verlo: el
+  // formulario manda `undefined` cuando la regla le negó la lectura, pero
+  // **el transporte de una callable no puede llevar `undefined`** — el SDK lo
+  // serializa como `null`—. Así que el acuerdo entre pantalla y servidor se
+  // rompía justo en el caso que existe hoy en producción: soporte no puede
+  // leer la marca, mandaba «no la traigo», y el servidor contestaba
+  // «`branding` tiene que ser un objeto».
+  //
+  // No se lee como «bórrala», y es deliberado: la pantalla no tiene ninguna
+  // acción de borrar la marca, así que un `null` no puede venir de una
+  // intención. Lo único que puede significar es que no se pudo leer. El día
+  // que exista «quitar la marca», será un campo propio y no la ausencia de
+  // uno — porque confundir «no sé» con «bórralo» es el defecto de esta rama.
+  const traeMarca = branding !== undefined && branding !== null;
+
+  let marcaNueva = null;
+  let marcaAntes = null;
+  if (traeMarca) {
+    if (typeof branding !== "object" || Array.isArray(branding)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "`branding` tiene que ser un objeto, o no venir. No se escribió nada."
+      );
+    }
+    const marcaRef = db.doc(`orgs/${id}/config/branding`);
+    const ms = await marcaRef.get();
+    marcaAntes = ms.exists ? (ms.data() || {}) : {};
+
+    // `empresa` es lo único que no puede quedar vacío: es lo que el encabezado
+    // enseña al cliente como suyo. Por omisión cae al nombre —el mismo dato,
+    // no uno inventado—, igual que en el alta.
+    const nombreFinal = nom !== undefined ? nom : String(antes.nombre || "").trim();
+    const empresa = String(branding.empresa || "").trim() || nombreFinal;
+    if (!empresa) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La razón social no puede quedar vacía y no hay nombre del que tomarla."
+      );
+    }
+
+    // Se parte de la marca GUARDADA, no de cero: así una llave que el
+    // formulario no mandó —el logo, que no se edita aquí— sobrevive. Y un
+    // vacío EXPLÍCITO sí borra, porque quitarle el nombre corto a un cliente
+    // es una edición legítima que no debe exigir una sesión de consola.
+    marcaNueva = { ...marcaAntes, empresa };
+    for (const k of ["empresaCorta", "dominio"]) {
+      if (!(k in branding)) continue;
+      const v = String(branding[k] || "").trim();
+      if (v) marcaNueva[k] = v;
+      else delete marcaNueva[k];
+    }
+    if (mismaMarca(marcaAntes, marcaNueva)) marcaNueva = null;
+  }
+
+  if (!Object.keys(cambios).length && marcaNueva === null) {
+    return { ok: true, orgId: id, sinCambios: true };
+  }
+
+  const batch = db.batch();
+  if (Object.keys(cambios).length) {
+    batch.update(orgRef, {
+      ...cambios,
+      modificadaEn: FieldValue.serverTimestamp(),
+      modificadaPor: request.auth.token.email || "",
+    });
+  }
+  if (marcaNueva !== null) batch.set(db.doc(`orgs/${id}/config/branding`), marcaNueva);
+
+  try {
+    await batch.commit();
+  } catch (e) {
+    throw new HttpsError("internal", `No se pudo modificar la organización: ${e.message}`);
+  }
+
+  // El antes y el después salen de vuelta para que la bitácora de la pantalla
+  // registre lo que CAMBIÓ de verdad, y no lo que el formulario tenía escrito.
+  return {
+    ok: true,
+    orgId: id,
+    nombre: { antes: String(antes.nombre || ""), despues: cambios.nombre ?? String(antes.nombre || "") },
+    marca: marcaNueva === null ? null : { antes: marcaAntes, despues: marcaNueva },
+  };
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // CREAR USUARIO
 // ──────────────────────────────────────────────────────────────────────────
 // La contraseña ya NO viene de la pantalla: se sortea aquí y sale en el correo

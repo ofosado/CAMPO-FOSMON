@@ -93,6 +93,23 @@ const LOG_EN_RAIZ = path.join(cuarto, 'firebase-debug.log');
 // Y la raíz de verdad no se toca: si el diagnóstico volviera a escribir ahí,
 // este banco lo dice en vez de dejar basura en el árbol.
 const LOG_DEL_REPO = path.join(raiz, 'firebase-debug.log');
+// ── POR QUÉ SE MIDE LA FIRMA DEL ARCHIVO Y NO SU EXISTENCIA ────────────────
+// La primera versión de esta comprobación, del 2026-11-26 por la mañana,
+// exigía que la raíz estuviera limpia EN ABSOLUTO. Esa misma tarde salió en
+// rojo sin que el repositorio tuviera nada: alguien había dejado corriendo
+// `firebase emulators:start` con el cwd en la raíz, y el CLI escribe ahí su
+// `firebase-debug.log` igual que el diagnóstico. El banco acusaba al
+// diagnóstico de algo que no hizo.
+//
+// Una aserción que se pone en rojo por un archivo que no es del repositorio
+// no protege nada: entrena a mirar para otro lado. Así que se compara la
+// firma del archivo ANTES y DESPUÉS, y lo que se afirma es lo único que a
+// este banco le toca afirmar: **que su propia corrida no lo escribió**.
+const firmaDelLogDelRepo = () => {
+  try { const s = fs.statSync(LOG_DEL_REPO); return `${s.size}·${s.mtimeMs}`; }
+  catch { return 'no existe'; }
+};
+const LOG_DEL_REPO_ANTES = firmaDelLogDelRepo();
 const limpiar = () => { try { fs.unlinkSync(LOG_EN_RAIZ); } catch { /* no estaba */ } };
 // Ojo: `limpiar` borra el log DEL CUARTO, nunca el de la raíz. Borrar el de la
 // raíz es justo lo que pisaba al otro banco.
@@ -194,9 +211,12 @@ exit 1`);
 // Se mide DESPUÉS de las tres secciones que de verdad escriben log, que es
 // cuando el archivo existiría si fuera a existir.
 console.log('\n3b. Y nada de esto toca el árbol del repositorio');
-check(!fs.existsSync(LOG_DEL_REPO),
+const LOG_DEL_REPO_DESPUES = firmaDelLogDelRepo();
+check(LOG_DEL_REPO_DESPUES === LOG_DEL_REPO_ANTES,
   'el diagnóstico escribió su log en su propio cuarto, no en la raíz',
-  fs.existsSync(LOG_DEL_REPO) ? 'HAY firebase-debug.log en la raíz' : `cuarto: ${cuarto}`);
+  LOG_DEL_REPO_DESPUES === LOG_DEL_REPO_ANTES
+    ? `cuarto: ${cuarto}`
+    : `firebase-debug.log de la raíz cambió: «${LOG_DEL_REPO_ANTES}» → «${LOG_DEL_REPO_DESPUES}»`);
 
 // ── 4. El CLI no está ──────────────────────────────────────────────────────
 //

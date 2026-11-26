@@ -214,18 +214,50 @@ traverse(ast, {
 
 // El efecto que carga la marca no es una declaración: es la flecha que va
 // dentro de un `useEffect`, y por eso no cae en el `decl` de arriba. Se busca
-// por lo que HACE —preguntar por `config/branding`— y no por el nombre de
-// ninguna variable, que no tiene.
+// por lo que HACE —pedir el documento de marca— y no por el nombre de ninguna
+// variable, que no tiene.
+//
+// ── POR QUÉ NO SE BUSCA YA LA CADENA `config/branding` ──
+// Así estaba hasta el 2026-11-26, y `||=` se quedaba con el PRIMER efecto que
+// la contuviera. El día que la pantalla de plataforma estrenó un efecto que
+// también lee el documento —para corregirle la ortografía a un cliente—, ése
+// pasó a ser el primero del archivo y este banco midió el modal creyendo que
+// medía el encabezado: salió rojo diciendo «el encabezado diría null», que es
+// cierto del modal y falso del encabezado. Un localizador que se queda con el
+// primero de varios candidatos no afirma sobre el que uno cree.
+//
+// Ahora la ruta la arma `rutaDeMarca` y el efecto que importa es el que la
+// pide CON EL `orgId` DE LA SESIÓN. Eso distingue los dos sin ambigüedad: el
+// encabezado lee la marca de quien usa la app; el modal, la de un cliente que
+// soporte está corrigiendo.
 let efectoMarca = null;
+const candidatosMarca = [];
 traverse(ast, {
   CallExpression(p) {
     if (p.node.callee.name !== 'useEffect') return;
     const cuerpo = p.node.arguments[0];
     if (!cuerpo) return;
     const texto = src.slice(cuerpo.start, cuerpo.end);
-    if (/config\/branding/.test(texto)) efectoMarca ||= texto;
+    if (!/rutaDeMarca\(/.test(texto)) return;
+    candidatosMarca.push(texto);
+    if (/rutaDeMarca\(\s*usuario\.orgId\s*\)/.test(texto)) efectoMarca ||= texto;
   },
 });
+// La declaración real de `rutaDeMarca`, tal cual está en el archivo: el
+// sandbox de abajo arma la ruta con ella y no con una copia que yo teclee. Si
+// el día de mañana la ruta cambia, este banco mide la nueva.
+const declRutaDeMarca = (src.match(/^const rutaDeMarca = .*$/m) || [])[0];
+if (!declRutaDeMarca) {
+  noArranco(['no se encontró `const rutaDeMarca = …` en una línea: el efecto del ' +
+    'encabezado se arma con esa función y sin ella este banco no puede correrlo'],
+    'src/App.jsx');
+}
+
+if (candidatosMarca.length && !efectoMarca) {
+  noArranco([`hay ${candidatosMarca.length} efecto(s) que piden el documento de marca y ` +
+    'ninguno lo pide con `rutaDeMarca(usuario.orgId)`: el del encabezado cambió de forma, ' +
+    'y medir otro sería afirmar sobre la pantalla equivocada'], 'src/App.jsx');
+}
 
 // Las opciones del menú de Configuración tampoco son una declaración de
 // módulo: viven dentro de `MenuConfiguracion`. Se buscan por dónde viven, no
@@ -1596,6 +1628,10 @@ const montarGP = () => {
     const usuario = { orgId: 'fosmon', correo: 'demo@fosmon.com.mx' };
     const fbDb = {};
     const doc = (db, ruta) => ruta;
+    // La ruta se arma con la funcion REAL del archivo, no con una copia: si
+    // cambiara de forma, este banco mide la nueva y no la que yo recuerde.
+    // (Aqui no caben acentos graves: esto vive dentro de una plantilla.)
+    ${declRutaDeMarca}
     const getDoc = async () => ({
       exists: () => ${JSON.stringify(existe)},
       data: () => (${JSON.stringify(datos)}),

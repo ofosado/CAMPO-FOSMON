@@ -236,6 +236,19 @@ for (const f of ['esAdminSistemaC()', 'esAdminSistemaD()', 'esSoporte()']) {
     'criterio, lo que hay que actualizar es la comparación, no fingir que midió.');
 }
 
+// ── Y LA LECTURA, QUE HASTA EL 2026-11-26 NO NOMBRABA A SOPORTE ────────────
+//
+// Era una asimetría, no una protección: `soporte` podía ESCRIBIR la marca de
+// un cliente y no podía LEERLA, así que la pantalla que la corrige tenía que
+// pintar los campos vacíos —y al guardar, borrársela— o callarse. Si alguien
+// quita este `esSoporte()` de la lectura, el formulario de la pantalla de
+// plataforma no revienta: se degrada en silencio al aviso de «no se pudo
+// leer», y nadie se enteraría. Por eso lo vigila un renglón.
+// Se mide en §6, abajo, y NO con `muere`: que la lectura no nombre a soporte
+// no es «no pude medir», es el defecto. Un 2 donde toca un 1 se lee como un
+// banco averiado y no como una regresión.
+const LECTURA = (BLOQUE.match(/allow read:([\s\S]*?)(?:\n\s*allow|$)/) || [])[1] || '';
+
 const rolesDeFuncion = (nombre) => {
   const m = REGLAS.match(new RegExp(`function\\s+${nombre}\\s*\\(\\)\\s*\\{([\\s\\S]*?)\\n    \\}`));
   if (!m) return null;
@@ -298,8 +311,14 @@ if (process.argv.includes('--contraprueba')) {
         '            Esta organización no tiene logo. La app no pinta ninguno en su lugar.',
         '            <img src="data:image/svg+xml,PLACEHOLDER" alt="Logotipo de muestra"/>')],
     ['APP', '§5 el logo se escribe en una ruta que nadie lee',
-      (t) => t.replace('      await setDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`),',
+      (t) => t.replace('      await setDoc(doc(fbDb, rutaDeMarca(usuario.orgId)),',
         '      await setDoc(doc(fbDb, `orgs/${usuario.orgId}/branding`),')],
+    ['APP', '§5 la ruta se vuelve a teclear a mano en vez de pasar por la función',
+      (t) => t.replace('    getDoc(doc(fbDb, rutaDeMarca(usuario.orgId)))',
+        '    getDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`))')],
+    ['RULES', 'soporte vuelve a poder escribir la marca sin poder leerla',
+      (t) => t.replace('      allow read:  if oid == orgId() || esSoporte();',
+        '      allow read:  if oid == orgId();')],
   ];
 
   let vistas = 0;
@@ -468,17 +487,47 @@ const falla = (q, esp, obt) => {
 }
 
 // §5. Se escribe donde se lee: una sola ruta para el documento de marca.
+//
+// Hasta el 2026-11-26 esto comparaba las PLANTILLAS: exigía dos o más y que
+// fueran idénticas como texto. Dejó de servir el día que apareció un tercer
+// sitio que toca el documento —la pantalla de plataforma, que lo lee para
+// corregirle la ortografía a un cliente—, porque su plantilla decía
+// `orgs/${org.id}/…` y la del encabezado `orgs/${usuario.orgId}/…`: la misma
+// ruta con otro nombre de variable salía como «dos rutas distintas».
+//
+// Y el aviso era correcto. Lo que estaba mal era el patrón, no la medición:
+// tres plantillas para una ruta es la discrepancia esperando. Ahora la ruta la
+// arma `rutaDeMarca` y esto afirma lo que de verdad importa: que hay **una
+// sola** plantilla —la de la función— y que **dos o más sitios** pasan por
+// ella. Localizar por la función, y no por una cadena, es además lo que
+// impide que alguien vuelva a teclear la ruta a mano en un cuarto sitio.
 {
+  const usos = (src.match(/rutaDeMarca\(/g) || []).length - 1;  // menos su propia declaración
   const distintas = [...new Set(RUTAS_MARCA)];
-  if (RUTAS_MARCA.length >= 2 && distintas.length === 1
-      && /config\/branding`$/.test(distintas[0]))
-    ok(`las ${RUTAS_MARCA.length} rutas del documento de marca son la misma: ${distintas[0]}`);
+  if (distintas.length === 1 && /config\/branding`$/.test(distintas[0]) && usos >= 2)
+    ok(`una sola plantilla —${distintas[0]}— y ${usos} sitios que pasan por \`rutaDeMarca\``);
   else falla('el logo se escribe en la misma ruta que se lee',
-    'al menos dos usos de una sola ruta, terminada en `config/branding`',
-    RUTAS_MARCA.length < 2
-      ? `sólo hay ${RUTAS_MARCA.length} ruta(s) con «branding»: o la lectura o la `
-        + 'escritura dejó de armarse así, y no se puede comparar'
-      : `hay ${distintas.length} rutas distintas: ${distintas.join('  ·  ')}`);
+    'una sola plantilla con `config/branding`, dentro de `rutaDeMarca`, y ≥2 sitios que la llamen',
+    distintas.length !== 1
+      ? `hay ${distintas.length} plantilla(s) con «branding»: ${distintas.join('  ·  ')}`
+      : `la plantilla es única pero sólo ${usos} sitio(s) llaman a \`rutaDeMarca\``);
+}
+
+// §6. Quien puede ESCRIBIR la marca puede LEERLA.
+//
+// Hasta el 2026-11-26 `soporte` podía escribirla y no leerla, y eso no era una
+// protección: era el camino corto a borrarle la razón social a un cliente,
+// porque la pantalla que la corrige tenía que pintar los campos vacíos. Si
+// alguien quita ese `esSoporte()` de la lectura nada revienta —el formulario
+// se degrada en silencio al aviso de «no se pudo leer»—, así que lo vigila
+// este renglón.
+{
+  if (LECTURA.includes('esSoporte()'))
+    ok('quien puede escribir la marca puede leerla: la lectura nombra a `soporte`');
+  else falla('quien puede escribir la marca puede leerla',
+    '`allow read` de `config/branding` consulta `esSoporte()`',
+    `${LECTURA.trim().replace(/\s+/g, ' ') || '(no se halló la lectura)'}`
+    + ' — el formulario de «Modificar» no podría enseñar la marca que corrige');
 }
 
 console.log('');
