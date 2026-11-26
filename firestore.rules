@@ -777,8 +777,19 @@ service cloud.firestore {
     // Marca del cliente. El paquete de marca de cotea lee de aquí, en tiempo
     // de ejecución, el logo que va junto al saludo. El manifest es del
     // producto —la app se llama cotea para todos—; esto es sólo del cliente.
+    // `soporte` LEE además de escribir, y hasta el 2026-11-26 sólo escribía.
+    // Era una asimetría, no una protección: el rol que puede cambiar la marca
+    // de un cliente no podía ver la que está cambiando, así que el formulario
+    // de corrección tenía que pintar los campos vacíos o callarse. Un campo
+    // vacío donde hay dato es el camino corto a borrarle la razón social al
+    // ayuntamiento, y el servidor tuvo que aprender a distinguir «no la
+    // traigo» de «bórrala» justamente por esto.
+    //
+    // Lo que se abre es un rótulo —razón social, nombre corto, dominio y el
+    // logo—, no operación: ni obras, ni avance, ni montos, ni evidencia, que
+    // es lo que la pantalla de plataforma promete en voz alta no ver.
     match /orgs/{oid}/config/branding {
-      allow read:  if oid == orgId();
+      allow read:  if oid == orgId() || esSoporte();
       allow write: if ((esAdminSistemaC() || esAdminSistemaD()) && oid == orgId())
                       || esSoporte();
     }

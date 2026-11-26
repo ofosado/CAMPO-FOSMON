@@ -13438,6 +13438,186 @@ function ModalMiPassword({ correo, onCerrar }){
 // `tipoOrg` tomado de la org elegida. Una segunda copia del formulario se
 // desincroniza de las listas de roles, y una lista de roles desfasada crea
 // cuentas cuyos claims las reglas no reconocen: la cuenta entra y no ve nada.
+// ── MODIFICAR UNA ORGANIZACIÓN QUE YA EXISTE ───────────────────────────────
+//
+// Pedido el 2026-11-26: «por si hay que corregir algún cambio de ortografía o
+// similar». Un acento mal puesto en el nombre de un ayuntamiento se le queda
+// al cliente en su encabezado.
+//
+// ── POR QUÉ ESTE MODAL NO ES EL FORMULARIO DE ALTA CON OTRO BOTÓN ──
+// El alta nace en blanco; esto nace con el dato del cliente ya dentro, y ahí
+// un campo que se pinta vacío cuando en realidad no se pudo leer es una
+// mentira que al guardar se vuelve un borrado. Son dos pantallas con dos
+// riesgos distintos, y la de edición carga con el suyo:
+//
+//   `soporte` PUEDE ESCRIBIR LA MARCA Y NO PUEDE LEERLA. Medido el 2026-11-26
+//   contra `firestore.rules`: `orgs/{oid}/config/branding` tiene
+//   `allow read: if oid == orgId()` y el perfil de soporte trae `orgId: null`,
+//   mientras `allow write` sí lo nombra. Así que los tres campos de marca se
+//   piden al servidor y, si la lectura se niega, **no se pintan vacíos y no se
+//   mandan**: se dice en pantalla que no se pudieron leer y se edita sólo el
+//   nombre. Un formulario que enseña blanco donde hay dato es el camino corto
+//   a borrarle la marca al cliente.
+// La decisión que no puede vivir dentro del componente, porque es la que
+// decide si al cliente se le borra la marca: ¿qué se le manda al servidor
+// sobre la marca, dado lo que se pudo LEER de ella?
+//
+//   `false` (se negó la lectura) y `null` (todavía no llega) → `undefined`,
+//   que el servidor lee como «no traigo la marca» y deja la guardada intacta.
+//   Un objeto → las tres claves, y el servidor distingue vacío de ausente.
+//
+// Está aquí arriba y no en el `onClick` por una razón medida: el taller dobla
+// `useEffect` con un no-op, así que un banco no puede hacer que el componente
+// complete su lectura. Una decisión de esta consecuencia que ningún banco
+// puede EJECUTAR es una decisión sin medir.
+// ── LA RUTA DEL DOCUMENTO DE MARCA, EN UN SOLO SITIO ───────────────────────
+// Tres sitios la tocan: el encabezado la LEE al entrar, Configuración → Marca
+// la ESCRIBE, y la pantalla de plataforma la lee para corregirla. Hasta el
+// 2026-11-26 cada uno llevaba su propia plantilla, y la tercera —ésta— rompió
+// dos bancos a la vez, que es la señal de que el patrón estaba mal:
+// `prueba-el-logo-entra-por-la-app` exige que se escriba donde se lee, y
+// `prueba-ui-dependencia` encontraba el efecto del encabezado buscando la
+// cadena `config/branding` dentro de un `useEffect` — y el primero que la
+// contenía dejó de ser el del encabezado.
+//
+// Una ruta, una función. Los bancos la buscan por ella y no por una cadena
+// que cualquiera puede volver a teclear en otro sitio.
+const rutaDeMarca = (oid) => `orgs/${oid}/config/branding`;
+
+const marcaQueSeManda = (marca) =>
+  (marca === false || marca === null || typeof marca !== 'object')
+    ? undefined
+    : {
+        empresa: String(marca.empresa || ''),
+        empresaCorta: String(marca.empresaCorta || ''),
+        dominio: String(marca.dominio || ''),
+      };
+
+function ModalOrganizacion({ org, onCancel, onConfirm, busy }) {
+  const [nombre, setNombre] = useState(org?.nombre || "");
+  // `null` = todavía no se sabe · objeto = se leyó · false = se negó la lectura
+  const [marca, setMarca] = useState(null);
+  const [marcaErr, setMarcaErr] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const s = await getDoc(doc(fbDb, rutaDeMarca(org.id)));
+        if (!vivo) return;
+        setMarca(s.exists() ? (s.data() || {}) : {});
+      } catch (e) {
+        if (!vivo) return;
+        setMarca(false);
+        setMarcaErr(e?.code || e?.message || "lectura denegada");
+      }
+    })();
+    return () => { vivo = false; };
+  }, [org.id]);
+
+  const f = (k, v) => setMarca(m => ({ ...(m || {}), [k]: v }));
+  const puede = nombre.trim() && marca !== null && !busy;
+
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,
+    display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div style={{background:"white",borderRadius:12,padding:20,width:"100%",maxWidth:480,
+      maxHeight:"90vh",overflow:"auto"}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.textPri,marginBottom:12}}>
+        Modificar «{org.id}»
+      </div>
+
+      {/* Lo que no se puede cambiar se enseña, no se esconde: quien viene a
+          corregir una falta de ortografía tiene que ver de una vez que el
+          identificador y el tipo no son de los que se corrigen. */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12,
+        background:C.bg,borderRadius:8,padding:"8px 10px"}}>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase"}}>Identificador</div>
+          <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{org.id}</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            Está en la ruta de todos sus datos. No se cambia.
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:9,color:C.textMut,textTransform:"uppercase"}}>Tipo</div>
+          <div style={{fontSize:11,fontWeight:600,color:C.textPri}}>{org.tipo || "sin tipo"}</div>
+          <div style={{fontSize:9,color:C.textMut,marginTop:2}}>
+            Decide qué roles existen. No se cambia.
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:3,textTransform:"uppercase"}}>Nombre</div>
+        <Inp type="text" value={nombre} onChange={e=>setNombre(e.target.value)}/>
+      </div>
+
+      <div style={{marginTop:12,paddingTop:10,borderTop:`0.5px solid ${C.border}`}}>
+        <div style={{fontSize:9,color:C.textMut,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+          Marca del cliente
+        </div>
+
+        {marca === null
+          ? <div style={{fontSize:11,color:C.textMut}}>Leyendo la marca actual…</div>
+          : marca === false
+            ? <div style={{fontSize:11,color:C.redDk,background:C.redBg,borderRadius:6,padding:"8px 10px"}}>
+                No se pudo leer la marca de este cliente ({marcaErr}), así que no se
+                muestra ni se toca: los campos en blanco serían un invento y al
+                guardar le borrarían su razón social. El nombre de arriba sí se
+                puede corregir.
+              </div>
+            : <>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                  <div>
+                    <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Razón social</div>
+                    <Inp type="text" value={marca.empresa || ""} placeholder="= el nombre"
+                      onChange={e=>f("empresa", e.target.value)}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Nombre corto</div>
+                    <Inp type="text" value={marca.empresaCorta || ""}
+                      onChange={e=>f("empresaCorta", e.target.value)}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.textMut,marginBottom:3}}>Dominio</div>
+                    <Inp type="text" value={marca.dominio || ""}
+                      onChange={e=>f("dominio", e.target.value)}/>
+                  </div>
+                </div>
+                <div style={{fontSize:9,color:C.textMut,marginTop:5}}>
+                  Vaciar el nombre corto o el dominio los borra. La razón social no
+                  puede quedar vacía: si la dejas así, vuelve a ser el nombre.
+                </div>
+              </>}
+      </div>
+
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+        <button onClick={onCancel} style={{background:"none",border:`0.5px solid ${C.border}`,
+          borderRadius:6,padding:"7px 14px",fontSize:11,color:C.textSec,cursor:"pointer"}}>
+          Cancelar
+        </button>
+        <button disabled={!puede}
+          onClick={()=>onConfirm({
+            orgId: org.id,
+            // `tipo` viaja para que el servidor pueda negarse si la
+            // organización no es la que este modal creía. No para cambiarlo.
+            tipo: org.tipo,
+            nombre: nombre.trim(),
+            // `undefined` NO es `{}`: el primero deja la marca intacta, el
+            // segundo la reescribe. Lo decide `marcaQueSeManda`, que es la
+            // cuenta que el banco ejecuta.
+            branding: marcaQueSeManda(marca),
+          })}
+          style={{background:puede?C.caliza:C.border,border:"none",borderRadius:6,
+            padding:"7px 14px",fontSize:11,fontWeight:700,
+            color:puede?C.bg:C.textMut,cursor:puede?"pointer":"not-allowed"}}>
+          {busy ? "Guardando…" : "Guardar cambios"}
+        </button>
+      </div>
+    </div>
+  </div>;
+}
+
 function PantallaPlataforma({ usuario, onLogout }) {
   const [orgs, setOrgs] = useState(null);      // null = todavía no llega
   const [errorLista, setErrorLista] = useState("");
@@ -13446,6 +13626,7 @@ function PantallaPlataforma({ usuario, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [aviso, setAviso] = useState(null);    // {ok:bool, texto:string}
   const [altaEn, setAltaEn] = useState(null);  // la org donde se da de alta el primer usuario
+  const [editando, setEditando] = useState(null); // la org que se está corrigiendo
 
   // El padrón de organizaciones se lee directo: `allow read` en `orgs/{oid}`
   // ya admite a soporte, y una Cloud Function de sólo lectura sería una pieza
@@ -13628,7 +13809,7 @@ function PantallaPlataforma({ usuario, onLogout }) {
               ? <div style={{fontSize:11,color:C.textMut,padding:"8px 2px"}}>Todavía no hay ninguna.</div>
               : <div style={{display:"flex",flexDirection:"column",gap:4}}>
                   {orgs.map(o => (
-                    <div key={o.id} style={{display:"grid",gridTemplateColumns:"1.2fr 2fr auto auto auto",
+                    <div key={o.id} style={{display:"grid",gridTemplateColumns:"1.2fr 2fr auto auto auto auto",
                       gap:8,alignItems:"center",padding:"8px 10px",background:C.bg,borderRadius:8,
                       opacity:o.activa === false ? 0.55 : 1}}>
                       <div style={{fontSize:11,fontWeight:600,color:C.caliza}}>{o.id}</div>
@@ -13636,6 +13817,9 @@ function PantallaPlataforma({ usuario, onLogout }) {
                         textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.nombre || "—"}</div>
                       <Bdg color={o.tipo === "dependencia" ? C.purple : C.blue} small>{o.tipo || "sin tipo"}</Bdg>
                       <Bdg color={o.activa === false ? C.red : C.green} small>{o.activa === false ? "Inactiva" : "Activa"}</Bdg>
+                      <SecBtn onClick={()=>setEditando({ id:o.id, tipo:o.tipo, nombre:o.nombre })}>
+                        Modificar
+                      </SecBtn>
                       <SecBtn onClick={()=>setAltaEn({ id:o.id, tipo:o.tipo, nombre:o.nombre })}>
                         + Usuario
                       </SecBtn>
@@ -13644,6 +13828,39 @@ function PantallaPlataforma({ usuario, onLogout }) {
                 </div>}
       </Card>
     </div>
+
+    {editando && <ModalOrganizacion
+      org={editando}
+      busy={busy}
+      onCancel={()=>setEditando(null)}
+      onConfirm={async (payload)=>{
+        setAviso(null);
+        setBusy(true);
+        const r = await callFn("actualizarOrganizacion", payload);
+        setBusy(false);
+        if (!r.ok) { setAviso({ ok:false, texto:`No se modificó «${payload.orgId}»: ${r.error}` }); return; }
+        if (r.data?.sinCambios) {
+          // Verde sería mentira: quien le dio a «Guardar cambios» cree que
+          // cambió algo. Que no haya diferencia es información, no un error.
+          setAviso({ ok:false, texto:`«${payload.orgId}» quedó igual: no había nada distinto que guardar.` });
+          setEditando(null);
+          return;
+        }
+        // El antes y el después los pone el SERVIDOR, no el formulario: la
+        // bitácora tiene que decir qué cambió de verdad, y el formulario sólo
+        // sabe lo que tenía escrito.
+        fsAudit("editar", { oid: payload.orgId,
+                            modulo:"plataforma", entidad:`orgs/${payload.orgId}`,
+                            antes:{ nombre: r.data?.nombre?.antes, branding: r.data?.marca?.antes },
+                            despues:{ nombre: r.data?.nombre?.despues, branding: r.data?.marca?.despues } });
+        const queCambio = [
+          r.data?.nombre && r.data.nombre.antes !== r.data.nombre.despues ? "el nombre" : null,
+          r.data?.marca ? "la marca" : null,
+        ].filter(Boolean).join(" y ");
+        setAviso({ ok:true, texto:`«${payload.orgId}»: se corrigió ${queCambio || "el registro"}.` });
+        setEditando(null);
+        await recargar();
+      }}/>}
 
     {altaEn && <ModalUsuario
       titulo={`Usuario en ${altaEn.nombre || altaEn.id}`}
@@ -28488,7 +28705,7 @@ function PantallaMarca({usuario, marca, onMarca}){
   const guardar = async () => {
     setGuardando(true); setProblema("");
     try {
-      await setDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`),
+      await setDoc(doc(fbDb, rutaDeMarca(usuario.orgId)),
         { logoBlanco: pend.dataURI }, { merge: true });
       // La marca de la sesión se actualiza con lo que SE ESCRIBIÓ, para que el
       // saludo lo enseñe sin recargar. No se vuelve a leer: lo que se pinta es
@@ -29867,7 +30084,7 @@ export default function App(){
     setMarca(null);
     if (!usuario?.orgId) return;
     let cancelado = false;
-    getDoc(doc(fbDb, `orgs/${usuario.orgId}/config/branding`))
+    getDoc(doc(fbDb, rutaDeMarca(usuario.orgId)))
       .then(s => { if (!cancelado) setMarca(s.exists() ? s.data() : null); })
       .catch(e => console.warn('branding no legible:', usuario.orgId, e?.code || e?.message));
     return () => { cancelado = true; };

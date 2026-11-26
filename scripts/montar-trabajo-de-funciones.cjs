@@ -91,6 +91,10 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
 
   const refDoc = (ruta) => ({
     id: ruta.split('/').pop(),
+    // `path` existe en el `DocumentReference` de verdad, y hace falta aquí
+    // porque un lote recibe REFERENCIAS y tiene que poder saber de qué
+    // documento habla cada acto antes de aplicarlo.
+    path: ruta,
     get: async () => {
       tropieza(fallaLectura, ruta);
       return {
@@ -238,6 +242,49 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
     },
   });
 
+  // ── UN LOTE DE MENTIRA, Y LA MITAD QUE IMPORTA ES QUE NO ESCRIBE ──────────
+  //
+  // Hasta el 2026-11-26 esta base no sabía de lotes, así que un trabajo que
+  // usa `db.batch()` reventaba con «batch is not a function» —un NO ARRANCÓ—
+  // y el banco del alta de organización se escribió su propio Firestore de
+  // mentira para poder medirlo. Dos dobles de Firestore en el repositorio es
+  // la discrepancia de siempre esperando: basta que uno aprenda algo que el
+  // otro no para que dos bancos salgan verdes sobre conductas distintas.
+  //
+  // **Nada se aplica hasta `commit()`**, y eso no es comodidad del doble: es
+  // la única propiedad por la que un trabajo usa un lote. Un doble que
+  // aplicara cada acto al encolarlo dejaría pasar un trabajo que escribe la
+  // mitad y revienta, que es exactamente lo que el lote existe para impedir
+  // —y lo que `crearOrganizacion` dice en su comentario que busca: «la
+  // organización y su marca entran juntas o no entra ninguna»—.
+  //
+  // `create` revienta con ALREADY_EXISTS como el de verdad, y revienta ANTES
+  // de aplicar cualquier acto del lote: con `code = 6`, que es el que el
+  // código de producción mira.
+  const batch = () => {
+    const actos = [];
+    return {
+      create: (ref, d) => { actos.push({ tipo: 'create', ref, d }); },
+      set: (ref, d, opt) => { actos.push({ tipo: 'set', ref, d, opt }); },
+      update: (ref, d) => { actos.push({ tipo: 'update', ref, d }); },
+      delete: (ref) => { actos.push({ tipo: 'delete', ref }); },
+      commit: async () => {
+        for (const a of actos) {
+          if (a.tipo === 'create' && docs.has(a.ref.path)) {
+            const e = new Error(`ALREADY_EXISTS: ${a.ref.path}`);
+            e.code = 6;
+            throw e;
+          }
+        }
+        for (const a of actos) {
+          if (a.tipo === 'create' || a.tipo === 'set') await a.ref.set(a.d, a.opt);
+          else if (a.tipo === 'update') await a.ref.update(a.d);
+          else await a.ref.delete();
+        }
+      },
+    };
+  };
+
   return {
     docs, escrituras, cuentas, actosAuth,
     // `app()` existe porque el respaldo pide la credencial por ahí
@@ -245,7 +292,7 @@ function baseFalsa(docsIniciales, { fallaLectura = null, fallaEscritura = null,
     // REST API de Firestore. Sin esto, montar ese trabajo revienta con
     // «admin.app is not a function» — un NO ARRANCÓ que se confundiría con
     // una regresión del trabajo.
-    admin: { firestore: () => ({ doc: refDoc, collection: coleccion }),
+    admin: { firestore: () => ({ doc: refDoc, collection: coleccion, batch }),
              auth, initializeApp: () => {},
              app: () => ({ options: { credential: {
                getAccessToken: async () => ({ access_token: "token-de-mentira" }),
