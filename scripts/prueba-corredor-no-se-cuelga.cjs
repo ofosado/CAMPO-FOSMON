@@ -75,8 +75,11 @@ if (process.argv.includes('--contraprueba')) {
   const MUTACIONES = [
     ['quitarle el plazo al spawn (el defecto original)',
       /timeout: PLAZO_BANCO,/, ''],
+    // Ancla movida el 2026-11-25, por lo mismo que la de «no contar las
+    // caducas»: la puerta pasó de expresión dentro del `process.exit` a la
+    // función `codigoDeSalida`. Ver el comentario de allá.
     ['no contar las colgadas al salir',
-      /rojas\.length \+ mudas\.length \+ colgadas\.length/, 'rojas.length + mudas.length'],
+      /const enRojo = rojas \+ mudas \+ colgadas/, 'const enRojo = rojas + mudas'],
     ['contar la colgada como verde',
       /if \(seColgó\) \{ estado = 'SE COLGÓ'; colgadas\.push\(\[f, tardó, salida\]\); \}/,
       `if (seColgó) { estado = 'verde'; verdes.push(f); }`],
@@ -170,9 +173,10 @@ if (process.argv.includes('--contraprueba')) {
     ['denunciar callando: no publicar cuál banco es',
       /for \(const \[f, razón\] of sinDeclarar\) console\.log\(`  \$\{corto\(f\)\}: \$\{razón\}`\);/,
       ''],
+    // Ancla movida el 2026-11-25 (misma causa: `codigoDeSalida`).
     ['ver la discrepancia y no contarla al salir',
-      /\+ exclusionesFantasma\.length \+ sinDeclarar\.length/,
-      '+ exclusionesFantasma.length'],
+      /\+ exclusionesFantasma \+ sinDeclarar \+/,
+      '+ exclusionesFantasma +'],
 
     // ── El barrido de fechas ──────────────────────────────────────────────
     // La más importante de todas: `fecha-falsa.cjs` revienta si no hay
